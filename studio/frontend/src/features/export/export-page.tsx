@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SectionCard } from "@/components/section-card";
-import { RecentTrainingsSection } from "@/features/studio/recent-trainings-section";
 import { Button } from "@/components/ui/button";
 import {
   Combobox,
@@ -49,6 +48,7 @@ import {
   PackageIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { useSearch } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -211,6 +211,29 @@ export function ExportPage() {
     };
   }, []);
 
+  // Apply the ?run= deep link (e.g. from a finished run's "Export to GGUF"
+  // button) once its run appears in the checkpoint list: select the run and
+  // default to GGUF. The main checkpoint is auto-selected further below, after
+  // the model-change effect that clears the checkpoint.
+  const { run: preselectRun } = useSearch({ from: "/export" });
+  const appliedRunRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!preselectRun) {
+      // Deep link cleared (e.g. navigated to /export via the sidebar): stop
+      // treating the previously preselected run specially.
+      appliedRunRef.current = null;
+      return;
+    }
+    if (models.length === 0) return;
+    if (appliedRunRef.current === preselectRun) return;
+    const match = models.find((m) => m.name === preselectRun);
+    if (!match) return;
+    appliedRunRef.current = preselectRun;
+    setSourceMode("checkpoint");
+    setSelectedModelIdx(match.name);
+    setExportMethod("gguf");
+  }, [preselectRun, models]);
+
   // ---- Fetch local models for direct export ----
   useEffect(() => {
     const controller = new AbortController();
@@ -361,6 +384,15 @@ export function ExportPage() {
   useEffect(() => {
     setCheckpoint(null);
   }, [selectedModelIdx]);
+
+  // For a ?run= deep link, default to the run's main checkpoint. Declared after
+  // the reset effect above so it runs last and isn't clobbered back to null.
+  useEffect(() => {
+    if (appliedRunRef.current == null) return;
+    if (appliedRunRef.current !== selectedModelIdx) return;
+    if (checkpoint != null || checkpointsForModel.length === 0) return;
+    setCheckpoint(checkpointsForModel[0].display_name);
+  }, [selectedModelIdx, checkpoint, checkpointsForModel]);
 
   // Auto-reset export method if incompatible with the selected model type
   useEffect(() => {
@@ -1191,8 +1223,6 @@ export function ExportPage() {
             </>
           )}
         </SectionCard>
-
-        <RecentTrainingsSection />
       </main>
     </div>
   );

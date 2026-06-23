@@ -1530,7 +1530,11 @@ def grpo_trainer_compute_loss(function_name, function):
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
-        current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
+        # Missing when evaluate() runs standalone; eval does not accumulate, so
+        # fall back to 1 to avoid underreporting eval_loss (#2464).
+        current_gradient_accumulation_steps = getattr(
+            self, "current_gradient_accumulation_steps", 1
+        )
         num_processes = self.accelerator.num_processes
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)

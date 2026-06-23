@@ -20,7 +20,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import _PROVISIONAL_ARGS_MIN_CHARS, LlamaCppBackend
 from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
@@ -1325,3 +1325,323 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
     assert len(starts) == 2
     assert [event["result"] for event in ends] == [TOOL_REJECTED_MESSAGE, "OK"]
     assert calls == [("python", {"code": "print(1)"})]
+
+
+def _streamed_structured_tool_call(
+    tool_name: str,
+    arguments: dict,
+    call_id: str,
+    frag: int = 24,
+) -> list[str]:
+    """A structured tool call whose arguments arrive token-by-token across many
+    deltas (id + name on the first delta), mirroring how llama-server streams a
+    large tool-call argument such as a full HTML/code file."""
+    args_json = json.dumps(arguments)
+    fragments = [args_json[i : i + frag] for i in range(0, len(args_json), frag)] or [""]
+    chunks = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": tool_name, "arguments": fragments[0]},
+                    }
+                ]
+            }
+        )
+    ]
+    for fragment in fragments[1:]:
+        chunks.append(_sse({"tool_calls": [{"index": 0, "function": {"arguments": fragment}}]}))
+    chunks.append(_done())
+    return chunks
+
+
+def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
+    """Regression: a large streamed tool-call argument surfaces a provisional
+    tool card BEFORE the full arguments finish, so the UI shows progress during
+    generation instead of a frozen 'Generating...'. (The bug: only render_html
+    surfaced early; python/terminal/etc. were silent until the call completed.)"""
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    args_json = json.dumps({"code": big_code})
+    assert len(args_json) > _PROVISIONAL_ARGS_MIN_CHARS
+
+    first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_py_big")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "OK"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "write code"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    real = [e for e in tool_starts if e.get("arguments", {}).get("code")]
+
+    # Exactly one provisional (empty args) and one real (full args), same id so
+    # the frontend reconciles them into a single card.
+    assert len(provisional) == 1, tool_starts
+    assert provisional[0]["tool_name"] == "python"
+    assert provisional[0]["tool_call_id"] == "call_py_big"
+    assert provisional[0]["provenance"].get("provisional") is True
+    assert len(real) == 1
+    assert real[0]["tool_call_id"] == "call_py_big"
+    # The provisional card appears before the real (completed) tool_start.
+    assert events.index(provisional[0]) < events.index(real[0])
+
+    assert calls == [("python", {"code": big_code})]
+    assert any(e.get("type") == "tool_end" and e.get("tool_name") == "python" for e in events)
+
+
+def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
+    """A small tool-call argument finishes streaming instantly, so it keeps the
+    existing behavior of a single (real) tool_start with no provisional card."""
+
+    first_stream = _structured_tool_call("python", {"code": "print(1)"}, "call_py_small")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "x"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    assert [e for e in tool_starts if not e.get("arguments")] == []
+    assert len([e for e in tool_starts if e.get("arguments", {}).get("code")]) == 1
+
+
+def _streamed_parallel_tool_calls(specs, frag: int = 24) -> list[str]:
+    """Two or more structured tool calls, each streamed token-by-token across
+    deltas, one index fully before the next, mirroring how llama-server streams
+    several parallel tool calls whose arguments are large."""
+    chunks: list[str] = []
+    for index, (tool_name, arguments, call_id) in enumerate(specs):
+        args_json = json.dumps(arguments)
+        fragments = [args_json[i : i + frag] for i in range(0, len(args_json), frag)] or [""]
+        chunks.append(
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": index,
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": tool_name, "arguments": fragments[0]},
+                        }
+                    ]
+                }
+            )
+        )
+        for fragment in fragments[1:]:
+            chunks.append(
+                _sse({"tool_calls": [{"index": index, "function": {"arguments": fragment}}]})
+            )
+    chunks.append(_done())
+    return chunks
+
+
+def test_parallel_large_tool_calls_each_emit_provisional_start(monkeypatch):
+    """With parallel tool use enabled (the default), every streamed large tool
+    call surfaces its own provisional card, not just the first one, so the UI
+    shows progress for each call as its arguments stream."""
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    big_cmd = "echo start\n" + "\n".join(f"echo line {i}" for i in range(60))
+    assert len(json.dumps({"code": big_code})) > _PROVISIONAL_ARGS_MIN_CHARS
+    assert len(json.dumps({"command": big_cmd})) > _PROVISIONAL_ARGS_MIN_CHARS
+
+    first_stream = _streamed_parallel_tool_calls(
+        [
+            ("python", {"code": big_code}, "call_py"),
+            ("terminal", {"command": big_cmd}, "call_term"),
+        ]
+    )
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "OK"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "do both"}],
+            tools = [
+                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
+    assert sorted(e["tool_call_id"] for e in provisional) == ["call_py", "call_term"]
+    assert all(e["provenance"].get("provisional") is True for e in provisional)
+    # Both calls actually executed (parallel tool use is enabled by default).
+    assert sorted(name for name, _ in calls) == ["python", "terminal"]
+
+
+def test_parallel_disabled_suppresses_provisional_for_later_calls(monkeypatch):
+    """When parallel tool use is disabled the downstream truncates to the first
+    call, so only the first streamed call may surface a provisional; a later
+    call must not get a card that could never reconcile or be closed."""
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    big_cmd = "echo start\n" + "\n".join(f"echo line {i}" for i in range(60))
+
+    first_stream = _streamed_parallel_tool_calls(
+        [
+            ("python", {"code": big_code}, "call_py"),
+            ("terminal", {"command": big_cmd}, "call_term"),
+        ]
+    )
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "OK"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "do both"}],
+            tools = [
+                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+            disable_parallel_tool_use = True,
+        )
+    )
+
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
+    assert [e["tool_call_id"] for e in provisional] == ["call_py"]
+    # Only the first call executes when parallel use is disabled.
+    assert calls == [("python", {"code": big_code})]
+    # The lone provisional is closed exactly once (no dangling card).
+    closing = [
+        e for e in events if e.get("type") == "tool_end" and e.get("tool_call_id") == "call_py"
+    ]
+    assert len(closing) == 1
+
+
+def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
+    """If llama-server drops mid tool-call after a provisional card is shown, the
+    loop must close that card before surfacing the error so the UI never leaves a
+    tool spinning forever."""
+    import httpx
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    fragments = _streamed_structured_tool_call("python", {"code": big_code}, "call_py_err")
+    # Drop the trailing [DONE]; raise a connection error after the fragments
+    # stream (and after the provisional card has been emitted).
+    fragments = fragments[:-1]
+
+    def raising_stream():
+        for chunk in fragments:
+            yield chunk
+        raise httpx.ConnectError("connection lost mid stream")
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [raising_stream()], payloads)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
+
+    collected: list[dict] = []
+    raised = False
+    gen = backend.generate_chat_completion_with_tools(
+        messages = [{"role": "user", "content": "write code"}],
+        tools = [{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations = 1,
+    )
+    try:
+        for event in gen:
+            collected.append(event)
+    except RuntimeError as exc:
+        raised = True
+        assert "Lost connection" in str(exc)
+
+    assert raised
+    provisional = [e for e in collected if e.get("type") == "tool_start" and not e.get("arguments")]
+    assert len(provisional) == 1
+    assert provisional[0]["tool_call_id"] == "call_py_err"
+    # The provisional card is closed before the error propagates.
+    closing = [
+        e
+        for e in collected
+        if e.get("type") == "tool_end" and e.get("tool_call_id") == "call_py_err"
+    ]
+    assert len(closing) == 1
+    # The closing card is marked as an error, not an empty success, so the UI
+    # renders it as failed.
+    assert "Error" in (closing[0].get("result") or "")
+
+
+def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
+    """llama.cpp can stream a tool call whose id is an empty string. A provisional
+    card keyed by "" cannot reconcile with the real tool_start (the frontend mints
+    its own id per event), so it must not be emitted -- otherwise the empty card
+    would dangle. The real call must still execute normally."""
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    assert len(json.dumps({"code": big_code})) > _PROVISIONAL_ARGS_MIN_CHARS
+
+    # Same large streamed call as the provisional test, but with an empty id.
+    first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "OK"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "write code"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    # No provisional card (empty-args tool_start) was surfaced for the empty id.
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
+    assert provisional == []
+    # The real call still executes despite the missing id.
+    assert calls == [("python", {"code": big_code})]

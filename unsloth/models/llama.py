@@ -1486,7 +1486,9 @@ def CausalLM_fast_forward(fast_forward_inference):
                     logit_softcapping = logit_softcapping,
                 )
                 if not return_dict:
-                    output = (logits,) + outputs[1:]
+                    # Fused CE never materializes `logits`; use EMPTY_LOGITS
+                    # like the return_dict branch below (fixes #2068).
+                    output = (EMPTY_LOGITS,) + outputs[1:]
                     return (loss,) + output if loss is not None else output
 
                 output = CausalLMOutputWithPast(
@@ -2762,6 +2764,20 @@ class FastLlamaModel:
             "is_torch_tpu_available()",
             "False",
         )
+        # Wire the stray-forward compile-cache reset into the plain Trainer path: get_peft_model
+        # arms the pre-train detector for every LoRA model, but only the TRL SFT/RL wrappers run
+        # the reset. A grad-enabled probe before a bare transformers.Trainer.train() would
+        # otherwise keep the poisoned Dynamo cache and leave the detector hook installed. Anchored
+        # on the first body statement; a no-op (and harmless) if upstream drops that line.
+        inner_training_loop = inner_training_loop.replace(
+            "self.accelerator.free_memory()",
+            "self.accelerator.free_memory()\n"
+            "    try:\n"
+            "        from unsloth.models._utils import _unsloth_reset_stray_compile_cache as _unsloth_reset_cc\n"
+            "        _unsloth_reset_cc(self)\n"
+            "    except Exception: pass",
+            1,
+        )
         exec(inner_training_loop, globals())
         Trainer._inner_training_loop = _fast_inner_training_loop
 
@@ -2944,6 +2960,9 @@ class FastLlamaModel:
             )
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            # Full finetuning still compiles, so a stray pre-train forward can poison the
+            # cache; install the detector here too (it is idempotent).
+            _unsloth_install_pretrain_detector(model)
             return model
         transformers_set_seed(random_state)
 
@@ -3022,6 +3041,9 @@ class FastLlamaModel:
                         model.get_output_embeddings(), DEVICE_TYPE_TORCH
                     )
 
+                # Pre-wrapped PEFT model passes through here; still arm the detector so an RL
+                # trainer can reset a compile cache poisoned by a pre-train forward.
+                _unsloth_install_pretrain_detector(model)
                 return model
             else:
                 raise TypeError(
@@ -3374,6 +3396,9 @@ class FastLlamaModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        # Detect a stray pre-train forward so train() can drop the torch.compile
+        # graph cache it would otherwise poison (see prepare_for_training_mode).
+        _unsloth_install_pretrain_detector(model)
         return model
 
     @staticmethod
@@ -3591,6 +3616,9 @@ class FastLlamaModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        # Detect a stray pre-train forward so train() can drop the torch.compile
+        # graph cache it would otherwise poison (see prepare_for_training_mode).
+        _unsloth_install_pretrain_detector(model)
         return model
 
     @staticmethod

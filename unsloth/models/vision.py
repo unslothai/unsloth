@@ -449,6 +449,23 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     return output
 
 
+def _missing_torchvision_error(error = None):
+    """True if a VLM processor failed to load due to missing torchvision (#4202).
+
+    Checks availability directly first, then only the specific torchvision-required
+    error text (not any incidental "torchvision" substring like a model path)."""
+    import importlib.util
+
+    if importlib.util.find_spec("torchvision") is None:
+        return True
+    if error is not None:
+        error_str = str(error).lower()
+        return (
+            "requires the torchvision" in error_str or "no module named 'torchvision'" in error_str
+        )
+    return False
+
+
 def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code):
     """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
 
@@ -1154,6 +1171,7 @@ class FastBaseModel:
                     except Exception:
                         pass
 
+        _processor_load_error = None
         if (whisper_language and whisper_task) or auto_model.__name__.endswith(
             "ForConditionalGeneration"
         ):
@@ -1166,7 +1184,8 @@ class FastBaseModel:
                     task = whisper_task,
                     trust_remote_code = trust_remote_code,
                 )
-            except Exception:
+            except Exception as e:
+                _processor_load_error = e
                 tokenizer = None
         else:
             try:
@@ -1176,7 +1195,8 @@ class FastBaseModel:
                     token = token,
                     trust_remote_code = trust_remote_code,
                 )
-            except:
+            except Exception as e:
+                _processor_load_error = e
                 tokenizer = get_auto_processor(
                     tokenizer_name,
                     padding_side = "left",
@@ -1200,7 +1220,16 @@ class FastBaseModel:
             )
             if _fallback is not None:
                 tokenizer = _fallback
-            if tokenizer is None:
+            # Missing torchvision silently degrades the VLM processor to a text-only
+            # tokenizer; surface the real cause instead of the later collator error (#4202).
+            if tokenizer is None or not hasattr(tokenizer, "image_processor"):
+                if _missing_torchvision_error(_processor_load_error):
+                    raise ImportError(
+                        f"Unsloth: Could not load the vision processor for `{tokenizer_name}` "
+                        "because torchvision is not installed. transformers requires torchvision "
+                        "for this model's vision (image/video) processors. Please install it, "
+                        "e.g. `pip install torchvision`."
+                    )
                 import sys
                 print(
                     f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
@@ -1386,6 +1415,9 @@ class FastBaseModel:
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            # Full finetuning still compiles, so a stray pre-train forward can poison the
+            # cache; install the detector here too (it is idempotent).
+            _unsloth_install_pretrain_detector(model)
             return model
         transformers_set_seed(random_state)
 
@@ -1583,6 +1615,9 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        # Detect a stray pre-train forward so train() can drop the torch.compile
+        # graph cache it would otherwise poison (see prepare_for_training_mode).
+        _unsloth_install_pretrain_detector(model)
         return model
 
     @staticmethod

@@ -60,6 +60,20 @@ def test_run_server_accepts_secure_kwarg():
     assert inspect.signature(run.run_server).parameters["secure"].default is False
 
 
+def test_arg_parser_secure_polarity_and_not_secure_alias():
+    # --secure/--no-secure is the documented flag; --not-secure is a hidden,
+    # back-compat alias for --no-secure. Last flag wins (BooleanOptionalAction).
+    import run
+
+    parser = run._build_arg_parser()
+    assert parser.parse_args([]).secure is False
+    assert parser.parse_args(["--secure"]).secure is True
+    assert parser.parse_args(["--no-secure"]).secure is False
+    assert parser.parse_args(["--not-secure"]).secure is False
+    assert parser.parse_args(["--secure", "--not-secure"]).secure is False
+    assert parser.parse_args(["--not-secure", "--secure"]).secure is True
+
+
 def test_run_server_accepts_enable_tools_kwarg():
     import inspect
 
@@ -145,6 +159,6 @@ def test_failclosed_message_present_in_source():
     # The exact, user-facing fail-closed message must not drift.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert (
-        "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+        "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
         in src
     )
