@@ -64,6 +64,12 @@ concurrency:
 permissions:
   contents: read
 
+# Secret handling on pull_request: these jobs check out and run PR-controlled code
+# (install.sh, .github/scripts/**), so HF_TOKEN (an external HF credential) is gated
+# off pull_request at each step below -- public GGUF repos still download anonymously.
+# GH_TOKEN (GITHUB_TOKEN) is kept: it is the job-scoped contents:read token and
+# install_llama_prebuilt.py needs it for the GitHub releases API (else 403s).
+
 env:
   # Determinism precedent (studio-inference-smoke.yml): temp 0 + fixed seed.
   UNSLOTH_SEED: '3407'
@@ -134,7 +140,8 @@ jobs:
         id: download-gguf
         if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
@@ -150,7 +157,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -335,7 +343,8 @@ jobs:
         id: download-gguf
         if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
@@ -351,7 +360,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -508,7 +518,8 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
@@ -524,7 +535,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail

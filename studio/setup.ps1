@@ -3704,35 +3704,49 @@ if (-not $NeedLlamaSourceBuild) {
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
         # CUDA flags -- only if GPU available, otherwise explicitly disable
         if ($HasNvidiaSmi -and $NvccPath) {
-            $CmakeArgs += '-DGGML_CUDA=ON'
-            # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
-            # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
-            # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
-            # (covers the configure probe + build), after Refresh-Environment, idempotent.
-            $nvccAllowFlag = '-allow-unsupported-compiler'
-            if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
-                $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
-            } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
-                $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
-            }
-            substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
-            $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
-            $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
-            $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
-            if ($CudaArch) {
-                # Validate nvcc actually supports this architecture
-                if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
-                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
-                } else {
-                    # GPU arch too new for this toolkit -- fall back to highest supported.
-                    # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
-                    $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
-                    if ($maxArch) {
-                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
-                        substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
-                        substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
+            # UNSLOTH_LLAMA_CUDA_ARCHS (e.g. "120" or "89;86") forces the build
+            # arch and wins over detection, matching setup.sh.
+            $CudaArchOverride = if ($env:UNSLOTH_LLAMA_CUDA_ARCHS) { ($env:UNSLOTH_LLAMA_CUDA_ARCHS -replace '\s', '') } else { '' }
+            if ((-not $CudaArch) -and (-not $CudaArchOverride)) {
+                # No detectable compute capability (#5854): -DGGML_CUDA=ON with no
+                # arch builds a PTX-only binary, so build CPU instead. Mirrors the
+                # Linux fix; set UNSLOTH_LLAMA_CUDA_ARCHS=120 to force a CUDA build.
+                substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS=120 to force a CUDA build)." "Yellow"
+                $CmakeArgs += '-DGGML_CUDA=OFF'
+            } else {
+                $CmakeArgs += '-DGGML_CUDA=ON'
+                # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
+                # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
+                # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
+                # (covers the configure probe + build), after Refresh-Environment, idempotent.
+                $nvccAllowFlag = '-allow-unsupported-compiler'
+                if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
+                    $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
+                } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
+                    $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
+                }
+                substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
+                $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
+                $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
+                $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+                if ($CudaArchOverride) {
+                    # Forced arch wins verbatim (no nvcc validation), matching setup.sh.
+                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchOverride"
+                } elseif ($CudaArch) {
+                    # Validate nvcc actually supports this architecture
+                    if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
+                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+                    } else {
+                        # GPU arch too new for this toolkit -- fall back to highest supported.
+                        # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
+                        $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
+                        if ($maxArch) {
+                            $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
+                            substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
+                            substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
+                        }
+                        # else: omit flag entirely, let cmake pick defaults
                     }
-                    # else: omit flag entirely, let cmake pick defaults
                 }
             }
         } else {

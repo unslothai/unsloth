@@ -149,14 +149,19 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
     "TokenizersBackend",
 }
 
-# Cache for dynamic tokenizer_config.json lookups (avoids repeated fetches).
-_tokenizer_class_cache: dict[str, bool] = {}
-
-# config.json cache keyed on (model_name, token-hash) so authed/unauthed reads stay separate.
+# Caches keyed on (model_name, token-hash) so authed/unauthed reads stay separate (a
+# gated/private repo's unauthenticated miss must not poison a later authenticated lookup).
+_tokenizer_class_cache: dict[tuple[str, str | None], bool] = {}
 _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
-_config_needs_510_cache: dict[str, bool] = {}
-_config_needs_550_cache: dict[str, bool] = {}
-_config_needs_530_cache: dict[str, bool] = {}
+_config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
+_config_needs_550_cache: dict[tuple[str, str | None], bool] = {}
+_config_needs_530_cache: dict[tuple[str, str | None], bool] = {}
+
+# AutoConfig-probe tier cache for the process lifetime (cleared on restart), keyed by
+# model_name plus a local config.json signature (see _probe_cache_key) so an overwritten
+# checkpoint re-probes. Not keyed by Hub sha, so the probe never imports huggingface_hub
+# before a worker's sidecar venv is activated (which would pin the wrong hub).
+_probe_tier_cache: dict[str, str] = {}
 
 # Versions
 TRANSFORMERS_510_VERSION = "5.10.2"
@@ -185,25 +190,29 @@ def _higher_tier(a: str, b: str) -> str:
     return a if _TIER_RANK.get(a, 0) >= _TIER_RANK.get(b, 0) else b
 
 
-def activate_transformers_for_subprocess(model_name: str) -> None:
+def activate_transformers_for_subprocess(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version in a subprocess worker.
 
     Call BEFORE any ML imports. Resolves LoRA adapters to their base model,
     determines the required tier, prepends the appropriate ``.venv_t5_*`` dir to
     ``sys.path``, and propagates it via ``PYTHONPATH`` for child processes
     (e.g. GGUF converter). Used by training, inference, and export workers.
+
+    ``hf_token`` is forwarded to tier detection so a gated/private model whose only 5.x
+    signal is an authenticated config/tokenizer reaches the right sidecar, not the default.
     """
-    # Pre-resolve only LoRA adapters; full checkpoints go to get_transformers_tier
-    # so their local config.json drives the tier (avoids a fragile HF-id probe).
+    # Pre-resolve only LoRA adapters; full checkpoints go to get_transformers_tier so their
+    # local config.json drives the tier (a full checkpoint with a private/offline
+    # _name_or_path must not resolve to an unreachable HF id and skip its own config).
     if _is_lora_adapter_dir(Path(model_name)):
         resolved = _resolve_base_model(model_name)
     else:
         resolved = model_name
-    tier = get_transformers_tier(resolved)
-    if model_name != resolved and (Path(model_name) / "config.json").is_file():
+    tier = get_transformers_tier(resolved, hf_token)
+    if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
         # Gate on a real local config.json: a checkpoint carries config the base may not
         # surface, but path names alone must not upgrade a plain adapter.
-        tier = _higher_tier(tier, get_transformers_tier(model_name))
+        tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
 
     if tier == "510":
         if not _ensure_venv_t5_510_exists():
@@ -372,6 +381,15 @@ def _resolve_base_model(model_name: str) -> str:
     return model_name
 
 
+def _token_cache_key(model_name: str, hf_token: str | None) -> tuple[str, str | None]:
+    """Cache key that keeps authenticated and unauthenticated reads separate, so an
+    unauthenticated miss on a gated/private repo never poisons a later authed lookup."""
+    import hashlib
+
+    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
+    return (model_name, tok)
+
+
 def _is_canonical_repo_id(model_name: str) -> bool:
     """True for a canonical ``owner/repo`` Hub id (not a local or relative path)."""
     return bool(
@@ -469,15 +487,18 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         return _adapter_base_from_hf_cache(model_name)
 
 
-def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
+def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = None) -> bool:
     """True if the model's tokenizer_class requires transformers 5.x.
 
-    Checks local tokenizer_config.json, else fetches from HuggingFace. Cached in
-    ``_tokenizer_class_cache``. Returns False on any network/parse error
+    Checks local tokenizer_config.json, else fetches from HuggingFace (authenticated
+    with ``hf_token`` so gated/private repos resolve). Cached in
+    ``_tokenizer_class_cache``, keyed by (model, token) so an unauthenticated miss does
+    not poison a later authed read. Returns False on any network/parse error
     (fail-open to default version).
     """
-    if model_name in _tokenizer_class_cache:
-        return _tokenizer_class_cache[model_name]
+    cache_key = _token_cache_key(model_name, hf_token)
+    if cache_key in _tokenizer_class_cache:
+        return _tokenizer_class_cache[cache_key]
 
     # --- Check local tokenizer_config.json first ---------------------------
     local_path = Path(model_name)
@@ -494,22 +515,30 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
                     model_name,
                     tokenizer_class,
                 )
-            _tokenizer_class_cache[model_name] = result
+            _tokenizer_class_cache[cache_key] = result
             return result
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_tc, exc)
 
+    # Local checkpoint without the file yet: don't fetch it as a Hub id or cache the miss,
+    # so a file written later this process (in-progress checkpoint) is read next call.
+    if _safe_is_dir(local_path):
+        return False
+
     # Offline: skip the 10s urllib fetch (fail-open to lower tier).
     if _env_offline():
-        _tokenizer_class_cache[model_name] = False
+        _tokenizer_class_cache[cache_key] = False
         return False
 
     # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
 
     url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"
+    headers = {"User-Agent": "unsloth-studio"}
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+        req = urllib.request.Request(url, headers = headers)
         with urllib.request.urlopen(req, timeout = 10) as resp:
             data = json.loads(resp.read().decode())
         tokenizer_class = data.get("tokenizer_class", "")
@@ -520,11 +549,11 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
                 model_name,
                 tokenizer_class,
             )
-        _tokenizer_class_cache[model_name] = result
+        _tokenizer_class_cache[cache_key] = result
         return result
     except Exception as exc:
         logger.debug("Could not fetch tokenizer_config.json for '%s': %s", model_name, exc)
-        _tokenizer_class_cache[model_name] = False
+        _tokenizer_class_cache[cache_key] = False
         return False
 
 
@@ -598,6 +627,11 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             _config_json_cache[cache_key] = None
             return None
 
+    # Local checkpoint without the file yet: don't fetch it as a Hub id or cache the miss,
+    # so a file written later this process (in-progress checkpoint) is read next call.
+    if _safe_is_dir(Path(model_name)):
+        return None
+
     if _env_offline():
         # No network: a previously downloaded repo can still tier from the hub cache.
         cfg = _config_json_from_hf_cache(model_name)
@@ -631,10 +665,10 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         return _config_json_from_hf_cache(model_name)
 
 
-def _config_json_is_definitive(model_name: str) -> bool:
-    """True if the last unauthenticated ``_load_config_json`` read was cached (definitive),
-    not a transient fallback (deliberately not stored, so callers re-check next call)."""
-    return (model_name, None) in _config_json_cache
+def _config_json_is_definitive(model_name: str, hf_token: str | None = None) -> bool:
+    """True if the last ``_load_config_json`` read for this model+token was cached
+    (definitive), not a transient fallback (not stored, so callers re-check next call)."""
+    return _token_cache_key(model_name, hf_token) in _config_json_cache
 
 
 def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:
@@ -694,14 +728,16 @@ def _config_needs_530(cfg: dict) -> bool:
     )
 
 
-def _check_config_needs_550(model_name: str) -> bool:
+def _check_config_needs_550(model_name: str, hf_token: str | None = None) -> bool:
     """True if ``config.json`` needs transformers 5.5.0 (e.g. Gemma 4). Local first, else
-    fetched; cached only for a definitive read so a transient miss retries. False on error.
+    fetched (authenticated with ``hf_token``); cached by (model, token) only for a definitive
+    read so a transient miss retries. False on error.
     """
-    if model_name in _config_needs_550_cache:
-        return _config_needs_550_cache[model_name]
+    cache_key = _token_cache_key(model_name, hf_token)
+    if cache_key in _config_needs_550_cache:
+        return _config_needs_550_cache[cache_key]
 
-    cfg = _load_config_json(model_name)
+    cfg = _load_config_json(model_name, hf_token)
     result = bool(cfg) and _config_needs_550(cfg)
     if result:
         logger.info(
@@ -711,26 +747,22 @@ def _check_config_needs_550(model_name: str) -> bool:
             cfg.get("architectures", []),
             cfg.get("model_type"),
         )
-    if _config_json_is_definitive(model_name):
-        _config_needs_550_cache[model_name] = result
+    if _config_json_is_definitive(model_name, hf_token):
+        _config_needs_550_cache[cache_key] = result
     return result
 
 
-def _check_config_needs_530(model_name: str) -> bool:
-    """Check ``config.json`` for 5.3.0-only architectures (Qwen3.5, Qwen3 MoE, GLM-4.7, LFM2.5-VL).
-
-    Used in the slow HF-ID path for private/renamed repos where name substrings
-    aren't reliable.
+def _check_config_needs_530(model_name: str, hf_token: str | None = None) -> bool:
+    """True if ``config.json`` needs transformers 5.3.0 (Qwen3.5, Qwen3 MoE, GLM-4.7, LFM2.5-VL).
+    Local first, else fetched (authenticated with ``hf_token``); cached by (model, token) only
+    for a definitive read so a transient miss retries. False on error.
     """
-    if model_name in _config_needs_530_cache:
-        return _config_needs_530_cache[model_name]
+    cache_key = _token_cache_key(model_name, hf_token)
+    if cache_key in _config_needs_530_cache:
+        return _config_needs_530_cache[cache_key]
 
-    cfg = _load_config_json(model_name)
-    if cfg is None:
-        _config_needs_530_cache[model_name] = False
-        return False
-
-    result = _config_needs_530(cfg)
+    cfg = _load_config_json(model_name, hf_token)
+    result = bool(cfg) and _config_needs_530(cfg)
     if result:
         logger.info(
             "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
@@ -739,16 +771,19 @@ def _check_config_needs_530(model_name: str) -> bool:
             cfg.get("architectures", []),
             cfg.get("model_type"),
         )
-    _config_needs_530_cache[model_name] = result
+    if _config_json_is_definitive(model_name, hf_token):
+        _config_needs_530_cache[cache_key] = result
     return result
 
 
-def _check_config_needs_510(model_name: str) -> bool:
-    """Check ``config.json`` for Gemma 4 Unified / 12B architectures."""
-    if model_name in _config_needs_510_cache:
-        return _config_needs_510_cache[model_name]
+def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> bool:
+    """Check ``config.json`` for Gemma 4 Unified / 12B architectures (authenticated with
+    ``hf_token``; cached by (model, token) only for a definitive read)."""
+    cache_key = _token_cache_key(model_name, hf_token)
+    if cache_key in _config_needs_510_cache:
+        return _config_needs_510_cache[cache_key]
 
-    cfg = _load_config_json(model_name)
+    cfg = _load_config_json(model_name, hf_token)
     result = bool(cfg) and _config_needs_510(cfg)
     if result:
         logger.info(
@@ -758,9 +793,225 @@ def _check_config_needs_510(model_name: str) -> bool:
             cfg.get("architectures", []),
             cfg.get("model_type"),
         )
-    if _config_json_is_definitive(model_name):
-        _config_needs_510_cache[model_name] = result
+    if _config_json_is_definitive(model_name, hf_token):
+        _config_needs_510_cache[cache_key] = result
     return result
+
+
+def _config_saved_by_transformers_5(cfg: dict | None) -> bool:
+    """True if ``config.json``'s ``transformers_version`` is >= 5. Only a cheap "worth
+    probing" hint (the saving version, not the minimum to load); the default-first probe
+    decides the actual tier."""
+    if not isinstance(cfg, dict):
+        return False
+    ver = cfg.get("transformers_version")
+    if not isinstance(ver, str):
+        return False
+    try:
+        return int(ver.strip().split(".", 1)[0]) >= 5
+    except ValueError:
+        return False
+
+
+def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
+    """Already-fetched config.json from the in-process cache (no new fetch); the tier checks
+    above populate it, and a miss just skips the version-field probe."""
+    return _config_json_cache.get(_token_cache_key(model_name, hf_token))
+
+
+# --- AutoConfig probe: general tier resolution for ambiguous models ----------
+# When the cheap signals only say "needs some 5.x", parse config.json with the built-in
+# parser in each candidate sidecar (lowest first) instead of guessing. Generalizes beyond
+# the hardcoded lists, e.g. dense NemotronH whose '-' (MLP) layer only 5.10 can parse.
+_PROBE_TIER_ORDER = ("530", "550", "510")
+_PROBE_TIMEOUT_SECS = 60
+
+# config.json-only parse in a sidecar (--target dir on sys.path, no per-venv python).
+# Built-in parser only, no repo code, no weights. Exit 0 = parses; token via env, not argv.
+_PROBE_CONFIG_SCRIPT = r"""
+import sys, os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+target_dir, model_name = sys.argv[1], sys.argv[2]
+if target_dir:  # empty = probe the ambient (default 4.57.x) transformers, no sidecar prepend
+    sys.path.insert(0, target_dir)
+try:
+    from transformers import AutoConfig
+    AutoConfig.from_pretrained(model_name, trust_remote_code=False)
+    sys.exit(0)
+except Exception as exc:
+    # stderr encoding may not be UTF-8 (e.g. cp1252 on Windows); write bytes so a
+    # non-ASCII error message cannot itself raise UnicodeEncodeError.
+    sys.stderr.buffer.write((type(exc).__name__ + ": " + str(exc)).encode("utf-8", "replace"))
+    sys.exit(1)
+"""
+
+# stderr fragments meaning "couldn't fetch/auth", NOT "needs a newer parser".
+_PROBE_TRANSIENT_MARKERS = (
+    "ConnectionError",
+    "HTTPError",
+    "Timeout",
+    "Max retries",
+    "Temporary failure",
+    "GatedRepoError",
+    "RepositoryNotFoundError",
+    "LocalEntryNotFoundError",
+    "OfflineModeIsEnabled",
+    "401",
+    "403",
+    "404",
+)
+
+
+def _stderr_is_transient(err: str) -> bool:
+    return any(marker in err for marker in _PROBE_TRANSIENT_MARKERS)
+
+
+def _probe_tier_venvs():
+    """tier -> (target_dir, ensure_fn), a function so the later _ensure_* defs resolve. The
+    ``default`` entry (empty target_dir = ambient 4.57.x) is only probed with include_default."""
+    return {
+        "default": ("", lambda: True),
+        "530": (_VENV_T5_530_DIR, _ensure_venv_t5_530_exists),
+        "550": (_VENV_T5_550_DIR, _ensure_venv_t5_550_exists),
+        "510": (_VENV_T5_510_DIR, _ensure_venv_t5_510_exists),
+    }
+
+
+def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) -> bool | None:
+    """Parse config.json with the built-in parser inside *target_dir*'s sidecar.
+    True = parses, False = parse/version failure (escalate), None = transient
+    (auth/network/offline/spawn) so the caller fails safe and does not cache.
+    """
+    env = child_env_without_native_path_secret()
+    if hf_token:
+        env["HF_TOKEN"] = hf_token
+        # The probe relies on the implicit HF_TOKEN env (no token= arg). Clear any inherited
+        # HF_HUB_DISABLE_IMPLICIT_TOKEN=1 so a gated repo authenticates instead of 401ing
+        # into the 530 fail-safe.
+        env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+    if _env_offline():
+        env["HF_HUB_OFFLINE"] = "1"
+        env["TRANSFORMERS_OFFLINE"] = "1"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _PROBE_CONFIG_SCRIPT, target_dir, model_name],
+            capture_output = True,
+            text = True,
+            errors = "replace",
+            timeout = _PROBE_TIMEOUT_SECS,
+            env = env,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("AutoConfig probe timed out for '%s' in %s", model_name, target_dir)
+        return None
+    except Exception as exc:
+        logger.warning("AutoConfig probe could not spawn for '%s': %s", model_name, exc)
+        return None
+    if result.returncode == 0:
+        return True
+    err = (result.stderr or "").strip()
+    if _stderr_is_transient(err):
+        logger.warning("AutoConfig probe transient failure for '%s': %s", model_name, err)
+        return None
+    logger.info("AutoConfig probe parse failure for '%s' in %s: %s", model_name, target_dir, err)
+    return False
+
+
+def _probe_cache_key(model_name: str) -> str:
+    """Cache key for the probe result. A local checkpoint can be overwritten in place, so
+    fold in a cheap config.json signature (size + mtime) and re-probe when it changes.
+    Remote ids key by name alone (resolving a Hub revision would need a pre-activation hub
+    import that pins the wrong env)."""
+    try:
+        config_path = (Path(model_name) / "config.json").resolve()
+        st = config_path.stat()
+    except OSError:
+        return model_name
+    return f"{config_path}\0{st.st_size}:{st.st_mtime_ns}"
+
+
+def _probe_tier(
+    model_name: str,
+    hf_token: str | None,
+    reason: str,
+    *,
+    include_default: bool = False,
+    floor: str = "530",
+) -> str:
+    """Lowest tier whose built-in parser loads the config; *floor* is the fail-safe.
+
+    Escalates ``_PROBE_TIER_ORDER`` (prefixed with the ambient ``default`` tier when
+    ``include_default``), returning the first that parses; never raises or escalates on
+    uncertainty:
+      - first success wins (cached unless a lower tier was skipped);
+      - transient failure (auth/network/offline) -> *floor*, uncached;
+      - a skipped/uninstallable sidecar -> uncached (a lower tier may yet be the answer);
+      - all tiers probed, none parse -> remote-code/custom model_type; keep *floor*.
+
+    Known-5.x callers use ``floor='530'``; weak-signal callers (config saved by transformers
+    5.x) use ``include_default=True, floor='default'`` so a model that still parses on 4.57.x
+    stays on the default. Cached per _probe_cache_key (process lifetime). No Hub sha is
+    resolved: that would import huggingface_hub before the sidecar is on sys.path.
+    """
+    if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
+        return floor
+    key = _probe_cache_key(model_name)
+    # Key by probe mode: the default-first path can return 'default', which must not be
+    # reused for a tokenizer/known-5.x caller (floor='530'). Legacy 530 keeps the bare key.
+    if include_default or floor != "530":
+        key = f"{key}\0floor={floor}:def={int(include_default)}"
+    if key in _probe_tier_cache:
+        return _probe_tier_cache[key]
+
+    def _cache(tier: str, *, skipped: bool) -> str:
+        # Do not pin a result that depended on a skipped lower tier: once that sidecar is
+        # available the lowest valid tier may differ, so re-probe next call.
+        if not skipped:
+            _probe_tier_cache[key] = tier
+        return tier
+
+    venvs = _probe_tier_venvs()
+    order = (("default",) + _PROBE_TIER_ORDER) if include_default else _PROBE_TIER_ORDER
+    probed_count = 0
+    skipped_any = False
+    for tier in order:
+        target_dir, ensure_fn = venvs[tier]
+        try:
+            available = ensure_fn()
+        except Exception:
+            available = False
+        if not available:
+            skipped_any = True
+            continue
+        probed_count += 1
+        ok = _probe_autoconfig(target_dir, model_name, hf_token)
+        if ok is True:
+            logger.info(
+                "Transformers tier %s selected for %s (AutoConfig probe; %s)",
+                tier,
+                model_name,
+                reason,
+            )
+            return _cache(tier, skipped = skipped_any)
+        if ok is None:
+            logger.info("Tier probe inconclusive for %s (%s); using %s", model_name, reason, floor)
+            return floor  # transient: retry next load
+
+    # Nothing parsed. Only treat it as conclusive (and cache) when every tier was actually
+    # probed; a skipped sidecar means the environment is incomplete, so retry uncached.
+    if skipped_any or probed_count == 0:
+        logger.info(
+            "Tier probe incomplete for %s (%s); using %s (uncached)", model_name, reason, floor
+        )
+        return floor
+    logger.info(
+        "Transformers tier %s selected for %s (AutoConfig probe found no higher tier; %s)",
+        floor,
+        model_name,
+        reason,
+    )
+    return _cache(floor, skipped = False)
 
 
 def _norm_separators(s: str) -> str:
@@ -816,7 +1067,11 @@ def _higher_tier_name_override(name_hint: str | None) -> str | None:
     return hint[0] if hint is not None and hint[0] in ("510", "550") else None
 
 
-def get_transformers_tier(model_name: str) -> str:
+def get_transformers_tier(
+    model_name: str,
+    hf_token: str | None = None,
+    probe: bool = True,
+) -> str:
     """Return the transformers tier required for *model_name*.
 
     Returns ``"510"`` for models needing transformers 5.10.x (Gemma 4 Unified),
@@ -824,14 +1079,24 @@ def get_transformers_tier(model_name: str) -> str:
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
 
-    Higher 5.x tiers run first.  For local paths, ``config.json`` is checked
-    before name heuristics to avoid false-positives from directory name fragments.
+    Strong signals (architecture/model_type, name substrings) are fast paths. For local paths,
+    ``config.json`` is checked before name heuristics to avoid false-positives from directory
+    name fragments. When the only signal is the 5.x tokenizer class, the exact tier is resolved
+    by probing AutoConfig in each sidecar; a config saved by transformers 5.x with no fast-path
+    match is probed default-first, catching a new 5.x-only arch while 4.57.x-loadable models
+    stay on default.
+
+    ``probe=False`` skips the sidecar subprocesses (used by the cheap
+    :func:`needs_transformers_5`); it still classifies via cheap signals (a 5.x-saved config
+    returns ``"530"``). ``probe=True`` (the activation path) resolves the exact tier.
+
+    Higher 5.x tiers run first.
     """
     # Local path: trust config.json. If its arch matches a known sidecar, return;
     # else fall back to the HF id in the config (not the folder name) for renamed dirs.
     local_cfg = Path(model_name) / "config.json"
     if _safe_is_file(local_cfg):
-        cfg = _load_config_json(model_name)
+        cfg = _load_config_json(model_name, hf_token)
         if cfg is not None:
             if _config_needs_510(cfg):
                 logger.info(
@@ -873,7 +1138,7 @@ def get_transformers_tier(model_name: str) -> str:
             resolved = _resolve_base_model(model_name)
             if resolved != model_name:
                 if _safe_is_dir(Path(resolved)):
-                    tier = get_transformers_tier(resolved)
+                    tier = get_transformers_tier(resolved, hf_token, probe = probe)
                     if tier != "default":
                         logger.info(
                             "Transformers tier %s selected for %s (resolved local path: %s)",
@@ -895,12 +1160,22 @@ def get_transformers_tier(model_name: str) -> str:
                         )
                         return tier
             local_tc = Path(model_name) / "tokenizer_config.json"
-            if _safe_is_file(local_tc) and _check_tokenizer_config_needs_v5(model_name):
-                logger.info(
-                    "Transformers tier 530 selected for %s (local tokenizer_config.json check)",
+            if _safe_is_file(local_tc) and _check_tokenizer_config_needs_v5(model_name, hf_token):
+                if not probe:
+                    return "530"
+                return _probe_tier(model_name, hf_token, "local tokenizer needs 5.x")
+            if _config_saved_by_transformers_5(cfg):
+                if not probe:
+                    return "530"  # cheap 5.x hint; the real path resolves the exact tier
+                tier = _probe_tier(
                     model_name,
+                    hf_token,
+                    "local config saved by transformers 5.x",
+                    include_default = True,
+                    floor = "default",
                 )
-                return "530"
+                if tier != "default":
+                    return tier
             logger.info(
                 "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
                 model_name,
@@ -919,17 +1194,17 @@ def get_transformers_tier(model_name: str) -> str:
         )
         return tier
 
-    # --- Slow config fallbacks (network for HF IDs) ------------------------
-    if _check_config_needs_510(model_name):
+    # --- Slow config fallbacks (network for HF IDs; authenticated with hf_token) --------
+    if _check_config_needs_510(model_name, hf_token):
         logger.info("Transformers tier 510 selected for %s (config.json check)", model_name)
         return "510"
-    if _check_config_needs_550(model_name):
+    if _check_config_needs_550(model_name, hf_token):
         logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
-    if _check_config_needs_530(model_name):
-        # Same Qwen3.6 caveat as the local path: honor a _name_or_path name hint
-        # before selecting 530.
-        remote_cfg = _load_config_json(model_name) or {}
+    if _check_config_needs_530(model_name, hf_token):
+        # Qwen3.6 reuses Qwen3.5 config ids but needs 5.5 by name; honor a real Hub-id name
+        # hint from _name_or_path before selecting 530.
+        remote_cfg = _load_config_json(model_name, hf_token) or {}
         base = remote_cfg.get("_name_or_path") or remote_cfg.get("model_name")
         override = _higher_tier_name_override(
             base if isinstance(base, str) and base != model_name else None
@@ -943,12 +1218,23 @@ def get_transformers_tier(model_name: str) -> str:
             return override
         logger.info("Transformers tier 530 selected for %s (config.json check)", model_name)
         return "530"
-    if _check_tokenizer_config_needs_v5(model_name):
-        logger.info(
-            "Transformers tier 530 selected for %s (tokenizer_config.json check)",
+    if _check_tokenizer_config_needs_v5(model_name, hf_token):
+        if not probe:
+            return "530"
+        return _probe_tier(model_name, hf_token, "tokenizer needs 5.x")
+
+    if _config_saved_by_transformers_5(_cached_config_json(model_name, hf_token)):
+        if not probe:
+            return "530"  # cheap 5.x hint; the real path resolves the exact tier
+        tier = _probe_tier(
             model_name,
+            hf_token,
+            "config saved by transformers 5.x",
+            include_default = True,
+            floor = "default",
         )
-        return "530"
+        if tier != "default":
+            return tier
 
     logger.info("Transformers tier default (4.57.x) selected for %s (no match)", model_name)
     return "default"
@@ -957,9 +1243,11 @@ def get_transformers_tier(model_name: str) -> str:
 def needs_transformers_5(model_name: str) -> bool:
     """Return True if *model_name* requires any transformers 5.x version.
 
-    Convenience wrapper around :func:`get_transformers_tier`.
+    Convenience wrapper around :func:`get_transformers_tier`. Passes ``probe=False`` so a
+    log-only parent caller never spawns sidecar probes (the worker re-resolves the exact
+    tier with ``probe=True`` on the real activation path).
     """
-    return get_transformers_tier(model_name) != "default"
+    return get_transformers_tier(model_name, probe = False) != "default"
 
 
 # ---------------------------------------------------------------------------
@@ -1236,7 +1524,7 @@ def ensure_transformers_version(model_name: str) -> None:
     else:
         resolved = model_name
     tier = get_transformers_tier(resolved)
-    if model_name != resolved and (Path(model_name) / "config.json").is_file():
+    if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
         # Gate on a real local config.json: a checkpoint carries config the base may not
         # surface, but path names alone must not upgrade a plain adapter.
         tier = _higher_tier(tier, get_transformers_tier(model_name))

@@ -52,6 +52,9 @@ from utils.transformers_version import (
     _config_needs_510_cache,
     _config_needs_530_cache,
     _config_needs_550_cache,
+    _probe_tier_cache,
+    _probe_tier,
+    _stderr_is_transient,
     needs_transformers_5,
     get_transformers_tier,
     activate_transformers_for_subprocess,
@@ -312,10 +315,44 @@ class TestCheckTokenizerConfigNeedsV5:
         tc = {"tokenizer_class": "TokenizersBackend"}
         (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
 
-        key = str(tmp_path)
-        _check_tokenizer_config_needs_v5(key)
+        key = (str(tmp_path), None)
+        _check_tokenizer_config_needs_v5(str(tmp_path))
         assert key in _tokenizer_class_cache
         assert _tokenizer_class_cache[key] is True
+
+    def test_token_cache_isolation_and_auth_fetch(self, monkeypatch):
+        # A gated repo: the unauthenticated miss (cached under (model, None)) must not block a
+        # later authed fetch (separate key), and the token rides in the Authorization header.
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        seen_auth = []
+
+        class _Resp:
+            def __init__(self, body):
+                self._b = body
+
+            def read(self):
+                return self._b.encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout = 10):
+            auth = req.get_header("Authorization")
+            seen_auth.append(auth)
+            if auth:
+                return _Resp(json.dumps({"tokenizer_class": "TokenizersBackend"}))
+            raise OSError("HTTP 401")
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        assert _check_tokenizer_config_needs_v5("org/gated") is False  # unauth miss
+        assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True  # authed hit
+        assert seen_auth == [None, "Bearer tok"]
+        assert _tokenizer_class_cache[("org/gated", None)] is False  # miss not poisoning
 
 
 # ---------------------------------------------------------------------------
@@ -406,8 +443,8 @@ class TestCheckConfigNeeds550:
         cfg = {"architectures": ["Gemma4ForConditionalGeneration"]}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        key = str(tmp_path)
-        _check_config_needs_550(key)
+        key = (str(tmp_path), None)
+        _check_config_needs_550(str(tmp_path))
         assert key in _config_needs_550_cache
         assert _config_needs_550_cache[key] is True
 
@@ -506,8 +543,8 @@ class TestCheckConfigNeeds510:
         cfg = {"architectures": ["Gemma4UnifiedForConditionalGeneration"]}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        key = str(tmp_path)
-        _check_config_needs_510(key)
+        key = (str(tmp_path), None)
+        _check_config_needs_510(str(tmp_path))
         assert key in _config_needs_510_cache
         assert _config_needs_510_cache[key] is True
 
@@ -750,11 +787,11 @@ class TestTierCheckTransientRetry:
         # Network blip -> serve the cache, but do NOT pin the tier result.
         with patch("urllib.request.urlopen", side_effect = OSError("boom")):
             assert _check_config_needs_510("org/model") is False
-        assert "org/model" not in _config_needs_510_cache
+        assert ("org/model", None) not in _config_needs_510_cache
         # Connectivity returns: the next call re-fetches and sees the higher tier.
         with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
             assert _check_config_needs_510("org/model") is True
-        assert _config_needs_510_cache["org/model"] is True  # definitive read is memoized
+        assert _config_needs_510_cache[("org/model", None)] is True  # definitive read memoized
 
     def test_definitive_network_read_is_memoized(self, tmp_path: Path, monkeypatch):
         fresh = {"architectures": ["Gemma4ForConditionalGeneration"]}  # needs 550
@@ -1037,6 +1074,442 @@ class TestGetTransformersTier:
             assert needs_transformers_5("meta-llama/Llama-3-8B") is False
 
 
+def _proc(returncode, stderr = ""):
+    from types import SimpleNamespace
+    return SimpleNamespace(returncode = returncode, stdout = "", stderr = stderr)
+
+
+class TestProbeTier:
+    """_probe_tier resolves the tier by parsing config in each sidecar and escalating."""
+
+    def setup_method(self):
+        _probe_tier_cache.clear()
+
+    def _patch_common(self, monkeypatch):
+        for fn in (
+            "_ensure_venv_t5_530_exists",
+            "_ensure_venv_t5_550_exists",
+            "_ensure_venv_t5_510_exists",
+        ):
+            monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
+        monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
+
+    def _venv_dirs(self):
+        import utils.transformers_version as tv
+        return [tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR, tv._VENV_T5_510_DIR]
+
+    def test_escalates_to_first_parsing_tier(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        seen = []
+        results = iter([_proc(1, "KeyError: '-'"), _proc(1, "KeyError: '-'"), _proc(0)])
+
+        def fake_run(cmd, **k):
+            seen.append(cmd[3])  # target_dir
+            return next(results)
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", fake_run)
+        assert _probe_tier("org/dense-nemotron", None, "x") == "510"
+        assert seen == self._venv_dirs()  # escalated 530 -> 550 -> 510
+
+    def test_first_success_stops_escalation(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        calls = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: calls.append(cmd[3]) or _proc(0),
+        )
+        assert _probe_tier("org/m", None, "x") == "530"
+        assert len(calls) == 1
+
+    def test_middle_tier_parses(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        results = iter([_proc(1, "ValueError: bad"), _proc(0)])
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run", lambda cmd, **k: next(results)
+        )
+        assert _probe_tier("org/m", None, "x") == "550"
+
+    def test_nothing_parses_stays_530_and_caches(self, monkeypatch):
+        # All tiers probed, none parse -> a remote-code model that loads via its own code;
+        # keep 530 (never jump to 510). Conclusive, so cached by model_name.
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: _proc(1, "KeyError: '-'"),
+        )
+        assert _probe_tier("org/m", None, "x") == "530"
+        assert _probe_tier_cache["org/m"] == "530"
+
+    def test_partial_sidecars_no_parse_is_530_uncached(self, monkeypatch):
+        # 510 sidecar missing and 530/550 fail to parse -> environment is incomplete, so we
+        # cannot conclude; return 530 uncached so it is retried once 510 is available.
+        monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
+        for fn in ("_ensure_venv_t5_530_exists", "_ensure_venv_t5_550_exists"):
+            monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
+        monkeypatch.setattr("utils.transformers_version._ensure_venv_t5_510_exists", lambda: False)
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: _proc(1, "KeyError: '-'"),
+        )
+        assert _probe_tier("org/m", None, "x") == "530"
+        assert "org/m" not in _probe_tier_cache
+
+    def test_success_not_cached_when_lower_tier_skipped(self, monkeypatch):
+        # 530 sidecar unavailable but 550 parses: return 550 (best effort now) but do NOT
+        # cache it, since once 530 is installed it may be the lowest valid tier.
+        monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
+        monkeypatch.setattr("utils.transformers_version._ensure_venv_t5_530_exists", lambda: False)
+        for fn in ("_ensure_venv_t5_550_exists", "_ensure_venv_t5_510_exists"):
+            monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
+        assert _probe_tier("org/m", None, "x") == "550"
+        assert "org/m" not in _probe_tier_cache  # skipped a lower tier -> not pinned
+
+    def test_cache_hit_skips_subprocess(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
+        assert _probe_tier("org/m", None, "x") == "530"
+
+        def boom(cmd, **k):
+            raise AssertionError("should not re-probe a cached model_name")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert _probe_tier("org/m", None, "x") == "530"
+
+    def test_transient_failure_is_530_and_uncached(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: _proc(1, "ConnectionError: Max retries exceeded"),
+        )
+        assert _probe_tier("org/m", None, "x") == "530"
+        assert "org/m" not in _probe_tier_cache  # retried next load
+
+    def test_timeout_is_530_and_uncached(self, monkeypatch):
+        import subprocess as _sp
+
+        self._patch_common(monkeypatch)
+
+        def timeout(cmd, **k):
+            raise _sp.TimeoutExpired(cmd, 60)
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", timeout)
+        assert _probe_tier("org/m", None, "x") == "530"
+        assert "org/m" not in _probe_tier_cache
+
+    def test_all_venvs_missing_is_530_no_spawn(self, monkeypatch):
+        for fn in (
+            "_ensure_venv_t5_530_exists",
+            "_ensure_venv_t5_550_exists",
+            "_ensure_venv_t5_510_exists",
+        ):
+            monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: False)
+
+        def boom(cmd, **k):
+            raise AssertionError("no sidecar available; must not spawn")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert _probe_tier("org/m", None, "x") == "530"
+        assert "org/m" not in _probe_tier_cache  # nothing probed -> uncached
+
+    def test_probe_does_not_import_hub(self, monkeypatch):
+        # The probe must not import huggingface_hub: that would land before the sidecar is on
+        # sys.path (activation never purges), pinning the default-env hub. So no in-process sha.
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
+        sys.modules.pop("huggingface_hub", None)
+        _probe_tier("org/m", None, "x")
+        assert "huggingface_hub" not in sys.modules
+
+    def test_disable_flag_skips_probe(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_DISABLE_TIER_PROBE", "1")
+
+        def boom(cmd, **k):
+            raise AssertionError("probe disabled; must not spawn")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert _probe_tier("org/m", None, "x") == "530"
+
+    def test_get_tier_uses_probe_for_remote_tokenizer_signal(self, monkeypatch):
+        # tokenizer says 5.x but no architecture/substring match -> probe (not a 530 guess).
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_550", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: True
+        )
+        monkeypatch.setattr("utils.transformers_version._probe_tier", lambda m, t, reason: "510")
+        assert get_transformers_tier("org/unknown-5x-arch") == "510"
+
+    def test_stderr_is_transient(self):
+        assert _stderr_is_transient("ConnectionError: x") is True
+        assert _stderr_is_transient("GatedRepoError: need token") is True
+        assert _stderr_is_transient("KeyError: '-'") is False
+        assert _stderr_is_transient("ValueError: bad pattern") is False
+
+    def test_get_tier_threads_token_to_checks(self, monkeypatch):
+        # A gated/private model: the token must reach the config/tokenizer checks (and the
+        # probe), otherwise the authed-only signal is missed and it falls to default 4.x.
+        seen = {}
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_510",
+            lambda m, t = None: seen.update({"510": t}) or False,
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_550",
+            lambda m, t = None: seen.update({"550": t}) or False,
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5",
+            lambda m, t = None: seen.update({"tok": t}) or True,
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._probe_tier",
+            lambda m, t, reason: seen.update({"probe": t}) or "510",
+        )
+        assert get_transformers_tier("org/gated-5x", "hf_abc") == "510"
+        assert seen == {"510": "hf_abc", "550": "hf_abc", "tok": "hf_abc", "probe": "hf_abc"}
+
+    def test_activate_threads_token_to_tier(self, monkeypatch):
+        # activate_transformers_for_subprocess must forward hf_token to tier detection, or
+        # the gated-model checks above run unauthenticated and the fix is unreachable.
+        seen = {}
+        monkeypatch.setattr("utils.transformers_version._resolve_base_model", lambda m: m)
+        monkeypatch.setattr(
+            "utils.transformers_version.get_transformers_tier",
+            lambda m, t = None: seen.update({"model": m, "token": t}) or "default",
+        )
+        activate_transformers_for_subprocess("org/gated", "hf_xyz")
+        assert seen == {"model": "org/gated", "token": "hf_xyz"}
+
+    def test_local_checkpoint_reprobes_after_config_change(self, monkeypatch, tmp_path):
+        # A local checkpoint overwritten in place must re-probe: the cache key folds in the
+        # config.json signature, so a different config does not serve the stale tier.
+        self._patch_common(monkeypatch)
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"model_type": "a"}))
+        local = str(tmp_path)
+        calls = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: calls.append(1) or _proc(0),
+        )
+        assert _probe_tier(local, None, "x") == "530"
+        assert _probe_tier(local, None, "x") == "530"  # cache hit, no re-spawn
+        assert len(calls) == 1
+        cfg.write_text(json.dumps({"model_type": "a_longer_value_changing_the_size"}))
+        assert _probe_tier(local, None, "x") == "530"
+        assert len(calls) == 2  # signature changed -> re-probed
+
+    def test_probe_child_enables_implicit_token(self, monkeypatch):
+        # With a token, the probe child must clear an inherited HF_HUB_DISABLE_IMPLICIT_TOKEN=1
+        # so HF_TOKEN authenticates the gated config fetch instead of 401ing to 530.
+        self._patch_common(monkeypatch)
+        monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+        captured = {}
+
+        def fake_run(cmd, **k):
+            captured.update(k.get("env") or {})
+            return _proc(0)
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", fake_run)
+        assert _probe_tier("org/gated", "secret-token", "x") == "530"
+        assert captured.get("HF_TOKEN") == "secret-token"
+        assert captured.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == "0"
+
+
+class TestProbeGating:
+    """probe=False suppresses sidecar probes (the log-only needs_transformers_5 path); a
+    config saved by transformers 5.x is probed default-first so a new 5.x-only arch is
+    caught without mis-routing a 4.57.x-loadable model onto a sidecar."""
+
+    def setup_method(self):
+        _probe_tier_cache.clear()
+        _config_json_cache.clear()
+        _config_needs_510_cache.clear()
+        _config_needs_550_cache.clear()
+        _tokenizer_class_cache.clear()
+
+    def _patch_venvs(self, monkeypatch):
+        for fn in (
+            "_ensure_venv_t5_530_exists",
+            "_ensure_venv_t5_550_exists",
+            "_ensure_venv_t5_510_exists",
+        ):
+            monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
+        monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
+
+    def _patch_checks_to_tokenizer(self, monkeypatch):
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_550", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: True
+        )
+
+    # ---- needs_transformers_5 / probe=False must not spawn probes --------------
+
+    def test_needs_transformers_5_does_not_spawn_probe(self, monkeypatch):
+        self._patch_checks_to_tokenizer(monkeypatch)
+
+        def boom(cmd, **k):
+            raise AssertionError("needs_transformers_5 must not spawn a probe")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        # Still correctly reports 5.x from the tokenizer signal, just without probing.
+        assert needs_transformers_5("org/unknown-5x") is True
+
+    def test_probe_false_returns_530_for_tokenizer_signal(self, monkeypatch):
+        self._patch_checks_to_tokenizer(monkeypatch)
+
+        def boom(cmd, **k):
+            raise AssertionError("probe=False must not spawn a probe")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert get_transformers_tier("org/unknown-5x", probe = False) == "530"
+
+    # ---- version-field probe is default-first (no mis-routing of 4.x models) ----
+
+    def test_version_field_probe_stays_default_when_default_parses(self, monkeypatch):
+        self._patch_venvs(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        _config_json_cache[("org/new", None)] = {
+            "model_type": "brandnew",
+            "transformers_version": "5.0.0",
+        }
+        seen = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: seen.append(cmd[3]) or _proc(0),
+        )
+        assert get_transformers_tier("org/new") == "default"
+        assert seen == [""]  # probed the ambient default tier first, it parsed -> stayed default
+
+    def test_version_field_probe_escalates_when_default_fails(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        self._patch_venvs(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        _config_json_cache[("org/new", None)] = {
+            "model_type": "brandnew",
+            "transformers_version": "5.6.0",
+        }
+        results = iter([_proc(1, "KeyError: 'x'"), _proc(1, "KeyError: 'x'"), _proc(0)])
+        seen = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: seen.append(cmd[3]) or next(results),
+        )
+        assert get_transformers_tier("org/new") == "550"
+        assert seen == ["", tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR]
+
+    def test_ordinary_4x_config_does_not_probe(self, monkeypatch):
+        self._patch_venvs(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        _config_json_cache[("org/llama", None)] = {
+            "model_type": "llama",
+            "transformers_version": "4.57.0",
+        }
+
+        def boom(cmd, **k):
+            raise AssertionError("a 4.x-saved config must not trigger a probe")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert get_transformers_tier("org/llama") == "default"
+
+    def test_needs_transformers_5_true_for_version_field_only(self, monkeypatch):
+        # A 5.x-saved standard-tokenizer model must report as 5.x (for vision routing)
+        # without spawning a probe.
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_550", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        _config_json_cache[("org/new", None)] = {
+            "model_type": "brandnew",
+            "transformers_version": "5.2.0",
+        }
+
+        def boom(cmd, **k):
+            raise AssertionError("needs_transformers_5 must not spawn a probe")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert needs_transformers_5("org/new") is True
+
+    def test_default_first_result_not_reused_for_tokenizer_path(self, monkeypatch, tmp_path):
+        # A default-first probe can cache "default"; a later tokenizer/known-5.x call
+        # (floor=530) must re-probe, not reuse that "default".
+        self._patch_venvs(monkeypatch)
+        (tmp_path / "config.json").write_text(
+            json.dumps({"model_type": "brandnew", "transformers_version": "5.0.0"})
+        )
+        local = str(tmp_path)
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
+        assert (
+            _probe_tier(local, None, "version", include_default = True, floor = "default") == "default"
+        )
+        seen = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: seen.append(cmd[3]) or _proc(0),
+        )
+        # Tokenizer/known-5.x mode (floor=530): must re-probe and never reuse "default".
+        assert _probe_tier(local, None, "tokenizer needs 5.x") == "530"
+        assert seen, "tokenizer path reused the cached default result instead of re-probing"
+
+
+class TestLocalCheckpointFilesAppear:
+    """A local checkpoint dir inspected before its files exist must not cache the miss or hit
+    the network, so files written later in the same process are still read (in-progress
+    checkpoints)."""
+
+    def setup_method(self):
+        _tokenizer_class_cache.clear()
+        _config_json_cache.clear()
+
+    def test_tokenizer_config_appearing_later_is_read(self, tmp_path: Path, monkeypatch):
+        local = str(tmp_path)
+
+        def boom(*a, **k):
+            raise AssertionError("a local checkpoint must not be fetched from the Hub")
+
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+        # Before the file exists: not 5.x, no network, and the miss must not be pinned.
+        assert _check_tokenizer_config_needs_v5(local) is False
+        # The file appears with a 5.x-only tokenizer -> the next call must read it.
+        (tmp_path / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "TokenizersBackend"})
+        )
+        assert _check_tokenizer_config_needs_v5(local) is True
+
+    def test_config_json_appearing_later_is_read(self, tmp_path: Path, monkeypatch):
+        local = str(tmp_path)
+
+        def boom(*a, **k):
+            raise AssertionError("a local checkpoint must not be fetched from the Hub")
+
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+        assert _load_config_json(local) is None
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "gemma4"}))
+        assert _load_config_json(local) == {"model_type": "gemma4"}
+
+
 # ---------------------------------------------------------------------------
 # activate_transformers_for_subprocess — issue #6103
 # The early log must make clear it only prepends to sys.path; the real
@@ -1130,7 +1603,7 @@ class TestActivateLoggingClarity:
                 ),
                 patch(
                     "utils.transformers_version.get_transformers_tier",
-                    side_effect = lambda m: tiers[m],
+                    side_effect = lambda m, t = None: tiers[m],
                 ),
                 patch(
                     "utils.transformers_version._ensure_venv_t5_510_exists",
@@ -1157,7 +1630,7 @@ class TestActivateLoggingClarity:
         snap = self._snapshot_env()
         seen = []
 
-        def fake_tier(m):
+        def fake_tier(m, t = None):
             seen.append(m)
             return "550" if "gemma-4" in m else "default"
 
@@ -1618,14 +2091,15 @@ class TestCheckConfigNeeds530:
         with patch("utils.transformers_version._load_config_json", return_value = None):
             assert _check_config_needs_530("org/unreachable-model") is False
 
-    def test_result_is_cached(self):
-        with patch(
-            "utils.transformers_version._load_config_json",
-            return_value = {"model_type": "qwen3_5"},
-        ) as mock_load:
-            _check_config_needs_530("cached-model")
-            _check_config_needs_530("cached-model")
-            assert mock_load.call_count == 1
+    def test_result_is_cached(self, tmp_path: Path):
+        """A definitive (local) read is cached by (model, token), mirroring 510/550."""
+        cfg = {"model_type": "qwen3_5"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        key = (str(tmp_path), None)
+        _check_config_needs_530(str(tmp_path))
+        assert key in _config_needs_530_cache
+        assert _config_needs_530_cache[key] is True
 
 
 # ---------------------------------------------------------------------------
