@@ -3,6 +3,7 @@
 
 """Model loading and streaming shared by `inference` and `chat`."""
 
+import asyncio
 import os
 import re
 import sys
@@ -222,6 +223,16 @@ def _llama_args_with_flash_attn(
     return args or None
 
 
+def _validate_llama_extra_args_or_exit(llama_extra_args: Optional[List[str]]) -> list[str]:
+    from core.inference.llama_server_args import validate_extra_args
+
+    try:
+        return validate_extra_args(llama_extra_args)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(code = 1)
+
+
 def _load_gguf_backend(
     model_config,
     *,
@@ -233,29 +244,48 @@ def _load_gguf_backend(
 ):
     ensure_studio_backend_path()
     from core.inference.llama_cpp import LlamaCppBackend
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.tensor_fallback import load_with_tensor_fallback
 
     llama_backend = LlamaCppBackend()
-    extra_args = validate_extra_args(_llama_args_with_flash_attn(llama_extra_args, flash_attn))
+    extra_args = _validate_llama_extra_args_or_exit(
+        _llama_args_with_flash_attn(llama_extra_args, flash_attn)
+    )
     common = dict(
         hf_variant = model_config.gguf_variant,
         model_identifier = model_config.identifier,
         is_vision = model_config.is_vision,
         n_ctx = max_seq_length,
-        tensor_parallel = tensor_parallel,
-        extra_args = extra_args,
     )
-    if model_config.gguf_hf_repo:
-        loaded = llama_backend.load_model(
-            hf_repo = model_config.gguf_hf_repo, hf_token = hf_token, **common
+
+    async def _attempt_gguf_load(
+        requested_tensor_parallel: bool, attempt_extra_args: Optional[List[str]]
+    ) -> bool:
+        attempt_common = dict(
+            common,
+            tensor_parallel = requested_tensor_parallel,
+            extra_args = attempt_extra_args,
         )
-    else:
-        loaded = llama_backend.load_model(
+        if model_config.gguf_hf_repo:
+            return llama_backend.load_model(
+                hf_repo = model_config.gguf_hf_repo,
+                hf_token = hf_token,
+                **attempt_common,
+            )
+        return llama_backend.load_model(
             gguf_path = model_config.gguf_file,
             mmproj_path = model_config.gguf_mmproj_file,
             mtp_draft_path = model_config.gguf_mtp_file,
-            **common,
+            **attempt_common,
         )
+
+    loaded = asyncio.run(
+        load_with_tensor_fallback(
+            _attempt_gguf_load,
+            requested_tensor = tensor_parallel,
+            extra_args = extra_args,
+            label = model_config.identifier,
+        )
+    )
     if not loaded:
         typer.echo("Model load failed", err = True)
         raise typer.Exit(code = 1)
@@ -497,9 +527,8 @@ class HttpChatBackend:
             "hf_token": hf_token,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
+            "tensor_parallel": tensor_parallel,
         }
-        if tensor_parallel:
-            payload["tensor_parallel"] = True
         extra_args = _llama_args_with_flash_attn(llama_extra_args, flash_attn)
         if extra_args:
             payload["llama_extra_args"] = extra_args

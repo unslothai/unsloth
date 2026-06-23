@@ -17,6 +17,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 import typer
+import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -403,6 +404,34 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
     ]
 
 
+def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    requests = []
+
+    class _OK:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        backend,
+        "_request",
+        lambda method, path, payload = None, timeout = None: (
+            requests.append((method, path, payload, timeout)),
+            _OK(),
+        )[1],
+    )
+
+    backend.ensure_loaded(
+        "org/model-GGUF",
+        hf_token = None,
+        max_seq_length = 4096,
+        load_in_4bit = True,
+        tensor_parallel = False,
+    )
+
+    assert requests[0][2]["tensor_parallel"] is False
+
+
 def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
     import unsloth_cli._inference as inference
 
@@ -417,11 +446,18 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
     fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
     fake_args = types.ModuleType("core.inference.llama_server_args")
     fake_args.validate_extra_args = lambda args: list(args or [])
+    fake_tensor_fallback = types.ModuleType("core.inference.tensor_fallback")
+
+    async def _passthrough(attempt_load, *, requested_tensor, extra_args, label = "", cancelled = None):
+        return await attempt_load(requested_tensor, extra_args)
+
+    fake_tensor_fallback.load_with_tensor_fallback = _passthrough
 
     monkeypatch.setitem(sys.modules, "core", types.ModuleType("core"))
     monkeypatch.setitem(sys.modules, "core.inference", types.ModuleType("core.inference"))
     monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
     monkeypatch.setitem(sys.modules, "core.inference.llama_server_args", fake_args)
+    monkeypatch.setitem(sys.modules, "core.inference.tensor_fallback", fake_tensor_fallback)
     monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
 
     config = SimpleNamespace(
@@ -453,6 +489,98 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
             "extra_args": ["--top-k", "20", "--flash-attn", "off"],
         }
     ]
+
+
+def test_load_gguf_backend_exits_cleanly_on_invalid_extra_args(monkeypatch):
+    import unsloth_cli._inference as inference
+
+    fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.LlamaCppBackend = object
+    fake_args = types.ModuleType("core.inference.llama_server_args")
+
+    def _raise(_args):
+        raise ValueError("llama-server flag '--model' is managed by Unsloth Studio")
+
+    fake_args.validate_extra_args = _raise
+    fake_tensor_fallback = types.ModuleType("core.inference.tensor_fallback")
+    fake_tensor_fallback.load_with_tensor_fallback = None
+
+    monkeypatch.setitem(sys.modules, "core", types.ModuleType("core"))
+    monkeypatch.setitem(sys.modules, "core.inference", types.ModuleType("core.inference"))
+    monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
+    monkeypatch.setitem(sys.modules, "core.inference.llama_server_args", fake_args)
+    monkeypatch.setitem(sys.modules, "core.inference.tensor_fallback", fake_tensor_fallback)
+    monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
+
+    config = SimpleNamespace(
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = "org/model-GGUF",
+    )
+
+    with pytest.raises(typer.Exit) as excinfo:
+        inference._load_gguf_backend(
+            config,
+            hf_token = "hf_x",
+            max_seq_length = 8192,
+            llama_extra_args = ["--model"],
+        )
+
+    assert excinfo.value.exit_code == 1
+
+
+def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
+    import unsloth_cli._inference as inference
+
+    calls = []
+    fallback_calls = []
+
+    class _FakeLlamaCppBackend:
+        def load_model(self, **kwargs):
+            calls.append(kwargs)
+            return kwargs["tensor_parallel"] is False
+
+    fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
+    fake_args = types.ModuleType("core.inference.llama_server_args")
+    fake_args.validate_extra_args = lambda args: list(args or [])
+    fake_tensor_fallback = types.ModuleType("core.inference.tensor_fallback")
+
+    async def _fallback(attempt_load, *, requested_tensor, extra_args, label = "", cancelled = None):
+        fallback_calls.append((requested_tensor, extra_args, label))
+        ok = await attempt_load(requested_tensor, extra_args)
+        if ok:
+            return True
+        return await attempt_load(False, ["--split-mode", "layer"])
+
+    fake_tensor_fallback.load_with_tensor_fallback = _fallback
+
+    monkeypatch.setitem(sys.modules, "core", types.ModuleType("core"))
+    monkeypatch.setitem(sys.modules, "core.inference", types.ModuleType("core.inference"))
+    monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
+    monkeypatch.setitem(sys.modules, "core.inference.llama_server_args", fake_args)
+    monkeypatch.setitem(sys.modules, "core.inference.tensor_fallback", fake_tensor_fallback)
+    monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
+
+    config = SimpleNamespace(
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = "org/model-GGUF",
+    )
+
+    backend = inference._load_gguf_backend(
+        config,
+        hf_token = "hf_x",
+        max_seq_length = 8192,
+        tensor_parallel = True,
+    )
+
+    assert isinstance(backend, ChatBackend)
+    assert fallback_calls == [(True, [], "org/model-GGUF")]
+    assert [call["tensor_parallel"] for call in calls] == [True, False]
+    assert calls[1]["extra_args"] == ["--split-mode", "layer"]
 
 
 def test_http_backend_merges_emoji_split_across_deltas(monkeypatch):
