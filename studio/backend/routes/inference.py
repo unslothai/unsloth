@@ -2274,6 +2274,42 @@ def _same_target_waiters(key: tuple[str, str]) -> int:
         return _auto_switch_waiters.get(key, 0)
 
 
+# A second waiter map keyed by the raw requested model, registered before the
+# (slow) resolve. The middleware counts a concurrent same-model request as
+# in-flight before it resolves and joins _auto_switch_waiters, so without this
+# the first request would see it as an unrelated request and 409.
+_auto_switch_request_waiters: dict[str, int] = {}
+_auto_switch_request_waiters_guard = threading.Lock()
+
+
+def _request_waiter_key(requested_model: str) -> str:
+    return requested_model.strip().lower()
+
+
+def _note_request_waiter(key: str, delta: int) -> None:
+    with _auto_switch_request_waiters_guard:
+        n = _auto_switch_request_waiters.get(key, 0) + delta
+        if n > 0:
+            _auto_switch_request_waiters[key] = n
+        else:
+            _auto_switch_request_waiters.pop(key, None)
+
+
+def _same_request_waiters(key: str) -> int:
+    with _auto_switch_request_waiters_guard:
+        return _auto_switch_request_waiters.get(key, 0)
+
+
+def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
+    """The id to report for the loaded GGUF in API responses: the advertised repo
+    id from an auto-switch load, never the concrete on-disk load path."""
+    return (
+        getattr(llama_backend, "_openai_advertised_id", None)
+        or getattr(llama_backend, "model_identifier", None)
+        or fallback
+    )
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str], fastapi_request: Request, current_subject: str
 ) -> None:
@@ -2303,98 +2339,111 @@ async def _maybe_auto_switch_model(
     ):
         return
 
-    # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
-    resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
-    if resolved is None:
-        # Idle-unload may have freed the model; reload exactly what it freed
-        # (path + quant + advertised id) so an alias/unknown name stays servable
-        # and keeps the override keyed by the advertised id, not the load path.
-        last = get_last_unloaded_model()
-        if not last or get_llama_cpp_backend().is_loaded:
-            return
-        if len(last) == 3:
-            target_id, variant, override_id = last
-        else:  # pre-3-tuple stash: fall back to the path as the override key
-            target_id, variant = last
-            override_id = target_id
-    else:
-        # load_path is a concrete local path (never the bare repo id), so /load
-        # takes the local branch and cannot trigger a download. override_id is the
-        # advertised repo id, used as the launch-override key and the public model id.
-        target_id, variant, override_id = resolved
-    backend = get_llama_cpp_backend()
-    # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
-    # repo, so it never reloads a different local quant that already serves it.
-    bare = ":" not in requested_model
-
-    def _already_serving() -> bool:
-        # Match against both the concrete load path and the advertised repo id, so
-        # a model loaded manually by repo id (identifier = repo id) and one loaded
-        # by auto-switch (identifier = path, advertised = repo id) both count as
-        # already serving the request rather than triggering a needless reswap.
-        if not backend.is_loaded or not backend.model_identifier:
-            return False
-        loaded_keys = {backend.model_identifier.lower()}
-        advertised = getattr(backend, "_openai_advertised_id", None)
-        if advertised:
-            loaded_keys.add(advertised.lower())
-        if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
-            return False
-        if bare:
-            return True
-        if variant:
-            loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
-            return loaded_variant == variant.lower()
-        return True
-
-    if _already_serving():
-        return
-    key = _switch_key(override_id, variant)
-    _note_switch_waiter(key, 1)
+    # Register by the raw requested model before resolving (which can be slow):
+    # the middleware already counts a concurrent same-model request as in-flight,
+    # so the busy guard must know it shares this target even while it resolves.
+    request_key = _request_waiter_key(requested_model)
+    _note_request_waiter(request_key, 1)
     try:
-        async with _auto_switch_lock():
-            # Hold the keep-warm gate across the swap so no new inference can start
-            # on the model while it is being torn down and replaced.
-            async with inference_lifecycle_gate():
-                if _already_serving():
-                    return
-                # Single slot: refuse a cross-model swap while another inference
-                # request is active rather than killing its response. Requests
-                # heading to this same target are excluded, so concurrent requests
-                # for one model load once instead of each 409-ing the other.
-                same_target_others = max(0, _same_target_waiters(key) - 1)
-                others = other_inference_request_count(current_request_counted = True)
-                if backend.is_loaded and others > same_target_others:
-                    raise HTTPException(
-                        status_code = 409,
-                        detail = openai_error_body(
-                            "Cannot switch models while another inference request is in progress.",
-                            status = 409,
-                            code = "model_switch_busy",
-                            param = "model",
-                        ),
+        # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
+        resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
+        if resolved is None:
+            # Idle-unload may have freed the model; reload exactly what it freed
+            # (path + quant + advertised id) so an alias/unknown name stays servable
+            # and keeps the override keyed by the advertised id, not the load path.
+            last = get_last_unloaded_model()
+            if not last or get_llama_cpp_backend().is_loaded:
+                return
+            if len(last) == 3:
+                target_id, variant, override_id = last
+            else:  # pre-3-tuple stash: fall back to the path as the override key
+                target_id, variant = last
+                override_id = target_id
+        else:
+            # load_path is a concrete local path (never the bare repo id), so /load
+            # takes the local branch and cannot trigger a download. override_id is the
+            # advertised repo id, the launch-override key and the public model id.
+            target_id, variant, override_id = resolved
+        backend = get_llama_cpp_backend()
+        # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
+        # repo, so it never reloads a different local quant that already serves it.
+        bare = ":" not in requested_model
+
+        def _already_serving() -> bool:
+            # Match against both the concrete load path and the advertised repo id,
+            # so a model loaded manually by repo id (identifier = repo id) and one
+            # loaded by auto-switch (identifier = path, advertised = repo id) both
+            # count as already serving rather than triggering a needless reswap.
+            if not backend.is_loaded or not backend.model_identifier:
+                return False
+            loaded_keys = {backend.model_identifier.lower()}
+            advertised = getattr(backend, "_openai_advertised_id", None)
+            if advertised:
+                loaded_keys.add(advertised.lower())
+            if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
+                return False
+            if bare:
+                return True
+            if variant:
+                loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
+                return loaded_variant == variant.lower()
+            return True
+
+        if _already_serving():
+            return
+        key = _switch_key(override_id, variant)
+        _note_switch_waiter(key, 1)
+        try:
+            async with _auto_switch_lock():
+                # Hold the keep-warm gate across the swap so no new inference can
+                # start on the model while it is being torn down and replaced.
+                async with inference_lifecycle_gate():
+                    if _already_serving():
+                        return
+                    # Single slot: refuse a cross-model swap while another inference
+                    # request is active rather than killing its response. Requests
+                    # heading to this same target (by resolved id or raw name) are
+                    # excluded, so concurrent requests for one model load once. A
+                    # pending request is still in the middleware, not generating, so
+                    # it is not counted here.
+                    same_others = max(
+                        _same_target_waiters(key) - 1, _same_request_waiters(request_key) - 1, 0
                     )
-                # Apply this model's saved launch flags so the swap honors the user's config.
-                override = get_model_override(override_id)
-                load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-                if override.get("llama_extra_args") is not None:
-                    load_kwargs["llama_extra_args"] = override["llama_extra_args"]
-                if override.get("max_seq_length") is not None:
-                    load_kwargs["max_seq_length"] = override["max_seq_length"]
-                # Reuse the load impl so its dedup, tensor fallback, and threading
-                # apply. Call the impl directly: we already hold the lifecycle gate
-                # the /load route would otherwise take, so going through the route
-                # would self-deadlock.
-                await _load_model_impl(
-                    LoadRequest(**load_kwargs),
-                    fastapi_request,
-                    current_subject,
-                )
-                # Advertise the repo id (not the concrete load path) as the loaded
-                # model's public id and override key for /v1/models and idle stash.
-                get_llama_cpp_backend()._openai_advertised_id = override_id
+                    others = other_inference_request_count(
+                        current_request_counted = True, include_pending = False
+                    )
+                    if backend.is_loaded and others > same_others:
+                        raise HTTPException(
+                            status_code = 409,
+                            detail = openai_error_body(
+                                "Cannot switch models while another inference request is in progress.",
+                                status = 409,
+                                code = "model_switch_busy",
+                                param = "model",
+                            ),
+                        )
+                    # Apply this model's saved launch flags so the swap honors the config.
+                    override = get_model_override(override_id)
+                    load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                    if override.get("llama_extra_args") is not None:
+                        load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+                    if override.get("max_seq_length") is not None:
+                        load_kwargs["max_seq_length"] = override["max_seq_length"]
+                    # Reuse the load impl so its dedup, tensor fallback, and threading
+                    # apply. Call the impl directly: we already hold the lifecycle gate
+                    # the /load route would otherwise take, so the route would deadlock.
+                    await _load_model_impl(
+                        LoadRequest(**load_kwargs),
+                        fastapi_request,
+                        current_subject,
+                    )
+                    # Advertise the repo id (not the concrete load path) as the loaded
+                    # model's public id and override key for /v1/models and idle stash.
+                    get_llama_cpp_backend()._openai_advertised_id = override_id
+        finally:
+            _note_switch_waiter(key, -1)
     finally:
-        _note_switch_waiter(key, -1)
+        _note_request_waiter(request_key, -1)
 
 
 async def _auto_switch_from_request_body(request: Request, current_subject: str):
@@ -3483,6 +3532,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
     try:
+        from core.inference.llama_keepwarm import (
+            inference_lifecycle_gate,
+            other_inference_request_count,
+        )
+
         # Check if the GGUF backend has this model loaded or is loading it.
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_active and (
@@ -3490,7 +3544,16 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             or is_registered_native_path_label(llama_backend.model_identifier, request.model_path)
             or not llama_backend.is_loaded
         ):
-            llama_backend.unload_model()
+            # Hold the lifecycle gate (like idle-unload/load) and refuse while an
+            # inference request is in flight rather than killing its stream. /unload
+            # isn't a tracked inference path, so the caller is not counted out.
+            async with inference_lifecycle_gate():
+                if other_inference_request_count(current_request_counted = False) > 0:
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = "Cannot unload a GGUF model while an inference request is in progress.",
+                    )
+                llama_backend.unload_model()
             logger.info(f"Unloaded GGUF model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -3500,6 +3563,8 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         logger.info(f"Unloaded model: {request.model_path}")
         return UnloadResponse(status = "unloaded", model = request.model_path)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to unload model")
@@ -3908,7 +3973,7 @@ async def generate_audio(
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
-        model_name = llama_backend.model_identifier
+        model_name = _llama_public_model_id(llama_backend)
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -4926,6 +4991,12 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        # External provider: this request won't touch the local GGUF, so drop it
+        # from the keep-warm count or its in-flight stream would falsely block a
+        # concurrent local auto-switch with model_switch_busy.
+        from core.inference.llama_keepwarm import untrack_current_request
+
+        untrack_current_request(request.scope)
         # Bypass Permissions suppresses the confirm gate, so do not reject a
         # request that sets both flags (effective confirm is then False).
         if (
@@ -4978,6 +5049,19 @@ async def openai_chat_completions(
                         param = "tools",
                     ),
                 )
+
+    # When auto-switch is on, reject a system-only chat before the hook so an
+    # invalid request never swaps the resident model (as /responses and /messages
+    # already validate before switching). Parse once and reuse below.
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+    _pre_parsed = None
+    if get_openai_auto_switch_enabled():
+        _pre_parsed = _extract_content_parts(payload.messages)
+        if not _pre_parsed[1]:
+            raise HTTPException(
+                status_code = 400, detail = "At least one non-system message is required."
+            )
 
     await _maybe_auto_switch_model(payload.model, request, current_subject)
 
@@ -5036,7 +5120,7 @@ async def openai_chat_completions(
         return response
 
     if using_gguf:
-        model_name = llama_backend.model_identifier or payload.model
+        model_name = _llama_public_model_id(llama_backend, payload.model)
         if getattr(llama_backend, "_is_audio", False):
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF audio chat completions")
@@ -5295,7 +5379,11 @@ async def openai_chat_completions(
         )
 
     # ── Parse messages (handles multimodal content parts) ─────
-    system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
+    # Reuse the pre-hook parse when auto-switch did it, else parse now.
+    if _pre_parsed is not None:
+        system_prompt, chat_messages, extracted_image_b64 = _pre_parsed
+    else:
+        system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -6495,8 +6583,7 @@ def _openai_model_objects() -> list[dict]:
         # on-disk load path, so /v1/models never leaks a host path or lists a
         # model twice (path plus repo id).
         entry = {
-            "id": getattr(llama_backend, "_openai_advertised_id", None)
-            or llama_backend.model_identifier,
+            "id": _llama_public_model_id(llama_backend),
             "object": "model",
             "created": _created,
             "owned_by": "local",
@@ -6650,7 +6737,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     monitor_id = api_monitor.start(
         endpoint = request.url.path,
         method = request.method,
-        model = str(body.get("model") or llama_backend.model_identifier or "default"),
+        model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
         prompt = prompt_text,
         context_length = llama_backend.context_length,
         subject = current_subject,
@@ -6826,7 +6913,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
             method = request.method,
-            model = str(body.get("model") or llama_backend.model_identifier or "default"),
+            model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
             prompt = prompt_text,
             context_length = llama_backend.context_length,
             subject = current_subject,
@@ -8438,7 +8525,7 @@ async def anthropic_messages(
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
 
-    model_name = getattr(llama_backend, "model_identifier", None) or payload.model
+    model_name = _llama_public_model_id(llama_backend, payload.model)
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
 
     # ── Translate Anthropic → OpenAI ──────────────────────────

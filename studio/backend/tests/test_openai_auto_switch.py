@@ -68,6 +68,7 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     # gate that auto-switch already owns, so it calls the impl directly).
     monkeypatch.setattr(inference_route, "_load_model_impl", recorder)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_auto_switch_request_waiters", {})
 
 
 def _run_hook(model = "some/model"):
@@ -1283,3 +1284,128 @@ def test_anthropic_400_when_auto_switch_on_and_max_tokens_missing(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.anthropic_messages(_anthropic_payload(), object(), "tester"))
     assert exc.value.status_code == 400
+
+
+# ── review round 6: concurrency ordering, external untrack, unload gate, ids ──
+
+
+def test_pending_same_target_request_does_not_force_409(monkeypatch):
+    # A second same-target request blocked in the middleware (pending, not yet
+    # generating) must not make the first request 409: pending is excluded.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(kw, "_inflight", 1)  # just the caller
+    monkeypatch.setattr(kw, "_pending", 1)   # second request blocked in middleware
+    _run_hook("org/B-GGUF:Q8_0")
+    assert len(rec.calls) == 1  # loads once, no 409
+
+
+def test_concurrent_same_target_loads_once_while_other_still_resolving(monkeypatch):
+    # The real middleware counts a concurrent same-model request as in-flight
+    # before it resolves and registers a target waiter. The raw-request waiter,
+    # registered before resolve, must still exclude it so the first request loads.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(kw, "_inflight", 2)  # caller + a still-resolving twin
+    monkeypatch.setattr(kw, "_pending", 0)
+    # The twin has only registered its raw requested model (not yet a target waiter).
+    inference_route._note_request_waiter(inference_route._request_waiter_key("org/B-GGUF:Q8_0"), 1)
+    _run_hook("org/B-GGUF:Q8_0")
+    assert len(rec.calls) == 1  # loads once, no 409
+
+
+def test_external_untrack_decrements_inflight_and_is_idempotent():
+    from core.inference import llama_keepwarm as kw
+
+    kw._inflight = 2
+    scope = {"type": "http"}
+    kw.untrack_current_request(scope)
+    assert kw._inflight == 1
+    assert scope.get(kw._UNTRACKED_SCOPE_KEY) is True
+    kw.untrack_current_request(scope)  # idempotent: no further decrement
+    assert kw._inflight == 1
+    kw._inflight = 0
+
+
+def test_unload_route_409s_while_inference_active(monkeypatch):
+    from fastapi import HTTPException
+    from core.inference import llama_keepwarm as kw
+    from models.inference import UnloadRequest
+
+    backend = _FakeBackend("org/A-GGUF")
+    backend.is_active = True
+    backend.unload_model = lambda: setattr(backend, "is_loaded", False)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
+    monkeypatch.setattr(kw, "_inflight", 1)  # another request streaming
+    monkeypatch.setattr(kw, "_pending", 0)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester"))
+    assert exc.value.status_code == 409
+    assert backend.is_loaded  # not torn down
+
+
+def test_unload_route_unloads_when_idle(monkeypatch):
+    from core.inference import llama_keepwarm as kw
+    from models.inference import UnloadRequest
+
+    backend = _FakeBackend("org/A-GGUF")
+    backend.is_active = True
+    backend.unload_model = lambda: setattr(backend, "is_loaded", False)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_pending", 0)
+    resp = asyncio.run(inference_route.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester"))
+    assert resp.status == "unloaded"
+    assert not backend.is_loaded
+
+
+def test_public_model_id_prefers_advertised_over_path():
+    backend = _FakeBackend("/cache/models--org--Repo/snapshots/abc")
+    backend._openai_advertised_id = "org/Repo-GGUF"
+    assert inference_route._llama_public_model_id(backend) == "org/Repo-GGUF"
+    backend._openai_advertised_id = None
+    # No advertised id: falls back to the identifier, then the explicit fallback.
+    assert inference_route._llama_public_model_id(backend) == "/cache/models--org--Repo/snapshots/abc"
+    backend.model_identifier = None
+    assert inference_route._llama_public_model_id(backend, "req") == "req"
+
+
+def test_chat_validates_non_system_message_before_auto_switch():
+    # A system-only chat must be rejected before the hook so an invalid request
+    # never swaps the resident model. Asserted on source order.
+    import inspect
+
+    src = inspect.getsource(inference_route.openai_chat_completions)
+    assert (
+        src.index("At least one non-system message is required.")
+        < src.index("_maybe_auto_switch_model")
+    )
+
+
+def test_chat_untracks_external_provider_before_proxy():
+    # The external-provider branch must untrack the request before proxying so its
+    # stream can't block a concurrent local auto-switch.
+    import inspect
+
+    src = inspect.getsource(inference_route.openai_chat_completions)
+    assert src.index("untrack_current_request") < src.index("_proxy_to_external_provider")

@@ -104,19 +104,38 @@ def _note_activity() -> None:
         _last_active = time.monotonic()
 
 
-def other_inference_request_count(current_request_counted: bool = True) -> int:
+def other_inference_request_count(
+    current_request_counted: bool = True, *, include_pending: bool = True
+) -> int:
     """Tracked inference requests other than the current route call.
 
     The middleware counts OpenAI-compatible requests before route code runs, so
-    the caller is excluded by default. Pending waiters (blocked on the gate)
-    count too: a swap can't assume they're safe since one may want the loaded
-    model. The auto-switch guard subtracts requests known to want the same target.
+    the caller is excluded by default. Idle-unload counts pending waiters too (a
+    swap holding the gate would unload out from under them). The swap guard passes
+    include_pending=False: a pending request is blocked in the middleware and has
+    not started inference, so it can't be the request a swap would interrupt.
     """
     with _lock:
         active = _inflight
         if current_request_counted and active > 0:
             active -= 1
-        return max(0, active) + _pending
+        return max(0, active) + (_pending if include_pending else 0)
+
+
+# Set on the ASGI scope by a route that proved this request won't touch
+# llama.cpp (e.g. it proxied to an external provider), so the keep-warm count
+# excludes it and the middleware skips its own end-decrement.
+_UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
+
+
+def untrack_current_request(scope) -> None:
+    """Drop this request from the in-flight count once the route knows it won't
+    use the local GGUF, so unrelated external-provider traffic can't trip the
+    swap busy guard. Idempotent; the middleware then skips its end-decrement."""
+    if not isinstance(scope, dict) or scope.get(_UNTRACKED_SCOPE_KEY):
+        return
+    scope[_UNTRACKED_SCOPE_KEY] = True
+    _note_end()
 
 
 def inference_lifecycle_gate() -> asyncio.Lock:
@@ -175,20 +194,24 @@ class LlamaKeepWarmMiddleware:
                 _note_unpending()
         ended = {"done": False}
 
+        def _finish() -> None:
+            # A route that untracked itself already decremented; don't double-count.
+            if ended["done"]:
+                return
+            ended["done"] = True
+            if not scope.get(_UNTRACKED_SCOPE_KEY):
+                _note_end()
+
         async def send_wrapper(message):
             # Final body frame marks the end of a (possibly streaming) response.
             if message.get("type") == "http.response.body" and not message.get("more_body", False):
-                if not ended["done"]:
-                    ended["done"] = True
-                    _note_end()
+                _finish()
             await send(message)
 
         try:
             await self.app(scope, receive, send_wrapper)
         finally:
-            if not ended["done"]:
-                ended["done"] = True
-                _note_end()
+            _finish()
 
 
 def _loaded_identity(backend):
