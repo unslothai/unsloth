@@ -60,6 +60,18 @@ export function buildChatTourSteps({
       onEnter: openSettings,
       onExit: closeSettings,
     },
+    {
+      id: "plus-menu",
+      target: "chat-plus-menu",
+      title: "The + menu",
+      body: (
+        <>
+          Everything else lives here: attach photos and files, reuse saved
+          prompts, toggle tools and MCP, start a side-by-side compare, and
+          export the chat.
+        </>
+      ),
+    },
   ];
 
   if (canCompare) {
