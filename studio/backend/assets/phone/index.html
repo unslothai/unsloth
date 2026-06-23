@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- Read-only phone dashboard served at /m/<token>; polls /api/phone/* with the token. -->
+<!-- Read-only phone dashboard at /m; reads the fragment token, polls /api/phone/*. -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -51,11 +51,7 @@
         background: var(--bg);
         color: var(--fg);
         font-family:
-          -apple-system,
-          BlinkMacSystemFont,
-          "Segoe UI",
-          system-ui,
-          sans-serif;
+          -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
       }
       .mono {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

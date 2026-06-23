@@ -64,10 +64,7 @@ export interface PhoneShareResponse {
   expires_at: string;
 }
 
-/**
- * Mint a read-only "watch on your phone" link for the current run. Returns a
- * LAN URL to render as a QR code; the link only works on the same network.
- */
+/** Mint a read-only "watch on your phone" link; returns a same-network QR URL. */
 export async function shareTrainingToPhone(): Promise<PhoneShareResponse> {
   const response = await authFetch("/api/phone/share", { method: "POST" });
   return parseJson<PhoneShareResponse>(response);

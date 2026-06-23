@@ -465,7 +465,7 @@ async def reset_training(current_subject: str = Depends(get_current_subject)):
 
 
 def build_training_status() -> TrainingStatus:
-    """Build the current training status snapshot (shared by /status and the phone dashboard)."""
+    """Training status snapshot, shared by /status and the phone dashboard."""
     backend = get_training_backend()
     job_id: str = getattr(backend, "current_job_id", "") or ""
 
@@ -483,7 +483,6 @@ def build_training_status() -> TrainingStatus:
 
     trainer_stopped = getattr(backend, "_should_stop", False)
 
-    # Derive high-level phase
     if error_message:
         phase = "error"
     elif is_active:
@@ -514,7 +513,7 @@ def build_training_status() -> TrainingStatus:
         if output_dir:
             details["output_dir"] = output_dir
 
-    # Metric history for chart recovery after SSE reconnection.
+    # Metric history so charts recover after SSE reconnect.
     metric_history = None
     if backend.step_history:
         metric_history = {

@@ -23,7 +23,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-# Read-only phone-dashboard tokens: scoped to /api/phone/*, never full-access routes.
+# Phone tokens: scoped to /api/phone/*, never full-access routes.
 PHONE_VIEW_SCOPE = "phone_view"
 PHONE_TOKEN_EXPIRE_HOURS = 12
 
@@ -79,7 +79,7 @@ def create_access_token(
 
 
 def create_phone_token(subject: str, run_id: str) -> Tuple[str, datetime]:
-    """Read-only "phone_view" JWT for the phone dashboard. Returns (token, expires_at)."""
+    """Read-only phone_view JWT. Returns (token, expires_at)."""
     expire = datetime.now(timezone.utc) + timedelta(hours = PHONE_TOKEN_EXPIRE_HOURS)
     to_encode = {
         "sub": subject,
@@ -98,7 +98,7 @@ def create_phone_token(subject: str, run_id: str) -> Tuple[str, datetime]:
 async def get_phone_viewer(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> Tuple[str, str]:
-    """Dependency for the read-only phone routes; accepts only a phone_view JWT."""
+    """Accept only a phone_view JWT."""
     token = credentials.credentials
     subject = _decode_subject_without_verification(token)
     if subject is None:
@@ -246,7 +246,7 @@ async def _get_current_subject(
     _salt, _pwd_hash, jwt_secret, must_change_password = record
     try:
         payload = jwt.decode(token, jwt_secret, algorithms = [ALGORITHM])
-        # Read-only phone tokens must never satisfy a full-access route.
+        # Phone tokens must never satisfy a full-access route.
         if payload.get("scope") == PHONE_VIEW_SCOPE:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,

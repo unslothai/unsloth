@@ -35,7 +35,7 @@ function PhoneGlyph(): ReactElement {
   );
 }
 
-// "View on phone": QR link to a read-only live training dashboard (routes/phone.py).
+// "View on phone": QR to a read-only training dashboard (routes/phone.py).
 export function PhoneShareButton(): ReactElement {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<PhoneShareResponse | null>(null);
