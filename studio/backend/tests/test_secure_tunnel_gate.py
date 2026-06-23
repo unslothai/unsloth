@@ -170,15 +170,14 @@ def test_failclosed_message_present_in_source():
 @pytest.mark.parametrize(
     "api_only,secure,expected",
     [
-        (False, False, ["*"]),       # plain server: any origin
-        (False, True, ["*"]),        # secure UI server: any origin
-        (True, True, ["*"]),         # secure api-only: remote browsers need any origin
-        (True, False, "tauri"),      # local api-only: locked to the Tauri app
+        (False, False, ["*"]),  # plain server: any origin
+        (False, True, ["*"]),  # secure UI server: any origin
+        (True, True, ["*"]),  # secure api-only: remote browsers need any origin
+        (True, False, "tauri"),  # local api-only: locked to the Tauri app
     ],
 )
 def test_cors_origins_for_mode(api_only, secure, expected):
     from utils.host_policy import cors_origins_for_mode
-
     origins = cors_origins_for_mode(api_only = api_only, secure = secure)
     if expected == "tauri":
         assert origins != ["*"] and any(o.startswith("tauri://") for o in origins)

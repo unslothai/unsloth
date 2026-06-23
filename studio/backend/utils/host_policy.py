@@ -37,11 +37,11 @@ def is_external_host(host: str) -> bool:
 # Tauri desktop webview origins. api-only serving (the desktop app calling a
 # local backend) locks CORS to these.
 _TAURI_CORS_ORIGINS = (
-    "tauri://localhost",       # Linux/macOS Tauri webview
+    "tauri://localhost",  # Linux/macOS Tauri webview
     "http://tauri.localhost",  # Windows Tauri webview
-    "http://localhost",        # dev fallback
-    "http://localhost:5173",   # Tauri dev/Vite
-    "http://127.0.0.1:5173",   # Tauri dev/Vite fallback
+    "http://localhost",  # dev fallback
+    "http://localhost:5173",  # Tauri dev/Vite
+    "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
 )
 
 
