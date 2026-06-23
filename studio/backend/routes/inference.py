@@ -5101,6 +5101,11 @@ async def openai_chat_completions(
                             _stream_finish = event.get("finish_reason")
                             continue
 
+                        if event["type"] == "reasoning_summary":
+                            # Forward server-side reasoning timing to the UI.
+                            yield f"data: {json.dumps(event)}\n\n"
+                            continue
+
                         # "content" type -- cumulative text. Sanitize the full
                         # cumulative then diff against the last sanitized
                         # snapshot so cross-chunk XML tags are handled correctly.
