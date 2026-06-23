@@ -2234,25 +2234,27 @@ def install_python_stack() -> int:
     # 4. Overrides (torchao) -- force-reinstall. The torchao version is chosen to
     #    match the torch installed in the venv so its C++ extensions load (see
     #    _select_torchao_spec). Skip when torch is unavailable (e.g. Intel Mac
-    #    GGUF-only mode): torchao requires torch.
+    #    GGUF-only mode): torchao requires torch. Also skipped on Windows ROCm,
+    #    which has no working torchao build (see below).
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
+    elif _rocm_windows_torch_installed:
+        # torchao has no working Windows ROCm build: it loads torch's c10d
+        # distributed backend at import, which the AMD Windows wheels omit (no
+        # RCCL), so `import torchao` raises and takes transformers.quantizers
+        # down with it. Studio stubs torchao at runtime (core/_torchao_stub.py),
+        # so installing it only ships a package that crashes on import -- skip it.
+        _progress("dependency overrides (skipped, Windows ROCm)")
+        _safe_print("   Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
     else:
         _progress("dependency overrides")
         _torch_ver = _probe_installed_torch_version()
         _torchao_spec = _select_torchao_spec(_torch_ver)
         _safe_print(f"   torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
-        _override_extra_args: tuple[str, ...] = ()
-        if _rocm_windows_torch_installed:
-            # torchao declares torch as a dependency; without --no-deps uv would
-            # install CPU torch from PyPI, overwriting the AMD ROCm wheels we just
-            # installed.
-            _override_extra_args = ("--no-deps",)
         pip_install(
             "Installing dependency overrides",
             "--force-reinstall",
             "--no-cache-dir",
-            *_override_extra_args,
             _torchao_spec,
         )
 

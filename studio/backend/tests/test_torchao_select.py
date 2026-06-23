@@ -69,3 +69,15 @@ def test_default_spec_matches_table(monkeypatch):
     mod = _load_module(monkeypatch)
     assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.14.0"
     assert mod._select_torchao_spec("2.9.0") == mod._TORCHAO_DEFAULT_SPEC
+
+
+def test_skips_torchao_on_windows_rocm():
+    """The overrides step must skip torchao on Windows ROCm. There is no working
+    torchao build there: it loads torch's c10d distributed backend at import,
+    which the AMD Windows wheels omit, so `import torchao` raises and takes
+    transformers.quantizers with it. Studio stubs torchao at runtime instead."""
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    # Branches on the Windows-ROCm marker set by _ensure_rocm_torch ...
+    assert "elif _rocm_windows_torch_installed:" in source
+    # ... and reports the skip in the progress label.
+    assert "dependency overrides (skipped, Windows ROCm)" in source
