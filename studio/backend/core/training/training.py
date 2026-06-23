@@ -77,8 +77,12 @@ _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 
 
 def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
+    # ``subject`` (the run owner's username / API-key id) is worker-only metadata; never
+    # persist it to config_json, which run-history GET returns to any authenticated user.
     db_config = {
-        k: v for k, v in config.items() if k not in {"hf_token", "wandb_token", "s3_config"}
+        k: v
+        for k, v in config.items()
+        if k not in {"hf_token", "wandb_token", "s3_config", "subject"}
     }
     s3_config = config.get("s3_config")
     if hasattr(s3_config, "model_dump"):
@@ -277,6 +281,7 @@ class TrainingBackend:
             "train_split": kwargs.get("train_split", "train"),
             "eval_split": kwargs.get("eval_split"),
             "eval_steps": kwargs.get("eval_steps", 0.00),
+            "dataset_streaming": kwargs.get("dataset_streaming", False),
             "dataset_slice_start": kwargs.get("dataset_slice_start"),
             "dataset_slice_end": kwargs.get("dataset_slice_end"),
             "custom_format_mapping": kwargs.get("custom_format_mapping"),
@@ -329,6 +334,7 @@ class TrainingBackend:
             "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
             "approved_remote_code_fingerprint": kwargs.get("approved_remote_code_fingerprint"),
+            "subject": kwargs.get("subject"),
             "gpu_ids": kwargs.get("gpu_ids"),
             "s3_config": kwargs.get("s3_config"),
             # Flipped to True only by the HTTP-fallback respawn after a stall.

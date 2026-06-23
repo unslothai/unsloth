@@ -36,13 +36,13 @@ def _ensure_backend_on_path() -> None:
         sys.path.insert(0, _BACKEND_PATH)
 
 
-def _activate_transformers_version(model_name: str) -> None:
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     _ensure_backend_on_path()
 
     from utils.transformers_version import activate_transformers_for_subprocess
 
-    activate_transformers_for_subprocess(model_name)
+    activate_transformers_for_subprocess(model_name, hf_token)
 
 
 def _decode_image(image_base64: str):
@@ -160,6 +160,114 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
+def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
+    """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
+    non-SSM models, idempotent. Returns True on success; on a fatal mamba-ssm failure sends a
+    'loaded' failure response and returns False. Call BEFORE importing transformers, which
+    snapshots its optional-backend gates at import (a later install may not be picked up).
+    """
+    try:
+        from utils.ssm_runtime import ensure_ssm_runtime
+    except Exception as exc:
+        logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
+        return True
+
+    _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
+    try:
+        for ssm_target in dict.fromkeys(t for t in targets if t):
+            ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
+        return True
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "loaded",
+                "success": False,
+                "message": (
+                    f"This model needs SSM kernel libraries (causal-conv1d / "
+                    f"mamba-ssm) that could not be installed: {exc}"
+                ),
+                "error_kind": "ssm_runtime_install_failed",
+            },
+        )
+        return False
+
+
+def _run_security_gates(
+    targets: list,
+    *,
+    trust_remote_code: bool,
+    hf_token: str | None,
+    approved_fingerprint: str | None,
+    resp_queue: Any,
+    compute_subdirs: bool = True,
+    subject: str | None = None,
+) -> bool:
+    """Malware + (when trust_remote_code) remote-code consent gates over *targets*
+    (model + base). Sends the matching 'loaded' failure and returns False if blocked; True
+    when every target is clear.
+
+    ``compute_subdirs=False`` keeps the gate transformers-free (``security_load_subdirs``
+    imports ``model_config`` -> ``transformers``, which would snapshot optional-backend
+    availability before the SSM kernels are installed): used for the pre-import preflight,
+    where ``_handle_load`` re-runs the authoritative gate with full subdir scoping.
+    """
+    targets = list(dict.fromkeys(t for t in targets if t))
+
+    # A poisoned pickle deserializes during from_pretrained even with trust_remote_code
+    # False, so check HF's security scan every load (for a LoRA, the base deserializes).
+    from utils.security import evaluate_file_security
+
+    if compute_subdirs:
+        from utils.security import security_load_subdirs
+
+    for target in targets:
+        _subdirs = security_load_subdirs(target, hf_token) if compute_subdirs else ()
+        _fs = evaluate_file_security(target, hf_token = hf_token, load_subdirs = _subdirs)
+        if _fs.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": _fs.reason,
+                    "error_kind": "malware_blocked",
+                    "security": _fs.response_payload(),
+                },
+            )
+            return False
+
+    # Scan auto_map code before it runs; block CRITICAL/HIGH unless pinned-approved. Adapter
+    # and base are scanned as one unit, pinned by a single fingerprint.
+    if trust_remote_code:
+        from utils.security import evaluate_remote_code_consent_for_targets
+        _rc = evaluate_remote_code_consent_for_targets(
+            targets,
+            hf_token = hf_token,
+            trust_remote_code = True,
+            approved_fingerprint = approved_fingerprint,
+            subject = subject,
+        )
+        if _rc.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": (
+                        f"Model '{_rc.model_name}' ships custom code flagged as "
+                        f"{_rc.max_severity} by the security scan. Review "
+                        f"and approve it to proceed."
+                    ),
+                    "error_kind": "remote_code_blocked",
+                    "remote_code": _rc.response_payload(),
+                },
+            )
+            return False
+
+    return True
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -175,61 +283,32 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "Auto-enabled trust_remote_code for Nemotron model: %s", config["model_name"]
             )
 
-        # Malware gate: a poisoned pickle deserializes during from_pretrained even
-        # with trust_remote_code False, so check HF's security scan (metadata-only)
-        # every load. For a LoRA, gate the base whose weights deserialize.
-        from utils.security import evaluate_file_security, security_load_subdirs
-
-        malware_targets = [config["model_name"]]
+        # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
+        # the SSM install so a blocked model never triggers a native kernel build.
+        targets = [config["model_name"]]
         if mc.is_lora and getattr(mc, "base_model", None):
-            malware_targets.append(str(mc.base_model))
-        for target in dict.fromkeys(malware_targets):
-            _fs = evaluate_file_security(
-                target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
-            )
-            if _fs.blocked:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "loaded",
-                        "success": False,
-                        "message": _fs.reason,
-                        "error_kind": "malware_blocked",
-                        "security": _fs.response_payload(),
-                    },
-                )
-                return
+            targets.append(str(mc.base_model))
+        if not _run_security_gates(
+            targets,
+            trust_remote_code = trust_remote_code,
+            hf_token = hf_token,
+            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            resp_queue = resp_queue,
+            subject = config.get("subject"),
+        ):
+            return
 
-        # Consent gate: scan auto_map code before it runs; block CRITICAL/HIGH
-        # unless pinned-approved. For a LoRA, gate the base whose code runs.
-        if trust_remote_code:
-            from utils.security import evaluate_remote_code_consent_for_targets
+        # Install SSM/Mamba kernels: a no-op for the initial load (pre-installed before import)
+        # but still needed for a LoRA's base (resolved only now via mc) and in-process loads.
+        # Skip on MLX (no macOS wheel). Probe the base, not the adapter id / local path.
+        if getattr(backend, "device", None) != "mlx":
+            from utils.ssm_runtime import ssm_probe_identifier
 
-            consent_targets = [config["model_name"]]
-            if mc.is_lora and getattr(mc, "base_model", None):
-                consent_targets.append(str(mc.base_model))
-            # Scan adapter + base as one unit, pinned by a single fingerprint.
-            _rc = evaluate_remote_code_consent_for_targets(
-                consent_targets,
-                hf_token = hf_token,
-                trust_remote_code = True,
-                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            _ssm_base = (
+                str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
             )
-            if _rc.blocked:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "loaded",
-                        "success": False,
-                        "message": (
-                            f"Model '{_rc.model_name}' ships custom code flagged as "
-                            f"{_rc.max_severity} by the security scan. Review "
-                            f"and approve it to proceed."
-                        ),
-                        "error_kind": "remote_code_blocked",
-                        "remote_code": _rc.response_payload(),
-                    },
-                )
+            ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -594,7 +673,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
-            _activate_transformers_version(model_name)
+            _activate_transformers_version(model_name, config.get("hf_token") or None)
         except Exception as exc:
             logger.warning(
                 "Failed to activate transformers version for '%s' (MLX inference); "
@@ -678,9 +757,33 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 )
         return
 
-    # ── 1. Activate transformers version BEFORE any ML imports ──
+    # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
+    # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
+    # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
+    import json as _json
+
+    _ensure_backend_on_path()
+    from utils.transformers_version import _remote_lora_base, _resolve_base_model
+
+    _hf_token = _clean_token(config.get("hf_token"))
+    _lora_base = None
+    _local_adapter_cfg = Path(model_name) / "adapter_config.json"
+    if _local_adapter_cfg.is_file():
+        try:
+            _lora_base = (
+                _json.loads(_local_adapter_cfg.read_text()).get("base_model_name_or_path") or None
+            )
+        except Exception:
+            _lora_base = None
+    if not _lora_base:
+        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
+    # Base for tier activation + the SSM-kernel heuristic: the LoRA base if any, else a full
+    # fine-tune's recorded base from config.json (its name reveals the SSM/sidecar arch).
+    _base = _lora_base or _resolve_base_model(model_name)
+
+    # ── 1. Activate transformers version (on the resolved base) BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name)
+        _activate_transformers_version(_base, _hf_token)
     except Exception as exc:
         _send_response(
             resp_queue,
@@ -704,6 +807,36 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
+    # ── 1c. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
+    # transformers snapshots its optional-backend gates at import, so a hybrid model's kernels
+    # must be installed before the import below ("mamba-ssm is required" otherwise). The gates
+    # are metadata-only, so run them first and refuse a blocked model before any native build.
+    # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
+    # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
+    _gate_targets = [model_name]
+    if _lora_base:
+        _gate_targets.append(_lora_base)
+    _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
+        model_name, hf_token = _hf_token
+    )
+    if not _run_security_gates(
+        _gate_targets,
+        trust_remote_code = _trust_remote_code,
+        hf_token = _hf_token,
+        approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        resp_queue = resp_queue,
+        compute_subdirs = False,  # stay transformers-free until the SSM kernels are installed
+        subject = config.get("subject"),
+    ):
+        return
+    # Probe the resolved base for SSM kernels, not the adapter id / local checkpoint path
+    # (arbitrary names must not match the SSM substrings).
+    from utils.ssm_runtime import ssm_probe_identifier
+
+    _ssm_targets = [ssm_probe_identifier(model_name, _base)]
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
+        return
+
     # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
         _send_response(
@@ -715,6 +848,11 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         )
 
         _ensure_backend_on_path()
+
+        # Recover from any namespace-package shadow before importing Unsloth.
+        from core.import_guards import ensure_real_packages
+
+        ensure_real_packages("unsloth_zoo", "unsloth")
 
         from core.inference.inference import InferenceBackend
 
