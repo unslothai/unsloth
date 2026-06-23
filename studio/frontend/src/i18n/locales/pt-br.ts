@@ -105,6 +105,27 @@ export const ptBR = {
         "Usado para carregar modelos restritos e enviar artefatos.",
       hideToken: "Ocultar token",
       showToken: "Mostrar token",
+      password: "Senha",
+      passwordDescription: "Altere a senha desta conta do Studio.",
+      passwordDialog: {
+        trigger: "Alterar senha",
+        title: "Alterar senha",
+        description:
+          "Insira sua senha atual e escolha uma nova (no mínimo {minLength} caracteres).",
+        currentPassword: "Senha atual",
+        newPassword: "Nova senha",
+        confirmPassword: "Confirmar nova senha",
+        currentTooShort:
+          "A senha atual deve ter no mínimo {minLength} caracteres.",
+        newTooShort: "A nova senha deve ter no mínimo {minLength} caracteres.",
+        mismatch: "As senhas não coincidem.",
+        samePassword:
+          "A nova senha deve ser diferente da senha atual.",
+        update: "Atualizar senha",
+        updating: "Atualizando...",
+        updated: "Senha atualizada.",
+        updateFailed: "Falha ao atualizar a senha.",
+      },
       chatDefaults: "Padrões do chat",
       autoTitleNewChats: "Gerar título automático para novos chats",
       autoTitleNewChatsDescription:
@@ -789,6 +810,7 @@ export const ptBR = {
     progress: {
       title: "Progresso do Treinamento",
       liveMetrics: "Métricas de treino em tempo real",
+      exportGguf: "Exportar para GGUF",
       openConfig: "Abrir configuração de treino",
       configLabel: "Configuração de Treino",
       hyperparams: "Hiperparâmetros",
@@ -848,6 +870,7 @@ export const ptBR = {
       resumingTraining: "Retomando treinamento...",
       startingTraining: "iniciando treinamento...",
       dataset: "Dataset",
+      datasetStreaming: "Dataset: streaming (sem download completo)",
       modelWeights: "Pesos do modelo",
     },
     tour: {
