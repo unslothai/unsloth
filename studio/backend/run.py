@@ -924,6 +924,7 @@ def run_server(
     cloudflare: bool = True,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
+    emit_tauri_port: bool = True,
 ):
     """
     Start the FastAPI server.
@@ -937,6 +938,9 @@ def run_server(
         llama_parallel_slots: parallel slots for llama-server
         enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
             the default (tools on, per-request enable_tools honored)
+        emit_tauri_port: print the machine-readable TAURI_PORT line the desktop
+            app parses from stdout; the headless `run --api-only` path turns it
+            off so it does not pollute the documented URL/API-key banner
 
     Note:
         Signal handlers are NOT registered here so embedders (e.g. Colab) keep
@@ -1167,7 +1171,8 @@ def run_server(
     atexit.register(terminate_all)
 
     # Output port for Tauri (api-only), only after sockets bind and startup done.
-    if api_only:
+    # The headless `run --api-only` path opts out so it does not leak this line.
+    if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
 
     # Free trycloudflare.com tunnel for 0.0.0.0 binds (the raw ip:port is often

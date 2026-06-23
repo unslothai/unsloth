@@ -190,3 +190,21 @@ def test_run_server_exports_secure_env_for_cors():
     # profile can tell remote secure serving from local Tauri use.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert 'os.environ["UNSLOTH_SECURE"] = "1"' in src
+
+
+def test_run_server_emit_tauri_port_defaults_on():
+    # Default on keeps the desktop app's stdout contract; the headless
+    # `run --api-only` path opts out explicitly.
+    import inspect
+
+    import run
+
+    params = inspect.signature(run.run_server).parameters
+    assert "emit_tauri_port" in params
+    assert params["emit_tauri_port"].default is True
+
+
+def test_tauri_port_print_is_gated_in_source():
+    # The TAURI_PORT line must depend on emit_tauri_port, not api_only alone.
+    src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    assert "if api_only and emit_tauri_port:" in src

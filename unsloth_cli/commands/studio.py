@@ -1284,6 +1284,9 @@ def run(
         llama_parallel_slots = parallel,
         cloudflare = cloudflare,
         secure = secure,
+        # Headless serving prints its own URL/API-key banner; the Tauri-only
+        # TAURI_PORT line would corrupt that machine-parseable output.
+        emit_tauri_port = False,
     )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend

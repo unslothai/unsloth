@@ -283,21 +283,6 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     assert _value_after(argv, "--temp") == "0.7", argv
 
 
-def test_reexec_forwards_api_only(monkeypatch):
-    """`run --api-only` must reach the child; otherwise the headless server
-    silently serves the web UI."""
-    result, captured = _invoke_run(monkeypatch, _BASE + ["--secure", "--api-only"])
-    assert len(captured) == 1, result.output
-    assert "--api-only" in captured[0]["argv"], captured[0]["argv"]
-
-
-def test_reexec_omits_api_only_by_default(monkeypatch):
-    """No --api-only unless asked: default `run` still serves the UI."""
-    result, captured = _invoke_run(monkeypatch, _BASE)
-    assert len(captured) == 1, result.output
-    assert "--api-only" not in captured[0]["argv"], captured[0]["argv"]
-
-
 def test_context_length_banner_line_formats_ints():
     studio_mod = _load_run_command()
     assert studio_mod._format_context_length_line({"context_length": 4096}) == (
@@ -497,7 +482,14 @@ def test_api_only_option_is_registered():
     assert getattr(opt, "default", None) is False  # opt-in; plain run keeps the UI
 
 
-@pytest.mark.parametrize("extra,present", [(["--api-only"], True), ([], False)])
+@pytest.mark.parametrize(
+    "extra,present",
+    [
+        (["--api-only"], True),
+        (["--secure", "--api-only"], True),  # secure headless path
+        ([], False),
+    ],
+)
 def test_reexec_forwards_api_only(monkeypatch, extra, present):
     """`--api-only` (and only when typed) must reach the re-exec'd child."""
     result, captured = _invoke_run(monkeypatch, _BASE + extra)
@@ -550,3 +542,7 @@ def test_in_venv_path_passes_api_only_to_run_server(monkeypatch, extra, expected
     assert (
         captured.get("api_only") is expected
     ), f"run_server got api_only={captured.get('api_only')!r}, expected {expected}"
+    # Headless serving must suppress the Tauri-only TAURI_PORT line.
+    assert (
+        captured.get("emit_tauri_port") is False
+    ), f"run_server got emit_tauri_port={captured.get('emit_tauri_port')!r}, expected False"
