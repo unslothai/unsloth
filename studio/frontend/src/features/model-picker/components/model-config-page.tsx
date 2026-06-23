@@ -306,7 +306,7 @@ export function ModelConfigPage({ target, onBack, onRun }: ModelConfigPageProps)
             className="h-8 rounded-full"
             onClick={handleRun}
           >
-            Run model
+            Load model
           </Button>
         </div>
       </div>

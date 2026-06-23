@@ -1656,9 +1656,10 @@ export function ChatPage({
       // else -- cached picks, local/native files, LoRA, external -- loads now.
       const wantManagerDownload =
         isDownloadableHubRepo(selection) && !selection.isDownloaded;
+      const loadNow = selection.config != null || store.loadOnSelection;
       if (
         (!hasGgufSource(selection) && !wantManagerDownload) ||
-        (store.loadOnSelection && selection.isDownloaded)
+        (loadNow && selection.isDownloaded)
       ) {
         // Detach any staged pick first so its edited knobs (e.g. a custom
         // context length) don't leak into this immediate load -- resolveLoad
@@ -1750,7 +1751,7 @@ export function ChatPage({
         nativePathToken: selection.nativePathToken,
         isGguf: selection.isGguf,
         isHubRepo: wantManagerDownload || undefined,
-        autoLoad: store.loadOnSelection,
+        autoLoad: loadNow,
       });
       let stagedConfig = selection.config ?? null;
       if (!stagedConfig && hasGgufSource(selection)) {
