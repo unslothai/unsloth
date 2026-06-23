@@ -132,7 +132,7 @@ def scan_checkpoints(
                     valid_checkpoints.append(sub)
 
             intermediate_checkpoints = []
-            for sub in sorted(valid_checkpoints, key=_checkpoint_sort_key):
+            for sub in sorted(valid_checkpoints, key = _checkpoint_sort_key):
                 loss = _read_checkpoint_loss(sub)
                 intermediate_checkpoints.append((sub.name, str(sub), loss))
 
