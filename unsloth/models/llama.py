@@ -1500,6 +1500,13 @@ def CausalLM_fast_forward(fast_forward_inference):
                     use_mtp_loss = kwargs.get("use_mtp_loss", None),
                     train_mtp = kwargs.get("train_mtp", None),
                     packed_seq_lengths = kwargs.get("packed_seq_lengths", None),
+                    input_ids = input_ids,
+                    position_ids = position_ids,
+                    attention_mask = attention_mask,
+                    inputs_embeds = inputs_embeds,
+                    cache_position = kwargs.get("cache_position", None),
+                    position_embeddings = kwargs.get("position_embeddings", None),
+                    embed_tokens = getattr(getattr(self, "model", None), "embed_tokens", None),
                     **filter_mtp_kwargs(kwargs),
                 )
                 if mtp_loss is not None:
@@ -1567,6 +1574,13 @@ def CausalLM_fast_forward(fast_forward_inference):
                 use_mtp_loss = kwargs.get("use_mtp_loss", None),
                 train_mtp = kwargs.get("train_mtp", None),
                 packed_seq_lengths = kwargs.get("packed_seq_lengths", None),
+                input_ids = input_ids,
+                position_ids = position_ids,
+                attention_mask = attention_mask,
+                inputs_embeds = inputs_embeds,
+                cache_position = kwargs.get("cache_position", None),
+                position_embeddings = kwargs.get("position_embeddings", None),
+                embed_tokens = getattr(getattr(self, "model", None), "embed_tokens", None),
                 **filter_mtp_kwargs(kwargs),
             )
             if mtp_loss is not None:
