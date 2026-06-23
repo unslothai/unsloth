@@ -241,7 +241,8 @@ jobs:
       # non-zero binary exit is an Unsloth/Studio bug.
       - name: Studio prebuilt llama.cpp install + GGUF inference (Mac M1)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
           # install_llama_prebuilt.py hits the GitHub releases API to
           # resolve the asset URL. Anonymous calls share the runner-IP
           # rate-limit bucket and 403 quickly -- pass the workflow's
@@ -332,7 +333,8 @@ jobs:
       # train_metrics.json so we can detect regressions across CI runs.
       - name: MLX export round-trip — TRAIN + SAVE 3 formats
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           mkdir -p mlx_workdir
@@ -348,7 +350,8 @@ jobs:
       # the saved dir.
       - name: MLX export round-trip — RELOAD LoRA (fresh process)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           python tests/studio/run_real_mlx_smoke.py reload \
@@ -357,7 +360,8 @@ jobs:
 
       - name: MLX export round-trip — RELOAD merged_16bit (fresh process)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           python tests/studio/run_real_mlx_smoke.py reload \
@@ -372,7 +376,8 @@ jobs:
       # LoRA + merged_16bit assertions remain the gating signal.
       - name: MLX export round-trip — RELOAD GGUF via llama-cli (fresh process)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           if python -c "import json,sys; m=json.load(open('mlx_workdir/train_metrics.json')); sys.exit(0 if m.get('gguf_supported') else 1)"; then
             python tests/studio/run_real_mlx_smoke.py reload \

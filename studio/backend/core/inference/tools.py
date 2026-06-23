@@ -2545,14 +2545,24 @@ def _python_exec(
                         pass
     try:
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
-        with os.fdopen(fd, "w") as f:
+        # utf-8 so non-ASCII in model-written code survives the OS default codec
+        # (Windows cp1252 would otherwise raise UnicodeEncodeError).
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        if disable_sandbox:
+            # Match the sandboxed Python path without changing bypass shell I/O.
+            safe_env = dict(safe_env)
+            safe_env["PYTHONIOENCODING"] = "utf-8"
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING);
+            # replace so non-ASCII output never crashes the read on Windows.
+            encoding = "utf-8",
+            errors = "replace",
             cwd = workdir,
             env = safe_env,
         )

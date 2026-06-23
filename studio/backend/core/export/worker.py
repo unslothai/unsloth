@@ -159,7 +159,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
     t_err.start()
 
 
-def _activate_transformers_version(model_name: str) -> None:
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on sys.path for utils imports.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -168,7 +168,7 @@ def _activate_transformers_version(model_name: str) -> None:
 
     from utils.transformers_version import activate_transformers_for_subprocess
 
-    activate_transformers_for_subprocess(model_name)
+    activate_transformers_for_subprocess(model_name, hf_token)
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
@@ -261,6 +261,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             hf_token = cmd.get("hf_token"),
             trust_remote_code = True,
             approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
+            subject = cmd.get("subject"),
         )
         if _rc.blocked:
             _send_response(
@@ -459,7 +460,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
-        _activate_transformers_version(checkpoint_path)
+        _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
     except Exception as exc:
         _send_response(
             resp_queue,
@@ -505,6 +506,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         backend_path = str(Path(__file__).resolve().parent.parent.parent)
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
+
+        # Recover from any namespace-package shadow before importing Unsloth.
+        from core.import_guards import ensure_real_packages
+
+        ensure_real_packages("unsloth_zoo", "unsloth")
 
         from core.export.export import ExportBackend
 
