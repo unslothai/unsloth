@@ -448,7 +448,14 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
     fake_args.validate_extra_args = lambda args: list(args or [])
     fake_tensor_fallback = types.ModuleType("core.inference.tensor_fallback")
 
-    async def _passthrough(attempt_load, *, requested_tensor, extra_args, label = "", cancelled = None):
+    async def _passthrough(
+        attempt_load,
+        *,
+        requested_tensor,
+        extra_args,
+        label = "",
+        cancelled = None,
+    ):
         return await attempt_load(requested_tensor, extra_args)
 
     fake_tensor_fallback.load_with_tensor_fallback = _passthrough
@@ -547,7 +554,14 @@ def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
     fake_args.validate_extra_args = lambda args: list(args or [])
     fake_tensor_fallback = types.ModuleType("core.inference.tensor_fallback")
 
-    async def _fallback(attempt_load, *, requested_tensor, extra_args, label = "", cancelled = None):
+    async def _fallback(
+        attempt_load,
+        *,
+        requested_tensor,
+        extra_args,
+        label = "",
+        cancelled = None,
+    ):
         fallback_calls.append((requested_tensor, extra_args, label))
         ok = await attempt_load(requested_tensor, extra_args)
         if ok:

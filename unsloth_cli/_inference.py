@@ -225,7 +225,6 @@ def _llama_args_with_flash_attn(
 
 def _validate_llama_extra_args_or_exit(llama_extra_args: Optional[List[str]]) -> list[str]:
     from core.inference.llama_server_args import validate_extra_args
-
     try:
         return validate_extra_args(llama_extra_args)
     except ValueError as exc:
