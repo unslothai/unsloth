@@ -1411,6 +1411,7 @@ class FastBaseModel:
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
+        finetune_audio_layers = False,  # placed last to preserve existing positional argument order
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -1429,11 +1430,30 @@ class FastBaseModel:
         if isinstance(model, PeftModelForCausalLM):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
 
+        # Remember whether the CALLER explicitly opted into audio. "all-linear" turns
+        # the flag on implicitly below, but an old unsloth_zoo that cannot do audio
+        # must not make a plain all-linear (text/vision) run fail.
+        _audio_explicitly_requested = bool(finetune_audio_layers)
         if target_modules == "all-linear":
             finetune_vision_layers = True
             finetune_language_layers = True
             finetune_attention_modules = True
             finetune_mlp_modules = True
+            finetune_audio_layers = True
+        # Older unsloth_zoo (before get_peft_regex gained finetune_audio_layers) does
+        # not accept the kwarg. Pass it only when supported; if the caller EXPLICITLY
+        # asked for audio but it is unsupported, fail loudly rather than silently
+        # training a language-only adapter. (all-linear's implicit opt-in degrades
+        # gracefully instead of raising.)
+        if "finetune_audio_layers" in inspect.signature(get_peft_regex).parameters:
+            _audio_kwargs = {"finetune_audio_layers": finetune_audio_layers}
+        elif _audio_explicitly_requested:
+            raise RuntimeError(
+                "Unsloth: finetune_audio_layers=True requires a newer unsloth_zoo. "
+                "Please upgrade with `pip install --upgrade --no-deps unsloth_zoo`."
+            )
+        else:
+            _audio_kwargs = {}
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -1441,20 +1461,28 @@ class FastBaseModel:
                 finetune_language_layers = finetune_language_layers,
                 finetune_attention_modules = finetune_attention_modules,
                 finetune_mlp_modules = finetune_mlp_modules,
+                **_audio_kwargs,
             )
         else:
             assert type(target_modules) in (list, tuple, str)
-            if type(target_modules) in (list, tuple) and (
+            # Route an explicit list through get_peft_regex when the caller scoped a
+            # layer family (one of the finetune_* below is off) OR opted into audio (so
+            # the new audio/embedder branches are considered). finetune_audio_layers is
+            # a POSITIVE term here: using `not finetune_audio_layers` would -- since it
+            # defaults False -- force every explicit list through the filter.
+            _scoping = (
                 not finetune_vision_layers
                 or not finetune_language_layers
                 or not finetune_attention_modules
                 or not finetune_mlp_modules
-            ):
-                print(
-                    "Unsloth: Explicit target_modules are constrained by the "
-                    "finetune_(vision|language|attention|mlp) filters; adapters "
-                    "attach only where both select."
-                )
+            )
+            if type(target_modules) in (list, tuple) and (_scoping or finetune_audio_layers):
+                if _scoping:
+                    print(
+                        "Unsloth: Explicit target_modules are constrained by the "
+                        "finetune_(vision|language|attention|mlp) filters; adapters "
+                        "attach only where both select."
+                    )
                 target_modules = get_peft_regex(
                     model,
                     finetune_vision_layers = finetune_vision_layers,
@@ -1462,6 +1490,7 @@ class FastBaseModel:
                     finetune_attention_modules = finetune_attention_modules,
                     finetune_mlp_modules = finetune_mlp_modules,
                     target_modules = list(target_modules),
+                    **_audio_kwargs,
                 )
 
         if hasattr(model, "vllm_engine"):
