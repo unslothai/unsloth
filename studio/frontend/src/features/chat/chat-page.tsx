@@ -2506,7 +2506,6 @@ export function ChatPage({
                     onClick={() => setSettingsOpen(true)}
                     className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Open run settings"
-                    data-tour="chat-settings"
                   >
                     <HugeiconsIcon
                       icon={LayoutAlignRightIcon}
