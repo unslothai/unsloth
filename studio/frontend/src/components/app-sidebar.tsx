@@ -438,7 +438,7 @@ export function AppSidebar() {
     isStudioRoute,
   ]);
 
-  const chatDisabled = isTrainingRunning;
+  const chatDisabled = trainingInProgress;
   const showSidebarBrand = !usesCustomTitlebar;
   const showCompactMacBrand = showSidebarBrand && usesNativeMacTitlebar;
 
@@ -1083,7 +1083,12 @@ export function AppSidebar() {
       </SidebarHeader>
 
       {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pt-[9px] pb-px shrink-0">
+      <SidebarGroup
+        className={cn(
+          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pb-px shrink-0",
+          showCompactMacBrand ? "pt-0" : "pt-[9px]",
+        )}
+      >
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem

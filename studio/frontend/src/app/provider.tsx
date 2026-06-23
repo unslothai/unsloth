@@ -187,8 +187,8 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-mac-titlebar-height": "34px",
   "--studio-mac-traffic-light-inset": "78px",
   "--studio-content-top-inset": "0px",
-  "--studio-chat-header-height": "48px",
-  "--studio-chat-header-padding-top": "9px",
+  "--studio-chat-header-height": "44px",
+  "--studio-chat-header-padding-top": "4px",
   "--studio-chat-control-height": "33px",
   "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
