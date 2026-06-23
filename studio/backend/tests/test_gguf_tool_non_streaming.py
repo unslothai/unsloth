@@ -50,8 +50,8 @@ class _ToolGgufBackend:
         }
 
 
-def _client(monkeypatch):
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _ToolGgufBackend())
+def _client(monkeypatch, backend = None):
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend or _ToolGgufBackend())
     # Tools forced on -- the same effect as the CLI `run --model` tool policy.
     monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
 
@@ -111,25 +111,10 @@ class _EventsBackend(_ToolGgufBackend):
         yield from self._events
 
 
-def _client_with_events(monkeypatch, events):
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _EventsBackend(events))
-    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
-
-    async def _fake_select(payload, **_kwargs):
-        return [{"type": "function", "function": {"name": "python"}}]
-
-    monkeypatch.setattr(inference_route, "_select_request_tools", _fake_select)
-
-    app = FastAPI()
-    app.include_router(inference_route.router)
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    return TestClient(app)
-
-
 def test_non_streaming_missing_usage_defaults_to_zero(monkeypatch):
     # No metadata event at all: usage zero-defaults and finish_reason falls back.
     events = [{"type": "content", "text": "hi"}]
-    response = _client_with_events(monkeypatch, events).post(
+    response = _client(monkeypatch, _EventsBackend(events)).post(
         "/chat/completions", json = _payload(stream = False)
     )
 
@@ -147,7 +132,7 @@ def test_non_streaming_preserves_length_finish_reason(monkeypatch):
         {"type": "content", "text": "truncated"},
         {"type": "metadata", "usage": {"prompt_tokens": 3, "completion_tokens": 9}, "finish_reason": "length"},
     ]
-    response = _client_with_events(monkeypatch, events).post(
+    response = _client(monkeypatch, _EventsBackend(events)).post(
         "/chat/completions", json = _payload(stream = False)
     )
 
@@ -156,3 +141,26 @@ def test_non_streaming_preserves_length_finish_reason(monkeypatch):
     assert body["choices"][0]["finish_reason"] == "length"
     # total_tokens is derived when the server omits it.
     assert body["usage"]["total_tokens"] == 12
+
+
+def test_non_streaming_preserves_cached_tokens(monkeypatch):
+    # KV-cache hit details from the metadata event must survive into the body
+    # (the tool path used to drop them and always report cached_tokens=0).
+    events = [
+        {"type": "content", "text": "hi"},
+        {
+            "type": "metadata",
+            "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 4,
+                "prompt_tokens_details": {"cached_tokens": 16},
+            },
+            "finish_reason": "stop",
+        },
+    ]
+    response = _client(monkeypatch, _EventsBackend(events)).post(
+        "/chat/completions", json = _payload(stream = False)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["usage"]["prompt_tokens_details"]["cached_tokens"] == 16
