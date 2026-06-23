@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { isTauri } from "@/lib/api-base";
-import { openModelsDir } from "@/features/native-intents/api";
+import { openModelsDir } from "@/features/native-intents";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
@@ -39,6 +39,7 @@ import {
   loadUploadLimitSettings,
   updateUploadLimitSettings,
 } from "../api/upload-limit";
+import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -339,6 +340,17 @@ export function GeneralTab() {
             </button>
           </div>
         </SettingsRow>
+        {/* The desktop app authenticates via desktop auto-auth with a generated
+            secret, so there is no user-entered password to change here (and
+            changing it would clear the desktop secret). Web only. */}
+        {isTauri ? null : (
+          <SettingsRow
+            label={t("settings.general.password")}
+            description={t("settings.general.passwordDescription")}
+          >
+            <ChangePasswordDialog />
+          </SettingsRow>
+        )}
       </SettingsSection>
 
       {modelsFolder ? (

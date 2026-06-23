@@ -23,6 +23,10 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
+  DOWNLOAD_KIND,
+  downloadManager,
+} from "@/features/hub/download-manager";
+import {
   type NativeIntent,
   NativeModelChip,
   NativeModelDropOverlay,
@@ -1097,6 +1101,11 @@ export function ChatPage({
   const abandonStaged = useCallback(() => {
     useChatRuntimeStore.getState().abandonStagedModel();
   }, []);
+  // Detach a staged pick on navigation without cancelling its download: the
+  // transfer keeps running in the manager and lands in cache, like Hub.
+  const detachStaged = useCallback(() => {
+    useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
+  }, []);
   // Tracks whether the chat page is still mounted, so a staged-load failure that
   // resolves after the user left chat doesn't resurrect the abandoned pick.
   const mountedRef = useRef(true);
@@ -1630,8 +1639,8 @@ export function ChatPage({
     const prev = prevChatContextRef.current;
     prevChatContextRef.current = chatContextKey;
     if (prev === null || prev === chatContextKey) return;
-    abandonStaged();
-  }, [chatContextKey, abandonStaged]);
+    detachStaged();
+  }, [chatContextKey, detachStaged]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   // Load immediately, or — when "Load on selection" is off — stage the pick so
@@ -1649,10 +1658,11 @@ export function ChatPage({
         (!hasGgufSource(selection) && !wantManagerDownload) ||
         (store.loadOnSelection && selection.isDownloaded)
       ) {
-        // Abandon any staged pick first so its edited knobs (e.g. a custom
+        // Detach any staged pick first so its edited knobs (e.g. a custom
         // context length) don't leak into this immediate load -- resolveLoad
-        // reads customContextLength before checking the target is GGUF.
-        abandonStaged();
+        // reads customContextLength before checking the target is GGUF. Detach
+        // (not abandon) keeps its download running.
+        detachStaged();
         // Load-on-selection skips the sheet, so seed this GGUF pick's saved load
         // knobs (context, KV cache, speculative, …) the way the sheet's restore
         // effect would -- otherwise a remembered config is silently ignored.
@@ -1667,18 +1677,64 @@ export function ChatPage({
         );
         return;
       }
-      // Refuse staging while a load is in flight (it would be silently dropped);
-      // the immediate-load branch above is already guarded in selectModel.
+      // Loads can't queue behind each other, but a download is independent: if
+      // the pick needs downloading, start it in the manager so it runs alongside
+      // the load. Nothing to download (already on device) just waits.
       if (store.modelLoading) {
-        toast.info("Another model is already loading", {
-          description: "Wait for it to finish or cancel it first.",
-        });
+        // Both an uncached non-GGUF snapshot (wantManagerDownload) and an
+        // uncached remote GGUF quant download through the manager, so either can
+        // run in the background while another model loads. wantManagerDownload
+        // excludes GGUF by design, so the GGUF case is checked separately.
+        const wantBackgroundDownload =
+          wantManagerDownload ||
+          (selection.source === "hub" &&
+            hasGgufSource(selection) &&
+            !selection.isDownloaded);
+        // The model currently loading already downloads as part of its own load
+        // (the /load flow fetches before setting the checkpoint), so re-picking
+        // it must not kick off a second transfer against the same cache.
+        const isLoadingThisPick =
+          !!loadingModel &&
+          normalizeModelRef(loadingModel.id) ===
+            normalizeModelRef(selection.id) &&
+          (loadingModel.ggufVariant ?? null) === (selection.ggufVariant ?? null);
+        if (isLoadingThisPick) {
+          toast.info("This model is already loading", {
+            description: "It's downloading as part of the load in progress.",
+          });
+        } else if (wantBackgroundDownload) {
+          // Only claim the download started once a job is actually created. A
+          // transport conflict records state that is only resolvable from the
+          // Hub download card, so point the user there instead of showing a
+          // success toast for a transfer that never began; "busy" and "error"
+          // already surface their own toasts.
+          const outcome = await downloadManager.requestStart({
+            kind: DOWNLOAD_KIND.MODEL,
+            repoId: selection.id,
+            variant: selection.ggufVariant ?? null,
+            expectedBytes: selection.expectedBytes ?? 0,
+          });
+          if (outcome === "started") {
+            toast.info("Downloading in the background", {
+              description:
+                "It'll be ready to load once the current model finishes.",
+            });
+          } else if (outcome === "conflict") {
+            toast.info("Resume this download from the Hub", {
+              description:
+                "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
+            });
+          }
+        } else {
+          toast.info("Another model is already loading", {
+            description: "Wait for it to finish or cancel it first.",
+          });
+        }
         return;
       }
-      // Tear down any existing staged pick first so its in-flight download is
-      // cancelled, not left running after we rebind to the new pick. With the
-      // toggle on, autoLoad downloads silently then loads; off stages for the sheet.
-      abandonStaged();
+      // Detach the prior staged pick (keeping its download) before rebinding, so
+      // a second pick downloads alongside the first instead of cancelling it.
+      detachStaged();
       store.stageModel({
         id: selection.id,
         isLora: selection.isLora,
@@ -1691,7 +1747,7 @@ export function ChatPage({
         autoLoad: store.loadOnSelection,
       });
     },
-    [abandonStaged, selectModel],
+    [detachStaged, selectModel, loadingModel],
   );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
