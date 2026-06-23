@@ -46,6 +46,27 @@ def _device() -> str:
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
+_torchao_stub_done = False
+
+
+def _install_torchao_stub_once() -> None:
+    """Neutralize torchao before the first sentence-transformers import.
+
+    transformers.quantizers imports torchao, which loads torch's c10d
+    distributed backend at module level; the AMD Windows ROCm wheels omit it
+    (no RCCL), so the import aborts and silently drops the ST embedder to the
+    llama-server fallback. The training/export workers install this stub at
+    process start, but the embedder runs in the main backend process, which
+    otherwise never does. No-op off Windows ROCm. Runs once (under ``_lock``)."""
+    global _torchao_stub_done
+    if _torchao_stub_done:
+        return
+    _torchao_stub_done = True
+    from core._torchao_stub import install_torchao_windows_rocm_stub
+
+    install_torchao_windows_rocm_stub()
+
+
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16
     for a ~1.5x speedup at negligible accuracy loss."""
@@ -53,6 +74,7 @@ def _get(model_name: str | None = None):
     name = model_name or config.EMBEDDING_MODEL
     with _lock:
         if _model is None or _name != name:
+            _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
 
             device = _device()
