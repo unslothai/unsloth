@@ -283,6 +283,21 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     assert _value_after(argv, "--temp") == "0.7", argv
 
 
+def test_reexec_forwards_api_only(monkeypatch):
+    """`run --api-only` must reach the child; otherwise the headless server
+    silently serves the web UI."""
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--secure", "--api-only"])
+    assert len(captured) == 1, result.output
+    assert "--api-only" in captured[0]["argv"], captured[0]["argv"]
+
+
+def test_reexec_omits_api_only_by_default(monkeypatch):
+    """No --api-only unless asked: default `run` still serves the UI."""
+    result, captured = _invoke_run(monkeypatch, _BASE)
+    assert len(captured) == 1, result.output
+    assert "--api-only" not in captured[0]["argv"], captured[0]["argv"]
+
+
 def test_context_length_banner_line_formats_ints():
     studio_mod = _load_run_command()
     assert studio_mod._format_context_length_line({"context_length": 4096}) == (
@@ -358,6 +373,29 @@ def test_studio_default_rejects_parallel_when_subcommand_invoked():
     assert "--parallel" in combined, combined
     assert (
         "run --parallel 8" in combined
+    ), f"error message must show the corrected invocation; got: {combined}"
+
+
+def test_studio_default_rejects_api_only_when_subcommand_invoked():
+    """`unsloth studio --api-only run ...` would silently serve the UI (the
+    parent's --api-only never reaches run). The callback rejects with exit 2
+    and points at the subcommand flag."""
+    studio_mod = _load_run_command()
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["studio", "--api-only", "run", "--model", "X"])
+    assert result.exit_code == 2, (
+        f"expected exit 2 when --api-only is on studio group with a "
+        f"subcommand invoked; got {result.exit_code}; output={result.output!r}"
+    )
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--api-only" in combined, combined
+    assert (
+        "run --api-only" in combined
     ), f"error message must show the corrected invocation; got: {combined}"
 
 

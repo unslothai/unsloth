@@ -979,9 +979,13 @@ def run_server(
     if _session_log is not None and not silent:
         print(f"Session log: {_session_log}")
 
-    # Set env var BEFORE importing main so CORS middleware picks it up.
+    # Set env vars BEFORE importing main so CORS middleware picks them up.
+    # secure api-only is a remote server behind Cloudflare, so it keeps the
+    # any-origin CORS profile; plain api-only stays locked to the Tauri app.
     if api_only:
         os.environ["UNSLOTH_API_ONLY"] = "1"
+    if secure:
+        os.environ["UNSLOTH_SECURE"] = "1"
 
     import nest_asyncio
 

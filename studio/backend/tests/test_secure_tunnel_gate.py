@@ -165,3 +165,29 @@ def test_failclosed_message_present_in_source():
         "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
         in src
     )
+
+
+@pytest.mark.parametrize(
+    "api_only,secure,expected",
+    [
+        (False, False, ["*"]),       # plain server: any origin
+        (False, True, ["*"]),        # secure UI server: any origin
+        (True, True, ["*"]),         # secure api-only: remote browsers need any origin
+        (True, False, "tauri"),      # local api-only: locked to the Tauri app
+    ],
+)
+def test_cors_origins_for_mode(api_only, secure, expected):
+    from utils.host_policy import cors_origins_for_mode
+
+    origins = cors_origins_for_mode(api_only = api_only, secure = secure)
+    if expected == "tauri":
+        assert origins != ["*"] and any(o.startswith("tauri://") for o in origins)
+    else:
+        assert origins == expected
+
+
+def test_run_server_exports_secure_env_for_cors():
+    # run_server must export UNSLOTH_SECURE before importing main so the CORS
+    # profile can tell remote secure serving from local Tauri use.
+    src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    assert 'os.environ["UNSLOTH_SECURE"] = "1"' in src

@@ -776,6 +776,16 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
+        # Same for --api-only: dropping it here would silently serve the UI.
+        if api_only:
+            typer.echo(
+                f"Error: --api-only on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} --api-only ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
         return
 
     # --secure requires the tunnel; force a loopback bind.
