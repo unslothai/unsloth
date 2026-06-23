@@ -2249,16 +2249,29 @@ def _auto_switch_lock() -> asyncio.Lock:
         return lock
 
 
-def _auto_switch_target_loaded(backend, target_id: str, variant: Optional[str]) -> bool:
-    """True when the live backend already serves target_id (and variant, if given)."""
-    loaded = backend.model_identifier if backend.is_loaded else None
-    if not loaded or loaded.lower() != target_id.lower():
-        return False
-    if variant:
-        # Mirror /load dedup: a different quant of the same repo is not "loaded".
-        loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
-        return loaded_variant == variant.lower()
-    return True
+# Counts in-flight auto-switch requests per (target, variant). The busy guard
+# subtracts same-target waiters so concurrent requests for one model load once
+# instead of each 409-ing the other.
+_auto_switch_waiters: dict[tuple[str, str], int] = {}
+_auto_switch_waiters_guard = threading.Lock()
+
+
+def _switch_key(override_id: str, variant: Optional[str]) -> tuple[str, str]:
+    return (override_id.lower(), (variant or "").lower())
+
+
+def _note_switch_waiter(key: tuple[str, str], delta: int) -> None:
+    with _auto_switch_waiters_guard:
+        n = _auto_switch_waiters.get(key, 0) + delta
+        if n > 0:
+            _auto_switch_waiters[key] = n
+        else:
+            _auto_switch_waiters.pop(key, None)
+
+
+def _same_target_waiters(key: tuple[str, str]) -> int:
+    with _auto_switch_waiters_guard:
+        return _auto_switch_waiters.get(key, 0)
 
 
 async def _maybe_auto_switch_model(
@@ -2277,7 +2290,7 @@ async def _maybe_auto_switch_model(
     from core.inference.local_model_resolver import resolve_local_gguf
     from core.inference.llama_keepwarm import (
         get_last_unloaded_model,
-        has_other_inference_request,
+        other_inference_request_count,
         inference_lifecycle_gate,
     )
 
@@ -2293,16 +2306,21 @@ async def _maybe_auto_switch_model(
     # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
     resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
     if resolved is None:
-        # Idle-unload may have freed the model; reload exactly what it freed (id +
-        # quant) so an alias/unknown name stays servable instead of 503-ing.
+        # Idle-unload may have freed the model; reload exactly what it freed
+        # (path + quant + advertised id) so an alias/unknown name stays servable
+        # and keeps the override keyed by the advertised id, not the load path.
         last = get_last_unloaded_model()
         if not last or get_llama_cpp_backend().is_loaded:
             return
-        target_id, variant = last
-        override_id = target_id
+        if len(last) == 3:
+            target_id, variant, override_id = last
+        else:  # pre-3-tuple stash: fall back to the path as the override key
+            target_id, variant = last
+            override_id = target_id
     else:
         # load_path is a concrete local path (never the bare repo id), so /load
-        # takes the local branch and cannot trigger a download.
+        # takes the local branch and cannot trigger a download. override_id is the
+        # advertised repo id, used as the launch-override key and the public model id.
         target_id, variant, override_id = resolved
     backend = get_llama_cpp_backend()
     # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
@@ -2310,47 +2328,73 @@ async def _maybe_auto_switch_model(
     bare = ":" not in requested_model
 
     def _already_serving() -> bool:
+        # Match against both the concrete load path and the advertised repo id, so
+        # a model loaded manually by repo id (identifier = repo id) and one loaded
+        # by auto-switch (identifier = path, advertised = repo id) both count as
+        # already serving the request rather than triggering a needless reswap.
+        if not backend.is_loaded or not backend.model_identifier:
+            return False
+        loaded_keys = {backend.model_identifier.lower()}
+        advertised = getattr(backend, "_openai_advertised_id", None)
+        if advertised:
+            loaded_keys.add(advertised.lower())
+        if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
+            return False
         if bare:
-            loaded = backend.model_identifier if backend.is_loaded else None
-            return bool(loaded) and loaded.lower() == target_id.lower()
-        return _auto_switch_target_loaded(backend, target_id, variant)
+            return True
+        if variant:
+            loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
+            return loaded_variant == variant.lower()
+        return True
 
     if _already_serving():
         return
-    async with _auto_switch_lock():
-        # Hold the keep-warm gate across the swap so no new inference can start on
-        # the model while it is being torn down and replaced.
-        async with inference_lifecycle_gate():
-            if _already_serving():
-                return
-            # Single slot: refuse to swap while another inference request is active
-            # rather than killing its response mid-flight (the caller is excluded).
-            # The client retries once that request finishes; concurrent same-model
-            # requests never reach here. See model_switch_busy in the PR notes for
-            # the residual concurrent/external-provider edge.
-            if backend.is_loaded and has_other_inference_request(current_request_counted = True):
-                raise HTTPException(
-                    status_code = 409,
-                    detail = openai_error_body(
-                        "Cannot switch models while another inference request is in progress.",
-                        status = 409,
-                        code = "model_switch_busy",
-                        param = "model",
-                    ),
+    key = _switch_key(override_id, variant)
+    _note_switch_waiter(key, 1)
+    try:
+        async with _auto_switch_lock():
+            # Hold the keep-warm gate across the swap so no new inference can start
+            # on the model while it is being torn down and replaced.
+            async with inference_lifecycle_gate():
+                if _already_serving():
+                    return
+                # Single slot: refuse a cross-model swap while another inference
+                # request is active rather than killing its response. Requests
+                # heading to this same target are excluded, so concurrent requests
+                # for one model load once instead of each 409-ing the other.
+                same_target_others = max(0, _same_target_waiters(key) - 1)
+                others = other_inference_request_count(current_request_counted = True)
+                if backend.is_loaded and others > same_target_others:
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = openai_error_body(
+                            "Cannot switch models while another inference request is in progress.",
+                            status = 409,
+                            code = "model_switch_busy",
+                            param = "model",
+                        ),
+                    )
+                # Apply this model's saved launch flags so the swap honors the user's config.
+                override = get_model_override(override_id)
+                load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                if override.get("llama_extra_args") is not None:
+                    load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+                if override.get("max_seq_length") is not None:
+                    load_kwargs["max_seq_length"] = override["max_seq_length"]
+                # Reuse the load impl so its dedup, tensor fallback, and threading
+                # apply. Call the impl directly: we already hold the lifecycle gate
+                # the /load route would otherwise take, so going through the route
+                # would self-deadlock.
+                await _load_model_impl(
+                    LoadRequest(**load_kwargs),
+                    fastapi_request,
+                    current_subject,
                 )
-            # Apply this model's saved launch flags so the swap honors the user's config.
-            override = get_model_override(override_id)
-            load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-            if override.get("llama_extra_args") is not None:
-                load_kwargs["llama_extra_args"] = override["llama_extra_args"]
-            if override.get("max_seq_length") is not None:
-                load_kwargs["max_seq_length"] = override["max_seq_length"]
-            # Reuse the load route so its dedup, tensor fallback, and threading apply.
-            await load_model(
-                LoadRequest(**load_kwargs),
-                fastapi_request,
-                current_subject = current_subject,
-            )
+                # Advertise the repo id (not the concrete load path) as the loaded
+                # model's public id and override key for /v1/models and idle stash.
+                get_llama_cpp_backend()._openai_advertised_id = override_id
+    finally:
+        _note_switch_waiter(key, -1)
 
 
 async def _auto_switch_from_request_body(request: Request, current_subject: str):
@@ -2610,6 +2654,20 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    # Hold the lifecycle gate across the load so idle auto-unload can't unload the
+    # model mid-load. Auto-switch calls _load_model_impl directly since it already
+    # holds this gate.
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+
+    async with inference_lifecycle_gate():
+        return await _load_model_impl(request, fastapi_request, current_subject)
+
+
+async def _load_model_impl(
+    request: LoadRequest,
+    fastapi_request: Request,
+    current_subject: str,
+):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     native_grant_backed = False
@@ -2990,6 +3048,9 @@ async def load_model(
             from core.inference.llama_keepwarm import note_model_loaded
 
             note_model_loaded()
+            # A plain load advertises its own identifier; auto-switch overwrites
+            # this with the repo id right after _load_model_impl returns.
+            llama_backend._openai_advertised_id = None
 
             # Audio detection moved into load_model under _serial_load_lock (#5642).
             _gguf_audio = llama_backend._audio_type
@@ -6430,8 +6491,12 @@ def _openai_model_objects() -> list[dict]:
     # Check GGUF backend
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded:
+        # Advertise the repo id an auto-switch load recorded, not the concrete
+        # on-disk load path, so /v1/models never leaks a host path or lists a
+        # model twice (path plus repo id).
         entry = {
-            "id": llama_backend.model_identifier,
+            "id": getattr(llama_backend, "_openai_advertised_id", None)
+            or llama_backend.model_identifier,
             "object": "model",
             "created": _created,
             "owned_by": "local",
@@ -8340,6 +8405,18 @@ async def anthropic_messages(
     JSON).
     """
     llama_backend = get_llama_cpp_backend()
+
+    # Default-off parity: with auto-switch disabled and nothing loaded, 503 before
+    # any request-shape check, exactly as the pre-feature endpoint did. When the
+    # feature is on, fall through so validation runs before a possible load.
+    if not llama_backend.is_loaded:
+        from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+        if not get_openai_auto_switch_enabled():
+            raise HTTPException(
+                status_code = 503,
+                detail = "No GGUF model loaded. Load a GGUF model first.",
+            )
 
     # max_tokens is a required field on the Anthropic Messages API; real Anthropic
     # returns a 400 invalid_request_error when it is omitted. Validate before

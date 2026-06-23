@@ -22,10 +22,12 @@ class _FakeBackend:
         self,
         loaded_id = None,
         hf_variant = None,
+        advertised_id = None,
     ):
         self.model_identifier = loaded_id
         self.is_loaded = loaded_id is not None
         self.hf_variant = hf_variant
+        self._openai_advertised_id = advertised_id
 
 
 class _LoadRecorder:
@@ -52,6 +54,9 @@ class _LoadRecorder:
             raise HTTPException(status_code = 503, detail = "load failed")
         self.backend.model_identifier = request.model_path
         self.backend.is_loaded = True
+        # Mirror _load_model_impl: a load advertises its own id until the
+        # auto-switch caller overwrites it with the repo id.
+        self.backend._openai_advertised_id = None
         return None
 
 
@@ -59,7 +64,10 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m: resolves_to)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(inference_route, "load_model", recorder)
+    # Auto-switch loads via _load_model_impl (the /load route holds the lifecycle
+    # gate that auto-switch already owns, so it calls the impl directly).
+    monkeypatch.setattr(inference_route, "_load_model_impl", recorder)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
 
 
 def _run_hook(model = "some/model"):
@@ -1106,3 +1114,172 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
     assert "snapshots" in entry.load_path  # loads from the concrete snapshot dir
     assert entry.load_path != "org/Repo"  # never the bare repo id
     assert entry.variants  # quant detected on disk
+
+
+# ── review round 5: concurrent-swap, repo-id identity, /v1/models id, gate, 503 ──
+
+
+def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):
+    # A model loaded normally has model_identifier == repo id, but the resolver
+    # returns the concrete load path. A request for that repo must count as already
+    # serving (no reload, no 409) even with another inference active.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("org/Repo-GGUF", hf_variant = "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/cache/models--org--Repo-GGUF/snapshots/abc", "Q4_K_M", "org/Repo-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(kw, "_inflight", 2)
+    monkeypatch.setattr(kw, "_pending", 0)
+    _run_hook("org/Repo-GGUF:Q4_K_M")  # exact quant
+    _run_hook("org/Repo-GGUF")  # bare id
+    assert rec.calls == []
+
+
+def test_auto_switch_advertises_repo_id_after_load(monkeypatch):
+    # After a load-by-path, the backend advertises the repo id (override key), not
+    # the concrete path, so /v1/models and the idle stash stay name-based.
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B-snapshot", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook("org/B-GGUF:Q8_0")
+    assert rec.calls[0].model_path == "/p/B-snapshot"  # loaded by concrete path
+    assert backend._openai_advertised_id == "org/B-GGUF"  # advertised by repo id
+
+
+def test_concurrent_same_target_requests_load_once(monkeypatch):
+    # Two concurrent requests for the same unloaded model must load once, not each
+    # 409 the other. Simulate the second request already waiting (registered) while
+    # the first runs the hook with _inflight counting both.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(kw, "_inflight", 2)  # both same-target requests counted
+    monkeypatch.setattr(kw, "_pending", 0)
+    inference_route._note_switch_waiter(inference_route._switch_key("org/B-GGUF", "Q8_0"), 1)
+    _run_hook("org/B-GGUF:Q8_0")
+    assert len(rec.calls) == 1  # loads once, no 409
+
+
+def test_swap_still_refused_when_other_request_targets_different_model(monkeypatch):
+    # A concurrent request heading to a different target still blocks the swap: the
+    # same-target exclusion must not swallow a genuinely conflicting request.
+    from fastapi import HTTPException
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(kw, "_inflight", 2)
+    monkeypatch.setattr(kw, "_pending", 0)
+    inference_route._note_switch_waiter(inference_route._switch_key("org/C-GGUF", "Q4_K_M"), 1)
+    with pytest.raises(HTTPException) as exc:
+        _run_hook("org/B-GGUF:Q8_0")
+    assert exc.value.status_code == 409
+    assert rec.calls == []
+
+
+def test_v1_models_advertises_repo_id_not_load_path(monkeypatch):
+    # /v1/models must report the advertised repo id, never the host load path.
+    from types import SimpleNamespace
+
+    llama = _FakeBackend("/cache/models--org--Repo/snapshots/abc")
+    llama._openai_advertised_id = "org/Repo-GGUF"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(
+        inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+    )
+    objects = inference_route._openai_model_objects()
+    assert [o["id"] for o in objects] == ["org/Repo-GGUF"]
+
+
+def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
+    # The idle stash carries (load_path, quant, advertised_id). An alias reload must
+    # look up the override by the advertised repo id, not the concrete load path,
+    # so the user's saved launch flags survive the unload/reload.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)  # idle-unload emptied the slot
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(
+        kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
+    overrides = {"org/A-GGUF": {"max_seq_length": 8192}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: overrides.get(mid, {}))
+    _run_hook("gpt-4o-mini")
+    assert rec.calls[0].model_path == "/cache/snap/A"  # reloads the freed path
+    assert rec.calls[0].gguf_variant == "Q4_K_M"
+    assert rec.calls[0].max_seq_length == 8192  # override keyed by repo id, not path
+
+
+def test_load_route_holds_lifecycle_gate(monkeypatch):
+    # Lock the manual /load gate against silent revert: the route must wrap the
+    # load in inference_lifecycle_gate so idle-unload can't fire mid-load.
+    import inspect
+
+    src = inspect.getsource(inference_route.load_model)
+    assert "inference_lifecycle_gate" in src
+    assert "_load_model_impl" in src
+
+
+def _anthropic_payload(max_tokens = None):
+    from models.inference import AnthropicMessagesRequest, AnthropicMessage
+
+    return AnthropicMessagesRequest(
+        model = "claude-x",
+        max_tokens = max_tokens,
+        messages = [AnthropicMessage(role = "user", content = "hi")],
+    )
+
+
+def test_anthropic_503_when_unloaded_and_auto_switch_off(monkeypatch):
+    # Default-off parity: unloaded backend + auto-switch off 503s before the
+    # max_tokens 400, exactly as the pre-feature endpoint did.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(_anthropic_payload(), object(), "tester"))
+    assert exc.value.status_code == 503
+
+
+def test_anthropic_400_when_auto_switch_on_and_max_tokens_missing(monkeypatch):
+    # With auto-switch on, request-shape validation runs first: a missing
+    # max_tokens still 400s before any load is attempted.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(_anthropic_payload(), object(), "tester"))
+    assert exc.value.status_code == 400

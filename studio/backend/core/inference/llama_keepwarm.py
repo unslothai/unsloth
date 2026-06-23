@@ -104,17 +104,19 @@ def _note_activity() -> None:
         _last_active = time.monotonic()
 
 
-def has_other_inference_request(current_request_counted: bool = True) -> bool:
-    """True if switching/unloading the model now would interrupt another request.
+def other_inference_request_count(current_request_counted: bool = True) -> int:
+    """Tracked inference requests other than the current route call.
 
-    OpenAI-compatible requests are counted by the middleware before route code
-    runs, so the caller (which is one such request) is excluded by default.
+    The middleware counts OpenAI-compatible requests before route code runs, so
+    the caller is excluded by default. Pending waiters (blocked on the gate)
+    count too: a swap can't assume they're safe since one may want the loaded
+    model. The auto-switch guard subtracts requests known to want the same target.
     """
     with _lock:
         active = _inflight
         if current_request_counted and active > 0:
             active -= 1
-        return active > 0 or _pending > 0
+        return max(0, active) + _pending
 
 
 def inference_lifecycle_gate() -> asyncio.Lock:
@@ -192,7 +194,11 @@ class LlamaKeepWarmMiddleware:
 def _loaded_identity(backend):
     if not backend.is_loaded or not backend.model_identifier:
         return None
-    return (backend.model_identifier, getattr(backend, "hf_variant", None))
+    # Third slot is the advertised id (repo id) an auto-switch load sets on the
+    # backend; it's the override key, so an idle stash keyed by the concrete load
+    # path doesn't drop the user's saved launch flags on the alias reload.
+    advertised = getattr(backend, "_openai_advertised_id", None) or backend.model_identifier
+    return (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
 
 
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
