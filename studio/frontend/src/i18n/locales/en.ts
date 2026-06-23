@@ -160,8 +160,7 @@ export const en = {
       storage: {
         sectionTitle: "Storage",
         modelsFolder: "Models folder",
-        modelsFolderDescription:
-          "Where downloaded models are stored.",
+        modelsFolderDescription: "Where downloaded models are stored.",
         openAction: "Open",
         copyAction: "Copy path",
         copied: "Path copied",
@@ -337,8 +336,7 @@ export const en = {
       copied: "Copied",
       setupDocs: "Setup docs:",
       codingAgents: "Coding agents",
-      codingAgentsHint:
-        "Launch a coding agent against this server, it uses the loaded model and mints an API key automatically.",
+      codingAgentsHint: "Launch a coding agent against this server. It uses the loaded model and mints an API key automatically.",
       codingAgentsSwap: "Swap claude for codex, openclaw, opencode, or hermes.",
       relativeNever: "never",
       relativeJustNow: "just now",
