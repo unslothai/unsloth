@@ -812,11 +812,17 @@ class FastBaseModel:
         user_quantization_config = kwargs.get("quantization_config", None)
 
         # Check if model already has a non-bitsandbytes quantization config (e.g. compressed-tensors/NVFP4)
-        from .loader_utils import check_and_disable_bitsandbytes_loading
+        from .loader_utils import (
+            check_and_disable_bitsandbytes_loading,
+            sync_unsloth_model_name_bnb_flags,
+        )
 
         load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
         )
+        # Correct UNSLOTH_MODEL_NAME's bnb tokens now that the effective bnb state is known
+        # (the per-load env was built before remap/disable). gpt-oss only; no-op otherwise.
+        sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
@@ -1380,6 +1386,9 @@ class FastBaseModel:
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            # Full finetuning still compiles, so a stray pre-train forward can poison the
+            # cache; install the detector here too (it is idempotent).
+            _unsloth_install_pretrain_detector(model)
             return model
         transformers_set_seed(random_state)
 
@@ -1577,6 +1586,9 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        # Detect a stray pre-train forward so train() can drop the torch.compile
+        # graph cache it would otherwise poison (see prepare_for_training_mode).
+        _unsloth_install_pretrain_detector(model)
         return model
 
     @staticmethod
