@@ -10,7 +10,11 @@ from loggers import get_logger
 from pathlib import Path
 from typing import List, Optional, Tuple
 from storage.studio_db import get_connection
-from utils.training_runs import build_default_output_dir_name, extract_project_name
+from utils.training_runs import (
+    build_default_output_dir_name,
+    extract_project_name,
+    model_segment_from_default_output_dir_name,
+)
 from utils.paths import outputs_root, resolve_output_dir
 
 logger = get_logger(__name__)
@@ -198,9 +202,8 @@ def scan_checkpoints(
                 metadata["base_model"] = _infer_base_model_from_history(item)
 
             if not metadata.get("base_model"):
-                parts = item.name.rsplit("_", 1)
-                if len(parts) == 2 and parts[1].isdigit():
-                    name_part = parts[0]
+                name_part = model_segment_from_default_output_dir_name(item.name)
+                if name_part:
                     idx = name_part.find("_")
                     if idx > 0:
                         metadata["base_model"] = name_part[:idx] + "/" + name_part[idx + 1 :]

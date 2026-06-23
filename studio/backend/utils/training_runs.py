@@ -10,6 +10,14 @@ import time
 from typing import Any, Optional
 
 _INVALID_SEGMENT_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+_MAX_RUN_DIR_NAME_CHARS = 255
+_PROJECT_MARKER = "__project-"
+
+
+def _trim_segment(segment: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    return segment[:max_chars].strip("._-")
 
 
 def normalize_project_name(project_name: Any) -> Optional[str]:
@@ -41,12 +49,33 @@ def build_default_output_dir_name(
     """Build the default training output folder name."""
     from utils.paths import default_run_dir_name
 
-    run_parts = [default_run_dir_name(model_name)]
+    timestamp_part = str(int(time.time() if timestamp is None else timestamp))
+    model_segment = default_run_dir_name(model_name)
     project_slug = slugify_project_name(project_name)
-    if project_slug:
-        run_parts.append(project_slug)
-    run_parts.append(str(int(time.time() if timestamp is None else timestamp)))
-    return "_".join(run_parts)
+    if not project_slug:
+        return f"{model_segment}_{timestamp_part}"
+
+    timestamp_suffix = f"_{timestamp_part}"
+    max_project_chars = (
+        _MAX_RUN_DIR_NAME_CHARS
+        - len("model")
+        - len(_PROJECT_MARKER)
+        - len(timestamp_suffix)
+    )
+    project_slug = _trim_segment(project_slug, max_project_chars) or "project"
+    project_suffix = f"{_PROJECT_MARKER}{project_slug}{timestamp_suffix}"
+    max_model_chars = _MAX_RUN_DIR_NAME_CHARS - len(project_suffix)
+    model_segment = _trim_segment(model_segment, max_model_chars) or "model"
+    return f"{model_segment}{project_suffix}"
+
+
+def model_segment_from_default_output_dir_name(output_dir_name: str) -> Optional[str]:
+    """Return the encoded model segment from a default run folder name."""
+    parts = str(output_dir_name or "").rsplit("_", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        return None
+    model_segment = parts[0].rsplit(_PROJECT_MARKER, 1)[0]
+    return model_segment or None
 
 
 def extract_project_name(config: Any) -> Optional[str]:

@@ -6,6 +6,7 @@ import json
 from storage.studio_db import _extract_project_name_from_config_json
 from utils.training_runs import (
     build_default_output_dir_name,
+    model_segment_from_default_output_dir_name,
     normalize_project_name,
     slugify_project_name,
 )
@@ -36,7 +37,21 @@ def test_build_default_output_dir_name_appends_project_slug():
         timestamp = 1771227800,
     )
 
-    assert output_dir == "unsloth_Llama-3.2-3B-Instruct_customer-support_1771227800"
+    assert (
+        output_dir
+        == "unsloth_Llama-3.2-3B-Instruct__project-customer-support_1771227800"
+    )
+
+
+def test_build_default_output_dir_name_caps_final_component(tmp_path):
+    output_dir = build_default_output_dir_name(
+        "a" * 240,
+        "b" * 80,
+        timestamp = 1771227800,
+    )
+
+    assert len(output_dir.encode()) <= 255
+    (tmp_path / output_dir).mkdir()
 
 
 def test_build_default_output_dir_name_skips_invalid_project_slug():
@@ -47,6 +62,15 @@ def test_build_default_output_dir_name_skips_invalid_project_slug():
     )
 
     assert output_dir == "unsloth_Llama-3.2-3B-Instruct_1771227800"
+
+
+def test_model_segment_from_default_output_dir_name_strips_project_slug():
+    assert (
+        model_segment_from_default_output_dir_name(
+            "unsloth_Llama-3.2-3B-Instruct__project-customer-support_1771227800"
+        )
+        == "unsloth_Llama-3.2-3B-Instruct"
+    )
 
 
 def test_extract_project_name_from_config_json_returns_normalized_name():
