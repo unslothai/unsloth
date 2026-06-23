@@ -2114,7 +2114,11 @@ async def _maybe_auto_switch_model(
 
     # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
     # absent so it falls through instead of raising in the membership checks below.
-    if not isinstance(requested_model, str) or not requested_model or not get_openai_auto_switch_enabled():
+    if (
+        not isinstance(requested_model, str)
+        or not requested_model
+        or not get_openai_auto_switch_enabled()
+    ):
         return
 
     # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.

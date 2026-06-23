@@ -79,16 +79,17 @@ export function ModelAutoSwitchSection() {
   };
 
   // Idle-unload is tied to auto-switch (the freed model reloads via the swap).
-  // Off sends 0 but keeps the drafted seconds visible; on commits the drafted
-  // value, falling back to the last saved one so it can never get stuck.
+  // Toggling off preserves the saved seconds rather than zeroing them — the
+  // backend gates unloading on the enabled flag, so it never unloads while off.
+  // Enabling commits the drafted value, falling back to the last saved one so
+  // it can never get stuck.
   const handleToggle = (enabled: boolean) => {
+    const savedIdleSeconds = settings?.autoUnloadIdleSeconds ?? 0;
     if (!enabled) {
-      void persist(false, 0, false);
+      void persist(false, savedIdleSeconds, false);
       return;
     }
-    const idleSeconds =
-      parseIdleSeconds() ?? settings?.autoUnloadIdleSeconds ?? 0;
-    void persist(true, idleSeconds);
+    void persist(true, parseIdleSeconds() ?? savedIdleSeconds);
   };
 
   const handleSaveIdle = () => {
