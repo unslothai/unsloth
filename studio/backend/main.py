@@ -860,9 +860,9 @@ app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["h
 app.include_router(phone_router, prefix = "/api/phone", tags = ["phone"])
 
 
-# Phone dashboard page; registered before the SPA catch-all so /m/<token> wins.
-@app.get("/m/{token}")
-async def serve_phone_dashboard(token: str):
+# Phone dashboard; before the SPA catch-all so /m wins. Token rides in the URL fragment.
+@app.get("/m")
+async def serve_phone_dashboard():
     import secrets
 
     page = Path(__file__).parent / "assets" / "phone" / "index.html"

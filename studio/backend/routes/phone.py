@@ -3,10 +3,11 @@
 
 """Read-only "watch training on your phone" routes for the QR dashboard."""
 
+import os
 import socket
-from typing import Tuple
+from typing import Optional, Tuple
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from loggers import get_logger
@@ -29,15 +30,41 @@ class PhoneShareResponse(BaseModel):
     expires_at: str
 
 
-def _lan_ip() -> str:
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _lan_ip() -> Optional[str]:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.connect(("8.8.8.8", 80))
         return sock.getsockname()[0]
     except Exception:
-        return "127.0.0.1"
+        return None
     finally:
         sock.close()
+
+
+def _phone_host() -> Optional[str]:
+    """Address the phone should dial, or None if Studio is bound loopback-only."""
+    bind_host = os.environ.get("UNSLOTH_BIND_HOST", "127.0.0.1")
+    if bind_host in _LOOPBACK_HOSTS:
+        return None
+    if bind_host in ("0.0.0.0", "::"):
+        return _lan_ip()
+    return bind_host
+
+
+def _require_run_active(viewer: Tuple[str, str]) -> None:
+    """410 once a different run starts, so an old link can't reveal new run data."""
+    run_id = viewer[1]
+    if not run_id:
+        return
+    backend = get_training_backend()
+    if run_id != (getattr(backend, "current_job_id", "") or ""):
+        raise HTTPException(
+            status_code = 410,
+            detail = "This phone link's training run has ended.",
+        )
 
 
 @router.post("/share", response_model = PhoneShareResponse)
@@ -46,18 +73,31 @@ async def share_to_phone(
     current_subject: str = Depends(get_current_subject),
 ):
     try:
+        host = _phone_host()
+        if not host:
+            raise HTTPException(
+                status_code = 422,
+                detail = (
+                    "Studio is only reachable on this computer. Restart it with "
+                    "`-H 0.0.0.0` so your phone can open the link on the same Wi-Fi."
+                ),
+            )
+
         backend = get_training_backend()
         run_id = getattr(backend, "current_job_id", "") or ""
         token, expires_at = create_phone_token(current_subject, run_id)
 
         scheme = request.url.scheme or "http"
         port = request.url.port or (443 if scheme == "https" else 80)
-        page_url = f"{scheme}://{_lan_ip()}:{port}/m/{token}"
+        # Fragment, not path — keeps the token out of server logs.
+        page_url = f"{scheme}://{host}:{port}/m#{token}"
 
         return PhoneShareResponse(
             page_url = page_url,
             expires_at = expires_at.isoformat(),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,
@@ -71,7 +111,10 @@ async def share_to_phone(
 @router.get("/status")
 async def phone_status(viewer: Tuple[str, str] = Depends(get_phone_viewer)):
     try:
+        _require_run_active(viewer)
         return build_training_status()
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,
@@ -85,7 +128,10 @@ async def phone_status(viewer: Tuple[str, str] = Depends(get_phone_viewer)):
 @router.get("/hardware")
 async def phone_hardware(viewer: Tuple[str, str] = Depends(get_phone_viewer)):
     try:
+        _require_run_active(viewer)
         return get_gpu_utilization()
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,

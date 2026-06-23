@@ -950,6 +950,9 @@ def run_server(
     if api_only:
         os.environ["UNSLOTH_API_ONLY"] = "1"
 
+    # Bind host, for the phone-share loopback check.
+    os.environ["UNSLOTH_BIND_HOST"] = host
+
     import nest_asyncio
 
     nest_asyncio.apply()

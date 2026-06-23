@@ -10,32 +10,6 @@
     <meta name="color-scheme" content="light dark" />
     <title>Unsloth — Training</title>
     <style>
-      @font-face {
-        font-family: "Hellix";
-        src: url("/fonts/Hellix-SemiBold.woff2") format("woff2");
-        font-weight: 600;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: "Hellix";
-        src: url("/fonts/Hellix-Medium.woff") format("woff");
-        font-weight: 500;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: "Hellix";
-        src: url("/fonts/Hellix-Regular.woff") format("woff");
-        font-weight: 400;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: "Fira Code";
-        src: url("/fonts/FiraCode-VariableFont_wght.ttf")
-          format("truetype-variations");
-        font-weight: 300 700;
-        font-display: swap;
-      }
-
       :root {
         --bg: #fefefd;
         --card: #ffffff;
@@ -77,7 +51,6 @@
         background: var(--bg);
         color: var(--fg);
         font-family:
-          "Hellix",
           -apple-system,
           BlinkMacSystemFont,
           "Segoe UI",
@@ -85,8 +58,7 @@
           sans-serif;
       }
       .mono {
-        font-family:
-          "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-variant-numeric: tabular-nums;
       }
 
@@ -120,11 +92,6 @@
         gap: 8px;
         opacity: 0.85;
         margin-top: 6px;
-      }
-      .brand img {
-        width: 24px;
-        height: 24px;
-        border-radius: 7px;
       }
       .brand span {
         font-size: 14px;
@@ -309,11 +276,6 @@
   <body>
     <div class="wrap" id="wrap">
       <div class="brand">
-        <img
-          src="/circle-logo-small.png"
-          alt=""
-          onerror="this.style.display = 'none'"
-        />
         <span>Unsloth Studio</span>
       </div>
 
@@ -383,7 +345,8 @@
 
     <script>
       (function () {
-        var token = location.pathname.split("/").filter(Boolean).pop();
+        // Token rides in the fragment, never sent to the server.
+        var token = location.hash.replace(/^#/, "");
         var H = { headers: { Authorization: "Bearer " + token } };
         var CIRC = 2 * Math.PI * 98; // 615.75
 
@@ -506,6 +469,7 @@
         function paintHw(h) {
           if (!h || h.available === false) {
             $("vram").textContent = "";
+            $("d-temp").textContent = "—";
             return;
           }
           var parts = [];
@@ -536,9 +500,14 @@
         async function tick() {
           try {
             var sr = await fetch("/api/phone/status", H);
-            if (sr.status === 401) {
+            if (sr.status === 401 || sr.status === 410) {
               stopped = true;
-              return showError("This link has expired or is invalid.", true);
+              return showError(
+                sr.status === 410
+                  ? "This run has ended. Ask for a fresh link to watch the current run."
+                  : "This link has expired or is invalid.",
+                true,
+              );
             }
             if (!sr.ok) throw 0;
             paintStatus(await sr.json());
