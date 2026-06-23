@@ -2597,11 +2597,16 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
         return set()
+    if not isinstance(data, dict):
+        print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
+        return set()
     keys: set[tuple[str, str, str, str]] = set()
     for e in data.get("entries", []):
+        if not isinstance(e, dict):
+            continue
         try:
             # Use the reviewed hash; else recompute it from the stored evidence.
-            evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence", ""))
+            evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
             keys.add(
                 (
                     _norm_pkg(e["package"]),
