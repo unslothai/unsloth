@@ -228,7 +228,6 @@ if _IS_MLX:
     )
 
     def _is_mlx_no_save_strategy(value):
-        """Return whether a Transformers save strategy disables checkpointing."""
         if hasattr(value, "value"):
             value = value.value
         strategy = str(value or "").strip().lower()
@@ -236,13 +235,11 @@ if _IS_MLX:
         return strategy in ("no", "none", "false")
 
     def _normalize_mlx_training_value(key, value):
-        """Normalize TRL/Transformers argument values to MLX-compatible values."""
         if key == "optim":
             return _normalize_mlx_optimizer_name(value)
         return value
 
     def _mlx_training_argument_values(args):
-        """Extract MLX-compatible fields from a TRL/Transformers args object."""
         values = {}
         for field in _dataclasses.fields(MLXTrainingConfig):
             if hasattr(args, field.name):
@@ -266,7 +263,6 @@ if _IS_MLX:
         return values
 
     def _split_mlx_trainer_kwargs(kwargs):
-        """Split SFTTrainer kwargs into MLXTrainer kwargs, config overrides, ignored."""
         trainer_kwargs = {}
         config_kwargs = {}
         ignored_kwargs = {}
@@ -282,7 +278,6 @@ if _IS_MLX:
         return trainer_kwargs, config_kwargs, ignored_kwargs
 
     def _is_mlx_training_args_like(value):
-        """Return whether a positional value looks like training arguments."""
         if isinstance(value, (MLXTrainingConfig, dict, str, os.PathLike)):
             return True
         return any(
@@ -297,7 +292,6 @@ if _IS_MLX:
         )
 
     def _should_use_trl_positional_schema(args):
-        """Return whether positional trainer args match TRL SFTTrainer layout."""
         if len(args) < 2:
             return False
         if _is_mlx_training_args_like(args[1]):
@@ -307,7 +301,6 @@ if _IS_MLX:
         return len(args) >= 3 and args[1] is None and (args[2] is None or callable(args[2]))
 
     def _assign_mlx_positional_kwarg(kwargs, name, value):
-        """Assign a positional trainer argument while preserving Python errors."""
         if name in kwargs:
             raise TypeError(
                 f"UnslothTrainer.__init__() got multiple values for argument " f"{name!r}"
@@ -315,7 +308,6 @@ if _IS_MLX:
         kwargs[name] = value
 
     def _normalize_mlx_trainer_init_args(args, kwargs):
-        """Map TRL-style or MLX-style positional trainer args into kwargs."""
         kwargs = dict(kwargs)
         if len(args) == 0:
             return kwargs
@@ -335,7 +327,6 @@ if _IS_MLX:
         return kwargs
 
     def _is_meaningful_mlx_extra_value(value):
-        """Return whether an inert compatibility arg may alter expected behavior."""
         if value is None or value is False:
             return False
         if isinstance(value, (str, bytes)) and len(value) == 0:
@@ -345,7 +336,6 @@ if _IS_MLX:
         return True
 
     def _warn_ignored_mlx_training_args(extra_kwargs):
-        """Warn when TrainingArguments kwargs are accepted but inert on MLX."""
         names = sorted(
             key
             for key, value in extra_kwargs.items()
@@ -363,13 +353,11 @@ if _IS_MLX:
         )
 
     def _is_meaningful_mlx_trainer_kwarg(key, value):
-        """Return whether an unsupported trainer kwarg would change behavior."""
         if key == "optimizers" and value == (None, None):
             return False
         return _is_meaningful_mlx_extra_value(value)
 
     def _raise_unsupported_mlx_trainer_kwargs(ignored_kwargs):
-        """Fail on unsupported trainer kwargs that would change training semantics."""
         names = sorted(
             key
             for key, value in ignored_kwargs.items()
@@ -384,7 +372,6 @@ if _IS_MLX:
         )
 
     def _raise_unknown_mlx_training_args(extra_kwargs):
-        """Fail on unknown TrainingArguments/SFTConfig kwargs on MLX."""
         names = sorted(key for key in extra_kwargs if key not in _MLX_ALLOWED_EXTRA_ARGUMENTS)
         if not names:
             return
@@ -395,7 +382,6 @@ if _IS_MLX:
         )
 
     def _positive_mlx_context_length(value):
-        """Return a positive integer context length or None."""
         if value is None or isinstance(value, bool):
             return None
         try:
@@ -407,7 +393,6 @@ if _IS_MLX:
         return length
 
     def _positive_mlx_training_number(value):
-        """Return a positive training scalar or None."""
         if value is None or isinstance(value, bool):
             return None
         try:
@@ -419,7 +404,6 @@ if _IS_MLX:
         return number
 
     def _set_mlx_cuda_style_context_length(args, length):
-        """Set both MLX and TRL context length names after CUDA-style resolution."""
         args.max_seq_length = length
         args.max_length = length
         args._unsloth_mlx_max_length_value = length
@@ -429,7 +413,6 @@ if _IS_MLX:
         """MLX-compatible public training arguments for Unsloth notebooks."""
 
         def __init__(self, *args, **kwargs):
-            """Accept TRL-style keyword args and keep MLX-supported values active."""
             if len(args) == 1 and isinstance(args[0], dict):
                 kwargs = {**args[0], **kwargs}
             elif len(args) == 1 and isinstance(args[0], (str, os.PathLike)):
@@ -516,7 +499,6 @@ if _IS_MLX:
             _warn_ignored_mlx_training_args(extra_kwargs)
 
     def _resolve_mlx_cuda_style_max_seq_length(args, model = None):
-        """Mirror Unsloth CUDA SFTTrainer's max_length/max_seq_length bridge."""
         model_max_seq_length = _positive_mlx_context_length(
             getattr(model, "max_seq_length", None),
         )
@@ -584,7 +566,6 @@ if _IS_MLX:
         model = None,
         max_seq_length_explicit = False,
     ):
-        """Apply notebook-compatible MLX defaults used only by UnslothTrainer."""
         if not getattr(args, "preserve_dataset_order", False) and not getattr(
             args, "_unsloth_mlx_dataset_order_explicit", False
         ):
@@ -617,7 +598,6 @@ if _IS_MLX:
         return args
 
     def _coerce_mlx_training_args(args, overrides = None):
-        """Return an MLXTrainingConfig from None, dicts, or trainer args objects."""
         overrides = overrides or {}
         if isinstance(args, MLXTrainingConfig) and not overrides:
             return args
@@ -721,8 +701,7 @@ if _IS_MLX:
     _MLX_TRAINER_KWARGS = frozenset(_MLX_TRAINER_POSITIONAL_KWARGS)
 
     def _is_mlx_native_text_collator(collator):
-        """HF pad/copy collators are redundant on MLX (MLXTrainer pads/masks
-        natively). Match by class name to avoid importing transformers here."""
+        """HF pad/copy collators are redundant on MLX; match by class name."""
         for klass in type(collator).__mro__:
             name = klass.__name__
             if name in (
@@ -740,7 +719,6 @@ if _IS_MLX:
         """Backend-aware public trainer that routes supported SFT notebooks to MLX."""
 
         def __init__(self, *args, **kwargs):
-            """Normalize common TRL SFTTrainer kwargs, then initialize MLXTrainer."""
             kwargs = _normalize_mlx_trainer_init_args(args, kwargs)
             processing_class = kwargs.pop("processing_class", None)
             processor_from_processing_class = False
@@ -844,7 +822,6 @@ if _IS_MLX:
         return _train_on_responses_only(*args, **kwargs)
 
     def _install_mlx_trl_sft_shim():
-        """Expose SFTTrainer/SFTConfig aliases for old notebooks after importing unsloth."""
         _trl = _sys.modules.get("trl")
         if _trl is None:
             try:
@@ -862,7 +839,6 @@ if _IS_MLX:
         _trl.__UNSLOTH_MLX_COMPAT__ = True
 
     def _install_mlx_unsloth_trainer_shim():
-        """Expose a lightweight unsloth.trainer module on MLX."""
         module_name = f"{__name__}.trainer"
         _trainer = _types.ModuleType(module_name)
         _trainer.__package__ = __name__
