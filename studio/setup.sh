@@ -1092,15 +1092,29 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
         exit 1
     fi
-    _RESOLVED_LOCAL="$(cd "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd)"
+    _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
     if [ "$_RESOLVED_LOCAL" = "$LLAMA_CPP_DIR" ]; then
         substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location; ignoring"
     else
+        # A stale link from a previous --with-llama-cpp-dir run isn't Studio-owned
+        # content; drop it before the ownership check so re-runs stay idempotent
+        # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
+        # link into the user's dir and reject it as unowned).
+        [ -L "$LLAMA_CPP_DIR" ] && rm -f "$LLAMA_CPP_DIR"
         if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
         fi
         rm -rf "$LLAMA_CPP_DIR"
         ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
+        # GGUF export's check_llama_cpp() looks for a llama-quantize shim at the
+        # root of the install dir. A normal source build keeps the binary under
+        # build/bin/, so mirror the source-build-reuse step and create the shim
+        # when the linked checkout has one but no root shim yet. Inference
+        # (llama-server) works off the linked tree directly and needs nothing.
+        if [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ] && \
+           [ ! -e "$LLAMA_CPP_DIR/llama-quantize" ]; then
+            ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+        fi
         step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
         _LOCAL_LLAMA_CPP_LINKED=true
         _NEED_LLAMA_SOURCE_BUILD=false

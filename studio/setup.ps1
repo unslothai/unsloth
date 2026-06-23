@@ -2765,6 +2765,17 @@ if ($LocalLlamaCppSrc) {
     if ($ResolvedLocal -eq $LlamaCppDir) {
         substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location; ignoring" "Yellow"
     } else {
+        # If the target is already a junction/symlink (e.g. a previous
+        # --with-llama-cpp-dir run), delete only the link via DirectoryInfo.Delete().
+        # Remove-Item -Recurse -Force on a reparse point can traverse the link and
+        # wipe the user's real llama.cpp directory on PowerShell 5.1. Dropping the
+        # stale link here also keeps the custom-home ownership check below idempotent.
+        if (Test-Path -LiteralPath $LlamaCppDir) {
+            $existing = Get-Item -LiteralPath $LlamaCppDir -Force
+            if ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                $existing.Delete()
+            }
+        }
         if ($StudioHomeIsCustom) {
             Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
         }
@@ -2993,7 +3004,13 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
     }
 }
 
-if (-not $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinked) {
+if ($LocalLlamaCppLinked) {
+    # Local dir linked above -- honor the flag's contract: skip BOTH the prebuilt
+    # download and the source build. Falling through here would run CMake inside
+    # the user's checkout (via the junction) when it lacks build\bin\Release\llama-server.exe.
+    Write-Host ""
+    step "llama.cpp" "linked (skipping build)"
+} elseif (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
 } elseif ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {

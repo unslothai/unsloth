@@ -123,14 +123,14 @@ assert_contains \
     "setup.ps1: disables the source build when the local dir is linked" \
     "$SETUP_PS1" '$NeedLlamaSourceBuild = $false'
 # The link branch must gate the prebuilt-install chain (the elseif on
-# FORCE_COMPILE), and the 'prebuilt (validated)' banner must be suppressed
-# when we linked a local dir instead of validating a real prebuilt.
+# FORCE_COMPILE), and the linked-dir case must short-circuit the build chain
+# so neither a prebuilt download nor a source build runs against it.
 assert_contains \
     "setup.ps1: link branch gates the prebuilt/compile chain" \
     "$SETUP_PS1" 'if ($LocalLlamaCppLinked) {'
 assert_contains \
-    "setup.ps1: 'prebuilt (validated)' banner excludes the linked-dir case" \
-    "$SETUP_PS1" '-not $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinked'
+    "setup.ps1: linked-dir case short-circuits the build chain" \
+    "$SETUP_PS1" 'step "llama.cpp" "linked (skipping build)"'
 
 echo ""
 echo "=== both setup scripts: a local dir pointing at the canonical path is a no-op ==="

@@ -54,7 +54,10 @@ _SHORTCUTS_ONLY=false
 _next_is_package=false
 _next_is_python=false
 _next_is_llama_cpp_dir=false
-_WITH_LLAMA_CPP_DIR=""
+# Seed from the environment so a caller who exports UNSLOTH_LOCAL_LLAMA_CPP_DIR
+# (the documented piped-install style) is honored; the --with-llama-cpp-dir
+# flag below overrides it when given.
+_WITH_LLAMA_CPP_DIR="${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}"
 for arg in "$@"; do
     if [ "$_next_is_package" = true ]; then
         PACKAGE_NAME="$arg"
@@ -2907,7 +2910,7 @@ if [ -n "$_WITH_LLAMA_CPP_DIR" ]; then
         echo "[ERROR] --with-llama-cpp-dir path does not exist: $_WITH_LLAMA_CPP_DIR" >&2
         exit 1
     fi
-    _WITH_LLAMA_CPP_DIR="$(cd "$_WITH_LLAMA_CPP_DIR" && pwd)"
+    _WITH_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_WITH_LLAMA_CPP_DIR" && pwd -P)"
 fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     _run_setup_with_studio_home env \
