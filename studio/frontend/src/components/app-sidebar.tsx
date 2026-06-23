@@ -262,13 +262,29 @@ export function AppSidebar() {
       search: s.location.search as Record<string, string | undefined>,
     }),
   });
-  const { togglePinned, isMobile, setOpenMobile, setOpen, state } = useSidebar();
+  const { isMobile, setOpenMobile, setOpen, state } = useSidebar();
   const navigate = useNavigate();
 
   // Auto-close mobile Sheet after navigation
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
+  const shouldHideExpandedSidebarContent = !isMobile && state === "collapsed";
+  const focusOpenSidebarTriggerRef = useRef(false);
+
+  useEffect(() => {
+    if (
+      !focusOpenSidebarTriggerRef.current ||
+      isMobile ||
+      state !== "collapsed"
+    ) {
+      return;
+    }
+    focusOpenSidebarTriggerRef.current = false;
+    document
+      .querySelector<HTMLElement>('[data-sidebar="open-trigger"]')
+      ?.focus();
+  }, [isMobile, state]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
@@ -960,7 +976,7 @@ export function AppSidebar() {
     >
       <SidebarHeader className="pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0">
         {/* Expanded: compact logo + close toggle */}
-        {state === "expanded" && <div className="flex items-center justify-between gap-[8.5px]">
+        {(state === "expanded" || isMobile) && <div className="flex items-center justify-between gap-[8.5px]">
           <Link
             to="/chat"
             onClick={(event) => {
@@ -988,11 +1004,8 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={() => {
+                    focusOpenSidebarTriggerRef.current = true;
                     setOpen(false);
-                    requestAnimationFrame(() => {
-                      const openTrigger = document.querySelector<HTMLElement>('[data-sidebar="open-trigger"]');
-                      openTrigger?.focus();
-                    });
                   }}
                   className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.closeSidebar")}
@@ -1019,7 +1032,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   data-sidebar="open-trigger"
-                  onClick={togglePinned}
+                  onClick={() => setOpen(true)}
                   className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.openSidebar")}
                 >
@@ -1039,7 +1052,7 @@ export function AppSidebar() {
       </SidebarHeader>
 
       {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pt-[9px] pb-px shrink-0" aria-hidden={state === "collapsed" || undefined} inert={state === "collapsed" || undefined}>
+      <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pt-[9px] pb-px shrink-0" aria-hidden={shouldHideExpandedSidebarContent || undefined} inert={shouldHideExpandedSidebarContent || undefined}>
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -1086,8 +1099,8 @@ export function AppSidebar() {
       <SidebarContent
         ref={scrollRef}
         onScroll={(e) => syncScrollState(e.currentTarget)}
-        aria-hidden={state === "collapsed" || undefined}
-        inert={state === "collapsed" || undefined}
+        aria-hidden={shouldHideExpandedSidebarContent || undefined}
+        inert={shouldHideExpandedSidebarContent || undefined}
         className={cn(
           // pb-2 keeps the last row's rounded highlight clear of the
           // overflow clip edge so its bottom corners aren't shaved off.
@@ -1359,7 +1372,7 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter className="relative group-data-[collapsible=icon]:px-0" aria-hidden={state === "collapsed" || undefined} inert={state === "collapsed" || undefined}>
+      <SidebarFooter className="relative group-data-[collapsible=icon]:px-0" aria-hidden={shouldHideExpandedSidebarContent || undefined} inert={shouldHideExpandedSidebarContent || undefined}>
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
             shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}

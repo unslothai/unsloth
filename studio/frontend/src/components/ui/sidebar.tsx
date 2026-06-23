@@ -323,7 +323,7 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar, open } = useSidebar()
+  const { toggleSidebar, open, openMobile, isMobile } = useSidebar()
 
   return (
     <Button
@@ -332,7 +332,7 @@ function SidebarTrigger({
       variant="ghost"
       size="icon-sm"
       className={cn(className)}
-      aria-expanded={open}
+      aria-expanded={isMobile ? openMobile : open}
       onClick={(event) => {
         onClick?.(event)
         toggleSidebar()

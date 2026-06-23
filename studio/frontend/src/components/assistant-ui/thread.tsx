@@ -3517,8 +3517,27 @@ const CancelledIndicator: FC = () => {
 
 const ChatLiveRegion: FC = () => {
   const [announcement, setAnnouncement] = useState("");
-  useAuiEvent("thread.runStart", () => setAnnouncement("Generating response..."));
-  useAuiEvent("thread.runEnd", () => setAnnouncement("Response complete."));
+  const announcementTimeoutRef = useRef<number | null>(null);
+  const announce = (message: string) => {
+    if (announcementTimeoutRef.current != null) {
+      window.clearTimeout(announcementTimeoutRef.current);
+    }
+    setAnnouncement("");
+    announcementTimeoutRef.current = window.setTimeout(() => {
+      setAnnouncement(message);
+      announcementTimeoutRef.current = null;
+    }, 0);
+  };
+  useEffect(
+    () => () => {
+      if (announcementTimeoutRef.current != null) {
+        window.clearTimeout(announcementTimeoutRef.current);
+      }
+    },
+    [],
+  );
+  useAuiEvent("thread.runStart", () => announce("Generating response..."));
+  useAuiEvent("thread.runEnd", () => announce("Response complete."));
   return (
     <div
       role="status"
