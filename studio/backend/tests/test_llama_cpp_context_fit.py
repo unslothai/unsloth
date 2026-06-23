@@ -225,26 +225,24 @@ def _drive(
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
             effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
-    elif (
-        apple_budget_mib > 0
-        and inst._can_estimate_kv()
-        and effective_ctx > 0
-    ):
+    elif apple_budget_mib > 0 and inst._can_estimate_kv() and effective_ctx > 0:
         # Mirrors the Apple-Silicon unified-memory branch in load_model: the
         # budget already carries the fraction, so budget_frac = 1.0; the UI
         # ceiling comes from native for both explicit and auto, but only auto
         # shrinks the launch context.
         native_ctx_for_cap = context_length or effective_ctx
         cap = inst._fit_context_to_vram(
-            native_ctx_for_cap, apple_budget_mib, model_size, cache_type_kv, budget_frac = 1.0,
+            native_ctx_for_cap,
+            apple_budget_mib,
+            model_size,
+            cache_type_kv,
+            budget_frac = 1.0,
         )
-        cap_footprint_mib = (
-            model_size + inst._estimate_kv_cache_bytes(cap, cache_type_kv)
-        ) / (1024 * 1024)
+        cap_footprint_mib = (model_size + inst._estimate_kv_cache_bytes(cap, cache_type_kv)) / (
+            1024 * 1024
+        )
         max_available_ctx = (
-            cap
-            if cap_footprint_mib <= apple_budget_mib
-            else min(FALLBACK_CTX, native_ctx_for_cap)
+            cap if cap_footprint_mib <= apple_budget_mib else min(FALLBACK_CTX, native_ctx_for_cap)
         )
         if not explicit_ctx:
             effective_ctx = max_available_ctx
@@ -744,7 +742,6 @@ def test_select_gpus_reserves_per_device_overhead():
 
 def _force_apple(monkeypatch):
     import platform as _platform
-
     monkeypatch.setattr(_platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_platform, "machine", lambda: "arm64")
 
@@ -754,9 +751,7 @@ def _install_fake_mlx(monkeypatch, working_set_bytes):
     mlx = _types.ModuleType("mlx")
     mlx_core = _types.ModuleType("mlx.core")
     mlx_core.metal = _types.SimpleNamespace(is_available = lambda: True)
-    mlx_core.device_info = lambda: {
-        "max_recommended_working_set_size": working_set_bytes
-    }
+    mlx_core.device_info = lambda: {"max_recommended_working_set_size": working_set_bytes}
     mlx.core = mlx_core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
@@ -811,18 +806,18 @@ class TestAppleContextCap:
         budget_mib = int(27 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION) // (1024 * 1024)
 
         # The native footprint over-commits the budget -- this is the bug.
-        native_footprint_mib = (
-            model_size_fit + inst._estimate_kv_cache_bytes(262144)
-        ) // (1024 * 1024)
+        native_footprint_mib = (model_size_fit + inst._estimate_kv_cache_bytes(262144)) // (
+            1024 * 1024
+        )
         assert native_footprint_mib > budget_mib
 
         capped = inst._fit_context_to_vram(
             262144, budget_mib, model_size_fit, None, budget_frac = 1.0
         )
         assert capped < 262144
-        capped_footprint_mib = (
-            model_size_fit + inst._estimate_kv_cache_bytes(capped)
-        ) // (1024 * 1024)
+        capped_footprint_mib = (model_size_fit + inst._estimate_kv_cache_bytes(capped)) // (
+            1024 * 1024
+        )
         assert capped_footprint_mib <= budget_mib
 
 

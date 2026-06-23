@@ -2190,7 +2190,6 @@ class LlamaCppBackend:
         rec_bytes = 0
         try:
             import mlx.core as mx
-
             if mx.metal.is_available():
                 rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
         except Exception:
@@ -2198,7 +2197,6 @@ class LlamaCppBackend:
         if rec_bytes <= 0:
             try:
                 import psutil
-
                 rec_bytes = int(psutil.virtual_memory().total)
             except Exception:
                 return 0
@@ -5353,11 +5351,7 @@ class LlamaCppBackend:
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
 
-                    elif (
-                        _apple_budget_mib > 0
-                        and self._can_estimate_kv()
-                        and effective_ctx > 0
-                    ):
+                    elif _apple_budget_mib > 0 and self._can_estimate_kv() and effective_ctx > 0:
                         # Apple Silicon enumerates no GPU, so the branches above are
                         # skipped and the context stays at full native length, which
                         # over-commits unified memory -> llama-server "Compute error."
