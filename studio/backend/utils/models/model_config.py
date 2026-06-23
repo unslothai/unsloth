@@ -471,6 +471,7 @@ def load_model_config(
     use_auth: bool = False,
     token: Optional[str] = None,
     trust_remote_code: bool = False,
+    local_files_only: bool = False,
 ):
     """Load model config with optional authentication control.
 
@@ -478,12 +479,18 @@ def load_model_config(
     metadata lookups must never execute a model repo's ``auto_map`` Python.
     Deliberate remote-code loads pass the flag explicitly through
     ``FastLanguageModel.from_pretrained`` with the user's own consent.
+
+    ``local_files_only`` keeps the config read on the local HF cache (offline
+    export), so an offline probe never blocks on the network.
     """
     from transformers import AutoConfig
 
     if token:
         return AutoConfig.from_pretrained(
-            model_name, trust_remote_code = trust_remote_code, token = token
+            model_name,
+            trust_remote_code = trust_remote_code,
+            token = token,
+            local_files_only = local_files_only,
         )
 
     if not use_auth:
@@ -493,12 +500,14 @@ def load_model_config(
                 model_name,
                 trust_remote_code = trust_remote_code,
                 token = None,
+                local_files_only = local_files_only,
             )
 
     # Default auth (cached tokens)
     return AutoConfig.from_pretrained(
         model_name,
         trust_remote_code = trust_remote_code,
+        local_files_only = local_files_only,
     )
 
 
@@ -598,7 +607,7 @@ def _is_vlm(config) -> bool:
 
 
 def _raw_config_has_vision_config(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str, hf_token: Optional[str] = None, local_files_only: bool = False
 ) -> Optional[bool]:
     try:
         if is_local_path(model_name):
@@ -610,6 +619,7 @@ def _raw_config_has_vision_config(
                     repo_id = model_name,
                     filename = "config.json",
                     token = hf_token,
+                    local_files_only = local_files_only,
                 )
             )
         config = json.loads(config_path.read_text())
@@ -780,22 +790,29 @@ def _token_fingerprint(token: Optional[str]) -> Optional[str]:
 # Keyed by (normalized_model_name, token_fingerprint) to handle gated models.
 # Only definitive results are cached; transient failures (network, timeouts)
 # are NOT cached so they can be retried.
-_vision_detection_cache: Dict[Tuple[str, Optional[str]], bool] = {}
+_vision_detection_cache: Dict[Tuple[str, Optional[str], bool], bool] = {}
 _vision_cache_lock = threading.Lock()
 
 
-def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
+def is_vision_model(
+    model_name: str, hf_token: Optional[str] = None, local_files_only: bool = False
+) -> bool:
     """
     Detect vision-language models (VLMs) via architecture in config. Works for
     fine-tuned models since they inherit the base architecture.
 
     Models needing transformers 5.x are checked in a .venv_t5/ subprocess.
-    Results are cached per (model_name, token_fingerprint) for the process
-    lifetime; transient failures are not cached so they can be retried.
+    Results are cached per (model_name, token_fingerprint, local_files_only) for
+    the process lifetime; transient failures are not cached so they can be
+    retried. local_files_only is part of the key because an offline probe reads
+    only the on-disk cache and can differ from an online probe (e.g. a
+    transformers-5 VLM the offline path cannot run the subprocess for), so the
+    two results must never share a cache entry.
 
     Args:
         model_name: Model identifier (HF repo or local path)
         hf_token: Optional HF token for gated/private models
+        local_files_only: Keep detection on the local HF cache (offline export)
     """
     # Local GGUF models are served by llama-server. Their multimodal
     # capability comes from a companion mmproj, not a Transformers config.
@@ -829,7 +846,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             exc,
         )
         resolved_name = model_name
-    cache_key = (resolved_name, _token_fingerprint(hf_token))
+    cache_key = (resolved_name, _token_fingerprint(hf_token), bool(local_files_only))
 
     # Lock-free fast path for cache hits. Sentinel distinguishes "key not found"
     # from "value is False" in a single atomic dict.get() call.
@@ -840,7 +857,9 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
     # Compute outside the lock so long-running detection isn't serialized across
     # models. Two concurrent calls may both run, but produce the same result.
-    result = _is_vision_model_uncached(resolved_name, hf_token)
+    result = _is_vision_model_uncached(
+        resolved_name, hf_token, local_files_only = local_files_only
+    )
     # Only cache definitive results; None is a transient failure, retry later.
     if result is not None:
         with _vision_cache_lock:
@@ -849,7 +868,9 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     return False
 
 
-def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
+def _is_vision_model_uncached(
+    model_name: str, hf_token: Optional[str] = None, local_files_only: bool = False
+) -> Optional[bool]:
     """Uncached vision detection; use is_vision_model() instead.
 
     Returns True/False for definitive results, or None on transient errors
@@ -858,15 +879,19 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
     # Try the raw-config reader FIRST (code-free, version-independent): it classifies
     # repo-code VLMs like DeepSeek-OCR via declarative vision_config with no remote-code
     # execution or transformers-5.x subprocess.
-    raw = _raw_config_has_vision_config(model_name, hf_token = hf_token)
+    raw = _raw_config_has_vision_config(
+        model_name, hf_token = hf_token, local_files_only = local_files_only
+    )
     if raw is not None:
         return raw
 
     # Raw read failed transiently: fall back to AutoConfig with remote code DISABLED
     # (in a transformers-5.x subprocess when the main process can't parse the arch).
+    # Skip the subprocess offline: it does its own network probe and would diverge
+    # from the online path, so offline we stay on the local cache via load_model_config.
     from utils.transformers_version import needs_transformers_5
 
-    if needs_transformers_5(model_name):
+    if not local_files_only and needs_transformers_5(model_name):
         logger.info(
             "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
@@ -874,7 +899,12 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
         return _is_vision_model_subprocess(model_name, hf_token = hf_token)
 
     try:
-        config = load_model_config(model_name, use_auth = True, token = hf_token)
+        config = load_model_config(
+            model_name,
+            use_auth = True,
+            token = hf_token,
+            local_files_only = local_files_only,
+        )
 
         if _is_vlm(config):
             model_type = getattr(config, "model_type", None)

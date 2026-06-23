@@ -860,6 +860,7 @@ class FastLanguageModel(FastLlamaModel):
                 old_model_name,
                 token = token,
                 revision = revision,
+                local_files_only = local_files_only,
                 is_trainable = True,
                 trust_remote_code = trust_remote_code,
             )
@@ -1767,6 +1768,7 @@ class FastModel(FastBaseModel):
                     old_model_name,
                     token = token,
                     revision = revision,
+                    local_files_only = local_files_only,
                     is_trainable = True,
                     trust_remote_code = trust_remote_code,
                 )

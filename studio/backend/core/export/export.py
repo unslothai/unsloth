@@ -280,7 +280,9 @@ class ExportBackend:
                 self._audio_type = detect_audio_type(
                     model_id, hf_token = token, local_files_only = local_files_only
                 )
-                self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token = token)
+                self.is_vision = not self._audio_type and is_vision_model(
+                    model_id, hf_token = token, local_files_only = local_files_only
+                )
 
             if self._audio_type == "csm":
                 from unsloth import FastModel

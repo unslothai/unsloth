@@ -71,7 +71,7 @@ class TestVisionCacheHitMiss:
         """Two calls for the same model invoke the uncached fn once."""
         assert is_vision_model("org/my-vlm") is True
         assert is_vision_model("org/my-vlm") is True
-        mock_uncached.assert_called_once_with("org/my-vlm", None)
+        mock_uncached.assert_called_once_with("org/my-vlm", None, local_files_only = False)
 
     @patch("utils.models.model_config._is_vision_model_uncached", return_value = False)
     def test_different_models_each_detected(self, mock_uncached):
@@ -97,7 +97,7 @@ class TestVisionCacheStoresFalse:
         assert is_vision_model("org/text-only") is False
         assert is_vision_model("org/text-only") is False
         mock_uncached.assert_called_once()
-        assert _vision_detection_cache[("org/text-only", None)] is False
+        assert _vision_detection_cache[("org/text-only", None, False)] is False
 
 
 # Subprocess path (transformers 5.x) caching
@@ -120,7 +120,7 @@ class TestVisionCacheSubprocessPath:
         assert is_vision_model("unsloth/Qwen3.5-2B") is True
 
         mock_subprocess.assert_called_once()
-        assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None)] is True
+        assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None, False)] is True
 
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = True)
     @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
@@ -133,7 +133,9 @@ class TestVisionCacheSubprocessPath:
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
 
-        mock_raw_config.assert_called_once_with("unsloth/gemma-4-E4B-it", hf_token = None)
+        mock_raw_config.assert_called_once_with(
+            "unsloth/gemma-4-E4B-it", hf_token = None, local_files_only = False
+        )
         mock_subprocess.assert_not_called()
 
 
@@ -403,6 +405,40 @@ class TestVisionCacheTokenHandling:
         assert is_vision_model("gated/model", hf_token = "token-a") is True
         assert is_vision_model("gated/model", hf_token = "token-a") is True
         mock_uncached.assert_called_once()
+
+
+class TestVisionCacheLocalOnly:
+    """local_files_only is part of the cache key (mirrors the audio cache). An
+    offline probe only sees the on-disk cache, so its negative result must never
+    be reused by a later online probe that can reach the Hub -- otherwise a VLM
+    is routed through the text loader until restart."""
+
+    def test_local_only_negative_does_not_poison_online(self, monkeypatch):
+        import utils.models.model_config as mc
+
+        mc._vision_detection_cache.clear()
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+
+        seen = []
+
+        def _probe(name, hf_token = None, local_files_only = False):
+            seen.append(local_files_only)
+            # Offline: cannot run the transformers-5 subprocess / fetch -> not a VLM.
+            # Online: the remote config reveals a VLM.
+            return False if local_files_only else True
+
+        monkeypatch.setattr(mc, "_is_vision_model_uncached", _probe)
+
+        # Offline probe caches False under a local-only key.
+        assert mc.is_vision_model("some/vlm", local_files_only = True) is False
+        # A later online probe must re-run (different key) and detect the VLM.
+        assert mc.is_vision_model("some/vlm", local_files_only = False) is True
+        assert seen == [True, False]
+        # The online positive is then cached for subsequent online callers.
+        assert mc.is_vision_model("some/vlm", local_files_only = False) is True
+        assert seen == [True, False]
+        mc._vision_detection_cache.clear()
 
 
 # ---------------------------------------------------------------------------

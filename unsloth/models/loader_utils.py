@@ -737,12 +737,25 @@ def _offline_aware_load(fn):
         try:
             return fn(*args, **kwargs)
         except Exception as e:
-            if _is_offline_related_error(e):
-                kwargs["local_files_only"] = True
-                with _force_hf_offline():
-                    return fn(*args, **kwargs)
-            raise
-
+            if not _is_offline_related_error(e):
+                raise
+        # Retry OUTSIDE the except block: an except-scoped exception still holds its
+        # __traceback__, which pins the failed attempt's frame locals (e.g. a
+        # partially loaded model) until the block exits. Loading the model a second
+        # time while the first copy is still alive can OOM a large VLM. Letting the
+        # except block close drops the traceback; collect + empty the device cache
+        # so the partial load is freed before the forced-offline retry reallocates.
+        try:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
+        except Exception:
+            pass
+        kwargs["local_files_only"] = True
+        with _force_hf_offline():
+            return fn(*args, **kwargs)
     return _wrapper
 
 
