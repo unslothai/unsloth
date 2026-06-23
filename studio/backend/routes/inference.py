@@ -2707,16 +2707,11 @@ async def load_model(
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
-
     async with inference_lifecycle_gate():
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 
-async def _load_model_impl(
-    request: LoadRequest,
-    fastapi_request: Request,
-    current_subject: str,
-):
+async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     native_grant_backed = False
@@ -8498,7 +8493,6 @@ async def anthropic_messages(
     # feature is on, fall through so validation runs before a possible load.
     if not llama_backend.is_loaded:
         from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
-
         if not get_openai_auto_switch_enabled():
             raise HTTPException(
                 status_code = 503,
