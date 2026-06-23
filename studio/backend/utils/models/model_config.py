@@ -607,7 +607,9 @@ def _is_vlm(config) -> bool:
 
 
 def _raw_config_has_vision_config(
-    model_name: str, hf_token: Optional[str] = None, local_files_only: bool = False
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> Optional[bool]:
     try:
         if is_local_path(model_name):
@@ -795,7 +797,9 @@ _vision_cache_lock = threading.Lock()
 
 
 def is_vision_model(
-    model_name: str, hf_token: Optional[str] = None, local_files_only: bool = False
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> bool:
     """
     Detect vision-language models (VLMs) via architecture in config. Works for
@@ -857,9 +861,7 @@ def is_vision_model(
 
     # Compute outside the lock so long-running detection isn't serialized across
     # models. Two concurrent calls may both run, but produce the same result.
-    result = _is_vision_model_uncached(
-        resolved_name, hf_token, local_files_only = local_files_only
-    )
+    result = _is_vision_model_uncached(resolved_name, hf_token, local_files_only = local_files_only)
     # Only cache definitive results; None is a transient failure, retry later.
     if result is not None:
         with _vision_cache_lock:
@@ -869,7 +871,9 @@ def is_vision_model(
 
 
 def _is_vision_model_uncached(
-    model_name: str, hf_token: Optional[str] = None, local_files_only: bool = False
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> Optional[bool]:
     """Uncached vision detection; use is_vision_model() instead.
 

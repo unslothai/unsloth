@@ -756,6 +756,7 @@ def _offline_aware_load(fn):
         kwargs["local_files_only"] = True
         with _force_hf_offline():
             return fn(*args, **kwargs)
+
     return _wrapper
 
 

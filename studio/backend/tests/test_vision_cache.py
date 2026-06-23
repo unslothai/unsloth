@@ -422,7 +422,11 @@ class TestVisionCacheLocalOnly:
 
         seen = []
 
-        def _probe(name, hf_token = None, local_files_only = False):
+        def _probe(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
             seen.append(local_files_only)
             # Offline: cannot run the transformers-5 subprocess / fetch -> not a VLM.
             # Online: the remote config reveals a VLM.
