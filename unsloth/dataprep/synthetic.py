@@ -408,9 +408,16 @@ class SyntheticDataKit:
         # Get left and right boundaries
         length = len(input_ids)
         n_chunks = int(np.ceil(length / (max_tokens - self.overlap)))
-        boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)
-        boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
-        boundaries = np.minimum(boundaries, length).tolist()
+        if n_chunks <= 1:
+            # A document that fits in a single chunk must still be emitted. The
+            # linspace/stack pairing below turns n boundary points into n-1
+            # ranges, which is empty when n_chunks == 1, silently dropping the
+            # whole document. Emit the full [0, length] range instead.
+            boundaries = [(0, length)]
+        else:
+            boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)
+            boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
+            boundaries = np.minimum(boundaries, length).tolist()
 
         filename, extension = os.path.splitext(filename)
         if filename.endswith("/"):
