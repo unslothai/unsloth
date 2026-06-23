@@ -11,7 +11,6 @@ from loggers import get_logger
 import os
 import shutil
 import contextlib
-import threading
 from pathlib import Path
 from typing import Optional, Tuple, List
 from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
@@ -106,73 +105,25 @@ def _hf_offline(timeout = 3):
         return True
 
 
-# Reuse Unsloth's lock-guarded forced-offline context (same repo / release) so
-# the brief HF-offline window during type detection is correct under nesting.
-# Fall back to a no-op if the private helper ever moves.
+# Reuse Unsloth's single lock-guarded forced-offline context (same repo /
+# release). It sets BOTH the HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE env vars (so a
+# spawned subprocess and any raw urllib / requests guards that read the env see
+# offline) AND the in-process huggingface_hub / transformers offline flags, all
+# refcounted so nested / concurrent windows restore correctly. Fall back to a
+# no-op if the private helper ever moves.
 try:
-    from unsloth.models.vision import _force_hf_offline as _unsloth_force_hf_offline
+    from unsloth.models.vision import _force_hf_offline
 except Exception:
     import contextlib as _contextlib
 
     @_contextlib.contextmanager
-    def _unsloth_force_hf_offline():
+    def _force_hf_offline():
         yield
-
-
-# Guards the os.environ flip below. A depth counter lets nested / concurrent
-# probe windows share one flip: only the first entrant saves the real original
-# values and only the last exit restores them, so overlapping windows can never
-# permanently poison HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE or restore a stale
-# value. The lock is held only around the flip / restore, not the wrapped probe.
-_OFFLINE_ENV_KEYS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
-_probe_window_lock = threading.RLock()
-_probe_window_depth = 0
-_probe_window_saved = {}
-
-
-@contextlib.contextmanager
-def _force_offline_probe_window():
-    """Force HF offline for the type-detection probe window.
-
-    _unsloth_force_hf_offline() flips the in-process huggingface_hub / transformers
-    offline flag, which covers transformers' own from_pretrained / is_offline_mode.
-    But two probe paths ignore that in-process flag:
-      * transformers_version._load_config_json / _check_tokenizer_config_needs_v5
-        gate their urllib fetches on the HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE env
-        vars (read directly), not the module flag.
-      * is_vision_model may spawn a subprocess that inherits os.environ but not the
-        in-process flag.
-    So also set the env vars for the window (saved / restored) so both see offline
-    and neither blocks on a network timeout when offline was detected only by the
-    reachability probe (no env var set by the user). The env mutation is
-    lock-guarded with a depth counter so concurrent exports cannot corrupt the
-    process-wide env vars.
-    """
-    global _probe_window_depth, _probe_window_saved
-    with _probe_window_lock:
-        if _probe_window_depth == 0:
-            _probe_window_saved = {_k: os.environ.get(_k) for _k in _OFFLINE_ENV_KEYS}
-            for _k in _OFFLINE_ENV_KEYS:
-                os.environ[_k] = "1"
-        _probe_window_depth += 1
-    try:
-        with _unsloth_force_hf_offline():
-            yield
-    finally:
-        with _probe_window_lock:
-            _probe_window_depth -= 1
-            if _probe_window_depth == 0:
-                for _k, _v in _probe_window_saved.items():
-                    if _v is None:
-                        os.environ.pop(_k, None)
-                    else:
-                        os.environ[_k] = _v
-                _probe_window_saved = {}
 
 
 def _offline_window_if(local_files_only):
     """Forced-offline window when offline was detected, else a no-op context."""
-    return _force_offline_probe_window() if local_files_only else contextlib.nullcontext()
+    return _force_hf_offline() if local_files_only else contextlib.nullcontext()
 
 
 def _is_wsl():
@@ -318,16 +269,14 @@ class ExportBackend:
             local_files_only = _hf_offline()
 
             # Token the type-detection probes too, else a gated multimodal base
-            # 404s here and falls through to the text loader. These probes resolve
-            # config / tokenizer files via the Hub, so when offline we run them in
-            # a forced-offline window: their hf_hub_download / AutoConfig reads then
-            # hit the local cache directly instead of waiting out connection
-            # timeouts (detect_audio_type already reads the local cache first).
+            # 404s here and falls through to the text loader. When offline we run
+            # them in a forced-offline window: it sets the HF offline env vars +
+            # in-process flags, so is_vision_model's hf_hub_download / AutoConfig /
+            # urllib probes and its transformers-5 subprocess all read the local
+            # cache instead of waiting out connection timeouts. detect_audio_type's
+            # remote fallback is a raw requests.get, so it is ALSO passed
+            # local_files_only (and itself honors the env vars) to skip the network.
             with _offline_window_if(local_files_only):
-                # detect_audio_type's remote fallback is a raw requests.get that
-                # ignores the HF offline flag, so pass local_files_only explicitly
-                # to skip it offline (the forced-offline window only covers the
-                # huggingface_hub-based reads in is_vision_model).
                 self._audio_type = detect_audio_type(
                     model_id, hf_token = token, local_files_only = local_files_only
                 )
@@ -366,20 +315,15 @@ class ExportBackend:
 
             elif self._audio_type == "snac":
                 logger.info("Loading as SNAC (Orpheus) audio model...")
-                # FastLanguageModel's text tokenizer path (load_correct_tokenizer ->
-                # AutoTokenizer) does not forward local_files_only, so force HF
-                # offline around the load when the probe detected offline (the model
-                # weights / config still load via the local_files_only kwarg).
-                with _offline_window_if(local_files_only):
-                    model, tokenizer = FastLanguageModel.from_pretrained(
-                        model_name = checkpoint_path,
-                        max_seq_length = max_seq_length,
-                        dtype = None,
-                        load_in_4bit = load_in_4bit,
-                        trust_remote_code = trust_remote_code,
-                        token = token,
-                        local_files_only = local_files_only,
-                    )
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    load_in_4bit = load_in_4bit,
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                )
 
             elif self._audio_type == "bicodec":
                 from unsloth import FastModel
@@ -421,20 +365,15 @@ class ExportBackend:
 
             else:
                 logger.info("Loading as text model...")
-                # FastLanguageModel's text tokenizer path (load_correct_tokenizer ->
-                # AutoTokenizer) does not forward local_files_only, so force HF
-                # offline around the load when the probe detected offline (the model
-                # weights / config still load via the local_files_only kwarg).
-                with _offline_window_if(local_files_only):
-                    model, tokenizer = FastLanguageModel.from_pretrained(
-                        model_name = checkpoint_path,
-                        max_seq_length = max_seq_length,
-                        dtype = None,
-                        load_in_4bit = load_in_4bit,
-                        trust_remote_code = trust_remote_code,
-                        token = token,
-                        local_files_only = local_files_only,
-                    )
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    load_in_4bit = load_in_4bit,
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                )
 
             if _IS_MLX:
                 # MLX doesn't use PeftModel — detect LoRA via adapter_config.json

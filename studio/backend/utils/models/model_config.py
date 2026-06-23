@@ -1028,7 +1028,11 @@ def _detect_audio_from_tokenizer(
 
     # 2) Fall back to HuggingFace API (skipped offline so an offline export never
     #    blocks on a 15s network read; the local cache above is authoritative).
-    if local_files_only:
+    #    This raw requests.get ignores the HF offline flag, so gate it on BOTH the
+    #    explicit local_files_only and the HF offline env vars - the forced-offline
+    #    window the exporter opens sets those env vars, so this is covered even if a
+    #    caller forgets to pass local_files_only.
+    if local_files_only or _env_offline():
         return None, read_any
 
     try:

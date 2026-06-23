@@ -38,6 +38,8 @@ from .loader_utils import (
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     prepare_device_map,
+    _offline_aware_load,
+    _resolve_checkpoint_tokenizer_name,
 )
 import os, contextlib, sys
 
@@ -284,6 +286,7 @@ def _fix_rope_inv_freq(model):
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
+    @_offline_aware_load
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
@@ -357,16 +360,10 @@ class FastLanguageModel(FastLlamaModel):
             if is_dist:
                 device_map = distributed_device_map
 
-        # Honour offline env vars BEFORE FastModel delegation so 8bit /
-        # full-finetuning / qat paths also receive local_files_only.
-        if not kwargs.get("local_files_only", False):
-            _offline = {"1", "true", "yes", "on"}
-            if (
-                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
-                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
-            ):
-                kwargs["local_files_only"] = True
-
+        # Offline is decided once by @_offline_aware_load: when offline it has
+        # already set kwargs["local_files_only"] = True and entered _force_hf_offline()
+        # around this whole load, so the 8bit / full-finetuning / qat delegation and
+        # every nested HF call (including the text tokenizer load) inherit it.
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -755,36 +752,11 @@ class FastLanguageModel(FastLlamaModel):
             use_gradient_checkpointing, max_seq_length, dtype
         )
 
-        # Check if this is local model since the tokenizer gets overwritten.
-        # Keep the local checkpoint dir as tokenizer_name when it has a tokenizer
-        # config plus the actual tokenizer files. special_tokens_map.json is NOT
-        # required: modern tokenizers (e.g. Gemma) store special tokens inside
-        # tokenizer_config.json and often omit it, and requiring it forced a
-        # fallback to the base repo id, which breaks offline reloads / exports.
-        _has_tok_config = os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
-        _has_tok_files = (
-            os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
-            or os.path.exists(os.path.join(old_model_name, "tokenizer.model"))
-            # A BPE vocab.json is only loadable together with its merges.txt
-            # (GPT-2 / RoBERTa style); vocab.json alone is not self-sufficient.
-            or (
-                os.path.exists(os.path.join(old_model_name, "vocab.json"))
-                and os.path.exists(os.path.join(old_model_name, "merges.txt"))
-            )
-            or os.path.exists(os.path.join(old_model_name, "vocab.txt"))
-            or os.path.exists(os.path.join(old_model_name, "spiece.model"))
-        )
-        # Always pop tokenizer_name out of kwargs: it is also passed explicitly to
-        # the downstream loader, so leaving it in kwargs would raise "multiple
-        # values for keyword argument 'tokenizer_name'". A caller-supplied override
-        # wins; otherwise use the local checkpoint dir when it is self-sufficient.
-        _explicit_tokenizer_name = kwargs.pop("tokenizer_name", None)
-        if _explicit_tokenizer_name is not None:
-            tokenizer_name = _explicit_tokenizer_name
-        elif _has_tok_config and _has_tok_files:
-            tokenizer_name = old_model_name
-        else:
-            tokenizer_name = None
+        # Check if this is a local model since the tokenizer gets overwritten. A
+        # caller-supplied tokenizer_name wins; otherwise keep the local checkpoint
+        # dir when it is self-sufficient, else fall back to the base repo id. See
+        # loader_utils._resolve_checkpoint_tokenizer_name for the exact rules.
+        tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, kwargs)
 
         if fast_inference:
             fast_inference, model_name = fast_inference_setup(model_name, model_config)
@@ -949,6 +921,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @_offline_aware_load
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
@@ -1157,16 +1130,10 @@ class FastModel(FastBaseModel):
         peft_error = None
         model_config = None
         peft_config = None
+        # Offline is decided once by @_offline_aware_load: when offline it has already
+        # set kwargs["local_files_only"] = True and entered _force_hf_offline() around
+        # this whole load, so every nested HF call inherits it.
         local_files_only = kwargs.get("local_files_only", False)
-        # Mirror env-var fallback for direct callers (FastVisionModel / FastTextModel).
-        if not local_files_only:
-            _offline = {"1", "true", "yes", "on"}
-            if (
-                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
-                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
-            ):
-                local_files_only = True
-                kwargs["local_files_only"] = True
 
         # Text-diffusion slow-path dispatch, factored so both the normal route (below) and the
         # legacy-config fallback (in the AutoConfig except handler) share one call site.
@@ -1568,36 +1535,11 @@ class FastModel(FastBaseModel):
             if model_type in model_types_all:
                 supports_sdpa = False
 
-        # Check if this is local model since the tokenizer gets overwritten.
-        # Keep the local checkpoint dir as tokenizer_name when it has a tokenizer
-        # config plus the actual tokenizer files. special_tokens_map.json is NOT
-        # required: modern tokenizers (e.g. Gemma) store special tokens inside
-        # tokenizer_config.json and often omit it, and requiring it forced a
-        # fallback to the base repo id, which breaks offline reloads / exports.
-        _has_tok_config = os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
-        _has_tok_files = (
-            os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
-            or os.path.exists(os.path.join(old_model_name, "tokenizer.model"))
-            # A BPE vocab.json is only loadable together with its merges.txt
-            # (GPT-2 / RoBERTa style); vocab.json alone is not self-sufficient.
-            or (
-                os.path.exists(os.path.join(old_model_name, "vocab.json"))
-                and os.path.exists(os.path.join(old_model_name, "merges.txt"))
-            )
-            or os.path.exists(os.path.join(old_model_name, "vocab.txt"))
-            or os.path.exists(os.path.join(old_model_name, "spiece.model"))
-        )
-        # Always pop tokenizer_name out of kwargs: it is also passed explicitly to
-        # the downstream loader, so leaving it in kwargs would raise "multiple
-        # values for keyword argument 'tokenizer_name'". A caller-supplied override
-        # wins; otherwise use the local checkpoint dir when it is self-sufficient.
-        _explicit_tokenizer_name = kwargs.pop("tokenizer_name", None)
-        if _explicit_tokenizer_name is not None:
-            tokenizer_name = _explicit_tokenizer_name
-        elif _has_tok_config and _has_tok_files:
-            tokenizer_name = old_model_name
-        else:
-            tokenizer_name = None
+        # Check if this is a local model since the tokenizer gets overwritten. A
+        # caller-supplied tokenizer_name wins; otherwise keep the local checkpoint
+        # dir when it is self-sufficient, else fall back to the base repo id. See
+        # loader_utils._resolve_checkpoint_tokenizer_name for the exact rules.
+        tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, kwargs)
 
         # Capture task intent before text_only can replace a parent VLM config
         # with its nested text config.
