@@ -804,9 +804,9 @@ _MTP_MIN_SIZE_B = 3.0
 _CTX_FIT_VRAM_FRACTION = 0.95
 
 # Fraction of Apple Silicon's recommended Metal working-set to budget for a GGUF
-# load. Unified memory is shared with the OS and other apps, so this is tighter
-# than the dedicated-VRAM fraction above; it matches MLX's own 0.85 cap
-# (mlx_inference.py _configure_memory_limits).
+# load: unified memory is shared with the OS, so it's tighter than the
+# dedicated-VRAM fraction above. Set independently to match the 0.85 MLX uses
+# in mlx_inference.py (_configure_memory_limits); the two are not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 
 # Flat MTP reserve, used only when GGUF dims are too sparse for the byte-accurate
@@ -5358,18 +5358,14 @@ class LlamaCppBackend:
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
-                        # Apple Silicon: no discrete GPU is enumerated, so the
-                        # VRAM-fit branches above are skipped and effective_ctx is
-                        # still the model's full native length -- which over-commits
-                        # unified memory and makes llama-server fail with "Compute
-                        # error." at decode (#5118, #6529). Cap against the unified-
-                        # memory budget with the same fit math; leave gpu_indices=None
-                        # / use_fit=True untouched (Metal has no CUDA device plumbing
-                        # to pin, and --fit on still ships as a backstop alongside the
-                        # reduced -c). Mirror the discrete-GPU branch: derive the UI
-                        # ceiling from native for both explicit and auto, but shrink
-                        # the launch context only when it's auto -- an explicit user
-                        # context is honored verbatim.
+                        # Apple Silicon enumerates no GPU, so the branches above are
+                        # skipped and the context stays at full native length, which
+                        # over-commits unified memory -> llama-server "Compute error."
+                        # at decode (#5118, #6529). Budget it with the same fit math.
+                        # gpu_indices/use_fit stay at their defaults (nothing to pin on
+                        # Metal; --fit on rides along as a backstop). Like the discrete
+                        # branch, the UI ceiling comes from native for both modes but
+                        # only the auto context is shrunk; an explicit one is honored.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         cap = self._fit_context_to_vram(
                             native_ctx_for_cap,
