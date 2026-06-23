@@ -902,6 +902,19 @@ export async function* streamChatCompletions(
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
       }
+      // Relay server-side reasoning duration.
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        "type" in parsed &&
+        parsed.type === "reasoning_summary"
+      ) {
+        yield {
+          _reasoningDurationMs: (parsed as { duration_ms?: number }).duration_ms,
+        } as unknown as OpenAIChatChunk;
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+        continue;
+      }
       yield parsed as OpenAIChatChunk;
       separatorIndex = buffer.search(/\r?\n\r?\n/);
     }

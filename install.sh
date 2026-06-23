@@ -3160,6 +3160,7 @@ if [ -t 1 ]; then
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            substep "(add --secure to allow HTTPS)"
             echo ""
             ;;
     esac
@@ -3181,5 +3182,6 @@ else
         substep "unsloth studio -p 8888"
     fi
     substep "(add -H 0.0.0.0 to allow network / cloud access)"
+    substep "(add --secure to allow HTTPS)"
     echo ""
 fi

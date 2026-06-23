@@ -953,9 +953,14 @@ def _setup_server_disk_logging():
 def _cloudflare_tunnel_should_start(
     *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
 ) -> bool:
-    """Whether to start the Cloudflare tunnel. --secure tunnels a loopback bind too;
-    non-secure keeps the 0.0.0.0-only rule. Colab/api-only never tunnel."""
-    return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
+    """Whether to start the Cloudflare tunnel. --secure exposes only the tunnel
+    (loopback bind), so it tunnels even api-only (headless secure API serving);
+    otherwise tunnel only a 0.0.0.0 bind, never api-only (Tauri) or Colab."""
+    if is_colab or not cloudflare:
+        return False
+    if secure:
+        return True
+    return host == "0.0.0.0" and not api_only
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
@@ -979,6 +984,7 @@ def run_server(
     cloudflare: bool = True,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
+    emit_tauri_port: bool = True,
 ):
     """
     Start the FastAPI server.
@@ -992,6 +998,9 @@ def run_server(
         llama_parallel_slots: parallel slots for llama-server
         enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
             the default (tools on, per-request enable_tools honored)
+        emit_tauri_port: print the machine-readable TAURI_PORT line the desktop
+            app parses from stdout; the headless `run --api-only` path turns it
+            off so it does not pollute the documented URL/API-key banner
 
     Note:
         Signal handlers are NOT registered here so embedders (e.g. Colab) keep
@@ -1034,9 +1043,13 @@ def run_server(
     if _session_log is not None and not silent:
         print(f"Session log: {_session_log}")
 
-    # Set env var BEFORE importing main so CORS middleware picks it up.
+    # Set env vars BEFORE importing main so CORS middleware picks them up.
+    # secure api-only is a remote server behind Cloudflare, so it keeps the
+    # any-origin CORS profile; plain api-only stays locked to the Tauri app.
     if api_only:
         os.environ["UNSLOTH_API_ONLY"] = "1"
+    if secure:
+        os.environ["UNSLOTH_SECURE"] = "1"
 
     import nest_asyncio
 
@@ -1218,7 +1231,8 @@ def run_server(
     atexit.register(terminate_all)
 
     # Output port for Tauri (api-only), only after sockets bind and startup done.
-    if api_only:
+    # The headless `run --api-only` path opts out so it does not leak this line.
+    if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
 
     # Free trycloudflare.com tunnel for 0.0.0.0 binds (the raw ip:port is often
