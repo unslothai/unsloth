@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression test: SyntheticDataKit.chunk_data must not drop a single-chunk document."""
+"""Regression tests for SyntheticDataKit.chunk_data: short-document handling and overlap validation."""
 
 import os
 import tempfile
@@ -33,9 +33,10 @@ def _make_kit(
     return kit
 
 
-def _chunk(text):
+def _chunk(text, kit = None):
     """Returns (chunk_filenames, chunk_contents); reads content before cleanup."""
-    kit = _make_kit()
+    if kit is None:
+        kit = _make_kit()
     with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
         f.write(text)
         path = f.name
@@ -74,6 +75,18 @@ def test_chunk_data_empty_document_yields_no_chunks():
     assert out == [], f"empty doc should yield no files, got {len(out)}"
 
 
+def test_chunk_data_short_document_is_not_split_into_fragments():
+    # A document shorter than the overlap previously reached the multi-chunk path
+    # (n_chunks >= 3) where linspace produced negative start indices, slicing the
+    # wrong tail tokens. It must be emitted as one chunk covering the whole document.
+    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 920, overlap = 64)  # max_tokens = 80
+    out, contents = _chunk("word " * 50, kit = kit)  # 50 tokens < overlap (would be 4 chunks)
+    assert len(out) == 1, f"sub-overlap doc should yield 1 chunk, got {len(out)}"
+    assert contents[0].split() == [f"w{i}" for i in range(50)], (
+        f"chunk must cover the whole document, not a fragment; got: {contents[0]!r}"
+    )
+
+
 def test_chunk_data_rejects_overlap_not_smaller_than_chunk():
     # If overlap >= chunk size the stride is non-positive, which would divide by zero
     # or emit one oversized chunk. The config must be rejected with a clear error.
@@ -95,5 +108,6 @@ if __name__ == "__main__":
     test_chunk_data_keeps_single_chunk_document()
     test_chunk_data_still_splits_long_document()
     test_chunk_data_empty_document_yields_no_chunks()
+    test_chunk_data_short_document_is_not_split_into_fragments()
     test_chunk_data_rejects_overlap_not_smaller_than_chunk()
     print("OK")

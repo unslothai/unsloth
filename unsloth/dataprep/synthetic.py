@@ -404,11 +404,10 @@ class SyntheticDataKit:
         if max_tokens <= 5:
             raise RuntimeError("Generation length is way too long!")
         if max_tokens <= self.overlap:
-            # The chunk stride is (max_tokens - overlap); a non-positive stride makes the
-            # n_chunks computation below divide by zero or go negative. Reject the unusable
-            # configuration with a clear message instead of silently emitting one huge chunk.
+            # A non-positive stride (max_tokens - overlap) makes the n_chunks
+            # computation below divide by zero or go negative, so reject it.
             raise RuntimeError(
-                f"Unsloth: the chunk size (max_seq_length - 2 * max_generation_tokens - 128 = "
+                f"The chunk size (max_seq_length - 2 * max_generation_tokens - 128 = "
                 f"{max_tokens}) must be larger than the overlap ({self.overlap}). "
                 f"Reduce overlap or max_generation_tokens."
             )
@@ -416,15 +415,17 @@ class SyntheticDataKit:
 
         # Get left and right boundaries
         length = len(input_ids)
-        n_chunks = int(np.ceil(length / (max_tokens - self.overlap)))
-        if n_chunks <= 1:
-            # A document that fits in a single chunk must still be emitted. The
-            # linspace/stack pairing below turns n boundary points into n-1
-            # ranges, which is empty when n_chunks == 1, silently dropping the
-            # whole document. Emit the full [0, length] range instead (and emit
-            # nothing for an empty document so we don't write an empty chunk).
-            boundaries = [(0, length)] if length > 0 else []
+        if length <= max_tokens:
+            # The whole document fits in one chunk window, so emit it as a single
+            # chunk. Routing it through the multi-chunk path below would drop it
+            # (the linspace/stack pairing emits one fewer range than boundary
+            # points) or, for a document shorter than the overlap, slice the wrong
+            # tokens via negative start indices. Empty doc -> no chunk.
+            boundaries = [[0, length]] if length > 0 else []
         else:
+            # length > max_tokens > overlap here, so length - overlap > 0 and the
+            # linspace boundaries below are always non-negative.
+            n_chunks = int(np.ceil(length / (max_tokens - self.overlap)))
             boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)
             boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
             boundaries = np.minimum(boundaries, length).tolist()
