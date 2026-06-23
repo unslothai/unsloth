@@ -13,15 +13,25 @@ import re
 # Pre-compiled patterns for tool XML stripping. The hyphen in the name
 # char-class lets dashed MCP tool/parameter names (mcp__srv__list-issues,
 # issue-number) parse alongside the built-ins.
+#
+# The Gemma close marker is anchored to ``(?:<tool_call|>|\Z)`` (the safe form
+# routes/inference.py's _TOOL_XML_RE uses): the plain ``<\|tool_call>.*?<tool_call\|>``
+# this PR introduced backtracks from every open position on a run of unclosed
+# markers (quadratic, and strip_tool_markup_streaming re-scans the cumulative
+# buffer per token), whereas the ``\Z`` alternative lets the first open consume
+# to EOF in one linear pass. strip_tool_call_markup additionally strips Gemma
+# spans via the brace/quote-aware _strip_gemma_native_spans, so a literal close
+# marker inside a <|"|>-quoted argument cannot truncate the span and leak its
+# suffix; the regex below is the streaming-stripper fallback.
+_TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?(?:<tool_call\|>|\Z)", re.DOTALL)
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
-    re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
+    _TC_GEMMA_CLOSED_PAT,
     re.compile(r"<tool_call\|>"),
     re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
-    re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
 
@@ -443,6 +453,41 @@ def parse_tool_calls_from_text(
     return tool_calls
 
 
+def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
+    """Remove complete Gemma-native ``<|tool_call>call:NAME{...}<tool_call|>``
+    spans, brace- and quote-balanced so a literal ``<tool_call|>`` inside a
+    ``<|"|>``-quoted argument does not truncate the span and leak its suffix
+    (which the plain ``.*?`` regex does). A span without a balanced closing
+    ``}`` or a trailing close marker is incomplete: dropped to EOF when
+    ``final`` (the response is over), otherwise kept verbatim so a call that is
+    still streaming is not stripped mid-token.
+    """
+    out: list[str] = []
+    cursor = 0
+    for match in _TC_GEMMA_START_RE.finditer(text):
+        start = match.start()
+        if start < cursor:
+            continue
+        brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
+        if brace_end < 0:
+            if final:
+                out.append(text[cursor:start])
+                cursor = len(text)
+            continue
+        tail = text[brace_end + 1 :]
+        leading_ws = len(tail) - len(tail.lstrip())
+        close = _TC_GEMMA_END_TAG_RE.match(tail, leading_ws)
+        if close is None:
+            if final:
+                out.append(text[cursor:start])
+                cursor = len(text)
+            continue
+        out.append(text[cursor:start])
+        cursor = brace_end + 1 + close.end()
+    out.append(text[cursor:])
+    return "".join(out)
+
+
 def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     """Strip tool-call XML markup from text.
 
@@ -450,7 +495,14 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     When ``final`` is True, trailing incomplete tool-call blocks are removed
     too, and the result is stripped of surrounding whitespace.
     """
+    # Gemma-native spans are stripped brace/quote-aware first; the regex form is
+    # not quote-aware and would truncate a span at a close marker inside a quoted
+    # argument. Skip that regex below and let the remaining patterns handle the
+    # JSON/XML formats and any orphan close marker.
+    text = _strip_gemma_native_spans(text, final = final)
     patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in patterns:
+        if pat is _TC_GEMMA_CLOSED_PAT:
+            continue
         text = pat.sub("", text)
     return text.strip() if final else text

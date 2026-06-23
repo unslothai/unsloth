@@ -22,6 +22,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.tool_call_parser import parse_tool_calls_from_text
+from core.tool_healing import strip_tool_call_markup
 
 
 def _args(call: dict) -> dict:
@@ -159,3 +160,15 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
     )
     calls = parse_tool_calls_from_text(content)
     assert [c["function"]["name"] for c in calls] == ["python"], calls
+
+
+def test_gemma_close_marker_inside_quoted_arg_is_not_leaked_when_stripping():
+    # A literal <tool_call|> inside a <|"|>-quoted argument must not truncate the
+    # span: the parser keeps it as data, and stripping must remove the whole span
+    # (brace/quote-aware), not stop at the inner marker and leak the suffix.
+    text = '<|tool_call>call:python{code:<|"|>print("<tool_call|>")<|"|>}<tool_call|>'
+    calls = parse_tool_calls_from_text(text)
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {"code": 'print("<tool_call|>")'}
+    assert strip_tool_call_markup("before " + text + " after") == "before  after"
+    assert strip_tool_call_markup("before " + text + " after", final = True) == "before  after"
