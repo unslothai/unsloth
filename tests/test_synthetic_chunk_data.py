@@ -9,14 +9,22 @@ from unsloth.dataprep.synthetic import SyntheticDataKit
 
 
 class _MockTokenizer:
-    def __call__(self, text, add_special_tokens = False):
+    def __call__(
+        self,
+        text,
+        add_special_tokens = False,
+    ):
         return SimpleNamespace(input_ids = list(range(len(text.split()))))
 
     def decode(self, token_ids):
         return " ".join(f"w{i}" for i in token_ids)
 
 
-def _make_kit(max_seq_length = 2048, max_generation_tokens = 512, overlap = 64):
+def _make_kit(
+    max_seq_length = 2048,
+    max_generation_tokens = 512,
+    overlap = 64,
+):
     kit = SyntheticDataKit.__new__(SyntheticDataKit)
     kit.tokenizer = _MockTokenizer()
     kit.max_seq_length = max_seq_length
