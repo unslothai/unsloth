@@ -1534,17 +1534,19 @@ _maybe_reroute_strixhalo_to_2404() {
 _maybe_reroute_strixhalo_to_2404 || true
 
 # ── Check system dependencies ──
-# cmake and git are needed by unsloth studio setup to build the GGUF inference
-# engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
+# A *source* build of the GGUF inference engine (llama.cpp) needs git to clone it
+# and cmake to compile it. Studio downloads a prebuilt llama.cpp by default,
+# which needs neither: they're only used by the source-build fallback, which
+# studio/setup.sh self-skips (degrading gracefully) when they're absent. So on
+# macOS -- where requiring cmake otherwise forces a manual Homebrew install -- we
+# don't block on it; on Linux it installs painlessly via apt, so we keep
+# requiring it there.
 tauri_log "STEP" "Checking system dependencies"
 MISSING=""
 
-command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
-command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
-
 case "$OS" in
     macos)
-        # Xcode Command Line Tools provide the C/C++ compiler
+        # Xcode Command Line Tools provide the C/C++ compiler and git.
         if ! xcode-select -p >/dev/null 2>&1; then
             echo ""
             echo "==> Xcode Command Line Tools are required."
@@ -1553,8 +1555,18 @@ case "$OS" in
             echo "    After the installation completes, please re-run this script."
             exit 1
         fi
+        # cmake is only needed for a source build; the default prebuilt path
+        # doesn't use it, so its absence is not fatal -- no Homebrew prerequisite.
+        if command -v cmake >/dev/null 2>&1; then
+            step "deps" "all system dependencies found"
+        else
+            step "deps" "using prebuilt llama.cpp (cmake not found)" "$C_WARN"
+            substep "Install cmake only if you want a source build: brew install cmake"
+        fi
         ;;
     linux|wsl)
+        command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
+        command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
         # curl or wget is needed for downloads; check both
         if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
             MISSING="$MISSING curl"
@@ -1562,27 +1574,12 @@ case "$OS" in
         command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
         # libcurl dev headers for llama.cpp HTTPS support
         command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
-        ;;
-esac
 
-MISSING=$(echo "$MISSING" | sed 's/^ *//')
-
-if [ -n "$MISSING" ]; then
-    echo ""
-    step "deps" "missing: $MISSING" "$C_WARN"
-    substep "These are needed to build the GGUF inference engine."
-
-    case "$OS" in
-        macos)
-            if ! command -v brew >/dev/null 2>&1; then
-                echo ""
-                echo "    Homebrew is required to install them."
-                echo "    Install Homebrew from https://brew.sh then re-run this script."
-                exit 1
-            fi
-            brew install $MISSING </dev/null
-            ;;
-        linux|wsl)
+        MISSING=$(echo "$MISSING" | sed 's/^ *//')
+        if [ -n "$MISSING" ]; then
+            echo ""
+            step "deps" "missing: $MISSING" "$C_WARN"
+            substep "These are needed to build the GGUF inference engine."
             if command -v apt-get >/dev/null 2>&1; then
                 _smart_apt_install $MISSING
             else
@@ -1597,12 +1594,12 @@ if [ -n "$MISSING" ]; then
                 echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
                 exit 1
             fi
-            ;;
-    esac
-    echo ""
-else
-    step "deps" "all system dependencies found"
-fi
+            echo ""
+        else
+            step "deps" "all system dependencies found"
+        fi
+        ;;
+esac
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
