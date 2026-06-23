@@ -8,7 +8,12 @@ import {
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -16,18 +21,24 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
+import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
+  DOWNLOAD_KIND,
+  downloadManager,
+} from "@/features/hub/download-manager";
+import {
+  type NativeIntent,
   NativeModelChip,
   NativeModelDropOverlay,
-  type NativeIntent,
   useChooseNativeModel,
   useNativeIntentStore,
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   BubbleChatTemporaryIcon,
@@ -37,7 +48,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
   type CSSProperties,
   type ReactElement,
@@ -48,10 +58,16 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "@/lib/toast";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import { listLocalModels } from "./api/chat-api";
+import { ArtifactSurface } from "./artifacts/artifact-surface";
+import {
+  clearAutoOpenedArtifacts,
+  useChatArtifactsStore,
+  useSelectedChatArtifact,
+} from "./artifacts/store";
+import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
-import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -63,12 +79,11 @@ import {
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import { useChatProjects } from "./hooks/use-chat-projects";
-import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
-import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
   type SidebarItem,
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
+import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -101,18 +116,15 @@ import {
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   hasGgufSource,
+  isDownloadableHubRepo,
   loadOptionalBool,
+  pendingSelectionMatches,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import type { PendingModelSelection } from "./stores/chat-runtime-store";
+import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
-import { ArtifactSurface } from "./artifacts/artifact-surface";
-import {
-  clearAutoOpenedArtifacts,
-  useChatArtifactsStore,
-  useSelectedChatArtifact,
-} from "./artifacts/store";
-import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import type { ChatView, MessageRecord } from "./types";
 import {
   getStoredChatThread,
@@ -492,6 +504,9 @@ function CompareShell({
   children: ReactElement;
   composer: ReactElement;
 }): ReactElement {
+  const showModelDisclaimer = useChatPreferencesStore(
+    (s) => s.showModelDisclaimer,
+  );
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
@@ -503,9 +518,11 @@ function CompareShell({
         </div>
         <div className="shrink-0 bg-background pl-5 pr-5 md:pr-[30px] pb-2 pt-1">
           <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
-          <p className="composer-footer-note">
-            LLMs can make mistakes. Double-check responses.
-          </p>
+          {showModelDisclaimer && (
+            <p className="composer-footer-note">
+              LLMs can make mistakes. Double-check responses.
+            </p>
+          )}
         </div>
       </div>
     </CompareHandlesProvider>
@@ -906,7 +923,9 @@ function ProjectLanding({
               },
             ] as const;
           }
-          const messages = await listStoredChatMessages(item.id).catch(() => []);
+          const messages = await listStoredChatMessages(item.id).catch(
+            () => [],
+          );
           const firstUserMessage =
             messages.find((message) => message.role === "user") ?? messages[0];
           return [
@@ -996,41 +1015,41 @@ function ProjectLanding({
             {projectTab === "sources" ? (
               <ProjectSourcesPanel projectId={projectId} />
             ) : (
-            <div className="mt-8 flex flex-col gap-1">
-              {items.map((item) => {
-                const preview = previews[item.id];
-                return (
-                  <button
-                    key={`${item.type}:${item.id}`}
-                    type="button"
-                    onClick={() => {
-                      navigate({
-                        to: "/chat",
-                        search:
-                          item.type === "single"
-                            ? { thread: item.id, project: projectId }
-                            : { compare: item.id, project: projectId },
-                      });
-                    }}
-                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
-                        {item.title}
-                      </div>
-                      {preview?.snippet ? (
-                        <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
-                          {preview.snippet}
+              <div className="mt-8 flex flex-col gap-1">
+                {items.map((item) => {
+                  const preview = previews[item.id];
+                  return (
+                    <button
+                      key={`${item.type}:${item.id}`}
+                      type="button"
+                      onClick={() => {
+                        navigate({
+                          to: "/chat",
+                          search:
+                            item.type === "single"
+                              ? { thread: item.id, project: projectId }
+                              : { compare: item.id, project: projectId },
+                        });
+                      }}
+                      className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                          {item.title}
                         </div>
-                      ) : null}
-                    </div>
-                    <span className="shrink-0 text-[14px] text-muted-foreground">
-                      {preview?.date ?? formatProjectChatDate(item.createdAt)}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+                        {preview?.snippet ? (
+                          <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
+                            {preview.snippet}
+                          </div>
+                        ) : null}
+                      </div>
+                      <span className="shrink-0 text-[14px] text-muted-foreground">
+                        {preview?.date ?? formatProjectChatDate(item.createdAt)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
         </div>
@@ -1067,15 +1086,25 @@ export function ChatPage({
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
-  const loadOnSelection = useChatRuntimeStore((s) => s.loadOnSelection);
-  const setLoadOnSelection = useChatRuntimeStore((s) => s.setLoadOnSelection);
   // Deferred-load staging: downloads a staged GGUF (if needed) and reads its
   // header context so the sheet can show the context slider before the load.
-  const stagedDownload = useStagedModelPreparation();
+  // autoLoad picks instead load the cached file as soon as the download ends;
+  // selectModel is defined below, so the load runs through a ref.
+  const autoLoadStagedRef = useRef<
+    ((pending: PendingModelSelection) => void) | null
+  >(null);
+  const stagedDownload = useStagedModelPreparation({
+    onAutoLoad: (pending) => autoLoadStagedRef.current?.(pending),
+  });
   // Abandon a staged pick: the store action cancels its in-flight download and
   // reverts the edited knobs, so nothing lingers after the user walks away.
   const abandonStaged = useCallback(() => {
     useChatRuntimeStore.getState().abandonStagedModel();
+  }, []);
+  // Detach a staged pick on navigation without cancelling its download: the
+  // transfer keeps running in the manager and lands in cache, like Hub.
+  const detachStaged = useCallback(() => {
+    useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
   }, []);
   // Tracks whether the chat page is still mounted, so a staged-load failure that
   // resolves after the user left chat doesn't resurrect the abandoned pick.
@@ -1252,6 +1281,33 @@ export function ChatPage({
     refreshRef.current = refresh;
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
+  // Load a cached autoLoad pick once its download finishes. The sheet was never
+  // opened, so on a load failure just drop the orphaned staged knobs. The knobs
+  // were already seeded on stage, so keepSpeculative only when a config was
+  // saved -- otherwise the standing speculative preference should win.
+  autoLoadStagedRef.current = (pending) => {
+    const remembered = loadRememberedLoadSettings(
+      rememberedLoadSettingsKey(pending),
+    );
+    void selectModel({
+      ...pending,
+      isDownloaded: true,
+      forceReload: true,
+      keepSpeculative: remembered != null,
+      throwOnError: true,
+    }).catch(() => {
+      const store = useChatRuntimeStore.getState();
+      // selectModel only clears pendingSelection on success, so a failed
+      // auto-load leaves our staged pick (and its edited load knobs) behind.
+      // Abandon it when it is still the active stage; otherwise just revert the
+      // settings if the stage was already cleared by something else.
+      if (pendingSelectionMatches(store.pendingSelection, pending)) {
+        store.abandonStagedModel();
+      } else if (!store.pendingSelection) {
+        store.resetModelSettingsToLoaded();
+      }
+    });
+  };
   const isExternalModel = useMemo(
     () => isExternalModelId(inferenceParams.checkpoint),
     [inferenceParams.checkpoint],
@@ -1446,7 +1502,9 @@ export function ChatPage({
       }
 
       if (search.thread) {
-        const thread = await getStoredChatThread(search.thread).catch(() => null);
+        const thread = await getStoredChatThread(search.thread).catch(
+          () => null,
+        );
         if (!canceled) {
           const projectId = thread?.projectId ?? null;
           setCurrentProjectId(projectId);
@@ -1583,8 +1641,8 @@ export function ChatPage({
     const prev = prevChatContextRef.current;
     prevChatContextRef.current = chatContextKey;
     if (prev === null || prev === chatContextKey) return;
-    abandonStaged();
-  }, [chatContextKey, abandonStaged]);
+    detachStaged();
+  }, [chatContextKey, detachStaged]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   // Load immediately, or — when "Load on selection" is off — stage the pick so
@@ -1593,20 +1651,90 @@ export function ChatPage({
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
-      // Only GGUF picks have pre-load options worth staging. Non-GGUF models
-      // (and the toggle-on case) load immediately, so e.g. a trust_remote_code
-      // approval surfaces through the normal load path.
-      if (store.loadOnSelection || !hasGgufSource(selection)) {
-        // Abandon any staged GGUF first so its edited knobs (e.g. a custom
+      // An un-cached HF repo (GGUF variant or a full non-GGUF snapshot) downloads
+      // through the manager first (global indicator), then auto-loads. Everything
+      // else -- cached picks, local/native files, LoRA, external -- loads now.
+      const wantManagerDownload =
+        isDownloadableHubRepo(selection) && !selection.isDownloaded;
+      if (
+        (!hasGgufSource(selection) && !wantManagerDownload) ||
+        (store.loadOnSelection && selection.isDownloaded)
+      ) {
+        // Detach any staged pick first so its edited knobs (e.g. a custom
         // context length) don't leak into this immediate load -- resolveLoad
-        // reads customContextLength before checking the target is GGUF.
-        abandonStaged();
-        await selectModel(selection);
+        // reads customContextLength before checking the target is GGUF. Detach
+        // (not abandon) keeps its download running.
+        detachStaged();
+        // Load-on-selection skips the sheet, so seed the saved knobs here the
+        // way the sheet's restore effect would; the switch would otherwise reset
+        // the remembered speculative choice (keepSpeculative below prevents it).
+        const remembered = hasGgufSource(selection)
+          ? loadRememberedLoadSettings(rememberedLoadSettingsKey(selection))
+          : null;
+        if (remembered) store.applyRememberedLoadSettings(remembered);
+        await selectModel(
+          remembered ? { ...selection, keepSpeculative: true } : selection,
+        );
         return;
       }
-      // Tear down any existing staged pick first so its in-flight download is
-      // cancelled, not left running after we rebind to the new pick.
-      abandonStaged();
+      // Loads can't queue behind each other, but a download is independent: if
+      // the pick needs downloading, start it in the manager so it runs alongside
+      // the load. Nothing to download (already on device) just waits.
+      if (store.modelLoading) {
+        // Both an uncached non-GGUF snapshot (wantManagerDownload) and an
+        // uncached remote GGUF quant download through the manager, so either can
+        // run in the background while another model loads. wantManagerDownload
+        // excludes GGUF by design, so the GGUF case is checked separately.
+        const wantBackgroundDownload =
+          wantManagerDownload ||
+          (selection.source === "hub" &&
+            hasGgufSource(selection) &&
+            !selection.isDownloaded);
+        // The model currently loading already downloads as part of its own load
+        // (the /load flow fetches before setting the checkpoint), so re-picking
+        // it must not kick off a second transfer against the same cache.
+        const isLoadingThisPick =
+          !!loadingModel &&
+          normalizeModelRef(loadingModel.id) ===
+            normalizeModelRef(selection.id) &&
+          (loadingModel.ggufVariant ?? null) === (selection.ggufVariant ?? null);
+        if (isLoadingThisPick) {
+          toast.info("This model is already loading", {
+            description: "It's downloading as part of the load in progress.",
+          });
+        } else if (wantBackgroundDownload) {
+          // Only claim the download started once a job is actually created. A
+          // transport conflict records state that is only resolvable from the
+          // Hub download card, so point the user there instead of showing a
+          // success toast for a transfer that never began; "busy" and "error"
+          // already surface their own toasts.
+          const outcome = await downloadManager.requestStart({
+            kind: DOWNLOAD_KIND.MODEL,
+            repoId: selection.id,
+            variant: selection.ggufVariant ?? null,
+            expectedBytes: selection.expectedBytes ?? 0,
+          });
+          if (outcome === "started") {
+            toast.info("Downloading in the background", {
+              description:
+                "It'll be ready to load once the current model finishes.",
+            });
+          } else if (outcome === "conflict") {
+            toast.info("Resume this download from the Hub", {
+              description:
+                "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
+            });
+          }
+        } else {
+          toast.info("Another model is already loading", {
+            description: "Wait for it to finish or cancel it first.",
+          });
+        }
+        return;
+      }
+      // Detach the prior staged pick (keeping its download) before rebinding, so
+      // a second pick downloads alongside the first instead of cancelling it.
+      detachStaged();
       store.stageModel({
         id: selection.id,
         isLora: selection.isLora,
@@ -1615,9 +1743,11 @@ export function ChatPage({
         expectedBytes: selection.expectedBytes,
         nativePathToken: selection.nativePathToken,
         isGguf: selection.isGguf,
+        isHubRepo: wantManagerDownload || undefined,
+        autoLoad: store.loadOnSelection,
       });
     },
-    [abandonStaged, selectModel],
+    [detachStaged, selectModel, loadingModel],
   );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
@@ -1708,8 +1838,7 @@ export function ChatPage({
           selectedProvider?.providerType,
           selectedExternal?.modelId,
           {
-            isReasoningProvider:
-              selectedProvider?.isReasoningModel === true,
+            isReasoningProvider: selectedProvider?.isReasoningModel === true,
             baseUrl: selectedProvider?.baseUrl ?? null,
           },
         );
@@ -1869,6 +1998,7 @@ export function ChatPage({
         }
         const selection = {
           id: value,
+          source: meta?.source,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded,
@@ -1968,8 +2098,7 @@ export function ChatPage({
           if (!usage) return;
           const store = useChatRuntimeStore.getState();
           const activeCheckpoint = store.params.checkpoint;
-          const usageModelId =
-            (usage as { modelId?: unknown }).modelId;
+          const usageModelId = (usage as { modelId?: unknown }).modelId;
           // Scope by modelId when present; reject if no active checkpoint
           // (model-scoped usage can't be attributed to "nothing").
           if (typeof usageModelId === "string" && usageModelId) {
@@ -2253,8 +2382,8 @@ export function ChatPage({
             beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
-            aria-hidden
-            className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            aria-hidden={true}
+            className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-[rgb(from_var(--background)_r_g_b/0)]"
           />
         )}
         <div
@@ -2275,8 +2404,6 @@ export function ChatPage({
                 activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
-                loadOnSelection={loadOnSelection}
-                onLoadOnSelectionChange={setLoadOnSelection}
                 onFoldersChange={refreshLocalModels}
                 onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
@@ -2304,7 +2431,7 @@ export function ChatPage({
                 />
                 {currentProject && activeThreadId ? (
                   <>
-                    <span className="shrink-0" aria-hidden>
+                    <span className="shrink-0" aria-hidden={true}>
                       /
                     </span>
                     <span className="min-w-0 truncate">
@@ -2405,7 +2532,6 @@ export function ChatPage({
                     onClick={() => setSettingsOpen(true)}
                     className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Open run settings"
-                    data-tour="chat-settings"
                   >
                     <HugeiconsIcon
                       icon={LayoutAlignRightIcon}
@@ -2495,6 +2621,7 @@ export function ChatPage({
           );
         }}
         externalProviderType={activeExternalProviderType}
+        loadingModel={loadingModel}
         onReloadModel={() => {
           const state = useChatRuntimeStore.getState();
           if (state.params.checkpoint) {
@@ -2512,22 +2639,23 @@ export function ChatPage({
           if (!pending) return;
           const keyAtLoad = chatContextKey;
           // forceReload: the staged model isn't loaded yet, so bypass the
-          // same-checkpoint dedupe (and selectModel clears pendingSelection).
-          // keepSpeculative: honor the speculative mode set on the sidebar.
+          // same-checkpoint dedupe. keepSpeculative: honor the speculative mode
+          // set on the sidebar.
           void selectModel({
             ...pending,
             forceReload: true,
             keepSpeculative: true,
             throwOnError: true,
           }).catch(() => {
-            // Recoverable failure (expired token, gated repo, OOM…): selectModel
-            // cleared the pick but left the edited knobs intact.
+            // Recoverable failure (expired token, gated repo, OOM…): the pick is
+            // cleared only on success, so it normally stays staged with edited
+            // knobs intact — nothing to restore.
             const store = useChatRuntimeStore.getState();
-            // A pick staged meanwhile owns the knobs now; leave it untouched.
+            // Still staged (this pick, or a newer one queued meanwhile): leave it.
             if (store.pendingSelection) return;
-            // Restore (not re-stage, which would reset the knobs) only if the
-            // staged-load is still wanted: same chat context, sheet still open,
-            // page still mounted.
+            // Cleared mid-load (sheet closed / switched chats). Re-stage only if
+            // the staged-load is still wanted: same chat context, sheet still
+            // open, page still mounted.
             const stillWanted =
               mountedRef.current &&
               store.settingsPanelOpen &&
@@ -2545,7 +2673,8 @@ export function ChatPage({
         stagedDownloadFraction={stagedDownload.progress?.fraction ?? null}
         onCancelStagedDownload={() =>
           stagedDownload.cancelDownload(
-            useChatRuntimeStore.getState().pendingSelection?.ggufVariant ?? null,
+            useChatRuntimeStore.getState().pendingSelection?.ggufVariant ??
+              null,
           )
         }
       />

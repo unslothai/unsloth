@@ -1653,6 +1653,8 @@ _REAL_REPO_MATRIX = [
 
 def _resolve_real(monkeypatch, repo, drafter, mode):
     backend = _resolver_backend(monkeypatch)
+    if "qwen" in repo.lower() and "-mtp" in repo.lower():
+        backend._nextn_predict_layers = 1
     flags = backend._build_speculative_flags(
         speculative_type = mode,
         spec_draft_n_max = None,
@@ -1843,3 +1845,126 @@ def test_spec_fallback_reason_reset_on_off(monkeypatch):
         binary = "/fake/llama-server",
     )
     assert backend.spec_fallback_reason is None
+
+
+def test_is_gemma_mtp_family():
+    from core.inference.llama_cpp import _is_gemma_mtp_family
+
+    assert _is_gemma_mtp_family("unsloth/gemma-4-E4B-it-GGUF") is True
+    assert _is_gemma_mtp_family("unsloth/gemma-4-12b-it-GGUF") is True
+    # gemma-3n ships no separate drafter, so it is not a drafter family.
+    assert _is_gemma_mtp_family("unsloth/gemma-3n-E2B-it-GGUF") is False
+    assert _is_gemma_mtp_family("unsloth/Qwen3.5-35B-A3B-MTP-GGUF") is False
+    assert _is_gemma_mtp_family("unsloth/llama-3-8b") is False
+
+
+def test_gemma_3n_without_drafter_is_not_mtp(monkeypatch):
+    # gemma-3n ships no drafter; it must take the normal non-MTP path, not
+    # drafter_not_found (which would make every reload retry a missing drafter).
+    backend = _resolver_backend(monkeypatch)
+    backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-3n-E4B-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,
+    )
+    assert backend.spec_fallback_reason is None
+
+
+def test_spec_fallback_reason_drafter_not_found(monkeypatch):
+    # Drafterless Gemma should fall back to ngram-mod + drafter_not_found.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,  # Drafter download failed
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_is_gemma_mtp_name_none_safe():
+    # model_identifier=None (local load) must not raise; recognise via filename.
+    from core.inference.llama_cpp import _is_gemma_mtp_family, _is_gemma_mtp_name
+
+    assert _is_gemma_mtp_family(None) is False
+    assert _is_gemma_mtp_name(None, "/models/gemma-4-E4B-it-Q4_K_M.gguf") is True
+    assert _is_gemma_mtp_name("unsloth/Qwen3.5-4B-MTP-GGUF", None) is False
+
+
+@pytest.mark.parametrize("mode", ["mtp", "mtp+ngram"])
+def test_forced_mtp_gemma_without_drafter_falls_back(monkeypatch, mode):
+    # Forced MTP on a drafterless Gemma must fall back, not emit draft-mtp.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert "--model-draft" not in parsed
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_local_gemma_gguf_without_identifier_falls_back(monkeypatch):
+    # Local Gemma GGUF (family only in filename) must not crash; falls back.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = None,
+        model_path = "/models/gemma-4-E4B-it-Q4_K_M.gguf",
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def _drafter_not_found_kwargs():
+    return dict(
+        model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gguf_path = None,  # HF load: drafter resolves inside load_model
+    )
+
+
+def test_already_in_target_state_retries_after_hf_drafter_not_found():
+    # Recoverable drafter_not_found must not dedupe; reload re-attempts download.
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        _speculative_type = "ngram-mod",
+        _spec_fallback_reason = "drafter_not_found",
+        _mtp_draft_path = None,
+        _gguf_path = None,
+    )
+    assert backend._already_in_target_state(**_drafter_not_found_kwargs()) is False
+    # Sanity: with no fallback reason the same request still dedupes (matches).
+    ok = _mtp_backend(_model_identifier = "unsloth/gemma-4-E4B-it-GGUF", _gguf_path = None)
+    assert ok._already_in_target_state(**_drafter_not_found_kwargs()) is True
