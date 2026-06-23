@@ -18,7 +18,6 @@ export interface PerModelConfig {
   specDraftNMax: number | null;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
-  trustRemoteCode: boolean;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -28,7 +27,6 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   specDraftNMax: null,
   tensorParallel: false,
   chatTemplateOverride: null,
-  trustRemoteCode: false,
 };
 
 export const KV_CACHE_DTYPES = ["bf16", "q8_0", "q5_1", "q4_1"] as const;
@@ -67,7 +65,6 @@ const STORED_CONFIG_FIELDS = new Set([
   "specDraftNMax",
   "tensorParallel",
   "chatTemplateOverride",
-  "trustRemoteCode",
 ]);
 
 function canonicalizeSpeculativeType(value: string): string | null {
@@ -275,10 +272,6 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
         ? partial.chatTemplateOverride
         : null,
-    trustRemoteCode:
-      typeof partial.trustRemoteCode === "boolean"
-        ? partial.trustRemoteCode
-        : DEFAULT_PER_MODEL_CONFIG.trustRemoteCode,
   };
 }
 
@@ -424,9 +417,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.specDraftNMax == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
-    (config.chatTemplateOverride ?? null) === null &&
-    Boolean(config.trustRemoteCode) ===
-      Boolean(DEFAULT_PER_MODEL_CONFIG.trustRemoteCode)
+    (config.chatTemplateOverride ?? null) === null
   );
 }
 

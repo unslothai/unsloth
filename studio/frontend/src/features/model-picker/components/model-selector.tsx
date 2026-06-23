@@ -33,6 +33,7 @@ import {
   useState,
 } from "react";
 import { Input } from "@/components/ui/input";
+import { ModelConfigPage } from "./model-config-page";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import {
@@ -44,6 +45,7 @@ import type {
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
+  ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 
@@ -111,6 +113,7 @@ export type {
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
+  ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 
@@ -411,6 +414,29 @@ function ModelSelectorContent({
     }
   }
 
+  const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!open) {
+      setConfigTarget(null);
+    }
+  }, [open]);
+  const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
+    if (meta.source === "external") {
+      onSelect(id, meta);
+      return;
+    }
+    const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+    setConfigTarget({
+      id,
+      displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
+      ggufVariant: meta.ggufVariant ?? null,
+      isGguf: meta.isGguf ?? Boolean(meta.ggufVariant),
+      meta,
+    });
+  };
+
   return (
     <PopoverContent
       align="start"
@@ -436,6 +462,16 @@ function ModelSelectorContent({
         skipDelayDuration={0}
         disableHoverableContent={true}
       >
+        {configTarget ? (
+          <ModelConfigPage
+            target={configTarget}
+            onBack={() => setConfigTarget(null)}
+            onRun={(config) =>
+              onSelect(configTarget.id, { ...configTarget.meta, config })
+            }
+          />
+        ) : (
+          <>
         {tabs.length > 1 ? (
           <PillTabs
             ariaLabel="Model source"
@@ -453,7 +489,7 @@ function ModelSelectorContent({
             loraModels={fineTunedModels}
             externalModels={externalModels}
             value={value}
-            onSelect={onSelect}
+            onSelect={handlePick}
             onFoldersChange={onFoldersChange}
             onBrowseHub={onBrowseHub}
             onModelsChange={onModelsChange}
@@ -512,6 +548,8 @@ function ModelSelectorContent({
             </button>
           </div>
         ) : null}
+          </>
+        )}
       </TooltipProvider>
     </PopoverContent>
   );

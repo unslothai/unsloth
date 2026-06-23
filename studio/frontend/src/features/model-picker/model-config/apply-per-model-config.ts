@@ -12,7 +12,6 @@ function cleanTemplate(value: string | null | undefined): string | null {
 }
 
 export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
-  const state = useChatRuntimeStore.getState();
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -20,9 +19,5 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     specDraftNMax: config.specDraftNMax ?? null,
     tensorParallel: config.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
-  });
-  state.setParams({
-    ...state.params,
-    trustRemoteCode: config.trustRemoteCode ?? false,
   });
 }
