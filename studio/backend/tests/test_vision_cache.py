@@ -41,8 +41,20 @@ from utils.models.model_config import (
 
 
 @pytest.fixture(autouse = True)
-def _clear_vision_cache():
-    """Ensure every test starts with a fresh cache."""
+def _clear_vision_cache(tmp_path, monkeypatch):
+    """Ensure every test starts with a fresh cache, from an empty working dir.
+
+    ``is_vision_model`` calls ``is_local_path`` first: any relative model id that
+    happens to exist on disk (``Path(name).exists()``) is treated as a local
+    model, short-circuiting before the mocked detection internals run. The CI cwd
+    (``studio/backend``) and the HF cache can contain dirs whose names collide
+    with the synthetic remote ids used here (``org/my-vlm``, ``model-a``,
+    ``broken/model`` ...), which made these tests fail with "called 0 times".
+    Running each test from a fresh empty ``tmp_path`` removes that collision
+    while leaving the real ``is_local_path`` logic intact (the local-GGUF tests
+    pass absolute ``tmp_path`` paths, unaffected by cwd).
+    """
+    monkeypatch.chdir(tmp_path)
     _vision_detection_cache.clear()
     yield
     _vision_detection_cache.clear()

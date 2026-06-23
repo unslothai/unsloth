@@ -21,6 +21,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   clearRememberedLoadSettings,
   loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
   saveRememberedLoadSettings,
 } from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import {
@@ -579,6 +580,9 @@ export function ChatSettingsPanel({
   );
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
+  const applyRememberedLoadSettings = useChatRuntimeStore(
+    (s) => s.applyRememberedLoadSettings,
+  );
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const setTensorParallel = useChatRuntimeStore((s) => s.setTensorParallel);
@@ -613,25 +617,16 @@ export function ChatSettingsPanel({
   // the saved per-model settings on stage, so the sheet opens with what was used
   // last time; the tick reflects whether a saved entry exists.
   const [remember, setRemember] = useState(false);
-  const pendingId = pendingSelection?.id ?? null;
+  // Keyed per quant: a different variant of the same repo has its own settings.
+  const pendingKey = pendingSelection
+    ? rememberedLoadSettingsKey(pendingSelection)
+    : null;
   useEffect(() => {
-    if (!pendingId) return;
-    const saved = loadRememberedLoadSettings(pendingId);
+    if (!pendingKey) return;
+    const saved = loadRememberedLoadSettings(pendingKey);
     setRemember(saved != null);
-    if (!saved) return;
-    setCustomContextLength(saved.contextLength);
-    setKvCacheDtype(saved.kvCacheDtype);
-    setSpeculativeType(saved.speculativeType ?? "auto");
-    setSpecDraftNMax(saved.specDraftNMax);
-    setTensorParallel(saved.tensorParallel);
-  }, [
-    pendingId,
-    setCustomContextLength,
-    setKvCacheDtype,
-    setSpeculativeType,
-    setSpecDraftNMax,
-    setTensorParallel,
-  ]);
+    if (saved) applyRememberedLoadSettings(saved);
+  }, [pendingKey, applyRememberedLoadSettings]);
   // While staging, the sheet reflects the STAGED model, so its header context
   // takes precedence over the loaded model's (which may differ or be larger).
   const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
@@ -1213,9 +1208,11 @@ export function ChatSettingsPanel({
                       type="button"
                       onClick={() => {
                         // Persist (or clear) this model's load knobs before loading.
-                        // Save the explicit context override only (null = auto), so
-                        // restoring never forces the native context into an OOM.
-                        const pid = pendingSelection?.id;
+                        // Context is stored as the override (null = auto), never the
+                        // resolved native value, so restoring can't force an OOM.
+                        const pid = pendingSelection
+                          ? rememberedLoadSettingsKey(pendingSelection)
+                          : null;
                         if (pid) {
                           if (remember) {
                             saveRememberedLoadSettings(pid, {
