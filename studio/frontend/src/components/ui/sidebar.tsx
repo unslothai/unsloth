@@ -203,7 +203,7 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, open } = useSidebar()
 
   if (collapsible === "none") {
     return (
@@ -299,6 +299,8 @@ function Sidebar({
             : !hasPinMode && "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
           className
         )}
+        aria-hidden={!open && collapsible !== "icon" ? true : undefined}
+        inert={!open && collapsible !== "icon" ? true : undefined}
         {...props}
       >
         <div
@@ -321,7 +323,7 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, open } = useSidebar()
 
   return (
     <Button
@@ -330,6 +332,7 @@ function SidebarTrigger({
       variant="ghost"
       size="icon-sm"
       className={cn(className)}
+      aria-expanded={open}
       onClick={(event) => {
         onClick?.(event)
         toggleSidebar()
