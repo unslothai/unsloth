@@ -32,7 +32,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Input } from "../ui/input";
+import { Input } from "@/components/ui/input";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import {

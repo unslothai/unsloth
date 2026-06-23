@@ -4,7 +4,7 @@
 import {
   loadRememberedLoadSettings,
   rememberedLoadSettingsKey,
-} from "@/components/assistant-ui/model-selector/remembered-load-settings";
+} from "@/features/model-picker/components/model-selector/remembered-load-settings";
 import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";

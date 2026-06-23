@@ -7,11 +7,11 @@ import {
   type LoraModelOption,
   type ModelOption,
   ModelSelector,
-} from "@/components/assistant-ui/model-selector";
+} from "@/features/model-picker/components/model-selector";
 import {
   loadRememberedLoadSettings,
   rememberedLoadSettingsKey,
-} from "@/components/assistant-ui/model-selector/remembered-load-settings";
+} from "@/features/model-picker/components/model-selector/remembered-load-settings";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {

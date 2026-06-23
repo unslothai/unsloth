@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import type { RememberedLoadSettings } from "@/features/model-picker/components/model-selector/remembered-load-settings";
 import { cancelStagedModelDownload } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";

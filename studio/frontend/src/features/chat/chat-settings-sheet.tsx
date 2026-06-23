@@ -23,7 +23,7 @@ import {
   loadRememberedLoadSettings,
   rememberedLoadSettingsKey,
   saveRememberedLoadSettings,
-} from "@/components/assistant-ui/model-selector/remembered-load-settings";
+} from "@/features/model-picker/components/model-selector/remembered-load-settings";
 import {
   Dialog,
   DialogContent,

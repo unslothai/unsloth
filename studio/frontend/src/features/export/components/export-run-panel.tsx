@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-browser";
+import { FolderBrowser } from "@/features/model-picker/components/model-selector/folder-browser";
 import { Input } from "@/components/ui/input";
 import {
   InputGroup,
