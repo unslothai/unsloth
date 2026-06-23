@@ -2234,16 +2234,14 @@ def install_python_stack() -> int:
     # 4. Overrides (torchao) -- force-reinstall. The torchao version is chosen to
     #    match the torch installed in the venv so its C++ extensions load (see
     #    _select_torchao_spec). Skip when torch is unavailable (e.g. Intel Mac
-    #    GGUF-only mode): torchao requires torch. Also skipped on Windows ROCm,
-    #    which has no working torchao build (see below).
+    #    GGUF-only mode): torchao requires torch. Also skipped on Windows ROCm
+    #    (no working build; see below).
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
     elif _rocm_windows_torch_installed:
-        # torchao has no working Windows ROCm build: it loads torch's c10d
-        # distributed backend at import, which the AMD Windows wheels omit (no
-        # RCCL), so `import torchao` raises and takes transformers.quantizers
-        # down with it. Studio stubs torchao at runtime (core/_torchao_stub.py),
-        # so installing it only ships a package that crashes on import -- skip it.
+        # No working Windows ROCm torchao build: it imports an absent c10d backend
+        # and crashes transformers.quantizers. Studio stubs it at runtime, so
+        # installing it only ships a package that crashes on import -- skip it.
         _progress("dependency overrides (skipped, Windows ROCm)")
         _safe_print("   Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
     else:
