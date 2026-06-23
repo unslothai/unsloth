@@ -237,6 +237,7 @@ function NavItem({
           disabled={disabled}
           onClick={onClick}
           isActive={active}
+          aria-label={label}
           data-tour={dataTour}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
@@ -295,7 +296,6 @@ export function AppSidebar() {
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
-  const shouldHideExpandedSidebarContent = !isMobile && state === "collapsed";
   const focusOpenSidebarTriggerRef = useRef(false);
 
   useEffect(() => {
@@ -1078,7 +1078,7 @@ export function AppSidebar() {
       </SidebarHeader>
 
       {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pt-[9px] pb-px shrink-0" aria-hidden={shouldHideExpandedSidebarContent || undefined} inert={shouldHideExpandedSidebarContent || undefined}>
+      <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pt-[9px] pb-px shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -1125,8 +1125,6 @@ export function AppSidebar() {
       <SidebarContent
         ref={scrollRef}
         onScroll={(e) => syncScrollState(e.currentTarget)}
-        aria-hidden={shouldHideExpandedSidebarContent || undefined}
-        inert={shouldHideExpandedSidebarContent || undefined}
         className={cn(
           // pb-2 keeps the last row's rounded highlight clear of the
           // overflow clip edge so its bottom corners aren't shaved off.
@@ -1398,7 +1396,7 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter className="relative pt-3 pb-4 group-data-[collapsible=icon]:px-0" aria-hidden={shouldHideExpandedSidebarContent || undefined} inert={shouldHideExpandedSidebarContent || undefined}>
+      <SidebarFooter className="relative pt-3 pb-4 group-data-[collapsible=icon]:px-0">
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
             shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
