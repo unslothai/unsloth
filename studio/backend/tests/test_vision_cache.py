@@ -731,7 +731,11 @@ class TestAudioDetectionCacheTokenAware:
 
         seen = []
 
-        def _probe(name, hf_token = None, local_files_only = False):
+        def _probe(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
             seen.append(local_files_only)
             return (None, True) if local_files_only else ("snac", True)
 

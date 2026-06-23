@@ -867,9 +867,7 @@ def is_vision_model(
 
     # Compute outside the lock so long-running detection isn't serialized across
     # models. Two concurrent calls may both run, but produce the same result.
-    result = _is_vision_model_uncached(
-        resolved_name, hf_token, local_files_only = effective_offline
-    )
+    result = _is_vision_model_uncached(resolved_name, hf_token, local_files_only = effective_offline)
     # Only cache definitive results; None is a transient failure, retry later.
     if result is not None:
         with _vision_cache_lock:
