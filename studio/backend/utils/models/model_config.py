@@ -850,7 +850,13 @@ def is_vision_model(
             exc,
         )
         resolved_name = model_name
-    cache_key = (resolved_name, _token_fingerprint(hf_token), bool(local_files_only))
+    # Mirror detect_audio_type: an env-offline probe behaves offline (skips the
+    # transformers-5 network subprocess, stays on the local cache), so key on the
+    # EFFECTIVE offline state and pass it through - otherwise an env-offline negative
+    # is stored under the online (False) key and poisons a later online lookup once
+    # the env var is cleared.
+    effective_offline = bool(local_files_only or _env_offline())
+    cache_key = (resolved_name, _token_fingerprint(hf_token), effective_offline)
 
     # Lock-free fast path for cache hits. Sentinel distinguishes "key not found"
     # from "value is False" in a single atomic dict.get() call.
@@ -861,7 +867,9 @@ def is_vision_model(
 
     # Compute outside the lock so long-running detection isn't serialized across
     # models. Two concurrent calls may both run, but produce the same result.
-    result = _is_vision_model_uncached(resolved_name, hf_token, local_files_only = local_files_only)
+    result = _is_vision_model_uncached(
+        resolved_name, hf_token, local_files_only = effective_offline
+    )
     # Only cache definitive results; None is a transient failure, retry later.
     if result is not None:
         with _vision_cache_lock:
@@ -993,15 +1001,19 @@ def detect_audio_type(
             resolved_name = resolve_cached_repo_id_case(model_name)
     except Exception:
         resolved_name = model_name
-    # Key on local_files_only too: a local-only probe only consults the on-disk
-    # cache, so its (possibly stale/partial) negative result must not be reused by
-    # a later online probe that would otherwise fetch the remote tokenizer config.
-    cache_key = (resolved_name, _token_fingerprint(hf_token), bool(local_files_only))
+    # _detect_audio_from_tokenizer skips the remote fetch when local_files_only OR
+    # the HF offline env vars are set, so its result reflects the EFFECTIVE offline
+    # state. Key on that (not just the kwarg): a local-only / env-offline probe only
+    # consults the on-disk cache, so its (possibly stale/partial) negative must not
+    # be stored under the online (False) key and reused by a later online probe -
+    # e.g. after HF_HUB_OFFLINE is cleared - that would otherwise fetch the config.
+    effective_offline = bool(local_files_only or _env_offline())
+    cache_key = (resolved_name, _token_fingerprint(hf_token), effective_offline)
     if cache_key in _audio_detection_cache:
         return _audio_detection_cache[cache_key]
 
     result, definitive = _detect_audio_from_tokenizer(
-        model_name, hf_token, local_files_only = local_files_only
+        model_name, hf_token, local_files_only = effective_offline
     )
     # Cache only definitive results; a transient read failure stays None and retries.
     if definitive:

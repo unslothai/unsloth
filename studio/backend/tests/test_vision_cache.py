@@ -419,6 +419,8 @@ class TestVisionCacheLocalOnly:
         mc._vision_detection_cache.clear()
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        # Pin env-offline off so effective_offline tracks the kwarg deterministically.
+        monkeypatch.setattr(mc, "_env_offline", lambda: False)
 
         seen = []
 
@@ -686,6 +688,8 @@ class TestAudioDetectionCacheTokenAware:
         mc._audio_detection_cache.clear()
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        # Pin env-offline off so effective_offline tracks the kwarg deterministically.
+        monkeypatch.setattr(mc, "_env_offline", lambda: False)
 
         seen = []
 
@@ -708,5 +712,37 @@ class TestAudioDetectionCacheTokenAware:
         assert seen == [True, False]
         # The online positive is then cached for subsequent online callers.
         assert mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
+        assert seen == [True, False]
+        mc._audio_detection_cache.clear()
+
+    def test_env_offline_negative_does_not_poison_online(self, monkeypatch):
+        """HF_HUB_OFFLINE with the default local_files_only=False makes detection
+        behave offline (skip the remote fetch), so the result must be cached under
+        the effective-offline key, not the online key. Otherwise clearing the env
+        var later leaks the stale offline negative to online callers."""
+        import utils.models.model_config as mc
+
+        mc._audio_detection_cache.clear()
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+
+        env_offline = {"v": True}
+        monkeypatch.setattr(mc, "_env_offline", lambda: env_offline["v"])
+
+        seen = []
+
+        def _probe(name, hf_token = None, local_files_only = False):
+            seen.append(local_files_only)
+            return (None, True) if local_files_only else ("snac", True)
+
+        monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _probe)
+
+        # Env offline + default kwarg: treated as offline, definitive None cached
+        # under the effective-offline key (the probe sees local_files_only=True).
+        assert mc.detect_audio_type("some/audio-model") is None
+        assert seen == [True]
+        # Env var cleared: a fresh online probe must re-run (different key) and detect.
+        env_offline["v"] = False
+        assert mc.detect_audio_type("some/audio-model") == "snac"
         assert seen == [True, False]
         mc._audio_detection_cache.clear()

@@ -646,6 +646,30 @@ _force_offline_saved = []  # in-process module attributes
 _force_offline_saved_env = {}  # HF offline env-var originals
 
 
+def _reset_hf_sessions():
+    """Clear huggingface_hub's per-thread cached requests.Session objects.
+
+    hf_hub caches one Session per thread and bakes the offline adapter in at
+    creation time (its backend factory reads constants.HF_HUB_OFFLINE and mounts
+    an OfflineAdapter or a real network adapter). So flipping the constant does
+    not re-mount an already-cached Session: one built while online keeps its live
+    network adapter inside this window (and one built while offline would stay
+    offline after restore). Resetting forces the next get_session() to rebuild
+    against the current flag. Best-effort: a no-op if the API is unavailable.
+    """
+    try:
+        from huggingface_hub.utils._http import reset_sessions
+    except Exception:
+        try:
+            from huggingface_hub.utils import reset_sessions
+        except Exception:
+            return
+    try:
+        reset_sessions()
+    except Exception:
+        pass
+
+
 @contextlib.contextmanager
 def _force_hf_offline():
     """Temporarily force Hugging Face offline mode at runtime.
@@ -692,6 +716,9 @@ def _force_hf_offline():
                 pass
             _force_offline_saved = saved
             _force_offline_saved_env = saved_env
+            # Rebuild cached HF sessions so they pick up the offline adapter; an
+            # already-cached online session would otherwise still hit the network.
+            _reset_hf_sessions()
         _force_offline_depth += 1
     try:
         yield
@@ -711,6 +738,9 @@ def _force_hf_offline():
                     else:
                         os.environ[_k] = _v
                 _force_offline_saved_env = {}
+                # Drop the offline-mounted sessions so later online calls rebuild
+                # with a real network adapter instead of staying stuck offline.
+                _reset_hf_sessions()
 
 
 def _offline_context_if(offline):
