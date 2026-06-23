@@ -10,7 +10,10 @@ child and run_server. Modeled on test_studio_run_parallel_flag.py.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -231,6 +234,42 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     CliRunner().invoke(app, _BASE + extras, catch_exceptions = True)
 
     assert captured.get("cloudflare") is expected, captured
+
+
+def test_run_banner_cloudflare_notice_is_wildcard_guarded():
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_studio().run)))
+
+    def _is_wildcard_guard(node):
+        if not isinstance(node.test, ast.Compare):
+            return False
+        if not isinstance(node.test.left, ast.Name) or node.test.left.id != "host":
+            return False
+        if not node.test.ops or not isinstance(node.test.ops[0], ast.In):
+            return False
+        comp = node.test.comparators[0]
+        if not isinstance(comp, ast.Tuple):
+            return False
+        return {getattr(item, "value", None) for item in comp.elts} == {"0.0.0.0", "::"}
+
+    guards = [node for node in ast.walk(tree) if isinstance(node, ast.If) and _is_wildcard_guard(node)]
+    assert guards
+    guard = guards[-1]
+    verify_calls = [
+        node.lineno
+        for node in ast.walk(guard)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_verify_global_reachability"
+    ]
+    print_calls = [
+        node.lineno
+        for node in ast.walk(guard)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_print_cloudflare_line"
+    ]
+    assert verify_calls and print_calls
+    assert min(verify_calls) < min(print_calls)
 
 
 # ── parent-level --no-cloudflare with a subcommand is rejected ───────

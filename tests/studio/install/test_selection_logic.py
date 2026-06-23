@@ -82,6 +82,7 @@ def load_studio_run_module(monkeypatch):
     startup_banner = types.ModuleType("startup_banner")
     startup_banner.print_studio_access_banner = lambda **k: None
     startup_banner.print_studio_stop_hint = lambda: None
+    startup_banner.stdout_supports_color = lambda: False
     monkeypatch.setitem(sys.modules, "startup_banner", startup_banner)
 
     paths = types.ModuleType("utils.paths")

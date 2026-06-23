@@ -475,8 +475,8 @@ def _print_cloudflare_line(secure: bool = False) -> None:
       - ON: the public trycloudflare.com URL plus a public-exposure warning. The
         warning is suppressed in secure mode, where the authenticated tunnel is the
         whole point and --no-cloudflare is not a valid option.
-      - FAILED: the tunnel was requested but did not come up (local network only).
-      - OFF: --no-cloudflare was passed; Studio stays on the local network.
+      - FAILED: the tunnel was requested but did not come up.
+      - OFF: --no-cloudflare was passed.
     A flag-on-but-not-started case (Colab / api-only / loopback) stays silent, as
     before. Reads the module-level state set by ``run_server``. When the public
     reachability probe just failed (``_public_reachable is False``) but the tunnel
@@ -498,12 +498,22 @@ def _print_cloudflare_line(secure: bool = False) -> None:
         else:
             _emit(f"  Secure link access via Cloudflare: {_cloudflare_url}", accent)
         if not secure:
-            _emit(
-                "  Cloudflare tunnel: ON. This is a PUBLIC internet URL: anyone who "
-                "has it can reach this Studio from outside your network. Relaunch "
-                "with --no-cloudflare to keep Studio on your local network only.",
-                warn,
-            )
+            if _public_reachable is True:
+                _emit(
+                    "  Cloudflare tunnel: ON. This Cloudflare URL is PUBLIC, and the "
+                    "raw port is also publicly reachable. --no-cloudflare disables "
+                    "only the Cloudflare URL; bind 127.0.0.1 or close firewall access "
+                    "to keep Studio private.",
+                    warn,
+                )
+            else:
+                _emit(
+                    "  Cloudflare tunnel: ON. This is a PUBLIC internet URL: anyone "
+                    "who has it can reach this Studio. Relaunch with --no-cloudflare "
+                    "to disable the Cloudflare URL; bind 127.0.0.1 or close firewall "
+                    "access to keep Studio private.",
+                    warn,
+                )
         return
     # No tunnel URL. Secure mode exits in run_server before the banner, so the
     # remaining cases are plain wildcard binds. When the reachability probe just
@@ -518,10 +528,17 @@ def _print_cloudflare_line(secure: bool = False) -> None:
                 "above): anyone who can reach it can access this Studio.",
                 warn,
             )
-        else:
+        elif _public_reachable is False:
             _emit(
                 "  Cloudflare tunnel: requested but failed to start. Studio is reachable "
                 "on your local network only (no public link).",
+                warn,
+            )
+        else:
+            _emit(
+                "  Cloudflare tunnel: requested but failed to start. There is no "
+                "Cloudflare public link. Raw port reachability was not verified; bind "
+                "127.0.0.1 or close firewall access to keep Studio private.",
                 warn,
             )
     elif not _cloudflare_flag:
@@ -532,11 +549,17 @@ def _print_cloudflare_line(secure: bool = False) -> None:
                 "--no-cloudflare disables only the Cloudflare link, not the public bind.",
                 warn,
             )
-        else:
+        elif _public_reachable is False:
             _emit(
                 "  Cloudflare tunnel: OFF (--no-cloudflare). Studio is reachable on your "
-                "local network only. Omit --no-cloudflare to expose a public Cloudflare "
-                "HTTPS link."
+                "local network only. Omit --no-cloudflare to expose a public "
+                "Cloudflare HTTPS link."
+            )
+        else:
+            _emit(
+                "  Cloudflare tunnel: OFF (--no-cloudflare). There is no Cloudflare "
+                "public link. Raw port reachability was not verified; bind 127.0.0.1 "
+                "or close firewall access to keep Studio private."
             )
 
 
@@ -1273,8 +1296,8 @@ if __name__ == "__main__":
         default = True,
         help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0, "
         "exposing Studio on a PUBLIC internet URL (default on). Pass --no-cloudflare "
-        "to keep Studio reachable on the local network only. The startup banner "
-        "always states whether the tunnel is on or off.",
+        "to disable that Cloudflare URL; it does not change a public wildcard bind. "
+        "The startup banner always states whether the tunnel is on or off.",
     )
     parser.add_argument(
         "--secure",
