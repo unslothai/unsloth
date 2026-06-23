@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for `unsloth connect` — config merging and launch env, no network."""
+"""Tests for `unsloth start` — config merging and launch env, no network."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
 import pytest
 from typer.testing import CliRunner
 
-import unsloth_cli.commands.connect as connect
+import unsloth_cli.commands.start as start
 
 BASE = "http://127.0.0.1:8888"
 MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
@@ -41,12 +41,12 @@ def _assert_env_unset(output: str, name: str) -> None:
 @pytest.fixture()
 def claude_settings(tmp_path, monkeypatch):
     path = tmp_path / "claude" / "settings.json"
-    monkeypatch.setattr(connect, "claude_settings_path", lambda: path)
+    monkeypatch.setattr(start, "claude_settings_path", lambda: path)
     return path
 
 
 def test_claude_settings_created_when_missing(claude_settings):
-    connect.ensure_claude_attribution_header()
+    start.ensure_claude_attribution_header()
     settings = json.loads(claude_settings.read_text())
     assert settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
 
@@ -56,7 +56,7 @@ def test_claude_settings_merge_preserves_existing(claude_settings):
     claude_settings.write_text(
         json.dumps({"effortLevel": "high", "env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "0"}})
     )
-    connect.ensure_claude_attribution_header()
+    start.ensure_claude_attribution_header()
     settings = json.loads(claude_settings.read_text())
     assert settings["effortLevel"] == "high"
     assert settings["env"]["CLAUDE_CODE_ENABLE_TELEMETRY"] == "0"
@@ -67,22 +67,22 @@ def test_claude_settings_already_set_untouched(claude_settings):
     claude_settings.parent.mkdir(parents = True)
     original = json.dumps({"env": {"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}})
     claude_settings.write_text(original)
-    connect.ensure_claude_attribution_header()
+    start.ensure_claude_attribution_header()
     assert claude_settings.read_text() == original
 
 
 def test_claude_settings_bad_json_left_alone(claude_settings, capsys):
     claude_settings.parent.mkdir(parents = True)
     claude_settings.write_text("{not json")
-    connect.ensure_claude_attribution_header()
+    start.ensure_claude_attribution_header()
     assert claude_settings.read_text() == "{not json"
     assert "couldn't parse" in capsys.readouterr().err
 
 
 def _fake_claude(monkeypatch, version_output: str) -> None:
-    monkeypatch.setattr(connect.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(
-        connect.subprocess,
+        start.subprocess,
         "run",
         lambda *args, **kwargs: SimpleNamespace(stdout = version_output),
     )
@@ -90,17 +90,17 @@ def _fake_claude(monkeypatch, version_output: str) -> None:
 
 def test_cache_flags_passed_to_supported_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.1.98 (Claude Code)\n")
-    assert connect._claude_cache_flags() == ["--exclude-dynamic-system-prompt-sections"]
+    assert start._claude_cache_flags() == ["--exclude-dynamic-system-prompt-sections"]
 
 
 def test_cache_flags_skipped_on_old_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.0.14 (Claude Code)\n")
-    assert connect._claude_cache_flags() == []
+    assert start._claude_cache_flags() == []
 
 
 def test_cache_flags_skipped_on_unparseable_version(monkeypatch):
     _fake_claude(monkeypatch, "weird build string\n")
-    assert connect._claude_cache_flags() == []
+    assert start._claude_cache_flags() == []
 
 
 def _parse_toml(text: str) -> dict:
@@ -109,7 +109,7 @@ def _parse_toml(text: str) -> dict:
 
 
 def test_merge_codex_config_fresh():
-    merged = connect._merge_codex_config("", BASE)
+    merged = start._merge_codex_config("", BASE)
     parsed = _parse_toml(merged)
     assert parsed["oss_provider"] == "unsloth_api"
     provider = parsed["model_providers"]["unsloth_api"]
@@ -132,24 +132,24 @@ def test_merge_codex_config_replaces_stale_block():
         "[model_providers.ollama]\n"
         'base_url = "http://localhost:11434/v1"\n'
     )
-    merged = connect._merge_codex_config(existing, BASE)
+    merged = start._merge_codex_config(existing, BASE)
     parsed = _parse_toml(merged)
     assert parsed["model"] == "gpt-5"
     assert parsed["model_providers"]["unsloth_api"]["base_url"] == f"{BASE}/v1"
     assert parsed["model_providers"]["unsloth_api"]["wire_api"] == "responses"
     assert "http_headers" not in parsed["model_providers"]["unsloth_api"]
     assert parsed["model_providers"]["ollama"]["base_url"] == "http://localhost:11434/v1"
-    assert connect._merge_codex_config(merged, BASE) == merged
+    assert start._merge_codex_config(merged, BASE) == merged
 
 
 def test_merge_codex_config_keeps_user_oss_provider():
-    merged = connect._merge_codex_config('oss_provider = "ollama"\n', BASE)
+    merged = start._merge_codex_config('oss_provider = "ollama"\n', BASE)
     assert _parse_toml(merged)["oss_provider"] == "ollama"
 
 
 def test_write_codex_config_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    connect.write_codex_config(BASE, MODEL)
+    start.write_codex_config(BASE, MODEL)
     profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
     assert profile["oss_provider"] == "unsloth_api"
     assert profile["model_provider"] == "unsloth_api"
@@ -184,22 +184,22 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
             return {}
         raise AssertionError(f"unexpected request: {method} {url}")
 
-    monkeypatch.setattr(connect, "find_studio_server", lambda: BASE)
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
     # Identity handshake has its own tests; trust the loopback server here.
-    monkeypatch.setattr(connect, "verify_studio_identity", lambda base: True)
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: True)
     # _studio_token / api-keys are faked so the mint flow stays offline.
-    monkeypatch.setattr(connect, "_studio_token", lambda: "jwt-token")
-    monkeypatch.setattr(connect, "_http_json", http_json)
-    monkeypatch.setattr(connect, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
+    monkeypatch.setattr(start, "_studio_token", lambda: "jwt-token")
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
     # No `claude` on PATH, so _claude_cache_flags never probes the real binary.
-    monkeypatch.setattr(connect.shutil, "which", lambda _: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: None)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
     return calls
 
 
 def test_connect_claude_no_launch(fake_studio, claude_settings):
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_unset(result.output, "ANTHROPIC_API_KEY")
     _assert_env_unset(result.output, "CLAUDE_CODE_OAUTH_TOKEN")
@@ -217,16 +217,16 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     captured = {}
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
-    monkeypatch.setattr(connect.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(connect, "_claude_cache_flags", lambda: [])
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_cache_flags", lambda: [])
 
     def run(command, env):
         captured["command"] = command
         captured["env"] = env
         return SimpleNamespace(returncode = 0)
 
-    monkeypatch.setattr(connect.subprocess, "run", run)
-    result = CliRunner().invoke(connect.connect_app, ["claude"])
+    monkeypatch.setattr(start.subprocess, "run", run)
+    result = CliRunner().invoke(start.start_app, ["claude"])
 
     assert result.exit_code == 0, result.output
     assert captured["command"] == ["/usr/local/bin/claude", "--model", MODEL["id"]]
@@ -248,17 +248,17 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
     monkeypatch.setattr(
-        connect.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
+        start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
     )
-    monkeypatch.setattr(connect, "_claude_cache_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_cache_flags", lambda: [])
 
     def run(command, env):
         captured["command"] = command
         captured["env"] = env
         return SimpleNamespace(returncode = 0)
 
-    monkeypatch.setattr(connect.subprocess, "run", run)
-    result = CliRunner().invoke(connect.connect_app, ["claude"])
+    monkeypatch.setattr(start.subprocess, "run", run)
+    result = CliRunner().invoke(start.start_app, ["claude"])
 
     assert result.exit_code == 0, result.output
     assert captured["command"] == [
@@ -289,10 +289,10 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
 def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studio, monkeypatch):
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(
-        connect.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
+        start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
     )
 
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
 
     assert result.exit_code == 0, result.output
     assert "export ANTHROPIC_API_KEY=" in result.output
@@ -303,7 +303,7 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studi
 
 
 def test_connect_codex_no_launch(fake_studio, tmp_path):
-    result = CliRunner().invoke(connect.connect_app, ["codex", "--no-launch"])
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "UNSLOTH_STUDIO_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     assert "codex --oss --profile unsloth_api" in result.output
@@ -312,8 +312,8 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
 
 
 def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
-    CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
-    CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     # First run mints; second reuses the minted key cached for this server.
     mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
     assert len(mints) == 1
@@ -323,10 +323,10 @@ def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
 
 def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path):
     CliRunner().invoke(
-        connect.connect_app,
+        start.start_app,
         ["claude", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
     )
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     # Reused, not re-minted (a mint would return the feedface stand-in).
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
@@ -342,7 +342,7 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
             {"servers": {BASE: {"minted": ["sk-unsloth-stale", "sk-unsloth-feedfacefeedface"]}}}
         )
     )
-    inner = connect._http_json
+    inner = start._http_json
 
     def http_json(
         method,
@@ -356,8 +356,8 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
 
-    monkeypatch.setattr(connect, "_http_json", http_json)
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     # The working key moves to the front so the next run tries it first.
@@ -369,7 +369,7 @@ def test_connect_legacy_unscoped_cache_not_replayed(fake_studio, tmp_path):
     # Legacy unscoped caches have no server binding (could leak across servers),
     # so they're ignored: a fresh key is minted and stored scoped to this server.
     (tmp_path / "agent_api_key.json").write_text(json.dumps({"key": "sk-unsloth-oldformat"}))
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
@@ -379,7 +379,7 @@ def test_connect_legacy_unscoped_cache_not_replayed(fake_studio, tmp_path):
 
 def test_connect_model_flag_loads_on_server(fake_studio):
     result = CliRunner().invoke(
-        connect.connect_app, ["claude", "--no-launch", "--model", "unsloth/Qwen3.5-35B-A3B"]
+        start.start_app, ["claude", "--no-launch", "--model", "unsloth/Qwen3.5-35B-A3B"]
     )
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
@@ -395,7 +395,7 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
     # to that model, not silently fall through to the first loaded one.
     requested = "Unsloth/Qwen3.5-35B-A3B"
     canonical = "unsloth/Qwen3.5-35B-A3B"
-    inner = connect._http_json
+    inner = start._http_json
 
     def http_json(
         method,
@@ -412,9 +412,9 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
             return {"object": "list", "data": [MODEL, {"id": canonical, "context_length": 4096}]}
         return inner(method, url, token, payload, timeout, error)
 
-    monkeypatch.setattr(connect, "_http_json", http_json)
+    monkeypatch.setattr(start, "_http_json", http_json)
     result = CliRunner().invoke(
-        connect.connect_app, ["claude", "--no-launch", "--model", requested]
+        start.start_app, ["claude", "--no-launch", "--model", requested]
     )
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", canonical)
@@ -422,7 +422,7 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
 
 def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
     monkeypatch.setattr(
-        connect,
+        start,
         "_http_json",
         lambda method, url, token, payload = None, timeout = 30, error = None: (
             {"key": "sk-unsloth-feedfacefeedface"}
@@ -430,7 +430,7 @@ def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
             else {"object": "list", "data": []}
         ),
     )
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "No model is loaded" in result.output
 
@@ -438,7 +438,7 @@ def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
 def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
     # Studio never surfaces the requested model; fail loudly rather than
     # silently connecting to whatever else happens to be loaded.
-    inner = connect._http_json
+    inner = start._http_json
 
     def http_json(
         method,
@@ -454,16 +454,16 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
             return {"object": "list", "data": [MODEL]}  # decoy; request never appears
         return inner(method, url, token, payload, timeout, error)
 
-    monkeypatch.setattr(connect, "_http_json", http_json)
+    monkeypatch.setattr(start, "_http_json", http_json)
     result = CliRunner().invoke(
-        connect.connect_app, ["claude", "--no-launch", "--model", "unsloth/Missing-7B"]
+        start.start_app, ["claude", "--no-launch", "--model", "unsloth/Missing-7B"]
     )
     assert result.exit_code == 1
     assert "unsloth/Missing-7B" in result.output
 
 
 def test_connect_codex_rejects_non_gguf_model(fake_studio, monkeypatch):
-    inner = connect._http_json
+    inner = start._http_json
 
     def http_json(
         method,
@@ -477,19 +477,19 @@ def test_connect_codex_rejects_non_gguf_model(fake_studio, monkeypatch):
             return {"is_gguf": False, "model_identifier": "unsloth/Qwen3-0.6B"}
         return inner(method, url, token, payload, timeout, error)
 
-    monkeypatch.setattr(connect, "_http_json", http_json)
-    result = CliRunner().invoke(connect.connect_app, ["codex", "--no-launch"])
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 1
     assert "GGUF" in result.output
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
 
 
 def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, monkeypatch):
     # A server known only by URL + health check is unverified: keyless connect
     # must refuse and make no request at all.
-    monkeypatch.setattr(connect, "find_studio_server", lambda: "http://studio.evil.example:8888")
-    result = CliRunner().invoke(connect.connect_app, ["opencode", "--no-launch"])
+    monkeypatch.setattr(start, "find_studio_server", lambda: "http://studio.evil.example:8888")
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 1
     assert "Settings → API" in result.output
     assert "--api-key" in result.output
@@ -498,9 +498,9 @@ def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, mon
 
 def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
     # User named both server and key, so it's their choice; only auto-send is blocked.
-    monkeypatch.setattr(connect, "find_studio_server", lambda: "http://studio.example:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: "http://studio.example:8888")
     result = CliRunner().invoke(
-        connect.connect_app,
+        start.start_app,
         ["opencode", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
     )
     assert result.exit_code == 0, result.output
@@ -510,11 +510,11 @@ def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatc
     # A key saved for a remote (non-loopback) Studio is replayed on keyless runs;
     # auto-minting stays blocked for non-loopback.
     remote = "http://studio.example:8888"
-    monkeypatch.setattr(connect, "find_studio_server", lambda: remote)
+    monkeypatch.setattr(start, "find_studio_server", lambda: remote)
     (tmp_path / "agent_api_key.json").write_text(
         json.dumps({"servers": {remote: {"saved": ["sk-unsloth-deadbeefdeadbeef"]}}})
     )
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
     assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # never minted
@@ -554,8 +554,8 @@ def test_connect_unverified_loopback_without_cached_key_refuses_to_mint(
 ):
     # With no saved key, the next step would auto-mint; an unverified loopback
     # server (port squatter) must be refused, with nothing sent.
-    monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "--api-key" in result.output
     assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # never minted
@@ -566,8 +566,8 @@ def test_connect_replays_saved_key_without_identity_check(fake_studio, tmp_path,
     # replays on keyless runs without the handshake, scoped to its own base.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"saved": ["sk-unsloth-deadbeefdeadbeef"]}}}))
-    monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
     assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # reused, not minted
@@ -578,8 +578,8 @@ def test_connect_minted_cache_requires_identity_check(fake_studio, tmp_path, mon
     # minted-key replay both sit behind the handshake, so a squatter can't grab it.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"minted": ["sk-unsloth-feedfacefeedface"]}}}))
-    monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "--api-key" in result.output
     assert not any(c[1].endswith("/v1/models") for c in fake_studio)  # minted key never sent
@@ -588,9 +588,9 @@ def test_connect_minted_cache_requires_identity_check(fake_studio, tmp_path, mon
 def test_connect_explicit_key_skips_identity_check(fake_studio, monkeypatch):
     # An explicit key is the user's deliberate choice, so it does not require
     # the automatic identity handshake.
-    monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
     result = CliRunner().invoke(
-        connect.connect_app,
+        start.start_app,
         ["claude", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
     )
     assert result.exit_code == 0, result.output
@@ -748,19 +748,19 @@ def test_verify_studio_identity_rejects_relayed_proof(tmp_path, monkeypatch):
     ],
 )
 def test_is_loopback_url(url, loopback):
-    assert connect.is_loopback_url(url) is loopback
+    assert start.is_loopback_url(url) is loopback
 
 
 def test_connect_no_studio_errors(fake_studio, monkeypatch):
-    monkeypatch.setattr(connect, "find_studio_server", lambda: None)
-    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "No running Studio server" in result.output
 
 
 def test_connect_explicit_api_key_skips_mint(fake_studio):
     result = CliRunner().invoke(
-        connect.connect_app,
+        start.start_app,
         ["claude", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
     )
     assert result.exit_code == 0, result.output
@@ -773,8 +773,8 @@ def test_connect_explicit_api_key_skips_mint(fake_studio):
 
 def test_write_openclaw_config_fresh(tmp_path, monkeypatch):
     path = tmp_path / "openclaw.json"
-    monkeypatch.setattr(connect, "openclaw_config_path", lambda: path)
-    connect.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    monkeypatch.setattr(start, "openclaw_config_path", lambda: path)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
     config = json.loads(path.read_text())
     provider = config["models"]["providers"]["unsloth"]
     assert provider["baseUrl"] == f"{BASE}/v1"
@@ -793,7 +793,7 @@ def test_write_openclaw_config_fresh(tmp_path, monkeypatch):
 
 def test_write_openclaw_config_preserves_and_idempotent(tmp_path, monkeypatch):
     path = tmp_path / "openclaw.json"
-    monkeypatch.setattr(connect, "openclaw_config_path", lambda: path)
+    monkeypatch.setattr(start, "openclaw_config_path", lambda: path)
     path.write_text(
         json.dumps(
             {
@@ -803,7 +803,7 @@ def test_write_openclaw_config_preserves_and_idempotent(tmp_path, monkeypatch):
             }
         )
     )
-    connect.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
     config = json.loads(path.read_text())
     assert config["theme"] == "dark"
     assert config["agents"]["defaults"]["temperature"] == 0.5  # other agent defaults kept
@@ -812,23 +812,23 @@ def test_write_openclaw_config_preserves_and_idempotent(tmp_path, monkeypatch):
     assert config["models"]["providers"]["openrouter"]["baseUrl"] == "x"
     assert config["models"]["providers"]["unsloth"]["baseUrl"] == f"{BASE}/v1"
     before = path.read_text()
-    connect.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
     assert path.read_text() == before
 
 
 def test_write_openclaw_config_corrupt_left_alone(tmp_path, monkeypatch, capsys):
     path = tmp_path / "openclaw.json"
-    monkeypatch.setattr(connect, "openclaw_config_path", lambda: path)
+    monkeypatch.setattr(start, "openclaw_config_path", lambda: path)
     path.write_text("{not json")
-    connect.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
     assert path.read_text() == "{not json"
     assert "couldn't parse" in capsys.readouterr().err
 
 
 def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     path = tmp_path / "openclaw.json"
-    monkeypatch.setattr(connect, "openclaw_config_path", lambda: path)
-    result = CliRunner().invoke(connect.connect_app, ["openclaw", "--no-launch"])
+    monkeypatch.setattr(start, "openclaw_config_path", lambda: path)
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "openclaw" in result.output
     assert "export" not in result.output  # key lives in the config, not the env
@@ -844,8 +844,8 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
 
 def test_write_opencode_config_fresh(tmp_path, monkeypatch):
     path = tmp_path / "opencode.json"
-    monkeypatch.setattr(connect, "opencode_config_path", lambda: path)
-    connect.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
+    monkeypatch.setattr(start, "opencode_config_path", lambda: path)
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
     config = json.loads(path.read_text())
     provider = config["provider"]["unsloth"]
     assert provider["npm"] == "@ai-sdk/openai-compatible"
@@ -856,24 +856,24 @@ def test_write_opencode_config_fresh(tmp_path, monkeypatch):
 
 def test_write_opencode_config_preserves_and_idempotent(tmp_path, monkeypatch):
     path = tmp_path / "opencode.json"
-    monkeypatch.setattr(connect, "opencode_config_path", lambda: path)
+    monkeypatch.setattr(start, "opencode_config_path", lambda: path)
     path.write_text(
         json.dumps({"theme": "tokyonight", "provider": {"anthropic": {"name": "Anthropic"}}})
     )
-    connect.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
     config = json.loads(path.read_text())
     assert config["theme"] == "tokyonight"
     assert config["provider"]["anthropic"]["name"] == "Anthropic"
     assert config["provider"]["unsloth"]["options"]["baseURL"] == f"{BASE}/v1"
     before = path.read_text()
-    connect.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
     assert path.read_text() == before
 
 
 def test_connect_opencode_no_launch(fake_studio, tmp_path, monkeypatch):
     path = tmp_path / "opencode.json"
-    monkeypatch.setattr(connect, "opencode_config_path", lambda: path)
-    result = CliRunner().invoke(connect.connect_app, ["opencode", "--no-launch"])
+    monkeypatch.setattr(start, "opencode_config_path", lambda: path)
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "opencode" in result.output
     config = json.loads(path.read_text())
@@ -888,13 +888,13 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path, monkeypatch):
 @pytest.fixture()
 def hermes_config(tmp_path, monkeypatch):
     path = tmp_path / "config.yaml"
-    monkeypatch.setattr(connect, "hermes_config_path", lambda: path)
+    monkeypatch.setattr(start, "hermes_config_path", lambda: path)
     return path
 
 
 def test_write_hermes_config_fresh(hermes_config):
     yaml = pytest.importorskip("yaml")
-    connect.write_hermes_config(BASE, MODEL)
+    start.write_hermes_config(BASE, MODEL)
     config = yaml.safe_load(hermes_config.read_text())
     # Hermes only honors the key for a *named* custom provider, so the endpoint
     # is registered under providers.* and model.provider points at it.
@@ -920,7 +920,7 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
             }
         )
     )
-    connect.write_hermes_config(BASE, MODEL)
+    start.write_hermes_config(BASE, MODEL)
     config = yaml.safe_load(hermes_config.read_text())
     assert config["terminal"] == {"backend": "local"}  # unrelated sections kept
     assert config["model"]["temperature"] == 0.7  # unrelated model keys kept
@@ -928,7 +928,7 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
     assert config["providers"]["openrouter"]["base_url"] == "https://openrouter.ai/api/v1"
     assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
     before = hermes_config.read_text()
-    connect.write_hermes_config(BASE, MODEL)
+    start.write_hermes_config(BASE, MODEL)
     assert hermes_config.read_text() == before
 
 
@@ -936,14 +936,14 @@ def test_write_hermes_config_preserves_non_mapping_file(hermes_config, capsys):
     pytest.importorskip("yaml")
     original = "- just\n- a\n- list\n"  # valid YAML, but not a mapping
     hermes_config.write_text(original)
-    connect.write_hermes_config(BASE, MODEL)
+    start.write_hermes_config(BASE, MODEL)
     assert hermes_config.read_text() == original  # user-managed file left untouched
     assert "couldn't parse" in capsys.readouterr().err
 
 
 def test_connect_hermes_no_launch(fake_studio, hermes_config):
     yaml = pytest.importorskip("yaml")
-    result = CliRunner().invoke(connect.connect_app, ["hermes", "--no-launch"])
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "UNSLOTH_API_KEY", "sk-unsloth-feedfacefeedface")
     assert "hermes" in result.output

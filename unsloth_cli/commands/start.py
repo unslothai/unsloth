@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth connect` — launch a coding agent against a running Studio server."""
+"""`unsloth start` — launch a coding agent against a running Studio server."""
 
 import json
 import os
@@ -27,8 +27,8 @@ from unsloth_cli._inference import (
     verify_studio_identity,
 )
 
-connect_app = typer.Typer(
-    help = "Connect a coding agent to a running Studio server.",
+start_app = typer.Typer(
+    help = "Start a coding agent against a running Studio server.",
     no_args_is_help = True,
     context_settings = {"help_option_names": ["-h", "--help"]},
 )
@@ -264,7 +264,7 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         "POST",
         f"{base}/api/auth/api-keys",
         token,
-        {"name": "Coding agents (unsloth connect)"},
+        {"name": "Coding agents (unsloth start)"},
         error = "Couldn't create an API key",
     )["key"]
     _remember_key(cache, base, key, "minted")
@@ -327,7 +327,7 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
     hint = model_id if "gguf" in model_id.lower() else f"{model_id}-GGUF"
     _fail(
         f"Codex needs a GGUF model served by llama-server, but {model_id} is on "
-        f"the transformers backend. Try: unsloth connect codex --model {hint}"
+        f"the transformers backend. Try: unsloth start codex --model {hint}"
     )
 
 
@@ -666,7 +666,7 @@ def write_hermes_config(base: str, model: dict) -> None:
         typer.echo(f"Updated {path}")
 
 
-@connect_app.command("claude", context_settings = _PASSTHROUGH)
+@start_app.command("claude", context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -705,7 +705,7 @@ def claude(
     )
 
 
-@connect_app.command("codex", context_settings = _PASSTHROUGH)
+@start_app.command("codex", context_settings = _PASSTHROUGH)
 def codex(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -722,7 +722,7 @@ def codex(
     _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
 
 
-@connect_app.command("openclaw", context_settings = _PASSTHROUGH)
+@start_app.command("openclaw", context_settings = _PASSTHROUGH)
 def openclaw(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -742,7 +742,7 @@ def openclaw(
     _run(base, entry, {}, command, launch = launch, install_hint = install_hint)
 
 
-@connect_app.command("opencode", context_settings = _PASSTHROUGH)
+@start_app.command("opencode", context_settings = _PASSTHROUGH)
 def opencode(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -757,7 +757,7 @@ def opencode(
     _run(base, entry, {}, command, launch = launch, install_hint = "npm install -g opencode-ai")
 
 
-@connect_app.command("hermes", context_settings = _PASSTHROUGH)
+@start_app.command("hermes", context_settings = _PASSTHROUGH)
 def hermes(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
