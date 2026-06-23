@@ -1775,7 +1775,9 @@ export function ChatSettingsPanel({
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
-          <div className="flex h-full flex-col">{settingsContent}</div>
+          <div data-tour="chat-settings" className="flex h-full flex-col">
+            {settingsContent}
+          </div>
         </SheetContent>
       </Sheet>
     );
@@ -1783,6 +1785,7 @@ export function ChatSettingsPanel({
 
   return (
     <aside
+      data-tour="chat-settings"
       className={`relative z-50 shrink-0 h-full overflow-hidden bg-panel-surface text-panel-surface-fg font-heading ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
     >
       <div className="h-full w-full">{settingsContent}</div>
