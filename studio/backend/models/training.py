@@ -27,6 +27,10 @@ _MAX_LORA_ALPHA = 32_768
 _MIN_VISION_IMAGE_SIZE = 256
 # 2048 is the highest most llms stay stable at
 _MAX_VISION_IMAGE_SIZE = 2048
+# Upper bound for dataset slice indices. Caps `.skip(n)` on streaming datasets so
+# an absurd index can't make the loader iterate effectively forever (DoS guard).
+# 1e9 is far beyond any realistic fine-tuning dataset row count.
+_MAX_DATASET_SLICE_INDEX = 1_000_000_000
 
 
 class S3Config(BaseModel):
@@ -125,12 +129,22 @@ class TrainingStartRequest(BaseModel):
     subset: Optional[str] = None
     train_split: Optional[str] = Field("train", description = "Training split name")
     eval_split: Optional[str] = Field(None, description = "Eval split name. None = auto-detect")
+    dataset_streaming: bool = Field(
+        False,
+        description = "Whether to load the Hugging Face dataset in streaming mode",
+    )
     eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
     dataset_slice_start: Optional[int] = Field(
-        None, description = "Inclusive start row index for dataset slicing"
+        None,
+        ge = 0,
+        le = _MAX_DATASET_SLICE_INDEX,
+        description = "Inclusive start row index for dataset slicing",
     )
     dataset_slice_end: Optional[int] = Field(
-        None, description = "Inclusive end row index for dataset slicing"
+        None,
+        ge = 0,
+        le = _MAX_DATASET_SLICE_INDEX,
+        description = "Inclusive end row index for dataset slicing",
     )
 
     @model_validator(mode = "before")
@@ -140,6 +154,70 @@ class TrainingStartRequest(BaseModel):
         if isinstance(values, dict) and "split" in values:
             values.setdefault("train_split", values.pop("split"))
         return values
+
+    # NOTE: pydantic runs all `mode="after"` validators in definition order. A
+    # second one, `_check_steps_or_epochs`, is defined lower in this class; keep
+    # these cross-field checks order-independent so the two stay decoupled.
+    @model_validator(mode = "after")
+    def _validate_dataset_slice(self) -> "TrainingStartRequest":
+        # Only the ordering is validated here. No upper bound is enforced on the
+        # indices: the trainer slices via datasets `.take()` / `.select()`, which
+        # clamp gracefully when the end index exceeds the dataset length.
+        # start == end is intentionally allowed (deliberate single-row slice,
+        # e.g. for debugging); the trainer logs a warning for that 1-row case.
+        if (
+            self.dataset_slice_start is not None
+            and self.dataset_slice_end is not None
+            and self.dataset_slice_end < self.dataset_slice_start
+        ):
+            raise ValueError(
+                "dataset_slice_end must be greater than or equal to dataset_slice_start"
+            )
+        return self
+
+    @field_validator("hf_dataset")
+    @classmethod
+    def _check_hf_dataset(cls, v: Optional[str]) -> Optional[str]:
+        # Constrain the HF dataset id to a safe charset + length to shrink the
+        # path-traversal / SSRF surface of `load_dataset(<id>, ...)`.
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > 256:
+            raise ValueError("hf_dataset is too long (max 256 chars)")
+        if ".." in v:
+            raise ValueError("hf_dataset must not contain '..'")
+        if not re.fullmatch(r"[A-Za-z0-9._\-/]+", v):
+            raise ValueError("hf_dataset may only contain letters, digits, '_', '-', '.', '/'")
+        return v
+
+    @field_validator("subset")
+    @classmethod
+    def _check_subset(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if len(v) > 128:
+            raise ValueError("subset is too long (max 128 chars)")
+        if not re.fullmatch(r"[A-Za-z0-9._\-]*", v):
+            raise ValueError("subset may only contain letters, digits, '_', '-', '.'")
+        return v
+
+    @field_validator("train_split", "eval_split")
+    @classmethod
+    def _check_split_name(cls, v: Optional[str]) -> Optional[str]:
+        # Split names feed HF slice syntax (e.g. "train[:80%]"), so allow that
+        # charset but cap length and block path-traversal / NUL bytes.
+        if v is None:
+            return v
+        if len(v) > 128:
+            raise ValueError("split name is too long (max 128 chars)")
+        if "\x00" in v or ".." in v or "/" in v or "\\" in v:
+            raise ValueError("split name contains invalid characters")
+        if not re.fullmatch(r"[A-Za-z0-9_\-\[\]:%.+ ]*", v):
+            raise ValueError("split name contains invalid characters")
+        return v
 
     @field_validator("learning_rate", mode = "before")
     @classmethod
@@ -414,6 +492,24 @@ class TrainingStartRequest(BaseModel):
         None,
         description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
     )
+
+    @model_validator(mode = "after")
+    def _validate_streaming_splits(self) -> "TrainingStartRequest":
+        # Streaming load_dataset does not accept HF slice syntax (e.g. "train[:50%]"
+        # or "train[:20]"). Probe-confirmed: raises ValueError: Bad split. Reject
+        # early with a clear message so the user knows to use a plain split name.
+        if self.dataset_streaming:
+            for field_name, split_val in (
+                ("train_split", self.train_split),
+                ("eval_split", self.eval_split),
+            ):
+                if split_val is not None and "[" in split_val:
+                    raise ValueError(
+                        f"dataset_streaming does not support HF slice syntax in {field_name} "
+                        f"(got {split_val!r}); streaming load_dataset raises 'Bad split' on "
+                        "bracket expressions. Use a plain split name (e.g. 'train', 'validation')."
+                    )
+        return self
 
     @model_validator(mode = "after")
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":

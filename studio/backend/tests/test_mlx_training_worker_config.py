@@ -92,6 +92,17 @@ def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
     assert "processor = tokenizer if is_vlm else None" not in source
 
 
+def test_mlx_wandb_run_config_excludes_subject_and_secrets():
+    # The MLX W&B run config uploads the whole config minus a sensitive set. The owner's
+    # subject (authenticated username / API-key id) must be filtered alongside the secrets,
+    # otherwise it lands in W&B run config even though DB history already strips it.
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text()
+
+    assert (
+        '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source
+    ), "MLX W&B run config must exclude subject and the token/s3 secrets"
+
+
 def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
     assert _mlx_vlm_max_resized_size(1000, 500, 512) == (512, 256)
     assert _mlx_vlm_max_resized_size(500, 1000, 512) == (256, 512)
@@ -239,7 +250,7 @@ def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
     )
     monkeypatch.setattr(_worker, "logger", fake_logger)
 
-    def _boom(_name):
+    def _boom(_name, _hf_token = None):
         raise RuntimeError("venv .venv_t5_550 missing")
 
     monkeypatch.setattr(_worker, "_activate_transformers_version", _boom)
@@ -257,7 +268,9 @@ def test_activate_transformers_version_or_warn_silent_on_success(monkeypatch):
         warning = lambda *a, **k: warnings_logged.append((a, k)),
     )
     monkeypatch.setattr(_worker, "logger", fake_logger)
-    monkeypatch.setattr(_worker, "_activate_transformers_version", lambda _name: None)
+    monkeypatch.setattr(
+        _worker, "_activate_transformers_version", lambda _name, _hf_token = None: None
+    )
 
     _worker._activate_transformers_version_or_warn("meta-llama/Llama-3-8B")
 

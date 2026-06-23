@@ -69,6 +69,7 @@ async def load_checkpoint(
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = request.hf_token,
+            subject = current_subject,
         )
 
         if not success:
