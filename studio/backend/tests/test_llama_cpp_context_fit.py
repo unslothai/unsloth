@@ -68,6 +68,7 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import (
+    _APPLE_UNIFIED_MEMORY_FRACTION,
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     classify_gpu_offload_lines,
@@ -120,6 +121,7 @@ def _drive(
     kv_per_token_bytes = 325_000,
     can_estimate_kv = True,
     extra_args = None,
+    apple_budget_mib = 0,
 ):
     """Drive the post-metadata portion of load_model with stubbed inputs.
 
@@ -223,6 +225,29 @@ def _drive(
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
             effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
+    elif (
+        apple_budget_mib > 0
+        and inst._can_estimate_kv()
+        and effective_ctx > 0
+    ):
+        # Mirrors the Apple-Silicon unified-memory branch in load_model: the
+        # budget already carries the fraction, so budget_frac = 1.0; the UI
+        # ceiling comes from native for both explicit and auto, but only auto
+        # shrinks the launch context.
+        native_ctx_for_cap = context_length or effective_ctx
+        cap = inst._fit_context_to_vram(
+            native_ctx_for_cap, apple_budget_mib, model_size, cache_type_kv, budget_frac = 1.0,
+        )
+        cap_footprint_mib = (
+            model_size + inst._estimate_kv_cache_bytes(cap, cache_type_kv)
+        ) / (1024 * 1024)
+        max_available_ctx = (
+            cap
+            if cap_footprint_mib <= apple_budget_mib
+            else min(FALLBACK_CTX, native_ctx_for_cap)
+        )
+        if not explicit_ctx:
+            effective_ctx = max_available_ctx
 
     return {
         "c_arg": effective_ctx if effective_ctx > 0 else 0,
@@ -704,3 +729,151 @@ def test_select_gpus_reserves_per_device_overhead():
         small, gpus, total_by_idx = totals, per_device_overhead_bytes = gib
     )
     assert a == [0] and b == [0]
+
+
+# ---------------------------------------------------------------------------
+# Apple Silicon unified-memory context cap (#5118, #6529).
+#
+# llama.cpp enumerates no discrete GPU on Metal, so the VRAM-fit branches never
+# run and the context defaulted to the model's full native length, over-
+# committing unified memory -> llama-server "Compute error." at decode. The fix
+# resolves a unified-memory budget and caps the *auto* context with the same fit
+# math used for discrete GPUs (explicit user contexts stay honored verbatim).
+# ---------------------------------------------------------------------------
+
+
+def _force_apple(monkeypatch):
+    import platform as _platform
+
+    monkeypatch.setattr(_platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_platform, "machine", lambda: "arm64")
+
+
+def _install_fake_mlx(monkeypatch, working_set_bytes):
+    """Minimal mlx.core stub exposing metal.is_available() and device_info()."""
+    mlx = _types.ModuleType("mlx")
+    mlx_core = _types.ModuleType("mlx.core")
+    mlx_core.metal = _types.SimpleNamespace(is_available = lambda: True)
+    mlx_core.device_info = lambda: {
+        "max_recommended_working_set_size": working_set_bytes
+    }
+    mlx.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+
+
+class TestAppleUnifiedMemoryBudget:
+    def test_zero_off_apple_silicon(self, monkeypatch):
+        import platform as _platform
+
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "machine", lambda: "x86_64")
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == 0
+
+    def test_uses_metal_working_set(self, monkeypatch):
+        _force_apple(monkeypatch)
+        ws = 27 * GIB  # ~recommended working set on a 36 GB Mac
+        _install_fake_mlx(monkeypatch, ws)
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
+            ws * _APPLE_UNIFIED_MEMORY_FRACTION
+        )
+
+    def test_falls_back_to_total_ram_without_mlx(self, monkeypatch):
+        _force_apple(monkeypatch)
+        monkeypatch.setitem(sys.modules, "mlx", None)  # import mlx.core -> ImportError
+        fake_psutil = _types.ModuleType("psutil")
+        fake_psutil.virtual_memory = lambda: _types.SimpleNamespace(total = 36 * GIB)
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
+            36 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
+        )
+
+    def test_zero_when_no_budget_resolvable(self, monkeypatch):
+        _force_apple(monkeypatch)
+        monkeypatch.setitem(sys.modules, "mlx", None)
+        monkeypatch.setitem(sys.modules, "psutil", None)
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == 0
+
+
+class TestAppleContextCap:
+    """The real ``_fit_context_to_vram`` against the reporter's M3 Pro case."""
+
+    def test_caps_native_context_into_unified_budget(self):
+        # Qwen3.6-27B Q4 (~15.7 GB) at native 262144 ctx with ~16 GB KV -> ~32 GB
+        # footprint on a 36 GB M3 Pro (~27 GB Metal working set, ~23 GB budget at
+        # 0.85). The fit must reduce the context so the footprint fits.
+        inst = _make_backend(native_ctx = 262144)
+        inst._can_estimate_kv = lambda: True
+        inst._estimate_kv_cache_bytes = (
+            lambda n, *a, **k: 0 if n <= 0 else int(n * 64_000)  # ~16 GB @ 262144
+        )
+        model_size_fit = int(15.7 * GIB)
+        budget_mib = int(27 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION) // (1024 * 1024)
+
+        # The native footprint over-commits the budget -- this is the bug.
+        native_footprint_mib = (
+            model_size_fit + inst._estimate_kv_cache_bytes(262144)
+        ) // (1024 * 1024)
+        assert native_footprint_mib > budget_mib
+
+        capped = inst._fit_context_to_vram(
+            262144, budget_mib, model_size_fit, None, budget_frac = 1.0
+        )
+        assert capped < 262144
+        capped_footprint_mib = (
+            model_size_fit + inst._estimate_kv_cache_bytes(capped)
+        ) // (1024 * 1024)
+        assert capped_footprint_mib <= budget_mib
+
+
+class TestAppleBranchEndToEnd:
+    """Drive the new Apple ``elif`` glue (cap / floor / explicit) via _drive.
+
+    No GPU is present, so only the Apple branch can fire; covers the
+    footprint-fits vs weights-exceed-budget decision the inline fit can't.
+    """
+
+    def test_auto_context_capped_below_native(self):
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            kv_per_token_bytes = 64_000,
+            apple_budget_mib = 23_000,  # ~22 GB: weights fit, native KV doesn't
+        )
+        assert 0 < plan["c_arg"] < 262144
+        assert plan["use_fit"] is True  # --fit on still ships as a backstop
+        assert plan["gpu_indices"] is None  # no CUDA device pinning on Metal
+        assert plan["max_available_ctx"] == plan["c_arg"]
+
+    def test_floors_to_fallback_when_weights_exceed_budget(self):
+        # Model weights alone blow the budget: the fit can't shrink ctx to help,
+        # so the auto context must floor to 4096 rather than stay at native.
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = 100,
+            gpus = [],
+            native_ctx = 262144,
+            apple_budget_mib = 20_000,
+        )
+        assert plan["c_arg"] == FALLBACK_CTX
+        assert plan["use_fit"] is True
+        assert plan["gpu_indices"] is None
+
+    def test_explicit_context_honored_verbatim(self):
+        # An explicit user context must never be silently shrunk on Apple, but
+        # the UI ceiling still tightens to the budget (mirrors the GPU branch,
+        # which computes max_available_ctx regardless of explicit_ctx).
+        plan = _drive(
+            n_ctx = 200_000,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            kv_per_token_bytes = 64_000,
+            apple_budget_mib = 23_000,
+        )
+        assert plan["c_arg"] == 200_000  # launch context honored verbatim
+        assert plan["use_fit"] is True
+        # Ceiling reflects the budget so the over-budget warning still fires.
+        assert plan["max_available_ctx"] < 262144

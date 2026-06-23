@@ -803,6 +803,12 @@ _MTP_MIN_SIZE_B = 3.0
 # of free (see _fit_context_to_vram), plus a byte-accurate MTP draft reserve.
 _CTX_FIT_VRAM_FRACTION = 0.95
 
+# Fraction of Apple Silicon's recommended Metal working-set to budget for a GGUF
+# load. Unified memory is shared with the OS and other apps, so this is tighter
+# than the dedicated-VRAM fraction above; it matches MLX's own 0.85 cap
+# (mlx_inference.py _configure_memory_limits).
+_APPLE_UNIFIED_MEMORY_FRACTION = 0.85
+
 # Flat MTP reserve, used only when GGUF dims are too sparse for the byte-accurate
 # reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
 _MTP_VRAM_RESERVE_FRAC = 0.05
@@ -2164,6 +2170,39 @@ class LlamaCppBackend:
         index; empty if no supported GPU is reachable. Thin wrapper over
         ``_get_gpu_memory`` for callers that only need free VRAM."""
         return [(idx, free) for idx, free, _total in LlamaCppBackend._get_gpu_memory()]
+
+    @staticmethod
+    def _apple_metal_memory_budget_bytes() -> int:
+        """Unified-memory budget for GGUF context fitting on Apple Silicon.
+
+        llama.cpp's discrete-GPU VRAM fit never runs on Metal -- no GPU is
+        enumerated (_get_gpu_memory returns []) -- so the context would default
+        to the model's full native length and over-commit unified memory,
+        making llama-server fail with "Compute error." at decode (#5118, #6529).
+        Mirror MLX's own budget: a fraction of Metal's recommended working-set
+        size, falling back to total system RAM. Returns 0 off Apple Silicon or
+        when no budget is resolvable (so callers can skip the cap).
+        """
+        from utils.hardware import is_apple_silicon
+
+        if not is_apple_silicon():
+            return 0
+        rec_bytes = 0
+        try:
+            import mlx.core as mx
+
+            if mx.metal.is_available():
+                rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
+        except Exception:
+            rec_bytes = 0
+        if rec_bytes <= 0:
+            try:
+                import psutil
+
+                rec_bytes = int(psutil.virtual_memory().total)
+            except Exception:
+                return 0
+        return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 
     @staticmethod
     def _get_gpu_memory() -> list[tuple[int, int, int]]:
@@ -5027,6 +5066,10 @@ class LlamaCppBackend:
                         else 0.0
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+                    # Apple Silicon enumerates no discrete GPU, so none of the
+                    # VRAM-fit branches below run; this unified-memory budget (0
+                    # off Apple Silicon) drives a context cap in their place.
+                    _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
                     def _restore_after_tensor_downgrade():
                         # Tensor mode dropped a quantized KV and stripped the cache
@@ -5309,6 +5352,53 @@ class LlamaCppBackend:
                             # Weights don't fit on any subset; default UI to 4096
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
+
+                    elif (
+                        _apple_budget_mib > 0
+                        and self._can_estimate_kv()
+                        and effective_ctx > 0
+                    ):
+                        # Apple Silicon: no discrete GPU is enumerated, so the
+                        # VRAM-fit branches above are skipped and effective_ctx is
+                        # still the model's full native length -- which over-commits
+                        # unified memory and makes llama-server fail with "Compute
+                        # error." at decode (#5118, #6529). Cap against the unified-
+                        # memory budget with the same fit math; leave gpu_indices=None
+                        # / use_fit=True untouched (Metal has no CUDA device plumbing
+                        # to pin, and --fit on still ships as a backstop alongside the
+                        # reduced -c). Mirror the discrete-GPU branch: derive the UI
+                        # ceiling from native for both explicit and auto, but shrink
+                        # the launch context only when it's auto -- an explicit user
+                        # context is honored verbatim.
+                        native_ctx_for_cap = self._context_length or effective_ctx
+                        cap = self._fit_context_to_vram(
+                            native_ctx_for_cap,
+                            _apple_budget_mib,
+                            model_size_fit,
+                            cache_type_kv,
+                            n_parallel = n_parallel,
+                            mtp_engaged = _mtp_reserves_gpu,
+                            mtp_overhead_fn = mtp_overhead_fn,
+                            budget_frac = 1.0,
+                            total_mib = None,
+                        )
+                        _cap_footprint_mib = (
+                            model_size_fit
+                            + self._estimate_kv_cache_bytes(
+                                cap, cache_type_kv, n_parallel = n_parallel
+                            )
+                            + _mtp_bytes(cap)
+                        ) / (1024 * 1024)
+                        # _fit_context_to_vram returns the request unchanged when it
+                        # already fits OR when weights alone exceed the budget; only
+                        # the latter still over-commits, so floor to 4096 then.
+                        max_available_ctx = (
+                            cap
+                            if _cap_footprint_mib <= _apple_budget_mib
+                            else min(4096, native_ctx_for_cap)
+                        )
+                        if not explicit_ctx:
+                            effective_ctx = max_available_ctx
 
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
