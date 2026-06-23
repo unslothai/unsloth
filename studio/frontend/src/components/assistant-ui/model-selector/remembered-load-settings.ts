@@ -46,24 +46,24 @@ function writeAll(all: Record<string, RememberedLoadSettings>) {
 }
 
 export function loadRememberedLoadSettings(
-  modelId: string,
+  key: string,
 ): RememberedLoadSettings | null {
-  return readAll()[modelId] ?? null;
+  return readAll()[key] ?? null;
 }
 
 export function saveRememberedLoadSettings(
-  modelId: string,
+  key: string,
   settings: RememberedLoadSettings,
 ) {
   const all = readAll();
-  all[modelId] = settings;
+  all[key] = settings;
   writeAll(all);
 }
 
-export function clearRememberedLoadSettings(modelId: string) {
+export function clearRememberedLoadSettings(key: string) {
   const all = readAll();
-  if (modelId in all) {
-    delete all[modelId];
+  if (key in all) {
+    delete all[key];
     writeAll(all);
   }
 }

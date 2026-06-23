@@ -1663,8 +1663,8 @@ export function ChatPage({
         // (not abandon) keeps its download running.
         detachStaged();
         // Load-on-selection skips the sheet, so seed the saved knobs here the
-        // way the sheet's restore effect would; otherwise keepSpeculative would
-        // reset the remembered speculative choice on the switch.
+        // way the sheet's restore effect would; the switch would otherwise reset
+        // the remembered speculative choice (keepSpeculative below prevents it).
         const remembered = hasGgufSource(selection)
           ? loadRememberedLoadSettings(rememberedLoadSettingsKey(selection))
           : null;
