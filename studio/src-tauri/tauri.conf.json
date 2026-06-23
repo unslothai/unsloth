@@ -27,7 +27,9 @@
         "center": true,
         "visible": false,
         "resizable": false,
-        "titleBarStyle": "Transparent",
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": { "x": 14, "y": 12 },
         "hiddenTitle": true
       }
     ]

@@ -440,6 +440,7 @@ export function AppSidebar() {
 
   const chatDisabled = isTrainingRunning;
   const showSidebarBrand = !usesCustomTitlebar;
+  const showCompactMacBrand = showSidebarBrand && usesNativeMacTitlebar;
 
   function chatSearchForProject(projectId: string | null) {
     if (projectId) {
@@ -968,17 +969,31 @@ export function AppSidebar() {
     >
       <SidebarHeader
         className={cn(
+          "relative",
           showSidebarBrand
-            ? "pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0"
+            ? cn(
+                "pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0",
+                showCompactMacBrand &&
+                  "pl-4 pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)] pb-2 group-data-[collapsible=icon]:pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)]",
+              )
             : "h-[var(--studio-custom-titlebar-height,34px)] shrink-0 p-0",
-          showSidebarBrand &&
-            usesNativeMacTitlebar &&
-            "pt-[calc(var(--studio-mac-titlebar-height,34px)+14px)] group-data-[collapsible=icon]:pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)]",
         )}
       >
         {showSidebarBrand && (
           <>
-            <div className="flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden">
+            {usesNativeMacTitlebar && (
+              <div
+                data-tauri-drag-region
+                aria-hidden="true"
+                className="absolute inset-x-0 top-0 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+              />
+            )}
+            <div
+              className={cn(
+                "flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden",
+                showCompactMacBrand && "gap-2",
+              )}
+            >
               <Link
                 to="/chat"
                 onClick={(event) => {
@@ -986,18 +1001,42 @@ export function AppSidebar() {
                   if (chatDisabled) return;
                   openNewChat(null);
                 }}
-                className="flex items-center gap-[6px] select-none"
+                className={cn(
+                  "flex items-center gap-[6px] select-none",
+                  showCompactMacBrand && "gap-2",
+                )}
                 aria-label={t("shell.aria.home")}
               >
                 <img
-                  src="/circle-logo-small.png"
+                  src={
+                    showCompactMacBrand
+                      ? "/rounded-512.png"
+                      : "/circle-logo-small.png"
+                  }
                   alt="Unsloth"
-                  className="h-[34px] w-[34px] rounded-full object-cover"
+                  className={cn(
+                    "object-cover",
+                    showCompactMacBrand
+                      ? "size-5 rounded-[6px]"
+                      : "h-[34px] w-[34px] rounded-full",
+                  )}
                 />
-                <span className="font-heading text-[21px] font-semibold tracking-[0em] dark:tracking-[0.02em] leading-none text-black dark:text-white">
+                <span
+                  className={cn(
+                    "font-heading font-semibold leading-none",
+                    showCompactMacBrand
+                      ? "text-[13.5px] tracking-[0.01em] text-nav-fg"
+                      : "text-[21px] tracking-[0em] text-black dark:text-white dark:tracking-[0.02em]",
+                  )}
+                >
                   unsloth
                 </span>
-                <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                <span
+                  className={cn(
+                    "nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
+                    showCompactMacBrand && "pt-[2px] pb-[1px] text-[7px]",
+                  )}
+                >
                   {t("shell.beta")}
                 </span>
               </Link>

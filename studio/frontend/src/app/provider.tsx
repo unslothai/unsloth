@@ -183,8 +183,14 @@ const WEB_UPDATE_HIDDEN_ROUTES = new Set([
 ]);
 
 const MAC_NATIVE_CHROME_STYLE = {
+  "--studio-titlebar-height": "0px",
   "--studio-mac-titlebar-height": "34px",
   "--studio-mac-traffic-light-inset": "78px",
+  "--studio-content-top-inset": "34px",
+  "--studio-chat-header-height": "48px",
+  "--studio-chat-header-padding-top": "9px",
+  "--studio-chat-control-height": "33px",
+  "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
 
 const CUSTOM_CHROME_STYLE = {
