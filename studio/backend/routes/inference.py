@@ -2070,14 +2070,18 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
 # lock per running loop, since a module-level asyncio.Lock binds to a single
 # loop and breaks multi-loop runners (e.g. pytest's per-test loops on pre-3.10).
 _auto_switch_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_auto_switch_locks_guard = threading.Lock()
 
 
 def _auto_switch_lock() -> asyncio.Lock:
     loop = asyncio.get_running_loop()
-    lock = _auto_switch_locks.get(loop)
-    if lock is None:
-        lock = _auto_switch_locks[loop] = asyncio.Lock()
-    return lock
+    # WeakKeyDictionary mutation isn't thread-safe; guard get-or-create so two
+    # loops on different threads can't race it.
+    with _auto_switch_locks_guard:
+        lock = _auto_switch_locks.get(loop)
+        if lock is None:
+            lock = _auto_switch_locks[loop] = asyncio.Lock()
+        return lock
 
 
 def _auto_switch_target_loaded(backend, target_id: str, variant: Optional[str]) -> bool:
@@ -6191,9 +6195,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
     if not isinstance(body, dict):
-        body = (
-            await request.json()
-        )  # re-raise the malformed-body error, post-503 (pre-feature behavior)
+        # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
+        # a valid non-dict body such as a list is a clean 400 rather than a 500.
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
     if body.get("max_tokens") is None:
         body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
@@ -6366,9 +6372,11 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
     if not isinstance(body, dict):
-        body = (
-            await request.json()
-        )  # re-raise the malformed-body error, post-503 (pre-feature behavior)
+        # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
+        # a valid non-dict body such as a list is a clean 400 rather than a 500.
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))

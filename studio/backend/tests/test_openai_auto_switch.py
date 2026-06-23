@@ -915,3 +915,63 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     assert str((tmp_path / "default").resolve()) in hf
     assert str((tmp_path / "custom").resolve()) in hf
     assert str((tmp_path / "lmstudio").resolve()) in lm
+
+
+# ── gemini round: list-body 400, non-POST not tracked ──
+
+
+def _json_body_request(payload):
+    class _Req:
+        async def json(self):
+            return payload
+
+    return _Req()
+
+
+def test_completions_list_body_is_400_not_500(monkeypatch):
+    # A valid JSON non-dict body (e.g. a list) on a loaded backend is a clean 400,
+    # not a 500 from body.get(...).
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("unsloth/A-GGUF")  # loaded
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = _LoadRecorder(backend))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request([]), "tester"))
+    assert exc.value.status_code == 400
+
+
+def test_embeddings_list_body_is_400_not_500(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("unsloth/A-GGUF")
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = _LoadRecorder(backend))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(_json_body_request([]), "tester"))
+    assert exc.value.status_code == 400
+
+
+def test_middleware_ignores_non_post(monkeypatch):
+    # CORS preflight (OPTIONS) on an inference path must not be tracked as in-flight.
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(kw, "_inflight", 0)
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["inflight"] = kw._inflight
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    async def drive():
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(_m):
+            pass
+
+        scope = {"type": "http", "path": "/v1/chat/completions", "method": "OPTIONS", "headers": []}
+        await kw.LlamaKeepWarmMiddleware(app)(scope, receive, send)
+
+    asyncio.run(drive())
+    assert seen["inflight"] == 0  # OPTIONS not counted
+    assert kw._inflight == 0

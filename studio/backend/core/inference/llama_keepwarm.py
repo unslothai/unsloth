@@ -38,10 +38,14 @@ _unload_gates: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 def _unload_gate() -> asyncio.Lock:
     loop = asyncio.get_running_loop()
-    gate = _unload_gates.get(loop)
-    if gate is None:
-        gate = _unload_gates[loop] = asyncio.Lock()
-    return gate
+    # WeakKeyDictionary mutation isn't thread-safe; guard get-or-create so two
+    # loops on different threads can't race it. (_lock is released here before
+    # the returned asyncio lock is awaited, so there is no nesting.)
+    with _lock:
+        gate = _unload_gates.get(loop)
+        if gate is None:
+            gate = _unload_gates[loop] = asyncio.Lock()
+        return gate
 
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
@@ -117,7 +121,13 @@ class LlamaKeepWarmMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or not _is_inference_path(scope.get("path", "")):
+        # Inference endpoints are all POST; skipping non-POST avoids counting CORS
+        # preflight (OPTIONS). ``or ""`` guards an explicit None path.
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or not _is_inference_path(scope.get("path") or "")
+        ):
             await self.app(scope, receive, send)
             return
         # Always track in-flight on inference paths, even when the feature is off,

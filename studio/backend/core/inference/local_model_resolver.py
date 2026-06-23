@@ -130,15 +130,16 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
 
 def _index() -> dict[str, _LocalGgufEntry]:
     global _scan
-    now = time.monotonic()
+    # Build under the lock so concurrent callers with an expired cache don't all
+    # run the (multi-dir) scan at once; the rest wait and reuse the fresh result.
     with _lock:
+        now = time.monotonic()
         ts, cached = _scan
         if now - ts < _CACHE_TTL_S:
             return cached
-    fresh = _build_index()
-    with _lock:
+        fresh = _build_index()
         _scan = (now, fresh)
-    return fresh
+        return fresh
 
 
 def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
