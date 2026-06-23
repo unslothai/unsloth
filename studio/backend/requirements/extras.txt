@@ -39,7 +39,7 @@ ftfy
 importlib-resources
 librosa
 markdown2
-matplotlib
+matplotlib==3.11.0
 pystoi
 soundfile
 tensorboard
