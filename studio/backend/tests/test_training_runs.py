@@ -37,10 +37,7 @@ def test_build_default_output_dir_name_appends_project_slug():
         timestamp = 1771227800,
     )
 
-    assert (
-        output_dir
-        == "unsloth_Llama-3.2-3B-Instruct__project-customer-support_1771227800"
-    )
+    assert output_dir == "unsloth_Llama-3.2-3B-Instruct__project-customer-support_1771227800"
 
 
 def test_build_default_output_dir_name_caps_final_component(tmp_path):

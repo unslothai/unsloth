@@ -57,10 +57,7 @@ def build_default_output_dir_name(
 
     timestamp_suffix = f"_{timestamp_part}"
     max_project_chars = (
-        _MAX_RUN_DIR_NAME_CHARS
-        - len("model")
-        - len(_PROJECT_MARKER)
-        - len(timestamp_suffix)
+        _MAX_RUN_DIR_NAME_CHARS - len("model") - len(_PROJECT_MARKER) - len(timestamp_suffix)
     )
     project_slug = _trim_segment(project_slug, max_project_chars) or "project"
     project_suffix = f"{_PROJECT_MARKER}{project_slug}{timestamp_suffix}"
