@@ -63,8 +63,7 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # HF_TOKEN withheld on pull_request: this step executes checked-out PR code,
-          # so a same-repo PR must not receive it; public GGUF repos download anonymously.
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
