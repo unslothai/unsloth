@@ -14,7 +14,7 @@ from typing import Any
 
 
 def content_to_text(content: Any) -> str:
-    """Plain text of a `content`: str unchanged, list/tuple text parts space-joined
+    """Plain text of a `content`: str unchanged, list/tuple text parts newline-joined
     (non-text dropped), None to "", else str(content)."""
     if content is None:
         return ""
@@ -34,5 +34,5 @@ def content_to_text(content: Any) -> str:
                 text = item.get("text")
                 if isinstance(text, str) and text:
                     parts.append(text)
-        return " ".join(parts)
+        return "\n".join(parts)
     return str(content)

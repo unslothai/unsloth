@@ -48,18 +48,18 @@ def test_multimodal_list_drops_non_text_parts():
     assert mc.content_to_text(content) == "describe this"
 
 
-def test_multiple_text_parts_joined_with_space():
+def test_multiple_text_parts_joined_with_newline():
     mc = _load_message_content()
     content = [
         {"type": "text", "text": "first"},
         {"type": "text", "text": "second"},
     ]
-    assert mc.content_to_text(content) == "first second"
+    assert mc.content_to_text(content) == "first\nsecond"
 
 
 def test_bare_string_items_in_list():
     mc = _load_message_content()
-    assert mc.content_to_text(["a", "b"]) == "a b"
+    assert mc.content_to_text(["a", "b"]) == "a\nb"
 
 
 def test_audio_and_image_only_list_is_empty():
@@ -89,7 +89,7 @@ def test_empty_text_parts_skipped():
 def test_tuple_behaves_like_list():
     mc = _load_message_content()
     content = ({"type": "text", "text": "x"}, {"type": "text", "text": "y"})
-    assert mc.content_to_text(content) == "x y"
+    assert mc.content_to_text(content) == "x\ny"
 
 
 def test_result_supports_string_ops():
