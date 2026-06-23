@@ -688,7 +688,7 @@ def studio_default(
     cloudflare: bool = typer.Option(
         True,
         "--cloudflare/--no-cloudflare",
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0, exposing "
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 or ::, exposing "
         "Studio on a PUBLIC internet URL (default on). Pass --no-cloudflare to disable "
         "that Cloudflare URL; it does not change a public wildcard bind.",
     ),
@@ -1080,7 +1080,7 @@ def run(
     cloudflare: bool = typer.Option(
         True,
         "--cloudflare/--no-cloudflare",
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0, exposing "
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 or ::, exposing "
         "Studio on a PUBLIC internet URL (default on). Pass --no-cloudflare to disable "
         "that Cloudflare URL; it does not change a public wildcard bind.",
     ),
@@ -1343,7 +1343,7 @@ def run(
     display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
-    # run_server started the tunnel during the silent run above (0.0.0.0 or --secure).
+    # run_server started the tunnel during the silent run above (wildcard or --secure).
     _cf_url = getattr(app.state, "cloudflare_url", None)
     # --secure: examples must use the public tunnel URL, not the loopback address.
     if secure and _cf_url:

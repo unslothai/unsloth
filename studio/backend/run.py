@@ -769,7 +769,7 @@ _server_thread = None
 # Shutdown event -- wakes the main loop on signal.
 _shutdown_event = None
 
-# trycloudflare.com URL for 0.0.0.0 binds (set by run_server, read by the banner);
+# trycloudflare.com URL for wildcard binds (set by run_server, read by the banner);
 # None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
 _cloudflare_url = None
 
@@ -955,12 +955,12 @@ def _cloudflare_tunnel_should_start(
 ) -> bool:
     """Whether to start the Cloudflare tunnel. --secure exposes only the tunnel
     (loopback bind), so it tunnels even api-only (headless secure API serving);
-    otherwise tunnel only a 0.0.0.0 bind, never api-only (Tauri) or Colab."""
+    otherwise tunnel wildcard binds, never api-only (Tauri) or Colab."""
     if is_colab or not cloudflare:
         return False
     if secure:
         return True
-    return host == "0.0.0.0" and not api_only
+    return host in ("0.0.0.0", "::") and not api_only
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
@@ -1235,7 +1235,7 @@ def run_server(
     if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
 
-    # Free trycloudflare.com tunnel for 0.0.0.0 binds (the raw ip:port is often
+    # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
     # read app.state.cloudflare_url; torn down by _graceful_shutdown.
     global _cloudflare_url, _cloudflare_requested, _cloudflare_flag
@@ -1317,7 +1317,7 @@ def _build_arg_parser():
         "--cloudflare",
         action = argparse.BooleanOptionalAction,
         default = True,
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0, "
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 or ::, "
         "exposing Studio on a PUBLIC internet URL (default on). Pass --no-cloudflare "
         "to disable that Cloudflare URL; it does not change a public wildcard bind. "
         "The startup banner always states whether the tunnel is on or off.",

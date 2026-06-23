@@ -708,10 +708,9 @@ def test_run_server_registers_tunnel_atexit_backstop():
 
 
 def test_run_server_gates_tunnel_on_wildcard():
-    # Guard against accidentally widening the trigger beyond 0.0.0.0.
     source = _RUN_PY.read_text()
     assert "_cloudflare_enabled" in source
-    assert 'host == "0.0.0.0"' in source
+    assert 'host in ("0.0.0.0", "::")' in source
 
 
 def _run_print_cloudflare_line(
