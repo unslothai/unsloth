@@ -4,7 +4,7 @@ fastapi
 uvicorn
 pydantic
 packaging
-matplotlib==3.11.0
+matplotlib==3.10.9
 pandas
 nest_asyncio
 datasets==4.3.0

@@ -42,13 +42,9 @@ _pyplot_failed = False
 
 
 def _load_pyplot():
-    """Lazily import matplotlib.pyplot with a headless backend.
-
-    Importing matplotlib triggers loading its native extension (_c_internal_utils),
-    which can fail when the wheel is unsigned and blocked by a host policy such as
-    Windows Smart App Control. Doing it here, on first plot, keeps that failure out
-    of the server's import path so Studio still starts. Returns the pyplot module,
-    or None if matplotlib is unavailable.
+    """Lazily import matplotlib.pyplot (headless Agg); return it, or None if
+    matplotlib is unavailable. Deferred so a blocked native wheel (e.g. Windows
+    Smart App Control) never breaks server startup, only loss plotting.
     """
     global _pyplot, _pyplot_failed
     if _pyplot is not None or _pyplot_failed:
@@ -56,7 +52,7 @@ def _load_pyplot():
     try:
         import matplotlib
 
-        matplotlib.use("Agg")  # headless; no GUI backend needed to render to file
+        matplotlib.use("Agg")  # headless backend
         import matplotlib.pyplot as plt
 
         _pyplot = plt
@@ -1122,10 +1118,7 @@ class TrainingBackend:
     ) -> "Optional[plt.Figure]":
         """Create training loss plot with theme-aware styling.
 
-        matplotlib is imported lazily here (not at module load) so the Studio
-        server can still start when matplotlib's native libs are unavailable or
-        blocked (e.g. Windows Smart App Control blocking the unsigned wheel). If
-        it can't be loaded, plotting is skipped and None is returned.
+        matplotlib is loaded lazily; returns None if it is unavailable.
         """
         plt = _load_pyplot()
         if plt is None:
