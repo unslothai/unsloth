@@ -19,6 +19,9 @@ export function useTtsPlayer(
   const [isSpeaking, setIsSpeaking] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  // Bumped on every stop()/new speak()/unmount so an in-flight /api/audio/speech
+  // response can detect it was superseded and skip late playback + state updates.
+  const requestIdRef = useRef(0);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const onPlaybackEndRef = useRef(onPlaybackEnd);
   onPlaybackEndRef.current = onPlaybackEnd;
@@ -62,6 +65,7 @@ export function useTtsPlayer(
   }, []);
 
   const stop = useCallback(() => {
+    requestIdRef.current += 1;
     stopTts();
     stopSynth();
     setIsSpeaking(false);
@@ -71,6 +75,8 @@ export function useTtsPlayer(
     async (text: string) => {
       stop();
       if (!text) return;
+      // stop() above bumped the counter; this is now our request's id.
+      const reqId = requestIdRef.current;
 
       if (isTtsModel) {
         setIsSpeaking(true);
@@ -80,8 +86,12 @@ export function useTtsPlayer(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ input: text, voice: "default" }),
           });
+          // A later stop()/speak()/unmount superseded us — drop the result so
+          // cancelled speech can't start late or update state after unmount.
+          if (requestIdRef.current !== reqId) return;
           if (!response.ok) throw new Error("TTS request failed");
           const blob = await response.blob();
+          if (requestIdRef.current !== reqId) return;
           const url = URL.createObjectURL(blob);
           objectUrlRef.current = url;
           const audio = audioRef.current ?? new Audio();
@@ -97,8 +107,12 @@ export function useTtsPlayer(
           audio.onended = cleanup;
           audio.onerror = cleanup;
           audio.src = url;
-          audio.play();
+          // play() returns a promise that can reject (autoplay policy, decode
+          // error) without ever firing onerror; run cleanup so the loop can't
+          // get stuck in the "speaking" state.
+          void audio.play().catch(cleanup);
         } catch {
+          if (requestIdRef.current !== reqId) return;
           setIsSpeaking(false);
           onPlaybackEndRef.current?.();
         }
@@ -128,6 +142,7 @@ export function useTtsPlayer(
 
   useEffect(() => {
     return () => {
+      requestIdRef.current += 1;
       stopTts();
       stopSynth();
     };

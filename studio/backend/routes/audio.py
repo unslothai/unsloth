@@ -66,7 +66,7 @@ async def create_speech(
         gen = lambda: backend.generate_audio_response(text = text)
 
     try:
-        wav_bytes, _ = await asyncio.get_event_loop().run_in_executor(None, gen)
+        wav_bytes, _ = await asyncio.to_thread(gen)
     except Exception as e:
         logger.error("Speech generation error: %s", e, exc_info = True)
         raise HTTPException(status_code = 500, detail = str(e))

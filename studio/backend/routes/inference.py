@@ -3401,6 +3401,13 @@ async def voice_load_model(
         raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
 
     if not ok:
+        # load_model returned False (e.g. the server became healthy but audio
+        # codec init failed). Tear the half-started slot down before raising so
+        # the llama-server process doesn't linger and occupy memory.
+        try:
+            voice_backend.unload_model()
+        except Exception:
+            pass
         raise HTTPException(status_code = 500, detail = "Voice model failed to start.")
 
     audio_type = getattr(voice_backend, "_audio_type", None)

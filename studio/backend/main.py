@@ -888,6 +888,9 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+# Expose the speech endpoint on the standard OpenAI path (/v1/audio/speech) too,
+# so external OpenAI-compatible clients reach it, not just the Studio /api surface.
+app.include_router(audio_router, prefix = "/v1/audio", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])

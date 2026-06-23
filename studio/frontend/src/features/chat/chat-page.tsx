@@ -1279,6 +1279,9 @@ export function ChatPage({
   );
   const handleVoiceModelChange = useCallback(
     async (id: string | null) => {
+      // Captured before we optimistically switch the selection so a cancelled
+      // download can roll back to whatever voice was active.
+      const previousId = useChatRuntimeStore.getState().selectedVoiceModelId;
       setSelectedVoiceModelId(id);
       if (!id) {
         // Browser voice — unload voice slot and activate the loop immediately.
@@ -1316,7 +1319,10 @@ export function ChatPage({
                 `Download ${modelName} (~${sizeMb} MB)? This downloads from HuggingFace.`,
               );
               if (!confirmed) {
-                setSelectedVoiceModelId(null);
+                // Roll back to the prior voice instead of dropping to Browser
+                // voice; any already-loaded voice slot stays intact and the
+                // selector keeps matching what /api/audio/speech will use.
+                setSelectedVoiceModelId(previousId);
                 return;
               }
             }
@@ -1360,6 +1366,19 @@ export function ChatPage({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceMode]);
+
+  // Navigating away from Chat while voice mode is still active unmounts this
+  // component without flipping voiceMode to "off", so the effect above never
+  // runs. Unload on teardown so the independent voice model can't keep holding
+  // VRAM until the backend restarts. Reads the store at cleanup time to avoid a
+  // stale closure over selectedVoiceModelId.
+  useEffect(() => {
+    return () => {
+      if (useChatRuntimeStore.getState().selectedVoiceModelId) {
+        void authFetch("/api/inference/voice/unload", { method: "POST" });
+      }
+    };
+  }, []);
 
   // Fetch cached GGUFs once when voice mode is first activated.
   useEffect(() => {
