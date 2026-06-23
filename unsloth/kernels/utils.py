@@ -266,24 +266,9 @@ torch_bfloat16 = torch.bfloat16
 # Set True before from_pretrained to store LoRA backward activations in INT8
 # instead of BF16, saving ~4 GB on 8B models at seq_len=2048 (~0.007% grad error).
 # Models using the LoRA_MLP kernel compress e/g; PEFT-path models compress lora_A input.
+# Note: the gradient-checkpointing no-op below only applies to the PEFT path. The
+# LoRA_MLP kernel path still quantizes e/g even under gradient checkpointing.
 UNSLOTH_QUANTIZE_ACTIVATIONS: bool = False
-
-# Model types that use the LoRA_MLP kernel (compression handled there; skip PEFT-path patch).
-_LORA_MLP_KERNEL_MODEL_TYPES: frozenset = frozenset(
-    {
-        "llama",
-        "mistral",
-        "qwen2",
-        "gemma",
-        "gemma2",
-        "cohere",
-        "granite",
-        "qwen3",
-        "falcon_h1",
-        "qwen3moe",
-        "qwen3_5",
-    }
-)
 
 
 def quant_act(x: torch.Tensor):
@@ -320,9 +305,12 @@ class _Int8LoRALinear(torch.autograd.Function):
     def backward(ctx, grad_out):
         x_q, x_s, weight = ctx.saved_tensors
         x_flat = dequant_act(x_q, x_s)
-        grad_out_flat = grad_out.reshape(-1, grad_out.shape[-1])
-        grad_weight = grad_out_flat.T @ x_flat
-        grad_x = (grad_out_flat @ weight).view(ctx.orig_shape)
+        # Under AMP grad_out may arrive as fp32 while the activation is BF16; align
+        # dtypes before the matmuls and cast each grad back to its tensor's dtype.
+        compute_dtype = x_flat.dtype
+        grad_out_flat = grad_out.reshape(-1, grad_out.shape[-1]).to(compute_dtype)
+        grad_weight = (grad_out_flat.T @ x_flat).to(weight.dtype)
+        grad_x = (grad_out_flat @ weight.to(compute_dtype)).view(ctx.orig_shape)
         return grad_x, grad_weight
 
 
@@ -330,17 +318,17 @@ def patch_lora_for_int8_activations(model) -> object:
     """
     Wrap every trainable PEFT lora_A layer so its input activation is saved in
     INT8 instead of BF16.  No-ops for:
-      * model_types that use Unsloth's LoRA_MLP kernel (compression happens there)
       * models with gradient checkpointing enabled (nothing to compress)
     Idempotent: already-patched layers are skipped.
+
+    Layers already handled by Unsloth's fused LoRA_MLP / QKV / O kernels bypass
+    ``lora_A.forward`` entirely, so wrapping them here is a harmless no-op. We
+    therefore wrap unconditionally rather than skipping by model_type, which
+    previously left dropout/bias fallback layers uncompressed.
     """
     import warnings
 
     model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
-
-    if model_type in _LORA_MLP_KERNEL_MODEL_TYPES:
-        # LoRA_MLP kernel already applies INT8 compression for these models.
-        return model
 
     if getattr(model, "gradient_checkpointing", False):
         warnings.warn(
