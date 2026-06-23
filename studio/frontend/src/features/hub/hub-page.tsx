@@ -554,8 +554,6 @@ export function ModelsPage() {
   const deferredDebouncedQuery = useDeferredValue(debouncedQuery);
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
-  // Only forward a well-formed `hf_...` token to the Hugging Face client; a
-  // malformed value would otherwise throw and break anonymous browsing.
   const apiHfToken = hfApiToken(debouncedHfToken);
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
