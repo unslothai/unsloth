@@ -2640,18 +2640,6 @@ export function ChatPage({
         }}
         externalProviderType={activeExternalProviderType}
         loadingModel={loadingModel}
-        onReloadModel={() => {
-          const state = useChatRuntimeStore.getState();
-          if (state.params.checkpoint) {
-            selectModel({
-              id: state.params.checkpoint,
-              ggufVariant: state.activeGgufVariant ?? undefined,
-              forceReload: true,
-              isDownloaded: true,
-              loadingDescription: "Reloading with updated chat template.",
-            });
-          }
-        }}
         onLoadPendingModel={() => {
           const pending = useChatRuntimeStore.getState().pendingSelection;
           if (!pending) return;
