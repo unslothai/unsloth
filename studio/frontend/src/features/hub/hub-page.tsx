@@ -1061,11 +1061,11 @@ export function ModelsPage() {
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
-    ? `${Math.floor(gpu.memoryTotalGb)} GB`
+    ? `${Math.round(gpu.memoryTotalGb)} GB`
     : "Unavailable";
   const ramLabel =
     gpu.systemRamTotalGb > 0
-      ? `${Math.floor(gpu.systemRamTotalGb)} GB`
+      ? `${Math.round(gpu.systemRamTotalGb)} GB`
       : "Unavailable";
   const coreLabel = `${gpu.cpuCore}/${gpu.cpuThread}`;
 

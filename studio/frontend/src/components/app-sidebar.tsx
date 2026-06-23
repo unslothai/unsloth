@@ -1478,8 +1478,8 @@ export function AppSidebar() {
 
         <SidebarFooter className="relative pt-3 pb-4 group-data-[collapsible=icon]:px-0">
           {/* Fade above the profile box, shown only when there's more list below
-              the fold; at the bottom (or short lists) it fades so the last row
-              shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
+            the fold; at the bottom (or short lists) it fades so the last row
+            shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
           <div
             aria-hidden="true"
             className={cn(
@@ -1521,9 +1521,55 @@ export function AppSidebar() {
               </SidebarGroupContent>
             </SidebarGroup>
           )}
-<<<<<<<<< Temporary merge branch 1
 
-          <SidebarMenu>
+          <SidebarMenu className="gap-3 group-data-[collapsible=icon]:gap-2.5">
+            {/* Update affordance — shows only when a newer version is available. */}
+            {showUpdateCard && (
+              <SidebarMenuItem>
+                <button
+                  type="button"
+                  aria-label={t("shell.updateAvailable")}
+                  onClick={() => {
+                    useSettingsDialogStore
+                      .getState()
+                      .openDialog("about", { scrollTarget: "about-updates" });
+                    closeMobileIfOpen();
+                  }}
+                  className="flex h-[44px] w-full items-center gap-[9px] rounded-[14px] border border-border/60 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="flex size-[32px] shrink-0 items-center justify-center group-data-[collapsible=icon]:size-full"
+                  >
+                    <HugeiconsIcon
+                      icon={BadgeInfoIcon}
+                      strokeWidth={1.75}
+                      className="size-[21px] text-nav-fg"
+                    />
+                  </span>
+                  <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
+                    <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
+                      {t("shell.updateAvailable")}
+                    </span>
+                    {updateVersion && (
+                      <span className="truncate text-[11.5px] text-muted-foreground">
+                        v{updateVersion}
+                      </span>
+                    )}
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+                  >
+                    <HugeiconsIcon
+                      icon={ArrowRight02Icon}
+                      className="size-[17px]"
+                      strokeWidth={1.75}
+                    />
+                  </span>
+                </button>
+              </SidebarMenuItem>
+            )}
             <SidebarMenuItem>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -1545,11 +1591,16 @@ export function AppSidebar() {
                       <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                     </div>
                     {/* settings cog (replaces the up/down chevron) */}
-                    <HugeiconsIcon
-                      icon={Settings02Icon}
-                      strokeWidth={1.5}
-                      className="ml-auto !size-[18px] text-muted-foreground group-data-[collapsible=icon]:hidden"
-                    />
+                    <span
+                      aria-hidden="true"
+                      className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+                    >
+                      <HugeiconsIcon
+                        icon={Settings02Icon}
+                        strokeWidth={1.5}
+                        className="!size-[18px]"
+                      />
+                    </span>
                   </SidebarMenuButton>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -1559,125 +1610,6 @@ export function AppSidebar() {
                   className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-2.5 py-2.5 font-heading rounded-[20px] border-0"
                 >
                   <DropdownMenuGroup>
-=========
-        />
-        <SidebarMenu className="gap-3 group-data-[collapsible=icon]:gap-2.5">
-          {/* Update affordance — shows only when a newer version is available. */}
-          {showUpdateCard && (
-            <SidebarMenuItem>
-              <button
-                type="button"
-                aria-label={t("shell.updateAvailable")}
-                onClick={() => {
-                  useSettingsDialogStore
-                    .getState()
-                    .openDialog("about", { scrollTarget: "about-updates" });
-                  closeMobileIfOpen();
-                }}
-                className="flex h-[44px] w-full items-center gap-[9px] rounded-[14px] border border-border/60 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
-              >
-                <span
-                  aria-hidden="true"
-                  className="flex size-[32px] shrink-0 items-center justify-center group-data-[collapsible=icon]:size-full"
-                >
-                  <HugeiconsIcon
-                    icon={BadgeInfoIcon}
-                    strokeWidth={1.75}
-                    className="size-[21px] text-nav-fg"
-                  />
-                </span>
-                <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
-                  <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
-                    {t("shell.updateAvailable")}
-                  </span>
-                  {updateVersion && (
-                    <span className="truncate text-[11.5px] text-muted-foreground">
-                      v{updateVersion}
-                    </span>
-                  )}
-                </div>
-                <span
-                  aria-hidden="true"
-                  className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
-                >
-                  <HugeiconsIcon
-                    icon={ArrowRight02Icon}
-                    className="size-[17px]"
-                    strokeWidth={1.75}
-                  />
-                </span>
-              </button>
-            </SidebarMenuItem>
-          )}
-          <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <SidebarMenuButton
-                  size="lg"
-                  aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] px-2 py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
-                >
-                  <div className="flex shrink-0 items-center">
-                    <UserAvatar
-                      name={displayTitle}
-                      imageUrl={avatarDataUrl}
-                      size="sm"
-                      className="!size-[32px] group-data-[collapsible=icon]:!rounded-full"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
-                    <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
-                    <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
-                  </div>
-                  {/* settings cog (replaces the up/down chevron) */}
-                  <span
-                    aria-hidden="true"
-                    className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
-                  >
-                    <HugeiconsIcon
-                      icon={Settings02Icon}
-                      strokeWidth={1.5}
-                      className="!size-[18px]"
-                    />
-                  </span>
-                </SidebarMenuButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side="top"
-                align="center"
-                sideOffset={8}
-                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-2.5 py-2.5 font-heading rounded-[20px] border-0"
-              >
-                <DropdownMenuGroup>
-                  <DropdownMenuItem
-                    onSelect={() => useSettingsDialogStore.getState().openDialog()}
-                  >
-                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.navigation.settings")}</span>
-                    <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
-                  >
-                    <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
-                    <span>{t("shell.navigation.api")}</span>
-                    <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
-                      {t("common.new")}
-                    </span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    ref={anchorRef as React.Ref<HTMLDivElement>}
-                    onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
-                  >
-                    {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
-                    <span>
-                      {isDark
-                        ? t("shell.navigation.lightMode")
-                        : t("shell.navigation.darkMode")}
-                    </span>
-                  </DropdownMenuItem>
-                  {getTourId(pathname) && (
->>>>>>>>> Temporary merge branch 2
                     <DropdownMenuItem
                       onSelect={() => useSettingsDialogStore.getState().openDialog()}
                     >

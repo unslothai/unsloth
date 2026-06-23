@@ -388,7 +388,7 @@ function LiveGpuPanel({
                   value={index}
                   className="bg-popover text-popover-foreground dark:bg-zinc-900 dark:text-zinc-100"
                 >
-                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.floor(device.vram_total_gb)}GB` : "N/A"})
+                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.round(device.vram_total_gb)}GB` : "N/A"})
                 </option>
               ))}
             </select>
