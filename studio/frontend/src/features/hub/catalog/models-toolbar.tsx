@@ -252,7 +252,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 ? `Search on-device ${isDataset ? "datasets" : "models"}`
                 : isDataset
                   ? "Search datasets"
-                  : "Search models"
+                  : "Search all models"
             }
             className={cn(
               "field-soft h-9 rounded-full !border-0 pl-10 text-[13px] placeholder:text-muted-foreground/80 focus-visible:!ring-0",
