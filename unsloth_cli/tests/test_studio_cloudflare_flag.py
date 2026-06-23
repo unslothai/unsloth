@@ -10,10 +10,7 @@ child and run_server. Modeled on test_studio_run_parallel_flag.py.
 
 from __future__ import annotations
 
-import ast
-import inspect
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -236,42 +233,44 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     assert captured.get("cloudflare") is expected, captured
 
 
-def test_run_banner_cloudflare_notice_is_wildcard_guarded():
-    tree = ast.parse(textwrap.dedent(inspect.getsource(_studio().run)))
+def test_run_display_host_and_url_helpers_cover_ipv6_wildcard():
+    import types
 
-    def _is_wildcard_guard(node):
-        if not isinstance(node.test, ast.Compare):
-            return False
-        if not isinstance(node.test.left, ast.Name) or node.test.left.id != "host":
-            return False
-        if not node.test.ops or not isinstance(node.test.ops[0], ast.In):
-            return False
-        comp = node.test.comparators[0]
-        if not isinstance(comp, ast.Tuple):
-            return False
-        return {getattr(item, "value", None) for item in comp.elts} == {"0.0.0.0", "::"}
+    studio_mod = _studio()
+    run_mod = types.SimpleNamespace(_resolve_external_ip = lambda: "198.51.100.7")
 
-    guards = [
-        node for node in ast.walk(tree) if isinstance(node, ast.If) and _is_wildcard_guard(node)
+    assert studio_mod._display_host_for_bind(run_mod, "0.0.0.0") == "198.51.100.7"
+    assert studio_mod._display_host_for_bind(run_mod, "::") == "198.51.100.7"
+    assert studio_mod._url_host("2001:db8::7") == "[2001:db8::7]"
+    assert studio_mod._url_host("127.0.0.1") == "127.0.0.1"
+
+
+def test_run_cloudflare_notice_uses_external_host_policy():
+    import types
+
+    studio_mod = _studio()
+    calls = []
+    run_mod = types.SimpleNamespace(
+        _verify_global_reachability = lambda host, port: calls.append(("verify", host, port)),
+        _print_cloudflare_line = lambda **kw: calls.append(("print", kw)),
+    )
+
+    studio_mod._emit_run_cloudflare_notice(run_mod, "0.0.0.0", "198.51.100.7", 8888, False)
+    assert calls == [
+        ("verify", "198.51.100.7", 8888),
+        ("print", {"secure": False, "loopback_host": "127.0.0.1"}),
     ]
-    assert guards
-    guard = guards[-1]
-    verify_calls = [
-        node.lineno
-        for node in ast.walk(guard)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_verify_global_reachability"
+
+    calls.clear()
+    studio_mod._emit_run_cloudflare_notice(run_mod, "::", "198.51.100.7", 8888, False)
+    assert calls == [
+        ("verify", "198.51.100.7", 8888),
+        ("print", {"secure": False, "loopback_host": "::1"}),
     ]
-    print_calls = [
-        node.lineno
-        for node in ast.walk(guard)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_print_cloudflare_line"
-    ]
-    assert verify_calls and print_calls
-    assert min(verify_calls) < min(print_calls)
+
+    calls.clear()
+    studio_mod._emit_run_cloudflare_notice(run_mod, "127.0.0.1", "127.0.0.1", 8888, False)
+    assert calls == []
 
 
 # ── parent-level --no-cloudflare with a subcommand is rejected ───────

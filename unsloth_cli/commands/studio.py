@@ -161,6 +161,32 @@ def _stream_for_subprocess(stream):
     return stream
 
 
+def _display_host_for_bind(run_mod, host: str) -> str:
+    return run_mod._resolve_external_ip() if host in ("0.0.0.0", "::") else host
+
+
+def _loopback_bind_host_for(host: str) -> str:
+    return "::1" if host == "::" else "127.0.0.1"
+
+
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+
+
+def _emit_run_cloudflare_notice(
+    run_mod, host: str, display_host: str, actual_port: int, secure: bool
+) -> None:
+    from unsloth_cli._tool_policy import is_external_host
+
+    if not is_external_host(host):
+        return
+    run_mod._verify_global_reachability(display_host, actual_port)
+    run_mod._print_cloudflare_line(
+        secure = secure,
+        loopback_host = _loopback_bind_host_for(host),
+    )
+
+
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
@@ -688,9 +714,10 @@ def studio_default(
     cloudflare: bool = typer.Option(
         True,
         "--cloudflare/--no-cloudflare",
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 or ::, exposing "
-        "Studio on a PUBLIC internet URL (default on). Pass --no-cloudflare to disable "
-        "that Cloudflare URL; it does not change a public wildcard bind.",
+        help = "Auto-create a free Cloudflare HTTPS tunnel for non-api-only wildcard "
+        "binds (0.0.0.0 or ::), exposing Studio on a PUBLIC internet URL (default on). "
+        "Pass --no-cloudflare to disable that Cloudflare URL; it does not change a "
+        "public wildcard bind. --api-only keeps it off unless paired with --secure.",
     ),
     secure: bool = typer.Option(
         False,
@@ -878,8 +905,8 @@ def studio_default(
     run_server = run_mod.run_server
 
     if not silent:
-        display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
-        typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
+        display_host = _display_host_for_bind(run_mod, host)
+        typer.echo(f"Starting Unsloth Studio on http://{_url_host(display_host)}:{port}")
 
     run_kwargs = dict(
         host = host,
@@ -1080,9 +1107,10 @@ def run(
     cloudflare: bool = typer.Option(
         True,
         "--cloudflare/--no-cloudflare",
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 or ::, exposing "
-        "Studio on a PUBLIC internet URL (default on). Pass --no-cloudflare to disable "
-        "that Cloudflare URL; it does not change a public wildcard bind.",
+        help = "Auto-create a free Cloudflare HTTPS tunnel for non-api-only wildcard "
+        "binds (0.0.0.0 or ::), exposing Studio on a PUBLIC internet URL (default on). "
+        "Pass --no-cloudflare to disable that Cloudflare URL; it does not change a "
+        "public wildcard bind. --api-only keeps it off unless paired with --secure.",
     ),
     secure: bool = typer.Option(
         False,
@@ -1340,8 +1368,8 @@ def run(
     context_length_line = _format_context_length_line(result)
 
     # 6. Print banner.
-    display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
-    base_url = f"http://{display_host}:{actual_port}"
+    display_host = _display_host_for_bind(run_mod, host)
+    base_url = f"http://{_url_host(display_host)}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
     # run_server started the tunnel during the silent run above (wildcard or --secure).
     _cf_url = getattr(app.state, "cloudflare_url", None)
@@ -1380,9 +1408,7 @@ def run(
             typer.echo(f"  On this machine only: {base_url}")
         else:
             typer.echo(f"  Unsloth Studio running at {base_url}")
-            if host in ("0.0.0.0", "::"):
-                run_mod._verify_global_reachability(display_host, actual_port)
-                run_mod._print_cloudflare_line(secure = secure)
+            _emit_run_cloudflare_notice(run_mod, host, display_host, actual_port, secure)
         typer.echo(f"  Model loaded: {loaded_model}{display_variant}")
         if context_length_line:
             typer.echo(context_length_line)

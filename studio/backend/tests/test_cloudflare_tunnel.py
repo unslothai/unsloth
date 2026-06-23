@@ -700,17 +700,33 @@ def test_argparse_cloudflare_default_true():
     assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is True
 
 
+def test_verify_global_reachability_marks_private_address_unreachable():
+    src = _RUN_PY.read_text()
+    tree = ast.parse(src)
+    func_src = next(
+        ast.get_source_segment(src, n)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_verify_global_reachability"
+    )
+    captured = []
+    ns = {
+        "_public_reachable": None,
+        "_stdout_color_ok": lambda: False,
+        "_url_host": lambda host: host,
+        "print": lambda *a, **k: captured.append(" ".join(str(x) for x in a)),
+    }
+    exec(compile(func_src, "<verify_global_reachability>", "exec"), ns)
+    ns["_verify_global_reachability"]("192.168.1.10", 8888)
+
+    assert ns["_public_reachable"] is False
+    assert "private/LAN address" in "\n".join(captured)
+
+
 def test_run_server_registers_tunnel_atexit_backstop():
     # An abnormal exit (exception after startup -> sys.exit) bypasses
     # _graceful_shutdown; an atexit backstop must still stop the tunnel.
     src = _RUN_PY.read_text()
     assert "atexit.register(stop_studio_tunnel)" in src
-
-
-def test_run_server_gates_tunnel_on_wildcard():
-    source = _RUN_PY.read_text()
-    assert "_cloudflare_enabled" in source
-    assert 'host in ("0.0.0.0", "::")' in source
 
 
 def _run_print_cloudflare_line(
@@ -721,6 +737,8 @@ def _run_print_cloudflare_line(
     cloudflare_requested = False,
     cloudflare_flag = True,
     secure = False,
+    loopback_host = "127.0.0.1",
+    color = False,
 ):
     """Exec _print_cloudflare_line without importing run.py's heavy deps."""
     src = _RUN_PY.read_text()
@@ -731,7 +749,7 @@ def _run_print_cloudflare_line(
         if isinstance(n, ast.FunctionDef) and n.name == "_print_cloudflare_line"
     )
     stub = types.ModuleType("startup_banner")
-    stub.stdout_supports_color = lambda: False
+    stub.stdout_supports_color = lambda: color
     monkeypatch.setitem(sys.modules, "startup_banner", stub)
     captured: list[str] = []
     ns = {
@@ -742,7 +760,7 @@ def _run_print_cloudflare_line(
         "print": lambda *a, **k: captured.append(" ".join(str(x) for x in a)),
     }
     exec(compile(func_src, "<print_cloudflare_line>", "exec"), ns)
-    ns["_print_cloudflare_line"](secure = secure)
+    ns["_print_cloudflare_line"](secure = secure, loopback_host = loopback_host)
     return "\n".join(captured)
 
 
@@ -769,9 +787,10 @@ def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
     assert "Use the secure link" not in out
 
 
-def test_cloudflare_line_prints_nothing_without_tunnel(monkeypatch):
+def test_cloudflare_line_states_inactive_when_enabled_but_not_requested(monkeypatch):
     out = _run_print_cloudflare_line(monkeypatch, cloudflare_url = None, public_reachable = False)
-    assert out == ""
+    assert "Cloudflare tunnel: OFF for this mode" in out
+    assert "local network only" in out
 
 
 def test_cloudflare_line_warns_when_public_url_up(monkeypatch):
@@ -849,6 +868,32 @@ def test_cloudflare_line_failed_does_not_claim_local_only_when_unknown(monkeypat
     assert "requested but failed to start" in out
     assert "Raw port reachability was not verified" in out
     assert "local network only" not in out
+
+
+@pytest.mark.parametrize(
+    "cloudflare_requested,cloudflare_flag,expected",
+    [
+        (True, True, "requested but failed to start"),
+        (False, True, "Cloudflare tunnel: OFF for this mode"),
+        (False, False, "Cloudflare tunnel: OFF"),
+    ],
+)
+def test_cloudflare_line_unknown_warns_with_loopback_host(
+    monkeypatch, cloudflare_requested, cloudflare_flag, expected
+):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = None,
+        cloudflare_requested = cloudflare_requested,
+        cloudflare_flag = cloudflare_flag,
+        loopback_host = "::1",
+        color = True,
+    )
+    assert expected in out
+    assert "bind ::1" in out
+    assert "bind 127.0.0.1" not in out
+    assert "\033[38;5;215;1m" in out
 
 
 def test_cloudflare_line_off_does_not_claim_local_only_when_publicly_reachable(monkeypatch):

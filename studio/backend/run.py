@@ -253,12 +253,13 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     local_url_c = "\033[38;5;108;1m" if use_color else ""  # matches banner's URL color
     reset = "\033[0m" if use_color else ""
 
-    url = f"http://{display_host}:{port}"
+    url = f"http://{_url_host(display_host)}:{port}"
 
     # Private/loopback/link-local addresses aren't globally routable.
     try:
         addr = ipaddress.ip_address(display_host)
         if addr.is_loopback or addr.is_private or addr.is_link_local:
+            _public_reachable = False
             print(
                 f"{dim}  Note: {display_host} is a private/LAN address -- "
                 f"reachable on this network only, not from the public internet."
@@ -395,6 +396,18 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         pass
 
 
+def _display_host_for_bind(host: str) -> str:
+    return _resolve_external_ip() if host in ("0.0.0.0", "::") else host
+
+
+def _loopback_bind_host_for(host: str) -> str:
+    return "::1" if host == "::" else "127.0.0.1"
+
+
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+
+
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
     """One-line tool-policy summary for the plain-server startup banner, so a
     network-reachable launch is never silent about code execution."""
@@ -462,12 +475,12 @@ def _emit_startup_output(
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
-        _print_cloudflare_line()
+        _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
     _emit_tool_policy_notice(host, False, enable_tools)
     print_studio_stop_hint()
 
 
-def _print_cloudflare_line(secure: bool = False) -> None:
+def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1") -> None:
     """Print Cloudflare tunnel state for startup banners."""
     from startup_banner import stdout_supports_color
 
@@ -489,16 +502,16 @@ def _print_cloudflare_line(secure: bool = False) -> None:
                 _emit(
                     "  Cloudflare tunnel: ON. This Cloudflare URL is PUBLIC, and the "
                     "raw port is also publicly reachable. --no-cloudflare disables "
-                    "only the Cloudflare URL; bind 127.0.0.1 or close firewall access "
-                    "to keep Studio private.",
+                    f"only the Cloudflare URL; bind {loopback_host} or close firewall "
+                    "access to keep Studio private.",
                     warn,
                 )
             else:
                 _emit(
                     "  Cloudflare tunnel: ON. This is a PUBLIC internet URL: anyone "
                     "who has it can reach this Studio. Relaunch with --no-cloudflare "
-                    "to disable the Cloudflare URL; bind 127.0.0.1 or close firewall "
-                    "access to keep Studio private.",
+                    f"to disable the Cloudflare URL; bind {loopback_host} or close "
+                    "firewall access to keep Studio private.",
                     warn,
                 )
         return
@@ -519,8 +532,28 @@ def _print_cloudflare_line(secure: bool = False) -> None:
         else:
             _emit(
                 "  Cloudflare tunnel: requested but failed to start. There is no "
-                "Cloudflare public link. Raw port reachability was not verified; bind "
-                "127.0.0.1 or close firewall access to keep Studio private.",
+                "Cloudflare public link. Raw port reachability was not verified; "
+                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                warn,
+            )
+    elif _cloudflare_flag:
+        if _public_reachable is True:
+            _emit(
+                "  Cloudflare tunnel: OFF for this mode. The raw port is still "
+                "reachable from the public internet (see the reachability check above): "
+                "anyone who can reach it can access this Studio.",
+                warn,
+            )
+        elif _public_reachable is False:
+            _emit(
+                "  Cloudflare tunnel: OFF for this mode. Studio is reachable on your "
+                "local network only (no public link)."
+            )
+        else:
+            _emit(
+                "  Cloudflare tunnel: OFF for this mode. There is no Cloudflare public "
+                "link. Raw port reachability was not verified; "
+                f"bind {loopback_host} or close firewall access to keep Studio private.",
                 warn,
             )
     elif not _cloudflare_flag:
@@ -540,8 +573,9 @@ def _print_cloudflare_line(secure: bool = False) -> None:
         else:
             _emit(
                 "  Cloudflare tunnel: OFF (--no-cloudflare). There is no Cloudflare "
-                "public link. Raw port reachability was not verified; bind 127.0.0.1 "
-                "or close firewall access to keep Studio private."
+                "public link. Raw port reachability was not verified; "
+                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                warn,
             )
 
 
@@ -1132,7 +1166,7 @@ def run_server(
             )
 
     # Resolve once; shared by the log rewrite and banner.
-    display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+    display_host = _display_host_for_bind(host)
     _install_uvicorn_startup_log_rewrite(host, display_host)
 
     ready_event = Event()
@@ -1168,10 +1202,10 @@ def run_server(
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
-    # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
+    # Direct (non-tunnel) base for the API panel; resolve wildcard binds to the LAN IP.
     if port and port > 0:
-        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
-        app.state.server_url = f"http://{_direct_host}:{port}"
+        _direct_host = _display_host_for_bind(host)
+        app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
     else:
         app.state.server_url = None
     app.state.secure = secure
@@ -1317,10 +1351,10 @@ def _build_arg_parser():
         "--cloudflare",
         action = argparse.BooleanOptionalAction,
         default = True,
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 or ::, "
-        "exposing Studio on a PUBLIC internet URL (default on). Pass --no-cloudflare "
-        "to disable that Cloudflare URL; it does not change a public wildcard bind. "
-        "The startup banner always states whether the tunnel is on or off.",
+        help = "Auto-create a free Cloudflare HTTPS tunnel for non-api-only wildcard "
+        "binds (0.0.0.0 or ::), exposing Studio on a PUBLIC internet URL (default on). "
+        "Pass --no-cloudflare to disable that Cloudflare URL; it does not change a "
+        "public wildcard bind. --api-only keeps it off unless paired with --secure.",
     )
     parser.add_argument(
         "--secure",
