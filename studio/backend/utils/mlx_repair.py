@@ -69,17 +69,36 @@ _ONLY_BINARY_ARG = "--only-binary=:all:"
 # uv still honours on-disk config (uv.toml / pip.conf), so a corporate mirror
 # configured there keeps working; only process-env redirects are dropped. We set
 # UV_OVERRIDE ourselves in _mlx_install_env, so a poisoned one here is ignored.
-_MLX_ENV_ALLOWLIST = frozenset({
-    "PATH", "HOME", "USER", "LOGNAME",
-    "TMPDIR", "TMP", "TEMP",
-    "LANG", "LC_ALL", "LC_CTYPE",
-    # proxies + custom CA bundles so installs behind a corporate gateway work
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-    # uv's download cache (a directory, not an index) so we reuse it, not redirect
-    "UV_CACHE_DIR", "XDG_CACHE_HOME",
-})
+_MLX_ENV_ALLOWLIST = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        # proxies + custom CA bundles so installs behind a corporate gateway work
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "all_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        # uv's download cache (a directory, not an index) so we reuse it, not redirect
+        "UV_CACHE_DIR",
+        "XDG_CACHE_HOME",
+    }
+)
 _REPAIR_TIMEOUT_S = 900
 
 # Attempt at most once per process; success is sticky (mlx then imports and the
