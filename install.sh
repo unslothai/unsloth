@@ -1539,10 +1539,9 @@ _maybe_reroute_strixhalo_to_2404 || true
 # which needs neither: they're only used by the source-build fallback, which
 # studio/setup.sh self-skips (degrading gracefully) when they're absent. So on
 # macOS -- where requiring cmake otherwise forces a manual Homebrew install -- we
-# don't block on it; on Linux it installs painlessly via apt, so we keep
-# requiring it there.
+# don't block on it; on Linux it's available through the system package manager,
+# so we keep requiring it there.
 tauri_log "STEP" "Checking system dependencies"
-MISSING=""
 
 case "$OS" in
     macos)
@@ -1565,6 +1564,7 @@ case "$OS" in
         fi
         ;;
     linux|wsl)
+        MISSING=""
         command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
         command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
         # curl or wget is needed for downloads; check both
