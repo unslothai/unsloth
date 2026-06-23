@@ -82,9 +82,9 @@ def test_chunk_data_short_document_is_not_split_into_fragments():
     kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 920, overlap = 64)  # max_tokens = 80
     out, contents = _chunk("word " * 50, kit = kit)  # 50 tokens < overlap (would be 4 chunks)
     assert len(out) == 1, f"sub-overlap doc should yield 1 chunk, got {len(out)}"
-    assert contents[0].split() == [f"w{i}" for i in range(50)], (
-        f"chunk must cover the whole document, not a fragment; got: {contents[0]!r}"
-    )
+    assert contents[0].split() == [
+        f"w{i}" for i in range(50)
+    ], f"chunk must cover the whole document, not a fragment; got: {contents[0]!r}"
 
 
 def test_chunk_data_rejects_overlap_not_smaller_than_chunk():
