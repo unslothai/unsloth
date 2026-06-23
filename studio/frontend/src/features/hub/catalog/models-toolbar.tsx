@@ -47,11 +47,11 @@ const SORT_OPTIONS: ReadonlyArray<{
   value: HfSortKey;
   label: string;
 }> = [
+  { value: "createdAt", label: "Newest" },
   { value: "trendingScore", label: "Trending" },
-  { value: "likes", label: "Most likes" },
   { value: "downloads", label: "Most downloads" },
   { value: "lastModified", label: "Recently updated" },
-  { value: "createdAt", label: "Newest" },
+  { value: "likes", label: "Most likes" },
 ];
 
 export const ModelsToolbar = memo(function ModelsToolbar({
@@ -252,7 +252,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 ? `Search on-device ${isDataset ? "datasets" : "models"}`
                 : isDataset
                   ? "Search datasets"
-                  : "Search models"
+                  : "Search all models"
             }
             className={cn(
               "field-soft h-9 rounded-full !border-0 pl-10 text-[13px] placeholder:text-muted-foreground/80 focus-visible:!ring-0",

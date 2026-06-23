@@ -70,7 +70,7 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  Setting07Icon,
+  Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
   ZapIcon,
@@ -1380,7 +1380,7 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 right-2 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-transparent transition-opacity duration-200",
+            "pointer-events-none absolute left-0 right-2 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
@@ -1441,7 +1441,7 @@ export function AppSidebar() {
                   </div>
                   {/* settings cog (replaces the up/down chevron) */}
                   <HugeiconsIcon
-                    icon={Setting07Icon}
+                    icon={Settings02Icon}
                     strokeWidth={1.5}
                     className="ml-auto !size-[18px] text-muted-foreground group-data-[collapsible=icon]:hidden"
                   />
@@ -1457,7 +1457,7 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
-                    <HugeiconsIcon icon={Setting07Icon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.navigation.settings")}</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>

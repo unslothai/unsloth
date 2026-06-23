@@ -1053,22 +1053,79 @@ $script:ROCmGfxArch = $null
 if (-not $HasNvidiaSmi) {
     # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
     # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
-    $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
-    if (-not $hipinfoExe) {
-        $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
-        $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
-        if ($hipRoot) {
-            $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
-            if (Test-Path $hipinfoCandidate) {
-                substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
-                substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
-                substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"
-                $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
-            } else {
-                substep "[WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" "Yellow"
-                substep "       HIP SDK install may be incomplete -- re-install from:" "Yellow"
-                substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+    # Ignore the venv hipInfo.exe (AMD wheel, on PATH): not a HIP SDK, so amd-smi
+    # would still auto-elevate. Cf. _path_inside_venv().
+    function Test-HipinfoIsVenvInternal {
+        param([AllowNull()][string]$HipinfoPath)
+        if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
+        # VenvDir/VIRTUAL_ENV can be unset this early (the update flow probes before
+        # VenvDir is set), so also derive the venv from the setup python + default
+        # Studio home, else the venv hipInfo isn't caught.
+        $venvRoots = @()
+        if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
+        $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
+        if ($vd) { $venvRoots += $vd }
+        if ($env:UNSLOTH_SETUP_PYTHON) {
+            try { $venvRoots += (Split-Path -Parent (Split-Path -Parent $env:UNSLOTH_SETUP_PYTHON)) } catch {}
+        }
+        if ($env:USERPROFILE) { $venvRoots += (Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio") }
+        # A custom Studio home (UNSLOTH_STUDIO_HOME / STUDIO_HOME alias) moves the
+        # venv off the default path; seed it too or its hipInfo escapes the filter.
+        $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
+        if ($studioHomeEnv) {
+            # Expand a leading ~ like the canonical resolver below; else GetFullPath
+            # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
+            if (($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+                # A bare "~" leaves an empty child path; Join-Path rejects that on
+                # PS 5.1, so use USERPROFILE directly and only join a real remainder.
+                $studioHomeRest = $studioHomeEnv.Substring(1).TrimStart('/', '\')
+                $studioHomeEnv = if ($studioHomeRest) { Join-Path $env:USERPROFILE $studioHomeRest } else { $env:USERPROFILE }
             }
+            $venvRoots += (Join-Path $studioHomeEnv "unsloth_studio")
+        }
+        try { $hip = [System.IO.Path]::GetFullPath($HipinfoPath).TrimEnd('\', '/') } catch { return $false }
+        foreach ($root in $venvRoots) {
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            try { $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\', '/') } catch { continue }
+            # Skip a bare drive root (e.g. a non-venv UNSLOTH_SETUP_PYTHON like
+            # C:\Python311\python.exe yields C:) -- it would match every path on that drive.
+            if ($r -match '^[a-zA-Z]:$') { continue }
+            if ($hip.Equals($r, [System.StringComparison]::OrdinalIgnoreCase) -or
+                $hip.StartsWith($r + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        return $false
+    }
+    # Scan all hipinfo and keep the first non-venv one (the venv copy from the
+    # bnb fix could shadow a real HIP SDK's). -CommandType Application matches
+    # only real executables, not a user alias/function named hipinfo.
+    $hipinfoExe = Get-Command hipinfo -CommandType Application -All -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
+        Select-Object -First 1
+    if (-not $hipinfoExe) {
+        # Iterate the env roots (mirrors the Python list) and take the first non-venv
+        # bin\hipinfo.exe, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH.
+        $hipMissingLabel = $null; $hipMissingRoot = $null; $hipMissingCandidate = $null
+        foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH")) {
+            $hipRoot = [Environment]::GetEnvironmentVariable($hipEnvLabel)
+            if ([string]::IsNullOrWhiteSpace($hipRoot)) { continue }
+            $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+            if (-not (Test-Path $hipinfoCandidate)) {
+                if (-not $hipMissingLabel) { $hipMissingLabel = $hipEnvLabel; $hipMissingRoot = $hipRoot; $hipMissingCandidate = $hipinfoCandidate }
+                continue
+            }
+            if (Test-HipinfoIsVenvInternal $hipinfoCandidate) { continue }   # venv copy (AMD wheel): not a HIP SDK
+            substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
+            substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
+            substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"
+            $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+            break
+        }
+        if ((-not $hipinfoExe) -and $hipMissingLabel) {
+            substep "[WARN] ${hipMissingLabel}=$hipMissingRoot is set but hipinfo.exe not found at $hipMissingCandidate" "Yellow"
+            substep "       HIP SDK install may be incomplete -- re-install from:" "Yellow"
+            substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
         }
     }
     if ($hipinfoExe) {
@@ -2594,10 +2651,14 @@ if ($script:UnslothVerbose) {
 # of whether the CUDA Toolkit is installed yet.
 # The CUDA tag is chosen based on the driver's max supported CUDA version.
 
-# Windows MAX_PATH (260 chars) causes Triton kernel compilation to fail because
-# the auto-generated filenames are extremely long. Use a short cache directory.
-$TorchCacheDir = "C:\tc"
-if (-not (Test-Path $TorchCacheDir)) { New-Item -ItemType Directory -Path $TorchCacheDir -Force | Out-Null }
+# Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
+# paths on, cache under Studio home; else use a short drive-root dir for headroom.
+if ($LongPathsEnabled) {
+    $TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
+} else {
+    $TorchCacheDir = "C:\tc"
+}
+if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
 $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
@@ -2675,6 +2736,7 @@ if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
 
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
+$ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
     if ($ROCmTorchSpec -ne "torch") {
@@ -2692,20 +2754,29 @@ if ($ROCmIndexUrl) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
         Write-Host $output -ForegroundColor Yellow
         $ROCmIndexUrl = $null
+        $ROCmCpuFallback = $true
     } else {
         # Tell install_python_stack.py to skip probe + suppress manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+        substep "GPU ROCm PyTorch installed ($ROCmGfxArch) -- training and GPU inference will use the GPU" "Cyan"
     }
 }
 
 if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
+    # After an AMD ROCm fallback, force-reinstall so a partially-installed ROCm torch
+    # (which still satisfies the CPU torch>= range) is replaced by the CPU build. Skip
+    # the forced reinstall on a genuine CPU-only host so the common path stays fast.
+    # Build the array directly: an if-expression collapses @("x") to a scalar string,
+    # which @splat would then enumerate char-by-char into broken single-letter args.
+    $cpuForce = @()
+    if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
+        Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu"
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu" | Out-String
+        $output = Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu" | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -2748,20 +2819,11 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     }
 }
 
-# Rename running unsloth.exe so pip can replace it (Windows refuses to delete a mapped .exe).
-$VenvScriptsDir = Join-Path $VenvDir "Scripts"
-$RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
-if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {
-    $StaleUnslothExe = "$RunningUnslothExe.deleteme"
-    if (Test-Path -LiteralPath $StaleUnslothExe) {
-        Remove-Item -LiteralPath $StaleUnslothExe -Force -ErrorAction SilentlyContinue
-    }
-    try {
-        Rename-Item -LiteralPath $RunningUnslothExe -NewName "unsloth.exe.deleteme" -Force -ErrorAction Stop
-    } catch {
-        substep "could not rename unsloth.exe ($($_.Exception.Message)); pip may fail with WinError 32" "Yellow"
-    }
-}
+# No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
+# running launcher only ever failed (WinError 32) and printed a scary warning. It's
+# also unnecessary: install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and
+# 'studio update' goes through uv (--upgrade-package), whose pip fallback no-ops on
+# the already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
@@ -2772,28 +2834,6 @@ $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
     Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
-    # Restore the pre-rename unsloth.exe so the user keeps a working CLI.
-    # Treat a zero-byte exe as "pip half-wrote a broken binary" -- prefer the
-    # stale-but-working copy in .deleteme.
-    if (Test-Path -LiteralPath "$RunningUnslothExe.deleteme") {
-        $needRestore = -not (Test-Path -LiteralPath $RunningUnslothExe)
-        if (-not $needRestore) {
-            try {
-                $needRestore = (Get-Item -LiteralPath $RunningUnslothExe -ErrorAction Stop).Length -eq 0
-            } catch { $needRestore = $true }
-        }
-        if ($needRestore) {
-            try {
-                if (Test-Path -LiteralPath $RunningUnslothExe) {
-                    Remove-Item -LiteralPath $RunningUnslothExe -Force -ErrorAction SilentlyContinue
-                }
-                Rename-Item -LiteralPath "$RunningUnslothExe.deleteme" -NewName "unsloth.exe" -Force -ErrorAction Stop
-                substep "restored unsloth.exe after failed install"
-            } catch {
-                substep "could not restore unsloth.exe ($($_.Exception.Message))" "Yellow"
-            }
-        }
-    }
     exit 1
 }
 
@@ -3664,35 +3704,49 @@ if (-not $NeedLlamaSourceBuild) {
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
         # CUDA flags -- only if GPU available, otherwise explicitly disable
         if ($HasNvidiaSmi -and $NvccPath) {
-            $CmakeArgs += '-DGGML_CUDA=ON'
-            # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
-            # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
-            # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
-            # (covers the configure probe + build), after Refresh-Environment, idempotent.
-            $nvccAllowFlag = '-allow-unsupported-compiler'
-            if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
-                $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
-            } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
-                $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
-            }
-            substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
-            $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
-            $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
-            $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
-            if ($CudaArch) {
-                # Validate nvcc actually supports this architecture
-                if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
-                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
-                } else {
-                    # GPU arch too new for this toolkit -- fall back to highest supported.
-                    # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
-                    $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
-                    if ($maxArch) {
-                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
-                        substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
-                        substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
+            # UNSLOTH_LLAMA_CUDA_ARCHS (e.g. "120" or "89;86") forces the build
+            # arch and wins over detection, matching setup.sh.
+            $CudaArchOverride = if ($env:UNSLOTH_LLAMA_CUDA_ARCHS) { ($env:UNSLOTH_LLAMA_CUDA_ARCHS -replace '\s', '') } else { '' }
+            if ((-not $CudaArch) -and (-not $CudaArchOverride)) {
+                # No detectable compute capability (#5854): -DGGML_CUDA=ON with no
+                # arch builds a PTX-only binary, so build CPU instead. Mirrors the
+                # Linux fix; set UNSLOTH_LLAMA_CUDA_ARCHS=120 to force a CUDA build.
+                substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS=120 to force a CUDA build)." "Yellow"
+                $CmakeArgs += '-DGGML_CUDA=OFF'
+            } else {
+                $CmakeArgs += '-DGGML_CUDA=ON'
+                # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
+                # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
+                # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
+                # (covers the configure probe + build), after Refresh-Environment, idempotent.
+                $nvccAllowFlag = '-allow-unsupported-compiler'
+                if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
+                    $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
+                } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
+                    $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
+                }
+                substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
+                $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
+                $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
+                $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+                if ($CudaArchOverride) {
+                    # Forced arch wins verbatim (no nvcc validation), matching setup.sh.
+                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchOverride"
+                } elseif ($CudaArch) {
+                    # Validate nvcc actually supports this architecture
+                    if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
+                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+                    } else {
+                        # GPU arch too new for this toolkit -- fall back to highest supported.
+                        # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
+                        $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
+                        if ($maxArch) {
+                            $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
+                            substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
+                            substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
+                        }
+                        # else: omit flag entirely, let cmake pick defaults
                     }
-                    # else: omit flag entirely, let cmake pick defaults
                 }
             }
         } else {

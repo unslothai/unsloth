@@ -393,6 +393,138 @@ class TestLoopBasic:
         assert exec_fn.calls[0][0] == "render_html"
         assert "<!doctype html>" in exec_fn.calls[0][1]["code"]
 
+    def test_render_html_confirmation_gate_suppresses_early_provisional(self, monkeypatch):
+        """When a human confirmation gate is active, render_html must not surface
+        an early provisional tool_start: that card (keyed by tool_call_id, no
+        approval) would show the tool 'running' before the user approves. The
+        gated real tool_start is the first signal the UI receives instead."""
+        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: "approval-rh")
+        monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
+        monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "allow")
+
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            confirm_tool_calls = True,
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        # No early provisional (empty-args) card while confirmation is pending.
+        assert [e for e in tool_starts if e.get("arguments") == {}] == []
+        # The real, gated tool_start still surfaces with the full arguments.
+        real = [e for e in tool_starts if e.get("arguments", {}).get("code")]
+        assert len(real) == 1
+        assert real[0].get("awaiting_confirmation") is True
+        assert "<!doctype html>" in real[0]["arguments"]["code"]
+        assert exec_fn.calls[0][0] == "render_html"
+
+    def test_render_html_bypass_permissions_keeps_early_provisional(self, monkeypatch):
+        """bypass_permissions wins over the confirm gate, so the early provisional
+        card is preserved (no human approval is required)."""
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            confirm_tool_calls = True,
+            bypass_permissions = True,
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert len(tool_starts) == 2
+        assert tool_starts[0]["arguments"] == {}
+        assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
+
+    def test_render_html_provisional_card_closed_on_generator_exception(self):
+        """If the model generator raises mid-stream after a provisional render_html
+        card was surfaced, the loop must close that card as errored before the
+        exception propagates, so the UI never leaves a tool spinning forever."""
+        exec_fn = FakeExecuteTool([])
+
+        def _gen(_messages):
+            acc = ""
+            for chunk in ["<function=render_html>", "<parameter=code><!doctype html><html>"]:
+                acc += chunk
+                yield acc
+            raise RuntimeError("model pipeline exploded")
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+        )
+
+        collected: list[dict] = []
+        raised = False
+        try:
+            for event in loop:
+                collected.append(event)
+        except RuntimeError as exc:
+            raised = True
+            assert "exploded" in str(exc)
+
+        assert raised
+        provisional = [
+            e for e in collected if e["type"] == "tool_start" and e.get("arguments") == {}
+        ]
+        assert len(provisional) == 1
+        # The provisional card is closed (as an error) before the exception
+        # propagates, so it never dangles.
+        closing = [
+            e
+            for e in collected
+            if e["type"] == "tool_end" and e.get("tool_call_id") == provisional[0]["tool_call_id"]
+        ]
+        assert len(closing) == 1
+        assert "Error" in (closing[0].get("result") or "")
+
     def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(self):
         loop, exec_fn = _make_loop(
             turns = [

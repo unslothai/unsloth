@@ -25,6 +25,7 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  isLocalModelPath,
   pendingSelectionMatches,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
@@ -57,6 +58,11 @@ export type SelectedModelInput = {
   id: string;
   isLora?: boolean;
   ggufVariant?: string;
+  /** Where the pick came from (e.g. "hub", "local", "external"). Used to decide
+   *  whether an uncached repo should download via the Hub manager. */
+  source?: string;
+  /** Uncached non-GGUF HF repo staged for a snapshot download (variant null). */
+  isHubRepo?: boolean;
   loadingDescription?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
@@ -484,8 +490,7 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora?.exportType === "lora");
-      // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
-      const isLocal = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(modelId);
+      const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
       const loadingDescription = [
         currentCheckpoint ? "Switching models." : null,

@@ -17,6 +17,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  clearRememberedLoadSettings,
+  loadRememberedLoadSettings,
+  saveRememberedLoadSettings,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import {
   Dialog,
   DialogContent,
@@ -520,9 +526,13 @@ export function ChatSettingsPanel({
   })();
   const isLoadedGguf =
     useChatRuntimeStore((s) => s.activeGgufVariant) != null;
-  const isGguf = isLoadedGguf || pendingIsGguf;
-  // A staged pick is always a local GGUF, so show its Model section (and the
-  // Load button) even when the currently active model is external.
+  // While a pick is staged the sheet configures *that* model, so its GGUF-ness
+  // (not the currently loaded model's) decides whether the GGUF-only controls
+  // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
+  // context/KV/speculative controls.
+  const isGguf = pendingSelection != null ? pendingIsGguf : isLoadedGguf;
+  // The Model section (and Load button) shows for any staged pick, even when the
+  // currently active model is external.
   const hasModelContent =
     pendingSelection != null ||
     (!isExternalModel && (isGguf || Boolean(params.checkpoint)));
@@ -599,6 +609,29 @@ export function ChatSettingsPanel({
   // pendingSelection, so the slider can use the staged model's real ceiling
   // without reading the loaded model's `ggufContextLength`.
   const stagedContextLength = pendingSelection?.contextLength ?? null;
+  // "Remember settings next time" tick for a staged model. Seeds the store from
+  // the saved per-model settings on stage, so the sheet opens with what was used
+  // last time; the tick reflects whether a saved entry exists.
+  const [remember, setRemember] = useState(false);
+  const pendingId = pendingSelection?.id ?? null;
+  useEffect(() => {
+    if (!pendingId) return;
+    const saved = loadRememberedLoadSettings(pendingId);
+    setRemember(saved != null);
+    if (!saved) return;
+    setCustomContextLength(saved.contextLength);
+    setKvCacheDtype(saved.kvCacheDtype);
+    setSpeculativeType(saved.speculativeType ?? "auto");
+    setSpecDraftNMax(saved.specDraftNMax);
+    setTensorParallel(saved.tensorParallel);
+  }, [
+    pendingId,
+    setCustomContextLength,
+    setKvCacheDtype,
+    setSpeculativeType,
+    setSpecDraftNMax,
+    setTensorParallel,
+  ]);
   // While staging, the sheet reflects the STAGED model, so its header context
   // takes precedence over the loaded model's (which may differ or be larger).
   const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
@@ -1148,34 +1181,61 @@ export function ChatSettingsPanel({
                 staged (deferred load), Load/Cancel takes its place: there's
                 nothing loaded to "apply" against yet. */}
             {pendingSelection ? (
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-4">
                 {stagedDownloading && (
                   <p className="text-[11px] text-muted-foreground">
                     Downloading…{" "}
                     {Math.round((stagedDownloadFraction ?? 0) * 100)}%
                   </p>
                 )}
+                <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[12px] text-muted-foreground">
+                  <Checkbox
+                    className="size-3.5 rounded-full [&_[data-slot=checkbox-indicator]_svg]:size-2.5"
+                    checked={remember}
+                    onCheckedChange={(v) => setRemember(v === true)}
+                  />
+                  Remember settings next time
+                </label>
                 {stagedLoading ? (
                   // Mid-load: nothing to load or abandon until it settles, so disable.
                   <Button
                     type="button"
                     disabled
                     size="sm"
-                    className="h-7 w-fit px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
+                    className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav bg-primary text-primary-foreground hover:bg-primary/90"
                   >
                     <Spinner className="size-3.5" />
                     Loading…
                   </Button>
                 ) : (
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="grid grid-cols-2 gap-3">
                     <Button
                       type="button"
-                      onClick={() => onLoadPendingModel?.()}
+                      onClick={() => {
+                        // Persist (or clear) this model's load knobs before loading.
+                        // Save the explicit context override only (null = auto), so
+                        // restoring never forces the native context into an OOM.
+                        const pid = pendingSelection?.id;
+                        if (pid) {
+                          if (remember) {
+                            saveRememberedLoadSettings(pid, {
+                              contextLength: customContextLength,
+                              kvCacheDtype,
+                              speculativeType,
+                              specDraftNMax,
+                              tensorParallel,
+                            });
+                          } else {
+                            clearRememberedLoadSettings(pid);
+                          }
+                        }
+                        onLoadPendingModel?.();
+                      }}
                       // Disabled while a different model is mid-load: selectModel
                       // refuses a concurrent load, so the click could only toast.
                       disabled={stagedDownloading || loadingModel != null}
                       size="sm"
-                      className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
+                      className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav bg-primary text-primary-foreground hover:bg-primary/90"
                     >
                       {loadingModel != null ? "Another model loading…" : "Load model"}
                     </Button>
@@ -1189,7 +1249,7 @@ export function ChatSettingsPanel({
                         if (stagedDownloading) onCancelStagedDownload?.();
                         abandonStagedModel();
                       }}
-                      className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
+                      className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav text-muted-foreground"
                     >
                       Cancel
                     </Button>
@@ -1715,7 +1775,9 @@ export function ChatSettingsPanel({
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
-          <div className="flex h-full flex-col">{settingsContent}</div>
+          <div data-tour="chat-settings" className="flex h-full flex-col">
+            {settingsContent}
+          </div>
         </SheetContent>
       </Sheet>
     );
@@ -1723,6 +1785,7 @@ export function ChatSettingsPanel({
 
   return (
     <aside
+      data-tour="chat-settings"
       className={`relative z-50 shrink-0 h-full overflow-hidden bg-panel-surface text-panel-surface-fg font-heading ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
     >
       <div className="h-full w-full">{settingsContent}</div>
