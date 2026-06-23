@@ -2627,6 +2627,17 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 continue;
               }
 
+              // Local GGUF sends server-timed reasoning duration. Guard the type
+              // so a malformed or proxied chunk (string/null/NaN duration) can
+              // never turn the label into NaN.
+              const reasoningMs = (
+                chunk as { _reasoningDurationMs?: number } | null | undefined
+              )?._reasoningDurationMs;
+              if (typeof reasoningMs === "number" && Number.isFinite(reasoningMs)) {
+                reasoningDuration = Math.max(0, Math.round(reasoningMs / 1000));
+                continue;
+              }
+
               // Diffusion frame: a transient canvas snapshot. Route it to the transient
               // store (the in-bubble renderer reads it) and skip it; it has no assistant
               // text, so it never enters the transcript or the counters below.
@@ -3175,6 +3186,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               }
               const textParts = parseAssistantContent(cumulativeText);
 
+              // Fallback when no server-side reasoning_summary arrives.
               if (
                 textParts.some((part) => part.type === "reasoning") &&
                 !reasoningStartAt
@@ -3283,6 +3295,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           finalTokPerSec,
         );
 
+        // Finalize reasoning-only streams.
+        if (reasoningStartAt && !reasoningDuration) {
+          reasoningDuration = Math.max(
+            0,
+            Math.round((Date.now() - reasoningStartAt) / 1000),
+          );
+        }
         yield {
           content: [
             ...buildAssistantContent(cumulativeText),

@@ -137,6 +137,25 @@ def run_attention(
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
 
+    # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects, so
+    # downcast any fp32 Q/K/V to a flash-supported dtype (#1013).
+    if backend in (FLASH_DENSE, FLASH_VARLEN) and torch.float32 in (
+        Q.dtype,
+        K.dtype,
+        V.dtype,
+    ):
+        # Prefer the autocast dtype, else a non-fp32 input's dtype, then clamp.
+        if torch.is_autocast_enabled():
+            try:
+                flash_dtype = torch.get_autocast_dtype("cuda")
+            except (AttributeError, TypeError):
+                flash_dtype = torch.get_autocast_gpu_dtype()
+        else:
+            flash_dtype = next((d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None)
+        if flash_dtype not in (torch.float16, torch.bfloat16):
+            flash_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        Q, K, V = Q.to(flash_dtype), K.to(flash_dtype), V.to(flash_dtype)
+
     if backend == FLASH_VARLEN:
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
         K_f = K.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)

@@ -1486,7 +1486,9 @@ def CausalLM_fast_forward(fast_forward_inference):
                     logit_softcapping = logit_softcapping,
                 )
                 if not return_dict:
-                    output = (logits,) + outputs[1:]
+                    # Fused CE never materializes `logits`; use EMPTY_LOGITS
+                    # like the return_dict branch below (fixes #2068).
+                    output = (EMPTY_LOGITS,) + outputs[1:]
                     return (loss,) + output if loss is not None else output
 
                 output = CausalLMOutputWithPast(
@@ -2931,6 +2933,7 @@ class FastLlamaModel:
                 ("finetune_language_layers", True),
                 ("finetune_attention_modules", True),
                 ("finetune_mlp_modules", True),
+                ("finetune_audio_layers", False),
             ):
                 if peft_arg not in kwargs:
                     kwargs[peft_arg] = flag
