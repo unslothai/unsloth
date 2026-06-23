@@ -30,6 +30,7 @@ def _fake_auto_tokenizer():
     # return distinguishable stand-ins so we can see which one is returned.
     def from_pretrained(name, **kwargs):
         return _Tok("slow" if kwargs.get("from_slow") else "fast")
+
     return types.SimpleNamespace(from_pretrained = from_pretrained)
 
 
@@ -41,9 +42,11 @@ def test_ignored_tokenizer_name_matched_case_insensitively():
     name = "unsloth/Qwen2.5-Coder-7B-Instruct"  # name.lower() is in IGNORED_TOKENIZER_NAMES
     assert name.lower() in tu.IGNORED_TOKENIZER_NAMES  # guard the test's own premise
 
-    with patch.object(tu, "AutoTokenizer", _fake_auto_tokenizer()), \
-         patch.object(tu, "assert_same_tokenization", lambda a, b: False), \
-         patch.object(tu, "convert_to_fast_tokenizer", lambda slow, **k: _Tok("converted")):
+    with (
+        patch.object(tu, "AutoTokenizer", _fake_auto_tokenizer()),
+        patch.object(tu, "assert_same_tokenization", lambda a, b: False),
+        patch.object(tu, "convert_to_fast_tokenizer", lambda slow, **k: _Tok("converted")),
+    ):
         result = tu._load_correct_tokenizer(name, fix_tokenizer = True)
 
     assert result.kind == "fast", (
