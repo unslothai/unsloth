@@ -170,7 +170,9 @@ def _loopback_bind_host_for(host: str) -> str:
 
 
 def _url_host(host: str) -> str:
-    return f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+    return (
+        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+    )
 
 
 def _emit_run_cloudflare_notice(
