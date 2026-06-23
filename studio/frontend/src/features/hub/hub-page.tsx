@@ -90,18 +90,19 @@ const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
 
-/** Discover browsing scope: only the unsloth org (default) or the whole Hub. */
+/** Discover browsing scope: the whole Hub (default) or only the unsloth org. */
 export type OwnerScope = "unsloth" | "all";
 
 function readOwnerScopePreference(): OwnerScope {
   if (typeof window === "undefined") {
-    return "unsloth";
+    return "all";
   }
   try {
     const value = window.localStorage.getItem(OWNER_SCOPE_STORAGE_KEY);
-    return value === "all" ? "all" : "unsloth";
+    // Default to the whole Hub; only honor an explicit "unsloth" preference.
+    return value === "unsloth" ? "unsloth" : "all";
   } catch {
-    return "unsloth";
+    return "all";
   }
 }
 
