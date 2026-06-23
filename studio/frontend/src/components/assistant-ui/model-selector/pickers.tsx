@@ -2336,7 +2336,7 @@ export function HubModelPicker({
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search models"
+            placeholder="Search Unsloth models"
             data-model-picker-search-input={true}
             className="field-soft h-9 border-0 pl-8 pr-8"
           />
@@ -2345,15 +2345,20 @@ export function HubModelPicker({
           )}
         </div>
         {onBrowseHub ? (
-          <button
-            type="button"
-            onClick={onBrowseHub}
-            aria-label="Search more models on the Hub"
-            className="hub-tab-toggle-pill flex h-9 w-[110px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
-          >
-            <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
-            Search Hub
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onBrowseHub}
+                aria-label="Search more models on the Hub"
+                className="hub-tab-toggle-pill flex h-9 w-[110px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
+              >
+                <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
+                Search Hub
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Search all models</TooltipContent>
+          </Tooltip>
         ) : null}
       </div>
 
@@ -2386,7 +2391,7 @@ export function HubModelPicker({
           // Height tracks the content up to the cap, so short lists do not
           // leave white space. scroll-py + symmetric px keep the focus ring off
           // the overflow clip edges during keyboard nav.
-          "model-list-scroll max-h-[21rem] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
+          "model-list-scroll max-h-[335px] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
           listScrolled && "is-scrolled",
           listMoreBelow && "is-bottom-faded",
         )}
@@ -3362,7 +3367,7 @@ export function HubModelPicker({
       {/* Floating eject pill: overlaid on the list bottom, outside the scroll
           so the edge fade never touches it. Only the pill catches clicks. */}
       {onEject ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-5">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[19px]">
           <button
             type="button"
             onClick={onEject}
