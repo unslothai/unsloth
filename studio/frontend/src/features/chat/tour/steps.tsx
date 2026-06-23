@@ -27,21 +27,21 @@ export function buildChatTourSteps({
       title: "Pick a model",
       body: (
         <>
-          This selects what’s loaded for inference. Hub = base models. Fine-tuned
-          = trained Unsloth outputs, including LoRA adapters and full finetunes.
+          Selects what’s loaded for inference. Recommended is Unsloth’s curated
+          base models; On Device is your downloads and fine-tuned outputs (LoRA
+          adapters and full finetunes).
         </>
       ),
     },
     {
       id: "model-tabs",
       target: "chat-model-selector-popover",
-      title: "Two tabs",
+      title: "Find a model",
       body: (
         <>
-          Hub: search Unsloth’s models here, or hit Search Hub to browse all of
-          Hugging Face. Fine-tuned: local Unsloth outputs you’ve trained or
-          exported. If results look off, compare base vs fine-tuned outputs to
-          see what changed.
+          Search Unsloth’s models, or hit Search Hub for all of Hugging Face.
+          Switch Recommended and On Device, filter by format, and sort by
+          trending or recent. An OOM tag means it won’t fit in your VRAM.
         </>
       ),
       onEnter: openModelSelector,
