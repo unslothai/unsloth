@@ -320,7 +320,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         Model Name
                       </label>
                       <Input
-                        placeholder="my-model-gguf"
+                        placeholder="my-model-GGUF"
                         value={modelName}
                         onChange={(e) => onModelNameChange(e.target.value)}
                       />
