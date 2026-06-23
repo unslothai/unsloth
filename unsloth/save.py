@@ -151,13 +151,14 @@ CURL_FLAG = "-DLLAMA_CURL=ON" if has_curl() else "-DLLAMA_CURL=OFF"
 
 def _is_cmake_only_llama_cpp(llama_cpp_dir: str = "llama.cpp") -> bool:
     """
-    True if llama.cpp's Makefile is the post-CMake-migration deprecation stub
-    (or missing entirely), so `make` cannot build it.
+    True if llama.cpp's Makefile is the post-CMake-migration deprecation stub,
+    so `make` cannot build it. A genuinely missing/empty checkout returns False
+    so the caller's make path fails loudly instead of silently entering CMake.
     """
     makefile_path = os.path.join(llama_cpp_dir, "Makefile")
     if not os.path.exists(makefile_path):
-        # No Makefile means CMake-only or not cloned yet
-        return True
+        # No Makefile: only CMake-only if a real CMake project is present
+        return os.path.exists(os.path.join(llama_cpp_dir, "CMakeLists.txt"))
     try:
         with open(makefile_path, "r", encoding = "utf-8", errors = "ignore") as f:
             content = f.read(4096)
