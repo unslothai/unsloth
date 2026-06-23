@@ -24,9 +24,10 @@ from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, TYPE_CHECKING
 
-import matplotlib.pyplot as plt
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 from utils.hardware import prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
@@ -35,6 +36,32 @@ from utils.native_path_leases import (
 from utils.paths import outputs_root
 
 logger = get_logger(__name__)
+
+_pyplot = None
+_pyplot_failed = False
+
+
+def _load_pyplot():
+    """Lazily import matplotlib.pyplot with a headless backend.
+
+    Importing matplotlib triggers loading its native extension (_c_internal_utils),
+    which can fail when the wheel is unsigned and blocked by a host policy such as
+    Windows Smart App Control. Doing it here, on first plot, keeps that failure out
+    of the server's import path so Studio still starts. Returns the pyplot module,
+    or None if matplotlib is unavailable.
+    """
+    global _pyplot, _pyplot_failed
+    if _pyplot is not None or _pyplot_failed:
+        return _pyplot
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # headless; no GUI backend needed to render to file
+        import matplotlib.pyplot as plt
+        _pyplot = plt
+    except Exception as e:
+        _pyplot_failed = True
+        logger.warning("matplotlib unavailable; loss plots disabled", error = str(e))
+    return _pyplot
 
 
 def _coerce_seed(value, default = 3407) -> int:
@@ -655,7 +682,7 @@ class TrainingBackend:
         plot = self._create_loss_plot(progress, theme)
         return (plot, progress)
 
-    def refresh_plot_for_theme(self, theme: str) -> Optional[plt.Figure]:
+    def refresh_plot_for_theme(self, theme: str) -> "Optional[plt.Figure]":
         """Refresh plot with new theme."""
         if theme and isinstance(theme, str) and theme in ["light", "dark"]:
             self.current_theme = theme
@@ -1090,8 +1117,17 @@ class TrainingBackend:
         self,
         progress: TrainingProgress,
         theme: str = "light",
-    ) -> plt.Figure:
-        """Create training loss plot with theme-aware styling."""
+    ) -> "Optional[plt.Figure]":
+        """Create training loss plot with theme-aware styling.
+
+        matplotlib is imported lazily here (not at module load) so the Studio
+        server can still start when matplotlib's native libs are unavailable or
+        blocked (e.g. Windows Smart App Control blocking the unsigned wheel). If
+        it can't be loaded, plotting is skipped and None is returned.
+        """
+        plt = _load_pyplot()
+        if plt is None:
+            return None
         plt.close("all")
 
         LIGHT_STYLE = {
