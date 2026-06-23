@@ -166,8 +166,12 @@ def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
     # A poisoned process env cannot repoint the install at a hostile source or
     # an attacker-staged cache (cache poisoning / symlink writes).
     for redirect in (
-        "UV_FIND_LINKS", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL",
-        "UV_CACHE_DIR", "XDG_CACHE_HOME",
+        "UV_FIND_LINKS",
+        "UV_DEFAULT_INDEX",
+        "UV_INDEX_URL",
+        "PIP_INDEX_URL",
+        "UV_CACHE_DIR",
+        "XDG_CACHE_HOME",
     ):
         assert redirect not in env
     # What uv genuinely needs is still forwarded.
