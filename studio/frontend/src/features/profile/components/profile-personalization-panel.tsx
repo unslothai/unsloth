@@ -11,11 +11,14 @@ import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { Camera01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SLOTH_AVATARS } from "../sloth-avatars";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { resizeImageFileToDataUrl } from "../utils/resize-image-file";
-import { useUserProfileStore } from "../stores/user-profile-store";
+import {
+  PROFILE_TEXT_MAX_LENGTH,
+  useUserProfileStore,
+} from "../stores/user-profile-store";
 import { UserAvatar } from "./user-avatar";
 
 const PROFILE_STORAGE_KEY = "unsloth_user_profile";
@@ -65,6 +68,8 @@ export function ProfilePersonalizationPanel() {
   const [draftName, setDraftName] = useState(displayName);
   const [draftNickname, setDraftNickname] = useState(nickname);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastDisplayNameRef = useRef(displayName);
+  const lastNicknameRef = useRef(nickname);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
   const previewName = draftName.trim() || sessionSub || "Unsloth";
@@ -76,6 +81,18 @@ export function ProfilePersonalizationPanel() {
     () => draftNickname.trim() !== nickname.trim(),
     [draftNickname, nickname],
   );
+
+  useEffect(() => {
+    const previous = lastDisplayNameRef.current;
+    lastDisplayNameRef.current = displayName;
+    setDraftName((draft) => (draft === previous ? displayName : draft));
+  }, [displayName]);
+
+  useEffect(() => {
+    const previous = lastNicknameRef.current;
+    lastNicknameRef.current = nickname;
+    setDraftNickname((draft) => (draft === previous ? nickname : draft));
+  }, [nickname]);
 
   const saveName = () => {
     const trimmed = draftName.trim();
@@ -111,7 +128,6 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  // Persist an avatar value (data URL or asset URL) and toast the result.
   const applyAvatar = (value: string) => {
     setAvatarDataUrl(value);
     const persisted = readPersistedProfile();
@@ -138,7 +154,6 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  // Use a bundled sloth sticker as the avatar.
   const pickSloth = (path: string) => {
     setImageError(null);
     applyAvatar(publicAssetUrl(path));
@@ -182,6 +197,7 @@ export function ProfilePersonalizationPanel() {
             id="profile-display-name"
             type="text"
             value={draftName}
+            maxLength={PROFILE_TEXT_MAX_LENGTH}
             onChange={(e) => setDraftName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -208,6 +224,7 @@ export function ProfilePersonalizationPanel() {
             id="profile-nickname"
             type="text"
             value={draftNickname}
+            maxLength={PROFILE_TEXT_MAX_LENGTH}
             onChange={(e) => setDraftNickname(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -259,7 +276,6 @@ export function ProfilePersonalizationPanel() {
           {SLOTH_AVATARS.map((path) => {
             const url = publicAssetUrl(path);
             const selected = avatarDataUrl === url;
-            // Readable accessible name from the filename, e.g. "sloth yay".
             const label =
               path.split("/").pop()?.replace(/\.png$/i, "").replace(/^large\s+/i, "").trim() ??
               "sloth";
