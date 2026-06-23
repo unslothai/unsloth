@@ -1228,9 +1228,7 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(
-        kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
-    )
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     overrides = {"org/A-GGUF": {"max_seq_length": 8192}}
     monkeypatch.setattr(settings, "get_model_override", lambda mid: overrides.get(mid, {}))
     _run_hook("gpt-4o-mini")
@@ -1251,7 +1249,6 @@ def test_load_route_holds_lifecycle_gate(monkeypatch):
 
 def _anthropic_payload(max_tokens = None):
     from models.inference import AnthropicMessagesRequest, AnthropicMessage
-
     return AnthropicMessagesRequest(
         model = "claude-x",
         max_tokens = max_tokens,
