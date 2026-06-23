@@ -412,8 +412,9 @@ class SyntheticDataKit:
             # A document that fits in a single chunk must still be emitted. The
             # linspace/stack pairing below turns n boundary points into n-1
             # ranges, which is empty when n_chunks == 1, silently dropping the
-            # whole document. Emit the full [0, length] range instead.
-            boundaries = [(0, length)]
+            # whole document. Emit the full [0, length] range instead (and emit
+            # nothing for an empty document so we don't write an empty chunk).
+            boundaries = [(0, length)] if length > 0 else []
         else:
             boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)
             boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T

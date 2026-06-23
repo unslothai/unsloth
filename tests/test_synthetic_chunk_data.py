@@ -68,7 +68,14 @@ def test_chunk_data_still_splits_long_document():
     assert len(out) > 1, f"long doc should yield multiple chunks, got {len(out)}"
 
 
+def test_chunk_data_empty_document_yields_no_chunks():
+    # An empty document must not produce an (empty) chunk file.
+    out, _ = _chunk("")
+    assert out == [], f"empty doc should yield no files, got {len(out)}"
+
+
 if __name__ == "__main__":
     test_chunk_data_keeps_single_chunk_document()
     test_chunk_data_still_splits_long_document()
+    test_chunk_data_empty_document_yields_no_chunks()
     print("OK")
