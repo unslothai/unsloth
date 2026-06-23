@@ -49,6 +49,7 @@ import {
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import { cancelStagedModelDownload } from "@/features/hub";
+import type { PerModelConfig } from "@/features/model-picker/model-config/per-model-config";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -76,6 +77,7 @@ export type SelectedModelInput = {
    *  instead of resetting it to the standing preference. Set by the deferred
    *  ("Load on selection") Load, where the user picked it for this model. */
   keepSpeculative?: boolean;
+  config?: PerModelConfig;
 };
 
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend

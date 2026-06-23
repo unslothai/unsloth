@@ -9,9 +9,10 @@ import {
   ModelSelector,
 } from "@/features/model-picker/components/model-selector";
 import {
-  loadRememberedLoadSettings,
-  rememberedLoadSettingsKey,
-} from "@/features/model-picker/components/model-selector/remembered-load-settings";
+  applyPerModelConfigToRuntime,
+  type PerModelConfig,
+  resolveInitialConfig,
+} from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -1283,14 +1284,16 @@ export function ChatPage({
   // were already seeded on stage, so keepSpeculative only when a config was
   // saved -- otherwise the standing speculative preference should win.
   autoLoadStagedRef.current = (pending) => {
-    const remembered = loadRememberedLoadSettings(
-      rememberedLoadSettingsKey(pending),
+    const { config, remembered } = resolveInitialConfig(
+      pending.id,
+      pending.ggufVariant,
     );
+    applyPerModelConfigToRuntime(config);
     void selectModel({
       ...pending,
       isDownloaded: true,
       forceReload: true,
-      keepSpeculative: remembered != null,
+      keepSpeculative: remembered,
       throwOnError: true,
     }).catch(() => {
       const store = useChatRuntimeStore.getState();
@@ -1662,15 +1665,21 @@ export function ChatPage({
         // reads customContextLength before checking the target is GGUF. Detach
         // (not abandon) keeps its download running.
         detachStaged();
-        // Load-on-selection skips the sheet, so seed the saved knobs here the
-        // way the sheet's restore effect would; the switch would otherwise reset
-        // the remembered speculative choice (keepSpeculative below prevents it).
-        const remembered = hasGgufSource(selection)
-          ? loadRememberedLoadSettings(rememberedLoadSettingsKey(selection))
-          : null;
-        if (remembered) store.applyRememberedLoadSettings(remembered);
+        let appliedConfig = selection.config ?? null;
+        if (!appliedConfig && hasGgufSource(selection)) {
+          const resolved = resolveInitialConfig(
+            selection.id,
+            selection.ggufVariant,
+          );
+          if (resolved.remembered) {
+            appliedConfig = resolved.config;
+          }
+        }
+        if (appliedConfig) {
+          applyPerModelConfigToRuntime(appliedConfig);
+        }
         await selectModel(
-          remembered ? { ...selection, keepSpeculative: true } : selection,
+          appliedConfig ? { ...selection, keepSpeculative: true } : selection,
         );
         return;
       }
@@ -1743,6 +1752,19 @@ export function ChatPage({
         isHubRepo: wantManagerDownload || undefined,
         autoLoad: store.loadOnSelection,
       });
+      let stagedConfig = selection.config ?? null;
+      if (!stagedConfig && hasGgufSource(selection)) {
+        const resolved = resolveInitialConfig(
+          selection.id,
+          selection.ggufVariant,
+        );
+        if (resolved.remembered) {
+          stagedConfig = resolved.config;
+        }
+      }
+      if (stagedConfig) {
+        applyPerModelConfigToRuntime(stagedConfig);
+      }
     },
     [detachStaged, selectModel, loadingModel],
   );
@@ -1810,6 +1832,7 @@ export function ChatPage({
         isDownloaded?: boolean;
         expectedBytes?: number;
         isGguf?: boolean;
+        config?: PerModelConfig;
       },
     ) => {
       const store = useChatRuntimeStore.getState();
@@ -1999,6 +2022,7 @@ export function ChatPage({
           isDownloaded: meta?.isDownloaded,
           expectedBytes: meta?.expectedBytes,
           isGguf: meta?.isGguf,
+          config: meta?.config,
         };
         // "Load on selection" off: stage the model and open settings so its
         // load knobs (tensor parallel, context length…) can be set, then it

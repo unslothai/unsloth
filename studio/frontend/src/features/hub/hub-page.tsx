@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  loadRememberedLoadSettings,
-  rememberedLoadSettingsKey,
-} from "@/features/model-picker/components/model-selector/remembered-load-settings";
+  applyPerModelConfigToRuntime,
+  resolveInitialConfig,
+} from "@/features/model-picker";
 import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -1100,24 +1100,19 @@ export function ModelsPage() {
       // load knobs here the way the sheet's restore effect would; otherwise the
       // remembered config is silently ignored on the Hub run path. keepSpeculative
       // then honors the restored speculative choice across the switch.
-      const remembered =
+      const resolvedConfig =
         opts.ggufVariant != null || selectedModel.isGguf
-          ? loadRememberedLoadSettings(
-              rememberedLoadSettingsKey({
-                id: runId,
-                ggufVariant: opts.ggufVariant,
-              }),
-            )
+          ? resolveInitialConfig(runId, opts.ggufVariant)
           : null;
-      if (remembered) {
-        useChatRuntimeStore.getState().applyRememberedLoadSettings(remembered);
+      if (resolvedConfig?.remembered) {
+        applyPerModelConfigToRuntime(resolvedConfig.config);
       }
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
         isDownloaded,
         expectedBytes: opts.expectedBytes,
-        keepSpeculative: remembered != null,
+        keepSpeculative: resolvedConfig?.remembered ?? false,
         throwOnError: true,
       })
         .then(() => {
