@@ -1534,13 +1534,10 @@ _maybe_reroute_strixhalo_to_2404() {
 _maybe_reroute_strixhalo_to_2404 || true
 
 # ── Check system dependencies ──
-# A *source* build of the GGUF inference engine (llama.cpp) needs git to clone it
-# and cmake to compile it. Studio downloads a prebuilt llama.cpp by default,
-# which needs neither: they're only used by the source-build fallback, which
-# studio/setup.sh self-skips (degrading gracefully) when they're absent. So on
-# macOS -- where requiring cmake otherwise forces a manual Homebrew install -- we
-# don't block on it; on Linux it's available through the system package manager,
-# so we keep requiring it there.
+# cmake/git are only needed to *build* llama.cpp from source. Studio downloads a
+# prebuilt by default, and setup.sh self-skips the source build when they're
+# absent -- so macOS doesn't block on cmake (requiring it would force a manual
+# Homebrew install). Linux keeps requiring them; its package manager has them.
 tauri_log "STEP" "Checking system dependencies"
 
 case "$OS" in
