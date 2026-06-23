@@ -512,8 +512,7 @@ _OFFLINE_ENV_KEYS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
 def _env_says_offline():
     """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
     return any(
-        os.environ.get(_k, "").strip().lower() in _OFFLINE_ENV_VALUES
-        for _k in _OFFLINE_ENV_KEYS
+        os.environ.get(_k, "").strip().lower() in _OFFLINE_ENV_VALUES for _k in _OFFLINE_ENV_KEYS
     )
 
 
@@ -643,8 +642,8 @@ def _is_offline_related_error(exc):
 # around the flip/restore, not around the wrapped load.
 _force_offline_lock = _threading.RLock()
 _force_offline_depth = 0
-_force_offline_saved = []        # in-process module attributes
-_force_offline_saved_env = {}    # HF offline env-var originals
+_force_offline_saved = []  # in-process module attributes
+_force_offline_saved_env = {}  # HF offline env-var originals
 
 
 @contextlib.contextmanager
@@ -728,6 +727,7 @@ def _offline_aware_load(fn):
     genuinely network-related error (the no-env-var, network-down case). The
     online path is unchanged when the network is up: no window, no retry.
     """
+
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
         if _get_effective_local_files_only(kwargs):
@@ -742,6 +742,7 @@ def _offline_aware_load(fn):
                 with _force_hf_offline():
                     return fn(*args, **kwargs)
             raise
+
     return _wrapper
 
 

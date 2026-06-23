@@ -1302,9 +1302,7 @@ class FastBaseModel:
                     _fallback, _fb_err = None, _fe
                 if _fallback is not None:
                     _tok = _fallback
-                elif _err is None or (
-                    _fb_err is not None and _is_offline_related_error(_fb_err)
-                ):
+                elif _err is None or (_fb_err is not None and _is_offline_related_error(_fb_err)):
                     # Surface the fallback's failure so the entry point can tell an
                     # offline failure (retry from cache) from a permanent one. A
                     # network _fb_err takes precedence even when the primary error
