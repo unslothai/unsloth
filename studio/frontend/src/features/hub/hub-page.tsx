@@ -14,7 +14,10 @@ import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scro
 import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { cn } from "@/lib/utils";
 import { usePlatformStore } from "@/config/env";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import {
+  hfApiToken,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
 import {
   getInferenceStatus,
   isExternalModelId,
@@ -551,6 +554,7 @@ export function ModelsPage() {
   const deferredDebouncedQuery = useDeferredValue(debouncedQuery);
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
+  const apiHfToken = hfApiToken(debouncedHfToken);
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
 
@@ -605,7 +609,7 @@ export function ModelsPage() {
     handleRetrySearch,
   } = useDiscoverSearch({
     debouncedQuery,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     isDiscoverTab,
     isDatasetMode,
     sortBy: effectiveSort,
@@ -619,7 +623,7 @@ export function ModelsPage() {
     channelId: isChannelListMode ? activeChannelId : null,
     results,
     isLoading,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
   });
 
   const {
@@ -702,7 +706,7 @@ export function ModelsPage() {
   const listRows = filteredDiscoverRows;
 
   const hubFeed = useHubFeed({
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     online,
     enabled: isFeedMode,
     deviceType,
@@ -908,7 +912,7 @@ export function ModelsPage() {
     filteredCachedRows,
     filteredLocalRows,
     results: selectionResults,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     online,
   });
 

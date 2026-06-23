@@ -19,24 +19,6 @@ const SIZES: Record<AvatarSize, string> = {
   lg: "size-12 rounded-[15px] text-[16px]",
 };
 
-// Unsloth's own uploads (no upstream provider match) show the bundled Unsloth
-// brand avatar instead of a colored-initial tile, so they read as Unsloth even
-// in virtualized rows that never fetch the HF profile picture.
-const UNSLOTH_OWNER_LOGO: ProviderLogo = {
-  id: "unsloth",
-  name: "Unsloth",
-  logoPath: "/circle-logo-small.png",
-  treatment: "original",
-  background: "transparent",
-  fit: "cover",
-  // Used directly for the unsloth owner, never via prefix matching.
-  prefixes: [],
-};
-
-function isUnslothOwner(owner: string): boolean {
-  return owner.trim().toLowerCase() === "unsloth";
-}
-
 const AVATAR_IMAGE_RETRY_BASE_MS = 60_000;
 const AVATAR_IMAGE_RETRY_MAX_MS = 30 * 60_000;
 
@@ -86,15 +68,6 @@ export function OwnerAvatar({
       />
     );
   }
-  if (isUnslothOwner(owner)) {
-    return (
-      <ProviderLogoTile
-        provider={UNSLOTH_OWNER_LOGO}
-        size={size}
-        className={className}
-      />
-    );
-  }
   return (
     <DefaultAvatar
       owner={owner}
@@ -113,9 +86,6 @@ export function useAvatarImageUrl(
   const remoteUrl = useHfOwnerAvatar(owner.trim() || "?");
   if (provider) {
     return provider.treatment === "original" ? provider.logoPath : null;
-  }
-  if (isUnslothOwner(owner)) {
-    return UNSLOTH_OWNER_LOGO.logoPath;
   }
   return remoteUrl;
 }
