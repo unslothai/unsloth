@@ -934,7 +934,13 @@ def test_completions_list_body_is_400_not_500(monkeypatch):
     from fastapi import HTTPException
 
     backend = _FakeBackend("unsloth/A-GGUF")  # loaded
-    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = _LoadRecorder(backend))
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = None,
+        backend = backend,
+        recorder = _LoadRecorder(backend),
+    )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_completions(_json_body_request([]), "tester"))
     assert exc.value.status_code == 400
@@ -944,7 +950,13 @@ def test_embeddings_list_body_is_400_not_500(monkeypatch):
     from fastapi import HTTPException
 
     backend = _FakeBackend("unsloth/A-GGUF")
-    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = _LoadRecorder(backend))
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = None,
+        backend = backend,
+        recorder = _LoadRecorder(backend),
+    )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_embeddings(_json_body_request([]), "tester"))
     assert exc.value.status_code == 400
