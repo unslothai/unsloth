@@ -3647,9 +3647,9 @@ const AssistantMessage: FC = () => {
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
+        <h6 className="sr-only">Response:</h6>
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
-            <h6 className="sr-only">Response:</h6>
             <textarea
               ref={textareaRef}
               aria-label="Edit message"
