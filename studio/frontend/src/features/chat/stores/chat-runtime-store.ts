@@ -762,15 +762,11 @@ type ChatRuntimeStore = {
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
-  setKvCacheDtype: (dtype: string | null) => void;
-  setSpeculativeType: (type: string | null) => void;
-  setSpecDraftNMax: (value: number | null) => void;
   /** Revert the editable load knobs to the loaded model's baseline (or defaults
    *  when nothing is loaded). Used by the settings-sheet Reset button and to
    *  start each deferred-staging session clean so one staged pick's settings
    *  don't leak onto the next. */
   resetModelSettingsToLoaded: () => void;
-  setTensorParallel: (value: boolean) => void;
   setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
@@ -782,8 +778,6 @@ type ChatRuntimeStore = {
    *  and clear the pending selection. Cancels its in-flight download too, unless
    *  `keepDownload` is set (navigation keeps the transfer running, like Hub). */
   abandonStagedModel: (opts?: { keepDownload?: boolean }) => void;
-  setCustomContextLength: (v: number | null) => void;
-  setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
   setPendingImageEditReference: (
@@ -1523,10 +1517,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return { toolCallTimeout };
     }),
-  setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
-  setSpeculativeType: (speculativeType) => set({ speculativeType }),
-  setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
-  setTensorParallel: (tensorParallel) => set({ tensorParallel }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
@@ -1570,9 +1560,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     if (!opts?.keepDownload) cancelStagedModelDownload(pendingSelection);
     set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null }));
   },
-  setCustomContextLength: (customContextLength) => set({ customContextLength }),
-  setChatTemplateOverride: (chatTemplateOverride) =>
-    set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>

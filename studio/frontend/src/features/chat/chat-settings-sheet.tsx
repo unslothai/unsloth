@@ -496,8 +496,6 @@ export function ChatSettingsPanel({
       ggufVariant: loadingModel.ggufVariant,
       nativePathToken: loadingModel.nativePathToken,
     });
-  // Load settings are snapshotted at click time; lock them while loading.
-  const modelControlsDisabled = stagedLoading;
   const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
   // A staged GGUF pick (deferred load) shows the GGUF load knobs so they can be
   // set before the single load.
