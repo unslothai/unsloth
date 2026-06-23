@@ -1153,4 +1153,7 @@ def test_load_model_restores_quantized_kv_on_tensor_downgrade():
     # GPU-count and capacity-gate downgrades.
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null
-    assert compact.count("cache_type_kv=_tensor_dropped_cache_type_kv") >= 2  # restored
+    # Restore is shared in one closure, called at every tensor->layer downgrade.
+    assert "cache_type_kv=_tensor_dropped_cache_type_kv" in compact  # restored in the closure
+    assert "def_restore_after_tensor_downgrade():" in compact  # one shared restore helper
+    assert compact.count("_restore_after_tensor_downgrade()") >= 3  # called at each downgrade
