@@ -1031,6 +1031,12 @@ def run(
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
     # `-f` removed (clustered `-fa`/`-fit*`); studio_default keeps it.
     frontend: Optional[Path] = typer.Option(None, "--frontend"),
+    api_only: bool = typer.Option(
+        False,
+        "--api-only",
+        help = "Serve only the API (no web UI), for a headless model server. "
+        "Pairs with --secure to expose the API over the Cloudflare link alone.",
+    ),
     silent: bool = typer.Option(False, "--silent", "-q"),
     enable_tools: Optional[bool] = typer.Option(
         None,
@@ -1214,6 +1220,8 @@ def run(
         args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
         if frontend:
             args.extend(["--frontend", str(frontend)])
+        if api_only:
+            args.append("--api-only")
         if silent:
             args.append("--silent")
         # Forward the resolved tool policy so the child doesn't re-resolve.
@@ -1262,6 +1270,7 @@ def run(
         host = host,
         port = port,
         silent = True,
+        api_only = api_only,
         llama_parallel_slots = parallel,
         cloudflare = cloudflare,
         secure = secure,

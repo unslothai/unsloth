@@ -893,9 +893,19 @@ def _setup_server_disk_logging():
 def _cloudflare_tunnel_should_start(
     *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
 ) -> bool:
-    """Whether to start the Cloudflare tunnel. --secure tunnels a loopback bind too;
-    non-secure keeps the 0.0.0.0-only rule. Colab/api-only never tunnel."""
-    return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
+    """Whether to start the Cloudflare tunnel.
+
+    --secure exposes ONLY the tunnel (loopback bind), so it must tunnel even in
+    api-only mode: a headless `unsloth studio run --secure --api-only` serves its
+    API over the authenticated Cloudflare link, with no web UI. Without --secure,
+    the historical rule holds -- tunnel only a 0.0.0.0 bind, and never api-only
+    (the Tauri desktop app loads the API on loopback and wants no tunnel). Colab
+    never tunnels (it is already reachable through its hosted proxy)."""
+    if is_colab or not cloudflare:
+        return False
+    if secure:
+        return True
+    return host == "0.0.0.0" and not api_only
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:

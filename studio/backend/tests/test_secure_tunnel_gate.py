@@ -31,11 +31,15 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
         # --no-cloudflare always wins.
         (False, "0.0.0.0", False, False, False, False),
         (False, "127.0.0.1", True, False, False, False),
-        # api-only and Colab never tunnel.
+        # Non-secure api-only never tunnels (Tauri desktop loads on loopback).
         (True, "0.0.0.0", False, True, False, False),
-        (True, "127.0.0.1", True, True, False, False),
+        # --secure tunnels even api-only: a headless secure API server (no UI)
+        # is reachable only through the authenticated Cloudflare link.
+        (True, "127.0.0.1", True, True, False, True),
+        # Colab never tunnels (already reachable via its hosted proxy), even --secure.
         (True, "0.0.0.0", False, False, True, False),
         (True, "127.0.0.1", True, False, True, False),
+        (True, "127.0.0.1", True, True, True, False),
     ],
 )
 def test_cloudflare_gate(cloudflare, host, secure, api_only, is_colab, expected):
