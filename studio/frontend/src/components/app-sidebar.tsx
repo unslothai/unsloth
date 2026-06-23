@@ -48,8 +48,9 @@ import { cn } from "@/lib/utils";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
+  ArrowRight02Icon,
+  BadgeInfoIcon,
   ChefHatIcon,
-  Clock03Icon,
   CursorInfo02Icon,
   DashboardCircleIcon,
   Delete02Icon,
@@ -87,7 +88,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowRight, ChevronDown, Moon } from "lucide-react";
+import { ChevronDown, Moon } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   archiveChatItem,
@@ -1373,7 +1374,7 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter className="relative group-data-[collapsible=icon]:px-0">
+      <SidebarFooter className="relative pt-3 pb-4 group-data-[collapsible=icon]:px-0">
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
             shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
@@ -1384,24 +1385,31 @@ export function AppSidebar() {
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
-        <SidebarMenu>
+        <SidebarMenu className="gap-3 group-data-[collapsible=icon]:gap-2.5">
           {/* Update affordance — shows only when a newer version is available. */}
           {showUpdateCard && (
-            <SidebarMenuItem className="mb-6">
+            <SidebarMenuItem>
               <button
                 type="button"
                 aria-label={t("shell.updateAvailable")}
                 onClick={() => {
-                  useSettingsDialogStore.getState().openDialog("about");
+                  useSettingsDialogStore
+                    .getState()
+                    .openDialog("about", { scrollTarget: "about-updates" });
                   closeMobileIfOpen();
                 }}
-                className="flex h-[55px] w-full items-center gap-2.5 rounded-[14px] border border-border/60 bg-transparent px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:mx-auto"
+                className="flex h-[44px] w-full items-center gap-[9px] rounded-[14px] border border-border/60 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
               >
-                <HugeiconsIcon
-                  icon={Clock03Icon}
-                  strokeWidth={1.75}
-                  className="size-[22px] shrink-0 text-nav-fg"
-                />
+                <span
+                  aria-hidden="true"
+                  className="flex size-[32px] shrink-0 items-center justify-center group-data-[collapsible=icon]:size-full"
+                >
+                  <HugeiconsIcon
+                    icon={BadgeInfoIcon}
+                    strokeWidth={1.75}
+                    className="size-[21px] text-nav-fg"
+                  />
+                </span>
                 <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                   <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
                     {t("shell.updateAvailable")}
@@ -1412,10 +1420,16 @@ export function AppSidebar() {
                     </span>
                   )}
                 </div>
-                <ArrowRight
-                  className="ml-auto size-4 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden"
-                  strokeWidth={1.75}
-                />
+                <span
+                  aria-hidden="true"
+                  className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+                >
+                  <HugeiconsIcon
+                    icon={ArrowRight02Icon}
+                    className="size-[17px]"
+                    strokeWidth={1.75}
+                  />
+                </span>
               </button>
             </SidebarMenuItem>
           )}
@@ -1440,11 +1454,16 @@ export function AppSidebar() {
                     <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
                   {/* settings cog (replaces the up/down chevron) */}
-                  <HugeiconsIcon
-                    icon={Settings02Icon}
-                    strokeWidth={1.5}
-                    className="ml-auto !size-[18px] text-muted-foreground group-data-[collapsible=icon]:hidden"
-                  />
+                  <span
+                    aria-hidden="true"
+                    className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+                  >
+                    <HugeiconsIcon
+                      icon={Settings02Icon}
+                      strokeWidth={1.5}
+                      className="!size-[18px]"
+                    />
+                  </span>
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
