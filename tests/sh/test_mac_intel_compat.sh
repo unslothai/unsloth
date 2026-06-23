@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # End-to-end sandbox tests for Mac Intel compatibility and UNSLOTH_NO_TORCH propagation.
 # Tests version_ge, arch detection (existing), plus E2E venv creation, torch skip
 # via a mock uv shim, and UNSLOTH_NO_TORCH env propagation in install.sh.

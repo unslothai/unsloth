@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { isTauri } from "@/lib/api-base";
-import { openModelsDir } from "@/features/native-intents/api";
+import { openModelsDir } from "@/features/native-intents";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
@@ -24,25 +24,26 @@ import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
+import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { Eye, EyeOff } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import {
+  type HelperPrecacheSettings,
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
-  type HelperPrecacheSettings,
 } from "../api/helper-precache";
 import {
   DEFAULT_UPLOAD_LIMIT_MB,
+  type UploadLimitSettings,
   loadUploadLimitSettings,
   updateUploadLimitSettings,
-  type UploadLimitSettings,
 } from "../api/upload-limit";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
-import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Keys cleared by "Reset all local preferences".
 // NEVER include auth/session keys here — clearing them would log the user out
@@ -66,6 +67,11 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
   "unsloth_chat_preferences",
+  "unsloth_load_settings",
+  // Model selector settings ("Select model settings" group)
+  "unsloth_chat_load_on_selection",
+  "unsloth_chat_expand_quantizations",
+  "unsloth_chat_show_all_quantizations",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
@@ -108,7 +114,7 @@ export function GeneralTab() {
       pathname: s.location.pathname,
       search:
         "searchStr" in s.location
-          ? (s.location as { searchStr?: string }).searchStr ?? ""
+          ? ((s.location as { searchStr?: string }).searchStr ?? "")
           : typeof window !== "undefined"
             ? window.location.search
             : "",
@@ -176,7 +182,9 @@ export function GeneralTab() {
       .catch((error) => {
         if (cancelled) return;
         setUploadLimitError(
-          error instanceof Error ? error.message : "Failed to load upload limit.",
+          error instanceof Error
+            ? error.message
+            : "Failed to load upload limit.",
         );
       });
     return () => {
@@ -324,10 +332,25 @@ export function GeneralTab() {
               }
               tabIndex={-1}
             >
-              {showToken ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+              {showToken ? (
+                <EyeOff className="size-3.5" />
+              ) : (
+                <Eye className="size-3.5" />
+              )}
             </button>
           </div>
         </SettingsRow>
+        {/* The desktop app authenticates via desktop auto-auth with a generated
+            secret, so there is no user-entered password to change here (and
+            changing it would clear the desktop secret). Web only. */}
+        {isTauri ? null : (
+          <SettingsRow
+            label={t("settings.general.password")}
+            description={t("settings.general.passwordDescription")}
+          >
+            <ChangePasswordDialog />
+          </SettingsRow>
+        )}
       </SettingsSection>
 
       {modelsFolder ? (
@@ -366,7 +389,19 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <StudioVersionSection />
+      <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLlamaUpdates")}
+          description={t(
+            "settings.general.notifications.showLlamaUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showLlamaUpdates}
+            onCheckedChange={setShowLlamaUpdateBanner}
+          />
+        </SettingsRow>
+      </SettingsSection>
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow
@@ -395,20 +430,6 @@ export function GeneralTab() {
               </span>
             ) : null}
           </div>
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
-        <SettingsRow
-          label={t("settings.general.notifications.showLlamaUpdates")}
-          description={t(
-            "settings.general.notifications.showLlamaUpdatesDescription",
-          )}
-        >
-          <Switch
-            checked={showLlamaUpdates}
-            onCheckedChange={setShowLlamaUpdateBanner}
-          />
         </SettingsRow>
       </SettingsSection>
 
@@ -444,9 +465,7 @@ export function GeneralTab() {
                 disabled={isSavingUploadLimit}
                 onClick={() => void saveUploadLimit()}
               >
-                {isSavingUploadLimit
-                  ? t("common.saving")
-                  : t("common.save")}
+                {isSavingUploadLimit ? t("common.saving") : t("common.save")}
               </Button>
             </div>
             {uploadLimitError ? (
@@ -479,9 +498,11 @@ export function GeneralTab() {
         </SettingsSection>
       )}
 
-      <SettingsSection title={t("settings.general.resetPreferences.sectionTitle")}>
+      <SettingsSection
+        title={t("settings.general.resetPreferences.sectionTitle")}
+      >
         <SettingsRow
-          destructive
+          destructive={true}
           label={t("settings.general.resetPreferences.label")}
           description={t("settings.general.resetPreferences.description")}
         >

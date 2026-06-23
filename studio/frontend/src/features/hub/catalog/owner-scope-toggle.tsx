@@ -28,7 +28,8 @@ export function OwnerScopeToggle({
       onValueChange={onChange}
       ariaLabel="Publisher scope"
       align="end"
-      className="h-8 text-[11.5px]"
+      // Extra gap before the chevron; min-width keeps the pill readable.
+      className="h-8 min-w-[96px] gap-1.5 text-[11.5px]"
     />
   );
 }

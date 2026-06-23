@@ -2,8 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
-import { toast } from "@/lib/toast";
 import {
   Dialog,
   DialogContent,
@@ -22,19 +20,21 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Switch } from "@/components/ui/switch";
 import {
   EXPORT_FORMATS_LIST,
+  type PlusMenuItemId,
   bulkExportConversationsByScope,
   clearAllChats,
   countAllChats,
   downloadChatExport,
   importConversationsFromFile,
-  useChatRuntimeStore,
   useChatPreferencesStore,
-  type PlusMenuItemId,
+  useChatRuntimeStore,
   usePlusMenuPrefsStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import {
   Bookmark02Icon,
   Delete02Icon,
@@ -43,6 +43,7 @@ import {
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Settings02Icon,
   ShieldBanIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -50,99 +51,102 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon, PlusIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
-import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
 const PLUS_MENU_ICON_CLASS = "size-[18px]";
-const PLUS_MENU_SETTINGS: { id: PlusMenuItemId; label: string; icon: ReactNode }[] =
-  [
-    {
-      id: "chatWithFiles",
-      label: "Chat with Files",
-      icon: (
-        <HugeiconsIcon
-          icon={FileDatabaseIcon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "mcp",
-      label: "MCP",
-      icon: (
-        <HugeiconsIcon
-          icon={McpServerIcon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "savedPrompts",
-      label: "Saved prompts",
-      icon: (
-        <HugeiconsIcon
-          icon={Bookmark02Icon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "compareChat",
-      label: "Compare chat",
-      icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
-    },
-    {
-      id: "exportChat",
-      label: "Export chat",
-      icon: (
-        <HugeiconsIcon
-          icon={Download01Icon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "canvas",
-      label: "Canvas",
-      icon: (
-        <HugeiconsIcon
-          icon={PencilRulerIcon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "projects",
-      label: "Projects",
-      icon: (
-        <HugeiconsIcon
-          icon={Folder01Icon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "bypassPermissions",
-      label: "Bypass permissions",
-      icon: (
-        <HugeiconsIcon
-          icon={ShieldBanIcon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-  ];
+const PLUS_MENU_SETTINGS: {
+  id: PlusMenuItemId;
+  label: string;
+  icon: ReactNode;
+}[] = [
+  {
+    id: "chatWithFiles",
+    label: "Chat with Files (RAG)",
+    icon: (
+      <HugeiconsIcon
+        icon={FileDatabaseIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "mcp",
+    label: "MCP",
+    icon: (
+      <HugeiconsIcon
+        icon={McpServerIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "savedPrompts",
+    label: "Saved prompts",
+    icon: (
+      <HugeiconsIcon
+        icon={Bookmark02Icon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "compareChat",
+    label: "Compare chat",
+    icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
+  },
+  {
+    id: "exportChat",
+    label: "Export chat",
+    icon: (
+      <HugeiconsIcon
+        icon={Download01Icon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "canvas",
+    label: "Canvas",
+    icon: (
+      <HugeiconsIcon
+        icon={PencilRulerIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "projects",
+    label: "Projects",
+    icon: (
+      <HugeiconsIcon
+        icon={Folder01Icon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "bypassPermissions",
+    label: "Bypass permissions",
+    icon: (
+      <HugeiconsIcon
+        icon={ShieldBanIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+];
 
 export function ChatTab() {
   const t = useT();
@@ -180,6 +184,22 @@ export function ChatTab() {
   );
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
+  );
+  const loadOnSelection = useChatRuntimeStore((state) => state.loadOnSelection);
+  const setLoadOnSelection = useChatRuntimeStore(
+    (state) => state.setLoadOnSelection,
+  );
+  const expandQuantizations = useChatRuntimeStore(
+    (state) => state.expandQuantizations,
+  );
+  const setExpandQuantizations = useChatRuntimeStore(
+    (state) => state.setExpandQuantizations,
+  );
+  const showAllQuantizations = useChatRuntimeStore(
+    (state) => state.showAllQuantizations,
+  );
+  const setShowAllQuantizations = useChatRuntimeStore(
+    (state) => state.setShowAllQuantizations,
   );
   const confirmDeleteChats = useChatPreferencesStore(
     (state) => state.confirmDeleteChats,
@@ -295,16 +315,83 @@ export function ChatTab() {
         </p>
       </header>
 
+      <SettingsSection title="Select model settings">
+        <SettingsRow
+          label="Load on selection"
+          alignTop={true}
+          description={
+            <span>
+              On: Unsloth auto-picks the best settings and loads it.
+              <br />
+              Off: opens Run settings to customize, then load.
+              <br />
+              The gear always opens Run settings:{" "}
+              <span className="ml-2 inline-flex items-center gap-3 align-middle">
+                <span className="font-mono text-xs text-foreground">
+                  Q4_K_M
+                </span>
+                <span className="text-[9px] font-medium text-green-400">
+                  downloaded
+                </span>
+                <span className="text-[10px] text-muted-foreground">16 GB</span>
+                <span className="inline-flex size-4 items-center justify-center rounded bg-black/[0.06] dark:bg-white/[0.08]">
+                  <HugeiconsIcon
+                    icon={Settings02Icon}
+                    strokeWidth={1.75}
+                    className="size-2.5 text-muted-foreground/80"
+                  />
+                </span>
+              </span>
+            </span>
+          }
+        >
+          <Switch
+            checked={loadOnSelection}
+            onCheckedChange={setLoadOnSelection}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Expand quantizations"
+          description={
+            <span>
+              On: On Device GGUF models show their quantizations right away.
+              <br />
+              Off: click a model to view its quantizations.
+            </span>
+          }
+        >
+          <Switch
+            checked={expandQuantizations}
+            onCheckedChange={setExpandQuantizations}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Show all quantizations"
+          description={
+            <span>
+              On: list every On Device quantization, including not downloaded.
+              <br />
+              Off: show only downloaded quantizations.
+            </span>
+          }
+        >
+          <Switch
+            checked={showAllQuantizations}
+            onCheckedChange={setShowAllQuantizations}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection
         title="Chat menu"
         description={
           <>
-            Choose which items are pinned in chat's{" "}
+            Pin items to chat's{" "}
             <PlusIcon
               aria-label="+"
               className="inline size-3.5 align-[-2px] stroke-[2px]"
             />{" "}
-            side menu. Unpinned items move into “More”.
+            side menu. Others move into “More”.
           </>
         }
       >
@@ -477,7 +564,7 @@ export function ChatTab() {
         </SettingsRow>
 
         <SettingsRow
-          destructive
+          destructive={true}
           // divide-y already draws the row separator; drop the extra border.
           className="border-t-0 mt-0 pt-3"
           label={t("settings.chat.clearAllChats")}

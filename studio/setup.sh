@@ -155,6 +155,31 @@ _nvcc_meets_llama_minimum() {
     echo "$_raw"
 }
 
+# Echo a ';'-separated CUDA arch list (e.g. "86;120"). Override ($2,
+# UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
+# ($1). Empty means "no arch detected", so the caller builds CPU instead of a
+# PTX-only binary that fails on an old driver (#5854).
+_resolve_cuda_archs() {
+    local _raw_caps=$1
+    local _arch_override=$2
+    if [ -n "$_arch_override" ]; then
+        printf '%s' "$_arch_override"
+        return 0
+    fi
+    local _archs="" _cap _arch
+    while IFS= read -r _cap; do
+        _cap=$(printf '%s' "$_cap" | tr -d '[:space:]')
+        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+            case ";$_archs;" in
+                *";$_arch;"*) ;;
+                *) _archs="${_archs:+$_archs;}$_arch" ;;
+            esac
+        fi
+    done <<< "$_raw_caps"
+    printf '%s' "$_archs"
+}
+
 # Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
 # NVIDIA driver cannot hang setup; fall back to a bare call where it is not.
 _setup_run_smi() {
@@ -439,14 +464,13 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
-# Directory-local evidence that Studio created "$1", used to adopt a custom-home
-# llama.cpp predating the .unsloth-studio-owned marker without weakening the guard.
-# Only UNSLOTH_PREBUILT_INFO.json counts (written exclusively by the prebuilt
-# installer). A top-level llama-quantize symlink is NOT trusted: a user may have
-# their own build with one, and this runs right before a destructive rm -rf, so we
-# match Windows and keep markerless source builds strict.
+# Directory-local evidence Studio created "$1": only prebuilt-installer metadata
+# counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
+# for Node), both written only by our installers. Mirrors the setup.ps1 Node guard.
+# A markerless source build stays strict since this runs right before an rm -rf.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
+    [ -f "$1/UNSLOTH_NODE_PREBUILT_INFO.json" ] && return 0
     return 1
 }
 _assert_studio_owned_or_absent() {
@@ -485,84 +509,141 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
 fi
 fi  # end SKIP_STUDIO_FRONTEND guard
 
-if [ "$_NEED_FRONTEND_BUILD" = false ]; then
+# OXC validator runtime (below) needs node/npm whenever its dir exists, regardless
+# of dist staleness; provision Node when the frontend builds OR the OXC dir exists.
+_OXC_DIR="$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
     step "frontend" "up to date"
     verbose_substep "frontend dist is newer than source inputs"
 else
 
-# ── Node ──
-NEED_NODE=true
-if command -v node &>/dev/null && command -v npm &>/dev/null; then
-    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-    NODE_MINOR=$(node -v | sed 's/v//' | cut -d. -f2)
-    NPM_MAJOR=$(npm -v | cut -d. -f1)
-    # Vite 8 requires Node ^20.19.0 || >=22.12.0
-    NODE_OK=false
-    if [ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -ge 19 ]; then NODE_OK=true; fi
-    if [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -ge 12 ]; then NODE_OK=true; fi
-    if [ "$NODE_MAJOR" -ge 23 ]; then NODE_OK=true; fi
-    if [ "$NODE_OK" = true ] && [ "$NPM_MAJOR" -ge 11 ]; then
-        NEED_NODE=false
-    else
-        if [ "$IS_COLAB" = true ] && [ "$NODE_OK" = true ]; then
-            # In Colab, just upgrade npm directly - nvm doesn't work well
-            if [ "$NPM_MAJOR" -lt 11 ]; then
-                substep "upgrading npm..."
-                run_maybe_quiet npm install -g npm@latest
-            fi
-            NEED_NODE=false
+# ── Node (isolated; never touches the system Node/npm) ──
+# Studio's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
+# Three sources:
+#   system  -- system Node + npm already satisfy both; used read-only.
+#   bundled -- install a pinned isolated Node under $UNSLOTH_HOME/node, build-only.
+#   skip    -- UNSLOTH_SKIP_NODE_INSTALL=1 and system unsuitable; print manual fix.
+# decide_node_source(node_v, npm_v, skip_flag) -> system | bundled | skip
+# (pure; unit-tested in tests/sh/test_node_decision.sh).
+decide_node_source() {
+    _dns_node="${1#v}"
+    _dns_npm="$2"
+    _dns_skip="$3"
+    # Treat empty or non-numeric versions as "missing".
+    case "$_dns_node" in ''|*[!0-9.]*) _dns_node='' ;; esac
+    case "$_dns_npm"  in ''|*[!0-9.]*) _dns_npm=''  ;; esac
+    if [ -n "$_dns_node" ] && [ -n "$_dns_npm" ]; then
+        _dns_nmaj="${_dns_node%%.*}"
+        case "$_dns_node" in
+            *.*) _dns_rest="${_dns_node#*.}"; _dns_nmin="${_dns_rest%%.*}" ;;
+            *)   _dns_nmin=0 ;;
+        esac
+        case "$_dns_nmin" in ''|*[!0-9]*) _dns_nmin=0 ;; esac
+        _dns_pmaj="${_dns_npm%%.*}"
+        _dns_ok=false
+        if [ "$_dns_nmaj" -eq 20 ] && [ "$_dns_nmin" -ge 19 ]; then _dns_ok=true; fi
+        if [ "$_dns_nmaj" -eq 22 ] && [ "$_dns_nmin" -ge 12 ]; then _dns_ok=true; fi
+        if [ "$_dns_nmaj" -ge 23 ]; then _dns_ok=true; fi
+        if [ "$_dns_ok" = true ] && [ "$_dns_pmaj" -ge 11 ]; then
+            echo system
+            return 0
         fi
     fi
+    if [ "$_dns_skip" = "1" ]; then
+        echo skip
+        return 0
+    fi
+    echo bundled
+}
+
+# Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
+if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    _NODE_PARENT="$STUDIO_HOME"
+else
+    _NODE_PARENT="$HOME/.unsloth"
 fi
+NODE_DIR="$_NODE_PARENT/node"
 
-if [ "$NEED_NODE" = true ]; then
-    substep "installing nvm..."
-    export NODE_OPTIONS=--dns-result-order=ipv4first
-    if _is_verbose; then
-        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+_SYS_NODE_VER="$(node -v 2>/dev/null || true)"
+_SYS_NPM_VER="$(npm -v 2>/dev/null || true)"
+NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}")"
+_FRONTEND_SKIP=false
+
+if [ "$NODE_SOURCE" = system ]; then
+    step "node" "$(node -v) | npm $(npm -v) (system)"
+elif [ "$NODE_SOURCE" = bundled ]; then
+    mkdir -p "$_NODE_PARENT"
+    # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
+    # never displace a user-owned $UNSLOTH_STUDIO_HOME/node.
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$NODE_DIR" "Node install"
+    fi
+    substep "installing isolated Node (system Node/npm left untouched)..."
+    # Runs before the venv is activated, so bare `python` may be absent; resolve
+    # venv python, then python3, then python.
+    if [ -x "$VENV_DIR/bin/python" ]; then
+        _NODE_PY="$VENV_DIR/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        _NODE_PY="python3"
     else
-        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+        _NODE_PY="python"
     fi
-
-    export NVM_DIR="$HOME/.nvm"
-    set +u
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
-    if [ -f "$HOME/.npmrc" ]; then
-        if grep -qE '^\s*(prefix|globalconfig)\s*=' "$HOME/.npmrc"; then
-            sed -i.bak '/^\s*\(prefix\|globalconfig\)\s*=/d' "$HOME/.npmrc"
-        fi
-    fi
-
-    substep "installing Node LTS..."
-    run_quiet "nvm install" nvm install --lts
+    _NODE_LOG="$(mktemp)"
+    set +e
     if _is_verbose; then
-        nvm use --lts
+        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee "$_NODE_LOG"
+        _NODE_STATUS=${PIPESTATUS[0]}
     else
-        nvm use --lts > /dev/null 2>&1
+        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >"$_NODE_LOG" 2>&1
+        _NODE_STATUS=$?
     fi
-    set -u
-
-    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-    NPM_MAJOR=$(npm -v | cut -d. -f1)
-
-    if [ "$NODE_MAJOR" -lt 20 ]; then
-        step "node" "FAILED -- version must be >= 20 (got $(node -v))" "$C_ERR"
+    set -e
+    if [ "$_NODE_STATUS" -eq 3 ]; then
+        step "node" "install blocked by another active Studio install" "$C_ERR"
+        sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
+        substep "close other Studio installs and retry"
+        exit 3
+    elif [ "$_NODE_STATUS" -ne 0 ]; then
+        step "node" "isolated Node install failed" "$C_ERR"
+        sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
+        substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
         exit 1
     fi
-    if [ "$NPM_MAJOR" -lt 11 ]; then
-        substep "upgrading npm..."
-        run_quiet "npm update" npm install -g npm@latest
+    grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
+    rm -f "$_NODE_LOG"
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
+        : > "$NODE_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
+    # Prepend the isolated bin (this process only) so node/npm/bun resolve here.
+    export PATH="$NODE_DIR/bin:$PATH"
+    # Keep npm and module resolution inside the isolated Node.
+    export NPM_CONFIG_PREFIX="$NODE_DIR"
+    export npm_config_prefix="$NODE_DIR"
+    unset NODE_PATH
+    hash -r 2>/dev/null || true
+    step "node" "$(node -v) | npm $(npm -v) (isolated)"
+else
+    _FRONTEND_SKIP=true
+    step "frontend" "skipped (no suitable Node; system left untouched)" "$C_WARN"
+    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Studio needs Node >=20.19/22.12/23 and npm >= 11"
+    substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node"
 fi
+verbose_substep "node source: $NODE_SOURCE (sys node=${_SYS_NODE_VER:-none} npm=${_SYS_NPM_VER:-none}) dir=$NODE_DIR"
 
-step "node" "$(node -v) | npm $(npm -v)"
-verbose_substep "node check: NEED_NODE=$NEED_NODE NODE_OK=${NODE_OK:-unknown} NPM_MAJOR=${NPM_MAJOR:-unknown}"
+if [ "$_FRONTEND_SKIP" = true ]; then
+    : # no suitable Node (skip source): message already shown above; nothing to build
+elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
+    # Node was provisioned only for the OXC runtime; the dist is already current.
+    step "frontend" "up to date"
+    verbose_substep "frontend dist is newer than source inputs"
+else
 
 # ── Install bun (optional, faster package installs) ──
-# Uses npm to install bun globally -- Node is already guaranteed above,
-# avoids platform-specific installers, PATH issues, and admin requirements.
-if ! command -v bun &>/dev/null; then
+# Install bun via npm only when we manage the isolated Node (npm -g lands in the
+# isolated prefix); on a system Node we install nothing global. Build falls back to npm.
+if command -v bun &>/dev/null; then
+    substep "bun already installed ($(bun --version))"
+elif [ "$NODE_SOURCE" = bundled ]; then
     substep "installing bun..."
     # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
     # postinstall fetches its binary; without it the install is a broken stub.
@@ -572,7 +653,7 @@ if ! command -v bun &>/dev/null; then
         substep "bun install skipped (npm will be used instead)"
     fi
 else
-    substep "bun already installed ($(bun --version))"
+    verbose_substep "skipping global bun install on system Node (npm will be used)"
 fi
 
 # ── Build frontend ──
@@ -669,17 +750,25 @@ fi
 
 cd "$SCRIPT_DIR"
 
+fi  # end _FRONTEND_SKIP guard (Node available: system or isolated)
+
 fi  # end frontend build check
 
 # ── oxc-validator runtime ──
-if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
-    cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
+# Node, so do not run npm install against an unsuitable/absent system Node.
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+    cd "$_OXC_DIR"
     run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
     _oxc_install_rc=$?
     if [ "$_oxc_install_rc" -ne 0 ]; then
         exit "$_oxc_install_rc"
     fi
     cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
+    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
+    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
 fi
 
 # ── Python venv + deps ──
@@ -1453,35 +1542,38 @@ else
                     fi
 
                     if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
-                        CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
-
-                        CUDA_ARCHS=""
-                        if command -v nvidia-smi &>/dev/null; then
-                            _raw_caps=$(_setup_run_smi nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                            while IFS= read -r _cap; do
-                                _cap=$(echo "$_cap" | tr -d '[:space:]')
-                                if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                                    _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                                    case ";$CUDA_ARCHS;" in
-                                        *";$_arch;"*) ;;
-                                        *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                                    esac
-                                fi
-                            done <<< "$_raw_caps"
+                        # Resolve the arch list before committing to a CUDA build;
+                        # an empty list means CPU instead of a PTX-only binary (#5854).
+                        _raw_caps=""
+                        # Resolve nvidia-smi as _setup_has_usable_nvidia_gpu does
+                        # (PATH, then /usr/bin); `command -v` alone would miss an
+                        # off-PATH binary and wrongly drop a CUDA host to CPU.
+                        _smi_bin=""
+                        if command -v nvidia-smi >/dev/null 2>&1; then
+                            _smi_bin="nvidia-smi"
+                        elif [ -x "/usr/bin/nvidia-smi" ]; then
+                            _smi_bin="/usr/bin/nvidia-smi"
                         fi
+                        if [ -n "$_smi_bin" ]; then
+                            _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                        fi
+                        CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
 
                         if [ -n "$CUDA_ARCHS" ]; then
-                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
                             _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+
+                            # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
+                            # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
+                            export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                         else
-                            _BUILD_DESC="building (CUDA)"
+                            # No detectable arch: build CPU (CMAKE_ARGS has no
+                            # -DGGML_CUDA=ON yet, so clearing GPU_BACKEND yields CPU).
+                            substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS, e.g. \"120\", to force a CUDA build)." "$C_WARN"
+                            GPU_BACKEND=""
+                            _BUILD_DESC="building (CPU, CUDA arch undetectable)"
                         fi
-
-                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
-
-                        # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
-                        # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
-                        export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                     fi
                 fi
             elif [ "$GPU_BACKEND" = "rocm" ]; then
