@@ -1367,7 +1367,6 @@ class FastBaseModel:
         finetune_language_layers = True,
         finetune_attention_modules = True,
         finetune_mlp_modules = True,
-        finetune_audio_layers = False,
         finetune_last_n_layers = None,
         layers_to_transform = None,
         layers_pattern = None,
@@ -1383,6 +1382,7 @@ class FastBaseModel:
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = False,  # [TODO] Add `ensure_weight_tying` for `modules_to_save` for vision models
+        finetune_audio_layers = False,  # placed last to preserve existing positional argument order
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -1398,6 +1398,10 @@ class FastBaseModel:
         if isinstance(model, PeftModelForCausalLM):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
 
+        # Remember whether the CALLER explicitly opted into audio. "all-linear" turns
+        # the flag on implicitly below, but an old unsloth_zoo that cannot do audio
+        # must not make a plain all-linear (text/vision) run fail.
+        _audio_explicitly_requested = bool(finetune_audio_layers)
         if target_modules == "all-linear":
             finetune_vision_layers = True
             finetune_language_layers = True
@@ -1405,12 +1409,13 @@ class FastBaseModel:
             finetune_mlp_modules = True
             finetune_audio_layers = True
         # Older unsloth_zoo (before get_peft_regex gained finetune_audio_layers) does
-        # not accept the kwarg. Pass it only when supported; if the caller explicitly
+        # not accept the kwarg. Pass it only when supported; if the caller EXPLICITLY
         # asked for audio but it is unsupported, fail loudly rather than silently
-        # training a language-only adapter.
+        # training a language-only adapter. (all-linear's implicit opt-in degrades
+        # gracefully instead of raising.)
         if "finetune_audio_layers" in inspect.signature(get_peft_regex).parameters:
             _audio_kwargs = {"finetune_audio_layers": finetune_audio_layers}
-        elif finetune_audio_layers:
+        elif _audio_explicitly_requested:
             raise RuntimeError(
                 "Unsloth: finetune_audio_layers=True requires a newer unsloth_zoo. "
                 "Please upgrade with `pip install --upgrade --no-deps unsloth_zoo`."
