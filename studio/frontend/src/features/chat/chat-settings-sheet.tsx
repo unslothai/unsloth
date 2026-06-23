@@ -518,11 +518,7 @@ export function ChatSettingsPanel({
   // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
   // context/KV/speculative controls.
   const isGguf = pendingSelection != null ? pendingIsGguf : isLoadedGguf;
-  // The Model section (and Load button) shows for any staged pick, even when the
-  // currently active model is external.
-  const hasModelContent =
-    pendingSelection != null ||
-    (!isExternalModel && (isGguf || Boolean(params.checkpoint)));
+  const hasModelContent = pendingSelection != null;
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const setActivePresetSource = useChatRuntimeStore(

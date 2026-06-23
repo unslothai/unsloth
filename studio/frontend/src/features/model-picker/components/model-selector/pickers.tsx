@@ -83,7 +83,6 @@ import {
   hasAnyCapability,
 } from "./model-capabilities";
 import { ModelDeleteAction } from "./model-delete-action";
-import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import {
   type ModelLoadTimes,
   loadedAt,
@@ -914,14 +913,6 @@ function GgufVariantExpander({
                 </span>
               </span>
             </button>
-            {v.downloaded && (
-              <ModelLoadSettingsAction
-                ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
-                repoId={repoId}
-                quant={v.quant}
-                maxContext={nativeContext}
-              />
-            )}
             {v.downloaded && onDeleteVariant && (
               <ModelDeleteAction
                 ariaLabel={`Delete ${repoId} ${v.quant}`}
