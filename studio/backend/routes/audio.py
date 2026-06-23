@@ -26,8 +26,7 @@ class SpeechRequest(BaseModel):
 
 @router.post("/speech")
 async def create_speech(
-    payload: SpeechRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: SpeechRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Generate speech from text using the currently loaded TTS model.
@@ -41,7 +40,7 @@ async def create_speech(
 
     text = payload.input.strip()
     if not text:
-        raise HTTPException(status_code=400, detail="input must not be empty.")
+        raise HTTPException(status_code = 400, detail = "input must not be empty.")
 
     # Priority: voice slot → main llama slot → transformers backend
     voice_backend = get_voice_llama_backend()
@@ -49,29 +48,27 @@ async def create_speech(
 
     if voice_backend.is_loaded and getattr(voice_backend, "_is_audio", False):
         gen = lambda: voice_backend.generate_audio_response(
-            text=text,
-            audio_type=voice_backend._audio_type,
+            text = text,
+            audio_type = voice_backend._audio_type,
         )
     elif llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
         gen = lambda: llama_backend.generate_audio_response(
-            text=text,
-            audio_type=llama_backend._audio_type,
+            text = text,
+            audio_type = llama_backend._audio_type,
         )
     else:
         backend = get_inference_backend()
         if not backend.active_model_name:
-            raise HTTPException(status_code=400, detail="No model loaded.")
+            raise HTTPException(status_code = 400, detail = "No model loaded.")
         model_info = backend.models.get(backend.active_model_name, {})
         if not model_info.get("is_audio"):
-            raise HTTPException(
-                status_code=400, detail="Active model is not a TTS model."
-            )
-        gen = lambda: backend.generate_audio_response(text=text)
+            raise HTTPException(status_code = 400, detail = "Active model is not a TTS model.")
+        gen = lambda: backend.generate_audio_response(text = text)
 
     try:
         wav_bytes, _ = await asyncio.get_event_loop().run_in_executor(None, gen)
     except Exception as e:
-        logger.error("Speech generation error: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Speech generation error: %s", e, exc_info = True)
+        raise HTTPException(status_code = 500, detail = str(e))
 
-    return Response(content=wav_bytes, media_type="audio/wav")
+    return Response(content = wav_bytes, media_type = "audio/wav")

@@ -3317,17 +3317,19 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
 # Voice Slot  (/voice/load  /voice/unload  /voice/status)
 # =====================================================================
 
+
 class _VoiceLoadRequest(BaseModel):
-    model_path: str = Field(..., description="GGUF model identifier or local .gguf path")
-    gguf_variant: Optional[str] = Field(None, description="GGUF quantization variant (e.g. 'Q4_K_M')")
-    hf_token: Optional[str] = Field(None, description="HuggingFace token for gated models")
-    n_ctx: int = Field(4096, ge=0, description="Context length (0 = model default)")
+    model_path: str = Field(..., description = "GGUF model identifier or local .gguf path")
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
+    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
+    n_ctx: int = Field(4096, ge = 0, description = "Context length (0 = model default)")
 
 
 @router.post("/voice/load")
 async def voice_load_model(
-    request: _VoiceLoadRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: _VoiceLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Load a TTS model into the voice slot (independent of the main chat slot).
@@ -3346,17 +3348,17 @@ async def voice_load_model(
     # exactly mirroring the ModelConfig.from_identifier() call in /load.
     try:
         config = ModelConfig.from_identifier(
-            model_id=model_identifier,
-            hf_token=request.hf_token,
-            gguf_variant=request.gguf_variant,
+            model_id = model_identifier,
+            hf_token = request.hf_token,
+            gguf_variant = request.gguf_variant,
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not resolve model: {e}")
+        raise HTTPException(status_code = 400, detail = f"Could not resolve model: {e}")
 
     if not config or not config.is_gguf:
         raise HTTPException(
-            status_code=400,
-            detail="Voice slot only accepts GGUF models. The provided identifier did not resolve to a GGUF.",
+            status_code = 400,
+            detail = "Voice slot only accepts GGUF models. The provided identifier did not resolve to a GGUF.",
         )
 
     # Already loaded with the same resolved config — skip reload.
@@ -3378,28 +3380,28 @@ async def voice_load_model(
             # HF repo mode: llama-server downloads/uses cached GGUF via -hf
             ok = await asyncio.to_thread(
                 voice_backend.load_model,
-                hf_repo=config.gguf_hf_repo,
-                hf_variant=config.gguf_variant,
-                hf_token=request.hf_token,
-                model_identifier=config.identifier,
-                n_ctx=request.n_ctx,
+                hf_repo = config.gguf_hf_repo,
+                hf_variant = config.gguf_variant,
+                hf_token = request.hf_token,
+                model_identifier = config.identifier,
+                n_ctx = request.n_ctx,
             )
         else:
             # Local file mode: llama-server loads via -m <path>
             ok = await asyncio.to_thread(
                 voice_backend.load_model,
-                gguf_path=config.gguf_file,
-                hf_variant=config.gguf_variant,
-                model_identifier=config.identifier,
-                n_ctx=request.n_ctx,
-                hf_token=request.hf_token,
+                gguf_path = config.gguf_file,
+                hf_variant = config.gguf_variant,
+                model_identifier = config.identifier,
+                n_ctx = request.n_ctx,
+                hf_token = request.hf_token,
             )
     except Exception as e:
-        logger.error("Voice slot load error: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to load voice model: {e}")
+        logger.error("Voice slot load error: %s", e, exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
 
     if not ok:
-        raise HTTPException(status_code=500, detail="Voice model failed to start.")
+        raise HTTPException(status_code = 500, detail = "Voice model failed to start.")
 
     audio_type = getattr(voice_backend, "_audio_type", None)
     is_audio = getattr(voice_backend, "_is_audio", False)
@@ -3411,8 +3413,8 @@ async def voice_load_model(
         except Exception:
             pass
         raise HTTPException(
-            status_code=400,
-            detail=(
+            status_code = 400,
+            detail = (
                 f"Model is not a supported TTS type for the voice slot "
                 f"(detected: {audio_type!r}). "
                 f"Only snac, bicodec, and dac GGUF models are accepted."
@@ -3428,9 +3430,7 @@ async def voice_load_model(
 
 
 @router.post("/voice/unload")
-async def voice_unload_model(
-    current_subject: str = Depends(get_current_subject),
-):
+async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
     """Unload whatever model is in the voice slot."""
     voice_backend = get_voice_llama_backend()
     if not voice_backend.is_active:
@@ -3439,16 +3439,14 @@ async def voice_unload_model(
     try:
         voice_backend.unload_model()
     except Exception as e:
-        logger.error("Voice slot unload error: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to unload voice model: {e}")
+        logger.error("Voice slot unload error: %s", e, exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to unload voice model: {e}")
     logger.info("Voice slot unloaded: %s", model_id)
     return {"status": "unloaded", "model": model_id}
 
 
 @router.get("/voice/status")
-async def voice_slot_status(
-    current_subject: str = Depends(get_current_subject),
-):
+async def voice_slot_status(current_subject: str = Depends(get_current_subject)):
     """Return the current state of the voice slot."""
     voice_backend = get_voice_llama_backend()
     loaded = voice_backend.is_loaded
