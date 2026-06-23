@@ -303,9 +303,7 @@
         if (e.isComposing || e.keyCode === 229) return;
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
-          // Call send() directly rather than form.requestSubmit(): the latter is
-          // unsupported on Safari < 16 / older iOS. send() also guards on the
-          // disabled button so Enter can't start a second request mid-stream.
+          // send() (not form.requestSubmit, unsupported on Safari < 16) guards the btn.
           send();
         }
       });
@@ -317,8 +315,7 @@
         return d;
       }
       async function send() {
-        // Single entry point for both the button and Enter. Never start a second
-        // request while one is in flight (btn stays disabled until it finishes).
+        // One path for button + Enter; ignore while a request is in flight.
         if (btn.disabled) return;
         const content = input.value.trim();
         if (!content) return;

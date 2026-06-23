@@ -197,8 +197,8 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
-  // Shareable base for the copy-link: Cloudflare tunnel > LAN host:port > origin.
-  // The tunnel registers shortly after startup, so poll (bounded) until it shows.
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel
+  // registers shortly after startup, so poll (bounded) until it shows.
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   useEffect(() => {
@@ -209,8 +209,7 @@ export function HistoryCardGrid({
         try {
           await fetchDeviceType({ force: true });
         } catch {
-          // Ignore transient network/server blips during startup; the copy-link
-          // falls back to serverUrl/origin, so keep polling until the timeout.
+          // Ignore startup blips; copy-link falls back to serverUrl/origin.
         }
         if (cancelled || usePlatformStore.getState().cloudflareUrl) return;
         await new Promise((r) => setTimeout(r, 2500));
@@ -388,9 +387,7 @@ export function HistoryCardGrid({
           const isRunning = run.status === "running";
           const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
-          // preview_ref is the backend-computed /p ref (run or run/checkpoint),
-          // already gated on previewability and a route-expressible depth, so it
-          // survives nested output dirs that a bare basename would 404 on.
+          // Backend /p ref, gated on previewability + route-expressible depth.
           const canCopyPreview = !!run.preview_ref;
           return (
             <div
@@ -449,8 +446,7 @@ export function HistoryCardGrid({
                   className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
                   onClick={async (e) => {
                     e.stopPropagation();
-                    // preview_ref is "run" or "run/checkpoint"; encode each
-                    // segment but keep the separators so the /p route matches.
+                    // Encode each segment but keep "/" so the /p route matches.
                     const ref = (run.preview_ref ?? "")
                       .split("/")
                       .map(encodeURIComponent)

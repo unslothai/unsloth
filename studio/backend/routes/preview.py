@@ -25,11 +25,8 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
-# Public (no key) so a shared link opens in any browser; resolve_preview_checkpoint
-# pins `run` under outputs_root, so this only ever serves your own checkpoints.
-
-# Serialize load+generate: the backend holds one model at a time, so concurrent
-# previews for different checkpoints could otherwise run against the wrong one.
+# Public (no key); resolve_preview_checkpoint pins `run` under outputs_root.
+# One model loads at a time, so serialize load+generate across previews.
 _preview_lock = asyncio.Lock()
 
 
@@ -45,15 +42,10 @@ def _resolve_or_4xx(run: str, checkpoint: str | None):
 def _sanitize_preview_payload(
     payload: ChatCompletionRequest, is_lora: bool
 ) -> ChatCompletionRequest:
-    # Public surface: drop tools/MCP (host code execution) and provider routing
-    # (would make /p/ an open proxy). Tools are also hard-off via the policy below.
-    # Normalize use_adapter rather than trusting the caller: `_apply_adapter_state`
-    # toggles the shared in-memory model non-destructively and never restores it,
-    # so an unpinned `use_adapter=false` would leave adapters disabled for later
-    # visitors (the page never sends the field). For a LoRA checkpoint pin it True
-    # (shows the fine-tune; self-heals a previously-disabled adapter); for a merged
-    # checkpoint strip to None (no adapter to toggle, and avoids a per-request
-    # "not a PeftModel" warning).
+    # Public surface: strip tools/MCP + provider routing (no host code / open proxy).
+    # Normalize use_adapter (never trust the caller): pin True for LoRA, None for
+    # merged. _apply_adapter_state mutates the shared model without restoring, so an
+    # unpinned `false` would persist to later visitors who omit the field.
     return payload.model_copy(
         update = {
             "tools": None,
@@ -74,7 +66,7 @@ def _sanitize_preview_payload(
 
 
 async def _unlock_after(body_iterator):
-    # Hold the lock until the stream drains, else another checkpoint could swap the backend mid-stream.
+    # Hold the lock until the stream drains so another checkpoint can't swap mid-stream.
     try:
         async for chunk in body_iterator:
             yield chunk
@@ -152,8 +144,7 @@ async def preview_models_checkpoint(run: str, checkpoint: str):
     return _models_response(run, checkpoint)
 
 
-# Serve the page's logo/fonts here too; the frontend static mount is absent in
-# --api-only mode (Tauri), where they would otherwise 404.
+# Serve logo/fonts here too: the SPA static mount is absent in --api-only (Tauri).
 _FRONTEND_DIST = (Path(__file__).resolve().parents[2] / "frontend" / "dist").resolve()
 _PREVIEW_ASSET_MEDIA_TYPES = {
     ".png": "image/png",
@@ -171,7 +162,7 @@ async def preview_asset(asset_path: str):
     return FileResponse(target, media_type = media_type)
 
 
-# Self-contained public page (not the auth-gated SPA); only the title is interpolated.
+# Self-contained public page; only the title is interpolated.
 _PREVIEW_PAGE_HTML = (
     Path(__file__).resolve().parent.parent / "assets" / "preview_page.html"
 ).read_text(encoding = "utf-8")

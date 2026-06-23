@@ -208,16 +208,14 @@ def test_chat_payload_sanitized(client, captured):
     assert p.provider_type is None
     assert p.provider_base_url is None
     assert p.external_model is None
-    # Adapter pinned on for a LoRA checkpoint: an unauthenticated caller cannot
-    # flip the shared backend to the base model for later visitors.
+    # Adapter pinned on for LoRA: a caller can't flip the shared backend to base.
     assert p.use_adapter is True
     # Loads the resolved checkpoint dir, not an attacker-supplied path.
     assert captured["load_path"].endswith("demorun")
 
 
 def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
-    # A merged (non-LoRA) checkpoint has no adapter to toggle, so use_adapter is
-    # stripped to None (avoids a per-request "not a PeftModel" warning).
+    # Merged (non-LoRA) checkpoint: no adapter to toggle, so use_adapter -> None.
     outputs = tmp_path / "outputs"
     merged = outputs / "mergedrun"
     merged.mkdir(parents = True)

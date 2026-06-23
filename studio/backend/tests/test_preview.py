@@ -43,8 +43,7 @@ def _point_outputs_root_at(monkeypatch, outputs: Path) -> None:
     from utils.models import checkpoints as _ckpt
 
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
-    # checkpoints imported `outputs_root` by name, so patch that alias too
-    # (preview_ref calls it directly; resolve_output_dir reads the storage_roots one).
+    # checkpoints imported outputs_root by name; patch that alias too (preview_ref uses it).
     monkeypatch.setattr(_ckpt, "outputs_root", lambda: outputs)
 
 
