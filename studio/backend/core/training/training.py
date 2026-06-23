@@ -55,8 +55,10 @@ def _load_pyplot():
         return _pyplot
     try:
         import matplotlib
+
         matplotlib.use("Agg")  # headless; no GUI backend needed to render to file
         import matplotlib.pyplot as plt
+
         _pyplot = plt
     except Exception as e:
         _pyplot_failed = True
