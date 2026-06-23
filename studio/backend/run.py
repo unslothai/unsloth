@@ -468,20 +468,7 @@ def _emit_startup_output(
 
 
 def _print_cloudflare_line(secure: bool = False) -> None:
-    """Announce the Cloudflare tunnel state on the startup banner.
-
-    A network-reachable launch must never be silent about public exposure, so for
-    a 0.0.0.0 (wildcard) bind this always prints one of three states:
-      - ON: the public trycloudflare.com URL plus a public-exposure warning. The
-        warning is suppressed in secure mode, where the authenticated tunnel is the
-        whole point and --no-cloudflare is not a valid option.
-      - FAILED: the tunnel was requested but did not come up.
-      - OFF: --no-cloudflare was passed.
-    A flag-on-but-not-started case (Colab / api-only / loopback) stays silent, as
-    before. Reads the module-level state set by ``run_server``. When the public
-    reachability probe just failed (``_public_reachable is False``) but the tunnel
-    is up, the link is reworded to point the user at the Cloudflare URL as the way in.
-    """
+    """Print Cloudflare tunnel state for startup banners."""
     from startup_banner import stdout_supports_color
 
     accent = "\033[38;5;150;1m"
@@ -515,11 +502,6 @@ def _print_cloudflare_line(secure: bool = False) -> None:
                     warn,
                 )
         return
-    # No tunnel URL. Secure mode exits in run_server before the banner, so the
-    # remaining cases are plain wildcard binds. When the reachability probe just
-    # confirmed the raw port is public (_public_reachable is True), do not claim
-    # "local network only" -- --no-cloudflare / a failed tunnel disables only the
-    # Cloudflare link, not the wildcard bind, so the port can still be public.
     if _cloudflare_requested:
         if _public_reachable is True:
             _emit(
@@ -797,10 +779,6 @@ _cloudflare_url = None
 # not decide (timeout, blocked, private address).
 _public_reachable = None
 
-# Whether a Cloudflare tunnel was attempted this run (the host/secure gate passed)
-# and the raw --cloudflare/--no-cloudflare flag value. Both are read by the banner
-# so it can state ON / FAILED / OFF explicitly instead of staying silent. Set by
-# run_server.
 _cloudflare_requested = False
 _cloudflare_flag = True
 

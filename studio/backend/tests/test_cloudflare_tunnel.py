@@ -137,12 +137,9 @@ def test_ensure_downloads_and_chmods_when_missing(monkeypatch, tmp_path):
     path = ct.ensure_cloudflared()
     assert path == str(cached)
     assert cached.exists()
-    # Windows has no POSIX executable bit and the production code skips chmod
-    # there, so only assert it on a POSIX host. The test monkeypatches
-    # sys.platform globally (ct.sys is sys), so use os.name -- the real,
-    # never-monkeypatched host indicator -- to detect Windows.
+    # Host OS, not monkeypatched ct.sys.platform.
     if os.name != "nt":
-        assert cached.stat().st_mode & 0o111  # executable bit set
+        assert cached.stat().st_mode & 0o111
 
 
 def test_ensure_returns_none_on_download_failure(monkeypatch, tmp_path):
@@ -244,8 +241,8 @@ def test_ensure_macos_extracts_tgz_and_chmods(monkeypatch, tmp_path):
     path = ct.ensure_cloudflared()
     assert path == str(cached)
     assert cached.read_bytes() == b"mach-o"
-    if os.name != "nt":  # POSIX host only; Windows has no execute bit
-        assert cached.stat().st_mode & 0o111  # chmod applied on posix
+    if os.name != "nt":
+        assert cached.stat().st_mode & 0o111
     assert not cached.with_suffix(".tgz").exists()  # temp archive cleaned up
 
 
@@ -726,8 +723,7 @@ def _run_print_cloudflare_line(
     cloudflare_flag = True,
     secure = False,
 ):
-    """Exec the real _print_cloudflare_line source in isolation (run.py has heavy
-    deps), with the module globals injected and startup_banner stubbed."""
+    """Exec _print_cloudflare_line without importing run.py's heavy deps."""
     src = _RUN_PY.read_text()
     tree = ast.parse(src)
     func_src = next(
@@ -767,7 +763,6 @@ def test_cloudflare_line_default_wording_when_reachable(monkeypatch):
 
 
 def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
-    # Probe did not run / could not decide -> keep the existing wording.
     out = _run_print_cloudflare_line(
         monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = None
     )
@@ -776,13 +771,11 @@ def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
 
 
 def test_cloudflare_line_prints_nothing_without_tunnel(monkeypatch):
-    # Flag on but tunnel not started (Colab / api-only / loopback) stays silent.
     out = _run_print_cloudflare_line(monkeypatch, cloudflare_url = None, public_reachable = False)
     assert out == ""
 
 
 def test_cloudflare_line_warns_when_public_url_up(monkeypatch):
-    # If both the tunnel and raw port are public, --no-cloudflare is not privacy.
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = "https://x.trycloudflare.com",
@@ -798,8 +791,6 @@ def test_cloudflare_line_warns_when_public_url_up(monkeypatch):
 
 
 def test_cloudflare_line_secure_mode_suppresses_public_warning(monkeypatch):
-    # Secure mode is intentional authenticated exposure; --no-cloudflare is invalid
-    # there, so do not nag about it.
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = "https://x.trycloudflare.com",
@@ -812,7 +803,6 @@ def test_cloudflare_line_secure_mode_suppresses_public_warning(monkeypatch):
 
 
 def test_cloudflare_line_states_disabled_when_off(monkeypatch):
-    # --no-cloudflare plus a failed public probe: no Cloudflare link, raw port local-only.
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = None,
@@ -825,7 +815,6 @@ def test_cloudflare_line_states_disabled_when_off(monkeypatch):
 
 
 def test_cloudflare_line_states_failed_when_requested_but_no_url(monkeypatch):
-    # Tunnel failed and the public probe failed too.
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = None,
@@ -838,7 +827,6 @@ def test_cloudflare_line_states_failed_when_requested_but_no_url(monkeypatch):
 
 
 def test_cloudflare_line_off_does_not_claim_local_only_when_unknown(monkeypatch):
-    # Unknown reachability is not proof that the raw wildcard port is private.
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = None,
@@ -852,7 +840,6 @@ def test_cloudflare_line_off_does_not_claim_local_only_when_unknown(monkeypatch)
 
 
 def test_cloudflare_line_failed_does_not_claim_local_only_when_unknown(monkeypatch):
-    # A failed tunnel still leaves the raw wildcard bind to account for.
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = None,
@@ -866,8 +853,6 @@ def test_cloudflare_line_failed_does_not_claim_local_only_when_unknown(monkeypat
 
 
 def test_cloudflare_line_off_does_not_claim_local_only_when_publicly_reachable(monkeypatch):
-    # --no-cloudflare but the reachability probe confirmed the raw port is public:
-    # the OFF notice must not contradict it by claiming "local network only".
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = None,
@@ -881,8 +866,6 @@ def test_cloudflare_line_off_does_not_claim_local_only_when_publicly_reachable(m
 
 
 def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachable(monkeypatch):
-    # Tunnel requested but failed, yet the raw port is publicly reachable: warn
-    # about the public raw port instead of claiming local-only.
     out = _run_print_cloudflare_line(
         monkeypatch,
         cloudflare_url = None,
