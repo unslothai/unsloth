@@ -64,6 +64,25 @@ concurrency:
 permissions:
   contents: read
 
+# Secret exposure on pull_request
+# ===============================
+# This workflow is `pull_request`-triggered (incl. on `install.sh` and the
+# `.github/scripts/**` it runs), and the connection + prompt-cache jobs check
+# out and EXECUTE that PR-controlled code. HF_TOKEN is an external Hugging Face
+# credential, so it must never reach those steps on a PR run: a same-repo PR
+# could modify install.sh / a script to read and exfiltrate it (directly, or by
+# writing it into the uploaded logs/ artifact). It is therefore gated with
+# `github.event_name != 'pull_request' && secrets.HF_TOKEN || ''` so the real
+# token flows only on the trusted schedule/workflow_dispatch runs; on a PR the
+# step sees an empty string, and the public GGUF repos still download anonymously.
+#
+# GITHUB_TOKEN (passed as GH_TOKEN) is deliberately left ungated: it is the
+# auto-provisioned, job-scoped, `contents: read` token (negligible marginal
+# value to a same-repo PR author, who already has write access, and it expires
+# with the job), and install_llama_prebuilt.py needs it to authenticate GitHub's
+# releases API or the prebuilt llama.cpp download 403s on the shared-runner
+# anonymous rate-limit bucket.
+
 env:
   # Determinism precedent (studio-inference-smoke.yml): temp 0 + fixed seed.
   UNSLOTH_SEED: '3407'
@@ -134,7 +153,9 @@ jobs:
         id: download-gguf
         if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on pull_request -- see the "Secret exposure" note below
+          # `permissions:`. Empty token still downloads the public GGUF.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
@@ -150,7 +171,9 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on pull_request -- see the "Secret exposure" note below
+          # `permissions:`. Empty token still downloads the public GGUF.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -335,7 +358,9 @@ jobs:
         id: download-gguf
         if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on pull_request -- see the "Secret exposure" note below
+          # `permissions:`. Empty token still downloads the public GGUF.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
@@ -351,7 +376,9 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on pull_request -- see the "Secret exposure" note below
+          # `permissions:`. Empty token still downloads the public GGUF.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -508,7 +535,9 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on pull_request -- see the "Secret exposure" note below
+          # `permissions:`. Empty token still downloads the public GGUF.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
@@ -524,7 +553,9 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on pull_request -- see the "Secret exposure" note below
+          # `permissions:`. Empty token still downloads the public GGUF.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail

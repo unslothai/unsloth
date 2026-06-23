@@ -75,7 +75,9 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # HF_TOKEN withheld on pull_request: this step executes checked-out PR code,
+          # so a same-repo PR must not receive it; public GGUF repos download anonymously.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
@@ -124,7 +126,9 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # HF_TOKEN withheld on pull_request: this step executes checked-out PR code,
+          # so a same-repo PR must not receive it; public GGUF repos download anonymously.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
