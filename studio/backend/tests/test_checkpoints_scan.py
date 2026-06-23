@@ -45,8 +45,17 @@ def _setup_training_runs_table(db_path: Path) -> None:
         conn.close()
 
 
+def _make_outputs_dir(tmp_path, monkeypatch) -> Path:
+    studio_home = tmp_path / "studio-home"
+    outputs_dir = studio_home / "outputs"
+    outputs_dir.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    return outputs_dir
+
+
 def test_scan_checkpoints_uses_output_dir_history_for_base_model(tmp_path, monkeypatch):
-    run_dir = tmp_path / "custom-run"
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "custom-run"
     run_dir.mkdir()
     (run_dir / "config.json").write_text("{}")
 
@@ -77,7 +86,7 @@ def test_scan_checkpoints_uses_output_dir_history_for_base_model(tmp_path, monke
         lambda: _make_history_connection(db_path),
     )
 
-    models = checkpoints_module.scan_checkpoints(outputs_dir = str(tmp_path))
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
 
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
@@ -85,12 +94,13 @@ def test_scan_checkpoints_uses_output_dir_history_for_base_model(tmp_path, monke
 def test_scan_checkpoints_matches_project_suffixed_default_dir_against_history(
     tmp_path, monkeypatch
 ):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
     run_name = build_default_output_dir_name(
         "unsloth/Llama-3.2-3B-Instruct",
         "Customer Support",
         timestamp = 1771227800,
     )
-    run_dir = tmp_path / run_name
+    run_dir = outputs_dir / run_name
     run_dir.mkdir()
     (run_dir / "config.json").write_text("{}")
 
@@ -121,13 +131,14 @@ def test_scan_checkpoints_matches_project_suffixed_default_dir_against_history(
         lambda: _make_history_connection(db_path),
     )
 
-    models = checkpoints_module.scan_checkpoints(outputs_dir = str(tmp_path))
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
 
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
 
 def test_scan_checkpoints_preserves_legacy_folder_name_fallback(tmp_path, monkeypatch):
-    run_dir = tmp_path / "unsloth_Llama-3.2-3B-Instruct_1771227800"
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "unsloth_Llama-3.2-3B-Instruct_1771227800"
     run_dir.mkdir()
     (run_dir / "config.json").write_text("{}")
 
@@ -139,6 +150,62 @@ def test_scan_checkpoints_preserves_legacy_folder_name_fallback(tmp_path, monkey
         lambda: _make_history_connection(db_path),
     )
 
-    models = checkpoints_module.scan_checkpoints(outputs_dir = str(tmp_path))
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
 
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
+
+
+def test_scan_checkpoints_prefers_exact_history_match_over_newer_suffix(
+    tmp_path, monkeypatch
+):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "unsloth_Test_1771227800"
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text("{}")
+
+    copied_dir = tmp_path / "copied" / run_dir.name
+    copied_dir.mkdir(parents = True)
+
+    db_path = tmp_path / "studio.db"
+    _setup_training_runs_table(db_path)
+    conn = _make_history_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO training_runs (id, model_name, config_json, output_dir, started_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "run-exact",
+                "correct/base",
+                "{}",
+                str(run_dir.resolve()),
+                "2026-04-09T00:00:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO training_runs (id, model_name, config_json, output_dir, started_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "run-suffix",
+                "wrong/base",
+                "{}",
+                str(copied_dir.resolve()),
+                "2026-04-10T00:00:00Z",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        checkpoints_module,
+        "get_connection",
+        lambda: _make_history_connection(db_path),
+    )
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert models[0][2]["base_model"] == "correct/base"

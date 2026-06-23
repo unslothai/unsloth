@@ -1787,11 +1787,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 5. Build output dir ──
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
-    from utils.paths import resolve_output_dir, ensure_dir, default_run_dir_name
+    from utils.paths import resolve_output_dir, ensure_dir
 
     output_dir = config.get("output_dir", "")
     if not output_dir:
-        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+        output_dir = build_default_output_dir_name(
+            model_name,
+            config.get("project_name"),
+        )
     output_dir = str(resolve_output_dir(output_dir))
     ensure_dir(Path(output_dir))
 

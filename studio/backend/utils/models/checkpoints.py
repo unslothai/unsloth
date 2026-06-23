@@ -26,23 +26,38 @@ def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
         return None
 
     try:
-        direct_rows = conn.execute(
+        exact_rows = conn.execute(
             """
             SELECT model_name
             FROM training_runs
             WHERE output_dir IN (?, ?)
-               OR output_dir LIKE ?
-               OR output_dir LIKE ?
             ORDER BY started_at DESC
             """,
             (
                 resolved_checkpoint_dir,
                 str(checkpoint_dir),
-                f"%/{checkpoint_name}",
-                f"%\\{checkpoint_name}",
             ),
         ).fetchall()
-        for row in direct_rows:
+        for row in exact_rows:
+            model_name = row["model_name"]
+            if model_name:
+                return model_name
+
+        suffix_rows = conn.execute(
+            """
+            SELECT model_name, output_dir
+            FROM training_runs
+            WHERE output_dir IS NOT NULL
+            ORDER BY started_at DESC
+            """
+        ).fetchall()
+        for row in suffix_rows:
+            output_dir = str(row["output_dir"] or "").rstrip("/\\")
+            if not (
+                output_dir.endswith(f"/{checkpoint_name}")
+                or output_dir.endswith(f"\\{checkpoint_name}")
+            ):
+                continue
             model_name = row["model_name"]
             if model_name:
                 return model_name
