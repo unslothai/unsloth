@@ -1112,24 +1112,25 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 def _extract_evidence(
     content: str,
     pattern: re.Pattern,
-    max_matches: int = 3,
+    max_matches: int = 0,
 ) -> str:
-    """Pull matching lines as evidence snippets.
+    """Pull matching lines as evidence snippets (``max_matches=0`` means all).
 
-    Falls back to a whole-content search when the pattern only matches across
-    line boundaries (several IOC regexes use ``re.DOTALL``). Without this an
-    anti-analysis / archive-staging finding could report empty evidence, making
-    the baseline entry impossible to review.
+    Records every matching line, not a sample, so an extra match appended to an
+    already-flagged file changes the evidence (and the baseline key) instead of
+    riding the first few. Leading whitespace is kept so a flagged line moved out
+    of a guarded block reads as changed. Falls back to a whole-content search
+    when the pattern only matches across line boundaries (DOTALL IOC regexes).
     """
     lines = content.splitlines()
     matches = []
     for i, line in enumerate(lines, 1):
         if pattern.search(line):
-            snippet = line.strip()
+            snippet = line.rstrip()
             if len(snippet) > 160:
                 snippet = snippet[:160] + "..."
             matches.append(f"L{i}: {snippet}")
-            if len(matches) >= max_matches:
+            if max_matches and len(matches) >= max_matches:
                 break
     if matches:
         return " | ".join(matches)
@@ -1137,7 +1138,7 @@ def _extract_evidence(
     m = pattern.search(content)
     if m:
         line_no = content.count("\n", 0, m.start()) + 1
-        snippet = lines[line_no - 1].strip() if line_no - 1 < len(lines) else ""
+        snippet = lines[line_no - 1].rstrip() if line_no - 1 < len(lines) else ""
         if len(snippet) > 160:
             snippet = snippet[:160] + "..."
         return f"L{line_no}: {snippet}" if snippet else f"L{line_no}: <multiline match>"
@@ -2548,23 +2549,25 @@ def _relpath_in_package(filename: str) -> str:
 
 
 # Evidence lists matched code spans, each tagged with an ``L<NN>:`` line marker.
-# Hash the deduped, sorted spans (markers stripped) so the key tracks the matched
-# code: line shifts and reordering keep it stable, new or changed code does not.
-_RE_EVIDENCE_LINENO = re.compile(r"\bL\d+:\s*")
-
-
-# Cap evidence before hashing/storing so the hash stays recomputable from the
-# stored field and a payload cannot hide past a short window. Matches the slice
-# _write_baseline persists.
-_EVIDENCE_CAP = 2000
+# A span's prefix up to and including the first ``L<NN>:`` marker: any delimiter
+# space, an optional "Label: " group, and the line number that _extract_evidence
+# prepends. The marker is always the first ``L<NN>:`` in a span, so a marker that
+# appears inside the matched code comes later and is preserved.
+_RE_EVIDENCE_PREFIX = re.compile(r"^.*?L\d+:\s?")
 
 
 def _canon_evidence(evidence: str) -> str:
-    """Sorted, deduped matched-code spans with line markers and inner whitespace
-    normalized, so only the set of flagged code (not its order or position) counts."""
-    text = _RE_EVIDENCE_LINENO.sub("", (evidence or "")[:_EVIDENCE_CAP])
-    spans = {re.sub(r"\s+", " ", s).strip() for s in re.split(r"[|\n]", text)}
-    return " | ".join(sorted(s for s in spans if s))
+    """Sorted, deduped set of matched code lines, line-number markers removed.
+
+    Splits evidence into per-match spans, drops each span's prefix up to the
+    first ``L<NN>:`` marker, and keeps the code with its indentation, so the key
+    tracks the exact set of flagged code regardless of line number or order."""
+    spans = set()
+    for s in re.split(r"[|\n]", evidence or ""):
+        s = _RE_EVIDENCE_PREFIX.sub("", s, count = 1).rstrip()
+        if s:
+            spans.add(s)
+    return "\n".join(sorted(spans))
 
 
 def _evidence_hash(evidence: str) -> str:
@@ -2637,7 +2640,7 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
                 "file": _relpath_in_package(f.filename),
                 "check": f.check,
                 "severity": f.severity,
-                "evidence": f.evidence[:_EVIDENCE_CAP],
+                "evidence": f.evidence,
                 "evidence_hash": _evidence_hash(f.evidence),
             }
         )

