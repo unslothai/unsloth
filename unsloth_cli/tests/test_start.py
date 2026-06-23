@@ -413,9 +413,7 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
         return inner(method, url, token, payload, timeout, error)
 
     monkeypatch.setattr(start, "_http_json", http_json)
-    result = CliRunner().invoke(
-        start.start_app, ["claude", "--no-launch", "--model", requested]
-    )
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", requested])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", canonical)
 
