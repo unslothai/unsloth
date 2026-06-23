@@ -720,6 +720,22 @@ if _IS_MLX:
     )
     _MLX_TRAINER_KWARGS = frozenset(_MLX_TRAINER_POSITIONAL_KWARGS)
 
+    def _is_mlx_native_text_collator(collator):
+        """HF pad/copy collators are redundant on MLX (MLXTrainer pads/masks
+        natively). Match by class name to avoid importing transformers here."""
+        for klass in type(collator).__mro__:
+            name = klass.__name__
+            if name in (
+                "DataCollatorForSeq2Seq",
+                "DataCollatorWithPadding",
+                "DefaultDataCollator",
+            ):
+                return True
+            if name == "DataCollatorForLanguageModeling":
+                # Plain causal padding is fine; MLM masking changes semantics.
+                return not bool(getattr(collator, "mlm", False))
+        return False
+
     class UnslothTrainer(MLXTrainer):
         """Backend-aware public trainer that routes supported SFT notebooks to MLX."""
 
@@ -742,23 +758,26 @@ if _IS_MLX:
 
             data_collator = kwargs.pop("data_collator", None)
             if data_collator is not None:
-                if not isinstance(data_collator, UnslothVisionDataCollator):
+                if isinstance(data_collator, UnslothVisionDataCollator):
+                    collator_processor = getattr(data_collator, "processor", None)
+                    if collator_processor is not None and (
+                        kwargs.get("processor", None) is None or processor_from_processing_class
+                    ):
+                        kwargs["processor"] = collator_processor
+                        if kwargs.get("tokenizer", None) is None:
+                            kwargs["tokenizer"] = getattr(
+                                collator_processor,
+                                "tokenizer",
+                                collator_processor,
+                            )
+                elif _is_mlx_native_text_collator(data_collator):
+                    pass  # redundant on MLX; MLXTrainer batches/masks/pads natively
+                else:
                     raise NotImplementedError(
                         "Unsloth MLX: custom data_collator is not supported by "
                         "MLXTrainer. Pass the dataset directly or use the MLX "
                         "trainer's native batching path."
                     )
-                collator_processor = getattr(data_collator, "processor", None)
-                if collator_processor is not None and (
-                    kwargs.get("processor", None) is None or processor_from_processing_class
-                ):
-                    kwargs["processor"] = collator_processor
-                    if kwargs.get("tokenizer", None) is None:
-                        kwargs["tokenizer"] = getattr(
-                            collator_processor,
-                            "tokenizer",
-                            collator_processor,
-                        )
 
             trainer_kwargs, config_kwargs, ignored_kwargs = _split_mlx_trainer_kwargs(kwargs)
             _raise_unsupported_mlx_trainer_kwargs(ignored_kwargs)

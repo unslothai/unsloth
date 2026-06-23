@@ -1855,6 +1855,15 @@ def get_chat_template(
         use_zoo_tokenizer_patch = is_mlx_backend
     old_tokenizer = tokenizer
 
+    # mlx-lm's TokenizerWrapper._tokenizer is the HF tokenizer, not the Rust
+    # backend the vocab-edit paths below need; unwrap here, re-wrap before return.
+    _mlx_tokenizer_wrapper = None
+    if is_mlx_backend and tokenizer.__class__.__name__ == "TokenizerWrapper":
+        _inner_tokenizer = getattr(tokenizer, "_tokenizer", None)
+        if _inner_tokenizer is not None and hasattr(_inner_tokenizer, "is_fast"):
+            _mlx_tokenizer_wrapper = tokenizer
+            tokenizer = _inner_tokenizer
+
     IS_GEMMA = False
     if tokenizer.__class__.__name__.startswith("Gemma"):
         if chat_template == "chatml": chat_template = "gemma_chatml"
@@ -2078,6 +2087,11 @@ def get_chat_template(
     # Add Ollama
     tokenizer._ollama_modelfile = ollama_modelfile
     tokenizer._system_message   = system_message
+
+    # Re-wrap so the trainer gets the same TokenizerWrapper type back.
+    if _mlx_tokenizer_wrapper is not None:
+        _mlx_tokenizer_wrapper._tokenizer = tokenizer
+        tokenizer = _mlx_tokenizer_wrapper
     return tokenizer#, stopping_criteria
 
 
