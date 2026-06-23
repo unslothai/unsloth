@@ -988,51 +988,36 @@ export function AppSidebar() {
             )}
             <div
               className={cn(
-                "flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden",
+                "flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
                 showCompactMacBrand &&
-                  "h-[var(--studio-chat-control-height,33px)]",
-                showCompactMacBrand && "gap-2",
+                  "h-[var(--studio-chat-control-height,33px)] justify-end gap-2",
+                !showCompactMacBrand && "justify-between",
               )}
             >
-              <Link
-                to="/chat"
-                onClick={(event) => {
-                  event.preventDefault();
-                  if (chatDisabled) return;
-                  openNewChat(null);
-                }}
-                className={cn(
-                  "flex items-center gap-[6px] select-none",
-                  showCompactMacBrand &&
-                    "inline-flex size-[var(--studio-chat-control-height,33px)] items-center justify-center rounded-[10px] transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                )}
-                aria-label={t("shell.aria.home")}
-              >
-                <img
-                  src={
-                    showCompactMacBrand
-                      ? "/rounded-512.png"
-                      : "/circle-logo-small.png"
-                  }
-                  alt="Unsloth"
-                  className={cn(
-                    "object-cover",
-                    showCompactMacBrand
-                      ? "size-5 rounded-[6px]"
-                      : "h-[34px] w-[34px] rounded-full",
-                  )}
-                />
-                {!showCompactMacBrand && (
-                  <>
-                    <span className="font-heading text-[21px] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
-                      unsloth
-                    </span>
-                    <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
-                      {t("shell.beta")}
-                    </span>
-                  </>
-                )}
-              </Link>
+              {!showCompactMacBrand && (
+                <Link
+                  to="/chat"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (chatDisabled) return;
+                    openNewChat(null);
+                  }}
+                  className="flex items-center gap-[6px] select-none"
+                  aria-label={t("shell.aria.home")}
+                >
+                  <img
+                    src="/circle-logo-small.png"
+                    alt="Unsloth"
+                    className="h-[34px] w-[34px] rounded-full object-cover"
+                  />
+                  <span className="font-heading text-[21px] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
+                    unsloth
+                  </span>
+                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                    {t("shell.beta")}
+                  </span>
+                </Link>
+              )}
               {!isMobile && (
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
