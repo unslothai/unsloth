@@ -2545,6 +2545,13 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
+# vLLM's compiled extensions, across the platforms its own init loads them on
+# (cuda/rocm: _C + _C_stable_libtorch; rocm also _rocm_C; xpu: _moe_C).
+_VLLM_COMPILED_EXTENSIONS = (
+    "vllm._C", "vllm._C_stable_libtorch", "vllm._rocm_C", "vllm._moe_C",
+)
+
+
 def disable_broken_vllm(error = None):
     """Disable vLLM dynamically when its shared library is ABI-broken."""
     global VLLM_BROKEN
@@ -2562,6 +2569,17 @@ def disable_broken_vllm(error = None):
 
         try:
             import vllm  # noqa: F401
+            # Modern vLLM loads its compiled extensions lazily, so a bare
+            # `import vllm` succeeds even when they're ABI-broken (e.g. built
+            # for another CUDA major). Force-load each so the .so failure
+            # surfaces here: a build that lacks one raises ModuleNotFoundError
+            # (skipped), while a real ABI break raises ImportError/OSError and
+            # is classified by _is_broken_vllm_error below.
+            for _ext in _VLLM_COMPILED_EXTENSIONS:
+                try:
+                    importlib.import_module(_ext)
+                except ModuleNotFoundError:
+                    pass
             return False
         except Exception as import_error:
             failure = import_error

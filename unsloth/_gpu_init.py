@@ -38,8 +38,9 @@ from .import_fixes import (
 
 # Redirect a read-only Hugging Face cache before anything below can import
 # huggingface_hub / transformers / vllm (disable_broken_vllm probes
-# `import vllm`, check_fbgemm_gpu_version imports transformers, and
-# fix_huggingface_hub imports huggingface_hub itself), all of which can
+# `import vllm` and its compiled extensions, check_fbgemm_gpu_version
+# imports transformers, and fix_huggingface_hub imports huggingface_hub
+# itself), all of which can
 # freeze Hub's cache constants with the un-redirected paths. unsloth_zoo
 # runs the same redirect at import, but that happens after these probes.
 # hf_cache.py is stdlib-only, so load it straight from its file without
