@@ -403,6 +403,15 @@ class SyntheticDataKit:
         )  # -128 to reduce errors
         if max_tokens <= 5:
             raise RuntimeError("Generation length is way too long!")
+        if max_tokens <= self.overlap:
+            # The chunk stride is (max_tokens - overlap); a non-positive stride makes the
+            # n_chunks computation below divide by zero or go negative. Reject the unusable
+            # configuration with a clear message instead of silently emitting one huge chunk.
+            raise RuntimeError(
+                f"Unsloth: the chunk size (max_seq_length - 2 * max_generation_tokens - 128 = "
+                f"{max_tokens}) must be larger than the overlap ({self.overlap}). "
+                f"Reduce overlap or max_generation_tokens."
+            )
         input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
 
         # Get left and right boundaries

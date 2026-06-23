@@ -74,8 +74,26 @@ def test_chunk_data_empty_document_yields_no_chunks():
     assert out == [], f"empty doc should yield no files, got {len(out)}"
 
 
+def test_chunk_data_rejects_overlap_not_smaller_than_chunk():
+    # If overlap >= chunk size the stride is non-positive, which would divide by zero
+    # or emit one oversized chunk. The config must be rejected with a clear error.
+    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 950, overlap = 64)  # max_tokens = 20
+    with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
+        f.write("word " * 50)
+        path = f.name
+    try:
+        try:
+            kit.chunk_data(filename = path)
+            raise AssertionError("expected RuntimeError when overlap >= chunk size")
+        except RuntimeError as e:
+            assert "overlap" in str(e), f"error should mention overlap, got: {e}"
+    finally:
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     test_chunk_data_keeps_single_chunk_document()
     test_chunk_data_still_splits_long_document()
     test_chunk_data_empty_document_yields_no_chunks()
+    test_chunk_data_rejects_overlap_not_smaller_than_chunk()
     print("OK")
