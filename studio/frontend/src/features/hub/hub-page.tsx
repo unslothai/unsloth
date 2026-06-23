@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -14,7 +18,10 @@ import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scro
 import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { cn } from "@/lib/utils";
 import { usePlatformStore } from "@/config/env";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import {
+  hfApiToken,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
 import {
   getInferenceStatus,
   isExternalModelId,
@@ -551,6 +558,7 @@ export function ModelsPage() {
   const deferredDebouncedQuery = useDeferredValue(debouncedQuery);
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
+  const apiHfToken = hfApiToken(debouncedHfToken);
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
 
@@ -605,7 +613,7 @@ export function ModelsPage() {
     handleRetrySearch,
   } = useDiscoverSearch({
     debouncedQuery,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     isDiscoverTab,
     isDatasetMode,
     sortBy: effectiveSort,
@@ -619,7 +627,7 @@ export function ModelsPage() {
     channelId: isChannelListMode ? activeChannelId : null,
     results,
     isLoading,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
   });
 
   const {
@@ -702,7 +710,7 @@ export function ModelsPage() {
   const listRows = filteredDiscoverRows;
 
   const hubFeed = useHubFeed({
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     online,
     enabled: isFeedMode,
     deviceType,
@@ -908,7 +916,7 @@ export function ModelsPage() {
     filteredCachedRows,
     filteredLocalRows,
     results: selectionResults,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     online,
   });
 
@@ -1084,11 +1092,32 @@ export function ModelsPage() {
         openNewChat();
         return;
       }
+      // Detach any leftover staged pick first so its edited knobs (e.g. a custom
+      // context length) don't leak into this load -- mirrors the chat page's
+      // detachStaged(); keepDownload keeps any staged download running.
+      useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
+      // Load-on-selection skips the chat sheet, so seed this GGUF pick's saved
+      // load knobs here the way the sheet's restore effect would; otherwise the
+      // remembered config is silently ignored on the Hub run path. keepSpeculative
+      // then honors the restored speculative choice across the switch.
+      const remembered =
+        opts.ggufVariant != null || selectedModel.isGguf
+          ? loadRememberedLoadSettings(
+              rememberedLoadSettingsKey({
+                id: runId,
+                ggufVariant: opts.ggufVariant,
+              }),
+            )
+          : null;
+      if (remembered) {
+        useChatRuntimeStore.getState().applyRememberedLoadSettings(remembered);
+      }
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
         isDownloaded,
         expectedBytes: opts.expectedBytes,
+        keepSpeculative: remembered != null,
         throwOnError: true,
       })
         .then(() => {

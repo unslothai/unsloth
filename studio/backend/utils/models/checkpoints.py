@@ -4,6 +4,7 @@
 """Checkpoint scanning utilities for discovering training runs and checkpoints."""
 
 import json
+import re
 import structlog
 from loggers import get_logger
 from pathlib import Path
@@ -11,6 +12,22 @@ from typing import List, Optional, Tuple
 from utils.paths import outputs_root, resolve_output_dir
 
 logger = get_logger(__name__)
+
+_CHECKPOINT_STEP_RE = re.compile(r"^checkpoint-(\d+)$")
+
+
+def _checkpoint_step(checkpoint_name: str) -> Optional[int]:
+    match = _CHECKPOINT_STEP_RE.fullmatch(checkpoint_name)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
+    step = _checkpoint_step(checkpoint_path.name)
+    if step is not None:
+        return (0, -step, checkpoint_path.name)
+    return (1, 0, str(checkpoint_path))
 
 
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
@@ -37,8 +54,10 @@ def scan_checkpoints(
     Returns:
         [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
         metadata keys (optional): base_model, peft_type, lora_rank.
-        First checkpoint entry is the main adapter; its loss mirrors the last
-        (highest-step) intermediate checkpoint.
+        First checkpoint entry is the main adapter; its loss mirrors the latest
+        (highest-step) intermediate checkpoint. Numbered checkpoints are sorted
+        by numeric step descending; non-numbered checkpoint-* dirs keep the
+        previous lexicographic directory order.
     """
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
@@ -103,18 +122,25 @@ def scan_checkpoints(
             checkpoints.append((item.name, str(item), None))
 
             # Scan for intermediate checkpoints (checkpoint-N subdirs).
-            for sub in sorted(item.iterdir()):
+            valid_checkpoints = []
+            for sub in item.iterdir():
                 if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
                     continue
                 sub_config = sub / "config.json"
                 sub_adapter = sub / "adapter_config.json"
                 if sub_config.exists() or sub_adapter.exists():
-                    loss = _read_checkpoint_loss(sub)
-                    checkpoints.append((sub.name, str(sub), loss))
+                    valid_checkpoints.append(sub)
 
-            # Assign the last checkpoint's loss to the main adapter entry.
-            if len(checkpoints) > 1:
-                last_checkpoint_loss = checkpoints[-1][2]
+            intermediate_checkpoints = []
+            for sub in sorted(valid_checkpoints, key = _checkpoint_sort_key):
+                loss = _read_checkpoint_loss(sub)
+                intermediate_checkpoints.append((sub.name, str(sub), loss))
+
+            checkpoints.extend(intermediate_checkpoints)
+
+            # Assign the latest checkpoint's loss to the main adapter entry.
+            if intermediate_checkpoints:
+                last_checkpoint_loss = intermediate_checkpoints[0][2]
                 checkpoints[0] = (
                     checkpoints[0][0],
                     checkpoints[0][1],
