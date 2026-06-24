@@ -46,6 +46,7 @@ type SidebarContextProps = {
   pinned: boolean
   setPinned: (value: boolean) => void
   togglePinned: () => void
+  sidebarId: string
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -80,6 +81,7 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
+  const sidebarId = React.useId()
 
   const prevIsMobileRef = React.useRef(isMobile)
   React.useEffect(() => {
@@ -163,8 +165,9 @@ function SidebarProvider({
       pinned,
       setPinned,
       togglePinned,
+      sidebarId,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, sidebarId]
   )
 
   return (
@@ -197,17 +200,20 @@ function Sidebar({
   className,
   children,
   dir,
+  id,
   ...props
 }: React.ComponentProps<"div"> & {
   side?: "left" | "right"
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, open } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, open, sidebarId: contextSidebarId } = useSidebar()
+  const sidebarId = id ?? contextSidebarId
 
   if (collapsible === "none") {
     return (
       <div
+        id={sidebarId}
         data-slot="sidebar"
         className={cn(
           "bg-sidebar text-sidebar-foreground flex h-full w-(--sidebar-width) flex-col",
@@ -222,14 +228,16 @@ function Sidebar({
 
   if (isMobile) {
     return (
-      <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
+      <Sheet open={openMobile} onOpenChange={setOpenMobile}>
         <SheetContent
+          id={sidebarId}
           dir={dir}
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
           className="bg-sidebar text-sidebar-foreground w-2/3 max-w-[18rem] p-0 [&>button]:hidden"
           side={side}
+          {...props}
         >
           <SheetHeader className="sr-only">
             <SheetTitle>Sidebar</SheetTitle>
@@ -280,6 +288,7 @@ function Sidebar({
         )}
       />
       <div
+        id={sidebarId}
         data-slot="sidebar-container"
         data-side={side}
         className={cn(
@@ -321,9 +330,10 @@ function Sidebar({
 function SidebarTrigger({
   className,
   onClick,
+  "aria-controls": ariaControls,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar, open, openMobile, isMobile } = useSidebar()
+  const { toggleSidebar, open, openMobile, isMobile, sidebarId } = useSidebar()
 
   return (
     <Button
@@ -333,6 +343,7 @@ function SidebarTrigger({
       size="icon-sm"
       className={cn(className)}
       aria-expanded={isMobile ? openMobile : open}
+      aria-controls={ariaControls ?? sidebarId}
       onClick={(event) => {
         onClick?.(event)
         toggleSidebar()

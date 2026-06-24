@@ -864,11 +864,9 @@ export function ChatSettingsPanel({
       return;
     }
     focusOpenTriggerOnCloseRef.current = false;
-    requestAnimationFrame(() => {
-      document
-        .querySelector<HTMLElement>("[data-chat-settings-open-trigger]")
-        ?.focus();
-    });
+    document
+      .querySelector<HTMLElement>("[data-chat-settings-open-trigger]")
+      ?.focus();
   }, [open]);
 
   useEffect(() => {
