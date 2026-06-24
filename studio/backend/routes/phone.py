@@ -68,10 +68,7 @@ def _require_run_active(viewer: Tuple[str, str]) -> None:
 
 
 @router.post("/share", response_model = PhoneShareResponse)
-async def share_to_phone(
-    request: Request,
-    current_subject: str = Depends(get_current_subject),
-):
+async def share_to_phone(request: Request, current_subject: str = Depends(get_current_subject)):
     try:
         host = _phone_host()
         if not host:

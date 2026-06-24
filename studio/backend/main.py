@@ -870,9 +870,7 @@ async def serve_phone_dashboard():
         raise HTTPException(status_code = 404, detail = "Phone dashboard not available")
     # Per-response nonce so the CSP allows the page's inline <script>.
     nonce = secrets.token_urlsafe(16)
-    html = page.read_text(encoding = "utf-8").replace(
-        "<script>", f'<script nonce="{nonce}">', 1
-    )
+    html = page.read_text(encoding = "utf-8").replace("<script>", f'<script nonce="{nonce}">', 1)
     return Response(
         content = html,
         media_type = "text/html",
@@ -881,6 +879,7 @@ async def serve_phone_dashboard():
             "Cache-Control": "no-cache, no-store, must-revalidate",
         },
     )
+
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
 # error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
