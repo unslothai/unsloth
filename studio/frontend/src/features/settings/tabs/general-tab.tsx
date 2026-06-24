@@ -307,7 +307,10 @@ export function GeneralTab() {
     }
   };
 
-  const saveWebhook = async (next: { enabled?: boolean; url?: string }) => {
+  const saveWebhook = async (next: {
+    enabled?: boolean;
+    url?: string;
+  }): Promise<boolean> => {
     const payload = {
       enabled: next.enabled ?? webhook?.enabled ?? false,
       url: next.url ?? webhookUrlDraft,
@@ -318,12 +321,14 @@ export function GeneralTab() {
       const settings = await updateTrainingWebhookSettings(payload);
       setWebhook(settings);
       setWebhookUrlDraft(settings.url);
+      return true;
     } catch (error) {
       setWebhookError(
         error instanceof Error
           ? error.message
           : t("settings.general.notifications.trainingWebhookSaveError"),
       );
+      return false;
     } finally {
       setIsSavingWebhook(false);
     }
@@ -333,6 +338,10 @@ export function GeneralTab() {
     setIsTestingWebhook(true);
     setWebhookError(null);
     try {
+      // Persist an unsaved draft first so the test hits the URL on screen.
+      if (webhookUrlDraft !== (webhook?.url ?? "")) {
+        if (!(await saveWebhook({ url: webhookUrlDraft }))) return;
+      }
       await sendTrainingWebhookTest();
       toast.success(
         t("settings.general.notifications.trainingWebhookTestSuccess"),
@@ -530,9 +539,9 @@ export function GeneralTab() {
                 size="sm"
                 disabled={
                   !webhook?.enabled ||
-                  !webhook?.url ||
-                  webhookUrlDraft.trim() !== webhook.url ||
-                  isTestingWebhook
+                  !webhookUrlDraft.trim() ||
+                  isTestingWebhook ||
+                  isSavingWebhook
                 }
                 onClick={() => void testWebhook()}
               >
