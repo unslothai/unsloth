@@ -52,6 +52,9 @@ const MODELS: ModelOption[] = [
   { id: MODEL.repo_id, name: MODEL.label, description: "Text-to-image · GGUF", isGguf: true },
 ];
 
+// Keep at most this many generated images in the session gallery.
+const MAX_GALLERY = 50;
+
 const RESOLUTIONS: Array<{ label: string; w: number; h: number }> = [
   { label: "Square 1024", w: 1024, h: 1024 },
   { label: "Square 768", w: 768, h: 768 },
@@ -316,19 +319,23 @@ export function ImagesPage() {
         seed: parsedSeed,
       });
       const id = nextResultId.current++;
-      setResults((prev) => [
-        {
-          id,
-          src: `data:${res.mime};base64,${res.image_b64}`,
-          prompt: prompt.trim(),
-          width: resolution.w,
-          height: resolution.h,
-          steps,
-          guidance,
-          seed: res.seed,
-        },
-        ...prev,
-      ]);
+      setResults((prev) =>
+        // Cap the gallery so the base64 PNGs (held in module scope across tab
+        // switches) can't grow without bound over a long session.
+        [
+          {
+            id,
+            src: `data:${res.mime};base64,${res.image_b64}`,
+            prompt: prompt.trim(),
+            width: resolution.w,
+            height: resolution.h,
+            steps,
+            guidance,
+            seed: res.seed,
+          },
+          ...prev,
+        ].slice(0, MAX_GALLERY),
+      );
       setSelectedId(id);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Image generation failed");

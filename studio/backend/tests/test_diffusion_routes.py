@@ -33,7 +33,6 @@ class _FakeBackend:
         self.loaded = True
         return {
             "loaded": True,
-            "loading": False,
             "repo_id": model_path,
             "family": "z-image",
             "base_repo": kwargs.get("base_repo") or "base/repo",
@@ -67,7 +66,6 @@ class _FakeBackend:
 def _unloaded_status():
     return {
         "loaded": False,
-        "loading": False,
         "repo_id": None,
         "family": None,
         "base_repo": None,

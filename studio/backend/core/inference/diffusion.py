@@ -352,11 +352,9 @@ class DiffusionBackend:
 
     def status(self) -> dict[str, Any]:
         state = self._state
-        loading = self._loading is not None and (self._loading.error is None)
         if state is None:
             return {
                 "loaded": False,
-                "loading": loading,
                 "repo_id": None,
                 "family": None,
                 "base_repo": None,
@@ -366,7 +364,6 @@ class DiffusionBackend:
             }
         return {
             "loaded": True,
-            "loading": loading,
             "repo_id": state.repo_id,
             "family": state.family.name,
             "base_repo": state.base_repo,

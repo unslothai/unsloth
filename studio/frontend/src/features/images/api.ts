@@ -6,7 +6,6 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export interface DiffusionStatus {
   loaded: boolean;
-  loading: boolean;
   repo_id: string | null;
   family: string | null;
   base_repo: string | null;

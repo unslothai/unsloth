@@ -1748,7 +1748,6 @@ class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
-    loading: bool = Field(False, description = "Whether a load is currently in progress")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
     family: Optional[str] = Field(None, description = "Detected diffusion family")
     base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
