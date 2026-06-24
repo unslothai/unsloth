@@ -401,8 +401,9 @@ def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unver
         raise UnpinnedNodeRefused(
             f"refusing to install Node v{version}: {asset} is not in the pinned manifest "
             f"({PINS_FILENAME}); its only checksum would arrive over the same channel as the "
-            f"archive. Install the pinned default version, add a pin for v{version}, or set "
-            f"{ALLOW_UNVERIFIED_ENV}=1 to trust the upstream SHASUMS256.txt at your own risk."
+            f"archive. Use the pinned default version (unset UNSLOTH_NODE_VERSION), add a pin "
+            f"for {asset}, or set {ALLOW_UNVERIFIED_ENV}=1 to trust the upstream SHASUMS256.txt "
+            f"at your own risk."
         )
 
     log(
@@ -410,7 +411,9 @@ def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unver
         f"{ALLOW_UNVERIFIED_ENV} is set. This checksum shares the archive's origin and is "
         f"not an independent integrity guarantee."
     )
-    shasums = download_bytes(node_shasums_url(version), timeout = 30).decode("utf-8")
+    # A non-UTF8 body just yields no hex match below (-> clean PrebuiltFallback),
+    # never an uncaught UnicodeDecodeError.
+    shasums = download_bytes(node_shasums_url(version), timeout = 30).decode("utf-8", "replace")
     expected = expected_sha256_for(shasums, asset)
     if not expected:
         raise PrebuiltFallback(f"no sha256 for {asset} in SHASUMS256.txt (v{version})")

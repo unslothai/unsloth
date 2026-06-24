@@ -640,7 +640,7 @@ def test_install_prebuilt_unpinned_refusal_does_not_keep_existing(
         M.install_prebuilt(install_dir, channel = channel, min_major = 24, force = False)
 
 
-def test_unpinned_refusal_maps_to_fallback_exit_code(tmp_path: Path, monkeypatch):
+def test_unpinned_refusal_maps_to_fallback_exit_code(tmp_path: Path, monkeypatch, capsys):
     # main() must surface the refusal as EXIT_FALLBACK (setup treats it as a failed
     # install with guidance), not as a success masked by the keep-existing path.
     install_dir = tmp_path / "node"
@@ -653,6 +653,57 @@ def test_unpinned_refusal_maps_to_fallback_exit_code(tmp_path: Path, monkeypatch
     monkeypatch.delenv(M.ALLOW_UNVERIFIED_ENV, raising = False)
     rc = M.main(["--install-dir", str(install_dir), "--node-version", "latest"])
     assert rc == M.EXIT_FALLBACK
+    # Guard the load-bearing main() catch order: the UnpinnedNodeRefused handler must
+    # be matched before the generic PrebuiltFallback one, so the actionable refusal
+    # text is logged (not the generic "prebuilt unavailable"). Swapping the two
+    # except blocks would still return EXIT_FALLBACK, so assert the message too.
+    out = capsys.readouterr().out
+    assert "refusing to install Node" in out
+    assert "prebuilt unavailable" not in out
+
+
+def test_resolve_expected_sha256_rejects_malformed_pins():
+    # pinned_sha256 must treat a structurally-broken manifest as "not pinned" (None),
+    # never return a bogus digest, and pinned_default_version must reject a bad default.
+    asset = "node-v24.17.0-linux-x64.tar.gz"
+    assert M.pinned_sha256({"versions": "nope"}, "24.17.0", asset) is None
+    assert M.pinned_sha256({"versions": {"24.17.0": "nope"}}, "24.17.0", asset) is None
+    assert M.pinned_sha256({"versions": {"24.17.0": {asset: "x" * 63}}}, "24.17.0", asset) is None
+    assert M.pinned_sha256({"versions": {"24.17.0": {asset: "z" * 64}}}, "24.17.0", asset) is None
+    # an uppercase but otherwise valid digest is normalized to lowercase
+    up = "A" * 64
+    assert M.pinned_sha256({"versions": {"24.17.0": {asset: up}}}, "24.17.0", asset) == up.lower()
+    for bad in [{}, {"default_version": ""}, {"default_version": "not-a-version"}]:
+        with pytest.raises(PrebuiltFallback):
+            M.pinned_default_version(bad)
+
+
+def test_install_prebuilt_optin_takes_remote_shasums_path(tmp_path: Path, monkeypatch):
+    # With UNSLOTH_NODE_ALLOW_UNVERIFIED=1 set, an unpinned version drives the legacy
+    # remote-SHASUMS path end to end through install_prebuilt: it fetches SHASUMS256.txt
+    # and proceeds to the verified archive download (no UnpinnedNodeRefused).
+    install_dir = tmp_path / "node"  # nothing on disk -> errors re-raise, not keep-existing
+    asset = "node-v26.3.1-linux-x64.tar.gz"
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)  # latest = 26.3.1 (unpinned)
+    monkeypatch.setenv(M.ALLOW_UNVERIFIED_ENV, "1")
+    shasums_fetched = {"n": 0}
+
+    def fake_shasums(url, **k):
+        shasums_fetched["n"] += 1
+        return f"{'d' * 64}  {asset}\n".encode()
+
+    class _ReachedDownload(Exception):
+        pass
+
+    def reached(*a, **k):
+        raise _ReachedDownload
+
+    monkeypatch.setattr(M, "download_bytes", fake_shasums)
+    monkeypatch.setattr(M, "download_file_verified", reached)
+    with pytest.raises(_ReachedDownload):
+        M.install_prebuilt(install_dir, channel = "latest", min_major = 24, force = False)
+    assert shasums_fetched["n"] == 1  # the opt-in path fetched the remote SHASUMS
 
 
 def test_pins_manifest_ships_next_to_installer():
