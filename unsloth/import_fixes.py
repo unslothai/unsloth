@@ -2349,13 +2349,10 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
-        # A shared library failed to load while importing vLLM — a CUDA-major
-        # mismatch can surface through any linked .so (libcudart, libcublas,
-        # libnccl, libcuda, ...), and force-loading an extension directly raises
-        # the bare loader error ("libcudart.so.12: cannot open shared object
-        # file") without vLLM's own "vllm._C" wrapper. Every caller feeds this
-        # only vLLM-origin import errors, so any such failure here is a broken
-        # vLLM binary.
+        # Force-loading an extension raises the bare loader error (e.g.
+        # "libcudart.so.12: cannot open shared object file") without vLLM's
+        # "vllm._C" wrapper, and a CUDA mismatch can surface through any linked
+        # .so. Match generically; every caller feeds this only vLLM imports.
         if "cannot open shared object file" in message:
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
@@ -2549,11 +2546,9 @@ def _clear_vllm_modules():
 
 
 # vLLM's main compiled extensions, eager-loaded when it initializes its kernels
-# — the lazy step where an ABI break (e.g. a CUDA-major mismatch) first
-# surfaces. The exact set varies by platform and vLLM version, so this is the
-# common subset, not exhaustive; a CUDA/ROCm major mismatch breaks all of them,
-# so probing _C and its siblings reliably trips it. Names a build lacks raise
-# ModuleNotFoundError and are skipped (loop below).
+# (where an ABI break first surfaces). Not exhaustive: the set varies by
+# platform and vLLM version, but a CUDA/ROCm major mismatch breaks all of them,
+# so probing _C and its siblings reliably trips it.
 _VLLM_COMPILED_EXTENSIONS = (
     "vllm._C",
     "vllm._C_stable_libtorch",
@@ -2584,9 +2579,8 @@ def disable_broken_vllm(error = None):
             # Modern vLLM loads its compiled extensions lazily, so a bare
             # `import vllm` succeeds even when they're ABI-broken (e.g. built
             # for another CUDA major). Force-load each so the .so failure
-            # surfaces here: a build that lacks one raises ModuleNotFoundError
-            # (skipped), while a real ABI break raises ImportError/OSError and
-            # is classified by _is_broken_vllm_error below.
+            # surfaces here; a build that lacks one raises ModuleNotFoundError
+            # (skipped below).
             for _ext in _VLLM_COMPILED_EXTENSIONS:
                 try:
                     importlib.import_module(_ext)
