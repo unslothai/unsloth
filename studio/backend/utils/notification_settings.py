@@ -37,7 +37,6 @@ def _validate_url(value: Any) -> str:
 def get_training_webhook() -> dict[str, Any]:
     try:
         from storage.studio_db import get_app_setting
-
         stored = get_app_setting(TRAINING_WEBHOOK_SETTING_KEY, None)
     except Exception:
         stored = None
@@ -55,11 +54,7 @@ def get_training_webhook() -> dict[str, Any]:
 def set_training_webhook(enabled: Any, url: Any) -> dict[str, Any]:
     enabled_bool = _coerce_bool(enabled)
     # Validate only when enabling; disabling must succeed even with a partial draft.
-    url_text = (
-        _validate_url(url)
-        if enabled_bool
-        else (url.strip() if isinstance(url, str) else "")
-    )
+    url_text = _validate_url(url) if enabled_bool else (url.strip() if isinstance(url, str) else "")
     if enabled_bool and not url_text:
         raise ValueError("A webhook URL is required to enable training notifications.")
     config = {"enabled": enabled_bool, "url": url_text}

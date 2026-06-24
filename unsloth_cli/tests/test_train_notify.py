@@ -34,9 +34,7 @@ class _Resp:
 
 def test_no_webhook_is_noop(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        notif.httpx, "post", lambda *a, **k: calls.append(1) or _Resp()
-    )
+    monkeypatch.setattr(notif.httpx, "post", lambda *a, **k: calls.append(1) or _Resp())
     train_mod._send_cli_notification(None, "m", "completed")
     train_mod._send_cli_notification("", "m", "completed")
     assert calls == []
@@ -45,7 +43,11 @@ def test_no_webhook_is_noop(monkeypatch):
 def test_sends_completed_event_with_autodetected_slack_shape(monkeypatch):
     sent = {}
 
-    def fake_post(url, json=None, timeout=None):
+    def fake_post(
+        url,
+        json = None,
+        timeout = None,
+    ):
         sent["url"] = url
         sent["json"] = json
         return _Resp()
@@ -55,9 +57,9 @@ def test_sends_completed_event_with_autodetected_slack_shape(monkeypatch):
         "https://hooks.slack.com/services/x",
         "unsloth/m",
         "completed",
-        total_steps=60,
-        final_loss=0.4,
-        duration_s=120.0,
+        total_steps = 60,
+        final_loss = 0.4,
+        duration_s = 120.0,
     )
     assert sent["url"] == "https://hooks.slack.com/services/x"
     assert "text" in sent["json"]  # slack shape, auto-detected from the URL
@@ -69,11 +71,11 @@ def test_sends_error_event(monkeypatch):
     monkeypatch.setattr(
         notif.httpx,
         "post",
-        lambda url, json=None, timeout=None: sent.update(json=json) or _Resp(),
+        lambda url, json = None, timeout = None: sent.update(json = json) or _Resp(),
     )
     # A setup failure (no progress object) still notifies via an explicit error.
     train_mod._send_cli_notification(
-        "https://webhook.site/x", "m", "error", error="Model preparation failed"
+        "https://webhook.site/x", "m", "error", error = "Model preparation failed"
     )
     assert sent["json"]["status"] == "error"
     assert "Model preparation failed" in sent["json"]["message"]

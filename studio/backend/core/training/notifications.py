@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 _WEBHOOK_TIMEOUT_SEC = 5.0
 _WEBHOOK_ATTEMPTS = 2
-_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="training-notify")
+_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "training-notify")
 
 # Local filesystem paths -> basename; HF repo ids like "unsloth/llama-3" stay.
 _LOCAL_PATH_RE = re.compile(r"^(/|~[\\/]|\.{1,2}[\\/]|[A-Za-z]:[\\/]|\\\\)")
@@ -27,7 +27,7 @@ _SLACK_HOST_RE = re.compile(r"(^|\.)slack\.com$", re.IGNORECASE)
 _DISCORD_HOST_RE = re.compile(r"(^|\.)(discord\.com|discordapp\.com)$", re.IGNORECASE)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class TrainingTerminalEvent:
     job_id: str
     status: str  # "completed" | "error" | "test"
@@ -136,7 +136,7 @@ class WebhookSink:
         last_exc: Exception | None = None
         for _ in range(_WEBHOOK_ATTEMPTS):
             try:
-                response = httpx.post(self.url, json=body, timeout=_WEBHOOK_TIMEOUT_SEC)
+                response = httpx.post(self.url, json = body, timeout = _WEBHOOK_TIMEOUT_SEC)
                 response.raise_for_status()
                 return
             except Exception as exc:  # noqa: BLE001
@@ -150,9 +150,7 @@ class TrainingNotifier:
         self._sinks = list(sinks)
 
     def emit(self, event: TrainingTerminalEvent) -> list[Future]:
-        return [
-            _EXECUTOR.submit(self._safe_deliver, sink, event) for sink in self._sinks
-        ]
+        return [_EXECUTOR.submit(self._safe_deliver, sink, event) for sink in self._sinks]
 
     @staticmethod
     def _safe_deliver(sink: WebhookSink, event: TrainingTerminalEvent) -> None:
@@ -170,12 +168,11 @@ class TrainingNotifier:
 def get_training_notifier() -> TrainingNotifier:
     try:
         from utils.notification_settings import get_training_webhook
-
         config = get_training_webhook()
     except Exception:
         config = None
 
     sinks: list[WebhookSink] = []
     if config and config.get("enabled") and config.get("url"):
-        sinks.append(WebhookSink(url=config["url"]))
+        sinks.append(WebhookSink(url = config["url"]))
     return TrainingNotifier(sinks)

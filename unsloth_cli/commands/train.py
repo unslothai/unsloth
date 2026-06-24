@@ -32,7 +32,6 @@ def _send_cli_notification(
             TrainingTerminalEvent,
             WebhookSink,
         )
-
         event = TrainingTerminalEvent(
             job_id = "cli",
             status = status,

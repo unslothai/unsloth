@@ -1023,9 +1023,7 @@ class TrainingBackend:
         try:
             from .notifications import TrainingTerminalEvent, get_training_notifier
 
-            final_loss = (
-                self.loss_history[-1] if self.loss_history else self._progress.loss
-            )
+            final_loss = self.loss_history[-1] if self.loss_history else self._progress.loss
             error = None
             if status == "error":
                 error = db_action_kwargs.get("error_message") or self._progress.error
