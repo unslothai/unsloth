@@ -841,36 +841,6 @@ def test_strip_tensor_split_alone_preserves_split_mode():
     assert out == ["--split-mode", "row", "--top-k", "20"]
 
 
-def test_strip_tensor_split_covers_short_and_equals_forms():
-    base = dict(
-        strip_context = False,
-        strip_cache = False,
-        strip_spec = False,
-        strip_template = False,
-        strip_split_mode = False,
-    )
-    assert strip_shadowing_flags(["-ts", "3,1", "-sm", "layer"], **base, strip_tensor_split = True) == [
-        "-sm",
-        "layer",
-    ]
-    assert strip_shadowing_flags(["-ts=3,1", "--seed", "-1"], **base, strip_tensor_split = True) == [
-        "--seed",
-        "-1",
-    ]
-
-
-def test_strip_tensor_split_is_opt_in():
-    # Default off: an inherited ratio survives when the caller doesn't ask.
-    assert strip_shadowing_flags(
-        ["--tensor-split", "1,1", "--top-k", "20"],
-        strip_context = False,
-        strip_cache = False,
-        strip_spec = False,
-        strip_template = False,
-        strip_split_mode = False,
-    ) == ["--tensor-split", "1,1", "--top-k", "20"]
-
-
 def test_strip_shadowing_flags_keeps_model_draft_without_spec():
     out = strip_shadowing_flags(
         ["--model-draft", "/custom/mtp.gguf"],

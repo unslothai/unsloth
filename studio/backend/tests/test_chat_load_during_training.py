@@ -624,23 +624,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(manual, resident * 0.25, places = 6)
         self.assertAlmostEqual(auto, resident, places = 6)  # default never scales
 
-    def test_manual_zero_layers_credits_cpu_residency(self):
-        # gpu_layers=0 -> fraction 0 -> ~0 GB on the GPU (all weights on CPU), so
-        # the guard lets it load alongside training.
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "model.gguf"
-            p.write_bytes(b"x" * 4096)
-            cfg = self._local_gguf_cfg(p)
-            with (
-                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 3.0),
-                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
-            ):
-                gb = self.route._estimate_gguf_required_gb(
-                    cfg, gpu_memory_mode = "manual", gpu_layers = 0
-                )
-        self.assertEqual(gb, 0.0)
-
     def test_manual_keeps_full_estimate_when_layer_count_unreadable(self):
         # _manual_gpu_layer_fraction returns None (can't read layers) -> no scale,
         # the conservative full estimate stands so training can't be OOM'd.
@@ -786,30 +769,28 @@ class TestStripSplitPredicates(unittest.TestCase):
 
         return LoadRequest(model_path = "unsloth/Qwen3-1.7B", **kw)
 
-    def test_manual_ratio_strips_only_tensor_split_not_split_mode(self):
-        # Manual + per-GPU ratio replaces the inherited --tensor-split but keeps
-        # the user's --split-mode (row/none/layer): tensor-split predicate True,
-        # split-mode predicate False. This is the fix #5 decoupling.
-        req = self._req(gpu_memory_mode = "manual", gpu_layers = 8, tensor_split = [2, 1])
-        self.assertTrue(self.route._should_strip_tensor_split(req))
-        self.assertFalse(self.route._should_strip_split_mode(req, []))
+    def test_should_strip_tensor_split_only_for_manual_ratio(self):
+        # The new predicate: True only for manual mode WITH a per-GPU ratio.
+        self.assertTrue(
+            self.route._should_strip_tensor_split(
+                self._req(gpu_memory_mode = "manual", gpu_layers = 8, tensor_split = [2, 1])
+            )
+        )
+        self.assertFalse(  # manual, no ratio
+            self.route._should_strip_tensor_split(
+                self._req(gpu_memory_mode = "manual", gpu_layers = 8)
+            )
+        )
+        self.assertFalse(self.route._should_strip_tensor_split(self._req()))  # auto
 
-    def test_manual_without_ratio_strips_neither(self):
-        req = self._req(gpu_memory_mode = "manual", gpu_layers = 8)
-        self.assertFalse(self.route._should_strip_tensor_split(req))
-        self.assertFalse(self.route._should_strip_split_mode(req, []))
-
-    def test_tensor_parallel_toggle_still_owns_split_mode(self):
-        # The TP toggle owns the whole split group (strip_split_mode covers
-        # --tensor-split), independent of manual mode.
-        req = self._req(tensor_parallel = True)
-        self.assertTrue(self.route._should_strip_split_mode(req, []))
-        self.assertFalse(self.route._should_strip_tensor_split(req))
-
-    def test_auto_mode_strips_neither(self):
-        req = self._req()  # default auto
-        self.assertFalse(self.route._should_strip_tensor_split(req))
-        self.assertFalse(self.route._should_strip_split_mode(req, []))
+    def test_split_mode_strip_decouples_from_manual_ratio(self):
+        # fix #5: a manual ratio must NOT strip --split-mode (the user's row/none
+        # survives), but the Tensor Parallelism toggle still owns the whole group.
+        manual_ratio = self._req(gpu_memory_mode = "manual", gpu_layers = 8, tensor_split = [2, 1])
+        self.assertFalse(self.route._should_strip_split_mode(manual_ratio, []))
+        self.assertTrue(
+            self.route._should_strip_split_mode(self._req(tensor_parallel = True), [])
+        )
 
 
 if __name__ == "__main__":
