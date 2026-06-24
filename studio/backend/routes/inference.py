@@ -2122,15 +2122,20 @@ def _request_matches_loaded_settings(
     ):
         return False
     # The diffusion runner is mode-agnostic (it always reports "auto" and ignores
-    # the layer/MoE/split knobs), so a standing fit/manual preference in the
-    # request must not force a needless reload -- only the GPU pick matters.
+    # the layer/MoE/split knobs), so a standing manual preference in the request
+    # must not force a needless reload -- only the GPU pick matters.
     if not llama_backend.is_diffusion:
         if request.gpu_memory_mode != llama_backend.gpu_memory_mode:
             return False
+        # Manual: a layer-count change always reloads; MoE/split only matter with
+        # an explicit offload (gpu_layers >= 0), so a leftover value under Auto
+        # must not force one. Mirrors LlamaCppBackend._already_in_target_state.
         if request.gpu_memory_mode == "manual" and (
             request.gpu_layers != llama_backend.gpu_layers
-            or request.n_cpu_moe != llama_backend.n_cpu_moe
-            or (request.tensor_split or None) != (llama_backend.tensor_split or None)
+            or (request.gpu_layers >= 0 and (
+                request.n_cpu_moe != llama_backend.n_cpu_moe
+                or (request.tensor_split or None) != (llama_backend.tensor_split or None)
+            ))
         ):
             return False
     _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
@@ -2770,10 +2775,10 @@ async def load_model(
                         strip_split_mode = _should_strip_split_mode(
                             request, llama_backend.extra_args
                         ),
-                        # fit/manual emit their own --fit/--gpu-layers, so an
-                        # inherited offload flag must not last-wins-override them.
-                        # auto leaves a user's inherited -ngl alone (offload_overridden).
-                        strip_offload = request.gpu_memory_mode in ("fit", "manual"),
+                        # manual emits its own --fit/--gpu-layers, so an inherited
+                        # offload flag must not last-wins-override it. auto leaves a
+                        # user's inherited -ngl alone (offload_overridden).
+                        strip_offload = request.gpu_memory_mode == "manual",
                     )
                     try:
                         extra_llama_args = validate_extra_args(stripped)

@@ -1270,6 +1270,7 @@ async function autoLoadSmallestModel(): Promise<{
               max_seq_length: resolveFitMaxSeqLength(
                 /* isGguf */ true,
                 rt.gpuMemoryMode,
+                rt.gpuLayers,
                 rt.customContextLength,
                 0,
               ),
@@ -1466,6 +1467,7 @@ async function autoLoadSmallestModel(): Promise<{
         max_seq_length: resolveFitMaxSeqLength(
           /* isGguf */ true,
           rt.gpuMemoryMode,
+          rt.gpuLayers,
           rt.customContextLength,
           0,
         ),

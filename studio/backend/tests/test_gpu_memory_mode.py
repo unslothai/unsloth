@@ -3,17 +3,20 @@
 
 """Backend contract for the GPU Memory mode dropdown.
 
-The dropdown threads a single ``gpu_memory_mode`` ("auto" | "fit") from the
-chat UI through the load request. "fit" hands all memory management to
-llama.cpp's ``--fit on``: no CUDA/HIP device masking, no context auto-reduce,
-no gpu-layer or tensor-split planning. These tests pin:
+The dropdown threads a single ``gpu_memory_mode`` ("auto" | "manual") from the
+chat UI through the load request. "manual" lets the user own the offload: with
+``gpu_layers < 0`` (Auto, the default) it hands all memory management to
+llama.cpp's ``--fit on`` (no CUDA/HIP device masking, no context auto-reduce, no
+gpu-layer or tensor-split planning); with ``gpu_layers >= 0`` it pins the layers
+and MoE offload itself (``--fit off``). These tests pin:
 
-  * the pydantic request/response/status contract (snake_case key,
-    default "auto", invalid values rejected),
+  * the pydantic request/response/status contract (snake_case key, default
+    "auto", unknown values rejected),
   * the backend ``gpu_memory_mode`` property and its reset on unload,
   * the ``_already_in_target_state`` reload-detection branch, and
-  * that the fit branch in ``load_model`` empties the probed GPU set and
-    drops tensor parallelism so the selection below no-ops.
+  * that the manual + Auto-layers branch in ``load_model`` empties the probed
+    GPU set and drops tensor parallelism so the selection below no-ops, while
+    the explicit-offload branch emits ``--gpu-layers`` / ``--fit off``.
 """
 
 from __future__ import annotations
@@ -77,15 +80,10 @@ def test_load_request_defaults_gpu_memory_mode_auto():
     assert LoadRequest(model_path = "owner/repo").gpu_memory_mode == "auto"
 
 
-def test_load_request_accepts_fit():
-    req = LoadRequest(model_path = "owner/repo", gpu_memory_mode = "fit")
-    assert req.gpu_memory_mode == "fit"
-
-
 def test_load_request_round_trips_json_key():
-    req = LoadRequest.model_validate({"model_path": "owner/repo", "gpu_memory_mode": "fit"})
-    assert req.gpu_memory_mode == "fit"
-    assert req.model_dump()["gpu_memory_mode"] == "fit"
+    req = LoadRequest.model_validate({"model_path": "owner/repo", "gpu_memory_mode": "manual"})
+    assert req.gpu_memory_mode == "manual"
+    assert req.model_dump()["gpu_memory_mode"] == "manual"
 
 
 def test_load_request_rejects_unknown_mode():
@@ -102,18 +100,18 @@ def test_response_models_emit_gpu_memory_mode(model_cls):
             display_name = "repo",
             inference = {},
         )
-        fit = model_cls(
+        manual = model_cls(
             status = "loaded",
             model = "owner/repo",
             display_name = "repo",
             inference = {},
-            gpu_memory_mode = "fit",
+            gpu_memory_mode = "manual",
         )
     else:
         default = model_cls()
-        fit = model_cls(gpu_memory_mode = "fit")
+        manual = model_cls(gpu_memory_mode = "manual")
     assert default.model_dump()["gpu_memory_mode"] == "auto"
-    assert fit.model_dump()["gpu_memory_mode"] == "fit"
+    assert manual.model_dump()["gpu_memory_mode"] == "manual"
 
 
 # ── Backend property + reset ─────────────────────────────────────────
@@ -141,14 +139,14 @@ def test_gpu_memory_mode_property_defaults_auto():
 
 def test_gpu_memory_mode_property_reflects_field():
     backend = LlamaCppBackend()
-    backend._gpu_memory_mode = "fit"
-    assert backend.gpu_memory_mode == "fit"
+    backend._gpu_memory_mode = "manual"
+    assert backend.gpu_memory_mode == "manual"
 
 
 def test_unload_resets_gpu_memory_mode():
     backend = LlamaCppBackend()
     backend._process = _FakeProcess()
-    backend._gpu_memory_mode = "fit"
+    backend._gpu_memory_mode = "manual"
     backend.unload_model()
     assert backend.gpu_memory_mode == "auto"
 
@@ -188,73 +186,71 @@ def _target_state(backend: LlamaCppBackend, gpu_memory_mode: str) -> bool:
     )
 
 
-@pytest.mark.parametrize("mode", ["auto", "fit"])
+@pytest.mark.parametrize("mode", ["auto", "manual"])
 def test_already_in_target_state_matches_same_mode(mode):
     assert _target_state(_loaded_backend(mode), mode) is True
 
 
-@pytest.mark.parametrize("loaded,requested", [("auto", "fit"), ("fit", "auto")])
+@pytest.mark.parametrize("loaded,requested", [("auto", "manual"), ("manual", "auto")])
 def test_already_in_target_state_reloads_on_mode_change(loaded, requested):
-    # Flipping the dropdown either direction must force a reload so the
-    # command is rebuilt with/without --fit on (and the GPU masking).
+    # Flipping the dropdown either direction must force a reload so the command
+    # is rebuilt with/without the Unsloth GPU masking.
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
 def test_already_in_target_state_ignores_mode_for_diffusion():
     # The diffusion runner is mode-agnostic (always reports "auto"), so a standing
-    # fit/manual preference in the request must not force a needless reload of an
+    # manual preference in the request must not force a needless reload of an
     # already-loaded diffusion model.
     backend = _loaded_backend("auto")
     backend._is_diffusion = True
-    assert _target_state(backend, "fit") is True
+    assert _target_state(backend, "manual") is True
 
 
-# ── load_model fit branch bypasses Unsloth GPU management ────────────
+# ── load_model: manual + Auto layers bypasses Unsloth GPU management ──
 
 
 def _load_model_source() -> str:
     return inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
 
 
-def test_fit_mode_empties_gpus_and_drops_tensor_parallel():
+def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
+    # Emptying the probed set makes the selection / TP planning below no-op, so
+    # gpu_indices stays None and use_fit True (--fit on).
     src = _load_model_source()
-    gate = src.find('if gpu_memory_mode == "fit":')
-    assert gate != -1, "load_model must branch on gpu_memory_mode == 'fit'"
-    # Emptying the probed set makes the selection / TP planning below no-op:
-    # gpu_indices stays None (no masking), use_fit True (--fit on), and
-    # tp_tensor_split None (no --tensor-split).
-    block = src[gate : gate + 800]
-    assert "gpus = []" in block, "fit branch must empty the probed GPU set"
-    assert "tensor_parallel = False" in block, "fit branch must drop tensor parallelism"
+    gate = src.find('if gpu_memory_mode == "manual" and gpu_layers < 0:')
+    assert gate != -1, "load_model must branch on manual + Auto layers (gpu_layers < 0)"
+    block = src[gate : gate + 1400]
+    assert "gpus = []" in block, "Auto-layers branch must empty the probed GPU set"
+    assert "tensor_parallel = False" in block, "Auto-layers branch must drop tensor parallelism"
     # --fit aborts under --split-mode tensor, so a raw-extras split-mode is stripped.
     assert "strip_split_mode_only(extra_args)" in block
-    # Auto (0) lets --fit size context; an explicit context is honored so --fit
-    # optimizes gpu-layers around it.
     assert "requested_ctx if requested_ctx > 0 else 0" in block
-    # The fit branch sits before GPU selection assigns gpu_indices.
+    # The branch sits before GPU selection assigns gpu_indices; --fit on is its emission.
     assert gate < src.find("gpu_indices, use_fit = None, True")
-    # --fit on is the use_fit emission the fit branch relies on.
     assert 'cmd.extend(["--fit", "on"])' in src
 
 
-def test_fit_mode_never_sends_ctx_size_zero():
+def test_auto_layers_never_sends_ctx_size_zero():
     # Sending "-c 0" sets fit_params_min_ctx = UINT32_MAX in llama.cpp, pinning
     # the full native context and disabling --fit's reduction. So the base cmd
-    # must never carry -c, "-c 0" is emitted only outside fit mode, and a
-    # positive context is passed through (which --fit optimizes layers around).
+    # must never carry -c, "-c 0" is emitted only outside the Auto-layers (--fit)
+    # case, and a positive context is passed through (which --fit optimizes
+    # layers around).
     src = _load_model_source()
     base_start = src.find("cmd = [")
     base_end = src.find("\n                ]", base_start)
     base_block = src[base_start:base_end]
     assert '"-c"' not in base_block, "-c must be conditional, not in the base cmd list"
     assert 'cmd.extend(["-c", str(effective_ctx)])' in src, "positive ctx must pass -c"
+    assert 'auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0' in src
     zero = src.find('cmd.extend(["-c", "0"])')
-    assert zero != -1, '"-c 0" emission must exist for non-fit mode'
-    guard = src.rfind('elif gpu_memory_mode != "fit":', 0, zero)
-    assert guard != -1 and zero - guard < 120, '"-c 0" must sit under non-fit guard'
+    assert zero != -1, '"-c 0" emission must exist outside the Auto-layers case'
+    guard = src.rfind("elif not auto_fit:", 0, zero)
+    assert guard != -1 and zero - guard < 120, '"-c 0" must sit under the not-auto_fit guard'
 
 
-# ── Manual mode (--gpu-layers + --fit off + --n-cpu-moe) ─────────────
+# ── Manual offload (--gpu-layers + --fit off + --n-cpu-moe) ───────────
 
 
 def test_load_request_accepts_manual():
@@ -384,34 +380,49 @@ def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_or_split_change():
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1]) is True
 
 
-def test_manual_emits_gpu_layers_fit_off_and_n_cpu_moe():
+def test_auto_layers_reload_tracks_only_gpu_layers():
+    # Under Auto (gpu_layers < 0) the MoE/split knobs don't apply, so a leftover
+    # value in the request must not force a reload -- only a change in gpu_layers
+    # (Auto -> a pinned count) does.
+    backend = _loaded_backend("manual")
+    backend._gpu_layers = -1
+    backend._n_cpu_moe = 0
+    backend._tensor_split = None
+    # Same Auto, leftover MoE/split in the request -> still no reload.
+    assert _target_state_manual(backend, gpu_layers = -1, n_cpu_moe = 8, tensor_split = [2, 1]) is True
+    # Auto -> explicit offload reloads.
+    assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0) is False
+
+
+def test_manual_offload_emits_gpu_layers_fit_off_and_n_cpu_moe():
     src = _load_model_source()
     gate = src.find('elif gpu_memory_mode == "manual":')
-    assert gate != -1, "load_model must branch on manual mode"
+    assert gate != -1, "load_model must have an explicit-offload manual branch"
     block = src[gate : gate + 700]
-    # Manual empties the probed set (skips the planner) but no longer forces
-    # tensor parallelism off -- the toggle is honored (see test below).
+    # Empties the probed set (skips the planner) but keeps the user's TP choice
+    # (only the Auto-layers branch above drops TP).
     assert "gpus = []" in block
     assert "tensor_parallel = False" not in block
-    # The cmd emits an explicit layer count with fit disabled.
+    # The cmd emits the layer count with fit disabled, gated on gpu_layers >= 0.
+    assert 'if gpu_memory_mode == "manual" and gpu_layers >= 0:' in src
     assert 'cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])' in src
-    # MoE offload uses --n-cpu-moe via _resolve_cpu_moe_flag (tested behaviorally
-    # below); the cmd only emits it when the helper returns a value.
+    # MoE offload uses --n-cpu-moe via _resolve_cpu_moe_flag (tested behaviorally below).
     assert "_resolve_cpu_moe_flag(" in src
     assert 'cmd.extend(["--n-cpu-moe", str(moe_flag)])' in src
-    # Manual forces use_fit False so --fit-ctx is never added under --fit off.
+    # The offload path forces use_fit False so --fit-ctx is never added under --fit off.
     emit = src.find('cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])')
     assert "use_fit = False" in src[src.rfind("\n", 0, emit) - 200 : emit + 80]
 
 
-def test_manual_emits_tensor_split():
-    # Manual emits --tensor-split from the per-GPU shares, only when provided and
-    # only with >1 GPU in use (a stale ratio on a narrowed picker must not emit).
+def test_manual_offload_emits_tensor_split():
+    # The offload path emits --tensor-split from the per-GPU shares, only when
+    # provided and only with >1 GPU in use (a stale ratio on a narrowed picker
+    # must not emit).
     src = _load_model_source()
     assert "if tensor_split and self._effective_gpu_count(gpu_indices) > 1:" in src
     assert '"--tensor-split"' in src
-    # Joined as a comma list (e.g. "2,1") within the manual branch.
-    gate = src.find('elif gpu_memory_mode == "manual":')
+    # Joined as a comma list (e.g. "2,1") within the explicit-offload cmd branch.
+    gate = src.find('if gpu_memory_mode == "manual" and gpu_layers >= 0:')
     nxt = src.find("elif use_fit:", gate)
     assert '","' in src[gate:nxt] and "tensor_split" in src[gate:nxt]
 
@@ -430,7 +441,7 @@ def test_resolve_cpu_moe_flag():
 
 
 def test_manual_allows_tensor_parallel_via_split_mode():
-    # Manual keeps the user's TP choice but skips the memory-based planner
+    # Manual offload keeps the user's TP choice but skips the memory-based planner
     # (plan_tp excludes manual, so its empty gpu set can't downgrade TP). The
     # --split-mode tensor emission gates on tensor_parallel alone, so manual
     # reaches it -- with tp_tensor_split None it's an even split (no
@@ -534,7 +545,7 @@ def test_gpu_picker_filters_probe_and_masks():
     # Auto selection only considers the picked devices.
     assert "if gpu_ids:" in src
     assert "g for g in gpus if g[0] in _picked" in src
-    # fit/manual (gpu_indices None) get pinned to the picked set.
+    # Auto-layers / manual (gpu_indices None) get pinned to the picked set.
     assert "if gpu_ids and gpu_indices is None:" in src
     assert "gpu_indices = sorted(gpu_ids)" in src
     # Picked indices follow PCI-bus order so the UI index == llama.cpp's.

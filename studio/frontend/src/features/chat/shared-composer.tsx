@@ -943,11 +943,12 @@ export function SharedComposer({
           return "ready";
         }
         // Size validation exactly as the load below, so the training-guard
-        // preflight checks the footprint that actually loads (in fit mode the
-        // load sends 0 / the pinned context, not raw maxSeqLength).
+        // preflight checks the footprint that actually loads (under Manual + Auto
+        // layers the load sends 0 / the pinned context, not raw maxSeqLength).
         const compareMaxSeqLength = resolveFitMaxSeqLength(
           sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null,
           currentStore.gpuMemoryMode,
+          currentStore.gpuLayers,
           currentStore.customContextLength,
           maxSeqLength,
         );
@@ -1004,7 +1005,7 @@ export function SharedComposer({
         });
         saveSpeculativeType(specSettings.speculativeType);
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
-        // so an applied fit/manual choice survives a restart.
+        // so an applied manual choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, currentStore.gpuMemoryMode);
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(

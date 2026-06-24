@@ -107,7 +107,7 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import {
-  GPU_LAYERS_ALL,
+  GPU_LAYERS_AUTO,
   distributeByWeight,
   isPendingGguf,
   pendingSelectionMatches,
@@ -683,16 +683,17 @@ export function ChatSettingsPanel({
     isGguf && (pendingSelection != null || !loadedIsDiffusion);
   const gpuDirty =
     gpuModeApplies && gpuMemoryMode !== (loadedGpuMemoryMode ?? "auto");
-  const isAutoFit = gpuModeApplies && gpuMemoryMode === "fit";
   const isManual = gpuModeApplies && gpuMemoryMode === "manual";
+  // Manual with the GPU Layers slider at "Auto" (leftmost): --fit owns the whole
+  // layout, so the offload knobs (MoE, split, TP) don't apply.
+  const autoLayers = isManual && gpuLayers < 0;
   // GPUs actually in use: the picked subset, or all visible when none picked.
   const gpusInUse = selectedGpuIds ?? gpuDevices.map((d) => d.index);
-  // Only fit forces TP off: llama.cpp's --fit aborts under --split-mode tensor.
-  // Manual allows it (--fit off, so no abort) -- it just skips Unsloth's planner.
-  // Also off with fewer than 2 GPUs in use (single GPU, or the picker narrowed
+  // TP is off with fewer than 2 GPUs in use (single GPU, or the picker narrowed
   // to one): tensor split is a no-op there and aborts on some archs. Mirrors the
-  // multi-GPU gate on the GPU picker / Split ratio.
-  const tpDisabled = isAutoFit || gpusInUse.length <= 1;
+  // multi-GPU gate on the GPU picker / Split ratio. (Under Auto layers the whole
+  // TP control is hidden -- llama.cpp's --fit aborts under --split-mode tensor.)
+  const tpDisabled = gpusInUse.length <= 1;
   // Manual gpu-layers ceiling = model layer count (else a safe fallback). While
   // staging, use the staged model's layer count (read from its header).
   const stagedLayerCount = pendingSelection?.layerCount ?? null;
@@ -704,10 +705,12 @@ export function ChatSettingsPanel({
   const moeLayersMax = pendingIsGguf
     ? (stagedMoeLayerCount ?? 0)
     : (moeLayerCount ?? 0);
-  const showMoeSlider = isManual && moeLayersMax > 0;
+  const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
+  // gpuLayers always counts; MoE only with an explicit layer count (see above).
   const manualDirty =
     isManual &&
-    (gpuLayers !== loadedGpuLayers || nCpuMoe !== (loadedNCpuMoe ?? 0));
+    (gpuLayers !== loadedGpuLayers ||
+      (!autoLayers && nCpuMoe !== (loadedNCpuMoe ?? 0)));
   // GPU picker: only meaningful on multi-GPU, and only when the reported
   // indices are physical (relative ordinals from a parent CUDA_VISIBLE_DEVICES
   // mask can't be mapped back to pin a device). null = use all (auto).
@@ -737,7 +740,8 @@ export function ChatSettingsPanel({
   const gpuIdsDirty = gpuIdsKey(selectedGpuIds) !== gpuIdsKey(loadedGpuIds);
   // Per-GPU layer split (--tensor-split): manual + 2+ GPUs in use. One slider
   // per GPU, each a layer count; together they sum to the GPU Layers total.
-  const showSplitRatio = isManual && showGpuPicker && gpusInUse.length > 1;
+  const showSplitRatio =
+    isManual && !autoLayers && showGpuPicker && gpusInUse.length > 1;
   // The total the per-GPU counts sum to (the GPU Layers slider, clamped past the
   // "all" sentinel). The devices behind the GPUs in use, for labels + the
   // VRAM-weighted default.
@@ -765,13 +769,15 @@ export function ChatSettingsPanel({
   };
   const splitRatioDirty =
     isManual &&
+    !autoLayers &&
     JSON.stringify(splitRatio ?? null) !== JSON.stringify(loadedSplitRatio ?? null);
-  // Auto-fit context: null / <= 0 means "Auto" (let --fit size it); a positive
-  // value pins it (--fit optimizes gpu-layers around it). After a fit load,
-  // surface the length --fit actually chose.
-  const fitCtxAuto = isAutoFit && (customContextLength ?? 0) <= 0;
+  // Auto-fit context (Manual + Auto layers): <= 0 means "Auto" (--fit sizes it);
+  // a positive value pins it. Surface the length --fit chose once it's loaded.
+  const fitCtxAuto = autoLayers && (customContextLength ?? 0) <= 0;
+  const loadedAutoLayers =
+    loadedGpuMemoryMode === "manual" && (loadedGpuLayers ?? GPU_LAYERS_AUTO) < 0;
   const fitResolvedCtx =
-    fitCtxAuto && loadedGpuMemoryMode === "fit" ? ggufContextLength : null;
+    fitCtxAuto && loadedAutoLayers ? ggufContextLength : null;
   // A saved chat-template override is a reload-time setting too, so surface
   // Apply for a template-only edit (otherwise it could never be applied).
   const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
@@ -1069,7 +1075,7 @@ export function ChatSettingsPanel({
             )}
             {isGguf && (
               <>
-                {showContextControl && (isAutoFit ? (
+                {showContextControl && (autoLayers ? (
                   <div className="space-y-3.5">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-1.5">
@@ -1348,15 +1354,11 @@ export function ChatSettingsPanel({
                           fits the model and context to your GPUs.
                         </div>
                         <div>
-                          <span className="font-medium">llama.cpp --fit:</span>{" "}
-                          llama.cpp sizes context and offloads overflow
-                          (including MoE experts) to RAM.
+                          <span className="font-medium">Manual:</span> set GPU
+                          Layers yourself. Leave it on Auto to let llama.cpp size
+                          the context and offload overflow (including MoE experts)
+                          to RAM.
                         </div>
-                        <div>
-                          <span className="font-medium">Manual:</span> pin GPU
-                          layers and MoE offload yourself.
-                        </div>
-                        <div>fit turns off Tensor Parallelism.</div>
                       </div>
                     </InfoHint>
                   </div>
@@ -1364,11 +1366,7 @@ export function ChatSettingsPanel({
                     <Select
                       value={gpuMemoryMode}
                       onValueChange={(v) => {
-                        const mode = v as "auto" | "fit" | "manual";
-                        setGpuMemoryMode(mode);
-                        // Only fit forces TP off (--fit aborts under tensor
-                        // split); manual keeps the user's TP choice.
-                        if (mode === "fit") setTensorParallel(false);
+                        setGpuMemoryMode(v as "auto" | "manual");
                       }}
                     >
                       <SelectTrigger
@@ -1382,7 +1380,6 @@ export function ChatSettingsPanel({
                       </SelectTrigger>
                       <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
                         <SelectItem value="auto">Default</SelectItem>
-                        <SelectItem value="fit">llama.cpp --fit</SelectItem>
                         <SelectItem value="manual">Manual</SelectItem>
                       </SelectContent>
                     </Select>
@@ -1393,17 +1390,19 @@ export function ChatSettingsPanel({
                   <>
                     <ParamSlider
                       label="GPU Layers"
-                      value={Math.min(gpuLayers, gpuLayersMax)}
-                      min={0}
+                      value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
+                      min={GPU_LAYERS_AUTO}
                       max={gpuLayersMax}
                       step={1}
                       onChange={setGpuLayersAndSplit}
+                      displayValue={autoLayers ? "Auto" : undefined}
                       valueSize={6}
                       info={
                         <>
-                          Layers to keep on the GPU (--gpu-layers); the rest
-                          run on CPU. At the maximum, the whole model is on the
-                          GPU.
+                          Layers to keep on the GPU (--gpu-layers); the rest run
+                          on CPU. Auto lets llama.cpp size the split (and the
+                          context) to fit VRAM. At the maximum, the whole model
+                          is on the GPU.
                         </>
                       }
                     />
@@ -1490,7 +1489,7 @@ export function ChatSettingsPanel({
                     </div>
                   </div>
                 )}
-                {gpuModeApplies && (
+                {gpuModeApplies && !autoLayers && (
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">

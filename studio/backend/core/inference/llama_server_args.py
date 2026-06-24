@@ -182,7 +182,7 @@ _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 
 # GPU-offload flags. Stripped only when the GPU Memory mode owns offload
-# (fit/manual emit --fit / --gpu-layers / --n-cpu-moe); in auto, a user's
+# (manual emits --fit / --gpu-layers / --n-cpu-moe); in auto, a user's
 # inherited -ngl is respected (the offload_overridden path), so this group is
 # opt-in, not default. Layer flags are shared with llama_cpp's override
 # detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).

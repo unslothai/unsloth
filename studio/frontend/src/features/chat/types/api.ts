@@ -65,12 +65,13 @@ export interface LoadModelRequest {
   tensor_parallel?: boolean | null;
   /**
    * GPU memory strategy for GGUF models. "auto" (default): Unsloth selects
-   * GPUs and caps context to fit VRAM. "fit": hand memory management to
-   * llama.cpp's --fit (no device masking / context / gpu-layer / split calc).
-   * "manual": pin gpu_layers and n_cpu_moe yourself (--fit off).
+   * GPUs and caps context to fit VRAM. "manual": you own the offload -- leave
+   * gpu_layers at -1 (Auto) to hand memory management to llama.cpp's --fit (no
+   * device masking / context / gpu-layer / split calc), or set gpu_layers >= 0
+   * to pin layers and n_cpu_moe yourself (--fit off).
    */
-  gpu_memory_mode?: "auto" | "fit" | "manual";
-  /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off). */
+  gpu_memory_mode?: "auto" | "manual";
+  /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off); -1 = Auto (--fit). */
   gpu_layers?: number;
   /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
   n_cpu_moe?: number;
@@ -172,7 +173,7 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
-  gpu_memory_mode?: "auto" | "fit" | "manual";
+  gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
@@ -224,7 +225,7 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
-  gpu_memory_mode?: "auto" | "fit" | "manual";
+  gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;

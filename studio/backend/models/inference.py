@@ -100,15 +100,16 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
-    gpu_memory_mode: Literal["auto", "fit", "manual"] = Field(
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
             "GPU memory strategy for GGUF models. 'auto' (default): Unsloth "
-            "selects GPUs and caps context to fit VRAM. 'fit': hand memory "
-            "management to llama.cpp's --fit -- no device masking, no context "
-            "auto-reduce, no gpu-layer/tensor-split planning. 'manual': pin "
-            "gpu_layers and n_cpu_moe yourself (--fit off); tensor_parallel still "
-            "applies (split by free VRAM unless tensor_split is set, no planner). "
+            "selects GPUs and caps context to fit VRAM. 'manual': you own the "
+            "offload. Leave gpu_layers at -1 (Auto) to hand memory management to "
+            "llama.cpp's --fit (no device masking, no context auto-reduce, no "
+            "gpu-layer/tensor-split planning); set gpu_layers >= 0 to pin layers "
+            "and n_cpu_moe yourself (--fit off), with tensor_parallel still "
+            "applying (split by free VRAM unless tensor_split is set, no planner). "
             "Ignored for non-GGUF."
         ),
     )
@@ -118,7 +119,8 @@ class LoadRequest(BaseModel):
         description = (
             "Manual mode only: number of layers to offload to the GPU "
             "(--gpu-layers, with --fit off). A value >= the model's layer count "
-            "offloads all of them. Ignored unless gpu_memory_mode is 'manual'."
+            "offloads all of them. -1 = Auto: hand layer + context sizing to "
+            "llama.cpp's --fit. Ignored unless gpu_memory_mode is 'manual'."
         ),
     )
     n_cpu_moe: int = Field(
@@ -128,7 +130,7 @@ class LoadRequest(BaseModel):
             "Manual mode only: keep the first N MoE expert layers on the CPU "
             "(--n-cpu-moe) to save VRAM on MoE models. 0 = none, N = number of "
             "MoE layers offloaded (the backend offsets past any leading dense "
-            "layers). Ignored unless gpu_memory_mode is 'manual'."
+            "layers). Ignored unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
         ),
     )
     tensor_split: Optional[List[float]] = Field(
@@ -138,7 +140,7 @@ class LoadRequest(BaseModel):
             "in the order of the GPUs in use, e.g. [2, 1] for 2:1. Omit it to let "
             "llama.cpp use its default, which splits by free VRAM. Any list given is "
             "passed through as-is, so send [1, 1] to force an even split. Ignored "
-            "unless gpu_memory_mode is 'manual'."
+            "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
         ),
     )
     llama_extra_args: Optional[List[str]] = Field(
@@ -321,13 +323,13 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
-    gpu_memory_mode: Literal["auto", "fit", "manual"] = Field(
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
-        description = "Active GPU memory strategy ('auto', 'fit' = --fit on, or 'manual').",
+        description = "Active GPU memory strategy ('auto' or 'manual').",
     )
     gpu_layers: int = Field(
         -1,
-        description = "Manual mode: requested --gpu-layers value (-1 when not manual).",
+        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
     )
     n_cpu_moe: int = Field(
         0,
@@ -477,13 +479,13 @@ class InferenceStatusResponse(BaseModel):
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
-    gpu_memory_mode: Literal["auto", "fit", "manual"] = Field(
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
-        description = "Active GPU memory strategy ('auto', 'fit' = --fit on, or 'manual').",
+        description = "Active GPU memory strategy ('auto' or 'manual').",
     )
     gpu_layers: int = Field(
         -1,
-        description = "Manual mode: requested --gpu-layers value (-1 when not manual).",
+        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
     )
     n_cpu_moe: int = Field(
         0,

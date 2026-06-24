@@ -1281,7 +1281,7 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
         self._tensor_parallel: bool = False
-        # GPU memory strategy applied on the active load ("auto"/"fit"/"manual").
+        # GPU memory strategy applied on the active load ("auto"/"manual").
         self._gpu_memory_mode: str = "auto"
         # Manual-mode load options (echoed back so the UI round-trips them).
         self._gpu_layers: int = -1
@@ -1671,7 +1671,7 @@ class LlamaCppBackend:
 
     @property
     def gpu_memory_mode(self) -> str:
-        """Active GPU memory strategy: 'auto' (Unsloth), 'fit' (--fit on), or 'manual'."""
+        """Active GPU memory strategy: 'auto' or 'manual' (gpu_layers < 0 = Auto/--fit, >= 0 = pinned)."""
         return self._gpu_memory_mode
 
     @property
@@ -3668,7 +3668,7 @@ class LlamaCppBackend:
         self._gpu_offload_active = True
         # Diffusion doesn't use the llama.cpp GPU-memory knobs; reset them to
         # defaults (the picked device is still recorded below) so /load, /status
-        # and reload dedup don't report a previous GGUF's fit/manual settings.
+        # and reload dedup don't report a previous GGUF's manual settings.
         self._gpu_memory_mode = "auto"
         self._gpu_layers = -1
         self._n_cpu_moe = 0
@@ -4564,7 +4564,7 @@ class LlamaCppBackend:
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
-        gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
+        gpu_memory_mode: Literal["auto", "manual"] = "auto",
         gpu_layers: int = -1,
         n_cpu_moe: int = 0,
         tensor_split: Optional[List[float]] = None,
@@ -4799,14 +4799,13 @@ class LlamaCppBackend:
                 split_mode_override = parse_split_mode_override(extra_args)
                 tensor_parallel = _effective_tensor_parallel(extra_args, tensor_parallel)
                 # Record the requested strategy for /status and the load
-                # response. 'fit'/'manual' have no fallback, so the request
-                # value is the value actually applied.
+                # response. 'manual' has no fallback, so the request value is the
+                # value actually applied.
                 self._gpu_memory_mode = gpu_memory_mode
-                # The layer/MoE/split knobs are applied only in manual mode; in
-                # auto/fit the launch ignores them, so record defaults rather than
-                # the request's unused values -- else /status and /load report
-                # Manual-only knobs (and a stale split) for a non-Manual server.
-                if gpu_memory_mode == "manual":
+                # The layer/MoE/split knobs apply only with an explicit offload
+                # (manual + gpu_layers >= 0); else record defaults so /status and
+                # /load don't report knobs the server never applied.
+                if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     self._gpu_layers = gpu_layers
                     self._n_cpu_moe = n_cpu_moe
                     self._tensor_split = tensor_split
@@ -4815,14 +4814,14 @@ class LlamaCppBackend:
                     self._n_cpu_moe = 0
                     self._tensor_split = None
                 self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
-                # Manual mode skips the TP planner but still emits --split-mode
-                # tensor at launch; drop it when fewer than 2 GPUs are in use
-                # (single GPU, or the picker narrowed to one) -- tensor split is a
-                # no-op there and aborts on some architectures. Done before the
-                # cache-drop below so a quantized KV survives the layer-split load.
+                # Manual offload skips the TP planner but still emits --split-mode
+                # tensor at launch; drop it when fewer than 2 GPUs are in use --
+                # tensor split is a no-op there and aborts on some architectures.
+                # Done before the cache-drop below so a quantized KV survives.
                 if (
                     tensor_parallel
                     and gpu_memory_mode == "manual"
+                    and gpu_layers >= 0
                     and self._effective_gpu_count(sorted(gpu_ids) if gpu_ids else None) < 2
                 ):
                     logger.info(
@@ -4912,7 +4911,7 @@ class LlamaCppBackend:
                     )
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
-                # probe that assigns it may throw first. Captured before fit/manual
+                # probe that assigns it may throw first. Captured before manual
                 # empty `gpus` so the speculative defaults stay GPU-aware and the
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
@@ -4930,13 +4929,13 @@ class LlamaCppBackend:
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
                     # GPU picker: restrict every mode to the chosen devices, so
-                    # auto selection only considers them and fit/manual mask to
+                    # auto selection only considers them and manual mask to
                     # them (the env block below pins CUDA/HIP_VISIBLE_DEVICES).
                     if gpu_ids:
                         _picked = set(gpu_ids)
                         gpus = [g for g in gpus if g[0] in _picked]
 
-                    # GPUs the model will run on -- captured before fit/manual
+                    # GPUs the model will run on -- captured before manual
                     # empty `gpus` to bypass the planner. bool() drives the
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
@@ -4972,16 +4971,15 @@ class LlamaCppBackend:
                     # GPU/VRAM-fit logic below may shrink it on limited HW.
                     max_available_ctx = self._context_length or effective_ctx
 
-                    # llama.cpp auto-fit (--fit on): hand all memory management
-                    # to llama-server. Emptying the probed GPU set makes the
-                    # selection and tensor-parallel planning below no-op, so
-                    # gpu_indices stays None (no AUTOMATIC device masking -- an
-                    # explicit gpu_ids pick still pins below), use_fit stays True
-                    # (--fit on), and tp_tensor_split stays None (no
-                    # --tensor-split). Honor an explicit context (so --fit
-                    # optimizes the gpu-layer offload around it); 0 lets --fit
-                    # size the context itself.
-                    if gpu_memory_mode == "fit":
+                    # Manual + Auto layers (the Manual default): llama.cpp auto-fit
+                    # (--fit on) handles all memory management. Emptying the probed
+                    # GPU set makes the selection and tensor-parallel planning below
+                    # no-op, so gpu_indices stays None (no AUTOMATIC device masking
+                    # -- an explicit gpu_ids pick still pins below), use_fit stays
+                    # True (--fit on), and tp_tensor_split stays None (no
+                    # --tensor-split). Honor an explicit context (so --fit optimizes
+                    # the gpu-layer offload around it); 0 lets --fit size it.
+                    if gpu_memory_mode == "manual" and gpu_layers < 0:
                         gpus = []
                         tensor_parallel = False
                         effective_ctx = requested_ctx if requested_ctx > 0 else 0
@@ -5101,7 +5099,7 @@ class LlamaCppBackend:
                     _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
                     _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
                     if _mtp_eff_n_max is None:
-                        # _detected_gpus (not gpus) so fit/manual -- which empty
+                        # _detected_gpus (not gpus) so manual -- which empty
                         # gpus to bypass the planner -- keep the GPU draft depth the
                         # launch flags also use, instead of the CPU default.
                         _mtp_eff_n_max = 2 if _detected_gpus else 3
@@ -5587,7 +5585,7 @@ class LlamaCppBackend:
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
-                # GPU picker: when no narrower subset was chosen (fit/manual, or
+                # GPU picker: when no narrower subset was chosen (manual, or
                 # a failed/file-size selection), pin the whole picked set so the
                 # model can't spill onto an unpicked GPU.
                 if gpu_ids and gpu_indices is None:
@@ -5637,13 +5635,14 @@ class LlamaCppBackend:
                 # "-c 0" would instead pin the FULL native context (llama.cpp's
                 # -c handler sets fit_params_min_ctx = UINT32_MAX on value 0,
                 # disabling --fit's reduction). See gpu_memory_mode.
+                auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
                 if effective_ctx > 0:
                     cmd.extend(["-c", str(effective_ctx)])
-                elif gpu_memory_mode != "fit":
+                elif not auto_fit:
                     cmd.extend(["-c", "0"])
 
                 fully_gpu_offloaded = False
-                if gpu_memory_mode == "manual":
+                if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     # Pin the user's layer count and disable auto-fit. --fit off
                     # also means _ctx_integrity_flags must not add --fit-ctx.
                     use_fit = False
@@ -6313,9 +6312,9 @@ class LlamaCppBackend:
                 self._start_mtp_crash_watchdog()
 
                 # Catch silent CPU fallback when GPU was intended (#5106). Manual
-                # mode (no picker) leaves gpu_indices None and use_fit False, so
+                # offload (no picker) leaves gpu_indices None and use_fit False, so
                 # include its GPU-layer intent; use the preserved probe since
-                # fit/manual empty `gpus`.
+                # auto-layers/manual empty `gpus`.
                 self._gpu_offload_active = self._classify_gpu_offload(
                     gpu_indices is not None
                     or use_fit
@@ -6685,7 +6684,7 @@ class LlamaCppBackend:
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
-        gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
+        gpu_memory_mode: Literal["auto", "manual"] = "auto",
         gpu_layers: int = -1,
         n_cpu_moe: int = 0,
         tensor_split: Optional[List[float]] = None,
@@ -6735,17 +6734,20 @@ class LlamaCppBackend:
             return False
 
         # The diffusion runner is mode-agnostic (always "auto", ignores the
-        # layer/MoE/split knobs), so a standing fit/manual preference in the
+        # layer/MoE/split knobs), so a standing manual preference in the
         # request must not force a needless reload -- only the GPU pick matters.
         if not self._is_diffusion:
-            # A GPU-memory-mode flip (Unsloth / --fit / manual) must always reload.
+            # A GPU-memory-mode flip (Unsloth / manual) must always reload.
             if self._gpu_memory_mode != gpu_memory_mode:
                 return False
-            # In manual mode a changed layer count, MoE-offload, or GPU split reloads.
+            # Manual: a layer-count change always reloads (covers Auto(-1) <-> a
+            # pinned count); MoE/split only matter with an explicit offload.
             if gpu_memory_mode == "manual" and (
                 self._gpu_layers != gpu_layers
-                or self._n_cpu_moe != n_cpu_moe
-                or (self._tensor_split or None) != (tensor_split or None)
+                or (gpu_layers >= 0 and (
+                    self._n_cpu_moe != n_cpu_moe
+                    or (self._tensor_split or None) != (tensor_split or None)
+                ))
             ):
                 return False
         # A changed GPU pick must reload (compare order-insensitively; None/[]

@@ -420,30 +420,29 @@ export function saveSpeculativeType(value: string | null): void {
 }
 
 // GPU Memory strategy is a standing preference (like speculative type), not a
-// per-model setting: a "fit" choice persists across model switches and reloads.
-export function readPersistedGpuMemoryMode(): "auto" | "fit" | "manual" {
-  const raw = loadString(CHAT_GPU_MEMORY_MODE_KEY, "auto");
-  return raw === "fit" || raw === "manual" ? raw : "auto";
+// per-model setting: a "manual" choice persists across model switches and reloads.
+export function readPersistedGpuMemoryMode(): "auto" | "manual" {
+  return loadString(CHAT_GPU_MEMORY_MODE_KEY, "auto") === "manual" ? "manual" : "auto";
 }
 
-export function saveGpuMemoryMode(value: "auto" | "fit" | "manual"): void {
+export function saveGpuMemoryMode(value: "auto" | "manual"): void {
   saveString(CHAT_GPU_MEMORY_MODE_KEY, value);
 }
 
 /** Persist the GPU Memory mode after a load, but only for a non-diffusion GGUF:
  *  non-GGUF has no such mode, and diffusion runs mode-agnostic (the backend
- *  reports "auto"), so neither must clobber the standing fit/manual preference.
+ *  reports "auto"), so neither must clobber the standing manual preference.
  *  Gates on the authoritative response flags so every load path stays in sync. */
 export function persistGpuMemoryModeOnLoad(
   resp: { is_gguf?: boolean; is_diffusion?: boolean },
-  mode: "auto" | "fit" | "manual",
+  mode: "auto" | "manual",
 ): void {
   if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
 }
 
-// Manual-mode gpu_layers sentinel: offload every layer (llama.cpp caps it to
-// the model's actual layer count).
-export const GPU_LAYERS_ALL = 999;
+// Manual-mode gpu_layers sentinel: -1 = Auto (hand layer + context sizing to
+// llama.cpp's --fit). The Manual default; "all on GPU" is the slider's max.
+export const GPU_LAYERS_AUTO = -1;
 
 // Round real-valued shares to integers summing exactly to `total`, giving the
 // leftover units to the largest fractional parts (largest-remainder method).
@@ -506,7 +505,7 @@ export function rebalanceSplit(
 export function loadedGpuMemoryFields(resp: {
   is_gguf?: boolean;
   is_diffusion?: boolean;
-  gpu_memory_mode?: "auto" | "fit" | "manual";
+  gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
@@ -517,20 +516,21 @@ export function loadedGpuMemoryFields(resp: {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
   // the authoritative is_gguf flag, not the field's presence -- otherwise loading
-  // a transformers model would reset the standing fit/manual preference.
+  // a transformers model would reset the standing manual preference.
   if (!resp.is_gguf) return {};
   const mode = resp.gpu_memory_mode ?? "auto";
   const gpuIds = resp.gpu_ids ?? null;
-  // Layer/MoE/split knobs apply (and are reported) only in manual mode; in
-  // auto/fit the server ignores them, so don't seed the loaded baseline or the
-  // editable knobs with values it never applied.
+  // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
+  // the server ignores them, so don't seed the loaded baseline or the editable
+  // knobs with values it never applied. In manual, the server reports gpu_layers
+  // = -1 under Auto, which round-trips the slider back to its Auto position.
   const manualKnobs =
     mode === "manual"
       ? {
           loadedGpuLayers: resp.gpu_layers ?? null,
           loadedNCpuMoe: resp.n_cpu_moe ?? null,
           loadedSplitRatio: resp.tensor_split ?? null,
-          gpuLayers: resp.gpu_layers ?? GPU_LAYERS_ALL,
+          gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
           nCpuMoe: resp.n_cpu_moe ?? 0,
           splitRatio: resp.tensor_split ?? null,
         }
@@ -539,7 +539,7 @@ export function loadedGpuMemoryFields(resp: {
     // A diffusion GGUF runs mode-agnostic (its runner pins all layers on one GPU
     // and always reports "auto"), so adopt everything a chat GGUF does EXCEPT the
     // live standing preference -- the next chat load must still honor the user's
-    // fit/manual choice. The loaded baseline below is still set to "auto"; the UI
+    // manual choice. The loaded baseline below is still set to "auto"; the UI
     // hides the mode controls for a loaded diffusion model, so it can't read as
     // dirty against the preserved preference.
     ...(resp.is_diffusion ? {} : { gpuMemoryMode: mode }),
@@ -794,14 +794,16 @@ type ChatRuntimeStore = {
   loadedTensorParallel: boolean | null;
   /**
    * GPU memory strategy for GGUF loads. "auto" = Unsloth picks GPUs and
-   * context to fit the model; "fit" = hand memory management to llama.cpp's
-   * --fit (no device masking, no context/gpu-layer/tensor-split calc);
-   * "manual" = pin gpuLayers/nCpuMoe yourself (--fit off).
+   * context to fit the model; "manual" = you own the offload -- gpuLayers < 0
+   * (Auto) hands memory management to llama.cpp's --fit (no device masking, no
+   * context/gpu-layer/tensor-split calc), gpuLayers >= 0 pins the layers and
+   * nCpuMoe yourself (--fit off).
    */
-  gpuMemoryMode: "auto" | "fit" | "manual";
+  gpuMemoryMode: "auto" | "manual";
   /** Backend-reported gpu memory mode; null until first hydrated. */
-  loadedGpuMemoryMode: "auto" | "fit" | "manual" | null;
-  /** Manual mode: layers to offload to GPU (>= model layer count = all). */
+  loadedGpuMemoryMode: "auto" | "manual" | null;
+  /** Manual mode: layers to offload to GPU. -1 = Auto (--fit); >= model layer
+   *  count = all. */
   gpuLayers: number;
   loadedGpuLayers: number | null;
   /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
@@ -948,7 +950,7 @@ type ChatRuntimeStore = {
    *  which skip the sheet but must still honor a saved config. */
   applyRememberedLoadSettings: (settings: RememberedLoadSettings) => void;
   setTensorParallel: (value: boolean) => void;
-  setGpuMemoryMode: (mode: "auto" | "fit" | "manual") => void;
+  setGpuMemoryMode: (mode: "auto" | "manual") => void;
   setGpuLayers: (value: number) => void;
   setNCpuMoe: (value: number) => void;
   setSplitRatio: (value: number[] | null) => void;
@@ -1183,14 +1185,14 @@ function loadedBaselineSettings(s: ChatRuntimeStore) {
     // mode (or the persisted default when nothing is loaded). The manual knobs
     // and GPU pick are per-model and revert to their loaded baseline. A loaded
     // diffusion model has no applicable mode (its baseline is "auto"); keep the
-    // live preference so Reset doesn't silently drop the user's fit/manual choice
+    // live preference so Reset doesn't silently drop the user's manual choice
     // for the next chat load.
     gpuMemoryMode: !hasLoadedModel
       ? readPersistedGpuMemoryMode()
       : s.loadedIsDiffusion
         ? s.gpuMemoryMode
         : (s.loadedGpuMemoryMode ?? "auto"),
-    gpuLayers: s.loadedGpuLayers ?? GPU_LAYERS_ALL,
+    gpuLayers: s.loadedGpuLayers ?? GPU_LAYERS_AUTO,
     nCpuMoe: s.loadedNCpuMoe ?? 0,
     splitRatio: s.loadedSplitRatio ?? null,
     selectedGpuIds: s.loadedGpuIds,
@@ -1286,7 +1288,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
   loadedGpuMemoryMode: null,
-  gpuLayers: GPU_LAYERS_ALL,
+  gpuLayers: GPU_LAYERS_AUTO,
   loadedGpuLayers: null,
   nCpuMoe: 0,
   loadedNCpuMoe: null,
@@ -1543,7 +1545,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,
-      gpuLayers: GPU_LAYERS_ALL,
+      gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,
       loadedNCpuMoe: null,
@@ -1815,14 +1817,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         specDraftNMax: null,
         // Keep the on-screen GPU Memory selection (loadedBaselineSettings would
         // otherwise revert it to the loaded model's mode, silently dropping a
-        // Fit/Manual choice just made). Use the live store value, not the
+        // Manual choice just made). Use the live store value, not the
         // persisted one: a mode hydrated from an out-of-band load isn't persisted,
         // so the persisted value can lag what the dropdown actually shows.
         gpuMemoryMode: s.gpuMemoryMode,
         // Per-model GPU knobs start from defaults too so a fresh pick doesn't
         // inherit the loaded model's layer/MoE/split/GPU choices, matching the
         // immediate-switch reset.
-        gpuLayers: GPU_LAYERS_ALL,
+        gpuLayers: GPU_LAYERS_AUTO,
         nCpuMoe: 0,
         splitRatio: null,
         selectedGpuIds: null,

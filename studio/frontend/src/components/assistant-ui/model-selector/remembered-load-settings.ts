@@ -22,7 +22,7 @@ export interface RememberedLoadSettings {
   // set/order at save time and, unlike gpu_ids, is not validated against the
   // current hardware, so a stale split would reach llama.cpp with a mismatched
   // length; it falls back to a VRAM-weighted default instead.
-  gpuMemoryMode?: "auto" | "fit" | "manual";
+  gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
