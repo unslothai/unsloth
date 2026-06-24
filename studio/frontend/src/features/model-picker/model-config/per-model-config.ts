@@ -45,11 +45,12 @@ export const MTP_SPECULATIVE_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 const STORAGE_KEY = "unsloth_model_configs";
+const LEGACY_STORAGE_KEY = "unsloth_load_settings";
+const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 const STORAGE_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
 export const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
-export const MAX_CHAT_TEMPLATE_LENGTH = MAX_CHAT_TEMPLATE_BYTES;
 
 type StoredPerModelConfig = PerModelConfig & {
   version: typeof STORAGE_SCHEMA_VERSION;
@@ -106,24 +107,6 @@ export function chatTemplateByteLength(value: string): number {
 
 export function isChatTemplateWithinLimit(value: string): boolean {
   return chatTemplateByteLength(value) <= MAX_CHAT_TEMPLATE_BYTES;
-}
-
-export function clampChatTemplateToByteLimit(value: string): string {
-  if (isChatTemplateWithinLimit(value)) {
-    return value;
-  }
-  const encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
-  const parts: string[] = [];
-  let bytes = 0;
-  for (const part of value) {
-    const partBytes = encoder ? encoder.encode(part).byteLength : part.length;
-    if (bytes + partBytes > MAX_CHAT_TEMPLATE_BYTES) {
-      break;
-    }
-    bytes += partBytes;
-    parts.push(part);
-  }
-  return parts.join("");
 }
 
 function serializedMapSize(map: StoredMap): number {
@@ -189,7 +172,89 @@ function storedConfigVersion(raw: unknown): number {
   return typeof version === "number" && Number.isFinite(version) ? version : 0;
 }
 
+let legacyMigrationChecked = false;
+
+function parseLegacyModelKey(
+  key: string,
+): { modelId: string; ggufVariant: string | null } | null {
+  const separator = key.lastIndexOf("::");
+  if (separator >= 0) {
+    const modelId = key.slice(0, separator);
+    return modelId
+      ? { modelId, ggufVariant: key.slice(separator + 2) || null }
+      : null;
+  }
+  return key ? { modelId: key, ggufVariant: null } : null;
+}
+
+function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
+  return normalizeV1({
+    customContextLength:
+      typeof raw.contextLength === "number" ? raw.contextLength : null,
+    kvCacheDtype:
+      typeof raw.kvCacheDtype === "string" ? raw.kvCacheDtype : null,
+    speculativeType:
+      typeof raw.speculativeType === "string" ? raw.speculativeType : null,
+    specDraftNMax:
+      typeof raw.specDraftNMax === "number" ? raw.specDraftNMax : null,
+    tensorParallel:
+      typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
+    chatTemplateOverride: null,
+  });
+}
+
+function mergeLegacyEntries(
+  map: StoredMap,
+  legacy: Record<string, unknown>,
+): boolean {
+  let changed = false;
+  for (const [legacyKey, value] of Object.entries(legacy)) {
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+    const parsedKey = parseLegacyModelKey(legacyKey);
+    if (!parsedKey) {
+      continue;
+    }
+    const migrated = legacyEntryToConfig(value as Record<string, unknown>);
+    const key = modelStorageKey(parsedKey.modelId, parsedKey.ggufVariant);
+    if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {
+      continue;
+    }
+    map[key] = toStoredConfig(migrated);
+    changed = true;
+  }
+  return changed;
+}
+
+function migrateLegacyLoadSettingsOnce(): void {
+  if (legacyMigrationChecked || !canUseStorage()) {
+    return;
+  }
+  legacyMigrationChecked = true;
+  try {
+    if (localStorage.getItem(LEGACY_MIGRATION_FLAG)) {
+      return;
+    }
+    localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
+    const legacy = JSON.parse(
+      localStorage.getItem(LEGACY_STORAGE_KEY) ?? "null",
+    );
+    if (!legacy || typeof legacy !== "object" || Array.isArray(legacy)) {
+      return;
+    }
+    const map = readMap();
+    if (mergeLegacyEntries(map, legacy as Record<string, unknown>)) {
+      enforceStorageBudget(map);
+      writeMap(map);
+    }
+  } catch (err) {
+    console.warn("Failed to migrate legacy load settings:", err);
+  }
+}
+
 function readMap(): StoredMap {
+  migrateLegacyLoadSettingsOnce();
   if (!canUseStorage()) {
     return {};
   }

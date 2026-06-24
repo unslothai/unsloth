@@ -11,6 +11,7 @@ from typing import Optional
 from jinja2 import TemplateError
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
+from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.paths.path_utils import (
     get_cache_path,
     is_local_path,
@@ -62,7 +63,7 @@ def _chat_template_from_tokenizer_config(config: dict) -> Optional[str]:
     return None
 
 
-def _chat_template_from_dir(dir_path: Path) -> Optional[str]:
+def _chat_template_from_tokenizer_dir(dir_path: Path) -> Optional[str]:
     for rel in _TOKENIZER_CONFIG_PATHS:
         config_file = dir_path / rel
         if not config_file.exists():
@@ -77,8 +78,45 @@ def _chat_template_from_dir(dir_path: Path) -> Optional[str]:
     return None
 
 
+def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[Path]:
+    try:
+        ggufs = [
+            path
+            for path in sorted(dir_path.rglob("*.gguf"))
+            if "mmproj" not in path.name.lower()
+        ]
+    except OSError:
+        return None
+    if not ggufs:
+        return None
+    needle = (gguf_variant or "").strip().lower()
+    if needle:
+        for path in ggufs:
+            try:
+                relative = str(path.relative_to(dir_path)).lower()
+            except ValueError:
+                relative = path.name.lower()
+            if needle in relative:
+                return path
+    return ggufs[0]
+
+
+def _chat_template_from_dir(
+    dir_path: Path, gguf_variant: Optional[str] = None
+) -> Optional[str]:
+    def from_gguf() -> Optional[str]:
+        gguf = _find_gguf_in_dir(dir_path, gguf_variant)
+        return read_gguf_chat_template(str(gguf)) if gguf is not None else None
+
+    if gguf_variant:
+        return from_gguf() or _chat_template_from_tokenizer_dir(dir_path)
+    return _chat_template_from_tokenizer_dir(dir_path) or from_gguf()
+
+
 def read_default_chat_template(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
 ) -> Optional[str]:
     if not isinstance(model_name, str) or not model_name.strip():
         return None
@@ -86,7 +124,9 @@ def read_default_chat_template(
 
     if is_local_path(name):
         try:
-            return _chat_template_from_dir(Path(name))
+            if name.lower().endswith(".gguf"):
+                return read_gguf_chat_template(name)
+            return _chat_template_from_dir(Path(name), gguf_variant)
         except Exception as exc:
             logger.debug("Could not read local chat template for %s: %s", name, exc)
             return None
@@ -99,7 +139,7 @@ def read_default_chat_template(
             snapshots_dir = repo_dir / "snapshots"
             if snapshots_dir.exists():
                 for snapshot in snapshots_dir.iterdir():
-                    template = _chat_template_from_dir(snapshot)
+                    template = _chat_template_from_dir(snapshot, gguf_variant)
                     if template:
                         return template
     except Exception as exc:

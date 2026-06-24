@@ -13,7 +13,11 @@ export type {
 export { FolderBrowser } from "./components/model-selector/folder-browser";
 export type { FolderBrowserProps } from "./components/model-selector/folder-browser";
 export { ModelDeleteAction } from "./components/model-selector/model-delete-action";
-export { applyPerModelConfigToRuntime } from "./model-config/apply-per-model-config";
+export {
+  applyPerModelConfigToRuntime,
+  currentRuntimePerModelConfig,
+  perModelConfigsEqual,
+} from "./model-config/apply-per-model-config";
 export {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,

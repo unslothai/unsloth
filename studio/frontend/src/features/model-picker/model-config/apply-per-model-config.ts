@@ -21,3 +21,31 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
   });
 }
+
+export function currentRuntimePerModelConfig(): PerModelConfig {
+  const s = useChatRuntimeStore.getState();
+  return {
+    customContextLength: s.customContextLength ?? null,
+    kvCacheDtype: s.kvCacheDtype ?? null,
+    speculativeType: normalizeSpeculativeType(s.speculativeType),
+    specDraftNMax: s.specDraftNMax ?? null,
+    tensorParallel: s.tensorParallel ?? false,
+    chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
+  };
+}
+
+export function perModelConfigsEqual(
+  a: PerModelConfig,
+  b: PerModelConfig,
+): boolean {
+  return (
+    (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
+    (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
+    normalizeSpeculativeType(a.speculativeType) ===
+      normalizeSpeculativeType(b.speculativeType) &&
+    (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
+    Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
+    cleanTemplate(a.chatTemplateOverride) ===
+      cleanTemplate(b.chatTemplateOverride)
+  );
+}

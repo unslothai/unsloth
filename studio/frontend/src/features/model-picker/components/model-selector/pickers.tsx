@@ -58,7 +58,6 @@ import {
   Download01Icon,
   Flag01Icon,
   Folder02Icon,
-  RemoveCircleIcon,
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
@@ -1135,7 +1134,6 @@ export function HubModelPicker({
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
-  onEject,
 }: {
   models: ModelOption[];
   /** Fine-tuned models, shown as a section in the On Device view. */
@@ -1153,8 +1151,6 @@ export function HubModelPicker({
   section?: "downloaded" | "recommended" | "custom" | "connected";
   /** Section toggle rendered under the search bar. */
   sectionToggle?: ReactNode;
-  /** Eject the loaded model. Rendered as the last list row when set. */
-  onEject?: () => void;
 }) {
   const gpu = useGpuInfo();
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
@@ -2399,16 +2395,12 @@ export function HubModelPicker({
         )}
         {...hubModelList.listboxProps}
       >
-        {/* Clear space for the floating Eject pill when scrolled to the end, so
-            its gap above the last row matches its gap below (applies to every
-            section, including Recommended). */}
         <div
           className={cn(
-            "pr-0",
+            "pr-0 pb-4",
             // On Device pulls the heading block tight to the controls; Recommended
             // keeps a little more top room above its first row.
             showDownloaded ? "pt-0" : "pt-[4px]",
-            onEject ? "pb-[60px]" : "pb-4",
           )}
         >
           {showConnected ? (
@@ -3366,21 +3358,6 @@ export function HubModelPicker({
           )}
         </div>
       </div>
-      {/* Floating eject pill: overlaid on the list bottom, outside the scroll
-          so the edge fade never touches it. Only the pill catches clicks. */}
-      {onEject ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[19px]">
-          <button
-            type="button"
-            onClick={onEject}
-            className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
-            title="Eject model"
-          >
-            <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-            Eject model
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 }

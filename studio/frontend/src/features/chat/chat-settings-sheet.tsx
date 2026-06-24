@@ -58,6 +58,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
 import {
   Edit03Icon,
@@ -516,9 +517,53 @@ export function ChatSettingsPanel({
   // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
   // context/KV/speculative controls.
   const isGguf = pendingSelection != null ? pendingIsGguf : isLoadedGguf;
-  const hasModelContent = pendingSelection != null;
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const ggufMaxContextLength = useChatRuntimeStore(
+    (s) => s.ggufMaxContextLength,
+  );
+  const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
+  const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
+  const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
+  const mtpUpdatable =
+    specFallbackReason === "binary_no_mtp" ||
+    specFallbackReason === "binary_outdated";
+  const {
+    status: llamaUpdateStatus,
+    applying: llamaUpdating,
+    apply: applyLlamaUpdate,
+  } = useLlamaUpdateCheck({ enabled: mtpUpdatable });
+  const handleMtpUpdate = useCallback(async () => {
+    const result = await applyLlamaUpdate();
+    if (result.ok) {
+      const reloadHint = result.reloadRequired
+        ? " Reload your model to enable MTP."
+        : "";
+      toast.success(
+        `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
+      );
+    } else {
+      toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
+    }
+  }, [applyLlamaUpdate]);
+  const loadedEffectiveContext = customContextLength ?? ggufContextLength;
+  const showSpecFallback =
+    pendingSelection == null &&
+    !isExternalModel &&
+    isLoadedGguf &&
+    specFallbackReason != null &&
+    (speculativeType === "auto" ||
+      speculativeType === "mtp" ||
+      speculativeType === "mtp+ngram");
+  const showContextVramWarning =
+    pendingSelection == null &&
+    !isExternalModel &&
+    isLoadedGguf &&
+    ggufMaxContextLength != null &&
+    loadedEffectiveContext != null &&
+    loadedEffectiveContext > ggufMaxContextLength;
+  const showLoadedDiagnostics = showSpecFallback || showContextVramWarning;
+  const hasModelContent = pendingSelection != null || showLoadedDiagnostics;
   const setActivePresetSource = useChatRuntimeStore(
     (s) => s.setActivePresetSource,
   );
@@ -871,6 +916,45 @@ export function ChatSettingsPanel({
                 )}
               </div>
             ) : null}
+            {showLoadedDiagnostics && (
+              <div className="flex flex-col gap-3">
+                {showSpecFallback && (
+                  <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
+                    <p>
+                      {specFallbackReason === "mla_mtp_disabled"
+                        ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it."
+                        : specFallbackReason === "runtime_error"
+                          ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
+                          : specFallbackReason === "drafter_not_found"
+                            ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
+                            : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
+                                llamaUpdateStatus?.update_available
+                                  ? " Update llama.cpp to enable it."
+                                  : ""
+                              }`}
+                    </p>
+                    {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                      <Button
+                        size="sm"
+                        className="corner-squircle mt-2 h-7 text-[12px]"
+                        onClick={handleMtpUpdate}
+                        disabled={llamaUpdating}
+                        data-test-id="mtp-update-button"
+                      >
+                        {llamaUpdating ? "Updating..." : "Update llama.cpp"}
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {showContextVramWarning && (
+                  <p className="text-[11px] text-amber-500">
+                    Context length exceeds the estimated VRAM capacity (
+                    {ggufMaxContextLength?.toLocaleString()} tokens). The model
+                    may use system RAM.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </CollapsibleSection>
         )}

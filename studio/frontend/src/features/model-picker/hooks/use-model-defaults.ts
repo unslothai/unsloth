@@ -15,6 +15,7 @@ const templateCache = new Map<string, string | null>();
 
 export function useDefaultChatTemplate(
   modelId: string | null,
+  ggufVariant: string | null | undefined,
   enabled: boolean,
 ): DefaultChatTemplateState {
   const [state, setState] = useState<DefaultChatTemplateState>({
@@ -27,9 +28,11 @@ export function useDefaultChatTemplate(
     if (!(enabled && modelId)) {
       return;
     }
-    if (templateCache.has(modelId)) {
+    const token = getHfToken();
+    const cacheKey = `${modelId}::${ggufVariant ?? ""}::${token}`;
+    if (templateCache.has(cacheKey)) {
       setState({
-        template: templateCache.get(modelId) ?? null,
+        template: templateCache.get(cacheKey) ?? null,
         loading: false,
         error: null,
       });
@@ -38,9 +41,9 @@ export function useDefaultChatTemplate(
 
     const controller = new AbortController();
     setState({ template: null, loading: true, error: null });
-    fetchDefaultChatTemplate(modelId, getHfToken(), controller.signal)
+    fetchDefaultChatTemplate(modelId, ggufVariant, token, controller.signal)
       .then((template) => {
-        templateCache.set(modelId, template);
+        templateCache.set(cacheKey, template);
         setState({ template, loading: false, error: null });
       })
       .catch((err: unknown) => {
@@ -55,7 +58,7 @@ export function useDefaultChatTemplate(
       });
 
     return () => controller.abort();
-  }, [modelId, enabled]);
+  }, [modelId, ggufVariant, enabled]);
 
   return state;
 }

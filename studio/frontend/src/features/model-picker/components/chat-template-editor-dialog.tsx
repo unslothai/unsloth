@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { validateChatTemplate } from "../api/templates";
 import {
   MAX_CHAT_TEMPLATE_BYTES,
@@ -40,11 +40,16 @@ export function ChatTemplateEditorDialog({
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
+  const wasOpen = useRef(false);
 
   useEffect(() => {
-    if (open) {
+    const justOpened = open && !wasOpen.current;
+    wasOpen.current = open;
+    if (justOpened) {
       setDraft(value ?? defaultTemplate ?? "");
       setError(null);
+    } else if (open && value == null && defaultTemplate != null) {
+      setDraft((current) => (current.length === 0 ? defaultTemplate : current));
     }
   }, [open, value, defaultTemplate]);
 

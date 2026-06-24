@@ -32,11 +32,15 @@ export async function validateChatTemplate(
 
 export async function fetchDefaultChatTemplate(
   modelName: string,
+  ggufVariant?: string | null,
   hfToken?: string | null,
   signal?: AbortSignal,
 ): Promise<string | null> {
+  const query = ggufVariant
+    ? `?gguf_variant=${encodeURIComponent(ggufVariant)}`
+    : "";
   const response = await authFetch(
-    `/api/picker/chat-template/${encodeURIComponent(modelName)}`,
+    `/api/picker/chat-template/${encodeURIComponent(modelName)}${query}`,
     { headers: hubTokenHeader(hfToken), signal },
   );
   const data = await parseJsonOrThrow<{

@@ -531,7 +531,6 @@ type ChatRuntimeStore = {
   activeGgufVariant: string | null;
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
-  ggufNativeContextLength: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -1010,7 +1009,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeGgufVariant: null,
   ggufContextLength: null,
   ggufMaxContextLength: null,
-  ggufNativeContextLength: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -1280,7 +1278,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       pendingSelection: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
-      ggufNativeContextLength: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       supportsReasoning: false,

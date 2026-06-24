@@ -31,8 +31,9 @@ async def validate_chat_template_route(
 @router.get("/chat-template/{model_name:path}", response_model = ModelTemplateResponse)
 async def get_default_chat_template_route(
     model_name: str,
+    gguf_variant: Optional[str] = Query(None),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> ModelTemplateResponse:
-    template = read_default_chat_template(model_name, hf_token)
+    template = read_default_chat_template(model_name, hf_token, gguf_variant)
     return ModelTemplateResponse(model_name = model_name, chat_template = template)
