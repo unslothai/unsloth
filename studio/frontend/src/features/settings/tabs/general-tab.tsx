@@ -25,8 +25,9 @@ import {
   useShowLlamaUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
+import { cn } from "@/lib/utils";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { Eye, EyeOff } from "lucide-react";
+import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   type HelperPrecacheSettings,
@@ -170,6 +171,12 @@ export function GeneralTab() {
     if (trimmed !== draftToken) setDraftToken(trimmed);
     if (trimmed !== hfToken) setHfToken(trimmed);
   };
+
+  // Show an "accepted" tick once a non-empty token has been committed to the
+  // store and the field still matches it (i.e. not mid-edit). Gives the user
+  // feedback that a pasted token was saved.
+  const tokenSaved =
+    draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
 
   useEffect(() => {
     let cancelled = false;
@@ -319,8 +326,22 @@ export function GeneralTab() {
               value={draftToken}
               onChange={(e) => setDraftToken(e.target.value)}
               onBlur={commitToken}
-              className="h-8 w-full pr-8 font-mono text-xs"
+              className={cn(
+                "h-8 w-full font-mono text-xs",
+                tokenSaved ? "pr-14" : "pr-8",
+              )}
             />
+            {tokenSaved ? (
+              // Decorative: pointer-events-none lets clicks reach the input
+              // underneath so the field still focuses anywhere.
+              <span
+                className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
+                role="img"
+                aria-label={t("settings.general.tokenSaved")}
+              >
+                <Check className="size-4" strokeWidth={2.5} />
+              </span>
+            ) : null}
             <button
               type="button"
               onClick={() => setShowToken((s) => !s)}
