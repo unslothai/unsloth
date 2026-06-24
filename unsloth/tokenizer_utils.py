@@ -601,7 +601,7 @@ def _load_correct_tokenizer(
         cache_dir = cache_dir,
     )
 
-    if not fix_tokenizer or tokenizer_name in IGNORED_TOKENIZER_NAMES:
+    if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
         return fast_tokenizer
     # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
