@@ -45,8 +45,7 @@ def test_exposed_env_takes_env():
 def test_env_wins_over_tty():
     # An explicit env var is honored even on an interactive terminal.
     assert (
-        resolve_admin_password_source(**_base_kwargs(env_password = "x" * 12, has_tty = True))
-        == "env"
+        resolve_admin_password_source(**_base_kwargs(env_password = "x" * 12, has_tty = True)) == "env"
     )
 
 
@@ -112,7 +111,9 @@ def _scripted_reader(values):
 
 
 def test_prompt_returns_matching_password():
-    pw = prompt_new_admin_password(reader = _scripted_reader(["correct horse battery", "correct horse battery"]))
+    pw = prompt_new_admin_password(
+        reader = _scripted_reader(["correct horse battery", "correct horse battery"])
+    )
     assert pw == "correct horse battery"
 
 

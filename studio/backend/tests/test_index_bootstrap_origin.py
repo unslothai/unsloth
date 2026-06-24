@@ -160,6 +160,7 @@ def test_local_direct_ipv6_loopback_peer():
 def test_local_direct_ipv4_mapped_loopback_peer():
     """``::ffff:127.0.0.1`` is loopback once the mapped IPv4 is unwrapped."""
     from main import _is_local_direct_request
+
     req = _build_request("127.0.0.1:8888", origin = None, client_host = "::ffff:127.0.0.1")
     assert _is_local_direct_request(req) is True
 
@@ -167,6 +168,7 @@ def test_local_direct_ipv4_mapped_loopback_peer():
 def test_local_direct_127_8_range_peer():
     """The whole 127.0.0.0/8 block is loopback, not just 127.0.0.1."""
     from main import _is_local_direct_request
+
     req = _build_request("127.0.0.1:8888", origin = None, client_host = "127.0.0.2")
     assert _is_local_direct_request(req) is True
 
@@ -215,6 +217,7 @@ def test_local_direct_garbage_peer_denied():
 def test_local_direct_forwarding_headers_denied(header):
     """A loopback peer + any proxy/tunnel marker (cloudflared adds these) is denied."""
     from main import _is_local_direct_request
+
     req = _build_request(
         "127.0.0.1:8888",
         origin = None,
@@ -227,6 +230,7 @@ def test_local_direct_forwarding_headers_denied(header):
 def test_local_direct_spoofed_xff_loopback_still_denied():
     """A spoofed ``X-Forwarded-For: 127.0.0.1`` must not unlock injection."""
     from main import _is_local_direct_request
+
     req = _build_request(
         "127.0.0.1:8888",
         origin = None,
@@ -239,6 +243,7 @@ def test_local_direct_spoofed_xff_loopback_still_denied():
 def test_local_direct_colab_exempt(monkeypatch):
     """Colab is owner-auth-gated and never tunnels, so injection stays allowed."""
     import main
+
     monkeypatch.setattr(main, "_IS_COLAB", True)
     req = _build_request(
         "studio.colab.dev",

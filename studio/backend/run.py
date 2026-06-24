@@ -1065,7 +1065,6 @@ def run_server(
     try:
         from auth import storage as _auth_storage
         from auth.secure_admin_prompt import ensure_admin_password_before_exposure
-
         ensure_admin_password_before_exposure(
             storage = _auth_storage,
             host = host,
