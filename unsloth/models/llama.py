@@ -2373,6 +2373,18 @@ class FastLlamaModel:
         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
         get_statistics(kwargs.get("local_files_only", False))
 
+        # Pre-download the repo in a killable subprocess that falls back from Xet
+        # to HTTP on a no-progress stall, so the in-process load below is a cache
+        # hit and cannot hang on a stalled Xet transfer.
+        maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = kwargs.get("local_files_only", False),
+            fast_inference = fast_inference,
+        )
+
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:

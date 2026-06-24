@@ -83,6 +83,7 @@ __all__ = [
     "verify_fp8_support_if_applicable",
     "_get_inference_mode_context_manager",
     "hf_login",
+    "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "get_moe_target_parameters",
     "make_fast_generate_wrapper",
@@ -822,6 +823,73 @@ warnings.filterwarnings(action = "ignore", category = UserWarning, module = "bit
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL + 1)
 
 TORCHAO_MSG = "Error: torchao not found, please install with `pip install torchao`"
+
+
+def maybe_prefetch_hf_snapshot(
+    model_name,
+    token = None,
+    *,
+    revision = None,
+    cache_dir = None,
+    local_files_only = False,
+    fast_inference = False,
+):
+    """Warm the Hugging Face cache for a remote repo before the in-process load.
+
+    Xet downloads can hang on a blob with no progress and no exception, and a
+    blocked native Xet thread cannot be killed in-process. We pull the whole
+    snapshot first in a killable subprocess that automatically falls back from
+    Xet to plain HTTP on a no-progress stall (unsloth_zoo.hf_xet_fallback); the
+    from_pretrained that follows is then a cache hit and cannot stall on Xet.
+
+    Best-effort: a deterministic failure (missing repo, auth, disk) is left for
+    from_pretrained to surface canonically; only a both-transports-stalled
+    DownloadStallError is raised here, to avoid a silent in-process hang.
+    """
+    try:
+        from unsloth_zoo.hf_xet_fallback import (
+            snapshot_download_with_xet_fallback,
+            DownloadStallError,
+        )
+    except Exception:
+        # Older unsloth_zoo without the helper: skip warming, load normally.
+        return
+
+    if not isinstance(model_name, str) or not model_name:
+        return
+    # A local directory / file path has nothing to download.
+    if os.path.isdir(model_name) or os.path.exists(model_name):
+        return
+    # Offline / cache-only: never reach out.
+    if local_files_only:
+        return
+    if any(
+        os.environ.get(flag, "0").lower() in ("1", "true", "yes", "on")
+        for flag in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    ):
+        return
+    # vLLM has its own download path; leave it untouched.
+    if fast_inference:
+        return
+
+    try:
+        snapshot_download_with_xet_fallback(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
+    except DownloadStallError:
+        # Both Xet and HTTP stalled: surface a clear network error instead of
+        # letting the in-process load hang on the same stall.
+        raise
+    except Exception as exception:
+        logger.warning_once(
+            f"Unsloth: Could not pre-download {model_name} "
+            f"({type(exception).__name__}: {exception}); continuing with the normal load."
+        )
+    return
+pass
 
 
 # Ignore logging messages
