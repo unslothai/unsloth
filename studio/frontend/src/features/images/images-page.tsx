@@ -70,9 +70,8 @@ const MODELS: ModelOption[] = [
   { id: MODEL.repo_id, name: MODEL.label, description: "Text-to-image · GGUF", isGguf: true },
 ];
 
-// Common aspect ratios (landscape-oriented; the Flip button gives the portrait
-// mirror). Picking one locks the W:H proportion; the sliders size it, and the
-// generation snaps to Z-Image's ~1-megapixel-trained 16px grid.
+// Common aspect ratios (landscape; Flip gives the portrait mirror). Picking one
+// locks the W:H proportion; the sliders set the size.
 const ASPECT_RATIOS: Record<string, [number, number]> = {
   "1:1": [1, 1],
   "3:2": [3, 2],
@@ -100,10 +99,9 @@ function matchAspect(width: number, height: number): { key: string; portrait: bo
   return { key: found ? found[0] : "custom", portrait: height > width };
 }
 
-// The gallery is persisted on the backend (durable across reloads); this module
-// cache only holds the last-fetched records + their object/data URLs so a tab
-// switch re-renders instantly without a refetch flash. Object URLs live for the
-// app's lifetime (revoked only on delete), so they stay valid across remounts.
+// Module cache of the backend-persisted gallery, so a tab switch re-renders
+// instantly. Object URLs are revoked only on delete (not unmount), so they stay
+// valid across remounts.
 const galleryCache: {
   images: GalleryImage[];
   selectedId: string | null;
@@ -114,10 +112,8 @@ const galleryCache: {
   inflight: Set<string>;
 } = { images: [], selectedId: null, quant: null, srcById: new Map(), inflight: new Set() };
 
-// Export filename: app name, a compact sortable timestamp, and the seed. A batch
-// shares the seed + timestamp, so a "_<n>" suffix is added past the first image.
-// e.g. Unsloth_20260624-143005_123.png / Unsloth_20260624-143005_123_1.png
-// (the full recipe is embedded in the PNG regardless).
+// Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share
+// the seed + timestamp, so they get a "_<n>" suffix past the first one.
 function exportFilename(image: GalleryImage): string {
   const d = new Date(image.created_at * 1000);
   const p = (n: number) => String(n).padStart(2, "0");
@@ -148,9 +144,9 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-// Render the chat ModelLoadDescription for a progress poll. The base text-
-// encoder/VAE repo downloads alongside the GGUF, so the total can exceed the
-// picked quant's size — that's the real one-time download.
+// Render the chat ModelLoadDescription for a progress poll. The base repo
+// (text-encoder/VAE) downloads alongside the GGUF, so the total exceeds the
+// picked quant's size.
 function loadToastDescription(p: DiffusionLoadProgress) {
   // "Downloading" only when bytes actually remain to fetch — a cached model (or
   // the pre-estimate window, total still 0) shouldn't claim a download.
@@ -457,11 +453,9 @@ export function ImagesPage() {
     toast.success("Settings restored to inputs");
   }, []);
 
-  // Size controls: a locked aspect ratio keeps the paired dimension in step as
-  // you drag a slider; "custom" frees both. Flip swaps width and height and
-  // keeps the lock (the ratio just applies in the other orientation).
-  // h/w multiplier for the locked ratio [a,b] (a:b = long:short): landscape puts
-  // the long side on width (h = w*b/a), portrait puts it on height (h = w*a/b).
+  // A locked ratio keeps the paired dimension in step while dragging; "custom"
+  // frees both; Flip swaps W/H. ratioHW is the h/w for ratio [a,b] (long:short):
+  // landscape h = w*b/a, portrait h = w*a/b.
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
   const changeAspect = (key: string) => {
     setAspect(key);

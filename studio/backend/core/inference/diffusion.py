@@ -3,19 +3,12 @@
 
 """Local diffusion (text-to-image) backend.
 
-A small torch-only singleton that loads a diffusers pipeline and generates
-images. Single-file GGUF checkpoints are dequantised on-device via
-``diffusers.GGUFQuantizationConfig``; the rest of the pipeline (VAE, text
-encoders, scheduler) comes from the matching base repo (see
-``diffusion_families``). torch/diffusers are imported lazily inside the methods
-so this module imports cleanly in a no-torch runtime.
-
-Loading runs on a background thread (``begin_load``) so the route returns
-immediately and the frontend can poll ``load_progress`` for a download bar.
-
-This backend owns no GPU-handoff policy: it assumes it is the heavy GPU user
-while loaded. Coordinating with the chat backend lives in the GPU arbiter the
-routes call, not here.
+A torch-only singleton: it dequantises a single-file GGUF on-device via
+``GGUFQuantizationConfig`` and pulls the rest of the pipeline (VAE, text
+encoders, scheduler) from the matching base repo. torch/diffusers are imported
+lazily so this stays importable in a no-torch runtime. ``begin_load`` runs on a
+background thread; poll ``load_progress`` for the download bar. GPU-handoff
+policy lives in the arbiter the routes call, not here.
 """
 
 from __future__ import annotations
