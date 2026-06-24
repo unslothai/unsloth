@@ -432,6 +432,7 @@ def strip_shadowing_flags(
     strip_spec: bool = True,
     strip_template: bool = True,
     strip_split_mode: bool = True,
+    strip_tensor_split: bool = False,
     strip_offload: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Studio settings.
@@ -441,6 +442,12 @@ def strip_shadowing_flags(
     (same for cache / spec / template / split-mode). Each ``strip_*``
     toggle controls one group; the route only strips groups whose
     first-class field the caller actually supplied.
+
+    ``strip_split_mode`` removes both ``--split-mode`` and the coupled
+    ``--tensor-split`` (the Tensor Parallelism toggle owns the whole split).
+    ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
+    replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
+    row/none/layer choice intact.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -453,6 +460,8 @@ def strip_shadowing_flags(
         shadowing |= _TEMPLATE_FLAGS
     if strip_split_mode:
         shadowing |= _SPLIT_SHADOWING_FLAGS
+    if strip_tensor_split:
+        shadowing |= _TENSOR_SPLIT_FLAGS
     if strip_offload:
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
 

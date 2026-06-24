@@ -3,6 +3,7 @@
 
 import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { cancelStagedModelDownload } from "@/features/hub";
+import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -498,6 +499,22 @@ export function rebalanceSplit(
   );
   otherIdx.forEach((i, k) => (out[i] = dist[k]));
   return out;
+}
+
+// Validate a persisted gpu_ids pick against the GPUs present right now, before
+// restoring it from remembered settings. Returns null (= automatic) when the
+// pick is stale (none of the saved ids exist, or the host can't pin a multi-GPU
+// set), so a saved [1] on a now-1-GPU host doesn't get sent and rejected with no
+// way to clear it. A null pick (= automatic) passes through unchanged, and an
+// unpopulated device cache leaves the pick alone (the backend still guards).
+export function reconcilePersistedGpuIds(
+  ids: number[] | null,
+): number[] | null {
+  if (ids == null) return ids;
+  const pinnable = cachedPinnableGpuIndices();
+  if (pinnable === null) return ids; // cache not ready: can't validate, keep it
+  const kept = ids.filter((i) => pinnable.includes(i));
+  return kept.length > 0 ? kept : null;
 }
 
 // Store fields derived from a load/status response's GPU-memory settings.
@@ -1780,7 +1797,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ...(settings.gpuLayers != null && { gpuLayers: settings.gpuLayers }),
       ...(settings.nCpuMoe != null && { nCpuMoe: settings.nCpuMoe }),
       ...(settings.selectedGpuIds !== undefined && {
-        selectedGpuIds: settings.selectedGpuIds,
+        // Reconcile a persisted pick against the GPUs actually present now: a
+        // saved [1] restored on a 1-GPU host (or under relative/UUID visibility)
+        // would hide the picker yet still send gpu_ids, which the backend
+        // rejects, with no way to clear it. Drop unknown ids / stale picks.
+        selectedGpuIds: reconcilePersistedGpuIds(settings.selectedGpuIds),
       }),
     }),
   setLoadOnSelection: (loadOnSelection) => {

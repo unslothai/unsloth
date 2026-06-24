@@ -118,6 +118,10 @@ export async function validateModel(
       // Size the training-coexistence guard against the GPUs /load will use, not
       // all visible ones, so validate and load agree on placement.
       gpu_ids: payload.gpu_ids,
+      // Manual offload settings too, so the guard credits a low gpu_layers pick
+      // (most weights on CPU) the same way /load does.
+      gpu_memory_mode: payload.gpu_memory_mode,
+      gpu_layers: payload.gpu_layers,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

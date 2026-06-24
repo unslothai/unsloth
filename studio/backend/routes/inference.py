@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, List, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 import json
 import httpx
 from loggers import get_logger
@@ -2065,21 +2065,33 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
 
 
 def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[str]]) -> bool:
-    """Whether an inherited --split-mode should be stripped on reload.
+    """Whether an inherited --split-mode (and its coupled --tensor-split) should
+    be stripped on reload.
 
     The binary Tensor Parallelism toggle can't carry --split-mode's row/none/
     layer modes, so only strip when the toggle overrides it: tensor being turned
     on, or the inherited mode is tensor (toggle turning it off). Non-tensor modes
-    survive. Manual mode with a per-GPU ratio is the other owner: it emits its own
-    --tensor-split, which an inherited one (appended last) would override, so
-    strip then too. Shared by the inheritance strip and the already-loaded stale
-    check so they agree on what reload would do.
+    survive. A manual per-GPU ratio is handled by _should_strip_tensor_split,
+    which strips only --tensor-split so the inherited mode is kept. Shared by the
+    inheritance strip and the already-loaded stale check so they agree on what
+    reload would do.
     """
     fields_set = getattr(request, "model_fields_set", set())
-    if "tensor_parallel" in fields_set and (
+    return "tensor_parallel" in fields_set and (
         request.tensor_parallel or resolve_tensor_parallel(backend_extra, False)
-    ):
-        return True
+    )
+
+
+def _should_strip_tensor_split(request: LoadRequest) -> bool:
+    """Whether an inherited --tensor-split alone should be stripped on reload.
+
+    Manual mode with a per-GPU ratio emits its own --tensor-split, which an
+    inherited one (appended last) would override, so strip the inherited ratio.
+    Unlike _should_strip_split_mode this leaves --split-mode untouched, so a
+    user's row/none/layer mode survives a Studio split-ratio edit. When the
+    Tensor Parallelism toggle IS overriding the mode, _should_strip_split_mode
+    (called alongside this at every site) strips --split-mode anyway.
+    """
     return request.gpu_memory_mode == "manual" and bool(request.tensor_split)
 
 
@@ -2115,6 +2127,8 @@ def _request_matches_loaded_settings(
         else strip_shadowing_flags(
             backend_extra,
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
+            strip_tensor_split = _should_strip_tensor_split(request),
+            strip_offload = request.gpu_memory_mode == "manual",
         )
     )
     if not _tensor_parallel_matches_loaded(
@@ -2179,14 +2193,17 @@ def _request_matches_loaded_settings(
     # contain any shadow flag, so the reload path strips them rather than
     # leaving a stale override in effect. (backend_extra computed above.)
     if request.llama_extra_args is None:
-        # Mirror the reload's conditional split-mode strip, so a preserved
-        # non-tensor mode (row/none/layer) isn't seen as stale and doesn't
-        # trigger a needless reload of a healthy server.
+        # Mirror the reload's conditional strips, so a preserved non-tensor mode
+        # (row/none/layer) isn't seen as stale and doesn't trigger a needless
+        # reload of a healthy server, while an inherited offload/ratio flag that
+        # the reload *would* strip is correctly seen as stale.
         if (
             backend_extra
             and strip_shadowing_flags(
                 backend_extra,
                 strip_split_mode = _should_strip_split_mode(request, backend_extra),
+                strip_tensor_split = _should_strip_tensor_split(request),
+                strip_offload = request.gpu_memory_mode == "manual",
             )
             != backend_extra
         ):
@@ -2336,16 +2353,41 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
+def _manual_gpu_layer_fraction(gguf_path: str, gpu_layers: int) -> Optional[float]:
+    """Fraction of the model pinned on the GPU under manual ``--gpu-layers``, or
+    None when the layer count can't be read (caller keeps the full estimate).
+    ``gpu_layers`` >= layer count -> 1.0 (all on GPU); 0 -> 0.0 (all on CPU)."""
+    try:
+        from utils.models.gguf_metadata import read_gguf_staged_dims
+
+        dims = read_gguf_staged_dims(gguf_path)
+        n_layers = dims.get("layer_count") if dims else None
+        if not n_layers:
+            return None
+        return min(max(gpu_layers, 0), n_layers) / n_layers
+    except Exception:
+        return None
+
+
 def _estimate_gguf_required_gb(
     config: ModelConfig,
     hf_token: Optional[str] = None,
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
+    gpu_layers: int = -1,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
-    resolves so the caller default-denies."""
+    resolves so the caller default-denies.
+
+    Manual mode with a pinned ``gpu_layers`` keeps only that fraction of layers
+    (weights + their KV) on the GPU and spills the rest to system RAM, so the
+    GPU-resident estimate is scaled down by the offloaded fraction -- otherwise a
+    low/zero gpu_layers config is wrongly blocked as full residency. A large
+    ``--n-cpu-moe`` saves still more VRAM, but that isn't credited here: the guard
+    must not *under*-estimate and OOM the training run."""
     try:
         total_bytes = 0
         main = getattr(config, "gguf_file", None)
@@ -2356,13 +2398,22 @@ def _estimate_gguf_required_gb(
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
         if total_bytes > 0:
-            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
+            resident_gb = total_bytes / (1024**3) + _estimate_gguf_kv_gb(
                 main, max_seq_length, llama_extra_args, n_parallel
             )
+            if main and gpu_memory_mode == "manual" and gpu_layers >= 0:
+                frac = _manual_gpu_layer_fraction(str(main), gpu_layers)
+                if frac is not None:
+                    resident_gb *= frac
+            return resident_gb
 
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)
         if repo and variant:
+            # Remote (not-yet-downloaded) GGUF: the layer count lives in the
+            # header, which isn't local yet, so manual offload can't be credited
+            # here. Returning the full size over-blocks a CPU-heavy manual load
+            # during training, which is the safe direction (never under-estimate).
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
@@ -2391,11 +2442,14 @@ def _guard_chat_load_against_training(
     requested_gpu_ids: Optional[List[int]],
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
+    gpu_layers: int = -1,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
     effective quantization (see _effective_load_in_4bit). Raises HTTP 409 when the
-    model would not fit alongside training."""
+    model would not fit alongside training. Manual GGUF offload (gpu_memory_mode /
+    gpu_layers) shrinks the GGUF estimate so a CPU-heavy pick isn't over-blocked."""
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
 
@@ -2414,6 +2468,8 @@ def _guard_chat_load_against_training(
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
+            gpu_memory_mode = gpu_memory_mode,
+            gpu_layers = gpu_layers,
         )
         if is_gguf
         else None
@@ -2705,6 +2761,8 @@ async def load_model(
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -2778,6 +2836,10 @@ async def load_model(
                         strip_split_mode = _should_strip_split_mode(
                             request, llama_backend.extra_args
                         ),
+                        # manual + per-GPU ratio emits its own --tensor-split; drop
+                        # an inherited one (appended last would override it) while
+                        # keeping the user's --split-mode row/none/layer choice.
+                        strip_tensor_split = _should_strip_tensor_split(request),
                         # manual emits its own --fit/--gpu-layers, so an inherited
                         # offload flag must not last-wins-override it. auto leaves a
                         # user's inherited -ngl alone (offload_overridden).
@@ -3215,6 +3277,8 @@ async def validate_model(
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

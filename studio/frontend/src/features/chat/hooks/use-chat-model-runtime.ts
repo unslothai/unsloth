@@ -631,6 +631,11 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               gpu_ids: validateGpuIds ?? undefined,
+              // Mirror /load's manual offload so the guard credits a low
+              // gpu_layers pick (most weights on CPU), like validateGpuLayers
+              // re-baselines the layer count above.
+              gpu_memory_mode: loadGpuMemoryMode,
+              gpu_layers: validateGpuLayers,
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the

@@ -1215,13 +1215,17 @@ async function autoLoadSmallestModel(): Promise<{
     is_lora: boolean;
     gguf_variant?: string | null;
   }): Promise<boolean> {
+    const rt = useChatRuntimeStore.getState();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
-      // Size the guard against the GPUs the auto-load will use.
-      gpu_ids: useChatRuntimeStore.getState().selectedGpuIds ?? undefined,
+      // Size the guard against the GPUs and manual offload the auto-load will use
+      // (it sends the same gpuMemoryMode/gpuLayers below).
+      gpu_ids: rt.selectedGpuIds ?? undefined,
+      gpu_memory_mode: rt.gpuMemoryMode,
+      gpu_layers: rt.gpuLayers,
     });
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
     // files on its own; both are deferred to the explicit consent dialog instead.

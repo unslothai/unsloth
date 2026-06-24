@@ -133,3 +133,20 @@ export function useGpuDevices(): SystemGpuDevice[] {
   }, []);
   return devices;
 }
+
+/**
+ * Pinnable physical GPU indices from the already-fetched /api/system cache, for
+ * non-React code (the store) that needs to validate a persisted `gpu_ids` pick
+ * without triggering a fetch. Returns:
+ *  - `null` when the cache isn't populated yet (caller can't validate, so keep
+ *    the pick and let the backend guard reject a truly bad one);
+ *  - `[]` when the host has no pinnable multi-GPU set (single GPU, or relative/
+ *    UUID-masked indices) -- the picker is hidden, so any saved pick is stale;
+ *  - the physical indices otherwise.
+ */
+export function cachedPinnableGpuIndices(): number[] | null {
+  if (!cachedSystem) return null;
+  const physical = toGpuDevices(cachedSystem).filter((d) => d.physicalIndex);
+  // Mirrors the sheet's showGpuPicker gate: only a 2+ physical-GPU host can pin.
+  return physical.length > 1 ? physical.map((d) => d.index) : [];
+}

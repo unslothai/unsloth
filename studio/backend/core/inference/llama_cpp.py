@@ -5638,6 +5638,9 @@ class LlamaCppBackend:
                     cmd.extend(["-c", "0"])
 
                 fully_gpu_offloaded = False
+                # Set when a positional --tensor-split is emitted, so the env block
+                # can pin CUDA to PCI order even without a GPU subset (see below).
+                manual_tensor_split_emitted = False
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     # Pin the user's layer count and disable auto-fit. --fit off
                     # also means _ctx_integrity_flags must not add --fit-ctx.
@@ -5659,6 +5662,7 @@ class LlamaCppBackend:
                     # emit a split that doesn't match the GPUs and abort.
                     if tensor_split and self._effective_gpu_count(gpu_indices) > 1:
                         cmd.extend(["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)])
+                        manual_tensor_split_emitted = True
                 elif use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
@@ -5967,6 +5971,15 @@ class LlamaCppBackend:
                             env.pop("ROCR_VISIBLE_DEVICES", None)
                     except Exception as e:
                         logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
+                elif manual_tensor_split_emitted:
+                    # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
+                    # no CUDA_VISIBLE_DEVICES mask above): the UI built the
+                    # --tensor-split list in physical/PCI index order, so pin CUDA
+                    # to that order too. Without this, CUDA's default FASTEST_FIRST
+                    # enumeration applies the shares to the wrong cards on
+                    # heterogeneous hosts (#5025). The whole visible set stays in
+                    # use; only its ordering is fixed.
+                    env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd

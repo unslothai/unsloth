@@ -594,6 +594,87 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 gb = self.route._estimate_gguf_required_gb(cfg, max_seq_length = 8192)
         self.assertAlmostEqual(gb, 1000 / (1024**3) + 2.0, places = 6)  # weights + KV
 
+    def _local_gguf_cfg(self, path):
+        return SimpleNamespace(
+            gguf_file = str(path),
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = None,
+            gguf_variant = None,
+        )
+
+    def test_manual_scales_estimate_by_gpu_layer_fraction(self):
+        # Manual offload keeps only gpu_layers/total of the model (weights + KV)
+        # on the GPU; the guard estimate scales down so a CPU-heavy pick isn't
+        # over-blocked. auto mode (the default) must not scale.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            cfg = self._local_gguf_cfg(p)
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.25),
+            ):
+                resident = 1000 / (1024**3) + 2.0
+                manual = self.route._estimate_gguf_required_gb(
+                    cfg, gpu_memory_mode = "manual", gpu_layers = 8
+                )
+                auto = self.route._estimate_gguf_required_gb(cfg)
+        self.assertAlmostEqual(manual, resident * 0.25, places = 6)
+        self.assertAlmostEqual(auto, resident, places = 6)  # default never scales
+
+    def test_manual_zero_layers_credits_cpu_residency(self):
+        # gpu_layers=0 -> fraction 0 -> ~0 GB on the GPU (all weights on CPU), so
+        # the guard lets it load alongside training.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 4096)
+            cfg = self._local_gguf_cfg(p)
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 3.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.0),
+            ):
+                gb = self.route._estimate_gguf_required_gb(
+                    cfg, gpu_memory_mode = "manual", gpu_layers = 0
+                )
+        self.assertEqual(gb, 0.0)
+
+    def test_manual_keeps_full_estimate_when_layer_count_unreadable(self):
+        # _manual_gpu_layer_fraction returns None (can't read layers) -> no scale,
+        # the conservative full estimate stands so training can't be OOM'd.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            cfg = self._local_gguf_cfg(p)
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = None),
+            ):
+                gb = self.route._estimate_gguf_required_gb(
+                    cfg, gpu_memory_mode = "manual", gpu_layers = 4
+                )
+        self.assertAlmostEqual(gb, 1000 / (1024**3), places = 9)
+
+    def test_manual_gpu_layer_fraction_clamps_and_reads_layers(self):
+        # _manual_gpu_layer_fraction imports read_gguf_staged_dims lazily, so
+        # patch it at its source module.
+        import utils.models.gguf_metadata as gm
+
+        frac = self.route._manual_gpu_layer_fraction
+        with patch.object(gm, "read_gguf_staged_dims", return_value = {"layer_count": 32}):
+            self.assertAlmostEqual(frac("x.gguf", 8), 0.25, places = 9)
+            self.assertEqual(frac("x.gguf", 0), 0.0)  # all on CPU
+            self.assertEqual(frac("x.gguf", 999), 1.0)  # clamps above layer count
+        # Unreadable / non-GGUF (None dims, or a None/zero layer_count) -> None so
+        # the caller keeps the full estimate.
+        with patch.object(gm, "read_gguf_staged_dims", return_value = None):
+            self.assertIsNone(frac("x.gguf", 8))
+        with patch.object(gm, "read_gguf_staged_dims", return_value = {"layer_count": None}):
+            self.assertIsNone(frac("x.gguf", 8))
+
     def test_kv_helper_graceful_on_non_gguf(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -690,6 +771,45 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         inf.unload_model.assert_not_called()
         inf._shutdown_subprocess.assert_not_called()
         llama.unload_model.assert_not_called()
+
+
+# ── split-mode vs tensor-split strip predicates (manual ratio decoupling) ─────
+
+
+class TestStripSplitPredicates(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.route = _load_inference_route()
+
+    def _req(self, **kw):
+        from models.inference import LoadRequest
+
+        return LoadRequest(model_path = "unsloth/Qwen3-1.7B", **kw)
+
+    def test_manual_ratio_strips_only_tensor_split_not_split_mode(self):
+        # Manual + per-GPU ratio replaces the inherited --tensor-split but keeps
+        # the user's --split-mode (row/none/layer): tensor-split predicate True,
+        # split-mode predicate False. This is the fix #5 decoupling.
+        req = self._req(gpu_memory_mode = "manual", gpu_layers = 8, tensor_split = [2, 1])
+        self.assertTrue(self.route._should_strip_tensor_split(req))
+        self.assertFalse(self.route._should_strip_split_mode(req, []))
+
+    def test_manual_without_ratio_strips_neither(self):
+        req = self._req(gpu_memory_mode = "manual", gpu_layers = 8)
+        self.assertFalse(self.route._should_strip_tensor_split(req))
+        self.assertFalse(self.route._should_strip_split_mode(req, []))
+
+    def test_tensor_parallel_toggle_still_owns_split_mode(self):
+        # The TP toggle owns the whole split group (strip_split_mode covers
+        # --tensor-split), independent of manual mode.
+        req = self._req(tensor_parallel = True)
+        self.assertTrue(self.route._should_strip_split_mode(req, []))
+        self.assertFalse(self.route._should_strip_tensor_split(req))
+
+    def test_auto_mode_strips_neither(self):
+        req = self._req()  # default auto
+        self.assertFalse(self.route._should_strip_tensor_split(req))
+        self.assertFalse(self.route._should_strip_split_mode(req, []))
 
 
 if __name__ == "__main__":
