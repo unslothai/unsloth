@@ -776,6 +776,25 @@ if _IS_MLX:
                                 "tokenizer",
                                 collator_processor,
                             )
+                    collator_kwargs = getattr(data_collator, "kwargs", None) or {}
+                    collator_image_size = collator_kwargs.get(
+                        "image_size",
+                        collator_kwargs.get("resize", None),
+                    )
+                    if isinstance(collator_image_size, list):
+                        collator_image_size = tuple(collator_image_size)
+                    if (
+                        "image_size" not in kwargs
+                        and (
+                            isinstance(collator_image_size, int)
+                            or (
+                                isinstance(collator_image_size, tuple)
+                                and len(collator_image_size) == 2
+                                and all(isinstance(x, int) for x in collator_image_size)
+                            )
+                        )
+                    ):
+                        kwargs["image_size"] = collator_image_size
                 elif _is_mlx_native_text_collator(data_collator):
                     pass  # redundant on MLX; MLXTrainer batches/masks/pads natively
                 else:
@@ -798,6 +817,11 @@ if _IS_MLX:
             )
 
             super().__init__(**trainer_kwargs)
+            self.processing_class = (
+                processing_class
+                if processing_class is not None
+                else self.processor or self.tokenizer
+            )
             if trainer_kwargs.get("max_seq_length") is not None:
                 _set_mlx_cuda_style_context_length(
                     self.args,
