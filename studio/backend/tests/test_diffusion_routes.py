@@ -51,12 +51,16 @@ class _FakeBackend:
             "error": None,
         }
 
-    def generate(self, *, seed = None, **kwargs):
+    def generate(self, *, seed = None, batch_size = 1, **kwargs):
         if not self.loaded:
             raise RuntimeError("No diffusion model is loaded.")
-        # The real backend returns the PIL image; the route persists it. The fake
-        # returns a sentinel object since image_gallery is stubbed in the fixture.
-        return {"image": object(), "seed": seed if seed is not None else 4242, "repo_id": "x/z-image"}
+        # The real backend returns the PIL images; the route persists them. The
+        # fake returns sentinels since image_gallery is stubbed in the fixture.
+        return {
+            "images": [object() for _ in range(batch_size)],
+            "seed": seed if seed is not None else 4242,
+            "repo_id": "x/z-image",
+        }
 
     def unload(self):
         self.loaded = False
@@ -97,7 +101,7 @@ def client(monkeypatch, tmp_path):
         (tmp_path / f"{image_id}.png").write_bytes(b"PNG")
         record = {**meta, "id": image_id, "url": f"/api/inference/images/gallery/{image_id}/file"}
         store[image_id] = record
-        return record, "QUJD"  # (record, base64 PNG)
+        return record
 
     def _clear():
         n = len(store)
@@ -137,10 +141,10 @@ def test_load_generate_status_unload_roundtrip(client):
 
     gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
     assert gen.status_code == 200
-    gbody = gen.json()
-    assert gbody["mime"] == "image/png" and gbody["image_b64"]
-    # The persisted record carries the full recipe back.
-    img = gbody["image"]
+    # One persisted record carrying the full recipe back.
+    images = gen.json()["images"]
+    assert len(images) == 1
+    img = images[0]
     assert img["seed"] == 7 and img["prompt"] == "a sloth" and img["id"]
 
     # The image is now listable, fetchable, and deletable.
@@ -153,6 +157,20 @@ def test_load_generate_status_unload_roundtrip(client):
     unloaded = client.post("/api/inference/images/unload")
     assert unloaded.status_code == 200 and unloaded.json()["loaded"] is False
     assert client.get("/api/inference/images/status").json()["loaded"] is False
+
+
+def test_generate_batch_size_persists_each_image(client):
+    client.post("/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"})
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "p", "batch_size": 3, "seed": 5},
+    )
+    assert resp.status_code == 200
+    images = resp.json()["images"]
+    assert len(images) == 3
+    assert all(i["seed"] == 5 for i in images)  # the batch shares one seed
+    assert len({i["id"] for i in images}) == 3  # but each is a distinct record
+    assert len(client.get("/api/inference/images/gallery").json()["images"]) == 3
 
 
 def test_generate_rejects_non_multiple_of_16(client):

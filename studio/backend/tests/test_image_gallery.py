@@ -44,7 +44,7 @@ def _meta(**over):
 
 
 def test_save_embeds_recipe_and_round_trips():
-    record, _b64 = gallery.save(_img(), _meta())
+    record = gallery.save(_img(), _meta())
     assert record["id"] and record["url"].endswith(f"{record['id']}/file")
 
     # The recipe is embedded in the PNG itself (portable), not just in a sidecar.
@@ -60,20 +60,20 @@ def test_save_embeds_recipe_and_round_trips():
 
 
 def test_list_is_newest_first():
-    old, _ = gallery.save(_img(), _meta(prompt = "old", created_at = 100.0))
-    new, _ = gallery.save(_img(), _meta(prompt = "new", created_at = 200.0))
+    old = gallery.save(_img(), _meta(prompt = "old", created_at = 100.0))
+    new = gallery.save(_img(), _meta(prompt = "new", created_at = 200.0))
     assert [r["id"] for r in gallery.list_images()] == [new["id"], old["id"]]
 
 
 def test_negative_prompt_recorded_in_parameters():
-    record, _ = gallery.save(_img(), _meta(negative_prompt = "blurry"))
+    record = gallery.save(_img(), _meta(negative_prompt = "blurry"))
     raw = base64.b64decode(gallery.image_b64(record["id"]))
     with Image.open(io.BytesIO(raw)) as im:
         assert "Negative prompt: blurry" in im.text["parameters"]
 
 
 def test_delete_and_clear():
-    a, _ = gallery.save(_img(), _meta(prompt = "a"))
+    a = gallery.save(_img(), _meta(prompt = "a"))
     gallery.save(_img(), _meta(prompt = "b"))
     assert gallery.delete(a["id"]) is True
     assert gallery.delete(a["id"]) is False  # already gone

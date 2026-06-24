@@ -122,7 +122,8 @@ class _FakePipe:
 
     def __call__(self, **kwargs):
         self.last_kwargs = kwargs
-        return types.SimpleNamespace(images = [_FakeImage()])
+        n = kwargs.get("num_images_per_prompt", 1)
+        return types.SimpleNamespace(images = [_FakeImage() for _ in range(n)])
 
 
 class _FakePipeline:
@@ -193,10 +194,14 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     gen = backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 4, guidance = 3.0)
     assert gen["seed"] == 4242  # random seed reported back
     assert gen["repo_id"] == str(tmp_path)  # echoed so the route can record the model
-    assert gen["image"] is not None  # PIL image handed to the route for persistence
+    assert len(gen["images"]) == 1  # PIL images handed to the route for persistence
 
     gen2 = backend.generate(prompt = "again", seed = 99)
     assert gen2["seed"] == 99
+
+    # batch_size produces that many images in one call, all sharing the seed.
+    batch = backend.generate(prompt = "batch", seed = 7, batch_size = 3)
+    assert len(batch["images"]) == 3 and batch["seed"] == 7
 
     assert backend.unload()["loaded"] is False
     assert backend.is_loaded is False

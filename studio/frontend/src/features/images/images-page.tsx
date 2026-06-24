@@ -321,8 +321,13 @@ export function ImagesPage() {
   const [steps, setSteps] = useState(9);
   const [guidance, setGuidance] = useState(0.0);
   const [seed, setSeed] = useState("");
+  // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
+  const [batchSize, setBatchSize] = useState(1);
+  const [count, setCount] = useState(1);
 
   const [busy, setBusy] = useState<Busy>(null);
+  // {done, total} while a multi-run generation is in flight (for the button).
+  const [genProgress, setGenProgress] = useState<{ done: number; total: number } | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   // Records come from the backend (durable); srcById maps each id to its object
   // URL (loaded images) or data URL (the one just generated).
@@ -515,40 +520,48 @@ export function ImagesPage() {
       toast.error("Prompt is empty");
       return;
     }
-    let parsedSeed: number | undefined;
+    // Resolve a base seed up front. With an explicit seed the run is fully
+    // reproducible; with a random one we still pick a concrete base now so each
+    // sequential image gets a distinct, reproducible seed (base + i).
+    let baseSeed: number;
     if (seed.trim()) {
       const n = Number(seed);
-      if (!Number.isInteger(n) || n < 0) {
+      if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
         toast.error("Seed must be a non-negative integer");
         return;
       }
-      parsedSeed = n;
+      baseSeed = n;
+    } else {
+      baseSeed = Math.floor(Math.random() * 2 ** 32);
     }
 
     setBusy("generating");
+    setGenProgress({ done: 0, total: count });
     try {
-      const res = await generateDiffusionImage({
-        prompt: prompt.trim(),
-        negative_prompt: negativePrompt.trim() || undefined,
-        width: resolution.w,
-        height: resolution.h,
-        steps,
-        guidance,
-        seed: parsedSeed,
-      });
-      // Display the returned bytes immediately (no refetch); the record is the
-      // durable, backend-persisted gallery entry.
-      const dataUrl = `data:${res.mime};base64,${res.image_b64}`;
-      galleryCache.srcById.set(res.image.id, dataUrl);
-      setSrcById((prev) => ({ ...prev, [res.image.id]: dataUrl }));
-      setImages((prev) => [res.image, ...prev]);
-      setSelectedId(res.image.id);
+      for (let i = 0; i < count; i++) {
+        const res = await generateDiffusionImage({
+          prompt: prompt.trim(),
+          negative_prompt: negativePrompt.trim() || undefined,
+          width: resolution.w,
+          height: resolution.h,
+          steps,
+          guidance,
+          seed: baseSeed + i,
+          batch_size: batchSize,
+        });
+        // Prepend this run's records (newest first) and load their blobs.
+        setImages((prev) => [...res.images, ...prev]);
+        if (res.images[0]) setSelectedId(res.images[0].id);
+        res.images.forEach((image) => void ensureSrc(image));
+        setGenProgress({ done: i + 1, total: count });
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Image generation failed");
     } finally {
       setBusy(null);
+      setGenProgress(null);
     }
-  }, [prompt, negativePrompt, resolution, steps, guidance, seed]);
+  }, [prompt, negativePrompt, resolution, steps, guidance, seed, batchSize, count, ensureSrc]);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -635,9 +648,30 @@ export function ImagesPage() {
             />
           </Field>
 
+          <SliderField
+            label="Batch size"
+            hint="Images generated together in one forward pass (VRAM-heavy). They share the run's seed but each comes out different."
+            value={batchSize}
+            min={1}
+            max={32}
+            step={1}
+            onChange={setBatchSize}
+          />
+          <SliderField
+            label="Sequential count"
+            hint="Repeat generation this many times in a loop. Each run advances the seed (base + i), so images differ and stay reproducible."
+            value={count}
+            min={1}
+            max={128}
+            step={1}
+            onChange={setCount}
+          />
+
           <Button onClick={handleGenerate} disabled={busy !== null || !status?.loaded}>
             {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
-            Generate
+            {busy === "generating" && genProgress && genProgress.total > 1
+              ? `Generating ${genProgress.done}/${genProgress.total}…`
+              : "Generate"}
           </Button>
         </SectionCard>
 

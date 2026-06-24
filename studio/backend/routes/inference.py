@@ -10101,6 +10101,7 @@ async def generate_diffusion_image(
             steps = request.steps,
             guidance = request.guidance,
             seed = request.seed,
+            batch_size = request.batch_size,
         )
     except RuntimeError as exc:
         # No model loaded (or unloaded mid-flight) — a client-state problem.
@@ -10109,30 +10110,34 @@ async def generate_diffusion_image(
         logger.error("diffusion.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
-    # Persist the image with its full recipe embedded, then hand the client both
-    # the bytes (instant display) and the saved record.
-    meta = {
-        "prompt": request.prompt,
-        "negative_prompt": request.negative_prompt,
-        "width": request.width,
-        "height": request.height,
-        "steps": request.steps,
-        "guidance": request.guidance,
-        "seed": result["seed"],
-        "model": result.get("repo_id"),
-        "created_at": time.time(),
-    }
+    # Persist each image with its full recipe embedded. The whole batch shares
+    # one seed (drawn sequentially from one generator) and one timestamp (the
+    # images are generated together), so their gallery order is stable on reload.
+    created_at = time.time()
+
+    def _persist() -> list[dict]:
+        records = []
+        for image in result["images"]:
+            records.append(image_gallery.save(image, {
+                "prompt": request.prompt,
+                "negative_prompt": request.negative_prompt,
+                "width": request.width,
+                "height": request.height,
+                "steps": request.steps,
+                "guidance": request.guidance,
+                "seed": result["seed"],
+                "model": result.get("repo_id"),
+                "created_at": created_at,
+            }))
+        return records
+
     try:
-        record, image_b64 = await asyncio.to_thread(image_gallery.save, result["image"], meta)
+        records = await asyncio.to_thread(_persist)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
 
-    return DiffusionGenerateResponse(
-        image_b64 = image_b64,
-        mime = "image/png",
-        image = GalleryImage(**record),
-    )
+    return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
 
 
 @studio_router.get("/images/gallery", response_model = GalleryListResponse)

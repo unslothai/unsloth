@@ -39,6 +39,7 @@ export interface DiffusionGenerateRequest {
   steps?: number;
   guidance?: number;
   seed?: number;
+  batch_size?: number;
 }
 
 // A persisted image's full generation recipe (also embedded in the PNG).
@@ -57,9 +58,7 @@ export interface GalleryImage {
 }
 
 export interface DiffusionGenerateResponse {
-  image_b64: string;
-  mime: string;
-  image: GalleryImage;
+  images: GalleryImage[];
 }
 
 async function parseJson<T>(response: Response): Promise<T> {

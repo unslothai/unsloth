@@ -65,15 +65,11 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     return buf.getvalue()
 
 
-def save(image: Any, meta: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    """Persist a PIL image with its recipe embedded; return (record, base64 PNG).
-
-    Returning the bytes we just wrote lets the caller hand them straight to the
-    client without reading the file back off disk."""
+def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
+    """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
-    png_bytes = _png_bytes(image, meta)
-    (gallery_dir() / f"{image_id}.png").write_bytes(png_bytes)
-    return _record(image_id, meta), base64.b64encode(png_bytes).decode("ascii")
+    (gallery_dir() / f"{image_id}.png").write_bytes(_png_bytes(image, meta))
+    return _record(image_id, meta)
 
 
 def _record(image_id: str, meta: dict[str, Any]) -> dict[str, Any]:

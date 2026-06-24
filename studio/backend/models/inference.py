@@ -1713,6 +1713,9 @@ class DiffusionGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**64 - 1, description = "Seed for reproducibility (random if omitted)"
     )
+    batch_size: int = Field(
+        1, ge = 1, le = 32, description = "Images generated in one forward pass (VRAM-heavy)"
+    )
 
     @field_validator("width", "height")
     @classmethod
@@ -1742,11 +1745,11 @@ class GalleryImage(BaseModel):
 
 
 class DiffusionGenerateResponse(BaseModel):
-    """A generated image (for instant display) plus its persisted gallery record."""
+    """The persisted gallery records for one generation call (a batch)."""
 
-    image_b64: str = Field(..., description = "Base64-encoded PNG (recipe embedded)")
-    mime: str = Field("image/png", description = "MIME type of image_b64")
-    image: GalleryImage = Field(..., description = "The saved gallery record")
+    images: list[GalleryImage] = Field(
+        ..., description = "Saved records, one per image in the batch"
+    )
 
 
 class GalleryListResponse(BaseModel):

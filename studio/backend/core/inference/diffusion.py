@@ -297,6 +297,7 @@ class DiffusionBackend:
         steps: int = 9,  # Z-Image-Turbo: 9 steps = 8 DiT forwards (official default).
         guidance: float = 0.0,  # Turbo is distilled CFG-free; guidance must be 0.
         seed: Optional[int] = None,
+        batch_size: int = 1,
     ) -> dict[str, Any]:
         import torch
 
@@ -321,14 +322,17 @@ class DiffusionBackend:
                 "num_inference_steps": steps,
                 "guidance_scale": guidance,
                 "generator": generator,
+                # Generate the whole batch in one forward pass (VRAM-heavy). All
+                # share this call's seed, drawn sequentially from one generator.
+                "num_images_per_prompt": batch_size,
             }
             if negative_prompt:
                 kwargs["negative_prompt"] = negative_prompt
 
-            image = state.pipe(**kwargs).images[0]
-            # Return the PIL image (not yet encoded): the route embeds the
-            # generation recipe and persists it via the gallery.
-            return {"image": image, "seed": int(seed), "repo_id": state.repo_id}
+            images = state.pipe(**kwargs).images
+            # Return the PIL images (not yet encoded): the route embeds each
+            # image's recipe and persists it via the gallery.
+            return {"images": list(images), "seed": int(seed), "repo_id": state.repo_id}
 
     def unload(self) -> dict[str, Any]:
         with self._lock:
