@@ -320,3 +320,94 @@ def test_resolve_tokenizer_config_without_files_falls_back(tmp_path):
 
 def test_resolve_tokenizer_nonexistent_dir_falls_back():
     assert L._resolve_checkpoint_tokenizer_name("/no/such/dir", {}) is None
+
+
+# ---------------------------------------------------------------------------
+# _offline_aware_load (the retry orchestrator)
+# ---------------------------------------------------------------------------
+
+def test_retry_once_on_offline_error_then_succeed(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise ConnectionError("network down")
+        return "ok"
+
+    assert fake("model") == "ok"
+    assert len(calls) == 2
+    assert not calls[0].get("local_files_only")  # first attempt online
+    assert calls[1].get("local_files_only") is True  # retry forced offline
+    assert L._force_offline_depth == 0  # window cleaned up
+
+
+def test_no_retry_on_non_offline_error(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        raise ValueError("genuine bug, not a network issue")
+
+    with pytest.raises(ValueError):
+        fake("model")
+    assert len(calls) == 1
+
+
+def test_no_retry_when_already_offline_via_kwarg(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(dict(kwargs))
+        # Offline window is active for the single attempt.
+        assert os.environ.get("HF_HUB_OFFLINE") == "1"
+        return "ok"
+
+    assert fake("model", local_files_only = True) == "ok"
+    assert len(calls) == 1
+    assert L._force_offline_depth == 0
+
+
+def test_offline_error_when_already_offline_propagates(monkeypatch):
+    # Already offline -> no online attempt to retry, so the error propagates once.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        raise ConnectionError("still down")
+
+    with pytest.raises(ConnectionError):
+        fake("model")
+    assert len(calls) == 1
+    assert L._force_offline_depth == 0
+
+
+def test_kwargs_preserved_across_retry(monkeypatch):
+    # Callee popping config/tokenizer_name must not change what the retry sees:
+    # fn(*args, **kwargs) re-packs a fresh **kwargs per call.
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    seen = []
+
+    @L._offline_aware_load
+    def fake(model_name, **kwargs):
+        cfg = kwargs.pop("config", None)
+        tok = kwargs.pop("tokenizer_name", None)
+        seen.append((cfg, tok))
+        if len(seen) == 1:
+            raise ConnectionError("down")
+        return cfg, tok
+
+    assert fake("m", config = "CFG", tokenizer_name = "TOK") == ("CFG", "TOK")
+    assert seen == [("CFG", "TOK"), ("CFG", "TOK")]

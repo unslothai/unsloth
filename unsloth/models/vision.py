@@ -1034,151 +1034,152 @@ class FastBaseModel:
         verify_fp8_support_if_applicable(model_config)
 
         raise_handler = RaiseUninitialized()
-        if not fast_inference:
-            # Prevent load_in_fp8 from being forwarded into HF internal model loading
-            load_in_fp8 = kwargs.pop("load_in_fp8", None)
-            # Transformers 5.x @strict config classes reject unexpected kwargs.
-            # Move config-level attributes onto the config object directly.
-            _num_labels = kwargs.pop("num_labels", None)
-            if _num_labels is not None:
-                set_task_config_attr(model_config, "num_labels", _num_labels)
-            for _cfg_key in ("id2label", "label2id", "problem_type"):
-                _cfg_val = kwargs.pop(_cfg_key, None)
+        try:
+            if not fast_inference:
+                # Prevent load_in_fp8 from being forwarded into HF internal model loading
+                load_in_fp8 = kwargs.pop("load_in_fp8", None)
+                # Transformers 5.x @strict config classes reject unexpected kwargs.
+                # Move config-level attributes onto the config object directly.
+                _num_labels = kwargs.pop("num_labels", None)
+                if _num_labels is not None:
+                    set_task_config_attr(model_config, "num_labels", _num_labels)
+                for _cfg_key in ("id2label", "label2id", "problem_type"):
+                    _cfg_val = kwargs.pop(_cfg_key, None)
+                    if _cfg_val is not None:
+                        set_task_config_attr(model_config, _cfg_key, _cfg_val)
+                _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
-                    set_task_config_attr(model_config, _cfg_key, _cfg_val)
-            _cfg_val = kwargs.pop("max_position_embeddings", None)
-            if _cfg_val is not None:
-                setattr(model_config, "max_position_embeddings", _cfg_val)
-            model = auto_model.from_pretrained(
-                model_name,
-                config = model_config,
-                device_map = device_map,
-                # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
-                # quantization_config   = bnb_config,
-                token = token,
-                trust_remote_code = trust_remote_code,
-                # attn_implementation   = attn_implementation,
-                **kwargs,
-            )
-            # Attach dispatch hooks for bnb multi-device loads.
-            _attach_bnb_multidevice_hooks(
-                model,
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                offload_embedding = offload_embedding,
-                fast_inference = fast_inference,
-            )
-            if hasattr(model, "generate"):
-                model.fast_generate = make_fast_generate_wrapper(model.generate)
-                model.fast_generate_batches = error_out_no_vllm
-            if offload_embedding:
-                if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
-                    # WSL doesn't work with offloaded embeddings
-                    pass
-                elif os.name == "nt":
-                    # Windows doesn't work with offloaded embeddings
-                    pass
-                else:
-                    embed_tokens = model.get_input_embeddings()
-                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                    embed_tokens.to("cpu")
+                    setattr(model_config, "max_position_embeddings", _cfg_val)
+                model = auto_model.from_pretrained(
+                    model_name,
+                    config = model_config,
+                    device_map = device_map,
+                    # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
+                    # quantization_config   = bnb_config,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    # attn_implementation   = attn_implementation,
+                    **kwargs,
+                )
+                # Attach dispatch hooks for bnb multi-device loads.
+                _attach_bnb_multidevice_hooks(
+                    model,
+                    load_in_4bit = load_in_4bit,
+                    load_in_8bit = load_in_8bit,
+                    offload_embedding = offload_embedding,
+                    fast_inference = fast_inference,
+                )
+                if hasattr(model, "generate"):
+                    model.fast_generate = make_fast_generate_wrapper(model.generate)
+                    model.fast_generate_batches = error_out_no_vllm
+                if offload_embedding:
+                    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
+                        # WSL doesn't work with offloaded embeddings
+                        pass
+                    elif os.name == "nt":
+                        # Windows doesn't work with offloaded embeddings
+                        pass
+                    else:
+                        embed_tokens = model.get_input_embeddings()
+                        nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+                        ngb = round(nbytes / 1024 / 1024 / 1024, 2)
+                        print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                        embed_tokens.to("cpu")
 
-                    # Add hooks to move inputs to CPU and back to CUDA
-                    # [TODO] Doesn't seem to work!
-                    # def pre_hook(module, args):
-                    #     args[0]._old_device = args[0].device
-                    #     return (args[0].to("cpu", non_blocking = True))
-                    # def post_hook(module, args, output):
-                    #     old_device = getattr(args[0], "_old_device", "cuda")
-                    #     return output.to(old_device, non_blocking = True)
-                    # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
-                    # embed_tokens.register_forward_hook    (post_hook, prepend = True)
-                    # Must free GPU memory otherwise will not free!
-                    torch.cuda.empty_cache()
-                    gc.collect()
-        else:
-            from unsloth_zoo.vllm_utils import (
-                load_vllm,
-                get_vllm_state_dict,
-                convert_vllm_to_huggingface,
-                generate_batches,
-                get_lora_supported_ranks,
-            )
-
-            if full_finetuning:
-                max_lora_rank = max(get_lora_supported_ranks())
-                raise NotImplementedError(
-                    "Unsloth: `fast_inference=True` cannot be used together with `full_finetuning=True`.\n"
-                    "Reason: fast_inference is optimized for inference-only workflows and "
-                    "does not currently support full fine-tuning.\n"
-                    "Workaround: disable fast_inference, or use parameter-efficient fine-tuning "
-                    f"(e.g. LoRA with rank r={max_lora_rank})."
+                        # Add hooks to move inputs to CPU and back to CUDA
+                        # [TODO] Doesn't seem to work!
+                        # def pre_hook(module, args):
+                        #     args[0]._old_device = args[0].device
+                        #     return (args[0].to("cpu", non_blocking = True))
+                        # def post_hook(module, args, output):
+                        #     old_device = getattr(args[0], "_old_device", "cuda")
+                        #     return output.to(old_device, non_blocking = True)
+                        # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
+                        # embed_tokens.register_forward_hook    (post_hook, prepend = True)
+                        # Must free GPU memory otherwise will not free!
+                        torch.cuda.empty_cache()
+                        gc.collect()
+            else:
+                from unsloth_zoo.vllm_utils import (
+                    load_vllm,
+                    get_vllm_state_dict,
+                    convert_vllm_to_huggingface,
+                    generate_batches,
+                    get_lora_supported_ranks,
                 )
 
-            model_config.model_name = model_name
+                if full_finetuning:
+                    max_lora_rank = max(get_lora_supported_ranks())
+                    raise NotImplementedError(
+                        "Unsloth: `fast_inference=True` cannot be used together with `full_finetuning=True`.\n"
+                        "Reason: fast_inference is optimized for inference-only workflows and "
+                        "does not currently support full fine-tuning.\n"
+                        "Workaround: disable fast_inference, or use parameter-efficient fine-tuning "
+                        f"(e.g. LoRA with rank r={max_lora_rank})."
+                    )
 
-            if fast_inference:
-                fast_inference, model_name = fast_inference_setup(model_name, model_config)
+                model_config.model_name = model_name
 
-            fp8_mode = None
-            if load_in_fp8 != False:
-                fp8_mode = _get_fp8_mode_and_check_settings(
-                    load_in_fp8,
-                    fast_inference,
-                    full_finetuning,
-                    load_in_4bit,
-                    load_in_8bit,
-                    load_in_16bit,
+                if fast_inference:
+                    fast_inference, model_name = fast_inference_setup(model_name, model_config)
+
+                fp8_mode = None
+                if load_in_fp8 != False:
+                    fp8_mode = _get_fp8_mode_and_check_settings(
+                        load_in_fp8,
+                        fast_inference,
+                        full_finetuning,
+                        load_in_4bit,
+                        load_in_8bit,
+                        load_in_16bit,
+                    )
+
+                allowed_args = inspect.getfullargspec(load_vllm).args
+                load_vllm_kwargs = dict(
+                    model_name = model_name,
+                    config = model_config,
+                    gpu_memory_utilization = gpu_memory_utilization,
+                    max_seq_length = max_seq_length,
+                    dtype = dtype,
+                    float8_kv_cache = float8_kv_cache,
+                    enable_lora = vllm_enable_lora,
+                    max_lora_rank = max_lora_rank,
+                    disable_log_stats = disable_log_stats,
+                    use_bitsandbytes = load_in_4bit,
+                    unsloth_vllm_standby = unsloth_vllm_standby,
+                    is_vision_model = is_vlm_config,
+                    fp8_mode = fp8_mode,
                 )
+                for allowed_arg in allowed_args:
+                    if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
+                        load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
 
-            allowed_args = inspect.getfullargspec(load_vllm).args
-            load_vllm_kwargs = dict(
-                model_name = model_name,
-                config = model_config,
-                gpu_memory_utilization = gpu_memory_utilization,
-                max_seq_length = max_seq_length,
-                dtype = dtype,
-                float8_kv_cache = float8_kv_cache,
-                enable_lora = vllm_enable_lora,
-                max_lora_rank = max_lora_rank,
-                disable_log_stats = disable_log_stats,
-                use_bitsandbytes = load_in_4bit,
-                unsloth_vllm_standby = unsloth_vllm_standby,
-                is_vision_model = is_vlm_config,
-                fp8_mode = fp8_mode,
-            )
-            for allowed_arg in allowed_args:
-                if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
-                    load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
+                # Load vLLM first
+                llm = load_vllm(**load_vllm_kwargs)
 
-            # Load vLLM first
-            llm = load_vllm(**load_vllm_kwargs)
+                # Convert to HF format
+                _, quant_state_dict = get_vllm_state_dict(
+                    llm,
+                    config = model_config,
+                    is_vision_model = is_vlm_config,
+                    load_in_fp8 = load_in_fp8,
+                )
+                model = convert_vllm_to_huggingface(
+                    quant_state_dict,
+                    model_config,
+                    dtype,
+                    bnb_config,
+                    is_vision_model = is_vlm_config,
+                )
+                model.vllm_engine = llm
+                llm.shared_weights = True
+                model.fast_generate = model.vllm_engine.generate
+                model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
 
-            # Convert to HF format
-            _, quant_state_dict = get_vllm_state_dict(
-                llm,
-                config = model_config,
-                is_vision_model = is_vlm_config,
-                load_in_fp8 = load_in_fp8,
-            )
-            model = convert_vllm_to_huggingface(
-                quant_state_dict,
-                model_config,
-                dtype,
-                bnb_config,
-                is_vision_model = is_vlm_config,
-            )
-            model.vllm_engine = llm
-            llm.shared_weights = True
-            model.fast_generate = model.vllm_engine.generate
-            model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
-
-        raise_handler.remove()
-
-        # Return old flag
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        finally:
+            raise_handler.remove()
+            # Return old flag
+            os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
         # Check float32 norm weights
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
