@@ -462,10 +462,16 @@ def test_pth_large_blob_finding_is_content_bound():
     # The .pth base64-blob evidence pins the full blob via a digest, so a payload
     # that keeps the first 120 chars but changes the tail reopens the finding.
     head = "A" * 120
-    a = [f for f in sp.check_pth_file("import os\n" + head + "B" * 200, "p/x.pth", "p")
-         if "base64-like blob" in f.check]
-    b = [f for f in sp.check_pth_file("import os\n" + head + "C" * 200, "p/x.pth", "p")
-         if "base64-like blob" in f.check]
+    a = [
+        f
+        for f in sp.check_pth_file("import os\n" + head + "B" * 200, "p/x.pth", "p")
+        if "base64-like blob" in f.check
+    ]
+    b = [
+        f
+        for f in sp.check_pth_file("import os\n" + head + "C" * 200, "p/x.pth", "p")
+        if "base64-like blob" in f.check
+    ]
     assert a and b, "large .pth blob must produce a finding"
     assert "sha256:" in a[0].evidence
     assert sp._finding_key(a[0]) != sp._finding_key(b[0])
@@ -477,7 +483,9 @@ def test_pth_import_lines_record_all_not_first_five():
     base = "".join(f"import mod{i}\n" for i in range(6))
     swapped = "".join(f"import mod{i}\n" for i in range(5)) + "import evil\n"
     fb = [f for f in sp.check_pth_file(base, "p/x.pth", "p") if "executable import line" in f.check]
-    fs = [f for f in sp.check_pth_file(swapped, "p/x.pth", "p") if "executable import line" in f.check]
+    fs = [
+        f for f in sp.check_pth_file(swapped, "p/x.pth", "p") if "executable import line" in f.check
+    ]
     assert fb and fs
     assert sp._finding_key(fb[0]) != sp._finding_key(fs[0])
 
