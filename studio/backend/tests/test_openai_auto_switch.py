@@ -1301,7 +1301,7 @@ def test_pending_same_target_request_does_not_force_409(monkeypatch):
         recorder = rec,
     )
     monkeypatch.setattr(kw, "_inflight", 1)  # just the caller
-    monkeypatch.setattr(kw, "_pending", 1)   # second request blocked in middleware
+    monkeypatch.setattr(kw, "_pending", 1)  # second request blocked in middleware
     _run_hook("org/B-GGUF:Q8_0")
     assert len(rec.calls) == 1  # loads once, no 409
 
@@ -1390,7 +1390,9 @@ def test_public_model_id_prefers_advertised_over_path():
     assert inference_route._llama_public_model_id(backend) == "org/Repo-GGUF"
     backend._openai_advertised_id = None
     # No advertised id: falls back to the identifier, then the explicit fallback.
-    assert inference_route._llama_public_model_id(backend) == "/cache/models--org--Repo/snapshots/abc"
+    assert (
+        inference_route._llama_public_model_id(backend) == "/cache/models--org--Repo/snapshots/abc"
+    )
     backend.model_identifier = None
     assert inference_route._llama_public_model_id(backend, "req") == "req"
 
@@ -1399,11 +1401,9 @@ def test_chat_validates_non_system_message_before_auto_switch():
     # A system-only chat must be rejected before the hook so an invalid request
     # never swaps the resident model. Asserted on source order.
     import inspect
-
     src = inspect.getsource(inference_route.openai_chat_completions)
-    assert (
-        src.index("At least one non-system message is required.")
-        < src.index("_maybe_auto_switch_model")
+    assert src.index("At least one non-system message is required.") < src.index(
+        "_maybe_auto_switch_model"
     )
 
 
@@ -1411,7 +1411,6 @@ def test_chat_untracks_external_provider_before_proxy():
     # The external-provider branch must untrack the request before proxying so its
     # stream can't block a concurrent local auto-switch.
     import inspect
-
     src = inspect.getsource(inference_route.openai_chat_completions)
     assert src.index("untrack_current_request") < src.index("_proxy_to_external_provider")
 
