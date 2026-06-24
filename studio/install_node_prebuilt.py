@@ -9,10 +9,8 @@ Downloads an official Node.js archive from nodejs.org into an isolated
 LTS clears the Studio frontend build floor (Vite 8: Node ^20.19 || >=22.12,
 npm >= 11) with the npm it bundles.
 
-Downloads are verified against sha256 digests pinned in ``node_prebuilt_pins.json``
-(committed in-tree next to this script), not against a checksum re-fetched from
-nodejs.org. A compromised CDN/TLS path therefore cannot swap in a malicious archive
-alongside a matching SHASUMS entry: the trusted digest never comes from the network.
+Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json``
+(committed in-tree), not a checksum re-fetched from the same origin as the archive.
 
 Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
 Exit codes: 0 success, 1 error, 2 fallback, 3 busy. A re-run that already matches
@@ -70,16 +68,12 @@ INSTALL_STAGING_ROOT_NAME = ".staging"
 METADATA_FILENAME = "UNSLOTH_NODE_PREBUILT_INFO.json"
 METADATA_SCHEMA_VERSION = 1
 
-# ── Pinned digest manifest (trust anchor) ──
-# node_prebuilt_pins.json ships in-tree next to this script, so the sha256 it
-# carries is code-reviewed and version-controlled instead of being re-fetched from
-# the same origin as the archive it is meant to vouch for.
+# Trust anchor: verify archives against sha256 pins committed in
+# node_prebuilt_pins.json (in-tree, code-reviewed), not a same-origin checksum.
 PINS_FILENAME = "node_prebuilt_pins.json"
 PINS_SCHEMA_VERSION = 1
 DEFAULT_NODE_CHANNEL = "pinned"
-# Opt-in escape hatch to install a version we have NOT pinned, trusting the
-# upstream SHASUMS256.txt. Off by default: that checksum rides the same channel as
-# the archive, so on its own it is exactly the integrity gap this manifest closes.
+# Opt-in to install an unpinned version, trusting the same-origin SHASUMS256.txt.
 ALLOW_UNVERIFIED_ENV = "UNSLOTH_NODE_ALLOW_UNVERIFIED"
 
 # PowerShell renders stderr as NativeCommandError noise; main() flips logs to stdout.
@@ -91,12 +85,8 @@ class PrebuiltFallback(RuntimeError):
 
 
 class UnpinnedNodeRefused(PrebuiltFallback):
-    """Deterministic policy refusal: an unpinned Node was requested without opt-in.
-
-    A subclass of PrebuiltFallback so main() still maps it to EXIT_FALLBACK, but a
-    distinct type the orchestrator re-raises instead of treating like a transient
-    download failure -- otherwise the keep-existing path would silently swallow it.
-    """
+    """Unpinned Node requested without opt-in. Distinct type so the orchestrator
+    re-raises it instead of letting the keep-existing path swallow the refusal."""
 
 
 class BusyInstallConflict(RuntimeError):
@@ -343,7 +333,6 @@ def pins_path() -> Path:
 
 
 def load_pins() -> dict:
-    """Load the committed Node digest manifest that anchors download integrity."""
     path = pins_path()
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
@@ -364,7 +353,6 @@ def pinned_default_version(pins: dict) -> str:
 
 
 def pinned_sha256(pins: dict, version: str, asset_name: str) -> str | None:
-    """Committed sha256 for (version, asset), or None when the pair is not pinned."""
     versions = pins.get("versions")
     if not isinstance(versions, dict):
         return None
@@ -385,13 +373,8 @@ def allow_unverified_node() -> bool:
 
 
 def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unverified: bool) -> str:
-    """Pick the sha256 to verify this archive against.
-
-    A pinned (version, asset) resolves to the committed digest and the remote
-    SHASUMS256.txt is never fetched -- it shares the archive's origin and so adds
-    no independent trust. An unpinned pair is refused unless the operator has
-    explicitly opted into the legacy remote-checksum path.
-    """
+    """Sha256 to verify the archive against: the committed pin, or (only with explicit
+    opt-in) the same-origin SHASUMS256.txt. Unpinned without opt-in is refused."""
     pinned = pinned_sha256(pins, version, asset)
     if pinned is not None:
         log(f"verifying {asset} against pinned sha256 from {PINS_FILENAME}")
@@ -411,8 +394,7 @@ def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unver
         f"{ALLOW_UNVERIFIED_ENV} is set. This checksum shares the archive's origin and is "
         f"not an independent integrity guarantee."
     )
-    # A non-UTF8 body just yields no hex match below (-> clean PrebuiltFallback),
-    # never an uncaught UnicodeDecodeError.
+    # A non-UTF8 body just yields no hex match below -> clean PrebuiltFallback.
     shasums = download_bytes(node_shasums_url(version), timeout = 30).decode("utf-8", "replace")
     expected = expected_sha256_for(shasums, asset)
     if not expected:
@@ -746,8 +728,7 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
     pins = load_pins()
 
     if channel in {"", "pinned", "default"}:
-        # Default path: install the digest-pinned Node committed to this repo. No
-        # index.json round-trip and no trust placed in any live nodejs.org response.
+        # Default path: the committed pin, no index.json round-trip.
         version = pinned_default_version(pins)
     elif channel in {"lts", "latest"}:
         try:
@@ -819,13 +800,10 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
                 except OSError:
                     pass
         except UnpinnedNodeRefused:
-            # A deterministic policy refusal, not a transient failure: never paper
-            # over it by silently keeping (and reporting success for) an older
-            # install the caller did not ask for. Fail closed.
+            # A policy refusal, not a transient failure: fail closed, never keep-existing.
             raise
         except Exception as exc:  # noqa: BLE001
-            # A transient download/verify failure (unreachable archive, checksum
-            # mismatch); keep an existing usable Node rather than aborting the update.
+            # Transient download/verify failure: keep an existing usable Node.
             if not force and existing_install_usable(install_dir, host):
                 log(f"Node download failed ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS
@@ -876,8 +854,7 @@ def main(argv: list[str] | None = None) -> int:
         log(str(exc))
         return EXIT_BUSY
     except UnpinnedNodeRefused as exc:
-        # Subclass of PrebuiltFallback; catch first so the refusal logs its own
-        # actionable message rather than the generic "prebuilt unavailable" one.
+        # Catch before PrebuiltFallback so the refusal logs its own message.
         log(str(exc))
         return EXIT_FALLBACK
     except PrebuiltFallback as exc:

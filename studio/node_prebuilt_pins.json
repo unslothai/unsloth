@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "comment": "Trust anchor for install_node_prebuilt.py. sha256 values are copied from the official https://nodejs.org/dist/v<version>/SHASUMS256.txt and frozen here, in-tree and code-reviewed, so a compromised nodejs.org/CDN response or a defeated TLS path cannot swap in a malicious archive together with a matching checksum. To move Node: fetch the new SHASUMS256.txt, update default_version and the per-asset digests below for every supported os/arch, and review the diff.",
+  "comment": "Trust anchor for install_node_prebuilt.py: sha256 frozen from the official nodejs.org SHASUMS256.txt. To bump: update default_version and every per-asset digest from the new SHASUMS256.txt.",
   "default_version": "24.17.0",
   "versions": {
     "24.17.0": {
