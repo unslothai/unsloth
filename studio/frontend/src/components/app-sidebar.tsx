@@ -454,6 +454,7 @@ export function AppSidebar() {
     chatOpen,
     trainOpen,
     runsOpen,
+    pinnedOpen,
     isStudioRoute,
   ]);
 
@@ -1103,6 +1104,16 @@ export function AppSidebar() {
       <SidebarContent
         ref={scrollRef}
         onScroll={(e) => syncScrollState(e.currentTarget)}
+        // Collapsible groups animate their height; re-measure the fade once the
+        // open/close animation settles, not on the (still-animating) state flip.
+        onAnimationEnd={(e) => {
+          if (
+            e.animationName === "collapsible-down" ||
+            e.animationName === "collapsible-up"
+          ) {
+            syncScrollState(e.currentTarget);
+          }
+        }}
         className={cn(
           // pb-2 keeps the last row's rounded highlight clear of the
           // overflow clip edge so its bottom corners aren't shaved off.
