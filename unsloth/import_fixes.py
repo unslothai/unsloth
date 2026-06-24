@@ -1318,7 +1318,8 @@ def fix_vllm_pdl_blackwell():
 
     if patched:
         logger.info(
-            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - patched: {', '.join(patched)}"
+            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
+            f"patched: {', '.join(patched)}"
         )
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
