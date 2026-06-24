@@ -301,7 +301,9 @@ def test_existing_install_matches_true_when_version_and_runtime_ok(tmp_path: Pat
 def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, monkeypatch):
     install_dir = tmp_path / "node"
     install_dir.mkdir()
-    M.write_metadata(install_dir, version = "24.17.0", asset = "x", sha256 = "y")
+    asset = M.node_asset_name("24.17.0", _host("linux", "x64"))
+    pin = M.pinned_sha256(M.load_pins(), "24.17.0", asset)  # short-circuit now needs the pin
+    M.write_metadata(install_dir, version = "24.17.0", asset = asset, sha256 = pin)
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
@@ -579,7 +581,9 @@ def test_install_prebuilt_default_channel_resolves_pinned_version(tmp_path: Path
     version = M.pinned_default_version(pins)
     install_dir = tmp_path / "node"
     install_dir.mkdir()
-    M.write_metadata(install_dir, version = version, asset = "x", sha256 = "y")
+    asset = M.node_asset_name(version, _host("linux", "x64"))
+    pin = M.pinned_sha256(pins, version, asset)  # kept only if the recorded digest is the pin
+    M.write_metadata(install_dir, version = version, asset = asset, sha256 = pin)
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
@@ -702,8 +706,40 @@ def test_pins_manifest_ships_next_to_installer():
 
 def test_pins_manifest_is_declared_in_package_data():
     # An unpackaged trust anchor is no trust anchor: a pip install must ship it.
-    import tomllib
+    # tomllib is stdlib only on 3.11+; fall back to tomli, else skip on 3.9/3.10.
+    tomllib = pytest.importorskip("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
     data = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))
     studio_globs = data["tool"]["setuptools"]["package-data"]["studio"]
     assert M.PINS_FILENAME in studio_globs
+
+
+def test_existing_install_matches_enforces_expected_sha(tmp_path: Path, monkeypatch):
+    # The short-circuit must not keep a version-matching install whose recorded digest
+    # is not the pin (old remote-SHASUMS install or a tampered artifact).
+    host = _host("linux", "x64")
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "aa")
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True  # back-compat
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "aa") is True
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0", expected_sha = "bb") is False
+
+
+def test_install_prebuilt_refuses_existing_unpinned_install(tmp_path: Path, monkeypatch):
+    # Codex P2: an unpinned version already on disk must still fail closed without the
+    # opt-in, not be kept by the version-only short-circuit.
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    M.write_metadata(install_dir, version = "26.3.1", asset = "a", sha256 = "s")
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "26.3.1")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.delenv(M.ALLOW_UNVERIFIED_ENV, raising = False)
+
+    def boom(*a, **k):
+        raise AssertionError("must not keep or download an unpinned install")
+
+    monkeypatch.setattr(M, "download_file", boom)
+    with pytest.raises(M.UnpinnedNodeRefused):
+        M.install_prebuilt(install_dir, channel = "26.3.1", min_major = 24, force = False)

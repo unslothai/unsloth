@@ -674,10 +674,20 @@ def load_metadata(install_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def existing_install_matches(install_dir: Path, host: HostInfo, *, version: str) -> bool:
-    """True iff the on-disk install is exactly this version and runs."""
+def existing_install_matches(
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    version: str,
+    expected_sha: str | None = None,
+) -> bool:
+    """True iff the on-disk install is exactly this version, runs, and (when
+    expected_sha is given) was recorded with that digest, so a non-pinned or
+    tampered artifact is not kept just because its version string matches."""
     meta = load_metadata(install_dir)
     if not meta or meta.get("version") != version:
+        return False
+    if expected_sha is not None and meta.get("sha256") != expected_sha:
         return False
     if installed_node_version(install_dir, host) != version:
         return False
@@ -753,19 +763,34 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
     asset = node_asset_name(version, host)
     log(f"target Node v{version} ({asset})")
 
-    if not force and existing_install_matches(install_dir, host, version = version):
+    # Only keep an existing install if it matches the committed pin (or the caller
+    # opted out of pinning); an unpinned target without opt-in falls through to the
+    # refusal in resolve_expected_sha256 rather than short-circuiting on it.
+    pin = pinned_sha256(pins, version, asset)
+    allow_unverified = allow_unverified_node()
+    may_keep = pin is not None or allow_unverified
+
+    if (
+        not force
+        and may_keep
+        and existing_install_matches(install_dir, host, version = version, expected_sha = pin)
+    ):
         log(f"existing Node install already matches v{version}; nothing to do")
         return EXIT_SUCCESS
 
     with install_lock(install_lock_path(install_dir)):
         # Re-check under the lock: a concurrent run may have just finished.
-        if not force and existing_install_matches(install_dir, host, version = version):
+        if (
+            not force
+            and may_keep
+            and existing_install_matches(install_dir, host, version = version, expected_sha = pin)
+        ):
             log(f"existing Node install already matches v{version}; nothing to do")
             return EXIT_SUCCESS
 
         try:
             expected_sha = resolve_expected_sha256(
-                pins, version, asset, allow_unverified = allow_unverified_node()
+                pins, version, asset, allow_unverified = allow_unverified
             )
 
             staging_root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
