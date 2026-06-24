@@ -49,7 +49,6 @@ def _studio_prepare_for_http(repo_type: str, repo_id: str) -> None:
     so the download manager's ``.transport`` marker accounting stays consistent
     (vs the generic delete-incompletes default in unsloth_zoo)."""
     from hub.utils.download_registry import prepare_cache_for_transport
-
     prepare_cache_for_transport(repo_type, repo_id, "http")
 
 
