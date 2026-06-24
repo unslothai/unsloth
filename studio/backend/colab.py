@@ -103,6 +103,43 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
     display(HTML(html))
 
 
+def start_cloudflare_tunnel(port: int) -> "str | None":
+    """Best-effort: open a free Cloudflare quick tunnel to localhost:*port* and
+    return its public ``https://*.trycloudflare.com`` URL, or None.
+
+    Colab's kernel-proxy iframe only works inside the single browser tab that
+    owns the runtime — it is not a link you can hand to someone else or open on
+    another device. The Cloudflare tunnel gives a shareable HTTPS URL anyone can
+    open. Studio's own ``run_server`` deliberately suppresses the tunnel on Colab
+    (see ``_cloudflare_tunnel_should_start`` in run.py), so we start it directly
+    here instead. Any failure collapses to None and the Colab proxy still works.
+    """
+    try:
+        from cloudflare_tunnel import start_studio_tunnel
+    except Exception as e:
+        logger.info(f"Cloudflare tunnel unavailable ({e}); using Colab proxy only.")
+        return None
+    try:
+        url = start_studio_tunnel(port)
+    except Exception as e:
+        logger.info(f"Cloudflare tunnel failed to start ({e}); using Colab proxy only.")
+        return None
+    if url:
+        logger.info(f"🔗 Shareable Cloudflare link: {url}")
+    else:
+        logger.info("Cloudflare tunnel did not produce a URL; using Colab proxy only.")
+    return url
+
+
+def _stop_cloudflare_tunnel() -> None:
+    """Best-effort teardown of the Cloudflare tunnel started by start_cloudflare_tunnel."""
+    try:
+        from cloudflare_tunnel import stop_studio_tunnel
+        stop_studio_tunnel()
+    except Exception:
+        pass
+
+
 def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
     """Return True if a Studio backend is already answering health checks on *port*."""
     import urllib.request
@@ -113,14 +150,40 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def _show_and_embed(port: int):
+def _shareable_link_html(cloudflare_url: str) -> str:
+    """A small branded card advertising the shareable Cloudflare HTTPS link.
+
+    Rendered above the Colab-proxy iframe so the user can copy a URL that works
+    from any device, not just the tab that owns the runtime.
+    """
+    return f"""
+<div style="font-family:system-ui,-apple-system,sans-serif;margin:8px 0;padding:14px 16px;
+            background:#0b0b0b;border:2px solid #000;border-radius:12px;">
+  <div style="color:#fff;font-weight:800;font-size:15px;margin-bottom:6px;">
+    🔗 Shareable link (works from any device)
+  </div>
+  <a href="{cloudflare_url}" target="_blank"
+     style="color:#7fd1ff;font-family:monospace;font-size:14px;font-weight:700;word-break:break-all;">
+    {cloudflare_url}
+  </a>
+  <div style="color:#999;font-size:12px;margin-top:6px;">
+    Unlike the in-tab view below, this Cloudflare HTTPS link can be opened by anyone you share it with.
+  </div>
+</div>
+"""
+
+
+def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
     """Embed the Studio inline for *port* with a branded header bar.
 
     Fetches the proxy URL once (registering the port), then renders header bar +
     iframe. Falls back to serve_kernel_port_as_iframe if IPython HTML is unavailable.
+    If *cloudflare_url* is given, a shareable-link card is rendered above the iframe.
     """
     url = get_colab_url(port)
     logger.info(f"🌐 Unsloth Studio URL: {url}")
+    if cloudflare_url:
+        logger.info(f"🔗 Shareable Cloudflare link: {cloudflare_url}")
 
     try:
         from IPython.display import HTML, display
@@ -135,6 +198,9 @@ def _show_and_embed(port: int):
             short_url = url[: next_dash + 1] + "..."
         except (ValueError, IndexError):
             short_url = url
+
+        if cloudflare_url:
+            display(HTML(_shareable_link_html(cloudflare_url)))
 
         display(
             HTML(f"""
@@ -164,13 +230,23 @@ def _show_and_embed(port: int):
             pass
 
 
-def start(port: int = 8888):
+def start(port: int = 8888, *, cloudflare: bool = False):
     """
     Start Unsloth Studio server in Colab and display the URL.
 
+    Args:
+        port: Port to bind/serve on.
+        cloudflare: Opt in to a free Cloudflare HTTPS tunnel and show a
+            ``trycloudflare.com`` link reachable from any device (default OFF).
+            Off by default, Studio is shown only through the Colab-proxy iframe,
+            which works in the tab that owns the runtime. The tunnel exposes
+            Studio's login page beyond Colab, so enabling it is an explicit
+            opt-in; pass ``cloudflare=False`` (or omit it) to turn it back off.
+
     Usage:
         from colab import start
-        start()
+        start()                    # Colab-proxy iframe only (default)
+        start(cloudflare=True)     # also open a shareable Cloudflare link
     """
     import time
 
@@ -180,13 +256,15 @@ def start(port: int = 8888):
     # the port, so just re-show the link and iframe.
     if _is_studio_healthy(port):
         logger.info(f"   Studio is already running on port {port} — reusing existing server.")
-        _show_and_embed(port)
+        cf_url = start_cloudflare_tunnel(port) if cloudflare else None
+        _show_and_embed(port, cloudflare_url = cf_url)
         try:
             for _ in range(10000):
                 time.sleep(300)
                 print("=", end = "", flush = True)
         except KeyboardInterrupt:
             logger.info("\nUnsloth Studio keepalive stopped.")
+            _stop_cloudflare_tunnel()
         return
 
     logger.info("   Loading backend...")
@@ -236,7 +314,11 @@ def start(port: int = 8888):
         )
         return
 
-    _show_and_embed(actual_port)
+    # Start the shareable Cloudflare tunnel now that the server is healthy. Studio's
+    # run_server suppresses the tunnel on Colab by design, so we open it directly.
+    cf_url = start_cloudflare_tunnel(actual_port) if cloudflare else None
+
+    _show_and_embed(actual_port, cloudflare_url = cf_url)
 
     # Keep kernel alive so the daemon server thread runs; handle KeyboardInterrupt
     # cleanly so interrupting the cell gives a readable message.
@@ -246,6 +328,7 @@ def start(port: int = 8888):
             print("=", end = "", flush = True)
     except KeyboardInterrupt:
         logger.info("\nUnsloth Studio keepalive stopped.")
+        _stop_cloudflare_tunnel()
 
 
 if __name__ == "__main__":
