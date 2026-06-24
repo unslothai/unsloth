@@ -1318,8 +1318,7 @@ def fix_vllm_pdl_blackwell():
 
     if patched:
         logger.info(
-            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
-            f"patched: {', '.join(patched)}"
+            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - patched: {', '.join(patched)}"
         )
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
@@ -2349,11 +2348,14 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
-        # Also catch CUDA shared library mismatches during vllm import
-        # e.g. "libcudart.so.12: cannot open shared object file"
-        if (
-            "libcudart" in message or "libcublas" in message or "libnvrtc" in message
-        ) and "cannot open shared object file" in message:
+        # A shared library failed to load while importing vLLM — a CUDA-major
+        # mismatch can surface through any linked .so (libcudart, libcublas,
+        # libnccl, libcuda, ...), and force-loading an extension directly raises
+        # the bare loader error ("libcudart.so.12: cannot open shared object
+        # file") without vLLM's own "vllm._C" wrapper. Every caller feeds this
+        # only vLLM-origin import errors, so any such failure here is a broken
+        # vLLM binary.
+        if "cannot open shared object file" in message:
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
@@ -2545,13 +2547,18 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
-# vLLM's compiled extensions, across the platforms its own init loads them on
-# (cuda/rocm: _C + _C_stable_libtorch; rocm also _rocm_C; xpu: _moe_C).
+# vLLM's main compiled extensions, eager-loaded when it initializes its kernels
+# — the lazy step where an ABI break (e.g. a CUDA-major mismatch) first
+# surfaces. The exact set varies by platform and vLLM version, so this is the
+# common subset, not exhaustive; a CUDA/ROCm major mismatch breaks all of them,
+# so probing _C and its siblings reliably trips it. Names a build lacks raise
+# ModuleNotFoundError and are skipped (loop below).
 _VLLM_COMPILED_EXTENSIONS = (
     "vllm._C",
     "vllm._C_stable_libtorch",
-    "vllm._rocm_C",
     "vllm._moe_C",
+    "vllm._moe_C_stable_libtorch",
+    "vllm._rocm_C",
 )
 
 
