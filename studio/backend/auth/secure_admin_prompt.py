@@ -153,7 +153,7 @@ def resolve_admin_password_source(
     is_colab: bool,
     requires_change: bool,
     has_tty: bool,
-    env_password,
+    env_password: "str | None",
 ) -> str:
     """Decide how to obtain the admin password before exposing the web UI.
 
@@ -164,11 +164,16 @@ def resolve_admin_password_source(
       - ``"backstop"`` : no TTY and no env var; leave the bootstrap state and rely
                          on the local-direct injection gate in main.py.
 
+    An explicitly set but empty env var (``UNSLOTH_STUDIO_ADMIN_PASSWORD=""``) is
+    treated as "env" so it fails fast through the minimum-length guard rather
+    than silently falling back to the bootstrap state. Only an unset var
+    (``None``) falls through to the prompt/backstop paths.
+
     Pure decision (no I/O) so it is cheap to unit test exhaustively.
     """
     if not (frontend_served and exposed and not is_colab and requires_change):
         return "skip"
-    if env_password:
+    if env_password is not None:
         return "env"
     if has_tty:
         return "prompt"

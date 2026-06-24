@@ -75,8 +75,11 @@ def test_secure_loopback_bind_still_provisions(temp_auth_db, monkeypatch):
     assert storage.requires_password_change(_admin()) is False
 
 
-def test_short_env_password_refuses(temp_auth_db, monkeypatch):
-    monkeypatch.setenv(ADMIN_PASSWORD_ENV_VAR, "short")
+@pytest.mark.parametrize("value", ["short", ""])
+def test_invalid_env_password_refuses(temp_auth_db, monkeypatch, value):
+    # Both a too-short and an explicitly empty env var must fail fast rather than
+    # exposing the server (the empty case must not silently fall to backstop).
+    monkeypatch.setenv(ADMIN_PASSWORD_ENV_VAR, value)
     storage.ensure_default_admin()
 
     with pytest.raises(SystemExit):

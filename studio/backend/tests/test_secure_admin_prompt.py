@@ -54,6 +54,19 @@ def test_exposed_no_tty_no_env_is_backstop():
     assert resolve_admin_password_source(**_base_kwargs(has_tty = False)) == "backstop"
 
 
+def test_empty_env_treated_as_env_not_backstop():
+    # An explicitly empty UNSLOTH_STUDIO_ADMIN_PASSWORD must fail fast through the
+    # min-length guard, not silently fall back to the bootstrap state.
+    assert (
+        resolve_admin_password_source(**_base_kwargs(env_password = "", has_tty = False))
+        == "env"
+    )
+
+
+def test_unset_env_none_falls_through_to_tty():
+    assert resolve_admin_password_source(**_base_kwargs(env_password = None)) == "prompt"
+
+
 def test_not_exposed_is_skip():
     assert resolve_admin_password_source(**_base_kwargs(exposed = False)) == "skip"
 
