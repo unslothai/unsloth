@@ -4,13 +4,11 @@ fastapi
 uvicorn
 pydantic
 packaging
-matplotlib
+matplotlib==3.10.9
 pandas
 nest_asyncio
 datasets==4.3.0
 pyjwt
-easydict
-addict
 # gradio>=4.0.0                  # 148 MB - Studio uses React + FastAPI, not Gradio
 huggingface-hub==0.36.2
 structlog>=24.1.0

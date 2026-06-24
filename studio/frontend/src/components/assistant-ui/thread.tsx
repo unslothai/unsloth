@@ -3043,6 +3043,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           type="button"
           aria-label="Tools and attachments"
           className="unsloth-composer-plus"
+          data-tour="chat-plus-menu"
         >
           <PlusIcon className="size-[22px] stroke-[1.75px]" />
         </button>

@@ -146,24 +146,50 @@ def test_async_generators_cleanup_tracker_in_finally():
     )
 
 
-def test_streaming_responses_have_no_background_task():
-    top = None
-    for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
-            top = n
-            break
-    assert top is not None
+def test_chat_completions_streams_avoid_starlette_task_group():
+    top = _async_function("openai_chat_completions")
+    legacy_calls = []
+    same_task_calls = 0
     for sub in ast.walk(top):
         if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
             continue
-        if sub.func.id != "StreamingResponse":
+        if sub.func.id == "StreamingResponse":
+            legacy_calls.append(sub.lineno)
+        if sub.func.id == "_SameTaskStreamingResponse":
+            same_task_calls += 1
+    assert not legacy_calls, (
+        "Streaming /v1/chat/completions must use _SameTaskStreamingResponse, "
+        "not Starlette's legacy task-group StreamingResponse. Lines: "
+        f"{legacy_calls}"
+    )
+    assert same_task_calls >= 5
+
+
+def test_openai_passthrough_stream_avoids_starlette_task_group():
+    top = _async_function("_openai_passthrough_stream")
+    legacy_calls = []
+    same_task_calls = 0
+    for sub in ast.walk(top):
+        if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
             continue
-        kwargs = {kw.arg for kw in sub.keywords if kw.arg}
-        assert "background" not in kwargs, (
-            "StreamingResponse in openai_chat_completions must not pass "
-            "`background=` -- cleanup now lives in the generator's finally "
-            "block; a BackgroundTask would be skipped on abrupt disconnect"
-        )
+        if sub.func.id == "StreamingResponse":
+            legacy_calls.append(sub.lineno)
+        if sub.func.id == "_SameTaskStreamingResponse":
+            same_task_calls += 1
+    assert not legacy_calls, (
+        "OpenAI passthrough streams must use _SameTaskStreamingResponse, "
+        "not Starlette's legacy task-group StreamingResponse. Lines: "
+        f"{legacy_calls}"
+    )
+    assert same_task_calls >= 2
+
+
+def test_local_chat_streams_install_same_task_disconnect_watcher():
+    top = _async_function("openai_chat_completions")
+    assert _calls_name(top, "_await_disconnect_then_cancel"), (
+        "Local same-task streams must watch request disconnects themselves; "
+        "do not restore Starlette's task-group StreamingResponse for this."
+    )
 
 
 def test_direct_llama_server_streams_install_disconnect_watcher():
@@ -183,6 +209,33 @@ def test_direct_llama_server_streams_install_disconnect_watcher():
         "when the downstream client disconnects during prefill. Missing in: "
         f"{missing}"
     )
+
+
+def test_audio_input_stream_installs_disconnect_watcher():
+    audio = _async_function("audio_input_stream")
+    has_watcher = False
+    has_cleanup = False
+    for sub in ast.walk(audio):
+        if isinstance(sub, ast.Call):
+            fn = sub.func
+            if (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "create_task"
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "asyncio"
+                and sub.args
+                and isinstance(sub.args[0], ast.Call)
+                and isinstance(sub.args[0].func, ast.Name)
+                and sub.args[0].func.id == "_await_disconnect_then_cancel"
+            ):
+                has_watcher = True
+            if isinstance(fn, ast.Name) and fn.id == "_stop_local_disconnect_cancel_watcher":
+                has_cleanup = True
+    assert has_watcher, (
+        "audio_input_stream must install a disconnect watcher so client "
+        "disconnects set cancel_event while asyncio.to_thread(next, ...) is blocked"
+    )
+    assert has_cleanup, "audio_input_stream must stop its disconnect watcher in finally"
 
 
 # ── Behavioral helpers ───────────────────────────────────────
@@ -219,6 +272,21 @@ def _load_registry_module():
             chunks.append(seg)
     mod = {}
     exec("import threading, time\n" + "\n\n".join(chunks), mod)
+    return mod
+
+
+def _load_same_task_response_module():
+    for n in _TREE.body:
+        if isinstance(n, ast.ClassDef) and n.name == "_SameTaskStreamingResponse":
+            source = ast.get_source_segment(SRC, n)
+            break
+    else:
+        raise AssertionError("_SameTaskStreamingResponse missing")
+    mod = {}
+    exec(
+        "class StreamingResponse: pass\nclass ClientDisconnect(Exception): pass\n" + source,
+        mod,
+    )
     return mod
 
 
@@ -324,6 +392,41 @@ def test_finally_cleanup_on_aclose():
     asyncio.run(run())
     assert "cid-abort" not in m["_CANCEL_REGISTRY"]
     assert "sid-abort" not in m["_CANCEL_REGISTRY"]
+
+
+def test_same_task_response_closes_body_iterator_on_send_disconnect():
+    m = _load_same_task_response_module()
+    closed = False
+
+    async def body():
+        nonlocal closed
+        try:
+            yield "data: first\n\n"
+        finally:
+            closed = True
+
+    async def run():
+        agen = body()
+        await agen.__anext__()
+        response = m["_SameTaskStreamingResponse"].__new__(m["_SameTaskStreamingResponse"])
+        response.body_iterator = agen
+        response.background = None
+        # __new__ bypasses __init__; __call__'s disconnect branch reads _unstarted_cleanup.
+        response._unstarted_cleanup = None
+
+        async def stream_response(_send):
+            raise OSError("client disconnected")
+
+        response.stream_response = stream_response
+        try:
+            await response({}, None, lambda _message: None)
+        except m["ClientDisconnect"]:
+            pass
+        else:
+            raise AssertionError("expected ClientDisconnect")
+
+    asyncio.run(run())
+    assert closed
 
 
 def test_preset_cancel_event_exits_cleanly_with_done():
