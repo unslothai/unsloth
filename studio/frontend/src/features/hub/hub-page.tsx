@@ -715,6 +715,19 @@ export function ModelsPage() {
     return map;
   }, [discoverRows, gpu]);
 
+  const addGpuFitLevel = useCallback(
+    (row: DiscoverRow): DiscoverRow => ({
+      ...row,
+      fitLevel: classifyGpuFit({
+        totalParams: row.result.totalParams,
+        estimatedSizeBytes: row.result.estimatedSizeBytes,
+        repoId: row.id,
+        gpu,
+      }),
+    }),
+    [gpu],
+  );
+
   const filteredDiscoverRows = useMemo(() => {
     if (isDatasetMode) return discoverRows;
     return discoverRows
@@ -757,8 +770,17 @@ export function ModelsPage() {
         effectiveLocalRows,
       )
         .filter((row) => !isHiddenModelId(row.id))
-        .filter((row) => matchesFormat(row.result.isGguf, "gguf")),
-    [hubFeed.trending.results, modelDiscoveryInventorySignature],
+        .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
+        .map(addGpuFitLevel)
+        .filter((row) =>
+          matchesGpuFitFilter(row.fitLevel ?? null, deferredGpuFitFilter),
+        ),
+    [
+      hubFeed.trending.results,
+      modelDiscoveryInventorySignature,
+      addGpuFitLevel,
+      deferredGpuFitFilter,
+    ],
   );
   const feedRows = useMemo(() => {
     if (!isFeedMode) return [];
@@ -1273,8 +1295,10 @@ export function ModelsPage() {
       hasMore,
       manualFetchAvailable: discoverManualFetchAvailable,
       hasActiveFilters:
-        !isFeedMode &&
-        (deferredFormatFilter !== "all" || deferredCapabilityFilter !== "all" || deferredGpuFitFilter !== "all"),
+        deferredGpuFitFilter !== "all" ||
+        (!isFeedMode &&
+          (deferredFormatFilter !== "all" ||
+            deferredCapabilityFilter !== "all")),
     }),
     [
       tab,
@@ -1300,6 +1324,7 @@ export function ModelsPage() {
       discoverManualFetchAvailable,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      deferredGpuFitFilter,
     ],
   );
 

@@ -72,18 +72,30 @@ const ACTIVE_PARAM_RE = /(?:^|[-_/. ])a(\d+(?:\.\d+)?)\s*[bB](?=$|[-_/. ])/i;
 const EFFECTIVE_PARAM_RE = /(?:^|[-_/. ])e(\d+(?:\.\d+)?)\s*[bB](?=$|[-_/. ])/i;
 const TOTAL_PARAM_RE = /(?:^|[-_/. ])(\d+(?:\.\d+)?)\s*[bB](?=$|[-_/. ])/;
 
+function paramsFromMatch(match: RegExpExecArray | null): number | undefined {
+  if (!match) return undefined;
+  const billions = parseFloat(match[1]);
+  return Number.isFinite(billions) && billions > 0
+    ? billions * 1e9
+    : undefined;
+}
+
+/** Active/effective parameter count parsed from a repo id, if it uses explicit
+ * MoE/Gemma-style notation such as A3B or E4B. */
+export function activeOrEffectiveParamsFromId(id: string): number | undefined {
+  return (
+    paramsFromMatch(ACTIVE_PARAM_RE.exec(id)) ??
+    paramsFromMatch(EFFECTIVE_PARAM_RE.exec(id))
+  );
+}
+
 /** Parameter count (absolute, e.g. 4e9) parsed from a repo id, or undefined
  * when the id has no size token (so callers can treat the size as unknown).
  * Prefers MoE active-param notation (A3B) over effective (E4B) over total. */
 export function paramsFromId(id: string): number | undefined {
-  for (const re of [ACTIVE_PARAM_RE, EFFECTIVE_PARAM_RE, TOTAL_PARAM_RE]) {
-    const match = re.exec(id);
-    if (match) {
-      const billions = parseFloat(match[1]);
-      if (Number.isFinite(billions) && billions > 0) return billions * 1e9;
-    }
-  }
-  return undefined;
+  return (
+    activeOrEffectiveParamsFromId(id) ?? paramsFromMatch(TOTAL_PARAM_RE.exec(id))
+  );
 }
 
 // Smallest practical GGUF/MLX quant (~Q2_K, low-bit). The fit check asks whether

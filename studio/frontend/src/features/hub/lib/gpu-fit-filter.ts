@@ -6,8 +6,9 @@
 
 import type { GpuInfo } from "@/hooks/use-gpu-info";
 import {
-  paramsFromId,
+  activeOrEffectiveParamsFromId,
   estimateQuantBytes,
+  paramsFromId,
 } from "@/components/assistant-ui/model-selector/recommended-fit";
 
 /** The three filter states exposed in the toolbar dropdown. */
@@ -36,10 +37,14 @@ export function classifyGpuFit(opts: {
   const ramGb = gpu.systemRamAvailableGb;
   if (gpuGb <= 0 && ramGb <= 0) return null; // no budget info
 
-  // Resolve model size: prefer metadata, fall back to name-based estimate
-  const params = totalParams ?? paramsFromId(repoId);
+  // Active/effective model tokens (for example MoE A3B) describe runnable size
+  // better than HF total-parameter metadata; otherwise prefer exact metadata.
+  const activeOrEffectiveParams = activeOrEffectiveParamsFromId(repoId);
+  const params = activeOrEffectiveParams ?? totalParams ?? paramsFromId(repoId);
   const sizeBytes =
-    estimatedSizeBytes ?? (params ? estimateQuantBytes(params) : undefined);
+    activeOrEffectiveParams
+      ? estimateQuantBytes(activeOrEffectiveParams)
+      : estimatedSizeBytes ?? (params ? estimateQuantBytes(params) : undefined);
 
   if (!sizeBytes || sizeBytes <= 0) return null; // can't determine
 
@@ -68,7 +73,7 @@ export function matchesGpuFitFilter(
   filter: GpuFitFilter,
 ): boolean {
   if (filter === "all") return true;
-  if (level === null) return true; // unknown size — don't hide
+  if (level === null) return false;
   if (filter === "comfortable") return level === "comfortable";
   // "fits" shows both comfortable and fits
   return level === "comfortable" || level === "fits";
