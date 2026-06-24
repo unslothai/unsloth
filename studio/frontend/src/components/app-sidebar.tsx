@@ -71,6 +71,7 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
+  Notebook01Icon,
   Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
@@ -361,6 +362,8 @@ export function AppSidebar() {
   };
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
+  const isNotebooksRoute =
+    pathname === "/notebooks" || pathname.startsWith("/notebooks/");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
@@ -1207,6 +1210,15 @@ export function AppSidebar() {
                     onClick={() => {
                       if (chatOnly) return;
                       navigate({ to: "/studio" });
+                      closeMobileIfOpen();
+                    }}
+                  />
+                  <NavItem
+                    icon={Notebook01Icon}
+                    label={t("shell.navigation.notebooks")}
+                    active={isNotebooksRoute}
+                    onClick={() => {
+                      navigate({ to: "/notebooks" });
                       closeMobileIfOpen();
                     }}
                   />
