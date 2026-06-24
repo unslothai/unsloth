@@ -1056,6 +1056,30 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
+    # Before the socket binds or the tunnel opens, make sure a network-exposed
+    # web UI is not serving the first-run bootstrap admin password to remote
+    # visitors: prompt the operator for a real password (or take it from
+    # UNSLOTH_STUDIO_ADMIN_PASSWORD) and persist it now. No-op for loopback
+    # binds, --api-only, and Colab.
+    frontend_served = bool(frontend_path) and not api_only
+    try:
+        from auth import storage as _auth_storage
+        from auth.secure_admin_prompt import ensure_admin_password_before_exposure
+
+        ensure_admin_password_before_exposure(
+            storage = _auth_storage,
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            frontend_served = frontend_served,
+            is_colab = _IS_COLAB,
+            logger = logger,
+        )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as e:  # never let provisioning bookkeeping crash startup
+        logger.warning("Admin password provisioning skipped: %s", e)
+
     # Resolve once; shared by the log rewrite and banner.
     display_host = _resolve_external_ip() if host == "0.0.0.0" else host
     _install_uvicorn_startup_log_rewrite(host, display_host)
