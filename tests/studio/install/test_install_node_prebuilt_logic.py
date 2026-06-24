@@ -120,7 +120,7 @@ def test_expected_sha256_rejects_malformed():
 # ── Version selection from index.json ──
 INDEX = [
     {"version": "v26.3.1", "lts": False},
-    {"version": "v24.17.0", "lts": "Krypton"},
+    {"version": "v24.18.0", "lts": "Krypton"},
     {"version": "v24.9.0", "lts": "Krypton"},
     {"version": "v22.20.0", "lts": "Jod"},
     {"version": "v20.19.0", "lts": "Iron"},
@@ -128,8 +128,8 @@ INDEX = [
 
 
 def test_select_lts_respects_min_major():
-    # Newest LTS at/above 24 -> 24.17.0 (22.x LTS is below the floor).
-    assert M.select_node_version(INDEX, channel = "lts", min_major = 24) == "24.17.0"
+    # Newest LTS at/above 24 -> 24.18.0 (22.x LTS is below the floor).
+    assert M.select_node_version(INDEX, channel = "lts", min_major = 24) == "24.18.0"
 
 
 def test_select_latest_overall():
@@ -301,12 +301,13 @@ def test_existing_install_matches_true_when_version_and_runtime_ok(tmp_path: Pat
 def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, monkeypatch):
     install_dir = tmp_path / "node"
     install_dir.mkdir()
-    asset = M.node_asset_name("24.17.0", _host("linux", "x64"))
-    pin = M.pinned_sha256(M.load_pins(), "24.17.0", asset)  # short-circuit now needs the pin
-    M.write_metadata(install_dir, version = "24.17.0", asset = asset, sha256 = pin)
+    version = M.pinned_default_version(M.load_pins())  # == INDEX's newest LTS
+    asset = M.node_asset_name(version, _host("linux", "x64"))
+    pin = M.pinned_sha256(M.load_pins(), version, asset)  # short-circuit now needs the pin
+    M.write_metadata(install_dir, version = version, asset = asset, sha256 = pin)
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
-    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
 
     def boom(*a, **k):
@@ -415,7 +416,7 @@ def test_install_prebuilt_keeps_existing_when_download_fails(tmp_path: Path, mon
     install_dir.mkdir()
     M.write_metadata(install_dir, version = "24.9.0", asset = "x", sha256 = "y")
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
-    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)  # newest LTS = 24.17.0 (pinned)
+    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)  # newest LTS = 24.18.0 (pinned)
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
     monkeypatch.setattr(M, "download_file_verified", _offline)  # archive download fails
