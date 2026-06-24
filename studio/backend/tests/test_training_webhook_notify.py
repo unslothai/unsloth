@@ -69,6 +69,15 @@ def test_slack_format_uses_text_key():
     assert "Training complete" in body["text"]
 
 
+def test_test_event_message_is_clearly_a_test():
+    # The "Send test" sample must not look like a finished run.
+    text = notif._summary(
+        notif.TrainingTerminalEvent(job_id="test", status="test", model="")
+    )
+    assert "connected" in text
+    assert "Training complete" not in text and "Training failed" not in text
+
+
 def test_discord_format_uses_content_key():
     body = notif.FORMATTERS["discord"](_event())
     assert set(body) == {"content"}

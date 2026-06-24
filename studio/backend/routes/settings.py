@@ -276,11 +276,8 @@ def test_notifications(
     sink = WebhookSink(url = config["url"])
     sample = TrainingTerminalEvent(
         job_id = "test",
-        status = "completed",
-        model = "unsloth/test-model",
-        total_steps = 60,
-        final_loss = 0.42,
-        duration_s = 125.0,
+        status = "test",
+        model = "",
     )
     try:
         sink.deliver(sample)

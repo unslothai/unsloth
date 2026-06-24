@@ -30,7 +30,7 @@ _DISCORD_HOST_RE = re.compile(r"(^|\.)(discord\.com|discordapp\.com)$", re.IGNOR
 @dataclass(frozen=True)
 class TrainingTerminalEvent:
     job_id: str
-    status: str  # "completed" | "error"
+    status: str  # "completed" | "error" | "test"
     model: str
     total_steps: int | None = None
     final_loss: float | None = None
@@ -63,6 +63,11 @@ def _format_duration(seconds: float | None) -> str | None:
 
 
 def _summary(event: TrainingTerminalEvent) -> str:
+    if event.status == "test":
+        return (
+            "✅ Unsloth notifications are connected. You'll get a message here "
+            "when a training run finishes or fails."
+        )
     model = _safe_model_label(event.model)
     head = (
         f"Training complete: {model}"
