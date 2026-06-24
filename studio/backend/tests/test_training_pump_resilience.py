@@ -1,0 +1,280 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Parent-side training event-pump resilience.
+
+The pump thread is the only writer of the in-memory progress state that SSE
+/progress, /status, /metrics and the DB history all read. If it ever died while
+the worker subprocess kept running, the run would continue (mp.Queue puts never
+block) while the UI froze on the last step it saw -- the long-standing "training
+is running in the background but no progress shows" symptom. These tests pin the
+two guarantees that prevent that: a single bad event/queue error can't kill the
+pump, and a pump that somehow does die is detected and restarted while the
+worker is alive. Driven with fakes; no GPU, no network, no real subprocess.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import queue
+import sys
+import threading
+import time
+import types as _types
+from pathlib import Path
+
+import pytest
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+# Stub the heavy module-level imports of core/training/training.py so it imports
+# under CPU-only/no-network, then restore them (see the restore loop below).
+_SAVED: dict = {}
+
+
+def _stub(name, mod):
+    _SAVED[name] = sys.modules.get(name)
+    sys.modules[name] = mod
+
+
+_lg = _types.ModuleType("loggers")
+_lg.get_logger = lambda name: logging.getLogger(name)
+_stub("loggers", _lg)
+_stub("structlog", _types.ModuleType("structlog"))
+_mpl = _types.ModuleType("matplotlib")
+_plt = _types.ModuleType("matplotlib.pyplot")
+_plt.Figure = type("Figure", (), {})  # referenced in a class-def annotation
+_mpl.pyplot = _plt
+_stub("matplotlib", _mpl)
+_stub("matplotlib.pyplot", _plt)
+_hw = _types.ModuleType("utils.hardware")
+_hw.prepare_gpu_selection = lambda *a, **k: (None, None)
+_stub("utils.hardware", _hw)
+_npl = _types.ModuleType("utils.native_path_leases")
+_npl.native_path_secret_removed_for_child_start = lambda: contextlib.nullcontext()
+_npl.run_without_native_path_secret = lambda fn: fn
+_stub("utils.native_path_leases", _npl)
+_pth = _types.ModuleType("utils.paths")
+_pth.outputs_root = lambda *a, **k: "/tmp/outputs"
+_stub("utils.paths", _pth)
+
+from core.training.training import TrainingBackend
+
+# Restore every stubbed module so this file never pollutes the shared session.
+for _name in (
+    "loggers",
+    "structlog",
+    "matplotlib",
+    "matplotlib.pyplot",
+    "utils.hardware",
+    "utils.native_path_leases",
+    "utils.paths",
+):
+    _prev = _SAVED.get(_name)
+    if _prev is None:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _prev
+
+
+class _FakeProc:
+    """A subprocess handle whose liveness the test drives directly."""
+
+    def __init__(self, alive: bool = True):
+        self._alive = alive
+        self.pid = 4321
+
+    def is_alive(self):
+        return self._alive
+
+    def join(self, timeout = None):
+        self._alive = False
+
+
+class _IdleQueue:
+    """get()/get_nowait() always signal "no event" so the pump idles."""
+
+    def put(self, *a, **k):
+        pass
+
+    def get(self, *a, **k):
+        raise queue.Empty
+
+    def get_nowait(self, *a, **k):
+        raise queue.Empty
+
+
+class _ScriptedQueue:
+    """Yields queued events once, then signals empty forever."""
+
+    def __init__(self, events):
+        self._events = list(events)
+
+    def put(self, *a, **k):
+        pass
+
+    def get(self, *a, **k):
+        if self._events:
+            return self._events.pop(0)
+        raise queue.Empty
+
+    def get_nowait(self, *a, **k):
+        if self._events:
+            return self._events.pop(0)
+        raise queue.Empty
+
+
+def _dead_thread() -> threading.Thread:
+    t = threading.Thread(target = lambda: None)
+    t.start()
+    t.join()
+    return t
+
+
+def _silence_db(monkeypatch, b):
+    """Neutralize DB finalization so a started pump exits cleanly off-box."""
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **k: None)
+
+
+def _wait_until(predicate, timeout = 5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+# ----------------------------------------------------------------------------
+# Guarantee 1: a single bad event/queue error cannot kill the pump.
+# ----------------------------------------------------------------------------
+
+
+def test_pump_survives_handler_exception_and_keeps_processing(monkeypatch):
+    b = TrainingBackend()
+    _silence_db(monkeypatch, b)
+    handled: list = []
+
+    def fake_handle(ev):
+        if ev.get("type") == "boom":
+            raise RuntimeError("handler blew up")
+        handled.append(ev.get("type"))
+
+    monkeypatch.setattr(b, "_handle_event", fake_handle)
+
+    proc = _FakeProc(alive = True)
+    b._proc = proc
+    b._event_queue = _ScriptedQueue(
+        [{"type": "boom"}, {"type": "progress"}, {"type": "boom"}, {"type": "progress"}]
+    )
+
+    pump = threading.Thread(target = b._pump_loop, daemon = True)
+    pump.start()
+    try:
+        assert _wait_until(lambda: handled.count("progress") == 2), (
+            "pump must keep processing good events after handler exceptions"
+        )
+        assert pump.is_alive(), "pump thread must survive handler exceptions"
+        assert b._pump_running is True
+    finally:
+        proc._alive = False  # let the loop reach its clean exit
+        pump.join(timeout = 5)
+
+    assert not pump.is_alive()
+    assert b._pump_running is False, "clean exit must clear the running flag"
+
+
+def test_read_queue_swallows_arbitrary_exception():
+    class _ExplodingQueue:
+        def get(self, *a, **k):
+            raise RuntimeError("queue exploded")
+
+    # An unexpected error (not just Empty/EOFError/OSError/ValueError) must read
+    # as "no event", never bubble up to the pump loop.
+    assert TrainingBackend._read_queue(_ExplodingQueue(), 0.01) is None
+
+
+# ----------------------------------------------------------------------------
+# Guarantee 2: a pump that dies while the worker runs is detected + restarted.
+# ----------------------------------------------------------------------------
+
+
+def test_ensure_pump_alive_restarts_crashed_pump(monkeypatch):
+    b = TrainingBackend()
+    _silence_db(monkeypatch, b)
+    b._proc = _FakeProc(alive = True)
+    b._event_queue = _IdleQueue()
+    b._pump_running = True  # a pump started, then died abnormally
+    dead = _dead_thread()
+    b._pump_thread = dead
+
+    assert b._ensure_pump_alive() is True
+    try:
+        assert b._pump_thread is not dead
+        assert b._pump_thread.is_alive(), "a fresh pump must be running"
+    finally:
+        b._proc._alive = False
+        b._pump_thread.join(timeout = 5)
+
+
+def test_ensure_pump_alive_noop_when_pump_alive():
+    b = TrainingBackend()
+    b._proc = _FakeProc(alive = True)
+    b._event_queue = _IdleQueue()
+    b._pump_running = True
+    release = threading.Event()
+    alive = threading.Thread(target = release.wait, daemon = True)
+    alive.start()
+    b._pump_thread = alive
+    try:
+        assert b._ensure_pump_alive() is False
+        assert b._pump_thread is alive
+    finally:
+        release.set()
+        alive.join(timeout = 5)
+
+
+def test_ensure_pump_alive_noop_when_worker_dead():
+    b = TrainingBackend()
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._pump_running = True
+    b._pump_thread = _dead_thread()
+    # Worker gone: the dead pump exited legitimately, nothing to revive.
+    assert b._ensure_pump_alive() is False
+
+
+def test_ensure_pump_alive_noop_during_setup():
+    # _pump_running is False between state-reset and the first pump actually
+    # running; the watchdog must not race in and spawn a rogue pump.
+    b = TrainingBackend()
+    b._proc = _FakeProc(alive = True)
+    b._event_queue = _IdleQueue()
+    b._pump_running = False
+    b._pump_thread = None
+    assert b._ensure_pump_alive() is False
+    assert b._pump_thread is None
+
+
+def test_is_training_active_revives_dead_pump(monkeypatch):
+    b = TrainingBackend()
+    _silence_db(monkeypatch, b)
+    b._proc = _FakeProc(alive = True)
+    b._event_queue = _IdleQueue()
+    b._pump_running = True
+    dead = _dead_thread()
+    b._pump_thread = dead
+
+    # The status poll the SSE stream makes every second both reports activity
+    # and heals the dead pump as a side effect.
+    assert b.is_training_active() is True
+    try:
+        assert b._pump_thread is not dead
+        assert b._pump_thread.is_alive()
+    finally:
+        b._proc._alive = False
+        b._pump_thread.join(timeout = 5)
