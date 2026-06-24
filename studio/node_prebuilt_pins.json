@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "comment": "Trust anchor for install_node_prebuilt.py. sha256 values are copied from the official https://nodejs.org/dist/v<version>/SHASUMS256.txt and frozen here, in-tree and code-reviewed, so a compromised nodejs.org/CDN response or a defeated TLS path cannot swap in a malicious archive together with a matching checksum. To move Node: fetch the new SHASUMS256.txt, update default_version and the per-asset digests below for every supported os/arch, and review the diff.",
+  "default_version": "24.17.0",
+  "npm_min_major": 11,
+  "versions": {
+    "24.17.0": {
+      "node-v24.17.0-linux-x64.tar.gz": "e0472427aa791ad80bdc426ff7cc73cdd28ed0f616d1ff9689a23a7f47f1265f",
+      "node-v24.17.0-linux-arm64.tar.gz": "faa0d59ba7fe7045c950ed09b190578fb8eee73e4358686d38fcc99ca58c1480",
+      "node-v24.17.0-darwin-x64.tar.gz": "80da552fe037290cb130e9dea590f5eeeb7aa450636f0c89ab41415511c1ec27",
+      "node-v24.17.0-darwin-arm64.tar.gz": "4fc3266a3702eebc39cc37661cf4eeceeade307e242ab64e4d7ce7949197e11f",
+      "node-v24.17.0-win-x64.zip": "f2aa33b35b75aca5f3f7b85675a6f6423201053e9381911e64961f3bda2528ab",
+      "node-v24.17.0-win-arm64.zip": "4957712f67fce55779cc794d9b4df9e0e802a18c841ad5a4e42f17be490e634d"
+    }
+  }
+}
