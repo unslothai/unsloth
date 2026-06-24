@@ -469,14 +469,10 @@ def test_js_fetch_eval_payload_tail_reopens_key():
     old = "(0,eval)(atob('" + head + "X" * 80 + "'))\n"
     new = "(0,eval)(atob('" + head + "Y" * 80 + "'))\n"
     of = [
-        f
-        for f in snp.scan_text_blob(pkg, "package/index.js", old)
-        if f.pattern == "js-fetch-eval"
+        f for f in snp.scan_text_blob(pkg, "package/index.js", old) if f.pattern == "js-fetch-eval"
     ][0]
     nf = [
-        f
-        for f in snp.scan_text_blob(pkg, "package/index.js", new)
-        if f.pattern == "js-fetch-eval"
+        f for f in snp.scan_text_blob(pkg, "package/index.js", new) if f.pattern == "js-fetch-eval"
     ][0]
     assert "sha256:" in of.evidence
     assert snp._finding_key(of) != snp._finding_key(nf)
