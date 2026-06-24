@@ -100,3 +100,19 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
     assert out == "/cache/model.gguf"
     assert seen_disable_xet == [False, True]  # Xet first, then HTTP
     assert prepared == [("model", DL_REPO, "http")], "shim must run Studio's marker-aware prep"
+
+
+def test_shim_snapshot_injects_studio_prepare(monkeypatch):
+    """The snapshot wrapper forwards Studio's marker-aware prep, like the file wrapper."""
+    captured = {}
+
+    def fake_snapshot(repo_id, **kwargs):
+        captured["repo_id"] = repo_id
+        captured["prepare_for_http_fn"] = kwargs.get("prepare_for_http_fn")
+        return "/tmp/snap-dir"
+
+    monkeypatch.setattr(xf, "_shared_snapshot_download_with_xet_fallback", fake_snapshot)
+    out = xf.snapshot_download_with_xet_fallback("org/model")
+    assert out == "/tmp/snap-dir"
+    assert captured["repo_id"] == "org/model"
+    assert captured["prepare_for_http_fn"] is xf._studio_prepare_for_http

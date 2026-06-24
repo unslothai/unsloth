@@ -825,6 +825,17 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 TORCHAO_MSG = "Error: torchao not found, please install with `pip install torchao`"
 
 
+# Artifacts a Transformers/PEFT load never consumes -- skip them when prewarming
+# so a mixed-format repo does not pull ONNX/TF/Flax/CoreML/GGUF/training state.
+# Conservative ignore list (not an allowlist) so no file a load needs is dropped.
+_PREFETCH_IGNORE_PATTERNS = (
+    "*.onnx", "onnx/*", "*.h5", "*.msgpack", "*.tflite",
+    "coreml/*", "*.mlpackage/*", "*.mlmodel", "*.gguf",
+    "optimizer.*", "scheduler.*", "rng_state*", "trainer_state.json",
+    "events.out.tfevents*", "checkpoint-*/*",
+)
+
+
 def maybe_prefetch_hf_snapshot(
     model_name,
     token = None,
@@ -878,6 +889,7 @@ def maybe_prefetch_hf_snapshot(
             token = token,
             revision = revision,
             cache_dir = cache_dir,
+            ignore_patterns = list(_PREFETCH_IGNORE_PATTERNS),
         )
     except DownloadStallError:
         # Both Xet and HTTP stalled: surface a clear network error instead of

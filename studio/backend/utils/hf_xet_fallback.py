@@ -15,21 +15,32 @@ manager keeps its ``.transport`` marker semantics on the HTTP retry. Call sites
 from __future__ import annotations
 
 import threading
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
-from unsloth_zoo.hf_xet_fallback import (
-    DEFAULT_GRACE_PERIOD,
-    DEFAULT_HEARTBEAT_INTERVAL,
-    DEFAULT_STALL_TIMEOUT,
-    DownloadStallError,
-    child_should_disable_xet,
-    get_hf_download_state,
-    snapshot_download_with_xet_fallback,
-    start_watchdog,
-)
-from unsloth_zoo.hf_xet_fallback import (
-    hf_hub_download_with_xet_fallback as _shared_hf_hub_download_with_xet_fallback,
-)
+try:
+    from unsloth_zoo.hf_xet_fallback import (
+        DEFAULT_GRACE_PERIOD,
+        DEFAULT_HEARTBEAT_INTERVAL,
+        DEFAULT_STALL_TIMEOUT,
+        DownloadStallError,
+        child_should_disable_xet,
+        get_hf_download_state,
+        start_watchdog,
+    )
+    from unsloth_zoo.hf_xet_fallback import (
+        hf_hub_download_with_xet_fallback as _shared_hf_hub_download_with_xet_fallback,
+        snapshot_download_with_xet_fallback as _shared_snapshot_download_with_xet_fallback,
+    )
+except ModuleNotFoundError as exc:
+    # The shared helper lives in a newer unsloth_zoo; fail with an actionable
+    # message instead of a bare ModuleNotFoundError at Studio startup.
+    if exc.name == "unsloth_zoo.hf_xet_fallback":
+        raise RuntimeError(
+            "Unsloth Studio requires an unsloth_zoo that provides "
+            "unsloth_zoo.hf_xet_fallback. Upgrade unsloth_zoo alongside unsloth "
+            "(pip install -U unsloth_zoo)."
+        ) from exc
+    raise
 
 __all__ = [
     "DEFAULT_GRACE_PERIOD",
@@ -81,3 +92,10 @@ def hf_hub_download_with_xet_fallback(
         on_status = on_status,
         prepare_for_http_fn = _studio_prepare_for_http,
     )
+
+
+def snapshot_download_with_xet_fallback(repo_id: str, **kwargs: Any) -> str:
+    """Whole-repo download with the shared Xet -> HTTP stall fallback, using Studio's
+    marker-aware cache prep on the HTTP retry (same injection as the single-file path)."""
+    kwargs.setdefault("prepare_for_http_fn", _studio_prepare_for_http)
+    return _shared_snapshot_download_with_xet_fallback(repo_id, **kwargs)
