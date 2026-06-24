@@ -62,7 +62,16 @@ export function ArtifactHtmlFrame({
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
   }, [allowNetworkAccess, networkAccessEnabled, code]);
+  // Only feed loads WE initiated (mount or a src change). Untrusted canvas code
+  // can self-navigate the frame to ?allow_network=1, which also fires onLoad;
+  // reposting there would let a strict frame self-upgrade into a network one.
+  const pendingPostRef = useRef(false);
+  useEffect(() => {
+    pendingPostRef.current = true;
+  }, [src]);
   const postArtifactHtml = useCallback(() => {
+    if (!pendingPostRef.current) return;
+    pendingPostRef.current = false;
     // Sandboxed frame has an opaque origin ("null"), so a wildcard target is
     // required; the payload only reaches this iframe's contentWindow.
     iframeRef.current?.contentWindow?.postMessage(
