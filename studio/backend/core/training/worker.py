@@ -1258,11 +1258,21 @@ _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 # Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used
 # only when mlx (Apple Silicon) is not importable so Studio config validation
 # still works on non-MLX hosts. The zoo function stays the source of truth.
-_MLX_STUDIO_ADAMW_ALIASES = frozenset((
-    "adamw_8bit", "paged_adamw_8bit", "adamw_bnb_8bit", "paged_adamw_32bit",
-    "adamw_torch", "adamw_torch_fused", "paged_adamw", "adamw_32bit",
-    "adamw_hf", "adamw_anyprecision", "adamw_apex_fused",
-))
+_MLX_STUDIO_ADAMW_ALIASES = frozenset(
+    (
+        "adamw_8bit",
+        "paged_adamw_8bit",
+        "adamw_bnb_8bit",
+        "paged_adamw_32bit",
+        "adamw_torch",
+        "adamw_torch_fused",
+        "paged_adamw",
+        "adamw_32bit",
+        "adamw_hf",
+        "adamw_anyprecision",
+        "adamw_apex_fused",
+    )
+)
 _MLX_STUDIO_NATIVE_OPTIMIZERS = ("adafactor", "adamw", "adam", "sgd", "muon", "lion")
 
 
