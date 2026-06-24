@@ -175,9 +175,9 @@ def test_pump_survives_handler_exception_and_keeps_processing(monkeypatch):
     pump = threading.Thread(target = b._pump_loop, daemon = True)
     pump.start()
     try:
-        assert _wait_until(lambda: handled.count("progress") == 2), (
-            "pump must keep processing good events after handler exceptions"
-        )
+        assert _wait_until(
+            lambda: handled.count("progress") == 2
+        ), "pump must keep processing good events after handler exceptions"
         assert pump.is_alive(), "pump thread must survive handler exceptions"
         assert b._pump_running is True
     finally:
