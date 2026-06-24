@@ -64,11 +64,9 @@ export interface LoadModelRequest {
    */
   tensor_parallel?: boolean | null;
   /**
-   * GPU memory strategy for GGUF models. "auto" (default): Unsloth selects
-   * GPUs and caps context to fit VRAM. "manual": you own the offload -- leave
-   * gpu_layers at -1 (Auto) to hand memory management to llama.cpp's --fit (no
-   * device masking / context / gpu-layer / split calc), or set gpu_layers >= 0
-   * to pin layers and n_cpu_moe yourself (--fit off).
+   * GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
+   * and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
+   * -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe.
    */
   gpu_memory_mode?: "auto" | "manual";
   /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off); -1 = Auto (--fit). */

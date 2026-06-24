@@ -793,11 +793,9 @@ type ChatRuntimeStore = {
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
   /**
-   * GPU memory strategy for GGUF loads. "auto" = Unsloth picks GPUs and
-   * context to fit the model; "manual" = you own the offload -- gpuLayers < 0
-   * (Auto) hands memory management to llama.cpp's --fit (no device masking, no
-   * context/gpu-layer/tensor-split calc), gpuLayers >= 0 pins the layers and
-   * nCpuMoe yourself (--fit off).
+   * GPU memory strategy for GGUF loads. "auto" = Unsloth picks GPUs and context
+   * to fit; "manual" = you own the offload (gpuLayers < 0 = Auto/--fit, >= 0
+   * pins layers + nCpuMoe).
    */
   gpuMemoryMode: "auto" | "manual";
   /** Backend-reported gpu memory mode; null until first hydrated. */

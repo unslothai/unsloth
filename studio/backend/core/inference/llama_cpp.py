@@ -4971,14 +4971,12 @@ class LlamaCppBackend:
                     # GPU/VRAM-fit logic below may shrink it on limited HW.
                     max_available_ctx = self._context_length or effective_ctx
 
-                    # Manual + Auto layers (the Manual default): llama.cpp auto-fit
-                    # (--fit on) handles all memory management. Emptying the probed
-                    # GPU set makes the selection and tensor-parallel planning below
-                    # no-op, so gpu_indices stays None (no AUTOMATIC device masking
-                    # -- an explicit gpu_ids pick still pins below), use_fit stays
-                    # True (--fit on), and tp_tensor_split stays None (no
-                    # --tensor-split). Honor an explicit context (so --fit optimizes
-                    # the gpu-layer offload around it); 0 lets --fit size it.
+                    # Manual + Auto layers (the Manual default): hand memory
+                    # management to llama.cpp's --fit. Emptying the probed GPU set
+                    # no-ops the selection/TP planning below, leaving gpu_indices
+                    # None (an explicit gpu_ids pick still pins below) and use_fit
+                    # True. An explicit context is honored (--fit optimizes around
+                    # it); 0 lets --fit size it.
                     if gpu_memory_mode == "manual" and gpu_layers < 0:
                         gpus = []
                         tensor_parallel = False
@@ -4991,13 +4989,11 @@ class LlamaCppBackend:
                         extra_args = strip_split_mode_only(extra_args)
                     elif gpu_memory_mode == "manual":
                         # Manual offload (--gpu-layers + --fit off): no automatic
-                        # device masking (an explicit gpu_ids pick still pins
-                        # below) and no context auto-cap -- the user owns layer
-                        # count and context (slider value, native default).
-                        # tensor_parallel is honored, but manual skips the
-                        # memory-based TP planner below (gpus = []); the toggle
-                        # just emits --split-mode tensor (llama.cpp then splits by
-                        # free VRAM, or by the Split ratio if set).
+                        # device masking (a gpu_ids pick still pins below) or
+                        # context cap -- the user owns both. tensor_parallel is
+                        # honored but skips the memory-based planner (gpus = []);
+                        # the toggle just emits --split-mode tensor (split by free
+                        # VRAM, or by the Split ratio if set).
                         gpus = []
                         effective_ctx = (
                             requested_ctx if requested_ctx > 0 else (self._context_length or 0)

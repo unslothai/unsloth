@@ -749,12 +749,11 @@ export function ChatSettingsPanel({
   const gpusInUseDevices = gpusInUse.map(
     (i) => gpuDevices.find((d) => d.index === i) ?? null,
   );
-  // The displayed per-GPU counts. splitRatio is a stable reference balance (only
-  // the user editing a slider changes it); rescale it to the current total so the
-  // counts always sum to GPU Layers. Deriving from the reference -- rather than
-  // mutating it on every GPU Layers change -- keeps the balance intact when the
-  // total passes through low values or Auto (where it can't be held as integers).
-  // No saved split: the VRAM-weighted default (mirroring llama.cpp), not yet sent.
+  // Displayed per-GPU counts. splitRatio is a stable reference balance (only a
+  // slider edit changes it), rescaled to the current total. Deriving it -- rather
+  // than mutating it on every GPU Layers change -- keeps the balance intact when
+  // the total passes through low values or Auto. No saved split: VRAM-weighted
+  // default (mirroring llama.cpp), not yet sent.
   const splitCounts =
     splitRatio && splitRatio.length === gpusInUse.length
       ? distributeByWeight(splitTotal, splitRatio)
