@@ -79,7 +79,6 @@ def create_access_token(
 
 
 def create_phone_token(subject: str, run_id: str) -> Tuple[str, datetime]:
-    """Read-only phone_view JWT. Returns (token, expires_at)."""
     expire = datetime.now(timezone.utc) + timedelta(hours = PHONE_TOKEN_EXPIRE_HOURS)
     to_encode = {
         "sub": subject,
@@ -98,7 +97,6 @@ def create_phone_token(subject: str, run_id: str) -> Tuple[str, datetime]:
 async def get_phone_viewer(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> Tuple[str, str]:
-    """Accept only a phone_view JWT."""
     token = credentials.credentials
     subject = _decode_subject_without_verification(token)
     if subject is None:

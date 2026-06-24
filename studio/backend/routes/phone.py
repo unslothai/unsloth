@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read-only "watch training on your phone" routes for the QR dashboard."""
-
 import os
 import socket
 from typing import Optional, Tuple
@@ -45,7 +43,6 @@ def _lan_ip() -> Optional[str]:
 
 
 def _phone_host() -> Optional[str]:
-    """Address the phone should dial, or None if Studio is bound loopback-only."""
     bind_host = os.environ.get("UNSLOTH_BIND_HOST", "127.0.0.1")
     if bind_host in _LOOPBACK_HOSTS:
         return None
@@ -55,10 +52,8 @@ def _phone_host() -> Optional[str]:
 
 
 def _require_run_active(viewer: Tuple[str, str]) -> None:
-    """410 once a different run starts, so an old link can't reveal new run data."""
+    # Exact match only; an empty run_id is not a wildcard for future runs.
     run_id = viewer[1]
-    if not run_id:
-        return
     backend = get_training_backend()
     if run_id != (getattr(backend, "current_job_id", "") or ""):
         raise HTTPException(

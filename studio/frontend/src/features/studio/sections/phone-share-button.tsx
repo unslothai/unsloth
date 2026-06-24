@@ -16,6 +16,7 @@ import {
   shareTrainingToPhone,
   type PhoneShareResponse,
 } from "@/features/training";
+import { useT } from "@/i18n";
 
 function PhoneGlyph(): ReactElement {
   return (
@@ -35,8 +36,8 @@ function PhoneGlyph(): ReactElement {
   );
 }
 
-// "View on phone": QR to a read-only training dashboard (routes/phone.py).
 export function PhoneShareButton(): ReactElement {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<PhoneShareResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +53,9 @@ export function PhoneShareButton(): ReactElement {
     try {
       setData(await shareTrainingToPhone());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not create a phone link.");
+      setError(
+        e instanceof Error ? e.message : t("studio.phoneShare.error"),
+      );
     } finally {
       setLoading(false);
     }
@@ -78,21 +81,22 @@ export function PhoneShareButton(): ReactElement {
         onClick={openAndShare}
       >
         <PhoneGlyph />
-        View on phone
+        {t("studio.phoneShare.button")}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader className="items-center text-center">
-            <DialogTitle>Watch on your phone</DialogTitle>
+            <DialogTitle>{t("studio.phoneShare.dialogTitle")}</DialogTitle>
             <DialogDescription>
-              Scan with your phone camera. Same Wi-Fi only · view-only · the link
-              expires automatically.
+              {t("studio.phoneShare.dialogDescription")}
             </DialogDescription>
           </DialogHeader>
 
           <div className="flex h-60 flex-col items-center justify-center gap-4">
             {loading ? (
-              <div className="text-muted-foreground text-sm">Creating link…</div>
+              <div className="text-muted-foreground text-sm">
+                {t("studio.phoneShare.creatingLink")}
+              </div>
             ) : error ? (
               <div className="text-destructive px-2 text-center text-sm">
                 {error}
@@ -117,7 +121,7 @@ export function PhoneShareButton(): ReactElement {
                     "cursor-pointer underline-offset-2 hover:underline",
                   )}
                 >
-                  {copied ? "Copied ✓" : data.page_url}
+                  {copied ? t("studio.phoneShare.copied") : data.page_url}
                 </button>
               </>
             ) : null}

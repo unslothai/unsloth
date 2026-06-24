@@ -1,5 +1,4 @@
 <!doctype html>
-<!-- Read-only phone dashboard at /m; reads the fragment token, polls /api/phone/*. -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -58,7 +57,6 @@
         font-variant-numeric: tabular-nums;
       }
 
-      /* --c is the single state colour; data-state on .wrap selects it. */
       .wrap {
         --c: var(--brand);
         min-height: 100%;
@@ -344,7 +342,7 @@
         // Token rides in the fragment, never sent to the server.
         var token = location.hash.replace(/^#/, "");
         var H = { headers: { Authorization: "Bearer " + token } };
-        var CIRC = 2 * Math.PI * 98; // 615.75
+        var CIRC = 2 * Math.PI * 98;
 
         var LABEL = {
           training: "Training",
@@ -400,7 +398,7 @@
           var now = Date.now();
           if (lastStep != null && step > lastStep && lastTime != null) {
             var inst = (step - lastStep) / ((now - lastTime) / 1000);
-            eps = eps == null ? inst : eps * 0.6 + inst * 0.4; // light smoothing so ETA doesn't jump
+            eps = eps == null ? inst : eps * 0.6 + inst * 0.4;
           }
           lastStep = step;
           lastTime = now;

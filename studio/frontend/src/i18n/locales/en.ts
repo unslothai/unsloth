@@ -832,6 +832,15 @@ export const en = {
         stopped: "Stopped",
       },
     },
+    phoneShare: {
+      button: "View on phone",
+      dialogTitle: "Watch on your phone",
+      dialogDescription:
+        "Scan with your phone camera. Same Wi-Fi only · view-only · the link expires automatically.",
+      creatingLink: "Creating link…",
+      error: "Could not create a phone link.",
+      copied: "Copied ✓",
+    },
     trainingStart: {
       ready: "Ready",
       downloading: "Downloading",

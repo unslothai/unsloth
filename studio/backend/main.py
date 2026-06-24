@@ -860,7 +860,7 @@ app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["h
 app.include_router(phone_router, prefix = "/api/phone", tags = ["phone"])
 
 
-# Phone dashboard; before the SPA catch-all so /m wins. Token rides in the URL fragment.
+# Before the SPA catch-all so /m wins.
 @app.get("/m")
 async def serve_phone_dashboard():
     import secrets
@@ -868,7 +868,6 @@ async def serve_phone_dashboard():
     page = Path(__file__).parent / "assets" / "phone" / "index.html"
     if not page.is_file():
         raise HTTPException(status_code = 404, detail = "Phone dashboard not available")
-    # Per-response nonce so the CSP allows the page's inline <script>.
     nonce = secrets.token_urlsafe(16)
     html = page.read_text(encoding = "utf-8").replace("<script>", f'<script nonce="{nonce}">', 1)
     return Response(

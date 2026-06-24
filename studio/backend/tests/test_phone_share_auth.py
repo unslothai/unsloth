@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auth tests for the read-only phone-view token (see routes/phone.py)."""
-
 import asyncio
 import secrets
 from datetime import datetime, timedelta, timezone
