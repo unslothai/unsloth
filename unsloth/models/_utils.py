@@ -901,7 +901,8 @@ def maybe_prefetch_hf_snapshot(
             f"({type(exception).__name__}: {exception}); continuing with the normal load."
         )
     return
-pass
+
+
 
 
 # Ignore logging messages
