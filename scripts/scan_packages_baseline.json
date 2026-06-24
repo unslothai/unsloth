@@ -55,7 +55,7 @@
       "file": "datasets/utils/file_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L443:     while True:",
+      "evidence": "L441:     while True:",
       "evidence_hash": "f6f3492f776f1ddff756fbd8984d1b2c473072641d020f1bf84d912b4656feb4"
     },
     {
@@ -79,24 +79,8 @@
       "file": "dill/_objects.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L320: a['TarFileType'] = tarfile.open(fileobj=_fileW,mode='w')\nNetwork: L333: x['SocketType'] = _socket = socket.socket()",
+      "evidence": "Archive: L317: a['TarFileType'] = tarfile.open(fileobj=_fileW,mode='w')\nNetwork: L330: x['SocketType'] = _socket = socket.socket()",
       "evidence_hash": "894862e547cf91b90cd6e4b495db3fb05b7490ef0d63de7e795a7e3d9447d850"
-    },
-    {
-      "package": "evaluate",
-      "file": "evaluate/utils/file_utils.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L261:     while True:",
-      "evidence_hash": "f6f3492f776f1ddff756fbd8984d1b2c473072641d020f1bf84d912b4656feb4"
-    },
-    {
-      "package": "execnet",
-      "file": "execnet/gateway_base.py",
-      "check": "Reverse shell / bind shell pattern",
-      "severity": "CRITICAL",
-      "evidence": "L1783:         os.dup2(fd, 0) | L1789:         os.dup2(fd, 1) | L1794:             os.dup2(fd, 2)",
-      "evidence_hash": "cc79e8720a58b11fad62452e75c20fdd33c5042e39e0b94eecf7ebc8fb69657d"
     },
     {
       "package": "fastapi",
@@ -215,7 +199,7 @@
       "file": "multiprocess/forkserver.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L6: import socket",
+      "evidence": "L5: import socket",
       "evidence_hash": "7773c884b8cd524d37b6b377f43cb5f05899db17d58442afb8508841ccc88991"
     },
     {
@@ -223,7 +207,7 @@
       "file": "multiprocess/tests/__init__.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L3569:                     os.dup2(conn.fileno(), i) | L3601:                          \"test needs os.dup2()\") | L3619:             os.dup2(fd, newfd)",
+      "evidence": "L3355:                     os.dup2(conn.fileno(), i) | L3387:                          \"test needs os.dup2()\") | L3405:             os.dup2(fd, newfd)",
       "evidence_hash": "44e8f5919373a4b4a6ff99e0d1438d6f9bd9f848249319125ace198394df7e93"
     },
     {
@@ -457,30 +441,6 @@
       "severity": "CRITICAL",
       "evidence": "Base64: L488:             decoded_bytes = base64.b64decode(base64_encoded)\nSubprocess: L80:         return subprocess.call(['which', name], | L100:         p = subprocess.Popen(['pbcopy', 'w'], | L105:         p = subprocess.Popen(['pbpaste', 'r'], | L167:         p = subprocess.Popen(['xclip', '-selection', selection], | L175:         p = subprocess.Popen(['xclip', '-selection', selection, '-o'], | L195:         p = subprocess.Popen(['xsel', selection_flag, '-i'], | L203:         p = subprocess.Popen(['xsel', selection_flag, '-o'], | L221:             subprocess.check_call(args, close_fds=True) | L224:             p = subprocess.Popen(args, stdin=subprocess.PIPE, close_fds=True) | L231:         p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True) | L241:         p = subprocess.Popen( | L248:         p = subprocess.Popen( | L469:         p = subprocess.Popen(['clip.exe'], | L477:         p = subprocess.Popen(['powershell.exe', '-noprofile', '-command', ps_script],",
       "evidence_hash": "9c3c5464987b3086428fbb095a521bdf38dae377297220db3109ebf068371228"
-    },
-    {
-      "package": "pytest",
-      "file": "_pytest/_py/path.py",
-      "check": "Downloads and executes remote code",
-      "severity": "CRITICAL",
-      "evidence": "L1153:                         exec(f.read(), mod.__dict__)",
-      "evidence_hash": "13ebc7c32fa9140c4d470fac5498535b3f8af4e72c89b9e28434c2fb6a9b9a23"
-    },
-    {
-      "package": "pytest",
-      "file": "_pytest/capture.py",
-      "check": "Reverse shell / bind shell pattern",
-      "severity": "CRITICAL",
-      "evidence": "L483:             os.dup2(self.targetfd_invalid, targetfd) | L522:         os.dup2(self.tmpfile.fileno(), self.targetfd) | L532:         os.dup2(self.targetfd_save, self.targetfd) | L547:         os.dup2(self.targetfd_save, self.targetfd) | L555:         os.dup2(self.tmpfile.fileno(), self.targetfd)",
-      "evidence_hash": "4d9493cef8f9e3649faac4d6241673134a9d0be052691bccbbf4372cdd8ff828"
-    },
-    {
-      "package": "pytest",
-      "file": "_pytest/config/__init__.py",
-      "check": "Reverse shell / bind shell pattern",
-      "severity": "CRITICAL",
-      "evidence": "L260:         os.dup2(devnull, sys.stdout.fileno())",
-      "evidence_hash": "6ff12ba150358aa0b2756d60df29a7ac9c08e60d0a1ad42157fd30af6e7d50ee"
     },
     {
       "package": "python-dateutil",
@@ -767,7 +727,7 @@
       "file": "transformers/testing_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L1663:     while True:",
+      "evidence": "L1623:     while True:",
       "evidence_hash": "f6f3492f776f1ddff756fbd8984d1b2c473072641d020f1bf84d912b4656feb4"
     },
     {
@@ -791,7 +751,7 @@
       "file": "transformers/utils/import_utils.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L2494:             return importlib.import_module(\".\" + module_name, self.__name__)",
+      "evidence": "L2345:             return importlib.import_module(\".\" + module_name, self.__name__)",
       "evidence_hash": "e584ecfdb097d9482bb19cd3992813bc1a119cfd4c40af14748bafe22900d91e"
     },
     {
@@ -1031,7 +991,7 @@
       "file": "dill/_dill.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L596:     return marshal.loads(string) | L1012:                 module = __import__(names[0]) | L1065:             submodule = getattr(__import__(module, None, None, [obj]), obj) | L1068:             return __import__(import_name, None, None, [obj]) | L1070:             return __import__(import_name)\nExec: L980:     return eval(repr_str) | L1038:         return eval(attr+'.__dict__[\"'+name+'\"]')",
+      "evidence": "Obfusc: L595:     return marshal.loads(string) | L1011:                 module = __import__(names[0]) | L1061:             submodule = getattr(__import__(module, None, None, [obj]), obj) | L1064:             return __import__(import_name, None, None, [obj]) | L1066:             return __import__(import_name)\nExec: L979:     return eval(repr_str) | L1037:         return eval(attr+'.__dict__[\"'+name+'\"]')",
       "evidence_hash": "ccfecb4d84f39b4e1dca7d28a6165b4da6c6246d4feba475217e13fddbbbff2d"
     },
     {
@@ -1039,7 +999,7 @@
       "file": "dill/source.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L396:                 lines, lnum = [\"%s = __import__('%s', fromlist=['%s']).%s\\n\" % (name,module,name,name)], 0\nExec: L60:         _ = eval(\"lambda %s : %s\" % (lhs,rhs), globals(),locals()) | L82:             _f = eval(\"lambda %s : %s\" % (_lhs,_rhs), globals(),locals()) | L397:                 obj = eval(lines[0].lstrip(name + ' = ')) | L543:             exec(getimportable(f, alias='_'), __globals__, __locals__) | L713:         try: exec(_str)",
+      "evidence": "Obfusc: L394:                 lines, lnum = [\"%s = __import__('%s', fromlist=['%s']).%s\\n\" % (name,module,name,name)], 0\nExec: L60:         _ = eval(\"lambda %s : %s\" % (lhs,rhs), globals(),locals()) | L82:             _f = eval(\"lambda %s : %s\" % (_lhs,_rhs), globals(),locals()) | L395:                 obj = eval(lines[0].lstrip(name + ' = ')) | L541:             exec(getimportable(f, alias='_'), __globals__, __locals__) | L711:         try: exec(_str)",
       "evidence_hash": "0053145466e8871ab88645ce7a3850beb088ba82c56509ae1220e94255f49af1"
     },
     {
@@ -1051,36 +1011,12 @@
       "evidence_hash": "1537bbfee2a893c0749bb1e9ccc910683a3c1e560be5eeb54301e3b265839314"
     },
     {
-      "package": "execnet",
-      "file": "execnet/gateway_base.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L1290:                 co = compile(source + \"\\n\", file_name or \"<remote exec>\", \"exec\")\nExec: L1291:                 exec(co, loc)",
-      "evidence_hash": "6e72163945d3816004048e3f7b90be278c06edf107c456283560bf0a89addd27"
-    },
-    {
-      "package": "execnet",
-      "file": "execnet/script/socketserver.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L63:         co = compile(source + \"\\n\", \"<socket server>\", \"exec\")\nExec: L45: exec( | L47:     exec(source, locs)\"\"\" | L61:     source = eval(source)",
-      "evidence_hash": "a5d3c3ca5a239c68a989bc5874966766a2b6b888b46db90d1b4e3dc8a7d080ac"
-    },
-    {
       "package": "fastmcp-slim",
       "file": "fastmcp/server/auth/providers/jwt.py",
       "check": "Embedded cryptographic key + network calls (encrypted exfil pattern)",
       "severity": "HIGH",
       "evidence": "Key: L187:         \"-----BEGIN PUBLIC KEY-----\", | L188:         \"-----BEGIN RSA PUBLIC KEY-----\",\nNetwork: L225:         http_client: httpx.AsyncClient | None = None, | L411:                 else httpx.AsyncClient(timeout=httpx.Timeout(10.0))",
       "evidence_hash": "7ee37e92a93cb8be09518e90043e19e4e74b2263ae7f80496cbc8763f5c47618"
-    },
-    {
-      "package": "hypothesis",
-      "file": "hypothesis/internal/scrutineer.py",
-      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
-      "severity": "HIGH",
-      "evidence": "Anti: L76:         return sys.gettrace() is None | L113:             sys.settrace(self.trace) | L136:             sys.settrace(None) | L295:     if Phase.explain in settings.phases and sys.gettrace() and not traces:",
-      "evidence_hash": "41c42cb2f72ed375c6bceb13d653283ef19bddc6440f8781a977869e9c392cc0"
     },
     {
       "package": "ipython",
@@ -1123,27 +1059,11 @@
       "evidence_hash": "622d0ed13a2a3cd1d7ee79b55ef0ff9d22bfbac6cd00457f1bb9e4ba81c3d6a0"
     },
     {
-      "package": "kgb",
-      "file": "kgb/spies.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L934:             eval(compile(func_code_str, '<string>', 'exec'),\nExec: L934:             eval(compile(func_code_str, '<string>', 'exec'),",
-      "evidence_hash": "6fecf5b879b46956ef23188518ee4384bada31a792711a5983c5b59d6f0605d7"
-    },
-    {
-      "package": "langid",
-      "file": "langid/train/common.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L44:         yield marshal.load(t)\nExec: L85:       key = eval(row[0])",
-      "evidence_hash": "812821d69adf9c063299c8a85fd688c2888f61e015c363a858b8735156f13c41"
-    },
-    {
       "package": "matplotlib",
       "file": "matplotlib/sphinxext/plot_directive.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L368:         compile(text, '<string>', 'exec')\nExec: L585:                     exec('import numpy as np\\n' | L588:                     exec(str(setup.config.plot_pre_code), ns) | L594:                 exec(code, ns) | L596:                     exec(function_name + \"()\", ns)",
+      "evidence": "Obfusc: L326:         compile(text, '<string>', 'exec')\nExec: L543:                     exec('import numpy as np\\n' | L546:                     exec(str(setup.config.plot_pre_code), ns) | L552:                 exec(code, ns) | L554:                     exec(function_name + \"()\", ns)",
       "evidence_hash": "613707cd54da4398b8fc33aadcb0859ccd2b86d597c029d5c7898f879372c4b0"
     },
     {
@@ -1151,7 +1071,7 @@
       "file": "multiprocess/tests/__init__.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L446:         time.sleep(300)",
+      "evidence": "Anti: L440:         time.sleep(300)",
       "evidence_hash": "121ccac34a6a34831c13d7998cfdef0830a4267cadc8cbbec52057b6a64ffb90"
     },
     {
@@ -1265,22 +1185,6 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L45:     mod = __import__(module_name, None, None, ['__all__'])\nExec: L154:             exec(f.read(), custom_namespace)",
       "evidence_hash": "aaf57134f9085f25d47a85b43dd8758982fb3837a83294bfb7631194e077e009"
-    },
-    {
-      "package": "pytest",
-      "file": "_pytest/_py/path.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L626:                 mod = __import__(hashtype) | L1118:             __import__(modname)\nExec: L1153:                         exec(f.read(), mod.__dict__)",
-      "evidence_hash": "815a2d7785cd2a96ba25d9cadbe4fe8b9a439e9fd2538272290a328f174313b9"
-    },
-    {
-      "package": "pytest",
-      "file": "_pytest/assertion/rewrite.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L393:             co = marshal.load(fp) | L395:             trace(f\"_read_pyc({source}): marshal.load error {e}\")\nExec: L188:         exec(co, module.__dict__)",
-      "evidence_hash": "55d7c7bbc8c43c45fac56ec30434b271ed623778f29a9f7f0a2edd58416f23ff"
     },
     {
       "package": "scikit-learn",

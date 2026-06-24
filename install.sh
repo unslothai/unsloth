@@ -1534,17 +1534,15 @@ _maybe_reroute_strixhalo_to_2404() {
 _maybe_reroute_strixhalo_to_2404 || true
 
 # ── Check system dependencies ──
-# cmake and git are needed by unsloth studio setup to build the GGUF inference
-# engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
+# cmake/git are only needed to *build* llama.cpp from source. Studio downloads a
+# prebuilt by default, and setup.sh self-skips the source build when they're
+# absent -- so macOS doesn't block on cmake (requiring it would force a manual
+# Homebrew install). Linux keeps requiring them; its package manager has them.
 tauri_log "STEP" "Checking system dependencies"
-MISSING=""
-
-command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
-command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
 
 case "$OS" in
     macos)
-        # Xcode Command Line Tools provide the C/C++ compiler
+        # Xcode Command Line Tools provide the C/C++ compiler and git.
         if ! xcode-select -p >/dev/null 2>&1; then
             echo ""
             echo "==> Xcode Command Line Tools are required."
@@ -1553,8 +1551,19 @@ case "$OS" in
             echo "    After the installation completes, please re-run this script."
             exit 1
         fi
+        # cmake is only needed for a source build; the default prebuilt path
+        # doesn't use it, so its absence is not fatal -- no Homebrew prerequisite.
+        if command -v cmake >/dev/null 2>&1; then
+            step "deps" "all system dependencies found"
+        else
+            step "deps" "using prebuilt llama.cpp (cmake not found)" "$C_WARN"
+            substep "Install cmake only if you want a source build: brew install cmake"
+        fi
         ;;
     linux|wsl)
+        MISSING=""
+        command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
+        command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
         # curl or wget is needed for downloads; check both
         if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
             MISSING="$MISSING curl"
@@ -1562,27 +1571,12 @@ case "$OS" in
         command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
         # libcurl dev headers for llama.cpp HTTPS support
         command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
-        ;;
-esac
 
-MISSING=$(echo "$MISSING" | sed 's/^ *//')
-
-if [ -n "$MISSING" ]; then
-    echo ""
-    step "deps" "missing: $MISSING" "$C_WARN"
-    substep "These are needed to build the GGUF inference engine."
-
-    case "$OS" in
-        macos)
-            if ! command -v brew >/dev/null 2>&1; then
-                echo ""
-                echo "    Homebrew is required to install them."
-                echo "    Install Homebrew from https://brew.sh then re-run this script."
-                exit 1
-            fi
-            brew install $MISSING </dev/null
-            ;;
-        linux|wsl)
+        MISSING=$(echo "$MISSING" | sed 's/^ *//')
+        if [ -n "$MISSING" ]; then
+            echo ""
+            step "deps" "missing: $MISSING" "$C_WARN"
+            substep "These are needed to build the GGUF inference engine."
             if command -v apt-get >/dev/null 2>&1; then
                 _smart_apt_install $MISSING
             else
@@ -1597,12 +1591,12 @@ if [ -n "$MISSING" ]; then
                 echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
                 exit 1
             fi
-            ;;
-    esac
-    echo ""
-else
-    step "deps" "all system dependencies found"
-fi
+            echo ""
+        else
+            step "deps" "all system dependencies found"
+        fi
+        ;;
+esac
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
@@ -2621,7 +2615,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2634,7 +2628,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2838,7 +2832,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2856,7 +2850,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            --upgrade-package unsloth "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2888,7 +2882,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.6.6" "unsloth>=2026.6.8" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.6.7" "unsloth>=2026.6.9" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -3126,10 +3120,11 @@ echo ""
 if [ -t 1 ]; then
     echo ""
     printf "  Start Unsloth Studio now? [Y/n] "
+    # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
     if [ -r /dev/tty ]; then
-        read -r _reply </dev/tty || _reply="y"
+        read -r _reply </dev/tty || _reply="n"
     else
-        _reply="y"
+        _reply="n"
     fi
     case "${_reply:-y}" in
         [Yy]*|"")
@@ -3137,8 +3132,12 @@ if [ -t 1 ]; then
             # Detach stdin from the `curl | sh` pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
-            "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null
-            _LAUNCH_EXIT=$?
+            # trap '' INT: wait for studio's shutdown instead of racing the prompt.
+            # Subshell resets INT so the child still gets Ctrl+C (no inherited ignore).
+            trap '' INT
+            # `|| ...`: capture the exit code without set -e aborting first.
+            _LAUNCH_EXIT=0
+            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null) || _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
                 echo "⚠️  Unsloth Studio failed to start after migration."
@@ -3155,6 +3154,7 @@ if [ -t 1 ]; then
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            substep "(add --secure to allow HTTPS)"
             echo ""
             ;;
     esac
@@ -3176,5 +3176,6 @@ else
         substep "unsloth studio -p 8888"
     fi
     substep "(add -H 0.0.0.0 to allow network / cloud access)"
+    substep "(add --secure to allow HTTPS)"
     echo ""
 fi
