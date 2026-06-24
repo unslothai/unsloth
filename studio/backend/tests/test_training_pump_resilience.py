@@ -237,9 +237,9 @@ def test_pump_survives_queue_read_exception_and_recovers(monkeypatch):
     pump = threading.Thread(target = b._pump_loop, daemon = True)
     pump.start()
     try:
-        assert _wait_until(lambda: handled == ["progress"]), (
-            "pump must recover after read errors and process the next event"
-        )
+        assert _wait_until(
+            lambda: handled == ["progress"]
+        ), "pump must recover after read errors and process the next event"
         assert pump.is_alive()
     finally:
         proc._alive = False
