@@ -2321,6 +2321,7 @@ async def _maybe_auto_switch_model(
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
+        get_auto_unload_idle_seconds,
         get_model_override,
     )
     from core.inference.local_model_resolver import resolve_local_gguf
@@ -2332,11 +2333,14 @@ async def _maybe_auto_switch_model(
 
     # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
     # absent so it falls through instead of raising in the membership checks below.
-    if (
-        not isinstance(requested_model, str)
-        or not requested_model
-        or not get_openai_auto_switch_enabled()
-    ):
+    if not isinstance(requested_model, str) or not requested_model:
+        return
+    auto_switch_on = get_openai_auto_switch_enabled()
+    # The reload-stash path also runs when idle-unload is active on its own (a
+    # standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off), so a model the idle
+    # loop freed is restored on the next request. The resolver-based switch still
+    # requires the auto-switch toggle.
+    if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
         return
 
     # Register by the raw requested model before resolving (which can be slow):
@@ -2346,13 +2350,23 @@ async def _maybe_auto_switch_model(
     _note_request_waiter(request_key, 1)
     try:
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
-        resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
+        # With auto-switch off, skip the resolve so only the reload-stash path runs.
+        resolved = (
+            await asyncio.to_thread(resolve_local_gguf, requested_model) if auto_switch_on else None
+        )
         if resolved is None:
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
             last = get_last_unloaded_model()
-            if not last or get_llama_cpp_backend().is_loaded:
+            # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload
+            # leaves the GGUF slot empty but is the live model, so don't resurrect
+            # the stale GGUF over it (that load would tear the active model down).
+            if (
+                not last
+                or get_llama_cpp_backend().is_loaded
+                or getattr(get_inference_backend(), "active_model_name", None)
+            ):
                 return
             if len(last) == 3:
                 target_id, variant, override_id = last
@@ -6663,7 +6677,8 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     """
     for model in await _all_openai_model_objects():
         # Case-insensitive to match the resolver, which lowercases its index.
-        if model["id"].lower() == model_id.lower():
+        mid = model.get("id")
+        if isinstance(mid, str) and mid.lower() == model_id.lower():
             return model
     raise HTTPException(
         status_code = 404,
@@ -6865,6 +6880,16 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 # =====================================================================
 
 
+def _embeddings_input_present(body: dict) -> bool:
+    """Whether an embeddings body carries a usable ``input`` (non-empty)."""
+    inp = body.get("input")
+    if isinstance(inp, str):
+        return inp != ""
+    if isinstance(inp, (list, tuple)):
+        return len(inp) > 0
+    return inp is not None
+
+
 @router.post("/embeddings")
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """
@@ -6876,6 +6901,18 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     error (expected).
     """
     llama_backend = get_llama_cpp_backend()
+    # When auto-switch is on, reject a request with no input before the hook so an
+    # invalid request never swaps the resident model (as chat/responses/messages
+    # already validate before switching).
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+    if get_openai_auto_switch_enabled():
+        try:
+            _pre = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            _pre = None
+        if isinstance(_pre, dict) and not _embeddings_input_present(_pre):
+            raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
     # Embeddings is a model-bearing inference path too, so honor auto-switch.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:

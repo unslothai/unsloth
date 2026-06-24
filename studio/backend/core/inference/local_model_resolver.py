@@ -35,6 +35,30 @@ _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
 
 
+def _is_abs_path_id(value: str) -> bool:
+    """True when an id is an absolute filesystem path (the ./models and LM Studio
+    scanners use the on-disk path as the id) rather than a repo id like org/name."""
+    from pathlib import Path
+
+    try:
+        return Path(value).is_absolute()
+    except Exception:
+        return False
+
+
+def _advertised_loader_id(info) -> Optional[str]:
+    """The id to advertise for a scanned model: prefer a client-facing alias over
+    an absolute filesystem path so /v1/models and the override key never expose a
+    host path (the ./models and LM Studio scanners report the path as info.id)."""
+    raw_id = getattr(info, "id", None)
+    if not raw_id or not _is_abs_path_id(raw_id):
+        return raw_id
+    for alt in (getattr(info, "model_id", None), getattr(info, "display_name", None)):
+        if alt and not _is_abs_path_id(alt):
+            return alt
+    return raw_id
+
+
 def _resolve_load_dir(p):
     """The concrete dir holding the GGUFs. For an HF cache repo (``models--*``
     with ``snapshots/``) this is the latest snapshot dir, so /load takes the
@@ -106,13 +130,13 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             if not d.is_dir():
                 return []
             rp = str(d.resolve())
-        except Exception as exc:  # a missing/None root must skip, never crash the index
+            if rp in seen_hf:
+                return []
+            seen_hf.add(rp)
+            return _scan_hf_cache(directory)
+        except Exception as exc:  # a missing/malformed root must skip, never crash the index
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
-        if rp in seen_hf:
-            return []
-        seen_hf.add(rp)
-        return _scan_hf_cache(directory)
 
     try:
         found = _scan_models_dir(Path("./models").resolve())
@@ -132,17 +156,21 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception:
         return index
     for info in found:
-        loader_id = getattr(info, "id", None)
-        if not loader_id:
+        raw_id = getattr(info, "id", None)
+        if not raw_id:
             continue
         # Skip what Studio hides from its pickers (validation probe, RAG embed
         # weights): not chat models, so never an auto-switch target.
-        if _is_hidden_model(loader_id, getattr(info, "path", None)):
+        if _is_hidden_model(raw_id, getattr(info, "path", None)):
             continue
+        # Advertise a client-facing alias, not an absolute filesystem path.
+        loader_id = _advertised_loader_id(info)
         entry = _local_gguf_entry(loader_id, info)
         if entry is None:
             continue
-        for key in (info.id, getattr(info, "model_id", None), getattr(info, "display_name", None)):
+        # Index every alias (including the path) so a client can resolve by any of
+        # them, even though only the non-path loader_id is advertised.
+        for key in (raw_id, getattr(info, "model_id", None), getattr(info, "display_name", None)):
             if key:
                 index.setdefault(key.strip().lower(), entry)
     return index

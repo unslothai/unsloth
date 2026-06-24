@@ -1504,3 +1504,159 @@ def test_env_idle_ttl_invalid_is_ignored(monkeypatch):
     assert settings.get_auto_unload_idle_seconds() == 0
     monkeypatch.delenv("UNSLOTH_MODEL_IDLE_TTL", raising = False)
     assert settings.get_auto_unload_idle_seconds() == 0
+
+
+# ── codex/gemini round: standalone-idle reload, path-as-id, embeddings input, retrieve id ──
+
+
+def test_env_idle_standalone_reloads_freed_model_with_auto_switch_off(monkeypatch):
+    # C3: a standalone UNSLOTH_MODEL_IDLE_TTL (auto-switch OFF) freed the model on
+    # idle; the next request must restore exactly what was freed even though the
+    # resolver never runs while auto-switch is off.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)  # idle-unload emptied the slot
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),  # would switch if resolver ran
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)  # standalone env TTL
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    _run_hook("org/B-GGUF")
+    # Resolver skipped (auto-switch off), so only the stash reload runs: the freed A
+    # is restored, not the resolves_to target B.
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "/cache/snap/A"
+    assert rec.calls[0].gguf_variant == "Q4_K_M"
+
+
+def test_no_stash_reload_when_idle_off_and_auto_switch_off(monkeypatch):
+    # C3 guard: with both auto-switch and idle-unload off the hook is a pure no-op
+    # and must not resurrect a stashed model (that path only serves the idle feature).
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    _run_hook("org/B-GGUF")
+    assert rec.calls == []
+
+
+def test_stash_reload_skipped_while_unsloth_model_active(monkeypatch):
+    # An Unsloth/Transformers model loaded after an idle-unload leaves the GGUF slot
+    # empty but is the live model; an unknown /v1 name must NOT resurrect the stale
+    # GGUF stash (that reload would tear the active Unsloth model down).
+    from types import SimpleNamespace
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)  # GGUF slot empty
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    # An Unsloth model is the live backend.
+    monkeypatch.setattr(
+        inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = "unsloth/Qwen3-8B")
+    )
+    _run_hook("gpt-4o-mini")
+    assert rec.calls == []  # stale GGUF not reloaded over the active Unsloth model
+
+
+def test_is_abs_path_id_distinguishes_path_from_repo_id():
+    assert resolver._is_abs_path_id("/abs/path/model.gguf") is True
+    assert resolver._is_abs_path_id("org/Repo-GGUF") is False
+    assert resolver._is_abs_path_id("Repo") is False
+
+
+def test_advertised_loader_id_prefers_alias_over_abs_path():
+    # C1: the ./models and LM Studio scanners report the on-disk path as info.id.
+    from types import SimpleNamespace
+
+    f = resolver._advertised_loader_id
+    # An absolute-path id falls back to the first non-path alias.
+    assert f(SimpleNamespace(id = "/home/me/models/x", model_id = "org/X-GGUF", display_name = "X")) == "org/X-GGUF"
+    # No alias available: keep the path (still resolvable by it).
+    assert f(SimpleNamespace(id = "/home/me/models/x", model_id = None, display_name = None)) == "/home/me/models/x"
+    # A normal repo id is advertised as-is.
+    assert f(SimpleNamespace(id = "org/X-GGUF", model_id = "org/X-GGUF", display_name = "X")) == "org/X-GGUF"
+
+
+def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
+    # C1 end-to-end: a scanner that reports the path as the id must not advertise the
+    # host path in /v1/models, yet the model stays resolvable by that path too.
+    from types import SimpleNamespace
+    import routes.models as models_route
+
+    gguf = tmp_path / "model-Q4_K_M.gguf"
+    gguf.write_bytes(b"x" * 32)
+    info = SimpleNamespace(
+        id = str(gguf),  # scanner uses the on-disk path as the id
+        path = str(gguf),
+        model_id = "org/Repo-GGUF",
+        display_name = "Repo",
+    )
+    monkeypatch.setattr(models_route, "_scan_models_dir", lambda *a, **k: [info])
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    resolver._scan = (0.0, {})
+
+    # The advertised id is the alias, never the absolute path.
+    assert resolver.list_switch_eligible_ids() == ["org/Repo-GGUF"]
+    # But the model is still resolvable by its on-disk path (an indexed alias).
+    resolver._scan = (0.0, {})
+    assert resolver.resolve_local_gguf(str(gguf)) is not None
+
+
+def test_embeddings_input_present_helper():
+    f = inference_route._embeddings_input_present
+    assert f({"input": "hi"}) is True
+    assert f({"input": ["a", "b"]}) is True
+    assert f({"input": [1, 2, 3]}) is True
+    assert f({}) is False
+    assert f({"input": ""}) is False
+    assert f({"input": []}) is False
+
+
+def test_embeddings_rejects_missing_input_before_switch(monkeypatch):
+    # C2: with auto-switch on, an embeddings request carrying no input must 400
+    # before the hook, so an invalid request never swaps the resident model.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")  # loaded
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(_json_body_request({"model": "org/B-GGUF"}), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # no model switch happened
+
+
+def test_retrieve_model_tolerates_non_string_id(monkeypatch):
+    # G2: a model object with a non-string id (defensive) must be skipped rather
+    # than crashing the .lower() compare; a valid id is still found, unknown 404s.
+    from fastapi import HTTPException
+
+    async def _objs():
+        return [{"id": 123, "object": "model"}, {"id": "org/B-GGUF", "object": "model"}]
+
+    monkeypatch.setattr(inference_route, "_all_openai_model_objects", _objs)
+    obj = asyncio.run(inference_route.openai_retrieve_model("org/B-GGUF", "tester"))
+    assert obj["id"] == "org/B-GGUF"
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_retrieve_model("123", "tester"))
+    assert exc.value.status_code == 404
