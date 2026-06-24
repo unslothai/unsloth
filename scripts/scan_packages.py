@@ -509,13 +509,15 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
     # Unusually large executable .pth (litellm's was 34 KB; legit ones are <100 bytes)
     size = len(content)
     if size > 500 and import_lines:
+        # Pin the content so a different payload of the same size/import count reopens.
+        digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
         findings.append(
             Finding(
                 HIGH,
                 package,
                 filename,
                 f"Unusually large executable .pth ({size} bytes)",
-                f"{len(import_lines)} import line(s) in {size}-byte .pth file",
+                f"{len(import_lines)} import line(s) in {size}-byte .pth file sha256:{digest}",
             )
         )
 
@@ -661,7 +663,8 @@ def _hidden_payload_findings(
                 package,
                 filename,
                 "exec/eval with hidden network+exec payload",
-                f"network+exec: {_extract_evidence(removed, RE_SUBPROCESS)}",
+                f"network+exec: {_extract_evidence(removed, RE_NETWORK)} | "
+                f"{_extract_evidence(removed, RE_SUBPROCESS)}",
             )
         )
     return out
@@ -1153,7 +1156,10 @@ def _extract_evidence(
         span = lines[start - 1 : end] or ["<multiline match>"]
         rendered = "\n".join(f"L{start + i}: {ln.rstrip()}" for i, ln in enumerate(span))
         if len(span) > _MAX_MULTILINE_LINES:
-            digest = hashlib.sha256(rendered.encode("utf-8", "replace")).hexdigest()
+            # Digest the code without the L<NN>: markers so a pure line shift of
+            # the same span stays stable while a code change still reopens.
+            code = "\n".join(ln.rstrip() for ln in span)
+            digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
             rendered = f"L{start}: {span[0].rstrip()} sha256:{digest}"
         out.append(rendered)
         if max_matches and len(out) >= max_matches:
@@ -1208,7 +1214,8 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                 package,
                 filename,
                 "JS embeds credential regexes AND makes network calls (stealer)",
-                _extract_evidence(content, RE_TOKEN_REGEX),
+                f"Token: {_extract_evidence(content, RE_TOKEN_REGEX)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
             )
         )
     if has_workflow_inj:
@@ -1255,6 +1262,12 @@ def check_shell_file(content: str, filename: str, package: str) -> list[Finding]
     if RE_DEV_TOOL_HIJACK.search(content) and (
         RE_NETWORK.search(content) or RE_SUBPROCESS.search(content)
     ):
+        # Bind the hook AND the network/exec signal so a changed exfil reopens.
+        evidence = [f"Hook: {_extract_evidence(content, RE_DEV_TOOL_HIJACK)}"]
+        if RE_NETWORK.search(content):
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if RE_SUBPROCESS.search(content):
+            evidence.append(f"Exec: {_extract_evidence(content, RE_SUBPROCESS)}")
         findings.append(
             Finding(
                 CRITICAL,
@@ -1262,7 +1275,7 @@ def check_shell_file(content: str, filename: str, package: str) -> list[Finding]
                 filename,
                 "Shell installs developer-tool persistence hook (.bashrc / "
                 "profile.d / vscode tasks) AND has network or exec",
-                _extract_evidence(content, RE_DEV_TOOL_HIJACK),
+                "\n".join(evidence),
             )
         )
     if RE_TOKEN_REGEX.search(content) and RE_NETWORK.search(content):
@@ -1272,7 +1285,8 @@ def check_shell_file(content: str, filename: str, package: str) -> list[Finding]
                 package,
                 filename,
                 "Shell embeds credential regexes AND makes network calls",
-                _extract_evidence(content, RE_TOKEN_REGEX),
+                f"Token: {_extract_evidence(content, RE_TOKEN_REGEX)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
             )
         )
     if RE_WORKFLOW_INJECT.search(content):
@@ -2575,7 +2589,7 @@ def _relpath_in_package(filename: str) -> str:
 # optional "Label: " then "L<NN>: "; a marker-like "L<NN>:" inside raw code (e.g.
 # a .pth import line) has no leading marker and is left intact.
 _RE_EVIDENCE_SPLIT = re.compile(r" \| (?=L\d+:)|\n")
-_RE_EVIDENCE_PREFIX = re.compile(r"^(?:[A-Za-z][A-Za-z0-9 _/-]*:\s*)?L\d+:\s?")
+_RE_EVIDENCE_PREFIX = re.compile(r"^(?:[A-Za-z][A-Za-z0-9 _/+.-]*:\s*)?L\d+:\s?")
 
 
 def _canon_evidence(evidence: str) -> str:

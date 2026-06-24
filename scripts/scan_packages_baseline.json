@@ -55,16 +55,16 @@
       "file": "datasets/utils/file_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L443:     while True: sha256:d29d611072807f8781b41efe125c6c5189a2ea633146340860274225ef47ca7d",
-      "evidence_hash": "70edfd26b5252f80fe5946ca934964976ae29e395669d8627004ffabd394f285"
+      "evidence": "L443:     while True: sha256:feba37d77721aa658e1786d2e4b67de76fefe1ceeb3ce8529d361c5241778eea",
+      "evidence_hash": "2e458563dec752d0a9896c9685d368d9906867110db315ab751e3eb6ec63f51c"
     },
     {
       "package": "datasets",
       "file": "datasets/utils/file_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L441:     while True: sha256:a1e987c33f0bcf9d1b1ad6f0867081fef1794be7c8a3682bdcfb4c81a6bfd526",
-      "evidence_hash": "890153bfbdc501565942dbf81f7446a9d24b40b5acbce0df4546dfe632007707"
+      "evidence": "L441:     while True: sha256:ce92e38c17c524815e1f9055be77235028c1e68e41b45cbfe9c8f1b867a205da",
+      "evidence_hash": "cb36281d28a975d101121c0702ee05eeee470879520d39a8be552129333f514d"
     },
     {
       "package": "diffusers",
@@ -95,8 +95,8 @@
       "file": "fastapi/routing.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L586:                                 while True: sha256:cd09ad493a6b5a8e248b7ab343c45d2ad2b96041dc2d2e853917b9faf7aaf57a",
-      "evidence_hash": "46b6d58d25b96a69bb30874af8b2e387dd5cec5a363ea7db7481a4b03993b0f2"
+      "evidence": "L586:                                 while True: sha256:4f8b3659bedc97ecb9b9ae20aa4fc57b1da466e3a803fcc5bf43f1082dc7dbce",
+      "evidence_hash": "96de8aa0caefc6559474a4cfc783186991e30de215f7b0a331e937c5f53e32da"
     },
     {
       "package": "fastmcp-slim",
@@ -111,8 +111,8 @@
       "file": "fastmcp/cli/apps_dev.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L624:     history.replaceState(null, \"\", url); sha256:7a20ea79071157bab6231788dfa7adfba22e16e0c7a2b5dc38b55773d6c13a98\nNetwork: L1291:     with httpx.Client(timeout=30.0) as client: | L1305:     with httpx.Client(timeout=30.0) as client: | L1335:     with httpx.Client(timeout=30.0) as client: | L1537:         client = httpx.AsyncClient( | L1701:     async with httpx.AsyncClient(trust_env=False) as client: | L1769:                     with socket.socket(family, socket.SOCK_STREAM) as s:",
-      "evidence_hash": "d8d93fced5b9aa5d3bb838ce41fcb52d6ed2d80c287a32eb6494fdf901a9601c"
+      "evidence": "FS: L624:     history.replaceState(null, \"\", url); sha256:fd8dbfa8af4dea2ce43f4d441f3f81239de341b76a2eb0a33c446f6757ce5f43\nNetwork: L1291:     with httpx.Client(timeout=30.0) as client: | L1305:     with httpx.Client(timeout=30.0) as client: | L1335:     with httpx.Client(timeout=30.0) as client: | L1537:         client = httpx.AsyncClient( | L1701:     async with httpx.AsyncClient(trust_env=False) as client: | L1769:                     with socket.socket(family, socket.SOCK_STREAM) as s:",
+      "evidence_hash": "6446d0671fb1cdff723dea551a7caa39116ebb3c3bc4a361b9406034494bf5c5"
     },
     {
       "package": "fonttools",
@@ -135,24 +135,24 @@
       "file": "httpx/_models.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L528:         history: list[Response] | None = None, sha256:822e817a1da37282677f786ca8f26026af21386abbf4343009bee76bc5d9f374\nNetwork: L9: import urllib.request | L1243:     class _CookieCompatRequest(urllib.request.Request):",
-      "evidence_hash": "40d8259dc36366339690c55dde61d340a9cd1ac9e661aa0eb60eac2811baa8a9"
+      "evidence": "FS: L528:         history: list[Response] | None = None, sha256:f56272dccd651b2644aa41ef6e688e211462427aad07fef5150240ec7347446e\nNetwork: L9: import urllib.request | L1243:     class _CookieCompatRequest(urllib.request.Request):",
+      "evidence_hash": "31d70ef38d09e1331a5d17cda41cd0956ae9948d3d2877840da7f6df434a5506"
     },
     {
       "package": "huggingface-hub",
       "file": "huggingface_hub/hf_api.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L3746:         while True: sha256:7adab95487e82515235d8710cc97540c6fb761a8197c8910b30cb20525f4e1cc",
-      "evidence_hash": "a3c37ab0798b04bf82d708b215b7c3df0e71d206384caee94456c8e51e412fd9"
+      "evidence": "L3746:         while True: sha256:0c73ed1a7447120b112c063b14e720c6695bc11d00eb6b912cd0f10dc3e29b31",
+      "evidence_hash": "22f50b930e44146c5350bb99e6e6ebb09feea9bf1e899e407bedc4ffaf06721b"
     },
     {
       "package": "huggingface-hub",
       "file": "huggingface_hub/hf_api.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L4600:         while True: sha256:12018a99708b32900b16ee99c7ab72910fc411fcdbdde8bed36fcbf9a862dd62",
-      "evidence_hash": "fd5b71ed737c373c4a45bede17ee03e00e813a79071ddea177e4be39c1a50cc2"
+      "evidence": "L4600:         while True: sha256:f4a851312a1832efe1b435aa1275a82184e19cc3f47e2cd244373d56c11de272",
+      "evidence_hash": "dc8fcf44788e32f42d1cc2eb0e2deb55eb2dbf2c3a55909a7d503e450f45e602"
     },
     {
       "package": "huggingface-hub",
@@ -167,24 +167,24 @@
       "file": "huggingface_hub/utils/_http.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L298:     while True: sha256:06353e5ed10a38f5d032f2fea033c0157cd5c705d688fad17c0eb4f24490019a",
-      "evidence_hash": "d1f83f1cb4f5fc7c8d4a20431973e634ca6b4709526ea794ca6feab957873b3a"
+      "evidence": "L439:     while True: sha256:0ab4fed32d3af10f361963371f681923481377508a405b5d8770cef75f859168",
+      "evidence_hash": "1484f6b92f41c427ba8cbc7c4695a94975fea683dfa83aa510b4b0e982be4721"
     },
     {
       "package": "huggingface-hub",
       "file": "huggingface_hub/utils/_http.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L439:     while True: sha256:98f53a2429c1aefd5f32cda4b2a3ec898f98c37bccc1ee036a3e296c45e19818",
-      "evidence_hash": "dc6582463aaf4efaa49e2bb666d7ec7482406fadb13e99d8695ce57bb57645ad"
+      "evidence": "L298:     while True: sha256:6b8e5e569594caf7c4eca6137646dae471a7c3aae7294096cf876f30b5f90306",
+      "evidence_hash": "c066cc27bce31ee7b6ce07411ee7a7d9ecfbf3aafc8848f6641fabfe522a7703"
     },
     {
       "package": "ipython",
       "file": "IPython/core/interactiveshell.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput sha256:3faa60888c183dce9dc25afc02e0d95a22b926eba775bb02bad97a5b1632c788\nNetwork: L4048:                 from urllib.request import urlopen | L4049:                 response = urlopen(target)",
-      "evidence_hash": "dbbae35c0f3a1f08fc9aa7ad812ae0c124674aefa35793e52dc154b49fdf90e5"
+      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput sha256:d235665701515da9717fc533dcf490bfc9f1e9d5d8b37463a484179c1f476438\nNetwork: L4048:                 from urllib.request import urlopen | L4049:                 response = urlopen(target)",
+      "evidence_hash": "d595985feee398e344dcda76a152dc833fc6e34ad8c866f5f9e1a44f9fb0fc8c"
     },
     {
       "package": "ipython",
@@ -215,24 +215,24 @@
       "file": "matplotlib/backends/backend_webagg.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L56:             if not webbrowser.open(url): sha256:d943f600d82b2656a40bc7acdac5929a814dc8fb01b6a1560e181d8b4c5d0323",
-      "evidence_hash": "6df228a19bb3f1aac166d3836dc163ebc9dfd1ab5675fafe1ad4aaf838003d48"
+      "evidence": "L56:             if not webbrowser.open(url): sha256:c92ecd0cb3aa00166f26aa2017eb2201cc6050d58de2654ada01a1d392a5c97c",
+      "evidence_hash": "bf56dfffad9c8638feab6a8bd7d74da6abc78ff406663e97ff5ac18f30c2f583"
     },
     {
       "package": "multiprocess",
       "file": "multiprocess/forkserver.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L6: import socket sha256:64adbdb34afe0ed3e467887a2268cd8fb90bac93f314671d3187304f1b5a1ad5",
-      "evidence_hash": "add1c04d16376fd91b3e789a42d31830b677ecf4a39cf02dc4a055e122453a66"
+      "evidence": "L5: import socket sha256:915068303029fa5806199f256fb74504c65f253f9aee8ea23d8e384bb772b1c7",
+      "evidence_hash": "30be130f165f418dfd37b144c5ae333de184b95f828ab8bd4010a67b84a5f814"
     },
     {
       "package": "multiprocess",
       "file": "multiprocess/forkserver.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L5: import socket sha256:0afd152ba1e3ee0b343ef96613efe2da0e2c1b69d090732869b3a92333c27ded",
-      "evidence_hash": "fcbfe76c81aa3a061b8e32de5c054419a84a1c68c99247c046acb6f5fc8b61f4"
+      "evidence": "L6: import socket sha256:6c707119169286c9a798e2c8d13a48614e481d8a503950916fd4ffb4c94d3182",
+      "evidence_hash": "50fec0f0522a8e4e636bf348b752002d7935d8455af31fb78c6f11e2eba19f6d"
     },
     {
       "package": "multiprocess",
@@ -287,8 +287,8 @@
       "file": "openai/_base_client.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L264:         while True: sha256:ef81334ea85b59db85585ad31db101911798c5d642428fd2284df5477f0f4ff3",
-      "evidence_hash": "8d0187bc417c78e62b5865419e00167f348b7e61d345daa2d02db176f0ede91b"
+      "evidence": "L264:         while True: sha256:95ca67e46d42354ae650abbdc5b0d97df8b0ed43187800bf40f5690c3901b94b",
+      "evidence_hash": "a57d8d15fed0bf04f9967dcc18a18b80bb19f4095675bccbb78ac0450d7fce14"
     },
     {
       "package": "openai",
@@ -327,48 +327,48 @@
       "file": "openai/resources/beta/threads/runs/runs.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L1074:         while True: sha256:b048be81ff0aee3f757e312c9e7e632fdda44799ea1ffa714099b722d58ba475",
-      "evidence_hash": "c2cf53189dc96c8b1b22393a40080a73e275ee4a8a26aaa5b706d5e835b2e8f0"
+      "evidence": "L1074:         while True: sha256:ef6d59a4a10b73a5af491f10af2885b7a309fda9468eb0f9572d19558d3ceb9f",
+      "evidence_hash": "43c03b55fedcbc980e5e6649c3c4493729128d280cc868349ab9590908ea5f99"
     },
     {
       "package": "openai",
       "file": "openai/resources/realtime/realtime.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L310:         while True: sha256:973d30bb03d3389105803c2974513df55e0a18c358f0bc63a01afb8d35d88e9e",
-      "evidence_hash": "2d98883570768fa2e43cb776473f88436a2b1b7301f867417ac73328333d9f01"
+      "evidence": "L310:         while True: sha256:458198ff3d3f05870bf98c9564cbfd68c739e57b9bbe4120ed81e3eb6af74a05",
+      "evidence_hash": "a3165d21e46b3ce553795daeae53e8f80e8e89c5cb228e68e6dcaff54bca5a89"
     },
     {
       "package": "openai",
       "file": "openai/resources/responses/responses.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L3803:         while True: sha256:78b63c8b606a81203e4060e57aec5185f0687e9758695ab9030528bc68597df8",
-      "evidence_hash": "8524eb73b623f1959e06360f7ba8a129c23799fcca2744e76090c74d416681c7"
+      "evidence": "L3803:         while True: sha256:1ce0b5a388c747945cdfda1a71b77afdfd03ae840d7aa9fa62f02eb00aa5e29f",
+      "evidence_hash": "6de300ebb5e6e17cb51c89cbcdf08515a44655182f0776f0908a9d1043ebbcd7"
     },
     {
       "package": "openai",
       "file": "openai/resources/vector_stores/file_batches.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L347:         while True: sha256:417e2ace669c95e320800d28b2ebe98748e67e361f41eb768466a867c594c393",
-      "evidence_hash": "26a1b5fabed7e5b119dec1bf8e9d12c104c09a89572e4bf8e10500f097f41579"
+      "evidence": "L347:         while True: sha256:604449e8ed433290252fe3f7a48a9e1d8ce46fa148b4ef3037042cc42fdb737b",
+      "evidence_hash": "e6c1e9bb40accffe2d597e875439bab405e51d9e53f1dad87fd276c0d4014981"
     },
     {
       "package": "openai",
       "file": "openai/resources/vector_stores/files.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L376:         while True: sha256:306be1ef7908fc8612805831853e0593038cb4aed67ae368a807818e6cf14171",
-      "evidence_hash": "25b2a8675bae326f6731bd935e487b7421a4a292afed48320a78105b81b6cf23"
+      "evidence": "L376:         while True: sha256:1bf8d6ef91d4043c98982fb19e5f5685b239a855cd4ff6c11b9b19651d43e944",
+      "evidence_hash": "8d26a3a0ab3d937e6d4f6873fa648c04afc59484122287bc96b1c022ede4065a"
     },
     {
       "package": "openai",
       "file": "openai/resources/videos.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L186:         while True: sha256:3605ff0e0598d50a2c2b1a168dc1527bc59c32d7fbfa15e31fb533d59f88914f",
-      "evidence_hash": "ff43e6e045fc282c91da4b80dacc9d88f5a3f0440ab3ea1fd1a5cf1d1ed21b23"
+      "evidence": "L186:         while True: sha256:e48be2f193c22eb93024339b9c04fff5dd80c8318708012432df119aef612a41",
+      "evidence_hash": "f1764390bf5e4e55fdedc1f5ec492535f3dd4444f9fb17eb6ce9eaaa010d1a81"
     },
     {
       "package": "protobuf",
@@ -415,16 +415,16 @@
       "file": "pyarrow/tests/test_orc.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L154:         os.environ['TZDIR'] = '/tmp/non_existent' sha256:50a03fdcb7e673b77a99b3fe142ebd2a77b1448f55dcdce10fff013cde951582",
-      "evidence_hash": "9dc0768e6d77fe7fcac05b0ee93c08f46e777fe4d0fae6481f94459679dfd1da"
+      "evidence": "L154:         os.environ['TZDIR'] = '/tmp/non_existent' sha256:d41f7ed866d91fe7b45dfdb557b81bb9c2a05101cf28cd7d39d8aa6faf249b00",
+      "evidence_hash": "4570f9f31ee6a90906e1074fa1877dcf0c8e061a0b83dec089da25b61071133c"
     },
     {
       "package": "pyarrow",
       "file": "pyarrow/tests/util.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L30: import socket sha256:089deba49005f31ec065569ccadc58dd612996c6614389caba5dca8885aa0427",
-      "evidence_hash": "922e960c352b5a0707dcd2ed927ca512aadf8ad786ad4b4e04d0bc2bb104f578"
+      "evidence": "L30: import socket sha256:5a5d71dfd22906b5dc8b1514316391e05a865f2c94c20dcc96683963f48106f7",
+      "evidence_hash": "76caefdfe4ac470f26379f05238b2dbfd62a864b8cd43e2392f228264cb1de85"
     },
     {
       "package": "pyarrow",
@@ -455,8 +455,8 @@
       "file": "pygments/lexers/_mysql_builtins.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L792:     'history', sha256:fe9aca2cd59d22eb4e700f04623a35d4918c495591132559243badda09f9b0b9\nNetwork: L1285:     from urllib.request import urlopen | L1297:         lex_file = urlopen(LEX_URL).read().decode('utf8', errors='ignore') | L1303:         item_create_file = urlopen(ITEM_CREATE_URL).read().decode('utf8', errors='ignore')",
-      "evidence_hash": "b526f59ee9ca62cbd0951c3efc8457e11f2bf904f10d97491d80907ef210ee84"
+      "evidence": "FS: L792:     'history', sha256:7c4e519af214f72bf45d4dcfa6a90aa96d2ffd5d1b76b244998110077a946fd2\nNetwork: L1285:     from urllib.request import urlopen | L1297:         lex_file = urlopen(LEX_URL).read().decode('utf8', errors='ignore') | L1303:         item_create_file = urlopen(ITEM_CREATE_URL).read().decode('utf8', errors='ignore')",
+      "evidence_hash": "17e7a5cbfce4ff08e41c3d719b3e78723a4247659526111ba261a1d5a9146e4b"
     },
     {
       "package": "pygments",
@@ -519,16 +519,16 @@
       "file": "sklearn/datasets/_openml.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L100:             while True: sha256:9058ed436ea7bcfcc74d42aeef1cb54c3695baf017166dc05eededca214fd3f7",
-      "evidence_hash": "4fe84ffb191ddd9ed0a93d65815f216bbeadca0cf503a7dbe18c0e9b4bbe84d3"
+      "evidence": "L100:             while True: sha256:270363bb66980201e477f9b94886e4023f7a3d21b5ce026b7603a8c249a50c5b",
+      "evidence_hash": "53edbe07c312d459068d38e537b5114e65685ac3d4487b0423fa4542b5df20fe"
     },
     {
       "package": "scikit-learn",
       "file": "sklearn/datasets/_openml.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L100:             while True: sha256:62d0a3cdc54cdbb2c07ad3ede615312666428c595ad112661da6ef634ada1cde",
-      "evidence_hash": "dc770e87170d818c3f099aac255bad02c959b08a244300a8c73d269700dc79f8"
+      "evidence": "L100:             while True: sha256:1f05a1b4fdd843b309634f583cb5e919866ef38ec5aa0b7d8a66ac8820655594",
+      "evidence_hash": "69597a64e5670a0f9a3c2aafc0bde4160f6170a9e2dc38f2c413cfa8d22ad193"
     },
     {
       "package": "scikit-learn",
@@ -623,8 +623,8 @@
       "file": "setuptools/_distutils/tests/test_build_ext.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L115:                 shutil.copyfile(libz_so[-1], '/tmp/libxx_z.so') sha256:9c76bbfed12a1e0613d700489177b63afc48dc62e75e75fa38b6372dba140dec",
-      "evidence_hash": "db097ab0739ae5a8e4e418d86b46f252c21fa575a1c297dfad3db1f6995ca62c"
+      "evidence": "L115:                 shutil.copyfile(libz_so[-1], '/tmp/libxx_z.so') sha256:bef4914cda18bd0d231ab5481953dcf1ed3f2d7589a3a1de35be40435fbae5b9",
+      "evidence_hash": "32624628db3d7f0e6d667695033821ee804e4eb941c6fbe0421e997f7e729ad7"
     },
     {
       "package": "setuptools",
@@ -655,8 +655,8 @@
       "file": "functorch/dim/magic_trace.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L15:     output: str = \"trace.fxt\", magic_trace_cache: str = \"/tmp/magic-trace\" sha256:f870db674a3e6024f8398b38a526f504399187acfe5a1cd3c474fd6e5d711c6c",
-      "evidence_hash": "39eb8b65ae0dd8e226ec95e175379bcd287342556dfef7a1b9806b0f2824c5fb"
+      "evidence": "L15:     output: str = \"trace.fxt\", magic_trace_cache: str = \"/tmp/magic-trace\" sha256:509c96b9721a10fc1df0567da3a366f08ed337b3afa3e57971756bd941da675e",
+      "evidence_hash": "6e64b3ddbb81079049d46dc3bd1024958c71ce0de299cda650720cfd168d5023"
     },
     {
       "package": "torch",
@@ -695,8 +695,8 @@
       "file": "torch/cuda/_memory_viz.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L74:     if \"history\" in b: sha256:1fb7a79577f6e0616d373effbc59093adadf1712f9af6534b0747f96444c0951\nNetwork: L97:         import urllib.request | L101:             urllib.request.urlretrieve(",
-      "evidence_hash": "c8f001077ca42f960d8c9a73acbffcd1399482ed2e9604519fe0f9f912bf91be"
+      "evidence": "FS: L74:     if \"history\" in b: sha256:8537d03f5cf112e0dd4afd03d7928fce66a1b24456ee5b9cf3cd776d1b756c34\nNetwork: L97:         import urllib.request | L101:             urllib.request.urlretrieve(",
+      "evidence_hash": "49d76bbc192981a6951110083eaa394c99645c589f3328dfb1b36cb8607b965d"
     },
     {
       "package": "torch",
@@ -727,8 +727,8 @@
       "file": "torch/testing/_internal/common_utils.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L32: import socket sha256:1796574f21bb84d73d097e554f09d5632d40e0fc4ff13bc9e56768e113cff3f3",
-      "evidence_hash": "496117b9756ab3b90013a265d6a0439f6d3e279c610c4f85bac64a2a51f278bd"
+      "evidence": "L32: import socket sha256:89faaaa8bc908e02dad73fd59b2b481fa91189c84b39b556c2766e71d2783bf3",
+      "evidence_hash": "3d23d77ace91812a07cb9508cf352185d154176e8e8c8b9b28fa92cdbcfe0d53"
     },
     {
       "package": "torchvision",
@@ -751,16 +751,8 @@
       "file": "transformers/integrations/integration_utils.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L2125:                 \"Syncing log history requires both flytekitplugins-deck-standard and pandas to be installed. \" sha256:dac6b07ddf1a19230e68e341d8623416e7bc011cae99fbe3b46d757f05e670d7\nNetwork: L2530:         import urllib.request | L2561:             req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2562:             with urllib.request.urlopen(req, timeout=5, context=self._get_ssl_context()) as resp:",
-      "evidence_hash": "9ac76151e8ef5b09503eb3ab332051dc0517abdc35fff35b502a5e9dda931a2b"
-    },
-    {
-      "package": "transformers",
-      "file": "transformers/integrations/integration_utils.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L2057:                 \"Syncing log history requires both flytekitplugins-deck-standard and pandas to be installed. \" sha256:d048a1f9134e36f9725925869daa5ee0e4232c02a6dd96999063a41bb1817dbd\nNetwork: L2462:         import urllib.request | L2493:             req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2494:             with urllib.request.urlopen(req, timeout=5, context=self._get_ssl_context()) as resp:",
-      "evidence_hash": "dc3bc7a4ed3e9be5f2785c181572d5687d61b48d9d80a792265a6ea8f2730678"
+      "evidence": "FS: L2125:                 \"Syncing log history requires both flytekitplugins-deck-standard and pandas to be installed. \" sha256:e8d462221be344624d83eea5e696f898835c89de17020fee72f03b5bb79ada56\nNetwork: L2530:         import urllib.request | L2561:             req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2562:             with urllib.request.urlopen(req, timeout=5, context=self._get_ssl_context()) as resp:",
+      "evidence_hash": "2d96584937e3c32256779f321e824e652fd1c8b40ff98dd61e4a4f733092e7bf"
     },
     {
       "package": "transformers",
@@ -775,24 +767,24 @@
       "file": "transformers/testing_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L1623:     while True: sha256:b4049ff9e15e949360788354db5fae34f8d7116dfce9d7335f1a79b7d019f4a4",
-      "evidence_hash": "5661edb5e0245a430a17d4a3a2da3791df26f100dadd32af991e7df8a06af58b"
+      "evidence": "L1663:     while True: sha256:969e911d30c37a279ad915fb8c3d2d0a3f5705a7eb82ae6e00687388b68bbe65",
+      "evidence_hash": "2aa8e94baa805d599720a16afee6f08976482e301333e619e6c343389498ad15"
     },
     {
       "package": "transformers",
       "file": "transformers/testing_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L1663:     while True: sha256:037ad15ea6a7de07522d69c41db19c2ef64cc4912ed53fe836ba1a00b85e8658",
-      "evidence_hash": "62113b946812608ac15c80a5c3abcf3c5d9b7ce26db3dd90777cb7bf8133aa73"
+      "evidence": "L1623:     while True: sha256:012c2884195786085fb2ecad951e47f205bf094d75335b81aae14c0b499a208a",
+      "evidence_hash": "af3cfbdaa405a19c27295fde282e907fb06ad3bb96039f6731f9f82754c1c049"
     },
     {
       "package": "transformers",
       "file": "transformers/testing_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L1577:     while True: sha256:16da493b0330c1aadc0d632688461771eae0950de59a88de468ee7531a50ca76",
-      "evidence_hash": "7e93c58a30d387af7c93a51650419ecec3227131e7c3e4f1f64dc77fd4f5e600"
+      "evidence": "L1577:     while True: sha256:2c6152f9da685f728e58d39dfc1827bc794f52606f56983bf38b5c6d0857cd5b",
+      "evidence_hash": "cdada67f3327237f00838a6750a4908dfaf76b9ab30c1352495c340d4fbd15c9"
     },
     {
       "package": "transformers",
@@ -807,8 +799,8 @@
       "file": "transformers/testing_utils.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L2473:     import socket sha256:2b953742488a0c2f58b65a0b5b7d00ccd6c44e20c683f36a5a7352c001911288",
-      "evidence_hash": "97a515ca2ee6de888ff64329f2d2c74196c70daf9efe26f0a6e07aada2cfb44d"
+      "evidence": "L2473:     import socket sha256:ad30a1fc73ad185f6c085cb5ee294fc944c614de31d5eea7e23082465a7fc0cc",
+      "evidence_hash": "8e7983acde3d0fe4377ee8ef95a732d74c2c9784aacc154d1ab9bbdf9fbcb736"
     },
     {
       "package": "transformers",
@@ -831,16 +823,16 @@
       "file": "trl/extras/vllm_client.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L146:         while True: sha256:a0e8786a8074cec578100a7a8468fc96ecfb2da012686ed9dff71e8e3b373b69",
-      "evidence_hash": "963c2f136b5b26069be18cc6a83e1aa41fc3204430dcff2cfdbd18375d6b68af"
+      "evidence": "L146:         while True: sha256:2beedc742e1f085eaa10fd3bc40be97d2331d21887ef1b9ccdfa2150a184edfe",
+      "evidence_hash": "1540dffaaa053780e953e04c11d9c6b9c74b91cb60f3e6d87451ba7fe7db46db"
     },
     {
       "package": "trl",
       "file": "trl/extras/vllm_client.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L152:         while True: sha256:6540b49c805cd11b5adcfe094b4f110e7aa86147fdc22af14a24373dab4709ca",
-      "evidence_hash": "d75d1313a7184719ac5ddc79fddf16e41d297423bd88309022379379a31d2dfa"
+      "evidence": "L152:         while True: sha256:93e7d409e300af445376e6defbe2d0241aa19ecf63ed41b780fbb91c7d09856f",
+      "evidence_hash": "208838617172de61bca201d2a1bbeb5aa5aaa55feb1a1069cf39214673a7d6d1"
     },
     {
       "package": "trl",
@@ -943,8 +935,8 @@
       "file": "tests/security/test_scan_packages.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L155:         \"/tmp/transformers.pyz\", sha256:122448553a1b5333f87cb64726268982e1029ca18de1dde0616937f42da53b87",
-      "evidence_hash": "620337eb87264ce615ba338f96d015b4f123c8fb1ba3ad6de9415c9d72287bc9"
+      "evidence": "L155:         \"/tmp/transformers.pyz\", sha256:391fc46893340b6b28bf8359aec196593d8cbd7545b9559c75569804529b5ce0",
+      "evidence_hash": "ba4f0bfd71bd79968c737b868d633c7e2159aaf5b95d06bab679245ba4ab12f0"
     },
     {
       "package": "unsloth-zoo",
@@ -959,16 +951,16 @@
       "file": "tests/test_mlx_save_export_regressions.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L164:         temporary_location=\"/tmp/ignored\", sha256:8ed52b168ded28751ca87852dd5eccdfae03984b7246f4d0e45c15ac3524d9f7",
-      "evidence_hash": "a233ccb971345cb0db5cb9446126e9c77b0902eca16661abc06e111e46c1bb2c"
+      "evidence": "L164:         temporary_location=\"/tmp/ignored\", sha256:78837e80d48e872ef191aaacfe5e1c621a98a20df486a70a41d1a932d074a5b3",
+      "evidence_hash": "dd11376e664d0d7e7f4cc4baf57eacd4b7ae7b03222dce3912ce68b63dbfca1e"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/test_quantize_gguf_q2_k_l.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L67:         input_gguf=\"/tmp/in.gguf\", sha256:f7c4f1727d4633146767265bb1d418f5ce7f99d1c18392666f275b79e788bf8d",
-      "evidence_hash": "ec7b4946a25a3a0ce0b66cffee5b4935ff861d360a2f914c4633c3c42d28ac38"
+      "evidence": "L67:         input_gguf=\"/tmp/in.gguf\", sha256:32532cadc357beee1009f4e86481bdbe60a0b7bf47f6bb022b05ec1b8e15aed0",
+      "evidence_hash": "49f5b67379de17178f21a9bc93b79d6b94a70ecbdd16de86574934aac30a071d"
     },
     {
       "package": "unsloth-zoo",
@@ -1007,8 +999,8 @@
       "file": "urllib3/response.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L557:         if retries is not None and retries.history: sha256:3dc5a3c9a40042a3205035b99dc02f85ef52ffb868b823211d5ceae6e138c3e3\nNetwork: L13: from http.client import HTTPMessage as _HttplibHTTPMessage | L14: from http.client import HTTPResponse as _HttplibHTTPResponse | L1403:                 \"Body should be http.client.HTTPResponse like. \"",
-      "evidence_hash": "d80b83030bbf697b20d98bf768a01540de04fdad52a5a8a4bfd8a30b6b3284cd"
+      "evidence": "FS: L557:         if retries is not None and retries.history: sha256:d86f44510dc7ac496a064865e943d7a1bc338be3eeb85192022c686761cde610\nNetwork: L13: from http.client import HTTPMessage as _HttplibHTTPMessage | L14: from http.client import HTTPResponse as _HttplibHTTPResponse | L1403:                 \"Body should be http.client.HTTPResponse like. \"",
+      "evidence_hash": "f95966d80e5333cc89129574a1a8e9c1d076dab841369dfea5d4966bffbd4079"
     },
     {
       "package": "urllib3",
@@ -1239,8 +1231,8 @@
       "file": "protobuf-3.19.6-nspkg.pth",
       "check": "Unusually large executable .pth (539 bytes)",
       "severity": "HIGH",
-      "evidence": "1 import line(s) in 539-byte .pth file",
-      "evidence_hash": "7e6e8cd7751fa441364e59e783480cb057f28e48a5f8cc50fb5012319c987bd9"
+      "evidence": "1 import line(s) in 539-byte .pth file sha256:c47e604f1738522a583f7aab6cffb80821cd18157dede051e10aa185e0af065e",
+      "evidence_hash": "26acfc4bd3ab7973d7195e470afc660c89d34c8e0d32d3d8f15941db3e4acb8e"
     },
     {
       "package": "pygments",

