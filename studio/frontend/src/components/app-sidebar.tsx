@@ -1374,14 +1374,24 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter className="relative pt-3 pb-4 group-data-[collapsible=icon]:px-0">
+      <SidebarFooter
+        className={cn(
+          "relative pb-3 group-data-[collapsible=icon]:px-0",
+          // Tighter top with the update card so the fade hugs it; fuller top
+          // for the profile on its own.
+          showUpdateCard ? "pt-1.5" : "pt-2.5",
+        )}
+      >
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
             shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 right-2 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
+            // Shorter fade when the update card sits above the profile so the
+            // list reads closer to it.
+            showUpdateCard ? "h-3" : "h-10",
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
