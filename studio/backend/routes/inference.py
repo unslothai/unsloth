@@ -10117,7 +10117,7 @@ async def generate_diffusion_image(
 
     def _persist() -> list[dict]:
         records = []
-        for image in result["images"]:
+        for index, image in enumerate(result["images"]):
             records.append(image_gallery.save(image, {
                 "prompt": request.prompt,
                 "negative_prompt": request.negative_prompt,
@@ -10126,6 +10126,9 @@ async def generate_diffusion_image(
                 "steps": request.steps,
                 "guidance": request.guidance,
                 "seed": result["seed"],
+                # Position within the batch: images here share a seed + timestamp,
+                # so the export filename needs this to stay unique.
+                "batch_index": index,
                 "model": result.get("repo_id"),
                 "created_at": created_at,
             }))

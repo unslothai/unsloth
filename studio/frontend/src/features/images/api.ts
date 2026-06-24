@@ -53,6 +53,7 @@ export interface GalleryImage {
   steps: number;
   guidance: number;
   seed: number;
+  batch_index: number;
   model: string | null;
   created_at: number;
 }

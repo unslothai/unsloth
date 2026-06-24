@@ -1740,6 +1740,7 @@ class GalleryImage(BaseModel):
     steps: int = Field(..., description = "Denoising steps")
     guidance: float = Field(..., description = "Guidance scale")
     seed: int = Field(..., description = "Seed used")
+    batch_index: int = Field(0, description = "Position within its batch (0-based)")
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
 
