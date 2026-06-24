@@ -1166,6 +1166,18 @@ export function AppSidebar() {
                   closeMobileIfOpen();
                 }}
               />
+              <NavItem
+                icon={PaintBrush02Icon}
+                label={t("shell.navigation.images")}
+                active={pathname === "/images" || pathname.startsWith("/images/")}
+                disabled={chatOnly}
+                tooltip={trainExportDisabledHint}
+                onClick={() => {
+                  if (chatOnly) return;
+                  navigate({ to: "/images" });
+                  closeMobileIfOpen();
+                }}
+              />
               {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
               <NavItem
                 icon={TestTubeOutlineIcon}
@@ -1217,18 +1229,6 @@ export function AppSidebar() {
                     active={isRecipesRoute}
                     onClick={() => {
                       navigate({ to: "/data-recipes" });
-                      closeMobileIfOpen();
-                    }}
-                  />
-                  <NavItem
-                    icon={PaintBrush02Icon}
-                    label={t("shell.navigation.images")}
-                    active={pathname === "/images" || pathname.startsWith("/images/")}
-                    disabled={chatOnly}
-                    tooltip={trainExportDisabledHint}
-                    onClick={() => {
-                      if (chatOnly) return;
-                      navigate({ to: "/images" });
                       closeMobileIfOpen();
                     }}
                   />
