@@ -439,8 +439,16 @@ def test_obfuscated_blob_key_reopens_on_changed_tail():
     head = "A" * 2300
     old = f'eval("{head}{"B" * 300}")'
     new = f'eval("{head}{"C" * 300}")'
-    of = [f for f in snp.scan_text_blob(pkg, "package/index.js", old) if f.pattern == "obfuscated-blob"][0]
-    nf = [f for f in snp.scan_text_blob(pkg, "package/index.js", new) if f.pattern == "obfuscated-blob"][0]
+    of = [
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", old)
+        if f.pattern == "obfuscated-blob"
+    ][0]
+    nf = [
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", new)
+        if f.pattern == "obfuscated-blob"
+    ][0]
     assert "sha256:" in of.evidence
     assert of.evidence != nf.evidence
     assert snp._finding_key(of) != snp._finding_key(nf)
