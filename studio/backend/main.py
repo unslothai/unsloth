@@ -282,6 +282,7 @@ from routes import (
     training_router,
 )
 from routes.llama import router as llama_router
+from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
@@ -672,6 +673,7 @@ from utils.upload_limits import (  # noqa: E402
 _BODY_PROTECTED_PREFIXES = (
     "/v1/chat/completions",
     "/v1/completions",
+    "/p/",
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
@@ -885,6 +887,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])

@@ -12,7 +12,9 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -300,33 +302,53 @@ export function ProjectsPage() {
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Export All Projects</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
-                  {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                    <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
-                      {label} (combined)
-                    </DropdownMenuItem>
-                  ))}
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                      Combined
+                    </DropdownMenuLabel>
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
                   <DropdownMenuSeparator />
-                  {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                    <DropdownMenuItem key={`ap-s-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, false)}>
-                      {label} (per chat)
-                    </DropdownMenuItem>
-                  ))}
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                      Per chat
+                    </DropdownMenuLabel>
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`ap-s-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, false)}>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Export Projects + Recents</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
-                  {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                    <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
-                      {label} (combined)
-                    </DropdownMenuItem>
-                  ))}
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                      Combined
+                    </DropdownMenuLabel>
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
                   <DropdownMenuSeparator />
-                  {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                    <DropdownMenuItem key={`all-s-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, false)}>
-                      {label} (per chat)
-                    </DropdownMenuItem>
-                  ))}
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                      Per chat
+                    </DropdownMenuLabel>
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`all-s-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, false)}>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             </DropdownMenuContent>
