@@ -5,18 +5,29 @@ from __future__ import annotations
 import builtins
 import importlib
 import importlib.util
+import platform
 import sys
 import types
 import warnings
 
 import pytest
 
+_MLX_SKIP_REASON = "MLX public trainer API is only active on the MLX backend"
+
 
 def _import_mlx_unsloth():
     """Import unsloth and skip when the current platform is not using MLX."""
+    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps
+    # (e.g. bitsandbytes) skip cleanly instead of erroring at collection.
+    if not (
+        platform.system() == "Darwin"
+        and platform.machine() == "arm64"
+        and importlib.util.find_spec("mlx") is not None
+    ):
+        pytest.skip(_MLX_SKIP_REASON)
     unsloth = importlib.import_module("unsloth")
     if getattr(unsloth, "DEVICE_TYPE", None) != "mlx":
-        pytest.skip("MLX public trainer API is only active on the MLX backend")
+        pytest.skip(_MLX_SKIP_REASON)
     return unsloth
 
 

@@ -1255,9 +1255,33 @@ def _adapt_for_mlx_vlm(
 _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
+# Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used
+# only when mlx (Apple Silicon) is not importable so Studio config validation
+# still works on non-MLX hosts. The zoo function stays the source of truth.
+_MLX_STUDIO_ADAMW_ALIASES = frozenset((
+    "adamw_8bit", "paged_adamw_8bit", "adamw_bnb_8bit", "paged_adamw_32bit",
+    "adamw_torch", "adamw_torch_fused", "paged_adamw", "adamw_32bit",
+    "adamw_hf", "adamw_anyprecision", "adamw_apex_fused",
+))
+_MLX_STUDIO_NATIVE_OPTIMIZERS = ("adafactor", "adamw", "adam", "sgd", "muon", "lion")
+
+
 def _normalize_mlx_studio_optimizer(value):
     try:
         from unsloth_zoo.mlx.trainer import _normalize_mlx_optimizer_name
+    except ImportError:
+        opt = str(getattr(value, "value", value) or "adamw_8bit").strip().lower()
+        opt = opt.rsplit(".", 1)[-1].replace("-", "_")
+        if opt in _MLX_STUDIO_ADAMW_ALIASES:
+            opt = "adamw"
+        if opt not in _MLX_STUDIO_NATIVE_OPTIMIZERS:
+            supported = ", ".join(_MLX_STUDIO_NATIVE_OPTIMIZERS)
+            raise ValueError(
+                f"Unsupported optimizer for MLX training: {value!r}. "
+                f"Supported optimizers: {supported}."
+            )
+        return opt
+    try:
         return _normalize_mlx_optimizer_name(value or "adamw_8bit")
     except ValueError as exc:
         raise ValueError(f"Unsupported optimizer for MLX training: {value!r}. {exc}") from exc
