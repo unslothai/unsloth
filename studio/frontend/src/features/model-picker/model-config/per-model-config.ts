@@ -236,17 +236,23 @@ function migrateLegacyLoadSettingsOnce(): void {
     if (localStorage.getItem(LEGACY_MIGRATION_FLAG)) {
       return;
     }
-    localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
     const legacy = JSON.parse(
       localStorage.getItem(LEGACY_STORAGE_KEY) ?? "null",
     );
     if (!legacy || typeof legacy !== "object" || Array.isArray(legacy)) {
+      localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
     }
     const map = readMap();
-    if (mergeLegacyEntries(map, legacy as Record<string, unknown>)) {
-      enforceStorageBudget(map);
-      writeMap(map);
+    if (!mergeLegacyEntries(map, legacy as Record<string, unknown>)) {
+      localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
+      return;
+    }
+    enforceStorageBudget(map);
+    if (writeMap(map)) {
+      localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
+    } else {
+      legacyMigrationChecked = false;
     }
   } catch (err) {
     console.warn("Failed to migrate legacy load settings:", err);
