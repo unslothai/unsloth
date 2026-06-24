@@ -612,6 +612,9 @@ export function SharedComposer({
   const isEffort =
     effectiveReasoningStyle === "reasoning_effort" ||
     effectiveReasoningStyle === "enable_thinking_effort";
+  // GLM-5.2's high|max effort menu has short labels, so it can sit slightly
+  // skinnier than the shared reasoning dropdown.
+  const isGlmEffort = effectiveReasoningStyle === "enable_thinking_effort";
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
@@ -1785,7 +1788,10 @@ export function SharedComposer({
                 <DropdownMenuContent
                   side="top"
                   align="end"
-                  className="unsloth-plus-menu min-w-44"
+                  className={cn(
+                    "unsloth-plus-menu",
+                    isGlmEffort ? "min-w-40" : "min-w-44",
+                  )}
                 >
                   {isEffort ? (
                     <>
