@@ -340,38 +340,19 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
                 flush = True,
             )
-            print(f"{dim}    Common causes:{reset}", flush = True)
             print(
-                f"{dim}      * AWS  -- the instance's Security Group doesn't "
-                f"allow inbound TCP {port}.{reset}",
+                f"{dim}    Usually a cloud firewall (AWS security group, "
+                f"GCP/Azure rule) or home router isn't allowing inbound "
+                f"TCP {port}.{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * GCP  -- no firewall rule allowing TCP {port} "
-                f"for the instance's network tag.{reset}",
+                f"{dim}    No firewall change needed -- SSH local-forward:  "
+                f"ssh -L {port}:localhost:{port} <user>@{display_host}{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * Azure / other clouds -- equivalent NSG / "
-                f"firewall rule missing.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}      * Home -- your router isn't port-forwarding "
-                f"{port} to this machine.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}    Workaround that needs no firewall changes -- "
-                f"SSH local-forward from your laptop:{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}        ssh -L {port}:localhost:{port} " f"<user>@{display_host}{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}    then open http://localhost:{port}/ in your browser.{reset}",
+                f"{dim}    then open http://localhost:{port}/.{reset}",
                 flush = True,
             )
             # Only offer the local URL if loopback answers.
