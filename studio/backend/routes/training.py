@@ -129,7 +129,6 @@ async def start_training(
         # session is not yet special-cased.)
         if via_api_key is True:
             from core.inference.llama_keepwarm import other_inference_request_count
-
             if other_inference_request_count(current_request_counted = False) > 0:
                 raise HTTPException(
                     status_code = 409,

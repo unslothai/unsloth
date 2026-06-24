@@ -1355,7 +1355,9 @@ def test_manual_unload_interrupts_even_while_inference_active(monkeypatch):
     monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
     monkeypatch.setattr(kw, "_inflight", 1)  # another request streaming
     monkeypatch.setattr(kw, "_pending", 0)
-    resp = asyncio.run(inference_route.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester"))
+    resp = asyncio.run(
+        inference_route.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester")
+    )
     assert resp.status == "unloaded"
     assert not backend.is_loaded  # torn down despite the active request
 
@@ -1430,7 +1432,6 @@ def test_authenticated_via_api_key_detects_key_vs_session():
 
 def _training_request():
     from models.training import TrainingStartRequest
-
     return TrainingStartRequest(
         model_name = "unsloth/test", training_type = "LoRA/QLoRA", format_type = "alpaca"
     )
@@ -1447,7 +1448,9 @@ def test_api_training_refused_while_inference_active(monkeypatch):
     monkeypatch.setattr(kw, "_pending", 0)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
-            training_route.start_training(_training_request(), current_subject = "t", via_api_key = True)
+            training_route.start_training(
+                _training_request(), current_subject = "t", via_api_key = True
+            )
         )
     assert exc.value.status_code == 409
 
