@@ -360,8 +360,7 @@ class FastLanguageModel(FastLlamaModel):
             if is_dist:
                 device_map = distributed_device_map
 
-        # @_offline_aware_load already set local_files_only + forced HF offline when
-        # offline, so the 8bit / full-ft / qat delegation and nested loads inherit it.
+        # @_offline_aware_load already forced offline when needed; delegations inherit it.
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -597,8 +596,7 @@ class FastLanguageModel(FastLlamaModel):
                 f"AutoConfig error: {autoconfig_error}\n\n"
                 f"PeftConfig error: {peft_error}\n\n"
             )
-            # Chain the probe cause so @_offline_aware_load can spot a network error
-            # in __cause__ and retry forced-offline; a permanent cause still propagates.
+            # Chain the cause so @_offline_aware_load can retry on a network error (permanent ones propagate).
             raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
 
         # Get base model for PEFT:
@@ -756,8 +754,7 @@ class FastLanguageModel(FastLlamaModel):
             use_gradient_checkpointing, max_seq_length, dtype
         )
 
-        # The tokenizer gets overwritten: keep the local checkpoint dir when it is
-        # self-sufficient, else the base repo id (see _resolve_checkpoint_tokenizer_name).
+        # Keep the local checkpoint dir as tokenizer when self-sufficient (see _resolve_checkpoint_tokenizer_name).
         tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, kwargs)
 
         if fast_inference:
@@ -1135,8 +1132,7 @@ class FastModel(FastBaseModel):
         peft_exc = None
         model_config = None
         peft_config = None
-        # @_offline_aware_load already set local_files_only + forced HF offline when
-        # offline, so every nested HF call inherits it.
+        # @_offline_aware_load already forced offline when needed; nested calls inherit it.
         local_files_only = kwargs.get("local_files_only", False)
 
         # Text-diffusion slow-path dispatch, factored so both the normal route (below) and the
@@ -1442,8 +1438,7 @@ class FastModel(FastBaseModel):
                 f"AutoConfig error: {autoconfig_error}\n\n"
                 f"PeftConfig error: {peft_error}\n\n"
             )
-            # Chain the probe cause so @_offline_aware_load can spot a network error
-            # in __cause__ and retry forced-offline; a permanent cause still propagates.
+            # Chain the cause so @_offline_aware_load can retry on a network error (permanent ones propagate).
             raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
 
         # Get base model for PEFT:
@@ -1543,8 +1538,7 @@ class FastModel(FastBaseModel):
             if model_type in model_types_all:
                 supports_sdpa = False
 
-        # The tokenizer gets overwritten: keep the local checkpoint dir when it is
-        # self-sufficient, else the base repo id (see _resolve_checkpoint_tokenizer_name).
+        # Keep the local checkpoint dir as tokenizer when self-sufficient (see _resolve_checkpoint_tokenizer_name).
         tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, kwargs)
 
         # Capture task intent before text_only can replace a parent VLM config

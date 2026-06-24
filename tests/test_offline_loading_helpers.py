@@ -1,9 +1,6 @@
-"""Unit tests for the consolidated offline-loading helpers in
-unsloth/models/loader_utils.py. These encode the subtle rules that drove the
-offline checkpoint/tokenizer work: which errors count as a lost connection vs a
-genuinely missing file, and that _force_hf_offline flips and restores both the
-HF env vars and the in-process constants under nesting / exceptions. Pure CPU,
-no network, no GPU."""
+"""Unit tests for the offline-loading helpers in unsloth/models/loader_utils.py:
+error classification, _force_hf_offline flip/restore, and the retry orchestrator.
+Pure CPU, no network, no GPU."""
 
 import os
 import socket
@@ -145,8 +142,7 @@ def test_offline_mode_is_enabled_is_offline():
 
 
 def test_local_entry_not_found_is_offline():
-    # LocalEntryNotFoundError is BOTH a FileNotFoundError and an HfHubHTTPError;
-    # it means "not cached and the Hub is unreachable", so it counts as offline.
+    # Both a FileNotFoundError and an HfHubHTTPError, but means "not cached + Hub down" -> offline.
     errors = pytest.importorskip("huggingface_hub.errors")
     assert L._is_offline_related_error(errors.LocalEntryNotFoundError("missing")) is True
 
@@ -341,9 +337,9 @@ def test_retry_once_on_offline_error_then_succeed(monkeypatch):
 
     assert fake("model") == "ok"
     assert len(calls) == 2
-    assert not calls[0].get("local_files_only")  # first attempt online
-    assert calls[1].get("local_files_only") is True  # retry forced offline
-    assert L._force_offline_depth == 0  # window cleaned up
+    assert not calls[0].get("local_files_only")
+    assert calls[1].get("local_files_only") is True
+    assert L._force_offline_depth == 0
 
 
 def test_no_retry_on_non_offline_error(monkeypatch):
@@ -435,4 +431,4 @@ def test_retry_runs_gc_collect_between_attempts(monkeypatch):
     gc_calls.clear()
     assert fake("model") == "ok"
     assert len(calls) == 2
-    assert len(gc_calls) == 1  # exactly once, on the retry path
+    assert len(gc_calls) == 1

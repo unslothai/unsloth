@@ -408,10 +408,8 @@ class TestVisionCacheTokenHandling:
 
 
 class TestVisionCacheLocalOnly:
-    """local_files_only is part of the cache key (mirrors the audio cache). An
-    offline probe only sees the on-disk cache, so its negative result must never
-    be reused by a later online probe that can reach the Hub -- otherwise a VLM
-    is routed through the text loader until restart."""
+    """local_files_only is in the cache key: an offline negative must not be reused by a
+    later online probe (else a VLM is routed through the text loader until restart)."""
 
     def test_local_only_negative_does_not_poison_online(self, monkeypatch):
         import utils.models.model_config as mc
@@ -419,7 +417,7 @@ class TestVisionCacheLocalOnly:
         mc._vision_detection_cache.clear()
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
-        # Pin env-offline off so effective_offline tracks the kwarg deterministically.
+        # Pin env-offline off so the key tracks the kwarg.
         monkeypatch.setattr(mc, "_env_offline", lambda: False)
 
         seen = []
@@ -430,8 +428,7 @@ class TestVisionCacheLocalOnly:
             local_files_only = False,
         ):
             seen.append(local_files_only)
-            # Offline: cannot run the transformers-5 subprocess / fetch -> not a VLM.
-            # Online: the remote config reveals a VLM.
+            # Offline can't fetch -> not a VLM; online reveals the VLM.
             return False if local_files_only else True
 
         monkeypatch.setattr(mc, "_is_vision_model_uncached", _probe)
@@ -679,16 +676,14 @@ class TestAudioDetectionCacheTokenAware:
         mc._audio_detection_cache.clear()
 
     def test_local_only_negative_does_not_poison_online(self, monkeypatch):
-        """An offline (local_files_only) probe only sees the on-disk cache, so its
-        negative result must not be reused by a later online probe that can fetch
-        the remote tokenizer config -- otherwise an audio model is routed through
-        the text loader until restart."""
+        """An offline negative must not be reused by a later online probe (else an audio
+        model is routed through the text loader until restart)."""
         import utils.models.model_config as mc
 
         mc._audio_detection_cache.clear()
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
-        # Pin env-offline off so effective_offline tracks the kwarg deterministically.
+        # Pin env-offline off so the key tracks the kwarg.
         monkeypatch.setattr(mc, "_env_offline", lambda: False)
 
         seen = []
@@ -699,8 +694,7 @@ class TestAudioDetectionCacheTokenAware:
             local_files_only = False,
         ):
             seen.append(local_files_only)
-            # Offline: nothing useful on disk -> definitive "not audio".
-            # Online: the remote config reveals an audio model.
+            # Offline: nothing on disk -> not audio; online reveals the audio model.
             return (None, True) if local_files_only else ("snac", True)
 
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _probe)
@@ -716,10 +710,8 @@ class TestAudioDetectionCacheTokenAware:
         mc._audio_detection_cache.clear()
 
     def test_env_offline_negative_does_not_poison_online(self, monkeypatch):
-        """HF_HUB_OFFLINE with the default local_files_only=False makes detection
-        behave offline (skip the remote fetch), so the result must be cached under
-        the effective-offline key, not the online key. Otherwise clearing the env
-        var later leaks the stale offline negative to online callers."""
+        """An env-offline probe (default local_files_only=False) must cache under the
+        effective-offline key, so clearing the env var later doesn't leak a stale negative."""
         import utils.models.model_config as mc
 
         mc._audio_detection_cache.clear()
@@ -741,8 +733,7 @@ class TestAudioDetectionCacheTokenAware:
 
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _probe)
 
-        # Env offline + default kwarg: treated as offline, definitive None cached
-        # under the effective-offline key (the probe sees local_files_only=True).
+        # Env offline + default kwarg -> probe runs offline; None cached under the offline key.
         assert mc.detect_audio_type("some/audio-model") is None
         assert seen == [True]
         # Env var cleared: a fresh online probe must re-run (different key) and detect.
@@ -753,11 +744,8 @@ class TestAudioDetectionCacheTokenAware:
 
 
 class TestEnvOfflineParsing:
-    """_env_offline must recognise the same truthy set as unsloth's offline helpers
-    (strip + lowercase, accepting on/true/yes/1). It gates the raw requests.get
-    tokenizer-config fallback and the detection cache keys, so a value like 'on' or
-    a whitespace-padded ' 1 ' must still count as offline or those paths leak to the
-    network while 'offline'."""
+    """_env_offline accepts the canonical truthy set (strip+lower, on/true/yes/1); it gates
+    the requests.get fallback and the cache keys, so 'on' or ' 1 ' must still count as offline."""
 
     def test_truthy_values_recognized(self, monkeypatch):
         import utils.models.model_config as mc

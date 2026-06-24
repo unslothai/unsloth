@@ -39,20 +39,10 @@ _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 
 def _hf_offline(timeout = 3):
-    """Whether checkpoint loading for export should avoid the Hugging Face Hub.
-
-    Honors the HF offline env vars, otherwise does one cheap TCP reachability
-    probe. When online the probe costs a few milliseconds; when the network is
-    down we treat the load as offline so it uses local files / the HF cache
-    instead of hanging on long connection timeouts (the reported "Loading
-    checkpoint" hang) or failing the export. Probed per call so a long-running
-    server reacts to connectivity changes.
-
-    Proxy aware: if an HTTP(S) proxy is configured for the HF endpoint (and the
-    host is not in NO_PROXY), we probe the *proxy* egress rather than a direct
-    connection to the Hub, so a setup that only reaches the Hub through a proxy is
-    not wrongly marked offline. Disable the probe with UNSLOTH_OFFLINE_PROBE=0.
-    """
+    """True if export should avoid the Hub: honors the HF offline env vars, else does one
+    cheap TCP reachability probe so a network-down load uses local files / the HF cache
+    instead of hanging on connection timeouts. Proxy-aware (probes the proxy egress when
+    one is configured); disable the probe with UNSLOTH_OFFLINE_PROBE=0."""
     _offline = {"1", "true", "yes", "on"}
     if (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
@@ -105,8 +95,7 @@ def _hf_offline(timeout = 3):
         return True
 
 
-# Reuse Unsloth's lock-guarded forced-offline context (sets the HF offline env vars
-# + in-process flags, refcounted). No-op fallback if the private helper ever moves.
+# Reuse Unsloth's lock-guarded forced-offline context; no-op fallback if it moves.
 try:
     from unsloth.models.loader_utils import _force_hf_offline
 except Exception:
@@ -260,14 +249,12 @@ class ExportBackend:
 
             model_id = base_model or checkpoint_path
 
-            # Skip the Hub when offline so a no-internet export uses the local
-            # checkpoint dir / HF cache instead of hanging or crashing.
+            # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
-            # Run the type-detection probes in the forced-offline window when offline
-            # (else a gated base 404s and falls through to the text loader). The window
-            # covers is_vision_model's Hub reads + transformers-5 subprocess; pass
-            # local_files_only too so detect_audio_type's raw requests.get also skips.
+            # Run the type-detection probes in the forced-offline window (else a gated
+            # base 404s); it covers is_vision_model's Hub reads + the transformers-5
+            # subprocess, and local_files_only makes detect_audio_type's requests.get skip.
             with _offline_window_if(local_files_only):
                 self._audio_type = detect_audio_type(
                     model_id, hf_token = token, local_files_only = local_files_only

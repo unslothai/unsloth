@@ -50,9 +50,7 @@ _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _env_offline() -> bool:
-    """True if HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE is truthy. Canonical parse
-    (strip + lowercase, on/true/yes/1) shared with loader_utils / model_config, since
-    this gates the direct urllib metadata fetches below."""
+    """True if an HF offline env var is truthy (canonical strip+lower parse); gates the urllib fetches below."""
     return (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
