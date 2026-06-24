@@ -128,7 +128,7 @@
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "FS: L528:         history: list[Response] | None = None,\nNetwork: L9: import urllib.request | L1243:     class _CookieCompatRequest(urllib.request.Request):",
-      "evidence_hash": "c22f15e019a46ca5d9dbddc0463dc63c1abfbd87a3b4fe5d35cc98230303eefc"
+      "evidence_hash": "2ef2b4367c936b2e16ce70915c56919d1bd12e5b9bf14bb4f0fe6449cd7ef356"
     },
     {
       "package": "huggingface-hub",
@@ -184,7 +184,7 @@
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Archive: L106:         with tarfile.open(fileobj=req, mode='r|*') as tf:\nNetwork: L15: import urllib.request | L105:         req = urllib.request.urlopen(url)",
-      "evidence_hash": "f406e783c27b9504c429d68ff0865b1a5c4af2f24c194f2cddca7821a83f93ef"
+      "evidence_hash": "ec7c64471fdfbc744503cb85e0f5e9bd0d902f0da608950b878392a974fb71bb"
     },
     {
       "package": "matplotlib",
@@ -264,7 +264,7 @@
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Env: L174:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L184:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L207:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\") | L680:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L690:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L713:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\")\nNetwork: L140:         http_client: httpx.Client | None = None, | L521:         http_client: httpx.Client | None = None, | L646:         http_client: httpx.AsyncClient | None = None, | L1027:         http_client: httpx.AsyncClient | None = None,",
-      "evidence_hash": "74614eb1e63e0f2ed2c9d936474706748b76e99c9d5558495d8e690eee4fdc8b"
+      "evidence_hash": "06a832dff1320f1f6fce31f852c8d1a599008bcca328cb6be81ba0b7d0a741cd"
     },
     {
       "package": "openai",
@@ -272,7 +272,7 @@
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "IMDS: L96:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L149:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L77:     http_client: httpx.Client | None = None, | L108:                 with httpx.Client() as client: | L133:     http_client: httpx.Client | None = None, | L155:                 with httpx.Client() as client: | L248:         with httpx.Client() as client:",
-      "evidence_hash": "210e3593d009dd9c5b1c4db3ca3f4f9879cf7141de9e301cff51fd44b872dad0"
+      "evidence_hash": "b1a9ad3315dcf6b98b1bb0449db26c79116848cadf2072e28634ce0239b9a89b"
     },
     {
       "package": "openai",
@@ -280,7 +280,7 @@
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Env: L213:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L216:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\") | L533:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L536:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\")\nNetwork: L36: _HttpxClientT = TypeVar(\"_HttpxClientT\", bound=Union[httpx.Client, httpx.AsyncClient]) | L99: class AzureOpenAI(BaseAzureClient[httpx.Client, Stream[Any]], OpenAI): | L118:         http_client: httpx.Client | None = None, | L140:         http_client: httpx.Client | None = None, | L162:         http_client: httpx.Client | None = None, | L188:         http_client: httpx.Client | None = None, | L295:         http_client: httpx.Client | None = None, | L416: class AsyncAzureOpenAI(BaseAzureClient[httpx.AsyncClient, AsyncStream[Any]], AsyncOpenAI): | L436:         http_client: httpx.AsyncClient | None = None, | L459:         http_client: httpx.AsyncClient | None = None, | L482:         http_client: httpx.AsyncClient | None = None, | L508:         http_client: httpx.AsyncClient | None = None, | L615:         http_client: httpx.AsyncClient | None = None,",
-      "evidence_hash": "acf5c989221be95439ca81e843d075def4e871537ab76159eb5e3d001874546f"
+      "evidence_hash": "7550ca91171e2d082856ab497cfeef3a7c197c9db4a45b3419e74b3cc12c794b"
     },
     {
       "package": "openai",
@@ -288,7 +288,7 @@
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Env: L133:             api_key = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\") | L308:             api_key = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\")\nNetwork: L119:         http_client: httpx.Client | None = None, | L203:         http_client: httpx.Client | None = None, | L294:         http_client: httpx.AsyncClient | None = None, | L380:         http_client: httpx.AsyncClient | None = None,",
-      "evidence_hash": "09733d0c9e5b127b17cfcf21e3b288850776e3750b4e5750a7c26ca31931ef0b"
+      "evidence_hash": "c5568f804283b2ddff4701a17e490dd1a80599e4d349479a1135e933127f7e31"
     },
     {
       "package": "openai",
@@ -343,8 +343,8 @@
       "file": "protobuf-3.19.6-nspkg.pth",
       "check": ".pth has advanced obfuscation (marshal/compile/zlib/__import__)",
       "severity": "CRITICAL",
-      "evidence": "L1: import sys, types, os;has_mfs = sys.version_info > (3, 5);p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('google',));importlib = has_mfs and __import_...",
-      "evidence_hash": "48064b6b740ccc2c0adbfb6996c6a602dbfac07aaf362875712150d35f71da96"
+      "evidence": "L1: import sys, types, os;has_mfs = sys.version_info > (3, 5);p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('google',));importlib = has_mfs and __import__('importlib.util');has_mfs and __import__('importlib.machinery');m = has_mfs and sys.modules.setdefault('google', importlib.util.module_from_spec(importlib.machinery.PathFinder.find_spec('google', [os.path.dirname(p)])));m = m or sys.modules.setdefault('google', types.ModuleType('google'));mp = (m or []) and m.__dict__.setdefault('__path__',[]);(p not in mp) and mp.append(p)",
+      "evidence_hash": "233fd2c695435bb5ee9cc00f442153f9dc9901e8a352814c2d23dfd6da0fe70d"
     },
     {
       "package": "ptyprocess",
@@ -592,7 +592,7 @@
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Archive: L79:         with tarfile.open(fileobj=req, mode='r|*') as tf:\nNetwork: L14: import urllib.request | L78:         req = urllib.request.urlopen(url)",
-      "evidence_hash": "f406e783c27b9504c429d68ff0865b1a5c4af2f24c194f2cddca7821a83f93ef"
+      "evidence_hash": "ec7c64471fdfbc744503cb85e0f5e9bd0d902f0da608950b878392a974fb71bb"
     },
     {
       "package": "sympy",
@@ -784,7 +784,7 @@
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "IMDS: L155:     r\"|/latest/meta-data\" | L156:     r\"|/metadata/instance\" | L157:     r\"|/metadata/identity\"\nNetwork: L53: import urllib.request | L1757:         req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758:         with urllib.request.urlopen(req, timeout = 30) as resp:",
-      "evidence_hash": "d23117b715eade6ab9df754eae863b09e47d28d8caaf3d28b0af030a3433dca7"
+      "evidence_hash": "d19d024508c30bc919d5a7f367de4eede3660d74cbab762d07b5eddf5493dd6d"
     },
     {
       "package": "unsloth-zoo",
@@ -792,7 +792,7 @@
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Archive: L1254:         with tarfile.open(path, mode = \"r|*\") as tf:\nNetwork: L53: import urllib.request | L1757:         req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758:         with urllib.request.urlopen(req, timeout = 30) as resp:",
-      "evidence_hash": "7637d9f838a4de7fa63bca41ce93b307bad35a402f70841ec1e24a29e58b7bef"
+      "evidence_hash": "50213acf7b275025c63065e7f08b00b0a38c9a43357d9845455212ca6756112d"
     },
     {
       "package": "unsloth-zoo",
@@ -800,7 +800,7 @@
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "FS: L116:     r\"|/etc/shadow|/etc/passwd\" | L256:     r\"|/etc/shadow\" | L257:     r\"|/etc/passwd\",\nNetwork: L53: import urllib.request | L1757:         req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758:         with urllib.request.urlopen(req, timeout = 30) as resp:",
-      "evidence_hash": "133e0f1b9704df756f01d5daee020dc77ded45ef12661cabedb20ad18b6d6401"
+      "evidence_hash": "5fbfd3a3a82e834c6202210a9c6e2b3bc6fea361b06f624ca714e8914e9bc0c9"
     },
     {
       "package": "unsloth-zoo",
@@ -808,7 +808,7 @@
       "check": "Installs persistence AND makes network calls (backdoor pattern)",
       "severity": "CRITICAL",
       "evidence": "Persist: L163:     r\"/etc/systemd/\" | L166:     r\"|/etc/cron\" | L169:     r\"|/Library/LaunchDaemons\" | L170:     r\"|/Library/LaunchAgents\" | L172:     r\"|~/.local/share/systemd\" | L174:     r\"|HKEY_LOCAL_MACHINE.*\\\\\\\\Run\" | L175:     r\"|HKEY_CURRENT_USER.*\\\\\\\\Run\"\nNetwork: L53: import urllib.request | L1757:         req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758:         with urllib.request.urlopen(req, timeout = 30) as resp:",
-      "evidence_hash": "d30febb194c31544ffd63c763f96d99767a8b99b35e31f8a145a877c4e253730"
+      "evidence_hash": "bd08f1dd4a5e11901872630b040944ca37adcd2050412cd9f46e3ed0264e64d6"
     },
     {
       "package": "unsloth-zoo",
@@ -816,7 +816,7 @@
       "check": "May-12 Shai-Hulud IOC string present in Python file",
       "severity": "CRITICAL",
       "evidence": "L353:     r\"|With Love TeamPCP|We've been online over 2 hours)\",",
-      "evidence_hash": "ed9d1c0187f617cb0fcc70b85be45a3f6ff1ecbc194f2784a2c5303a3f1ca13e"
+      "evidence_hash": "1fc2637d45f3b1dc5a94c41c13abc5fde05e224b9fcac3f8ddd861e84f90ec57"
     },
     {
       "package": "unsloth-zoo",
@@ -824,7 +824,7 @@
       "check": "Targets cryptocurrency wallets AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Crypto: L294:     r\"|\\b(?:xprv|xpub|bc1|0x[a-fA-F0-9]{40})\\b\",\nNetwork: L53: import urllib.request | L1757:         req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758:         with urllib.request.urlopen(req, timeout = 30) as resp:",
-      "evidence_hash": "2c557c4c71a4f109ec72f3c8f89c6bb21a52188280f996d502f179d9bff904d3"
+      "evidence_hash": "3bdfa09f800ba16bf632e8fdfd1b5033c3b265dea459c0cb491767070936b5c8"
     },
     {
       "package": "unsloth-zoo",
@@ -832,7 +832,7 @@
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
       "evidence": "L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\",",
-      "evidence_hash": "6700d45ac6d089c80c49651fea60d276e12dea621fa5ffc31ba62511a9ee82c1"
+      "evidence_hash": "dc06185fb21ee4d9a14a5bd4378b09da1e6b6fea584264591c1a51825997c22d"
     },
     {
       "package": "unsloth-zoo",
@@ -1016,7 +1016,7 @@
       "check": "Embedded cryptographic key + network calls (encrypted exfil pattern)",
       "severity": "HIGH",
       "evidence": "Key: L187:         \"-----BEGIN PUBLIC KEY-----\", | L188:         \"-----BEGIN RSA PUBLIC KEY-----\",\nNetwork: L225:         http_client: httpx.AsyncClient | None = None, | L411:                 else httpx.AsyncClient(timeout=httpx.Timeout(10.0))",
-      "evidence_hash": "7ee37e92a93cb8be09518e90043e19e4e74b2263ae7f80496cbc8763f5c47618"
+      "evidence_hash": "79f465cc9ebb38925448280d7599c2fe5060a36238001c1df82cc1f957cd9501"
     },
     {
       "package": "ipython",
@@ -1287,8 +1287,8 @@
       "file": "tensorboard/plugins/projector/tf_projector_plugin/projector_binary.js",
       "check": "Python wheel ships large (1918 KB) JS bundle (uncommon; manually review)",
       "severity": "HIGH",
-      "evidence": "",
-      "evidence_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      "evidence": "sha256: 1ed9dc3bb896b1e4e13fb87d8b2e5231bdc7f6a88cf3ae45e975db02149d5d08",
+      "evidence_hash": "794978e4a4742539d66121820315ac0f3dfb5997bfbb61cf300e17249764ae3c"
     },
     {
       "package": "torch",
@@ -1375,8 +1375,8 @@
       "file": "unsloth_zoo/compiler.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L1013:             _mod = __import__(model_location, fromlist=items) | L4291:         f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\ | L4292:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n...\nExec: L612:                 if eval(_dtype) is not None: | L613:                     dtype = eval(_dtype) | L955:         _modeling_file = eval(model_location) | L1255:     f = eval(f\"{model_location}.{module}\") | L1563:         exec(f\"def raise_{j}(*args, **kwargs): print('{function}')\", globals(), locals()) | L1564:         try: exec(f\"EMPTY_LOGITS.{function} = raise_{j}\", globals(), locals()) | L2699:         exec(f\"import {parent}\", locals(), globals()) | L2830:                 dir(eval(parent)), | L2834:             exec(f\"{parent}.{child}.forward = forward\", globals(), locals()) | L2908:         module = eval(f\"modeling_file.{module}\") | L2935:             inner_class = eval(f\"modeling_file.{inner_class}\") | L3065:                 exec(f\"from timm.layers.norm_act import {norm}\") | L3073:             forward = eval(norm).forward | L3079:             exec(f\"timm.layers.norm_act.{norm}.forward = forward\") | L3096:                 exec(f\"from timm.models._efficientnet_blocks import {block}\") | L3104:             forward = eval(block).forward | L3110:             exec(f\"timm.models._efficientnet_blocks.{block}.forward = forward\") | L3385:         exec(f\"import {model_location}\", globals()) | L3388:     modeling_file = eval(model_location) | L3401:     exec( | L3405:     exec( | L3560:         source = eval(f\"modeling_file.{module}\") | L3574:         source = eval(f\"modeling_file.{module}\") | L3675:         source = eval(f\"modeling_file.{module}\") | L3713:             source = eval(f\"{model_location}.{module}\") | L3784:                 source = eval(f\"{model_location}.{module}\") | L3832:             source = eval(f\"{model_location}.{module}\") | L4054:         source = eval(f\"{model_location}.{module}\") | L4065:         exec( | L4131:                 source = eval(f\"{model_location}.{module}\") | L4172:                 module_cls = eval(f\"{model_location}.{module}\") | L4209:                 module_cls = eval(f\"{model_location}.{module}\") | L4276:     exec( | L4341:     exec(inner_training_loop, globals()) | L4349:             function = eval(f\"{model_location}.{module}\") | L4427:             function = eval(f\"{model_location}.{module}\") | L4562:                 source = eval(f\"{model_location}.torch\") | L4569:             function = eval(f\"source.nn.{module}\") | L4628:             exec( | L4634:                 exec( | L4642:                 exec( | L4648:                     exec( | L4669:             exec( | L4683:     check_dicts = dir(eval(f\"{model_location}\")) | L4685:         item = eval(f\"{model_location}.{check}\") | L4695:                         exec(",
-      "evidence_hash": "a7e5901ab6e01dd5e88becce25294b8867518264767bce833ee2961bae93c3db"
+      "evidence": "Obfusc: L1013:             _mod = __import__(model_location, fromlist=items) | L4291:         f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\ | L4292:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nExec: L612:                 if eval(_dtype) is not None: | L613:                     dtype = eval(_dtype) | L955:         _modeling_file = eval(model_location) | L1255:     f = eval(f\"{model_location}.{module}\") | L1563:         exec(f\"def raise_{j}(*args, **kwargs): print('{function}')\", globals(), locals()) | L1564:         try: exec(f\"EMPTY_LOGITS.{function} = raise_{j}\", globals(), locals()) | L2699:         exec(f\"import {parent}\", locals(), globals()) | L2830:                 dir(eval(parent)), | L2834:             exec(f\"{parent}.{child}.forward = forward\", globals(), locals()) | L2908:         module = eval(f\"modeling_file.{module}\") | L2935:             inner_class = eval(f\"modeling_file.{inner_class}\") | L3065:                 exec(f\"from timm.layers.norm_act import {norm}\") | L3073:             forward = eval(norm).forward | L3079:             exec(f\"timm.layers.norm_act.{norm}.forward = forward\") | L3096:                 exec(f\"from timm.models._efficientnet_blocks import {block}\") | L3104:             forward = eval(block).forward | L3110:             exec(f\"timm.models._efficientnet_blocks.{block}.forward = forward\") | L3385:         exec(f\"import {model_location}\", globals()) | L3388:     modeling_file = eval(model_location) | L3401:     exec( | L3405:     exec( | L3560:         source = eval(f\"modeling_file.{module}\") | L3574:         source = eval(f\"modeling_file.{module}\") | L3675:         source = eval(f\"modeling_file.{module}\") | L3713:             source = eval(f\"{model_location}.{module}\") | L3784:                 source = eval(f\"{model_location}.{module}\") | L3832:             source = eval(f\"{model_location}.{module}\") | L4054:         source = eval(f\"{model_location}.{module}\") | L4065:         exec( | L4131:                 source = eval(f\"{model_location}.{module}\") | L4172:                 module_cls = eval(f\"{model_location}.{module}\") | L4209:                 module_cls = eval(f\"{model_location}.{module}\") | L4276:     exec( | L4341:     exec(inner_training_loop, globals()) | L4349:             function = eval(f\"{model_location}.{module}\") | L4427:             function = eval(f\"{model_location}.{module}\") | L4562:                 source = eval(f\"{model_location}.torch\") | L4569:             function = eval(f\"source.nn.{module}\") | L4628:             exec( | L4634:                 exec( | L4642:                 exec( | L4648:                     exec( | L4669:             exec( | L4683:     check_dicts = dir(eval(f\"{model_location}\")) | L4685:         item = eval(f\"{model_location}.{check}\") | L4695:                         exec(",
+      "evidence_hash": "c03115edd4e048c54ab3ade4cedfcc4482ad0c1d40ad3f50d3a083adbe31c928"
     },
     {
       "package": "unsloth-zoo",

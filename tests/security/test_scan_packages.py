@@ -411,6 +411,104 @@ def test_baseline_key_indentation_is_significant():
     assert sp._finding_key(guarded) != sp._finding_key(top_level)
 
 
+def test_canon_evidence_keeps_bitwise_or_in_a_span():
+    # ' | ' only delimits spans when it precedes an L<NN>: marker; a pipe inside
+    # matched code (bitwise OR, typing.Union) is code, so changing an operand
+    # must reopen the finding instead of deduping to the same key.
+    a = _mk(sp.CRITICAL, "p", "p/x.py", "c", "L5: mode = os.O_RDONLY | os.O_CLOEXEC")
+    b = _mk(sp.CRITICAL, "p", "p/x.py", "c", "L5: mode = os.O_RDONLY | os.O_EVIL")
+    assert sp._finding_key(a) != sp._finding_key(b)
+    # The OR survives canonicalization as one span (not split on the pipe).
+    assert sp._canon_evidence("L5: a = X | Y") == "a = X | Y"
+
+
+def test_extract_evidence_keeps_full_long_line():
+    # No per-line truncation: a payload appended past column 160 must show in the
+    # evidence so it changes the key instead of being clipped off the first match.
+    marker = "EXFIL_PAST_160"
+    pad = "# " + " " * 200
+    line = "requests.get('http://a')  " + pad + marker
+    ev = sp._extract_evidence(line + "\n", sp.RE_NETWORK)
+    assert marker in ev
+    base = sp._extract_evidence("requests.get('http://a')  " + pad + "x\n", sp.RE_NETWORK)
+    assert sp._evidence_hash(ev) != sp._evidence_hash(base)
+
+
+def test_extract_evidence_records_all_multiline_matches():
+    # The DOTALL fallback must record every distinct cross-line match, so a second
+    # long-sleep appended below an already-flagged one reopens the finding.
+    one = "foo = time.sleep(\n    600\n)\n"
+    two = one + "bar = time.sleep(\n    900\n)\n"
+    ev1 = sp._extract_evidence(one, sp.RE_ANTI_ANALYSIS)
+    ev2 = sp._extract_evidence(two, sp.RE_ANTI_ANALYSIS)
+    assert ev2.count("time.sleep(") == 2  # both matches, not just the first
+    assert sp._evidence_hash(ev1) != sp._evidence_hash(ev2)
+
+
+def test_large_js_bundle_finding_is_content_bound():
+    # A large benign JS bundle yields a HIGH carrying a content digest, not empty
+    # evidence: two different bundles in the same size bucket get different keys,
+    # so a malicious bundle cannot ride a baselined empty-evidence entry.
+    big_a = "var x = 1;\n" * 20000  # ~200 KB, benign
+    big_b = big_a + "var exfil = 2;\n"  # different content, same size bucket
+    ja = [f for f in sp.check_js_file(big_a, "pkg/bundle.js", "pkg") if "JS bundle" in f.check]
+    jb = [f for f in sp.check_js_file(big_b, "pkg/bundle.js", "pkg") if "JS bundle" in f.check]
+    assert ja and jb, "large JS bundle must produce a finding"
+    assert ja[0].evidence.startswith("sha256:")
+    assert sp._finding_key(ja[0]) != sp._finding_key(jb[0])
+
+
+def test_pth_large_blob_finding_is_content_bound():
+    # The .pth base64-blob evidence pins the full blob via a digest, so a payload
+    # that keeps the first 120 chars but changes the tail reopens the finding.
+    head = "A" * 120
+    a = [f for f in sp.check_pth_file("import os\n" + head + "B" * 200, "p/x.pth", "p")
+         if "base64-like blob" in f.check]
+    b = [f for f in sp.check_pth_file("import os\n" + head + "C" * 200, "p/x.pth", "p")
+         if "base64-like blob" in f.check]
+    assert a and b, "large .pth blob must produce a finding"
+    assert "sha256:" in a[0].evidence
+    assert sp._finding_key(a[0]) != sp._finding_key(b[0])
+
+
+def test_pth_import_lines_record_all_not_first_five():
+    # All executable import lines are recorded, so swapping the sixth import for a
+    # malicious one (first five unchanged) still reopens the catch-all finding.
+    base = "".join(f"import mod{i}\n" for i in range(6))
+    swapped = "".join(f"import mod{i}\n" for i in range(5)) + "import evil\n"
+    fb = [f for f in sp.check_pth_file(base, "p/x.pth", "p") if "executable import line" in f.check]
+    fs = [f for f in sp.check_pth_file(swapped, "p/x.pth", "p") if "executable import line" in f.check]
+    assert fb and fs
+    assert sp._finding_key(fb[0]) != sp._finding_key(fs[0])
+
+
+def test_load_baseline_warns_on_missing_evidence_hash(tmp_path, capsys):
+    # A legacy baseline predating evidence_hash still loads (hash recomputed) but
+    # must WARN so the maintainer regenerates rather than degrade silently.
+    import json
+
+    bl = tmp_path / "legacy.json"
+    bl.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "package": "p",
+                        "file": "p/x.py",
+                        "check": "c",
+                        "severity": sp.CRITICAL,
+                        "evidence": "L5: while True:",
+                    }
+                ],
+            }
+        )
+    )
+    keys = sp._load_baseline(str(bl))
+    assert keys  # still loaded
+    assert "lack evidence_hash" in capsys.readouterr().err
+
+
 def test_fstring_statement_is_not_blanked():
     # A bare f-string evaluates at import, so it must stay scannable.
     src = "f\"{__import__('os').system('id')}\"\n"

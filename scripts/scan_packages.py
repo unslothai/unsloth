@@ -479,21 +479,23 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
     # Large base64 blob
     if RE_LARGE_BLOB.search(content):
         blob = RE_LARGE_BLOB.search(content).group()
+        # Pin the full blob via a digest (not just the first 120 chars), so a
+        # later payload that keeps the prefix but changes the tail reopens.
+        digest = hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
         findings.append(
             Finding(
                 CRITICAL,
                 package,
                 filename,
                 f".pth has large base64-like blob ({len(blob)} chars)",
-                blob[:120] + "...",
+                f"{blob[:120]}... sha256:{digest}",
             )
         )
 
-    # Catch-all: any import line in .pth if nothing else triggered
+    # Catch-all: any import line in .pth if nothing else triggered. Record all
+    # lines (not the first five) so an appended/swapped import reopens the key.
     if not findings and import_lines:
-        evidence = "\n".join(import_lines[:5])
-        if len(import_lines) > 5:
-            evidence += f"\n... ({len(import_lines)} import lines total)"
+        evidence = "\n".join(import_lines)
         findings.append(
             Finding(
                 HIGH,
@@ -1116,33 +1118,35 @@ def _extract_evidence(
 ) -> str:
     """Pull matching lines as evidence snippets (``max_matches=0`` means all).
 
-    Records every matching line, not a sample, so an extra match appended to an
-    already-flagged file changes the evidence (and the baseline key) instead of
-    riding the first few. Leading whitespace is kept so a flagged line moved out
-    of a guarded block reads as changed. Falls back to a whole-content search
-    when the pattern only matches across line boundaries (DOTALL IOC regexes).
+    Records every matching line in full, not a truncated sample, so an extra
+    match (or extra code on a long line) appended to an already-flagged file
+    changes the evidence and the baseline key instead of riding the first few.
+    Leading whitespace is kept so a flagged line moved out of a guarded block
+    reads as changed. Falls back to a whole-content search (recording every
+    distinct match line) when the pattern only matches across line boundaries.
     """
     lines = content.splitlines()
     matches = []
     for i, line in enumerate(lines, 1):
         if pattern.search(line):
-            snippet = line.rstrip()
-            if len(snippet) > 160:
-                snippet = snippet[:160] + "..."
-            matches.append(f"L{i}: {snippet}")
+            matches.append(f"L{i}: {line.rstrip()}")
             if max_matches and len(matches) >= max_matches:
                 break
     if matches:
         return " | ".join(matches)
-    # Multiline (DOTALL) match: report the line where the match begins.
-    m = pattern.search(content)
-    if m:
+    # Multiline (DOTALL) match: record the line where each distinct match begins.
+    seen: set[int] = set()
+    out = []
+    for m in pattern.finditer(content):
         line_no = content.count("\n", 0, m.start()) + 1
+        if line_no in seen:
+            continue
+        seen.add(line_no)
         snippet = lines[line_no - 1].rstrip() if line_no - 1 < len(lines) else ""
-        if len(snippet) > 160:
-            snippet = snippet[:160] + "..."
-        return f"L{line_no}: {snippet}" if snippet else f"L{line_no}: <multiline match>"
-    return ""
+        out.append(f"L{line_no}: {snippet}" if snippet else f"L{line_no}: <multiline match>")
+        if max_matches and len(out) >= max_matches:
+            break
+    return " | ".join(out)
 
 
 # Non-Python checkers
@@ -1206,6 +1210,10 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
             )
         )
     if is_large and not findings:
+        # Digest the bundle so the baseline key pins its content: a future
+        # bundle in the same size bucket but with changed code reopens instead
+        # of riding an empty-evidence allowlist entry.
+        digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
         findings.append(
             Finding(
                 HIGH,
@@ -1213,7 +1221,7 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                 filename,
                 f"Python wheel ships large ({len(content) // 1024} KB) JS bundle "
                 "(uncommon; manually review)",
-                "",
+                f"sha256: {digest}",
             )
         )
     return findings
@@ -2548,22 +2556,24 @@ def _relpath_in_package(filename: str) -> str:
     return _RE_SDIST_ROOT.sub("", filename, count = 1)
 
 
-# Evidence lists matched code spans, each tagged with an ``L<NN>:`` line marker.
-# A span's prefix up to and including the first ``L<NN>:`` marker: any delimiter
-# space, an optional "Label: " group, and the line number that _extract_evidence
-# prepends. The marker is always the first ``L<NN>:`` in a span, so a marker that
-# appears inside the matched code comes later and is preserved.
+# Evidence joins matched spans with " | " and a newline between labelled groups,
+# each span tagged "L<NN>: ". Split only on those real delimiters (a " | " before
+# a marker, or a newline), never on a bare "|" -- matched code may contain a
+# bitwise-or or union type. A span's prefix up to and including the first marker
+# (delimiter space, optional "Label: ", line number) is metadata; a later L<NN>:
+# inside the code is kept.
+_RE_EVIDENCE_SPLIT = re.compile(r" \| (?=L\d+:)|\n")
 _RE_EVIDENCE_PREFIX = re.compile(r"^.*?L\d+:\s?")
 
 
 def _canon_evidence(evidence: str) -> str:
     """Sorted, deduped set of matched code lines, line-number markers removed.
 
-    Splits evidence into per-match spans, drops each span's prefix up to the
-    first ``L<NN>:`` marker, and keeps the code with its indentation, so the key
-    tracks the exact set of flagged code regardless of line number or order."""
+    Splits evidence on its real span delimiters, drops each span's prefix up to
+    the first ``L<NN>:`` marker, and keeps the code with its indentation, so the
+    key tracks the exact set of flagged code regardless of line number or order."""
     spans = set()
-    for s in re.split(r"[|\n]", evidence or ""):
+    for s in _RE_EVIDENCE_SPLIT.split(evidence or ""):
         s = _RE_EVIDENCE_PREFIX.sub("", s, count = 1).rstrip()
         if s:
             spans.add(s)
@@ -2604,12 +2614,15 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
         print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
         return set()
     keys: set[tuple[str, str, str, str]] = set()
+    legacy = 0
     for e in data.get("entries", []):
         if not isinstance(e, dict):
             continue
         try:
             # Use the reviewed hash; else recompute it from the stored evidence.
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
+            if not e.get("evidence_hash"):
+                legacy += 1
             keys.add(
                 (
                     _norm_pkg(e["package"]),
@@ -2620,6 +2633,12 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
             )
         except (KeyError, TypeError):
             continue
+    if legacy:
+        print(
+            f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash; "
+            f"regenerate with --write-baseline",
+            file = sys.stderr,
+        )
     return keys
 
 
