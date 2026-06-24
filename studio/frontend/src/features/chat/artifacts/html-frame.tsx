@@ -3,7 +3,6 @@
 
 "use client";
 
-import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -36,29 +35,33 @@ export function ArtifactHtmlFrame({
   title = "HTML canvas preview",
   className,
   fill = false,
+  // Only artifacts the user explicitly rendered (the render_html tool) may opt
+  // into network mode. Auto-extracted fence cards default to no network so
+  // prompt-injected assistant text can never reach the network-enabled frame.
+  allowNetworkAccess = false,
 }: {
   code: string;
   title?: string;
   className?: string;
   fill?: boolean;
+  allowNetworkAccess?: boolean;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const allowNetworkAccess = useChatRuntimeStore(
+  const networkAccessEnabled = useChatRuntimeStore(
     (state) => state.allowArtifactNetworkAccess,
   );
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
   const src = useMemo(() => {
     const query = new URLSearchParams({ v: hashArtifactCode(code) });
-    if (allowNetworkAccess) {
-      const token = getAuthToken();
-      if (token) {
-        query.set("allow_network", "1");
-        query.set("token", token);
-      }
+    // No auth token is ever placed in the frame URL: untrusted canvas HTML runs
+    // in this frame and could read it back via window.location.href. The
+    // backend selects the network CSP from allow_network alone.
+    if (allowNetworkAccess && networkAccessEnabled) {
+      query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
-  }, [allowNetworkAccess, code]);
+  }, [allowNetworkAccess, networkAccessEnabled, code]);
   const postArtifactHtml = useCallback(() => {
     // Sandboxed frame has an opaque origin ("null"), so a wildcard target is
     // required; the payload only reaches this iframe's contentWindow.
