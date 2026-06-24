@@ -13,6 +13,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -300,15 +301,21 @@ export function ProjectsPage() {
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Export All Projects</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
+                  <DropdownMenuLabel className="px-3 pb-1 pt-2 text-[11px] font-medium">
+                    Combined
+                  </DropdownMenuLabel>
                   {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                     <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
-                      {label} (combined)
+                      {label}
                     </DropdownMenuItem>
                   ))}
                   <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="px-3 pb-1 pt-2 text-[11px] font-medium">
+                    Per chat
+                  </DropdownMenuLabel>
                   {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                     <DropdownMenuItem key={`ap-s-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, false)}>
-                      {label} (per chat)
+                      {label}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuSubContent>
@@ -316,15 +323,21 @@ export function ProjectsPage() {
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Export Projects + Recents</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
+                  <DropdownMenuLabel className="px-3 pb-1 pt-2 text-[11px] font-medium">
+                    Combined
+                  </DropdownMenuLabel>
                   {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                     <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
-                      {label} (combined)
+                      {label}
                     </DropdownMenuItem>
                   ))}
                   <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="px-3 pb-1 pt-2 text-[11px] font-medium">
+                    Per chat
+                  </DropdownMenuLabel>
                   {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                     <DropdownMenuItem key={`all-s-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, false)}>
-                      {label} (per chat)
+                      {label}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuSubContent>
