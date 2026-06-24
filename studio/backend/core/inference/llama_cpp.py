@@ -6740,10 +6740,13 @@ class LlamaCppBackend:
             # pinned count); MoE/split only matter with an explicit offload.
             if gpu_memory_mode == "manual" and (
                 self._gpu_layers != gpu_layers
-                or (gpu_layers >= 0 and (
-                    self._n_cpu_moe != n_cpu_moe
-                    or (self._tensor_split or None) != (tensor_split or None)
-                ))
+                or (
+                    gpu_layers >= 0
+                    and (
+                        self._n_cpu_moe != n_cpu_moe
+                        or (self._tensor_split or None) != (tensor_split or None)
+                    )
+                )
             ):
                 return False
         # A changed GPU pick must reload (compare order-insensitively; None/[]

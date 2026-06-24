@@ -2132,10 +2132,13 @@ def _request_matches_loaded_settings(
         # must not force one. Mirrors LlamaCppBackend._already_in_target_state.
         if request.gpu_memory_mode == "manual" and (
             request.gpu_layers != llama_backend.gpu_layers
-            or (request.gpu_layers >= 0 and (
-                request.n_cpu_moe != llama_backend.n_cpu_moe
-                or (request.tensor_split or None) != (llama_backend.tensor_split or None)
-            ))
+            or (
+                request.gpu_layers >= 0
+                and (
+                    request.n_cpu_moe != llama_backend.n_cpu_moe
+                    or (request.tensor_split or None) != (llama_backend.tensor_split or None)
+                )
+            )
         ):
             return False
     _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
