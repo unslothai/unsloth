@@ -10145,11 +10145,22 @@ async def generate_diffusion_image(
 
 
 @studio_router.get("/images/gallery", response_model = GalleryListResponse)
-async def list_gallery_images(current_subject: str = Depends(get_current_subject)):
+async def list_gallery_images(
+    limit: int = 50,
+    offset: int = 0,
+    current_subject: str = Depends(get_current_subject),
+):
     from core.inference import image_gallery
 
-    records = await asyncio.to_thread(image_gallery.list_images)
-    return GalleryListResponse(images = [GalleryImage(**r) for r in records])
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    # Fetch one extra to learn whether more remain, without a second scan.
+    records = await asyncio.to_thread(image_gallery.list_images, limit + 1, offset)
+    has_more = len(records) > limit
+    return GalleryListResponse(
+        images = [GalleryImage(**r) for r in records[:limit]],
+        has_more = has_more,
+    )
 
 
 @studio_router.get("/images/gallery/{image_id}/file")

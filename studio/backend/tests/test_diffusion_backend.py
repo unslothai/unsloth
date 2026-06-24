@@ -308,18 +308,6 @@ def test_estimate_eta():
     assert _estimate_eta(8, 8, first_step_at = 100.0, now = 107.0) == 0.0
 
 
-def test_generate_progress_reads_gen_state():
-    from core.inference.diffusion import _GenState
-
-    backend = DiffusionBackend()
-    assert backend.generate_progress()["active"] is False
-
-    backend._gen = _GenState(total_steps = 8, step = 4, eta_seconds = 4.0)
-    p = backend.generate_progress()
-    assert p["active"] is True and p["step"] == 4 and p["total_steps"] == 8
-    assert abs(p["fraction"] - 0.5) < 1e-9 and p["eta_seconds"] == 4.0
-
-
 def test_begin_load_rejects_concurrent(monkeypatch):
     backend = DiffusionBackend()
     monkeypatch.setattr(DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: 0))

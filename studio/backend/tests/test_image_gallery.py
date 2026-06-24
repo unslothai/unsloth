@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 
 import pytest
 
@@ -59,10 +60,30 @@ def test_save_embeds_recipe_and_round_trips():
     assert listed[0]["prompt"] == "a sloth" and listed[0]["seed"] == 7
 
 
+def _save_with_mtime(prompt: str, t: float) -> dict:
+    record = gallery.save(_img(), _meta(prompt = prompt, created_at = t))
+    # Listing orders by mtime; set it explicitly so a tight test loop can't tie it.
+    os.utime(gallery.gallery_dir() / f"{record['id']}.png", (t, t))
+    return record
+
+
 def test_list_is_newest_first():
-    old = gallery.save(_img(), _meta(prompt = "old", created_at = 100.0))
-    new = gallery.save(_img(), _meta(prompt = "new", created_at = 200.0))
+    old = _save_with_mtime("old", 100.0)
+    new = _save_with_mtime("new", 200.0)
     assert [r["id"] for r in gallery.list_images()] == [new["id"], old["id"]]
+
+
+def test_list_paginates_with_limit_offset():
+    # 5 images, newest (t=4) first.
+    for i in range(5):
+        _save_with_mtime(f"p{i}", float(i))
+    page1 = gallery.list_images(limit = 2, offset = 0)
+    page2 = gallery.list_images(limit = 2, offset = 2)
+    assert [r["prompt"] for r in page1] == ["p4", "p3"]
+    assert [r["prompt"] for r in page2] == ["p2", "p1"]
+    # limit=None still returns everything from the offset.
+    assert len(gallery.list_images()) == 5
+    assert len(gallery.list_images(offset = 4)) == 1
 
 
 def test_negative_prompt_recorded_in_parameters():

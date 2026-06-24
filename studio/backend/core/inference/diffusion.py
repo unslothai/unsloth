@@ -374,7 +374,7 @@ class DiffusionBackend:
             "active": True,
             "step": gen.step,
             "total_steps": gen.total_steps,
-            "fraction": min(gen.step / gen.total_steps, 1.0),
+            "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
         }
 

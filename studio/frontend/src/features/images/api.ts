@@ -115,11 +115,15 @@ export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
 }
 
-export async function getGallery(): Promise<GalleryImage[]> {
-  const { images } = await parseJson<{ images: GalleryImage[] }>(
-    await authFetch("/api/inference/images/gallery"),
+export interface GalleryPage {
+  images: GalleryImage[];
+  has_more: boolean;
+}
+
+export async function getGallery(offset = 0, limit = 50): Promise<GalleryPage> {
+  return parseJson(
+    await authFetch(`/api/inference/images/gallery?offset=${offset}&limit=${limit}`),
   );
-  return images;
 }
 
 export async function deleteGalleryImage(id: string): Promise<void> {

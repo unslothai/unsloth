@@ -1754,9 +1754,10 @@ class DiffusionGenerateResponse(BaseModel):
 
 
 class GalleryListResponse(BaseModel):
-    """All persisted images, newest first."""
+    """A newest-first page of persisted images, for infinite scroll."""
 
     images: list[GalleryImage] = Field(default_factory = list)
+    has_more: bool = Field(False, description = "Whether older images remain past this page")
 
 
 class DiffusionGenerateProgressResponse(BaseModel):

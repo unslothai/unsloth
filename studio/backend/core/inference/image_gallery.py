@@ -117,19 +117,31 @@ def _read_meta(path: Path) -> Optional[dict[str, Any]]:
     return meta if isinstance(meta, dict) else None
 
 
-def list_images() -> list[dict[str, Any]]:
-    """All app-generated images, newest first (by embedded ``created_at``)."""
-    records = []
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def list_images(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, Any]]:
+    """A newest-first window of images for infinite scroll.
+
+    Ordered by file mtime (a cheap stat, ~= generation order) so a months-old
+    gallery isn't opened in full just to sort it; only the window's recipes are
+    read. limit=None returns everything from ``offset`` on."""
     try:
         paths = list(gallery_dir().glob("*.png"))
     except OSError:
         return []
-    for path in paths:
+    paths.sort(key = _mtime, reverse = True)
+    window = paths[offset:] if limit is None else paths[offset:offset + limit]
+    records = []
+    for path in window:
         meta = _read_meta(path)
         if meta is None:  # not one of ours (no recipe chunk) — skip
             continue
         records.append(_record(path.stem, meta))
-    records.sort(key = lambda r: r.get("created_at", 0.0), reverse = True)
     return records
 
 

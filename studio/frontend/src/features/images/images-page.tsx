@@ -106,13 +106,24 @@ function matchAspect(width: number, height: number): { key: string; portrait: bo
 // valid across remounts.
 const galleryCache: {
   images: GalleryImage[];
+  hasMore: boolean;
   selectedId: string | null;
   quant: string | null;
   srcById: Map<string, string>;
   // Ids with a fetch in flight, so concurrent ensureSrc calls don't double-fetch
   // (and leak the duplicate object URL).
   inflight: Set<string>;
-} = { images: [], selectedId: null, quant: null, srcById: new Map(), inflight: new Set() };
+} = {
+  images: [],
+  hasMore: false,
+  selectedId: null,
+  quant: null,
+  srcById: new Map(),
+  inflight: new Set(),
+};
+
+// Images loaded per infinite-scroll page.
+const PAGE_SIZE = 50;
 
 // Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share
 // the seed + timestamp, so they get a "_<n>" suffix past the first one.
@@ -376,10 +387,13 @@ export function ImagesPage() {
   // Records come from the backend (durable); srcById maps each id to its object
   // URL (loaded images) or data URL (the one just generated).
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
+  const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     Object.fromEntries(galleryCache.srcById),
   );
+  // Guards a "load more" so a fast scroll can't fire several at once.
+  const loadingMore = useRef(false);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -392,9 +406,10 @@ export function ImagesPage() {
   // Mirror to the module cache so a tab switch re-renders instantly.
   useEffect(() => {
     galleryCache.images = images;
+    galleryCache.hasMore = hasMore;
     galleryCache.selectedId = selectedId;
     galleryCache.quant = quant;
-  }, [images, selectedId, quant]);
+  }, [images, hasMore, selectedId, quant]);
 
   const selected = useMemo(
     () => images.find((i) => i.id === selectedId) ?? images[0] ?? null,
@@ -419,12 +434,38 @@ export function ImagesPage() {
 
   const loadGallery = useCallback(async () => {
     try {
-      const records = await getGallery();
-      galleryCache.images = records;
-      setImages(records);
-      records.forEach((image) => void ensureSrc(image));
+      const page = await getGallery(0, PAGE_SIZE);
+      galleryCache.images = page.images;
+      galleryCache.hasMore = page.has_more;
+      setImages(page.images);
+      setHasMore(page.has_more);
+      page.images.forEach((image) => void ensureSrc(image));
     } catch {
       // Best-effort: a failed gallery load shouldn't block the page.
+    }
+  }, [ensureSrc]);
+
+  // Load the next older page. offset = how many we've loaded so far. A newly
+  // generated image gets a newer mtime, so it sorts to the front on the backend
+  // too — the offset keeps pointing at the same older images.
+  const loadMore = useCallback(async () => {
+    if (loadingMore.current || !galleryCache.hasMore) return;
+    loadingMore.current = true;
+    try {
+      const page = await getGallery(galleryCache.images.length, PAGE_SIZE);
+      setImages((prev) => {
+        const seen = new Set(prev.map((i) => i.id));
+        const next = [...prev, ...page.images.filter((i) => !seen.has(i.id))];
+        galleryCache.images = next;
+        return next;
+      });
+      galleryCache.hasMore = page.has_more;
+      setHasMore(page.has_more);
+      page.images.forEach((image) => void ensureSrc(image));
+    } catch {
+      // transient; the user can scroll again to retry
+    } finally {
+      loadingMore.current = false;
     }
   }, [ensureSrc]);
 
@@ -872,7 +913,14 @@ export function ImagesPage() {
           </div>
 
           {(images.length > 0 || busy === "generating") && (
-            <div className="flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3">
+            <div
+              className="flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3"
+              onScroll={(e) => {
+                // Near the right edge: pull the next older page (infinite scroll).
+                const el = e.currentTarget;
+                if (el.scrollWidth - el.scrollLeft - el.clientWidth < 400) void loadMore();
+              }}
+            >
               {/* In-progress generation: a placeholder tile at the front so past
                   images stay visible and browsable while the new one renders. */}
               {busy === "generating" && (
@@ -906,6 +954,12 @@ export function ImagesPage() {
                   )}
                 </button>
               ))}
+              {/* Tail spinner while older pages stream in on scroll. */}
+              {hasMore && (
+                <div className="flex size-16 shrink-0 items-center justify-center">
+                  <Spinner className="size-4 text-muted-foreground" />
+                </div>
+              )}
             </div>
           )}
         </div>

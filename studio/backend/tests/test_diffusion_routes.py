@@ -110,10 +110,11 @@ def client(monkeypatch, tmp_path):
 
     monkeypatch.setattr(gallery_module, "save", _save)
     monkeypatch.setattr(gallery_module, "image_b64", lambda i: "QUJD" if i in store else None)
-    monkeypatch.setattr(
-        gallery_module, "list_images",
-        lambda: sorted(store.values(), key = lambda r: r.get("created_at", 0.0), reverse = True),
-    )
+    def _list_images(limit = None, offset = 0):
+        ordered = sorted(store.values(), key = lambda r: r.get("created_at", 0.0), reverse = True)
+        return ordered[offset:] if limit is None else ordered[offset:offset + limit]
+
+    monkeypatch.setattr(gallery_module, "list_images", _list_images)
     monkeypatch.setattr(
         gallery_module, "image_path",
         lambda i: (tmp_path / f"{i}.png") if i in store else None,
@@ -171,6 +172,15 @@ def test_generate_batch_size_persists_each_image(client):
     assert all(i["seed"] == 5 for i in images)  # the batch shares one seed
     assert len({i["id"] for i in images}) == 3  # but each is a distinct record
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 3
+
+
+def test_gallery_pagination(client):
+    client.post("/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"})
+    client.post("/api/inference/images/generate", json = {"prompt": "p", "batch_size": 5, "seed": 1})
+    page1 = client.get("/api/inference/images/gallery?limit=2&offset=0").json()
+    assert len(page1["images"]) == 2 and page1["has_more"] is True
+    last = client.get("/api/inference/images/gallery?limit=2&offset=4").json()
+    assert len(last["images"]) == 1 and last["has_more"] is False
 
 
 def test_generate_rejects_non_multiple_of_16(client):
