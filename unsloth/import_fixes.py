@@ -2545,15 +2545,14 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
-# vLLM's main compiled extensions, eager-loaded when it initializes its kernels
-# (where an ABI break first surfaces). Not exhaustive: the set varies by
-# platform and vLLM version, but a CUDA/ROCm major mismatch breaks all of them,
-# so probing _C and its siblings reliably trips it.
+# vLLM's shipped compiled extensions. On CUDA, _C and _C_stable_libtorch are
+# imported eagerly at platform init, so an ABI break (e.g. a CUDA-major
+# mismatch) crashes there -- the reported failure -- and breaks the rest
+# uniformly, so probing _C and its siblings reliably trips it.
 _VLLM_COMPILED_EXTENSIONS = (
     "vllm._C",
     "vllm._C_stable_libtorch",
     "vllm._moe_C",
-    "vllm._moe_C_stable_libtorch",
     "vllm._rocm_C",
 )
 
