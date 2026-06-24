@@ -569,6 +569,30 @@ def test_js_token_network_finding_binds_network_evidence():
     assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
 
 
+def test_embedded_pem_key_body_change_reopens():
+    # The embedded-key evidence pins the full PEM block via a digest, so swapping
+    # the key body under the same BEGIN/END markers reopens the finding instead
+    # of riding the unchanged marker line.
+    head = "-----BEGIN RSA PRIVATE KEY-----\n"
+    tail = "\n-----END RSA PRIVATE KEY-----"
+    net = "\nrequests.get('http://c2.example')\n"
+    old = f"k = '''{head}MIIoldAAAAAAAAAAAAAAAAAAAA{tail}'''{net}"
+    new = f"k = '''{head}MIInewBBBBBBBBBBBBBBBBBBBB{tail}'''{net}"
+    fo = [
+        f
+        for f in sp.check_py_file(old, "p/k.py", "p")
+        if f.check.startswith("Embedded cryptographic key + network")
+    ]
+    fn = [
+        f
+        for f in sp.check_py_file(new, "p/k.py", "p")
+        if f.check.startswith("Embedded cryptographic key + network")
+    ]
+    assert fo and fn
+    assert "sha256:" in fo[0].evidence
+    assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
+
+
 def test_shell_combos_bind_network_evidence():
     # Both shell combos record their network/exec side, so a changed endpoint
     # reopens instead of riding the unchanged token or hook line.

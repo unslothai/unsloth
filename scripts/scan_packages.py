@@ -158,6 +158,9 @@ RE_EMBEDDED_KEYS = re.compile(
     re.DOTALL,
 )
 
+# Full PEM block (BEGIN..END), used to pin a multiline key body in evidence.
+RE_PEM_BLOCK = re.compile(r"-----BEGIN[^\n]*KEY-----.*?-----END[^\n]*KEY-----", re.DOTALL)
+
 # Cloud metadata / IMDS endpoints
 RE_CLOUD_METADATA = re.compile(
     r"169\.254\.169\.254"  # AWS/Azure/GCP IMDS
@@ -729,7 +732,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
         if has_network:
             evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
         if has_keys:
-            evidence.append(f"Key: {_extract_evidence(content, RE_EMBEDDED_KEYS)}")
+            evidence.append(f"Key: {_embedded_key_evidence(content)}")
         findings.append(
             Finding(
                 CRITICAL,
@@ -945,7 +948,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 package,
                 filename,
                 "Embedded cryptographic key + network calls (encrypted exfil pattern)",
-                f"Key: {_extract_evidence(content, RE_EMBEDDED_KEYS)}\n"
+                f"Key: {_embedded_key_evidence(content)}\n"
                 f"Network: {_extract_evidence(content, RE_NETWORK)}",
             )
         )
@@ -1097,7 +1100,7 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 package,
                 filename,
                 "Embedded cryptographic key material",
-                _extract_evidence(content, RE_EMBEDDED_KEYS),
+                _embedded_key_evidence(content),
             )
         )
 
@@ -1191,6 +1194,18 @@ def _extract_evidence(
         if max_matches and len(out) >= max_matches:
             break
     return " | ".join(out)
+
+
+def _embedded_key_evidence(content: str) -> str:
+    """Key evidence that also pins the full PEM block(s) via a digest, so a key
+    body swapped under the same BEGIN marker reopens the finding (single-line and
+    DER keys are already bound by their full matched line)."""
+    ev = _extract_evidence(content, RE_EMBEDDED_KEYS)
+    blocks = RE_PEM_BLOCK.findall(content)
+    if blocks:
+        digest = hashlib.sha256("\n".join(blocks).encode("utf-8", "replace")).hexdigest()
+        ev = f"{ev} sha256:{digest}" if ev else f"sha256:{digest}"
+    return ev
 
 
 # Non-Python checkers

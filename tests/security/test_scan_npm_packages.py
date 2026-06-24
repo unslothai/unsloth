@@ -454,6 +454,34 @@ def test_obfuscated_blob_key_reopens_on_changed_tail():
     assert snp._finding_key(of) != snp._finding_key(nf)
 
 
+def test_js_fetch_eval_payload_tail_reopens_key():
+    # The js-fetch-eval evidence digests the full containing line when the shown
+    # window truncates it, so a changed payload tail beyond the window reopens
+    # the key instead of riding the unchanged decoder head.
+    pkg = snp.PackageEntry(
+        name = "evil",
+        version = "1.0.0",
+        resolved = "https://registry.npmjs.org/evil/-/evil-1.0.0.tgz",
+        integrity = "sha512-test",
+        lockfile_key = "node_modules/evil",
+    )
+    head = "A" * 40
+    old = "(0,eval)(atob('" + head + "X" * 80 + "'))\n"
+    new = "(0,eval)(atob('" + head + "Y" * 80 + "'))\n"
+    of = [
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", old)
+        if f.pattern == "js-fetch-eval"
+    ][0]
+    nf = [
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", new)
+        if f.pattern == "js-fetch-eval"
+    ][0]
+    assert "sha256:" in of.evidence
+    assert snp._finding_key(of) != snp._finding_key(nf)
+
+
 def test_outbound_cred_surface_binds_context():
     # The outbound cred-surface host finding records the host WITH its URL path /
     # fetch call, so changing the outbound path or headers reopens the key rather

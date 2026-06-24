@@ -902,16 +902,25 @@ def _evidence(
     pat: re.Pattern,
     max_chars: int = 200,
 ) -> str:
-    # Record every match; when a snippet is truncated for display, append a digest
-    # of the full match so a changed payload tail or appended blob reopens the key.
+    # Record every match. When the displayed snippet is only a window into a
+    # longer line (short match, or a truncated payload), append a digest of the
+    # full containing line so a changed payload tail outside the window reopens.
     snippets = []
     for m in pat.finditer(text):
-        start = max(0, m.start() - 30)
-        end = min(len(text), m.end() + 30)
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(text)
+        full_line = text[line_start:line_end].replace("\n", " ")
+        start = max(line_start, m.start() - 30)
+        end = min(line_end, m.end() + 30)
         snippet = text[start:end].replace("\n", " ")
+        windowed = start > line_start or end < line_end or len(snippet) > max_chars
         if len(snippet) > max_chars:
-            digest = hashlib.sha256(m.group(0).encode("utf-8", "replace")).hexdigest()
-            snippet = f"{snippet[:max_chars]}... sha256:{digest}"
+            snippet = snippet[:max_chars] + "..."
+        if windowed:
+            digest = hashlib.sha256(full_line.encode("utf-8", "replace")).hexdigest()
+            snippet = f"{snippet} sha256:{digest}"
         snippets.append(snippet)
     return " | ".join(snippets)
 
