@@ -39,7 +39,6 @@ def _is_abs_path_id(value: str) -> bool:
     """True when an id is an absolute filesystem path (the ./models and LM Studio
     scanners use the on-disk path as the id) rather than a repo id like org/name."""
     from pathlib import Path
-
     try:
         return Path(value).is_absolute()
     except Exception:

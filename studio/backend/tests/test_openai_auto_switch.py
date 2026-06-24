@@ -1564,7 +1564,9 @@ def test_stash_reload_skipped_while_unsloth_model_active(monkeypatch):
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     # An Unsloth model is the live backend.
     monkeypatch.setattr(
-        inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = "unsloth/Qwen3-8B")
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = "unsloth/Qwen3-8B"),
     )
     _run_hook("gpt-4o-mini")
     assert rec.calls == []  # stale GGUF not reloaded over the active Unsloth model
@@ -1582,11 +1584,19 @@ def test_advertised_loader_id_prefers_alias_over_abs_path():
 
     f = resolver._advertised_loader_id
     # An absolute-path id falls back to the first non-path alias.
-    assert f(SimpleNamespace(id = "/home/me/models/x", model_id = "org/X-GGUF", display_name = "X")) == "org/X-GGUF"
+    assert (
+        f(SimpleNamespace(id = "/home/me/models/x", model_id = "org/X-GGUF", display_name = "X"))
+        == "org/X-GGUF"
+    )
     # No alias available: keep the path (still resolvable by it).
-    assert f(SimpleNamespace(id = "/home/me/models/x", model_id = None, display_name = None)) == "/home/me/models/x"
+    assert (
+        f(SimpleNamespace(id = "/home/me/models/x", model_id = None, display_name = None))
+        == "/home/me/models/x"
+    )
     # A normal repo id is advertised as-is.
-    assert f(SimpleNamespace(id = "org/X-GGUF", model_id = "org/X-GGUF", display_name = "X")) == "org/X-GGUF"
+    assert (
+        f(SimpleNamespace(id = "org/X-GGUF", model_id = "org/X-GGUF", display_name = "X")) == "org/X-GGUF"
+    )
 
 
 def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
@@ -1641,7 +1651,9 @@ def test_embeddings_rejects_missing_input_before_switch(monkeypatch):
         recorder = rec,
     )
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_embeddings(_json_body_request({"model": "org/B-GGUF"}), "tester"))
+        asyncio.run(
+            inference_route.openai_embeddings(_json_body_request({"model": "org/B-GGUF"}), "tester")
+        )
     assert exc.value.status_code == 400
     assert rec.calls == []  # no model switch happened
 
