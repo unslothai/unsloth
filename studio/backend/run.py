@@ -340,34 +340,19 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
                 flush = True,
             )
-            print(f"{dim}    Common causes:{reset}", flush = True)
             print(
-                f"{dim}      * AWS  -- the instance's Security Group doesn't "
-                f"allow inbound TCP {port}.{reset}",
+                f"{dim}    Usually a cloud firewall (AWS security group, "
+                f"GCP firewall / Azure NSG rule) or home router isn't "
+                f"allowing inbound TCP {port}.{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * GCP  -- no firewall rule allowing TCP {port} "
-                f"for the instance's network tag.{reset}",
+                f"{dim}    No firewall change needed -- SSH local-forward "
+                f"from your own computer:{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * Azure / other clouds -- equivalent NSG / "
-                f"firewall rule missing.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}      * Home -- your router isn't port-forwarding "
-                f"{port} to this machine.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}    Workaround that needs no firewall changes -- "
-                f"SSH local-forward from your laptop:{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}        ssh -L {port}:localhost:{port} " f"<user>@{display_host}{reset}",
+                f"{dim}        ssh -L {port}:localhost:{port} <user>@{display_host}{reset}",
                 flush = True,
             )
             print(
@@ -622,7 +607,7 @@ def _graceful_shutdown(server = None):
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
     _remove_pid_file()
-    logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
+    logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 1. Shut down uvicorn (releases the listening socket).
     if server is not None:
