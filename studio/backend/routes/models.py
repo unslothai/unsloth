@@ -5,6 +5,7 @@
 
 import asyncio
 import hashlib
+import functools
 import json
 import os
 import shutil
@@ -3055,6 +3056,83 @@ def _repo_gguf_last_modified(repo_info) -> float:
     return latest
 
 
+# GGUF general.architecture values that denote a diffusion (image) model;
+# everything else is treated as a text model. Lets the Images picker show only
+# image GGUFs in its On Device list.
+_DIFFUSION_GGUF_ARCHS = frozenset({
+    "flux", "flux2", "sd1", "sd2", "sd3", "sdxl", "stable_diffusion",
+    "lumina2", "qwen_image", "qwenimage", "auraflow", "pixart",
+    "hunyuan_video", "wan",
+})
+
+
+# GGUF value type ids -> struct format (scalars). 8=string, 9=array handled separately.
+_GGUF_SCALAR_FMT = {
+    0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
+    6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d",
+}
+
+
+def _read_gguf_value(f, vtype: int):
+    """Read one GGUF metadata value, advancing the file pointer. Arrays are
+    skipped (returned as None) since we only need scalar/string KVs."""
+    import struct
+
+    if vtype == 8:  # string
+        (ln,) = struct.unpack("<Q", f.read(8))
+        return f.read(ln).decode("utf-8", "ignore")
+    if vtype == 9:  # array: [elem_type:u32][count:u64][elements...]
+        (elem_type,) = struct.unpack("<I", f.read(4))
+        (count,) = struct.unpack("<Q", f.read(8))
+        for _ in range(count):
+            _read_gguf_value(f, elem_type)
+        return None
+    fmt = _GGUF_SCALAR_FMT[vtype]
+    return struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0]
+
+
+@functools.lru_cache(maxsize = 1024)
+def _gguf_architecture(path: str) -> Optional[str]:
+    """Read just general.architecture from a GGUF header by parsing the KV section
+    directly — orders of magnitude cheaper than GGUFReader on multi-GB files.
+    Cached by path (the cached file never changes)."""
+    import struct
+
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return None
+            f.read(4)  # version
+            f.read(8)  # tensor count
+            (n_kv,) = struct.unpack("<Q", f.read(8))
+            for _ in range(n_kv):
+                (klen,) = struct.unpack("<Q", f.read(8))
+                key = f.read(klen).decode("utf-8", "ignore")
+                (vtype,) = struct.unpack("<I", f.read(4))
+                value = _read_gguf_value(f, vtype)
+                if key == "general.architecture":
+                    return value.strip() if isinstance(value, str) and value.strip() else None
+    except Exception:
+        return None
+    return None
+
+
+def _repo_gguf_task(repo_info) -> Optional[str]:
+    """HF pipeline task of a cached GGUF repo, from its architecture:
+    'text-to-image' for diffusion archs, else 'text-generation' (None if unreadable)."""
+    try:
+        for path in _iter_gguf_paths(Path(repo_info.repo_path)):
+            if _is_mmproj_filename(path.name):
+                continue
+            arch = _gguf_architecture(str(path))
+            if arch is None:
+                continue
+            return "text-to-image" if arch.lower() in _DIFFUSION_GGUF_ARCHS else "text-generation"
+    except Exception:
+        pass
+    return None
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
@@ -3082,6 +3160,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
                             "has_vision": _repo_has_mmproj(repo_info),
+                            "task": _repo_gguf_task(repo_info),
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.

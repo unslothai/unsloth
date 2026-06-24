@@ -1689,10 +1689,8 @@ class AnthropicMessagesResponse(BaseModel):
 class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
-    model_path: str = Field(..., description = "Diffusion repo id or local path")
-    gguf_filename: Optional[str] = Field(
-        None, description = "Single-file GGUF inside model_path (omit for a full diffusers repo)"
-    )
+    model_path: str = Field(..., description = "Diffusion GGUF repo id or local path")
+    gguf_filename: str = Field(..., description = "The chosen single-file GGUF quant inside model_path")
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
     )

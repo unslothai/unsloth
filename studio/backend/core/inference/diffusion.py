@@ -116,11 +116,12 @@ class DiffusionBackend:
         cpu_offload: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
+        if not gguf_filename:
+            raise ValueError("gguf_filename is required: this backend loads single-file GGUF checkpoints only.")
         fam = detect_family(repo_id, family_override)
         if fam is None:
             raise ValueError(
-                f"Could not infer a diffusion family for '{repo_id}'. "
-                "Pass family_override (one of: flux.2-klein, flux.2, flux.1, qwen-image)."
+                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
             )
         base = resolve_base_repo(fam, base_repo)
 
@@ -236,35 +237,34 @@ class DiffusionBackend:
     ) -> dict[str, Any]:
         import diffusers
 
+        if not gguf_filename:
+            raise ValueError("gguf_filename is required: this backend loads single-file GGUF checkpoints only.")
         fam = detect_family(repo_id, family_override)
         if fam is None:
             raise ValueError(
-                f"Could not infer a diffusion family for '{repo_id}'. "
-                "Pass family_override (one of: flux.2-klein, flux.2, flux.1, qwen-image)."
+                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
             )
         base = resolve_base_repo(fam, base_repo)
         device, dtype = self._pick_device_and_dtype()
 
         with self._lock:
-            # Free the old pipeline before allocating the new one so two FLUX
+            # Free the old pipeline before allocating the new one so two
             # checkpoints never sit in VRAM at once.
             self._unload_locked()
 
-            transformer = None
-            if gguf_filename:
-                gguf_path = self._resolve_gguf_path(repo_id, gguf_filename, hf_token)
-                transformer_cls = getattr(diffusers, fam.transformer_class)
-                transformer = transformer_cls.from_single_file(
-                    gguf_path,
-                    quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype),
-                    torch_dtype = dtype,
-                    config = base,
-                    subfolder = "transformer",
-                )
+            # Dequantise the GGUF transformer on-device; the VAE / text-encoder /
+            # scheduler come from the base diffusers repo (the GGUF is transformer-only).
+            gguf_path = self._resolve_gguf_path(repo_id, gguf_filename, hf_token)
+            transformer_cls = getattr(diffusers, fam.transformer_class)
+            transformer = transformer_cls.from_single_file(
+                gguf_path,
+                quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype),
+                torch_dtype = dtype,
+                config = base,
+                subfolder = "transformer",
+            )
 
-            pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
-            if transformer is not None:
-                pipe_kwargs["transformer"] = transformer
+            pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
             if hf_token:
                 pipe_kwargs["token"] = hf_token
             pipeline_cls = getattr(diffusers, fam.pipeline_class)

@@ -29,35 +29,16 @@ class DiffusionFamily:
     aliases: tuple[str, ...] = field(default_factory = tuple)
 
 
-# Ordered most-specific first so "flux.2-klein" matches klein, not flux.2.
+# MVP: Z-Image-Turbo only. Its single-file GGUF is the transformer (Lumina2 DiT);
+# the VAE / text-encoder / scheduler come from the base diffusers repo. More
+# families (FLUX, Qwen-Image) can be appended here when we ship them.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
-        name = "flux.2-klein",
-        pipeline_class = "Flux2KleinPipeline",
-        transformer_class = "Flux2Transformer2DModel",
-        base_repo = "black-forest-labs/FLUX.2-klein-base-4B",
-        aliases = ("flux2-klein", "flux-2-klein"),
-    ),
-    DiffusionFamily(
-        name = "flux.2",
-        pipeline_class = "Flux2Pipeline",
-        transformer_class = "Flux2Transformer2DModel",
-        base_repo = "black-forest-labs/FLUX.2-dev",
-        aliases = ("flux2-dev", "flux-2-dev"),
-    ),
-    DiffusionFamily(
-        name = "flux.1",
-        pipeline_class = "FluxPipeline",
-        transformer_class = "FluxTransformer2DModel",
-        base_repo = "black-forest-labs/FLUX.1-dev",
-        aliases = ("flux1-dev", "flux-1-dev", "flux-dev"),
-    ),
-    DiffusionFamily(
-        name = "qwen-image",
-        pipeline_class = "QwenImagePipeline",
-        transformer_class = "QwenImageTransformer2DModel",
-        base_repo = "Qwen/Qwen-Image",
-        aliases = ("qwenimage", "qwen_image"),
+        name = "z-image",
+        pipeline_class = "ZImagePipeline",
+        transformer_class = "ZImageTransformer2DModel",
+        base_repo = "Tongyi-MAI/Z-Image-Turbo",
+        aliases = ("z-image-turbo", "zimage", "z_image"),
     ),
 )
 

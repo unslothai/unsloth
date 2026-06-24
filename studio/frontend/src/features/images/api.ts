@@ -25,7 +25,7 @@ export interface DiffusionLoadProgress {
 
 export interface DiffusionLoadRequest {
   model_path: string;
-  gguf_filename?: string;
+  gguf_filename: string;
   base_repo?: string;
   family_override?: string;
   hf_token?: string;

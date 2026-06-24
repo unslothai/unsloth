@@ -27,21 +27,20 @@ from core.inference.diffusion_families import (
 
 
 def test_detect_family_from_repo_id():
-    assert detect_family("unsloth/FLUX.2-klein-4B-GGUF").name == "flux.2-klein"
-    assert detect_family("unsloth/FLUX.2-dev-GGUF").name == "flux.2"
-    assert detect_family("city96/FLUX.1-dev-gguf").name == "flux.1"
-    assert detect_family("unsloth/Qwen-Image-GGUF").name == "qwen-image"
+    assert detect_family("unsloth/Z-Image-Turbo-GGUF").name == "z-image"
+    assert detect_family("unsloth/Z-Image-GGUF").name == "z-image"
     assert detect_family("meta-llama/Llama-3-8B") is None
+    assert detect_family("unsloth/FLUX.2-klein-4B-GGUF") is None  # not in the MVP family table
 
 
 def test_detect_family_override():
-    assert detect_family("local/path", override = "flux.1").name == "flux.1"
-    assert detect_family("local/path", override = "qwen_image").name == "qwen-image"
+    assert detect_family("local/path", override = "z-image").name == "z-image"
+    assert detect_family("local/path", override = "zimage").name == "z-image"
     assert detect_family("local/path", override = "not-a-family") is None
 
 
 def test_resolve_base_repo():
-    fam = detect_family("x", override = "flux.1")
+    fam = detect_family("x", override = "z-image")
     assert resolve_base_repo(fam, None) == fam.base_repo
     assert resolve_base_repo(fam, "   ") == fam.base_repo
     assert resolve_base_repo(fam, "custom/base") == "custom/base"
@@ -152,8 +151,8 @@ def fake_runtime(monkeypatch):
 
     diffusers = types.ModuleType("diffusers")
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
-    diffusers.Flux2KleinPipeline = _FakePipeline
-    diffusers.Flux2Transformer2DModel = _FakeTransformer
+    diffusers.ZImagePipeline = _FakePipeline
+    diffusers.ZImageTransformer2DModel = _FakeTransformer
 
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
@@ -173,10 +172,10 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
         str(tmp_path),
         gguf_filename = "model.gguf",
         base_repo = "base/repo",
-        family_override = "flux.2-klein",
+        family_override = "z-image",
     )
     assert status["loaded"] is True
-    assert status["family"] == "flux.2-klein"
+    assert status["family"] == "z-image"
     assert status["base_repo"] == "base/repo"
     assert status["device"] == "cpu"
     assert status["dtype"] == "float32"
@@ -200,9 +199,14 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
 
 
 def test_cpu_offload_ignored_off_cuda(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     status = backend.load_pipeline(
-        str(tmp_path), family_override = "flux.2-klein", base_repo = "base/repo", cpu_offload = True
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        family_override = "z-image",
+        base_repo = "base/repo",
+        cpu_offload = True,
     )
     # No CUDA in the stub, so offload is not engaged.
     assert status["cpu_offload"] is False
@@ -214,10 +218,16 @@ def test_generate_without_load_raises(fake_runtime):
         backend.generate(prompt = "x")
 
 
+def test_load_without_gguf_raises():
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError):
+        backend.load_pipeline("unsloth/Z-Image-Turbo-GGUF")  # no gguf_filename
+
+
 def test_load_unknown_family_raises():
     backend = DiffusionBackend()
     with pytest.raises(ValueError):
-        backend.load_pipeline("some/unrecognised-repo")
+        backend.load_pipeline("some/unrecognised-repo", gguf_filename = "x.gguf")
 
 
 def test_encode_png_base64_roundtrips():
@@ -265,6 +275,6 @@ def test_begin_load_rejects_concurrent(monkeypatch):
     monkeypatch.setattr(DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: 0))
     # Block the spawned worker so the load stays "in progress".
     monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **k: __import__("time").sleep(0.2))
-    backend.begin_load("unsloth/FLUX.2-klein-4B-GGUF")
+    backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
     with pytest.raises(RuntimeError):
-        backend.begin_load("unsloth/FLUX.2-klein-4B-GGUF")
+        backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")

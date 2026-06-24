@@ -203,6 +203,10 @@ export interface CachedGgufRepo {
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
+  /** HF pipeline task inferred from the GGUF architecture ("text-to-image" for
+   * diffusion, "text-generation" otherwise). Lets the Images picker show only
+   * diffusion GGUFs. Optional for older-backend compatibility. */
+  task?: string | null;
 }
 
 export async function getGgufDownloadProgress(

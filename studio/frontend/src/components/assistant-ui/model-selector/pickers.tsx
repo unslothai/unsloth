@@ -40,6 +40,7 @@ import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scro
 import {
   type HfModelResult,
   type HfSortKey,
+  type HfTaskFilter,
   useHubModelSearch,
 } from "@/features/hub/hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
@@ -966,6 +967,14 @@ function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
   return Boolean(hintedIsGguf) || hasGgufSuffix(id);
 }
 
+// True when a repo's inferred task is within the picker's task filter (or no
+// filter is set). Unknown task (null) only passes when there's no filter.
+function taskMatchesFilter(repoTask: string | null | undefined, filter: HfTaskFilter): boolean {
+  if (!filter) return true;
+  const wanted = Array.isArray(filter) ? filter : [filter];
+  return repoTask != null && (wanted as readonly string[]).includes(repoTask);
+}
+
 // Module-level caches so re-mounting the popover shows results instantly
 let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
@@ -1147,6 +1156,7 @@ export function HubModelPicker({
   section = "downloaded",
   sectionToggle,
   onEject,
+  task,
 }: {
   models: ModelOption[];
   /** Fine-tuned models, shown as a section in the On Device view. */
@@ -1166,6 +1176,9 @@ export function HubModelPicker({
   sectionToggle?: ReactNode;
   /** Eject the loaded model. Rendered as the last list row when set. */
   onEject?: () => void;
+  /** Restrict Hub results to a pipeline task (e.g. text-to-image for the
+   *  Images page). Undefined = all tasks (chat default). */
+  task?: HfTaskFilter;
 }) {
   const gpu = useGpuInfo();
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
@@ -1196,6 +1209,7 @@ export function HubModelPicker({
     hasMore,
   } = useHubModelSearch(debouncedQuery, {
     ownerScope: "unsloth",
+    task,
     sortBy: recommendedSortBy,
     sortDirection: "desc",
     pinUnslothFirst: true,
@@ -1208,6 +1222,7 @@ export function HubModelPicker({
   });
   const recommendedSearch = useHubModelSearch("", {
     ownerScope: "unsloth",
+    task,
     sortBy: recommendedSortBy,
     sortDirection: "desc",
     pinUnslothFirst: true,
@@ -1524,18 +1539,25 @@ export function HubModelPicker({
   const isMac = deviceType === "mac";
 
   // Drop models Studio can't run for chat (diffusion / image / video / etc.)
-  // using the Hub's classifier on the tags the listing already carries.
+  // using the Hub's classifier on the tags the listing already carries. When the
+  // picker is scoped to a task (e.g. the Images page asks for text-to-image),
+  // models matching that task are exactly what we want — keep them even though
+  // the chat classifier marks image tasks "unsupported".
   const isChatSupported = useCallback(
-    (r: HfModelResult) =>
-      classifyUnslothSupport({
-        modelId: r.id,
-        pipelineTag: r.pipelineTag,
-        tags: r.tags,
-        libraryName: r.libraryName,
-        quantMethod: r.quantMethod,
-        deviceType,
-      }).status !== "unsupported",
-    [deviceType],
+    (r: HfModelResult) => {
+      if (task && taskMatchesFilter(r.pipelineTag, task)) return true;
+      return (
+        classifyUnslothSupport({
+          modelId: r.id,
+          pipelineTag: r.pipelineTag,
+          tags: r.tags,
+          libraryName: r.libraryName,
+          quantMethod: r.quantMethod,
+          deviceType,
+        }).status !== "unsupported"
+      );
+    },
+    [deviceType, task],
   );
 
   const recommendedIds = useMemo(() => {
@@ -1698,14 +1720,23 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
-  // Ordered by the On Device dropdown (recent/download date/size/name).
+  // Ordered by the On Device dropdown (recent/download date/size/name). When a
+  // task filter is set (e.g. Images page), drop cached repos whose architecture
+  // is not that task so On Device matches the Recommended tab.
   const sortedCachedGguf = useMemo(
-    () => sortCachedRepos(cachedGguf, downloadedSort, loadTimes),
-    [cachedGguf, downloadedSort, loadTimes],
+    () =>
+      sortCachedRepos(
+        task ? cachedGguf.filter((c) => taskMatchesFilter(c.task, task)) : cachedGguf,
+        downloadedSort,
+        loadTimes,
+      ),
+    [cachedGguf, downloadedSort, loadTimes, task],
   );
+  // Non-GGUF (safetensors) cached repos aren't single-file diffusion GGUFs, so
+  // hide them entirely when a task filter is active (the Images picker).
   const sortedCachedModels = useMemo(
-    () => sortCachedRepos(cachedModels, downloadedSort, loadTimes),
-    [cachedModels, downloadedSort, loadTimes],
+    () => (task ? [] : sortCachedRepos(cachedModels, downloadedSort, loadTimes)),
+    [cachedModels, downloadedSort, loadTimes, task],
   );
   // Each local section's search is scoped to its own models (matched by name).
   const localQuery = normalizeForSearch(debouncedQuery.trim());

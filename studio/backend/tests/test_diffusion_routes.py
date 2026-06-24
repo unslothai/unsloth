@@ -35,7 +35,7 @@ class _FakeBackend:
             "loaded": True,
             "loading": False,
             "repo_id": model_path,
-            "family": "flux.2-klein",
+            "family": "z-image",
             "base_repo": kwargs.get("base_repo") or "base/repo",
             "device": "cpu",
             "dtype": "float32",
@@ -95,13 +95,13 @@ def client(monkeypatch):
 
 def test_load_generate_status_unload_roundtrip(client):
     loaded = client.post("/api/inference/images/load", json = {
-        "model_path": "unsloth/FLUX.2-klein-4B-GGUF",
-        "gguf_filename": "model.gguf",
+        "model_path": "unsloth/Z-Image-Turbo-GGUF",
+        "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
         "base_repo": "base/repo",
     })
     assert loaded.status_code == 200
     body = loaded.json()
-    assert body["loaded"] is True and body["family"] == "flux.2-klein"
+    assert body["loaded"] is True and body["family"] == "z-image"
 
     assert client.get("/api/inference/images/status").json()["loaded"] is True
 
@@ -116,8 +116,14 @@ def test_load_generate_status_unload_roundtrip(client):
 
 
 def test_generate_rejects_non_multiple_of_8(client):
-    client.post("/api/inference/images/load", json = {"model_path": "x/flux.2-klein"})
+    client.post("/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"})
     resp = client.post("/api/inference/images/generate", json = {"prompt": "p", "width": 1001})
+    assert resp.status_code == 422
+
+
+def test_load_requires_gguf_filename(client):
+    # gguf_filename is now mandatory — a load without it is a 422.
+    resp = client.post("/api/inference/images/load", json = {"model_path": "x/z-image"})
     assert resp.status_code == 422
 
 
@@ -133,7 +139,7 @@ def test_load_unknown_family_returns_400(client, monkeypatch):
     backend = _FakeBackend()
     backend.begin_load = _raise
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
-    resp = client.post("/api/inference/images/load", json = {"model_path": "x/y"})
+    resp = client.post("/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"})
     assert resp.status_code == 400
     assert "family" in resp.json()["detail"]
 
@@ -143,7 +149,7 @@ def test_load_progress_route(client):
     idle = client.get("/api/inference/images/load-progress")
     assert idle.status_code == 200 and idle.json()["phase"] is None
     # After load: the fake reports ready.
-    client.post("/api/inference/images/load", json = {"model_path": "x/flux.2-klein"})
+    client.post("/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"})
     ready = client.get("/api/inference/images/load-progress")
     assert ready.json()["phase"] == "ready"
 
