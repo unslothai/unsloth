@@ -902,15 +902,18 @@ def _evidence(
     pat: re.Pattern,
     max_chars: int = 200,
 ) -> str:
-    m = pat.search(text)
-    if not m:
-        return ""
-    start = max(0, m.start() - 30)
-    end = min(len(text), m.end() + 30)
-    snippet = text[start:end].replace("\n", " ")
-    if len(snippet) > max_chars:
-        snippet = snippet[:max_chars] + "..."
-    return snippet
+    # Record every match; when a snippet is truncated for display, append a digest
+    # of the full match so a changed payload tail or appended blob reopens the key.
+    snippets = []
+    for m in pat.finditer(text):
+        start = max(0, m.start() - 30)
+        end = min(len(text), m.end() + 30)
+        snippet = text[start:end].replace("\n", " ")
+        if len(snippet) > max_chars:
+            digest = hashlib.sha256(m.group(0).encode("utf-8", "replace")).hexdigest()
+            snippet = f"{snippet[:max_chars]}... sha256:{digest}"
+        snippets.append(snippet)
+    return " | ".join(snippets)
 
 
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
@@ -1515,7 +1518,13 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
         return set()
+    if not isinstance(data, dict):
+        print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
+        return set()
     entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
+        return set()
     if entries and data.get("version") != _BASELINE_SCHEMA_VERSION:
         print(
             f"  [WARN] baseline schema v{data.get('version')} predates package-relative "
@@ -1525,6 +1534,8 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
         return set()
     keys: set[tuple[str, str, str, str]] = set()
     for e in entries:
+        if not isinstance(e, dict):
+            continue
         try:
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
             keys.add(

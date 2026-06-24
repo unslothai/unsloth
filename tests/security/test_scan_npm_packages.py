@@ -426,6 +426,47 @@ def test_baseline_reopens_on_changed_evidence(tmp_path):
     assert changed in active
 
 
+def test_obfuscated_blob_key_reopens_on_changed_tail():
+    # A large blob's evidence hash binds the full match (via a digest when the
+    # snippet is truncated), so changing only the payload tail reopens the key.
+    pkg = snp.PackageEntry(
+        name = "evil",
+        version = "1.0.0",
+        resolved = "https://registry.npmjs.org/evil/-/evil-1.0.0.tgz",
+        integrity = "sha512-test",
+        lockfile_key = "node_modules/evil",
+    )
+    head = "A" * 2300
+    old = f'eval("{head}{"B" * 300}")'
+    new = f'eval("{head}{"C" * 300}")'
+    of = [f for f in snp.scan_text_blob(pkg, "package/index.js", old) if f.pattern == "obfuscated-blob"][0]
+    nf = [f for f in snp.scan_text_blob(pkg, "package/index.js", new) if f.pattern == "obfuscated-blob"][0]
+    assert "sha256:" in of.evidence
+    assert of.evidence != nf.evidence
+    assert snp._finding_key(of) != snp._finding_key(nf)
+
+
+def test_load_baseline_skips_non_dict_entries(tmp_path):
+    # A malformed current-schema baseline (non-dict entries, or a non-object root)
+    # must not crash the loader; bad entries are skipped, valid ones still load.
+    bl = tmp_path / "bad.json"
+    bl.write_text(
+        json.dumps(
+            {
+                "version": snp._BASELINE_SCHEMA_VERSION,
+                "entries": ["oops", 123, {"package": "p", "file": "package/a.js", "pattern": "x"}],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    keys = snp._load_baseline(str(bl))
+    assert keys == {("p", "a.js", "x", snp._evidence_hash(""))}
+    # A non-object root is rejected with a warning, not a crash.
+    arr = tmp_path / "arr.json"
+    arr.write_text("[1, 2, 3]", encoding = "utf-8")
+    assert snp._load_baseline(str(arr)) == set()
+
+
 def test_legacy_schema_baseline_is_ignored(tmp_path):
     # A pre-v2 baseline stored basenames; its keys are ambiguous under
     # package-relative matching, so a populated legacy file is ignored (fail
