@@ -1010,12 +1010,12 @@ export function AppSidebar() {
               <div
                 data-tauri-drag-region
                 aria-hidden="true"
-                className="absolute inset-x-0 top-0 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+                className="absolute inset-x-0 top-0 z-0 h-[var(--studio-mac-titlebar-height,34px)] select-none"
               />
             )}
             <div
               className={cn(
-                "flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
+                "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
                 showCompactMacBrand &&
                   "h-[var(--studio-chat-control-height,33px)] justify-end gap-2",
                 !showCompactMacBrand && "justify-between",
@@ -1073,7 +1073,7 @@ export function AppSidebar() {
               )}
             </div>
             {!isMobile && (
-              <div className="hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
+              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button

@@ -219,7 +219,7 @@ function RootLayout() {
       <SettingsDialog />
       <RemoteCodeConsentDialog />
       {hideNavbar ? (
-        <main className="flex-1">
+        <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <Suspense fallback={<RouteFallback />}>
             <Outlet />
           </Suspense>
