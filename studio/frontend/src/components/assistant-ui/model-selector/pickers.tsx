@@ -1745,36 +1745,42 @@ export function HubModelPicker({
     normalizeForSearch(
       `${m.model_id ?? ""} ${m.display_name} ${m.id}`,
     ).includes(localQuery);
+  // A task filter (the Images page) wants diffusion GGUFs only; local folders /
+  // LM Studio / fine-tuned models aren't that, so drop them in that mode.
   const sortedLmStudio = useMemo(
     () =>
-      sortLocalModels(
-        lmStudioModels.filter(
-          (m) =>
-            localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
-        ),
-        downloadedSort,
-        loadTimes,
-      ),
+      task
+        ? []
+        : sortLocalModels(
+            lmStudioModels.filter(
+              (m) =>
+                localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+            ),
+            downloadedSort,
+            loadTimes,
+          ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery],
+    [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery, task],
   );
   // Local ./models entries. Chat-only Studio runs GGUF (any host) and MLX (Mac
   // only), so raw checkpoints there are hidden (mirrors the cached non-GGUF
   // rule). An MLX build a Mac user dropped in ./models stays selectable.
   const sortedLocalDir = useMemo(
     () =>
-      sortLocalModels(
-        localDirModels.filter(
-          (m) =>
-            (!chatOnly ||
-              localModelIsGguf(m) ||
-              (isMac && localModelIsMlx(m))) &&
-            localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
-        ),
-        downloadedSort,
-        loadTimes,
-      ),
+      task
+        ? []
+        : sortLocalModels(
+            localDirModels.filter(
+              (m) =>
+                (!chatOnly ||
+                  localModelIsGguf(m) ||
+                  (isMac && localModelIsMlx(m))) &&
+                localModelMatchesFormat(m, formatFilter) &&
+                matchesLocalQuery(m),
+            ),
+            downloadedSort,
+            loadTimes,
+          ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       localDirModels,
@@ -1784,25 +1790,30 @@ export function HubModelPicker({
       loadTimes,
       localQuery,
       chatOnly,
+      task,
     ],
   );
   const sortedCustomFolderModels = useMemo(
     () =>
-      sortLocalModels(
-        customFolderModels.filter(
-          (m) =>
-            localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
-        ),
-        customSort,
-        loadTimes,
-      ),
+      task
+        ? []
+        : sortLocalModels(
+            customFolderModels.filter(
+              (m) =>
+                localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+            ),
+            customSort,
+            loadTimes,
+          ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [customFolderModels, customSort, formatFilter, loadTimes, localQuery],
+    [customFolderModels, customSort, formatFilter, loadTimes, localQuery, task],
   );
 
   // Fine-tuned models for the On Device "Fine-tuned" section: flat, query-
-  // filtered, newest first.
+  // filtered, newest first. Hidden under a task filter (no fine-tuning of e.g.
+  // image models).
   const fineTunedRows = useMemo(() => {
+    if (task) return [];
     const needle = normalizeForSearch(debouncedQuery.trim());
     return loraModels
       .filter((m) => {
@@ -1818,7 +1829,7 @@ export function HubModelPicker({
         if (aTime !== bTime) return bTime - aTime;
         return a.name.localeCompare(b.name);
       });
-  }, [loraModels, debouncedQuery]);
+  }, [loraModels, debouncedQuery, task]);
 
   // While searching, filter Downloaded by the query instead of hiding it, so a
   // downloaded model the user is searching for stays visible.
@@ -2197,7 +2208,9 @@ export function HubModelPicker({
   // On Device owns the downloaded and custom-folder models; the Unsloth tab
   // searches the HF listing (below). Both filter locally by the query.
   const showDownloaded = section === "downloaded";
-  const showCustom = section === "downloaded";
+  // Custom Folders (server-side scan dirs) hold arbitrary local models, not
+  // diffusion GGUFs — hide the whole section under a task filter (Images).
+  const showCustom = section === "downloaded" && !task;
   const showRecommendedSection = !showHfSection && section === "recommended";
   const downloadedEmpty =
     visibleCachedGguf.length === 0 &&
@@ -2677,8 +2690,9 @@ export function HubModelPicker({
 
               {/* Fine-tuned models: a section above Custom Folders. Always shown on
               On Device so the train shortcut always has a target, with an empty
-              state when none exist. */}
-              {section === "downloaded" ? (
+              state when none exist. Hidden under a task filter (e.g. Images —
+              we don't fine-tune image models). */}
+              {section === "downloaded" && !task ? (
                 <>
                   <div
                     ref={fineTunedSectionRef}
