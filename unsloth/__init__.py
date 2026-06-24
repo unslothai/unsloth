@@ -106,6 +106,29 @@ if _IS_MLX:
     __version__ = unsloth_zoo.__version__
     DEVICE_TYPE = "mlx"
 
+    def _patch_mlx_batch_encoding_to_cuda():
+        """Treat tokenizer_output.to("cuda") as a no-op on the MLX backend."""
+        try:
+            from transformers.tokenization_utils_base import BatchEncoding
+        except Exception:
+            return
+
+        original_to = getattr(BatchEncoding, "to", None)
+        if original_to is None or getattr(original_to, "_unsloth_mlx_cuda_noop", False):
+            return
+
+        def batch_encoding_to(self, device=None, *args, **kwargs):
+            target = str(device).lower() if device is not None else ""
+            if target.startswith("cuda"):
+                return self
+            return original_to(self, device, *args, **kwargs)
+
+        batch_encoding_to._unsloth_mlx_cuda_noop = True
+        batch_encoding_to._unsloth_original_to = original_to
+        BatchEncoding.to = batch_encoding_to
+
+    _patch_mlx_batch_encoding_to_cuda()
+
     # Load raw_text helpers without executing dataprep/__init__.py, which
     # imports synthetic.py -> torch and would defeat the torch-free MLX path.
     from pathlib import Path as _Path
