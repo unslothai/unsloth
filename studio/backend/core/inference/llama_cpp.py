@@ -803,10 +803,8 @@ _MTP_MIN_SIZE_B = 3.0
 # of free (see _fit_context_to_vram), plus a byte-accurate MTP draft reserve.
 _CTX_FIT_VRAM_FRACTION = 0.95
 
-# Fraction of Apple Silicon's recommended Metal working-set to budget for a GGUF
-# load: unified memory is shared with the OS, so it's tighter than the
-# dedicated-VRAM fraction above. Set independently to match the 0.85 MLX uses
-# in mlx_inference.py (_configure_memory_limits); the two are not kept in sync.
+# Apple unified memory is shared with the OS, so tighter than VRAM. Matches the
+# 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 
 # Flat MTP reserve, used only when GGUF dims are too sparse for the byte-accurate
@@ -2175,13 +2173,10 @@ class LlamaCppBackend:
     def _apple_metal_memory_budget_bytes() -> int:
         """Unified-memory budget for GGUF context fitting on Apple Silicon.
 
-        llama.cpp's discrete-GPU VRAM fit never runs on Metal -- no GPU is
-        enumerated (_get_gpu_memory returns []) -- so the context would default
-        to the model's full native length and over-commit unified memory,
-        making llama-server fail with "Compute error." at decode (#5118, #6529).
-        Mirror MLX's own budget: a fraction of Metal's recommended working-set
-        size, falling back to total system RAM. Returns 0 off Apple Silicon or
-        when no budget is resolvable (so callers can skip the cap).
+        No GPU is enumerated on Metal, so the context would default to native and
+        over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
+        fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
+        when unresolvable, so callers skip the cap.
         """
         from utils.hardware import is_apple_silicon
 
@@ -5064,9 +5059,7 @@ class LlamaCppBackend:
                         else 0.0
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
-                    # Apple Silicon enumerates no discrete GPU, so none of the
-                    # VRAM-fit branches below run; this unified-memory budget (0
-                    # off Apple Silicon) drives a context cap in their place.
+                    # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
                     def _restore_after_tensor_downgrade():
@@ -5352,21 +5345,15 @@ class LlamaCppBackend:
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
 
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
-                        # Apple Silicon enumerates no GPU, so the branches above are
-                        # skipped and the context stays at full native length, which
-                        # over-commits unified memory -> llama-server "Compute error."
-                        # at decode (#5118, #6529). Budget it with the same fit math.
-                        # gpu_indices/use_fit stay at their defaults (nothing to pin on
-                        # Metal; --fit on rides along as a backstop). Like the discrete
-                        # branch, the UI ceiling comes from native for both modes but
-                        # only the auto context is shrunk; an explicit one is honored.
+                        # No GPU on Metal: the branches above are skipped and the context
+                        # stays at native, over-committing unified memory (#5118, #6529).
+                        # Cap with the same fit math (--fit on stays as a backstop); only
+                        # auto context shrinks, explicit is honored.
                         native_ctx_for_cap = self._context_length or effective_ctx
-                        # Mirror the discrete path's _pin_fraction: reserve the flat MTP
-                        # fraction up front when the draft KV can't be byte-sized, so an
-                        # MTP draft (e.g. Qwen3.6-MTP, #6529) can't push the unified
-                        # footprint over budget. No-op (== _apple_budget_mib) when MTP is
-                        # not engaged, since _flat_mtp_reserve is 0 then; mutually
-                        # exclusive with the byte-accurate _mtp_bytes reserve below.
+                        # Reserve the flat MTP fraction up front like the discrete
+                        # _pin_fraction, so an unsized MTP draft (e.g. Qwen3.6-MTP, #6529)
+                        # can't over-commit. No-op when MTP is off; exclusive with the
+                        # byte-accurate _mtp_bytes reserve.
                         _apple_fit_budget_mib = int(
                             _apple_budget_mib * max(0.0, 1.0 - _flat_mtp_reserve)
                         )
@@ -5389,19 +5376,16 @@ class LlamaCppBackend:
                                 )
                                 + _mtp_bytes(cap)
                             ) / (1024 * 1024)
-                            # _fit_context_to_vram returns the request unchanged when it
-                            # already fits OR when weights alone exceed the budget; only
-                            # the latter still over-commits, so floor to 4096 then.
+                            # Fit returns the request unchanged when it fits OR weights
+                            # exceed budget; only the latter over-commits, so floor to 4096.
                             max_available_ctx = (
                                 cap
                                 if _cap_footprint_mib <= _apple_fit_budget_mib
                                 else min(4096, native_ctx_for_cap)
                             )
                         else:
-                            # KV metadata too sparse to size the cache: mirror the
-                            # discrete file-size-only fallback (elif gpus above). Native
-                            # is not a safe auto default on unified memory, so floor to
-                            # 4096 instead of launching at full native and over-committing.
+                            # No KV estimate: mirror the discrete file-size-only fallback
+                            # and floor to 4096 rather than launch at native and over-commit.
                             max_available_ctx = min(4096, native_ctx_for_cap)
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx

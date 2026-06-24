@@ -227,12 +227,9 @@ def _drive(
         if use_fit and not explicit_ctx:
             effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
     elif apple_budget_mib > 0 and effective_ctx > 0:
-        # Mirrors the Apple-Silicon unified-memory branch in load_model: the
-        # budget already carries the fraction, so budget_frac = 1.0; the UI
-        # ceiling comes from native for both explicit and auto, but only auto
-        # shrinks the launch context. A flat MTP reserve is taken off the budget
-        # up front (no-op when flat_mtp_reserve == 0), and sparse-KV metadata
-        # floors to FALLBACK_CTX like the discrete file-size-only fallback.
+        # Mirrors the Apple unified-memory branch in load_model: flat MTP reserve
+        # off the budget up front (no-op at 0), sparse-KV floors to FALLBACK_CTX,
+        # only auto context shrinks.
         native_ctx_for_cap = context_length or effective_ctx
         apple_fit_budget_mib = int(apple_budget_mib * max(0.0, 1.0 - flat_mtp_reserve))
         if inst._can_estimate_kv():
@@ -739,13 +736,9 @@ def test_select_gpus_reserves_per_device_overhead():
 
 
 # ---------------------------------------------------------------------------
-# Apple Silicon unified-memory context cap (#5118, #6529).
-#
-# llama.cpp enumerates no discrete GPU on Metal, so the VRAM-fit branches never
-# run and the context defaulted to the model's full native length, over-
-# committing unified memory -> llama-server "Compute error." at decode. The fix
-# resolves a unified-memory budget and caps the *auto* context with the same fit
-# math used for discrete GPUs (explicit user contexts stay honored verbatim).
+# Apple Silicon unified-memory context cap (#5118, #6529): no discrete GPU on
+# Metal, so the auto context defaulted to native and over-committed unified
+# memory. The fix budgets and caps the auto context (explicit stays verbatim).
 # ---------------------------------------------------------------------------
 
 
@@ -803,9 +796,8 @@ class TestAppleContextCap:
     """The real ``_fit_context_to_vram`` against the reporter's M3 Pro case."""
 
     def test_caps_native_context_into_unified_budget(self):
-        # Qwen3.6-27B Q4 (~15.7 GB) at native 262144 ctx with ~16 GB KV -> ~32 GB
-        # footprint on a 36 GB M3 Pro (~27 GB Metal working set, ~23 GB budget at
-        # 0.85). The fit must reduce the context so the footprint fits.
+        # ~15.7 GB weights at native 262144 (~16 GB KV) -> ~32 GB on a 36 GB M3
+        # Pro (~23 GB budget); the fit must reduce the context to fit.
         inst = _make_backend(native_ctx = 262144)
         inst._can_estimate_kv = lambda: True
         inst._estimate_kv_cache_bytes = (
@@ -831,11 +823,7 @@ class TestAppleContextCap:
 
 
 class TestAppleBranchEndToEnd:
-    """Drive the new Apple ``elif`` glue (cap / floor / explicit) via _drive.
-
-    No GPU is present, so only the Apple branch can fire; covers the
-    footprint-fits vs weights-exceed-budget decision the inline fit can't.
-    """
+    """Drive the Apple elif glue (cap / floor / explicit) via _drive, no GPU."""
 
     def test_auto_context_capped_below_native(self):
         plan = _drive(
@@ -852,8 +840,7 @@ class TestAppleBranchEndToEnd:
         assert plan["max_available_ctx"] == plan["c_arg"]
 
     def test_floors_to_fallback_when_weights_exceed_budget(self):
-        # Model weights alone blow the budget: the fit can't shrink ctx to help,
-        # so the auto context must floor to 4096 rather than stay at native.
+        # Weights alone exceed budget: ctx can't help, so floor to 4096.
         plan = _drive(
             n_ctx = 0,
             model_gib = 100,
@@ -866,9 +853,7 @@ class TestAppleBranchEndToEnd:
         assert plan["gpu_indices"] is None
 
     def test_explicit_context_honored_verbatim(self):
-        # An explicit user context must never be silently shrunk on Apple, but
-        # the UI ceiling still tightens to the budget (mirrors the GPU branch,
-        # which computes max_available_ctx regardless of explicit_ctx).
+        # Explicit context is never shrunk, but the UI ceiling still tightens.
         plan = _drive(
             n_ctx = 200_000,
             model_gib = 15.7,
@@ -884,13 +869,11 @@ class TestAppleBranchEndToEnd:
 
 
 class TestAppleMtpFlatReserve:
-    """The Apple cap must reserve the flat MTP fraction up front, like the
-    discrete path's _pin_fraction, so an MTP draft whose KV can't be byte-sized
-    (e.g. Qwen3.6-MTP, #6529) can't push the unified footprint over budget."""
+    """Apple cap reserves the flat MTP fraction up front (like _pin_fraction) so
+    an unsized MTP draft (Qwen3.6-MTP, #6529) can't over-commit."""
 
     def test_flat_reserve_keeps_draft_within_budget(self):
-        # Without the reserve the cap fills the whole budget with weights+main KV,
-        # leaving nothing for the ~5% flat MTP draft reserve -> over-commit.
+        # No reserve -> cap fills the budget, leaving nothing for the ~5% draft.
         kw = dict(
             n_ctx = 0,
             model_gib = 15.7,
@@ -925,9 +908,8 @@ class TestAppleMtpFlatReserve:
 
 
 class TestAppleNoKvMetadataFloor:
-    """When KV metadata is too sparse to size the cache, the Apple branch must
-    floor the auto context to FALLBACK_CTX (mirroring the discrete file-size-only
-    fallback) instead of launching at full native and over-committing."""
+    """Sparse KV metadata floors the auto context to FALLBACK_CTX (like the
+    discrete file-size-only fallback) instead of launching at native."""
 
     def test_sparse_kv_floors_auto_context(self):
         plan = _drive(
