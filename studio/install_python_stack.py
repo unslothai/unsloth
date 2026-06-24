@@ -11,7 +11,6 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 
 from __future__ import annotations
 
-import atexit
 import glob
 import os
 import platform
@@ -37,6 +36,7 @@ from backend.utils.wheel_utils import (
     probe_torch_wheel_env,
     url_exists,
 )
+from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -1375,53 +1375,7 @@ def _ensure_rocm_torch() -> None:
             )
 
 
-# Space-free temp copies handed to uv by _uv_safe_path on POSIX; removed at exit.
-_UV_SAFE_PATH_TMPDIRS: list[str] = []
-
-
-@atexit.register
-def _cleanup_uv_safe_path_tmpdirs() -> None:
-    while _UV_SAFE_PATH_TMPDIRS:
-        shutil.rmtree(_UV_SAFE_PATH_TMPDIRS.pop(), ignore_errors = True)
-
-
-def _uv_safe_path(path: object) -> str:
-    # uv 0.11.x truncates a `-c`/`-r` path at the first space, so hand it a
-    # space-free path instead (https://github.com/unslothai/unsloth/issues/6503).
-    s = str(path)
-    if " " not in s:
-        return s
-    if IS_WINDOWS:
-        # Windows: resolve to the 8.3 short form, no temp copy needed.
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            get_short = ctypes.windll.kernel32.GetShortPathNameW
-            get_short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
-            get_short.restype = wintypes.DWORD
-            buf = ctypes.create_unicode_buffer(32768)
-            rc = get_short(s, buf, 32768)
-            if 0 < rc < 32768 and " " not in buf.value:
-                return buf.value
-        except Exception:
-            pass
-        return s
-    # macOS/Linux have no 8.3 equivalent: copy the constraints/requirements file
-    # into a space-free temp dir and point uv there. On any error, return s.
-    try:
-        if not os.path.isfile(s):
-            return s
-        tmp_dir = tempfile.mkdtemp(prefix = "unsloth_uv_")
-        if " " in tmp_dir:  # extremely unusual (e.g. TMPDIR has a space)
-            shutil.rmtree(tmp_dir, ignore_errors = True)
-            return s
-        dst = os.path.join(tmp_dir, (os.path.basename(s) or "uv_args.txt").replace(" ", "_"))
-        shutil.copyfile(s, dst)
-        _UV_SAFE_PATH_TMPDIRS.append(tmp_dir)
-        return dst
-    except Exception:
-        return s
+# _uv_safe_path is imported from backend.utils.uv_path_safety (shared with mlx_repair).
 
 
 def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
@@ -1510,9 +1464,10 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 
 # Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides).
+# _uv_safe_path: uv truncates UV_OVERRIDE at the first space too (issue #6503).
 _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
-if IS_MAC_ARM and _MLX_OVERRIDES.is_file():
-    os.environ.setdefault("UV_OVERRIDE", str(_MLX_OVERRIDES))
+if IS_MAC_ARM and _MLX_OVERRIDES.is_file() and "UV_OVERRIDE" not in os.environ:
+    os.environ["UV_OVERRIDE"] = _uv_safe_path(_MLX_OVERRIDES)
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the console encoding may be a legacy code page (e.g. CP1252)
