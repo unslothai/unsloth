@@ -122,6 +122,7 @@ def _drive(
     can_estimate_kv = True,
     extra_args = None,
     apple_budget_mib = 0,
+    flat_mtp_reserve = 0.0,
 ):
     """Drive the post-metadata portion of load_model with stubbed inputs.
 
@@ -225,25 +226,33 @@ def _drive(
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
             effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
-    elif apple_budget_mib > 0 and inst._can_estimate_kv() and effective_ctx > 0:
+    elif apple_budget_mib > 0 and effective_ctx > 0:
         # Mirrors the Apple-Silicon unified-memory branch in load_model: the
         # budget already carries the fraction, so budget_frac = 1.0; the UI
         # ceiling comes from native for both explicit and auto, but only auto
-        # shrinks the launch context.
+        # shrinks the launch context. A flat MTP reserve is taken off the budget
+        # up front (no-op when flat_mtp_reserve == 0), and sparse-KV metadata
+        # floors to FALLBACK_CTX like the discrete file-size-only fallback.
         native_ctx_for_cap = context_length or effective_ctx
-        cap = inst._fit_context_to_vram(
-            native_ctx_for_cap,
-            apple_budget_mib,
-            model_size,
-            cache_type_kv,
-            budget_frac = 1.0,
-        )
-        cap_footprint_mib = (model_size + inst._estimate_kv_cache_bytes(cap, cache_type_kv)) / (
-            1024 * 1024
-        )
-        max_available_ctx = (
-            cap if cap_footprint_mib <= apple_budget_mib else min(FALLBACK_CTX, native_ctx_for_cap)
-        )
+        apple_fit_budget_mib = int(apple_budget_mib * max(0.0, 1.0 - flat_mtp_reserve))
+        if inst._can_estimate_kv():
+            cap = inst._fit_context_to_vram(
+                native_ctx_for_cap,
+                apple_fit_budget_mib,
+                model_size,
+                cache_type_kv,
+                budget_frac = 1.0,
+            )
+            cap_footprint_mib = (model_size + inst._estimate_kv_cache_bytes(cap, cache_type_kv)) / (
+                1024 * 1024
+            )
+            max_available_ctx = (
+                cap
+                if cap_footprint_mib <= apple_fit_budget_mib
+                else min(FALLBACK_CTX, native_ctx_for_cap)
+            )
+        else:
+            max_available_ctx = min(FALLBACK_CTX, native_ctx_for_cap)
         if not explicit_ctx:
             effective_ctx = max_available_ctx
 
@@ -872,3 +881,66 @@ class TestAppleBranchEndToEnd:
         assert plan["use_fit"] is True
         # Ceiling reflects the budget so the over-budget warning still fires.
         assert plan["max_available_ctx"] < 262144
+
+
+class TestAppleMtpFlatReserve:
+    """The Apple cap must reserve the flat MTP fraction up front, like the
+    discrete path's _pin_fraction, so an MTP draft whose KV can't be byte-sized
+    (e.g. Qwen3.6-MTP, #6529) can't push the unified footprint over budget."""
+
+    def test_flat_reserve_keeps_draft_within_budget(self):
+        # Without the reserve the cap fills the whole budget with weights+main KV,
+        # leaving nothing for the ~5% flat MTP draft reserve -> over-commit.
+        kw = dict(
+            n_ctx = 0, model_gib = 15.7, gpus = [], native_ctx = 262144,
+            kv_per_token_bytes = 64_000, apple_budget_mib = 23_000,
+        )
+        no_reserve = _drive(**kw, flat_mtp_reserve = 0.0)
+        with_reserve = _drive(**kw, flat_mtp_reserve = 0.05)
+
+        def footprint_mib(ctx):
+            return (15.7 * GIB + ctx * 64_000) / (1024 * 1024)
+
+        # No reserve: main footprint + 5% draft exceeds the budget.
+        assert footprint_mib(no_reserve["c_arg"]) + 0.05 * 23_000 > 23_000
+        # With reserve: the cap is smaller and the full footprint fits.
+        assert with_reserve["c_arg"] < no_reserve["c_arg"]
+        assert footprint_mib(with_reserve["c_arg"]) + 0.05 * 23_000 <= 23_000
+
+    def test_no_reserve_is_a_noop_when_mtp_absent(self):
+        # flat_mtp_reserve == 0 (the common, non-MTP case) must not change the cap.
+        kw = dict(
+            n_ctx = 0, model_gib = 15.7, gpus = [], native_ctx = 262144,
+            kv_per_token_bytes = 64_000, apple_budget_mib = 23_000,
+        )
+        assert _drive(**kw, flat_mtp_reserve = 0.0) == _drive(**kw)
+
+
+class TestAppleNoKvMetadataFloor:
+    """When KV metadata is too sparse to size the cache, the Apple branch must
+    floor the auto context to FALLBACK_CTX (mirroring the discrete file-size-only
+    fallback) instead of launching at full native and over-committing."""
+
+    def test_sparse_kv_floors_auto_context(self):
+        plan = _drive(
+            n_ctx = 0,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            can_estimate_kv = False,
+            apple_budget_mib = 23_000,
+        )
+        assert plan["c_arg"] == FALLBACK_CTX  # not native 262144
+        assert plan["use_fit"] is True
+        assert plan["gpu_indices"] is None
+
+    def test_sparse_kv_still_honors_explicit_context(self):
+        plan = _drive(
+            n_ctx = 100_000,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            can_estimate_kv = False,
+            apple_budget_mib = 23_000,
+        )
+        assert plan["c_arg"] == 100_000  # explicit honored even without KV sizing

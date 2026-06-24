@@ -5351,7 +5351,7 @@ class LlamaCppBackend:
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
 
-                    elif _apple_budget_mib > 0 and self._can_estimate_kv() and effective_ctx > 0:
+                    elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # Apple Silicon enumerates no GPU, so the branches above are
                         # skipped and the context stays at full native length, which
                         # over-commits unified memory -> llama-server "Compute error."
@@ -5361,32 +5361,48 @@ class LlamaCppBackend:
                         # branch, the UI ceiling comes from native for both modes but
                         # only the auto context is shrunk; an explicit one is honored.
                         native_ctx_for_cap = self._context_length or effective_ctx
-                        cap = self._fit_context_to_vram(
-                            native_ctx_for_cap,
-                            _apple_budget_mib,
-                            model_size_fit,
-                            cache_type_kv,
-                            n_parallel = n_parallel,
-                            mtp_engaged = _mtp_reserves_gpu,
-                            mtp_overhead_fn = mtp_overhead_fn,
-                            budget_frac = 1.0,
-                            total_mib = None,
+                        # Mirror the discrete path's _pin_fraction: reserve the flat MTP
+                        # fraction up front when the draft KV can't be byte-sized, so an
+                        # MTP draft (e.g. Qwen3.6-MTP, #6529) can't push the unified
+                        # footprint over budget. No-op (== _apple_budget_mib) when MTP is
+                        # not engaged, since _flat_mtp_reserve is 0 then; mutually
+                        # exclusive with the byte-accurate _mtp_bytes reserve below.
+                        _apple_fit_budget_mib = int(
+                            _apple_budget_mib * max(0.0, 1.0 - _flat_mtp_reserve)
                         )
-                        _cap_footprint_mib = (
-                            model_size_fit
-                            + self._estimate_kv_cache_bytes(
-                                cap, cache_type_kv, n_parallel = n_parallel
+                        if self._can_estimate_kv():
+                            cap = self._fit_context_to_vram(
+                                native_ctx_for_cap,
+                                _apple_fit_budget_mib,
+                                model_size_fit,
+                                cache_type_kv,
+                                n_parallel = n_parallel,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                budget_frac = 1.0,
+                                total_mib = None,
                             )
-                            + _mtp_bytes(cap)
-                        ) / (1024 * 1024)
-                        # _fit_context_to_vram returns the request unchanged when it
-                        # already fits OR when weights alone exceed the budget; only
-                        # the latter still over-commits, so floor to 4096 then.
-                        max_available_ctx = (
-                            cap
-                            if _cap_footprint_mib <= _apple_budget_mib
-                            else min(4096, native_ctx_for_cap)
-                        )
+                            _cap_footprint_mib = (
+                                model_size_fit
+                                + self._estimate_kv_cache_bytes(
+                                    cap, cache_type_kv, n_parallel = n_parallel
+                                )
+                                + _mtp_bytes(cap)
+                            ) / (1024 * 1024)
+                            # _fit_context_to_vram returns the request unchanged when it
+                            # already fits OR when weights alone exceed the budget; only
+                            # the latter still over-commits, so floor to 4096 then.
+                            max_available_ctx = (
+                                cap
+                                if _cap_footprint_mib <= _apple_fit_budget_mib
+                                else min(4096, native_ctx_for_cap)
+                            )
+                        else:
+                            # KV metadata too sparse to size the cache: mirror the
+                            # discrete file-size-only fallback (elif gpus above). Native
+                            # is not a safe auto default on unified memory, so floor to
+                            # 4096 instead of launching at full native and over-committing.
+                            max_available_ctx = min(4096, native_ctx_for_cap)
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
 
