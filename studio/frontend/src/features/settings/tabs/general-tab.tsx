@@ -332,9 +332,11 @@ export function GeneralTab() {
               )}
             />
             {tokenSaved ? (
+              // Decorative: pointer-events-none lets clicks reach the input
+              // underneath so the field still focuses anywhere.
               <span
-                className="absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
-                title={t("settings.general.tokenSaved")}
+                className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
+                role="img"
                 aria-label={t("settings.general.tokenSaved")}
               >
                 <Check className="size-4" strokeWidth={2.5} />
