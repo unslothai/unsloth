@@ -742,31 +742,28 @@ export function ChatSettingsPanel({
   // per GPU, each a layer count; together they sum to the GPU Layers total.
   const showSplitRatio =
     isManual && !autoLayers && showGpuPicker && gpusInUse.length > 1;
-  // The total the per-GPU counts sum to (the GPU Layers slider, clamped past the
-  // "all" sentinel). The devices behind the GPUs in use, for labels + the
-  // VRAM-weighted default.
-  const splitTotal = Math.min(gpuLayers, gpuLayersMax);
+  // The total the per-GPU counts sum to (the GPU Layers slider value); 0 under
+  // Auto, where the split is hidden. The devices behind the GPUs in use, for
+  // labels + the VRAM-weighted default.
+  const splitTotal = Math.max(0, Math.min(gpuLayers, gpuLayersMax));
   const gpusInUseDevices = gpusInUse.map(
     (i) => gpuDevices.find((d) => d.index === i) ?? null,
   );
-  // Explicit per-GPU counts once the user edits a slider; otherwise the default
-  // split (VRAM-weighted, mirroring llama.cpp), shown but not yet sent.
+  // The displayed per-GPU counts. splitRatio is a stable reference balance (only
+  // the user editing a slider changes it); rescale it to the current total so the
+  // counts always sum to GPU Layers. Deriving from the reference -- rather than
+  // mutating it on every GPU Layers change -- keeps the balance intact when the
+  // total passes through low values or Auto (where it can't be held as integers).
+  // No saved split: the VRAM-weighted default (mirroring llama.cpp), not yet sent.
   const splitCounts =
     splitRatio && splitRatio.length === gpusInUse.length
-      ? splitRatio
+      ? distributeByWeight(splitTotal, splitRatio)
       : distributeByWeight(
           splitTotal,
           gpusInUseDevices.map((d) => d?.memoryTotalGb || 1),
         );
   const setSplitCount = (k: number, v: number) =>
     setSplitRatio(rebalanceSplit(splitTotal, splitCounts, k, v));
-  // Keep the per-GPU counts summing to the GPU Layers total when it changes.
-  const setGpuLayersAndSplit = (v: number) => {
-    setGpuLayers(v);
-    if (splitRatio) {
-      setSplitRatio(distributeByWeight(Math.min(v, gpuLayersMax), splitRatio));
-    }
-  };
   const splitRatioDirty =
     isManual &&
     !autoLayers &&
@@ -1394,7 +1391,7 @@ export function ChatSettingsPanel({
                       min={GPU_LAYERS_AUTO}
                       max={gpuLayersMax}
                       step={1}
-                      onChange={setGpuLayersAndSplit}
+                      onChange={setGpuLayers}
                       displayValue={autoLayers ? "Auto" : undefined}
                       valueSize={6}
                       info={
