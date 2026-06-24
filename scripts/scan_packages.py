@@ -724,14 +724,19 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # openssl encryption + network/key material (encrypted exfiltration)
     if has_openssl_cli and (has_network or has_keys):
+        # Bind whichever side(s) co-occur so a changed endpoint or key reopens.
+        evidence = [f"OpenSSL: {_extract_evidence(content, RE_OPENSSL_CLI)}"]
+        if has_network:
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if has_keys:
+            evidence.append(f"Key: {_extract_evidence(content, RE_EMBEDDED_KEYS)}")
         findings.append(
             Finding(
                 CRITICAL,
                 package,
                 filename,
                 "openssl encryption + network/key material (encrypted exfiltration)",
-                f"OpenSSL: {_extract_evidence(content, RE_OPENSSL_CLI)}\n"
-                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+                "\n".join(evidence),
             )
         )
 
@@ -903,6 +908,10 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # Obfuscated payload: base64 + exec/eval + large blob
     if has_base64 and has_exec_eval and has_blob:
+        # Digest the blob too: it may sit on a separate line from the decode call,
+        # so binding only the base64/exec lines would miss a changed payload.
+        blob = RE_LARGE_BLOB.search(content).group()
+        blob_digest = hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
         findings.append(
             Finding(
                 HIGH,
@@ -910,7 +919,8 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 filename,
                 "base64 decode + exec/eval + large encoded blob",
                 f"Base64: {_extract_evidence(content, RE_BASE64)}\n"
-                f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}",
+                f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}\n"
+                f"Blob: sha256:{blob_digest}",
             )
         )
 
@@ -942,25 +952,41 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # Anti-analysis + any other suspicious pattern
     if has_anti and (has_network or has_subprocess or has_exec_eval):
+        # Bind the suspicious side too so a changed payload reopens.
+        evidence = [f"Anti: {_extract_evidence(content, RE_ANTI_ANALYSIS)}"]
+        if has_network:
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if has_subprocess:
+            evidence.append(f"Subprocess: {_extract_evidence(content, RE_SUBPROCESS)}")
+        if has_exec_eval:
+            evidence.append(f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}")
         findings.append(
             Finding(
                 HIGH,
                 package,
                 filename,
                 "Anti-analysis/sandbox evasion + suspicious behavior",
-                f"Anti: {_extract_evidence(content, RE_ANTI_ANALYSIS)}",
+                "\n".join(evidence),
             )
         )
 
     # DNS exfiltration with dynamic hostnames
     if has_dns_exfil and (has_base64 or has_network or has_creds):
+        # Bind the co-occurring side so a changed exfil channel reopens.
+        evidence = [f"DNS: {_extract_evidence(content, RE_DNS_EXFIL)}"]
+        if has_base64:
+            evidence.append(f"Base64: {_extract_evidence(content, RE_BASE64)}")
+        if has_network:
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if has_creds:
+            evidence.append(f"Creds: {_extract_evidence(content, RE_CRED_ACCESS)}")
         findings.append(
             Finding(
                 HIGH,
                 package,
                 filename,
                 "DNS exfiltration / tunneling patterns",
-                _extract_evidence(content, RE_DNS_EXFIL),
+                "\n".join(evidence),
             )
         )
 

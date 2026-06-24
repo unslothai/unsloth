@@ -1453,11 +1453,11 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
 
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
 
-# Bumped when the entry-key semantics change. v2 keys on the package-relative
-# path; v1 stored only a basename, so a v1 entry could suppress a same-named file
-# in a different directory. A pre-v2 baseline with entries is ignored (fail
-# closed) rather than mis-applied.
-_BASELINE_SCHEMA_VERSION = 2
+# Bumped when the entry-key semantics change. v3 adds an evidence hash so a new
+# payload under an already-listed package/path/pattern is not auto-suppressed; v2
+# keyed on the package-relative path; v1 stored only a basename. A pre-v3 baseline
+# with entries is ignored (fail closed) rather than mis-applied.
+_BASELINE_SCHEMA_VERSION = 3
 
 
 def _norm_pkg_name(display: str) -> str:
@@ -1486,12 +1486,26 @@ def _relpath_in_package(filename: str) -> str:
     return f[len(_NPM_TARBALL_ROOT) :] if f.startswith(_NPM_TARBALL_ROOT) else f
 
 
-def _finding_key(f: Finding) -> tuple[str, str, str]:
-    """Stable allowlist key: normalized package, package-relative path, pattern."""
-    return (_norm_pkg_name(f.package), _relpath_in_package(f.filename), f.pattern)
+def _evidence_hash(evidence: str) -> str:
+    """Stable digest of the matched evidence (whitespace-normalized). The npm
+    snippet carries no line markers, so it is already version-stable."""
+    canon = " ".join((evidence or "").split())
+    return hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
 
 
-def _load_baseline(path: str) -> set[tuple[str, str, str]]:
+def _finding_key(f: Finding) -> tuple[str, str, str, str]:
+    """Allowlist key: normalized package, package-relative path, pattern, and a
+    hash of the matched evidence -- so changed flagged code under an already-listed
+    package/path/pattern reopens instead of riding the reviewed entry."""
+    return (
+        _norm_pkg_name(f.package),
+        _relpath_in_package(f.filename),
+        f.pattern,
+        _evidence_hash(f.evidence or f.detail),
+    )
+
+
+def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
     try:
         with open(path, "r", encoding = "utf-8") as fh:
@@ -1509,10 +1523,18 @@ def _load_baseline(path: str) -> set[tuple[str, str, str]]:
             file = sys.stderr,
         )
         return set()
-    keys: set[tuple[str, str, str]] = set()
+    keys: set[tuple[str, str, str, str]] = set()
     for e in entries:
         try:
-            keys.add((_norm_pkg_name(e["package"]), _relpath_in_package(e["file"]), e["pattern"]))
+            evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
+            keys.add(
+                (
+                    _norm_pkg_name(e["package"]),
+                    _relpath_in_package(e["file"]),
+                    e["pattern"],
+                    evidence_hash,
+                )
+            )
         except (KeyError, TypeError):
             continue
     return keys
@@ -1521,7 +1543,7 @@ def _load_baseline(path: str) -> set[tuple[str, str, str]]:
 def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> int:
     """Persist at-or-above-threshold findings as an allowlist for triage."""
     entries = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: (_SEVERITY_RANK[f.severity], f.package)):
         if _SEVERITY_RANK[f.severity] > threshold_rank:
             continue
@@ -1529,21 +1551,24 @@ def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> 
         if key in seen:
             continue
         seen.add(key)
+        evidence = f.evidence or f.detail
         entries.append(
             {
                 "package": _norm_pkg_name(f.package),
                 "file": _relpath_in_package(f.filename),
                 "pattern": f.pattern,
                 "severity": f.severity,
-                "evidence": (f.evidence or f.detail)[:240],
+                "evidence": evidence,
+                "evidence_hash": _evidence_hash(evidence),
             }
         )
     doc = {
         "_comment": (
             "scan_npm_packages.py allowlist. Each entry is a HIGH/CRITICAL "
             "finding manually judged benign. Matched on (package, "
-            "package-relative path, pattern); evidence/severity are for review "
-            "only. Regenerate with --write-baseline AFTER reviewing every line."
+            "package-relative path, pattern, evidence hash); a new payload under "
+            "an already-listed package/path/pattern reopens. severity is for "
+            "review only. Regenerate with --write-baseline AFTER reviewing every line."
         ),
         "version": _BASELINE_SCHEMA_VERSION,
         "entries": entries,
@@ -1556,7 +1581,7 @@ def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> 
 
 
 def _partition_baseline(
-    findings: list[Finding], baseline: set[tuple[str, str, str]]
+    findings: list[Finding], baseline: set[tuple[str, str, str, str]]
 ) -> tuple[list[Finding], list[Finding]]:
     """Split findings into (active, suppressed) by allowlist membership."""
     if not baseline:

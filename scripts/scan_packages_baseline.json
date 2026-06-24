@@ -1047,8 +1047,8 @@
       "file": "ddgs/dht/libp2p_client.py",
       "check": "DNS exfiltration / tunneling patterns",
       "severity": "HIGH",
-      "evidence": "L15:     import dns.resolver | L63:             logger.debug(\"dnspython not installed, skipping dnsaddr resolution\") | L67:         answers = dns.resolver.resolve(f\"_dnsaddr.{dnsaddr_domain}\", \"TXT\")",
-      "evidence_hash": "1f1497f86e141b89502c269741f1bbaa1ef38ce984fd08dd34abe5d6e09cbaac"
+      "evidence": "DNS: L15:     import dns.resolver | L63:             logger.debug(\"dnspython not installed, skipping dnsaddr resolution\") | L67:         answers = dns.resolver.resolve(f\"_dnsaddr.{dnsaddr_domain}\", \"TXT\")\nNetwork: L195:             sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM) | L205:             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+      "evidence_hash": "4c81badc952680a1169eda6da0a200f48b26224cf13c43f5e0fb7fb2ef8d0daf"
     },
     {
       "package": "dill",
@@ -1071,8 +1071,8 @@
       "file": "dns/query.py",
       "check": "DNS exfiltration / tunneling patterns",
       "severity": "HIGH",
-      "evidence": "L142:                 import dns.resolver | L144:                 resolver = dns.resolver.Resolver() | L414:     resolver: Optional[\"dns.resolver.Resolver\"], | L415: ) -> \"dns.resolver.Resolver\": | L421:         import dns.resolver | L423:         resolver = dns.resolver.Resolver() | L457:     resolver: Optional[\"dns.resolver.Resolver\"] = None,",
-      "evidence_hash": "1537bbfee2a893c0749bb1e9ccc910683a3c1e560be5eeb54301e3b265839314"
+      "evidence": "DNS: L142:                 import dns.resolver | L144:                 resolver = dns.resolver.Resolver() | L414:     resolver: Optional[\"dns.resolver.Resolver\"], | L415: ) -> \"dns.resolver.Resolver\": | L421:         import dns.resolver | L423:         resolver = dns.resolver.Resolver() | L457:     resolver: Optional[\"dns.resolver.Resolver\"] = None,\nNetwork: L175: ) -> socket.socket: | L176:     return socket.socket(af, kind, proto) | L182:     [socket.AddressFamily | int, socket.SocketKind, int], socket.socket | L328: ) -> socket.socket: | L566:     if session and not isinstance(session, httpx.Client): | L567:         raise ValueError(\"session parameter must be an httpx.Client\") | L598:         cm = httpx.Client( | L1545:     s: socket.socket | ssl.SSLSocket, | L1556:     is_udp = isinstance(s, socket.socket) and s.type == socket.SOCK_DGRAM",
+      "evidence_hash": "698710fb0719bdce40a46fbfa7366360bb24d4a6094307405b93086af8308ee0"
     },
     {
       "package": "fastmcp-slim",
@@ -1087,8 +1087,8 @@
       "file": "IPython/core/debugger.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L960:         trace_function = sys.gettrace() | L961:         sys.settrace(None) | L973:         sys.settrace(trace_function) | L1373:             sys.settrace(None)",
-      "evidence_hash": "7612f5828d785bc688d7944949a49be9deaab830bcc1741f74b68c2fd60299a3"
+      "evidence": "Anti: L960:         trace_function = sys.gettrace() | L961:         sys.settrace(None) | L973:         sys.settrace(trace_function) | L1373:             sys.settrace(None)\nExec: L899:                 x = eval(arg, {}, {})",
+      "evidence_hash": "12c5443b95d8594119929a03c8540674d0649567587dd98b65452648361b44d5"
     },
     {
       "package": "ipython",
@@ -1111,8 +1111,8 @@
       "file": "IPython/core/magics/execution.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L972:                     trace = sys.gettrace() | L983:                     sys.settrace(trace)",
-      "evidence_hash": "32ed7412f8a57dc158406462cf6677e98252a1e0fe91232d73632edbd701a58c"
+      "evidence": "Anti: L972:                     trace = sys.gettrace() | L983:                     sys.settrace(trace)\nExec: L1213:         exec(code, glob, ns) | L1398:                 out = eval(code, glob, local_ns) | L1412:                 exec(code, glob, local_ns) | L1417:                     out = eval(code_2, glob, local_ns)",
+      "evidence_hash": "3758dcc38a84996c1aaab59adcd3603b970f5dbb5cfcde33eb4dbd4d48c73610"
     },
     {
       "package": "jinja2",
@@ -1135,8 +1135,8 @@
       "file": "multiprocess/tests/__init__.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L440:         time.sleep(300)",
-      "evidence_hash": "121ccac34a6a34831c13d7998cfdef0830a4267cadc8cbbec52057b6a64ffb90"
+      "evidence": "Anti: L440:         time.sleep(300)\nNetwork: L3651:         client = socket.socket() | L4933:         s = socket.socket() | L5205:             return socket.socket().detach() | L5209:             fd = socket.socket().detach() | L5220:             socket.socket(socket.AF_INET, socket.SOCK_STREAM, fileno=fd).close()\nSubprocess: L4394:         with subprocess.Popen([sys.executable, '-E', '-c', cmd], | L5107:         data = subprocess.check_output( | L5504:                 p = subprocess.Popen([sys.executable,",
+      "evidence_hash": "a1a4baceb7509af25df4a9b2094d706ee347add89fba6e1adc63c25981d8b24a"
     },
     {
       "package": "networkx",
@@ -1207,8 +1207,16 @@
       "file": "numpy/testing/_private/utils.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L2777:             original_trace = sys.gettrace() | L2779:                 sys.settrace(None) | L2782:                 sys.settrace(original_trace)",
-      "evidence_hash": "4788e343e3d2947807332a0da910a740d651de4c6021490977295654fd4b7d90"
+      "evidence": "Anti: L2788:             original_trace = sys.gettrace() | L2790:                 sys.settrace(None) | L2793:                 sys.settrace(original_trace)\nSubprocess: L1486:         output = subprocess.run(cmd, capture_output=True, text=True) | L2889:     res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,\nExec: L1352:     exec(astr, dict) | L1640:         exec(code, globs, locs)",
+      "evidence_hash": "a431512d2528be2da6af29080a4207cb9bfc783a23e47450afb8a68c88d2bb53"
+    },
+    {
+      "package": "numpy",
+      "file": "numpy/testing/_private/utils.py",
+      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
+      "severity": "HIGH",
+      "evidence": "Anti: L2777:             original_trace = sys.gettrace() | L2779:                 sys.settrace(None) | L2782:                 sys.settrace(original_trace)\nSubprocess: L1478:         output = subprocess.run(cmd, capture_output=True, text=True)\nExec: L1346:     exec(astr, dict) | L1632:         exec(code, globs, locs)",
+      "evidence_hash": "a934460d8266e6e91b1ba2ecc408086fff9d05711b1f570229e4d2b32dfb7d97"
     },
     {
       "package": "numpy",
@@ -1359,8 +1367,8 @@
       "file": "torch/_dynamo/bytecode_debugger.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L1048:             self._old_trace = sys.gettrace() | L1049:             sys.settrace(self._settrace_callback) | L1106:             sys.settrace(self._old_trace)",
-      "evidence_hash": "e1a077d15946b1da45dc35e440f9be6408d1d4c03dc958281e0a20ac641a7a4f"
+      "evidence": "Anti: L1048:             self._old_trace = sys.gettrace() | L1049:             sys.settrace(self._settrace_callback) | L1106:             sys.settrace(self._old_trace)\nExec: L683:                         result = eval(arg, frame_globals, eval_locals) | L708:                     result = eval(cmd, frame_globals, eval_locals) | L716:                         exec(cmd, frame_globals, eval_locals)",
+      "evidence_hash": "516d47a7e3db887d6e57ed7b948f919331f8cafe811cc301c32fb0d4e2ea9551"
     },
     {
       "package": "torch",
