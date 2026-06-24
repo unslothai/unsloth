@@ -1279,7 +1279,10 @@ _MLX_STUDIO_NATIVE_OPTIMIZERS = ("adafactor", "adamw", "adam", "sgd", "muon", "l
 def _normalize_mlx_studio_optimizer(value):
     try:
         from unsloth_zoo.mlx.trainer import _normalize_mlx_optimizer_name
-    except ImportError:
+        return _normalize_mlx_optimizer_name(value or "adamw_8bit")
+    except (ImportError, ValueError):
+        # Missing mlx, or an older unsloth-zoo whose normalizer lacks CUDA/TRL
+        # aliases: map common adamw_* names locally so notebook defaults work.
         opt = str(getattr(value, "value", value) or "adamw_8bit").strip().lower()
         opt = opt.rsplit(".", 1)[-1].replace("-", "_")
         if opt in _MLX_STUDIO_ADAMW_ALIASES:
@@ -1291,10 +1294,6 @@ def _normalize_mlx_studio_optimizer(value):
                 f"Supported optimizers: {supported}."
             )
         return opt
-    try:
-        return _normalize_mlx_optimizer_name(value or "adamw_8bit")
-    except ValueError as exc:
-        raise ValueError(f"Unsupported optimizer for MLX training: {value!r}. {exc}") from exc
 
 
 def _normalize_mlx_studio_scheduler(value):

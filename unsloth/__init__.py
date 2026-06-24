@@ -234,10 +234,35 @@ if _IS_MLX:
         strategy = strategy.rsplit(".", 1)[-1]
         return strategy in ("no", "none", "false")
 
+    _MLX_ADAMW_OPTIMIZER_ALIASES = frozenset(
+        (
+            "adamw_8bit",
+            "paged_adamw_8bit",
+            "adamw_bnb_8bit",
+            "paged_adamw_32bit",
+            "adamw_torch",
+            "adamw_torch_fused",
+            "paged_adamw",
+            "adamw_32bit",
+            "adamw_hf",
+            "adamw_anyprecision",
+            "adamw_apex_fused",
+        )
+    )
+
     def _normalize_mlx_training_value(key, value):
-        if key == "optim":
+        if key != "optim":
+            return value
+        try:
             return _normalize_mlx_optimizer_name(value)
-        return value
+        except ValueError:
+            # Older unsloth-zoo lacks CUDA/TRL optimizer aliases; map common
+            # adamw_* names so notebook defaults (optim="adamw_8bit") still work.
+            opt = str(getattr(value, "value", value) or "adamw").strip().lower()
+            opt = opt.rsplit(".", 1)[-1].replace("-", "_")
+            if opt in _MLX_ADAMW_OPTIMIZER_ALIASES:
+                return "adamw"
+            raise
 
     def _mlx_training_argument_values(args):
         values = {}
@@ -424,12 +449,12 @@ if _IS_MLX:
                 )
 
             max_length_value = kwargs.get("max_length", None)
-            # An explicit TRL max_length is an explicit context-length intent too,
-            # so it is not discarded in favor of the model's max_seq_length.
-            max_length_explicit = _positive_mlx_context_length(max_length_value) is not None
-            max_seq_length_explicit = _positive_mlx_context_length(
-                kwargs.get("max_seq_length", None)
-            ) is not None or ("max_seq_length" not in kwargs and max_length_explicit)
+            # Only the canonical max_seq_length marks context length explicit; TRL
+            # max_length stays a compatibility alias and defers to the model's
+            # context length when one is available.
+            max_seq_length_explicit = (
+                _positive_mlx_context_length(kwargs.get("max_seq_length", None)) is not None
+            )
             if "max_length" in kwargs and "max_seq_length" not in kwargs:
                 kwargs["max_seq_length"] = kwargs["max_length"]
             if "num_train_epochs" in kwargs and "max_steps" not in kwargs:
