@@ -493,6 +493,8 @@ class FastLanguageModel(FastLlamaModel):
 
         autoconfig_error = None
         peft_error = None
+        autoconfig_exc = None
+        peft_exc = None
         model_config = None
         peft_config = None
         local_files_only = kwargs.get("local_files_only", False)
@@ -510,6 +512,7 @@ class FastLanguageModel(FastLlamaModel):
             raise
         except Exception as error:
             autoconfig_error = str(error)
+            autoconfig_exc = error
             if "architecture" in autoconfig_error:
                 if "qwen3_5" in autoconfig_error:
                     raise ImportError(
@@ -536,6 +539,7 @@ class FastLanguageModel(FastLlamaModel):
             raise
         except Exception as error:
             peft_error = str(error)
+            peft_exc = error
             if "architecture" in peft_error:
                 raise ValueError(
                     f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"
@@ -595,7 +599,12 @@ class FastLanguageModel(FastLlamaModel):
                 f"AutoConfig error: {autoconfig_error}\n\n"
                 f"PeftConfig error: {peft_error}\n\n"
             )
-            raise RuntimeError(combined_error)
+            # Chain the original probe exception so @_offline_aware_load can see a
+            # network/offline cause (ConnectionError / LocalEntryNotFoundError / 5xx)
+            # in __cause__ and retry the load forced-offline from cache. A permanent
+            # cause (404 / bad config) is not offline-classified, so it still
+            # propagates without a wasted retry.
+            raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
 
         # Get base model for PEFT:
         if is_peft:
@@ -1129,6 +1138,8 @@ class FastModel(FastBaseModel):
 
         autoconfig_error = None
         peft_error = None
+        autoconfig_exc = None
+        peft_exc = None
         model_config = None
         peft_config = None
         # Offline is decided once by @_offline_aware_load: when offline it has already
@@ -1169,6 +1180,7 @@ class FastModel(FastBaseModel):
             raise
         except Exception as error:
             autoconfig_error = str(error)
+            autoconfig_exc = error
             # Legacy text-diffusion configs use model_type "diffusion_gemma", which current
             # transformers does not register by name (it ships "diffusion_gemma4"). AutoConfig
             # raises before we can dispatch; route straight to the diffusion slow path, whose
@@ -1201,6 +1213,7 @@ class FastModel(FastBaseModel):
             raise
         except Exception as error:
             peft_error = str(error)
+            peft_exc = error
             if "architecture" in peft_error:
                 raise ValueError(
                     f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"
@@ -1437,7 +1450,12 @@ class FastModel(FastBaseModel):
                 f"AutoConfig error: {autoconfig_error}\n\n"
                 f"PeftConfig error: {peft_error}\n\n"
             )
-            raise RuntimeError(combined_error)
+            # Chain the original probe exception so @_offline_aware_load can see a
+            # network/offline cause (ConnectionError / LocalEntryNotFoundError / 5xx)
+            # in __cause__ and retry the load forced-offline from cache. A permanent
+            # cause (404 / bad config) is not offline-classified, so it still
+            # propagates without a wasted retry.
+            raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
 
         # Get base model for PEFT:
         if is_peft:

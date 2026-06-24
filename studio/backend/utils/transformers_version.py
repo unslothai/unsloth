@@ -46,13 +46,21 @@ from utils.subprocess_compat import (
 logger = get_logger(__name__)
 
 
+_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
 def _env_offline() -> bool:
-    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value.
+
+    Matches the canonical parsing (loader_utils._env_says_offline /
+    model_config._env_offline): strip + lowercase and accept on/true/yes/1. This
+    gates the direct urllib metadata fetches below, so it must recognise the same
+    values or HF_HUB_OFFLINE=on / " 1 " would still hit the network while offline.
+    """
+    return (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
+    )
 
 
 def _safe_is_file(p: Path) -> bool:

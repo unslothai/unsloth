@@ -626,8 +626,13 @@ def _is_offline_related_error(exc):
             code = _http_status(cur)
             if code is not None and 500 <= code < 600:
                 return True
-        # Plain OSError wording fallback - never applied to HTTP errors (their
-        # status code already decided) so a 4xx message can't be misread.
+            # A status-less HTTP error (no response / unparseable code) never went
+            # through the 4xx-vs-5xx decision above, so fall back to the network
+            # wording check - a 4xx with a real code already returned/!=offline here.
+            if code is None and not is_fnf and any(w in str(cur).lower() for w in _wording):
+                return True
+        # Plain OSError wording fallback - never applied to HTTP errors with a known
+        # status (that code already decided) so a 4xx message can't be misread.
         elif isinstance(cur, OSError) and not is_fnf:
             if any(w in str(cur).lower() for w in _wording):
                 return True
