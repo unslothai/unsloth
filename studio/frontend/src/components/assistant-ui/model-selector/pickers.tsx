@@ -570,6 +570,20 @@ function ModelRow({
 
 // ── GGUF Variant Expander ────────────────────────────────────
 
+function isValidGgufVariant(
+  variant: GgufVariantDetail | null | undefined,
+): variant is GgufVariantDetail {
+  return (
+    typeof variant?.filename === "string" &&
+    variant.filename.length > 0 &&
+    typeof variant.quant === "string" &&
+    variant.quant.length > 0 &&
+    typeof variant.size_bytes === "number" &&
+    Number.isFinite(variant.size_bytes) &&
+    variant.size_bytes >= 0
+  );
+}
+
 function GgufVariantExpander({
   repoId,
   onSelect,
@@ -622,7 +636,7 @@ function GgufVariantExpander({
     listGgufVariants(repoId)
       .then((res) => {
         if (canceled) return;
-        setVariants(res.variants);
+        setVariants(Array.isArray(res.variants) ? res.variants : []);
         setDefaultVariant(res.default_variant);
         setHasVision(res.has_vision);
         onHasVision?.(res.has_vision);
@@ -668,6 +682,11 @@ function GgufVariantExpander({
     [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
   );
 
+  const validVariants = useMemo(() => {
+    if (!variants) return variants;
+    return variants.filter(isValidGgufVariant);
+  }, [variants]);
+
   // GGUF fit classification matching llama-server's _select_gpus logic:
   //   fits  = model <= 0.7 * total GPU memory
   //   tight = model > 0.7 * GPU but <= 0.7 * GPU + 0.7 * system RAM (--fit uses CPU offload)
@@ -694,23 +713,29 @@ function GgufVariantExpander({
   // If the recommended variant is OOM, pick the largest fitting one;
   // if all are OOM, recommend the smallest.
   const effectiveRecommended = useMemo(() => {
-    if (!variants || totalBudgetGb <= 0) return defaultVariant;
-    const defaultV = variants.find((v) => v.quant === defaultVariant);
+    if (!validVariants || validVariants.length === 0 || totalBudgetGb <= 0) {
+      return defaultVariant;
+    }
+    const defaultV = validVariants.find((v) => v.quant === defaultVariant);
     if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
       return defaultVariant;
     // Largest non-OOM variant (best quality that fits)
-    const fitting = variants.filter((v) => getGgufFit(v.size_bytes) !== "oom");
+    const fitting = validVariants.filter(
+      (v) => getGgufFit(v.size_bytes) !== "oom",
+    );
     if (fitting.length > 0) {
       fitting.sort((a, b) => b.size_bytes - a.size_bytes);
       return fitting[0].quant;
     }
     // All OOM -- recommend smallest (most likely to partially run)
-    const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
-    return sorted[0].quant;
-  }, [variants, defaultVariant, totalBudgetGb, getGgufFit]);
+    const sorted = [...validVariants].sort(
+      (a, b) => a.size_bytes - b.size_bytes,
+    );
+    return sorted[0]?.quant ?? defaultVariant;
+  }, [validVariants, defaultVariant, totalBudgetGb, getGgufFit]);
 
   const sortedVariants = useMemo(() => {
-    if (!variants) return variants;
+    if (!validVariants) return validVariants;
     // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight, 4 = OOM
     const tierOf = (v: GgufVariantDetail) => {
       const f = getGgufFit(v.size_bytes);
@@ -718,7 +743,7 @@ function GgufVariantExpander({
       const base = f === "fits" ? 0 : 1;
       return v.downloaded ? base : base + 2;
     };
-    return [...variants].sort((a, b) => {
+    return [...validVariants].sort((a, b) => {
       const aTier = tierOf(a);
       const bTier = tierOf(b);
       if (aTier !== bTier) return aTier - bTier;
@@ -735,7 +760,7 @@ function GgufVariantExpander({
         ? b.size_bytes - a.size_bytes
         : a.size_bytes - b.size_bytes;
     });
-  }, [variants, effectiveRecommended, getGgufFit]);
+  }, [validVariants, effectiveRecommended, getGgufFit]);
 
   // On Device only: when Show all quantizations is off, list quants already on
   // disk. Recommended and other browse lists always show every quant.
