@@ -17,6 +17,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { SectionCard } from "@/components/section-card";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
 import type {
   ModelOption,
@@ -105,6 +106,49 @@ function progressView(p: DiffusionLoadProgress): {
     progressPercent: null,
     progressLabel: p.bytes_downloaded > 0 ? `${formatBytes(p.bytes_downloaded)} downloaded` : null,
   };
+}
+
+// Mirrors the Train page's SliderRow (studio/sections/params-section.tsx):
+// label + standard Slider + number input, same classes.
+function SliderField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <div className="flex items-center gap-3">
+        <Slider
+          value={[value]}
+          onValueChange={([v]) => onChange(v)}
+          min={min}
+          max={max}
+          step={step}
+          className="w-32"
+        />
+        <input
+          type="number"
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          min={min}
+          max={max}
+          step={step}
+          className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+        />
+      </div>
+    </div>
+  );
 }
 
 // Matches the field-label style used across Studio (export/chat settings).
@@ -311,7 +355,13 @@ export function ImagesPage() {
 
       {/* ── Controls rail + preview canvas ─────────────────── */}
       <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-4 pb-4 sm:px-6 sm:pb-6">
-        <div className="flex w-[340px] shrink-0 flex-col gap-4 overflow-y-auto">
+        <SectionCard
+          icon={<HugeiconsIcon icon={ImageAdd02Icon} className="size-5" strokeWidth={1.5} />}
+          title="Generate"
+          description="Prompt and settings"
+          accent="indigo"
+          className="w-[340px] shrink-0 gap-4 overflow-y-auto"
+        >
           <Field label="Prompt">
             <Textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
           </Field>
@@ -339,18 +389,15 @@ export function ImagesPage() {
             </Select>
           </Field>
 
-          <Field label={`Steps · ${steps}`}>
-            <Slider value={[steps]} onValueChange={([v]) => setSteps(v)} min={1} max={50} step={1} />
-          </Field>
-          <Field label={`Guidance · ${guidance.toFixed(1)}`}>
-            <Slider
-              value={[guidance]}
-              onValueChange={([v]) => setGuidance(v)}
-              min={0}
-              max={15}
-              step={0.5}
-            />
-          </Field>
+          <SliderField label="Steps" value={steps} min={1} max={50} step={1} onChange={setSteps} />
+          <SliderField
+            label="Guidance"
+            value={guidance}
+            min={0}
+            max={15}
+            step={0.5}
+            onChange={setGuidance}
+          />
           <Field label="Seed">
             <Input
               placeholder="Random if empty"
@@ -363,7 +410,7 @@ export function ImagesPage() {
             {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
             Generate
           </Button>
-        </div>
+        </SectionCard>
 
         <div className="bg-card corner-squircle relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
           <div className="relative flex flex-1 items-center justify-center overflow-auto p-6">
