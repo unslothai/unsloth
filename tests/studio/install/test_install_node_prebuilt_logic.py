@@ -562,9 +562,7 @@ def test_resolve_expected_sha256_optin_falls_back_to_remote_shasums(monkeypatch)
     pins = M.load_pins()
     asset = "node-v26.3.1-linux-x64.tar.gz"
     remote_sha = "d" * 64
-    monkeypatch.setattr(
-        M, "download_bytes", lambda url, **k: f"{remote_sha}  {asset}\n".encode()
-    )
+    monkeypatch.setattr(M, "download_bytes", lambda url, **k: f"{remote_sha}  {asset}\n".encode())
     # Only with the explicit opt-in does the legacy remote-checksum path run.
     sha = M.resolve_expected_sha256(pins, "26.3.1", asset, allow_unverified = True)
     assert sha == remote_sha

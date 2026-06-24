@@ -384,9 +384,7 @@ def allow_unverified_node() -> bool:
     return os.environ.get(ALLOW_UNVERIFIED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def resolve_expected_sha256(
-    pins: dict, version: str, asset: str, *, allow_unverified: bool
-) -> str:
+def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unverified: bool) -> str:
     """Pick the sha256 to verify this archive against.
 
     A pinned (version, asset) resolves to the committed digest and the remote
