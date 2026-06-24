@@ -46,6 +46,7 @@ studio = [
     "*.sh",
     "*.ps1",
     "*.bat",
+    "node_prebuilt_pins.json",
     "frontend/dist/**/*",
     "frontend/*.json",
     "frontend/*.ts",
@@ -56,6 +57,7 @@ studio = [
     "backend/requirements/**/*",
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
+    "backend/assets/**/*.html",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
 ]
