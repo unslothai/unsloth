@@ -1,0 +1,165 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Disk-backed persistence for generated images.
+
+Each image is a PNG under ``studio_root()/images`` with its full generation
+recipe embedded as PNG text chunks: a structured ``unsloth`` JSON blob (the
+source of truth the gallery reads back) plus an Automatic1111-style
+``parameters`` string for interop with other tools. Because the recipe lives
+inside the file, a downloaded PNG carries its own settings.
+
+The gallery is intentionally dumb storage: the route owns the metadata schema
+and passes a plain dict; this module only writes/reads/sorts files.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import re
+import uuid
+from pathlib import Path
+from typing import Any, Optional
+
+from loggers import get_logger
+from utils.paths import ensure_dir, studio_root
+
+logger = get_logger(__name__)
+
+# PNG text-chunk key holding our structured recipe JSON.
+_META_KEY = "unsloth"
+# Image ids are file stems; restrict to filename-safe chars so a crafted id
+# can't escape the gallery directory.
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def gallery_dir() -> Path:
+    return ensure_dir(studio_root() / "images")
+
+
+def _params_text(meta: dict[str, Any]) -> str:
+    """Automatic1111-style ``parameters`` string for cross-tool interop."""
+    lines = [str(meta.get("prompt", ""))]
+    negative = meta.get("negative_prompt")
+    if negative:
+        lines.append(f"Negative prompt: {negative}")
+    lines.append(
+        f"Steps: {meta.get('steps')}, CFG scale: {meta.get('guidance')}, "
+        f"Seed: {meta.get('seed')}, Size: {meta.get('width')}x{meta.get('height')}, "
+        f"Model: {meta.get('model', '')}"
+    )
+    return "\n".join(lines)
+
+
+def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
+    import io
+
+    from PIL.PngImagePlugin import PngInfo
+
+    info = PngInfo()
+    info.add_text(_META_KEY, json.dumps(meta))
+    info.add_text("parameters", _params_text(meta))
+    buf = io.BytesIO()
+    image.save(buf, format = "PNG", pnginfo = info)
+    return buf.getvalue()
+
+
+def save(image: Any, meta: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Persist a PIL image with its recipe embedded; return (record, base64 PNG).
+
+    Returning the bytes we just wrote lets the caller hand them straight to the
+    client without reading the file back off disk."""
+    image_id = uuid.uuid4().hex
+    png_bytes = _png_bytes(image, meta)
+    (gallery_dir() / f"{image_id}.png").write_bytes(png_bytes)
+    return _record(image_id, meta), base64.b64encode(png_bytes).decode("ascii")
+
+
+def _record(image_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **meta,
+        "id": image_id,
+        "url": f"/api/inference/images/gallery/{image_id}/file",
+    }
+
+
+def image_path(image_id: str) -> Optional[Path]:
+    """Resolve an id to its on-disk PNG, or None if missing / unsafe."""
+    if not _ID_RE.match(image_id):
+        return None
+    path = gallery_dir() / f"{image_id}.png"
+    # Defence in depth: confirm the resolved path is still inside the gallery.
+    try:
+        path.resolve().relative_to(gallery_dir().resolve())
+    except ValueError:
+        return None
+    return path if path.is_file() else None
+
+
+def image_b64(image_id: str) -> Optional[str]:
+    path = image_path(image_id)
+    if path is None:
+        return None
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def _read_meta(path: Path) -> Optional[dict[str, Any]]:
+    from PIL import Image
+
+    try:
+        with Image.open(path) as im:
+            raw = im.text.get(_META_KEY)  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        meta = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def list_images() -> list[dict[str, Any]]:
+    """All app-generated images, newest first (by embedded ``created_at``)."""
+    records = []
+    try:
+        paths = list(gallery_dir().glob("*.png"))
+    except OSError:
+        return []
+    for path in paths:
+        meta = _read_meta(path)
+        if meta is None:  # not one of ours (no recipe chunk) — skip
+            continue
+        records.append(_record(path.stem, meta))
+    records.sort(key = lambda r: r.get("created_at", 0.0), reverse = True)
+    return records
+
+
+def delete(image_id: str) -> bool:
+    path = image_path(image_id)
+    if path is None:
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError as exc:
+        logger.warning("image_gallery.delete_failed: %s", exc)
+        return False
+
+
+def clear() -> int:
+    """Delete every gallery PNG; return how many were removed."""
+    removed = 0
+    try:
+        paths = list(gallery_dir().glob("*.png"))
+    except OSError:
+        return 0
+    for path in paths:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed

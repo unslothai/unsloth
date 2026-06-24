@@ -1054,6 +1054,8 @@ from models.inference import (
     DiffusionGenerateResponse,
     DiffusionStatusResponse,
     DiffusionLoadProgressResponse,
+    GalleryImage,
+    GalleryListResponse,
     LoadResponse,
     LoadProgressResponse,
     UnloadResponse,
@@ -10085,6 +10087,7 @@ async def generate_diffusion_image(
     request: DiffusionGenerateRequest,
     current_subject: str = Depends(get_current_subject),
 ):
+    from core.inference import image_gallery
     from core.inference.diffusion import get_diffusion_backend
 
     backend = get_diffusion_backend()
@@ -10099,13 +10102,85 @@ async def generate_diffusion_image(
             guidance = request.guidance,
             seed = request.seed,
         )
-        return DiffusionGenerateResponse(**result)
     except RuntimeError as exc:
         # No model loaded (or unloaded mid-flight) — a client-state problem.
         raise HTTPException(status_code = 409, detail = str(exc))
     except Exception as exc:
         logger.error("diffusion.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
+
+    # Persist the image with its full recipe embedded, then hand the client both
+    # the bytes (instant display) and the saved record.
+    meta = {
+        "prompt": request.prompt,
+        "negative_prompt": request.negative_prompt,
+        "width": request.width,
+        "height": request.height,
+        "steps": request.steps,
+        "guidance": request.guidance,
+        "seed": result["seed"],
+        "model": result.get("repo_id"),
+        "created_at": time.time(),
+    }
+    try:
+        record, image_b64 = await asyncio.to_thread(image_gallery.save, result["image"], meta)
+    except Exception as exc:
+        logger.error("diffusion.persist_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+
+    return DiffusionGenerateResponse(
+        image_b64 = image_b64,
+        mime = "image/png",
+        image = GalleryImage(**record),
+    )
+
+
+@studio_router.get("/images/gallery", response_model = GalleryListResponse)
+async def list_gallery_images(current_subject: str = Depends(get_current_subject)):
+    from core.inference import image_gallery
+
+    records = await asyncio.to_thread(image_gallery.list_images)
+    return GalleryListResponse(images = [GalleryImage(**r) for r in records])
+
+
+@studio_router.get("/images/gallery/{image_id}/file")
+async def get_gallery_image_file(
+    image_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import image_gallery
+
+    path = await asyncio.to_thread(image_gallery.image_path, image_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    data = await asyncio.to_thread(path.read_bytes)
+    # Immutable content (id is unique per image), so let the browser cache it.
+    return Response(
+        content = data,
+        media_type = "image/png",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+@studio_router.delete("/images/gallery/{image_id}")
+async def delete_gallery_image(
+    image_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import image_gallery
+
+    deleted = await asyncio.to_thread(image_gallery.delete, image_id)
+    if not deleted:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    return {"deleted": True}
+
+
+@studio_router.delete("/images/gallery")
+async def clear_gallery_images(current_subject: str = Depends(get_current_subject)):
+    from core.inference import image_gallery
+
+    removed = await asyncio.to_thread(image_gallery.clear)
+    return {"removed": removed}
 
 
 @studio_router.post("/images/unload", response_model = DiffusionStatusResponse)

@@ -191,9 +191,9 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert "transformer" in _FakePipeline.last
 
     gen = backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 4, guidance = 3.0)
-    assert gen["mime"] == "image/png"
     assert gen["seed"] == 4242  # random seed reported back
-    assert isinstance(gen["image_b64"], str) and gen["image_b64"]
+    assert gen["repo_id"] == str(tmp_path)  # echoed so the route can record the model
+    assert gen["image"] is not None  # PIL image handed to the route for persistence
 
     gen2 = backend.generate(prompt = "again", seed = 99)
     assert gen2["seed"] == 99

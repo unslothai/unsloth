@@ -294,8 +294,8 @@ class DiffusionBackend:
         negative_prompt: Optional[str] = None,
         width: int = 1024,
         height: int = 1024,
-        steps: int = 24,
-        guidance: float = 3.5,
+        steps: int = 9,  # Z-Image-Turbo: 9 steps = 8 DiT forwards (official default).
+        guidance: float = 0.0,  # Turbo is distilled CFG-free; guidance must be 0.
         seed: Optional[int] = None,
     ) -> dict[str, Any]:
         import torch
@@ -326,11 +326,9 @@ class DiffusionBackend:
                 kwargs["negative_prompt"] = negative_prompt
 
             image = state.pipe(**kwargs).images[0]
-            return {
-                "image_b64": encode_png_base64(image),
-                "mime": "image/png",
-                "seed": int(seed),
-            }
+            # Return the PIL image (not yet encoded): the route embeds the
+            # generation recipe and persists it via the gallery.
+            return {"image": image, "seed": int(seed), "repo_id": state.repo_id}
 
     def unload(self) -> dict[str, Any]:
         with self._lock:

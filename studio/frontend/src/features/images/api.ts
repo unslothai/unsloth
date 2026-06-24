@@ -41,10 +41,25 @@ export interface DiffusionGenerateRequest {
   seed?: number;
 }
 
+// A persisted image's full generation recipe (also embedded in the PNG).
+export interface GalleryImage {
+  id: string;
+  url: string;
+  prompt: string;
+  negative_prompt: string | null;
+  width: number;
+  height: number;
+  steps: number;
+  guidance: number;
+  seed: number;
+  model: string | null;
+  created_at: number;
+}
+
 export interface DiffusionGenerateResponse {
   image_b64: string;
   mime: string;
-  seed: number;
+  image: GalleryImage;
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
@@ -86,4 +101,29 @@ export async function generateDiffusionImage(
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
+}
+
+export async function getGallery(): Promise<GalleryImage[]> {
+  const { images } = await parseJson<{ images: GalleryImage[] }>(
+    await authFetch("/api/inference/images/gallery"),
+  );
+  return images;
+}
+
+export async function deleteGalleryImage(id: string): Promise<void> {
+  const res = await authFetch(`/api/inference/images/gallery/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await readFastApiError(res));
+}
+
+export async function clearGallery(): Promise<void> {
+  const res = await authFetch("/api/inference/images/gallery", { method: "DELETE" });
+  if (!res.ok) throw new Error(await readFastApiError(res));
+}
+
+/** Fetch a gallery PNG (auth-protected, so it can't be a plain <img src>) and
+ *  wrap it in an object URL. Callers must revoke the URL when done. */
+export async function fetchGalleryObjectUrl(url: string): Promise<string> {
+  const res = await authFetch(url);
+  if (!res.ok) throw new Error(await readFastApiError(res));
+  return URL.createObjectURL(await res.blob());
 }

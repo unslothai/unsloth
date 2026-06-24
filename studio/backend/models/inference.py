@@ -1706,30 +1706,53 @@ class DiffusionGenerateRequest(BaseModel):
 
     prompt: str = Field(..., min_length = 1, description = "Text prompt")
     negative_prompt: Optional[str] = Field(None, description = "What to avoid (if the model supports it)")
-    width: int = Field(1024, ge = 256, le = 2048, description = "Image width in pixels (multiple of 8)")
-    height: int = Field(1024, ge = 256, le = 2048, description = "Image height in pixels (multiple of 8)")
-    steps: int = Field(24, ge = 1, le = 100, description = "Number of denoising steps")
-    guidance: float = Field(3.5, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
+    width: int = Field(1024, ge = 256, le = 2048, description = "Image width in pixels (multiple of 16)")
+    height: int = Field(1024, ge = 256, le = 2048, description = "Image height in pixels (multiple of 16)")
+    steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
+    guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**64 - 1, description = "Seed for reproducibility (random if omitted)"
     )
 
     @field_validator("width", "height")
     @classmethod
-    def _multiple_of_8(cls, value: int) -> int:
-        # VAEs downsample by 8; non-multiples crash deep in the pipeline, so
-        # reject them here for a clean 422 instead of a cryptic 500.
-        if value % 8 != 0:
-            raise ValueError("must be a multiple of 8")
+    def _multiple_of_16(cls, value: int) -> int:
+        # Z-Image requires dimensions divisible by 16 (8x VAE downsample + 2x
+        # patch). Non-multiples crash deep in the pipeline, so reject them here
+        # for a clean 422 instead of a cryptic 500.
+        if value % 16 != 0:
+            raise ValueError("must be a multiple of 16")
         return value
 
 
-class DiffusionGenerateResponse(BaseModel):
-    """A generated image plus the seed actually used."""
+class GalleryImage(BaseModel):
+    """A persisted image's full generation recipe (embedded in the PNG too)."""
 
-    image_b64: str = Field(..., description = "Base64-encoded PNG")
+    id: str = Field(..., description = "Stable id (the on-disk filename stem)")
+    url: str = Field(..., description = "Relative URL to fetch the PNG bytes")
+    prompt: str = Field(..., description = "Prompt used")
+    negative_prompt: Optional[str] = Field(None, description = "Negative prompt, if any")
+    width: int = Field(..., description = "Image width")
+    height: int = Field(..., description = "Image height")
+    steps: int = Field(..., description = "Denoising steps")
+    guidance: float = Field(..., description = "Guidance scale")
+    seed: int = Field(..., description = "Seed used")
+    model: Optional[str] = Field(None, description = "Model repo id that produced it")
+    created_at: float = Field(..., description = "Creation time (epoch seconds)")
+
+
+class DiffusionGenerateResponse(BaseModel):
+    """A generated image (for instant display) plus its persisted gallery record."""
+
+    image_b64: str = Field(..., description = "Base64-encoded PNG (recipe embedded)")
     mime: str = Field("image/png", description = "MIME type of image_b64")
-    seed: int = Field(..., description = "Seed used (echoes the request, or the random one chosen)")
+    image: GalleryImage = Field(..., description = "The saved gallery record")
+
+
+class GalleryListResponse(BaseModel):
+    """All persisted images, newest first."""
+
+    images: list[GalleryImage] = Field(default_factory = list)
 
 
 class DiffusionLoadProgressResponse(BaseModel):

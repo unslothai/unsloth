@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 import core.inference.diffusion as diffusion_module
 import core.inference.gpu_arbiter as gpu_arbiter
+import core.inference.image_gallery as gallery_module
 from auth.authentication import get_current_subject
 from routes.inference import studio_router
 
@@ -53,7 +54,9 @@ class _FakeBackend:
     def generate(self, *, seed = None, **kwargs):
         if not self.loaded:
             raise RuntimeError("No diffusion model is loaded.")
-        return {"image_b64": "QUJD", "mime": "image/png", "seed": seed if seed is not None else 4242}
+        # The real backend returns the PIL image; the route persists it. The fake
+        # returns a sentinel object since image_gallery is stubbed in the fixture.
+        return {"image": object(), "seed": seed if seed is not None else 4242, "repo_id": "x/z-image"}
 
     def unload(self):
         self.loaded = False
@@ -76,7 +79,7 @@ def _unloaded_status():
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     backend = _FakeBackend()
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     # Isolate from the real GPU arbiter: reset ownership and stub the evictors so
@@ -84,6 +87,35 @@ def client(monkeypatch):
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
+
+    # In-memory gallery backed by tmp files, so routes exercise persistence wiring
+    # without PIL/real disk under studio_root.
+    store: dict[str, dict] = {}
+
+    def _save(image, meta):
+        image_id = f"img{len(store)}"
+        (tmp_path / f"{image_id}.png").write_bytes(b"PNG")
+        record = {**meta, "id": image_id, "url": f"/api/inference/images/gallery/{image_id}/file"}
+        store[image_id] = record
+        return record, "QUJD"  # (record, base64 PNG)
+
+    def _clear():
+        n = len(store)
+        store.clear()
+        return n
+
+    monkeypatch.setattr(gallery_module, "save", _save)
+    monkeypatch.setattr(gallery_module, "image_b64", lambda i: "QUJD" if i in store else None)
+    monkeypatch.setattr(
+        gallery_module, "list_images",
+        lambda: sorted(store.values(), key = lambda r: r.get("created_at", 0.0), reverse = True),
+    )
+    monkeypatch.setattr(
+        gallery_module, "image_path",
+        lambda i: (tmp_path / f"{i}.png") if i in store else None,
+    )
+    monkeypatch.setattr(gallery_module, "delete", lambda i: store.pop(i, None) is not None)
+    monkeypatch.setattr(gallery_module, "clear", _clear)
 
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
@@ -106,17 +138,33 @@ def test_load_generate_status_unload_roundtrip(client):
     gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
     assert gen.status_code == 200
     gbody = gen.json()
-    assert gbody["mime"] == "image/png" and gbody["seed"] == 7 and gbody["image_b64"]
+    assert gbody["mime"] == "image/png" and gbody["image_b64"]
+    # The persisted record carries the full recipe back.
+    img = gbody["image"]
+    assert img["seed"] == 7 and img["prompt"] == "a sloth" and img["id"]
+
+    # The image is now listable, fetchable, and deletable.
+    listed = client.get("/api/inference/images/gallery").json()["images"]
+    assert [i["id"] for i in listed] == [img["id"]]
+    assert client.get(img["url"]).status_code == 200
+    assert client.delete(img["url"].removesuffix("/file")).status_code == 200
+    assert client.get("/api/inference/images/gallery").json()["images"] == []
 
     unloaded = client.post("/api/inference/images/unload")
     assert unloaded.status_code == 200 and unloaded.json()["loaded"] is False
     assert client.get("/api/inference/images/status").json()["loaded"] is False
 
 
-def test_generate_rejects_non_multiple_of_8(client):
+def test_generate_rejects_non_multiple_of_16(client):
     client.post("/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"})
-    resp = client.post("/api/inference/images/generate", json = {"prompt": "p", "width": 1001})
-    assert resp.status_code == 422
+    # Odd, and a multiple of 8 that isn't a multiple of 16: both rejected, since
+    # Z-Image requires dimensions divisible by 16.
+    for bad in (1001, 1000):
+        resp = client.post("/api/inference/images/generate", json = {"prompt": "p", "width": bad})
+        assert resp.status_code == 422, bad
+    # A multiple of 16 is accepted.
+    ok = client.post("/api/inference/images/generate", json = {"prompt": "p", "width": 1024})
+    assert ok.status_code == 200
 
 
 def test_load_requires_gguf_filename(client):
