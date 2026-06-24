@@ -412,3 +412,27 @@ def test_kwargs_preserved_across_retry(monkeypatch):
 
     assert fake("m", config = "CFG", tokenizer_name = "TOK") == ("CFG", "TOK")
     assert seen == [("CFG", "TOK"), ("CFG", "TOK")]
+
+
+def test_retry_runs_gc_collect_between_attempts(monkeypatch):
+    # The retry lives OUTSIDE the except so the failed attempt's traceback (a
+    # partial model) is freed by gc.collect() before the second load reallocates.
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    gc_calls = []
+    monkeypatch.setattr(L.gc, "collect", lambda *a, **k: gc_calls.append(1))
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("down")
+        # By the retry attempt, gc.collect() must already have fired.
+        assert gc_calls, "gc.collect must run before the offline retry"
+        return "ok"
+
+    gc_calls.clear()
+    assert fake("model") == "ok"
+    assert len(calls) == 2
+    assert len(gc_calls) == 1  # exactly once, on the retry path
