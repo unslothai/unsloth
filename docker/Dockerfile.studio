@@ -156,7 +156,11 @@ RUN set -eux \
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch
-RUN chmod +x /usr/local/bin/unsloth-studio-launch
+# In-place Studio updater: `docker exec <container> unsloth-studio-update`
+# refreshes the Studio packages (backend + baked frontend) and restarts the
+# service, without pulling a new image or touching the torch/CUDA stack.
+COPY unsloth_studio_update.sh /usr/local/bin/unsloth-studio-update
+RUN chmod +x /usr/local/bin/unsloth-studio-launch /usr/local/bin/unsloth-studio-update
 
 # Studio web UI, JupyterLab, sshd. All bind 0.0.0.0 inside the container's
 # network namespace; the operator publishes them explicitly with -p.
