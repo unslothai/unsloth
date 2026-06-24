@@ -296,20 +296,28 @@ def test_load_progress_fraction_clamped(monkeypatch):
     assert p["bytes_downloaded"] == 1000  # clamped to the estimate
 
 
-def test_generate_progress_reports_step_and_eta():
-    import time as _time
+def test_estimate_eta():
+    from core.inference.diffusion import _estimate_eta
 
+    # No rate yet until a step has elapsed since the first.
+    assert _estimate_eta(8, 1, first_step_at = 100.0, now = 100.0) is None
+    assert _estimate_eta(8, 0, first_step_at = 0.0, now = 100.0) is None
+    # 3 steps in 3s since the first ⇒ 1s/step ⇒ 4 steps left ⇒ ~4s.
+    assert _estimate_eta(8, 4, first_step_at = 100.0, now = 103.0) == 4.0
+    # Last step ⇒ 0 remaining.
+    assert _estimate_eta(8, 8, first_step_at = 100.0, now = 107.0) == 0.0
+
+
+def test_generate_progress_reads_gen_state():
     from core.inference.diffusion import _GenState
 
     backend = DiffusionBackend()
     assert backend.generate_progress()["active"] is False
 
-    # Halfway through an 8-step run, ~1s/step measured since the first step.
-    backend._gen = _GenState(total_steps = 8, step = 4, first_step_at = _time.time() - 3)
+    backend._gen = _GenState(total_steps = 8, step = 4, eta_seconds = 4.0)
     p = backend.generate_progress()
     assert p["active"] is True and p["step"] == 4 and p["total_steps"] == 8
-    assert abs(p["fraction"] - 0.5) < 1e-9
-    assert p["eta_seconds"] is not None and 0 < p["eta_seconds"] < 30  # ~4 steps left
+    assert abs(p["fraction"] - 0.5) < 1e-9 and p["eta_seconds"] == 4.0
 
 
 def test_begin_load_rejects_concurrent(monkeypatch):

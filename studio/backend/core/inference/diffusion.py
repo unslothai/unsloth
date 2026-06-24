@@ -64,6 +64,18 @@ class _GenState:
     # Set when the first step finishes; the ETA rate is measured from there so the
     # slower first step (warmup) doesn't skew it.
     first_step_at: float = 0.0
+    # Computed once per step (in the callback) so it's stable between polls.
+    eta_seconds: Optional[float] = None
+
+
+def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
+    """Seconds remaining, from the average step time measured after the first step.
+    None until at least one step has elapsed since the first."""
+    steps_since_first = step - 1
+    if not first_step_at or steps_since_first <= 0:
+        return None
+    per_step = (now - first_step_at) / steps_since_first
+    return max(0.0, (total_steps - step) * per_step)
 
 
 class DiffusionBackend:
@@ -332,9 +344,11 @@ class DiffusionBackend:
             gen = _GenState(total_steps = steps)
 
             def _on_step(pipe, step_index, timestep, callback_kwargs):
+                now = time.time()
                 gen.step = step_index + 1
                 if gen.first_step_at == 0.0:
-                    gen.first_step_at = time.time()
+                    gen.first_step_at = now
+                gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
                 return callback_kwargs
 
             # Not every pipeline accepts the callback; only pass it where supported
@@ -356,18 +370,12 @@ class DiffusionBackend:
         gen = self._gen
         if gen is None or gen.total_steps <= 0:
             return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
-        step, total = gen.step, gen.total_steps
-        eta = None
-        steps_since_first = step - 1
-        if gen.first_step_at and steps_since_first > 0:
-            per_step = (time.time() - gen.first_step_at) / steps_since_first
-            eta = max(0.0, (total - step) * per_step)
         return {
             "active": True,
-            "step": step,
-            "total_steps": total,
-            "fraction": min(step / total, 1.0),
-            "eta_seconds": eta,
+            "step": gen.step,
+            "total_steps": gen.total_steps,
+            "fraction": min(gen.step / gen.total_steps, 1.0),
+            "eta_seconds": gen.eta_seconds,
         }
 
     def unload(self) -> dict[str, Any]:

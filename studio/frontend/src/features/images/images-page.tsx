@@ -38,7 +38,7 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/components/assistant-ui/model-selector/types";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
-import { formatBytes } from "@/features/hub/lib/format";
+import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
@@ -137,16 +137,12 @@ function formatTimestamp(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
-function formatEta(seconds: number): string {
-  if (seconds < 1) return "<1s";
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-}
-
-// Bar label for an in-flight generation: step count plus an ETA once it's known.
+// Bar label for an in-flight generation: step count plus an ETA once it's known
+// (formatEta returns "" for non-positive, so the last step shows just the step).
 function genStepLabel(p: DiffusionGenerateProgress): string {
   const base = `Step ${p.step}/${p.total_steps}`;
-  return p.eta_seconds != null ? `${base} · ~${formatEta(p.eta_seconds)} left` : base;
+  const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
+  return eta ? `${base} · ~${eta}` : base;
 }
 
 // The chat tab's model-load toast styling, reused verbatim so the diffusion
@@ -626,7 +622,12 @@ export function ImagesPage() {
     genPollTimer.current = setInterval(async () => {
       try {
         const p = await getGenerateProgress();
-        setGenStep(p.active ? p : null);
+        // Skip the state update (and re-render) when nothing the bar shows moved.
+        setGenStep((prev) => {
+          if (!p.active) return null;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          return p;
+        });
       } catch {
         // transient; keep polling
       }
