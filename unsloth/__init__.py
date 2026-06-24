@@ -117,7 +117,12 @@ if _IS_MLX:
         if original_to is None or getattr(original_to, "_unsloth_mlx_cuda_noop", False):
             return
 
-        def batch_encoding_to(self, device=None, *args, **kwargs):
+        def batch_encoding_to(
+            self,
+            device = None,
+            *args,
+            **kwargs,
+        ):
             target = str(device).lower() if device is not None else ""
             if target.startswith("cuda"):
                 return self
@@ -806,15 +811,12 @@ if _IS_MLX:
                     )
                     if isinstance(collator_image_size, list):
                         collator_image_size = tuple(collator_image_size)
-                    if (
-                        "image_size" not in kwargs
-                        and (
-                            isinstance(collator_image_size, int)
-                            or (
-                                isinstance(collator_image_size, tuple)
-                                and len(collator_image_size) == 2
-                                and all(isinstance(x, int) for x in collator_image_size)
-                            )
+                    if "image_size" not in kwargs and (
+                        isinstance(collator_image_size, int)
+                        or (
+                            isinstance(collator_image_size, tuple)
+                            and len(collator_image_size) == 2
+                            and all(isinstance(x, int) for x in collator_image_size)
                         )
                     ):
                         kwargs["image_size"] = collator_image_size
