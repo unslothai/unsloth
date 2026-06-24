@@ -2412,7 +2412,10 @@ async def _maybe_auto_switch_model(
                     others = other_inference_request_count(
                         current_request_counted = True, include_pending = False
                     )
-                    if backend.is_loaded and others > same_others:
+                    # Not gated on the GGUF being loaded: _load_model_impl also
+                    # tears down an active Unsloth backend before loading a GGUF,
+                    # so refuse whenever any other inference request is in flight.
+                    if others > same_others:
                         raise HTTPException(
                             status_code = 409,
                             detail = openai_error_body(
@@ -3527,11 +3530,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
     try:
-        from core.inference.llama_keepwarm import (
-            inference_lifecycle_gate,
-            other_inference_request_count,
-        )
-
         # Check if the GGUF backend has this model loaded or is loading it.
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_active and (
@@ -3539,16 +3537,9 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             or is_registered_native_path_label(llama_backend.model_identifier, request.model_path)
             or not llama_backend.is_loaded
         ):
-            # Hold the lifecycle gate (like idle-unload/load) and refuse while an
-            # inference request is in flight rather than killing its stream. /unload
-            # isn't a tracked inference path, so the caller is not counted out.
-            async with inference_lifecycle_gate():
-                if other_inference_request_count(current_request_counted = False) > 0:
-                    raise HTTPException(
-                        status_code = 409,
-                        detail = "Cannot unload a GGUF model while an inference request is in progress.",
-                    )
-                llama_backend.unload_model()
+            # A manual unload is a deliberate user action: tear down now even if a
+            # request is mid-stream (only the automatic idle loop defers to it).
+            llama_backend.unload_model()
             logger.info(f"Unloaded GGUF model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -3558,8 +3549,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         logger.info(f"Unloaded model: {request.model_path}")
         return UnloadResponse(status = "unloaded", model = request.model_path)
 
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to unload model")

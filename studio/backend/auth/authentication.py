@@ -143,6 +143,17 @@ async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depend
     )
 
 
+async def authenticated_via_api_key(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """True when the caller used an sk-unsloth API key, not a UI session JWT.
+
+    Lets routes treat programmatic API callers differently from the Studio UI
+    (e.g. refuse a teardown the UI would allow).
+    """
+    return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
+
+
 async def get_current_subject_allow_password_change(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:

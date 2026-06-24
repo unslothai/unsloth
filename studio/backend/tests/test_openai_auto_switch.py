@@ -1342,8 +1342,9 @@ def test_external_untrack_decrements_inflight_and_is_idempotent():
     kw._inflight = 0
 
 
-def test_unload_route_409s_while_inference_active(monkeypatch):
-    from fastapi import HTTPException
+def test_manual_unload_interrupts_even_while_inference_active(monkeypatch):
+    # A manual /unload is a deliberate action: it tears down immediately even with
+    # a request in flight (only the automatic idle loop defers). No 409.
     from core.inference import llama_keepwarm as kw
     from models.inference import UnloadRequest
 
@@ -1354,26 +1355,33 @@ def test_unload_route_409s_while_inference_active(monkeypatch):
     monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
     monkeypatch.setattr(kw, "_inflight", 1)  # another request streaming
     monkeypatch.setattr(kw, "_pending", 0)
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester"))
-    assert exc.value.status_code == 409
-    assert backend.is_loaded  # not torn down
-
-
-def test_unload_route_unloads_when_idle(monkeypatch):
-    from core.inference import llama_keepwarm as kw
-    from models.inference import UnloadRequest
-
-    backend = _FakeBackend("org/A-GGUF")
-    backend.is_active = True
-    backend.unload_model = lambda: setattr(backend, "is_loaded", False)
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(inference_route, "is_registered_native_path_label", lambda *a: False)
-    monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_pending", 0)
     resp = asyncio.run(inference_route.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester"))
     assert resp.status == "unloaded"
-    assert not backend.is_loaded
+    assert not backend.is_loaded  # torn down despite the active request
+
+
+def test_auto_switch_refuses_when_unsloth_stream_active(monkeypatch):
+    # The GGUF slot is empty but an Unsloth model is streaming (counted in-flight).
+    # _load_model_impl would unload it, so auto-switch must 409, not only when a
+    # GGUF is loaded.
+    from fastapi import HTTPException
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)  # no GGUF loaded
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(kw, "_inflight", 2)  # an Unsloth stream + this request
+    monkeypatch.setattr(kw, "_pending", 0)
+    with pytest.raises(HTTPException) as exc:
+        _run_hook("org/B-GGUF:Q8_0")
+    assert exc.value.status_code == 409
+    assert rec.calls == []  # the active Unsloth model is not torn down
 
 
 def test_public_model_id_prefers_advertised_over_path():
@@ -1406,3 +1414,57 @@ def test_chat_untracks_external_provider_before_proxy():
 
     src = inspect.getsource(inference_route.openai_chat_completions)
     assert src.index("untrack_current_request") < src.index("_proxy_to_external_provider")
+
+
+# ── round 7: API-initiated training defers to active inference, UI does not ──
+
+
+def test_authenticated_via_api_key_detects_key_vs_session():
+    from fastapi.security import HTTPAuthorizationCredentials
+    from auth.authentication import authenticated_via_api_key, API_KEY_PREFIX
+
+    key = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = API_KEY_PREFIX + "abc")
+    jwt = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = "eyJhbGciOiJ.session")
+    assert asyncio.run(authenticated_via_api_key(key)) is True
+    assert asyncio.run(authenticated_via_api_key(jwt)) is False
+
+
+def _training_request():
+    from models.training import TrainingStartRequest
+
+    return TrainingStartRequest(
+        model_name = "unsloth/test", training_type = "LoRA/QLoRA", format_type = "alpaca"
+    )
+
+
+def test_api_training_refused_while_inference_active(monkeypatch):
+    # API-key caller: training is refused with 409 while a request streams, so it
+    # can't free VRAM by unloading the chat model out from under the stream.
+    from fastapi import HTTPException
+    from core.inference import llama_keepwarm as kw
+    import routes.training as training_route
+
+    monkeypatch.setattr(kw, "_inflight", 1)
+    monkeypatch.setattr(kw, "_pending", 0)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            training_route.start_training(_training_request(), current_subject = "t", via_api_key = True)
+        )
+    assert exc.value.status_code == 409
+
+
+def test_ui_training_not_blocked_by_active_inference(monkeypatch):
+    # UI (session auth) caller: the API guard is skipped, so training proceeds past
+    # it even with inference active (here it hits the normal already-active path).
+    from types import SimpleNamespace
+    from core.inference import llama_keepwarm as kw
+    import routes.training as training_route
+
+    monkeypatch.setattr(kw, "_inflight", 1)
+    monkeypatch.setattr(kw, "_pending", 0)
+    fake = SimpleNamespace(is_training_active = lambda: True, current_job_id = "job-1")
+    monkeypatch.setattr(training_route, "get_training_backend", lambda: fake)
+    resp = asyncio.run(
+        training_route.start_training(_training_request(), current_subject = "t", via_api_key = False)
+    )
+    assert resp.status == "error" and "already" in (resp.error or "").lower()
