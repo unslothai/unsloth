@@ -48,6 +48,40 @@ function getBrowserNotificationApi(): typeof Notification | null {
   return window.Notification;
 }
 
+function notificationsSupported(): boolean {
+  if (isTauri) {
+    return true;
+  }
+  // Web Notifications need a secure context (https or localhost), not LAN http.
+  return (
+    getBrowserNotificationApi() !== null &&
+    typeof window !== "undefined" &&
+    window.isSecureContext
+  );
+}
+
+async function sendNotificationToChannel(
+  title: string,
+  body: string | undefined,
+): Promise<void> {
+  if (isTauri) {
+    const { sendNotification } = await import(
+      "@tauri-apps/plugin-notification"
+    );
+    sendNotification({ title, body });
+    return;
+  }
+
+  const NotificationCtor = getBrowserNotificationApi();
+  if (NotificationCtor && NotificationCtor.permission === "granted") {
+    const notification = new NotificationCtor(title, body ? { body } : undefined);
+    notification.onclick = () => {
+      window.focus();
+      notification.close();
+    };
+  }
+}
+
 function rememberSentKey(key: string): void {
   sentKeys.add(key);
 
@@ -102,7 +136,7 @@ async function checkNativePermission(allowRequest: boolean): Promise<boolean> {
 }
 
 async function ensurePermission(allowRequest: boolean): Promise<boolean> {
-  if (!isTauri) {
+  if (!notificationsSupported()) {
     return false;
   }
   if (permissionState !== "unknown") {
@@ -120,7 +154,7 @@ async function ensurePermission(allowRequest: boolean): Promise<boolean> {
 }
 
 export async function primeNativeNotificationPermission(): Promise<void> {
-  if (!isTauri || permissionState !== "unknown") {
+  if (!notificationsSupported() || permissionState !== "unknown") {
     return;
   }
 
@@ -138,7 +172,7 @@ export async function primeNativeNotificationPermission(): Promise<void> {
 export async function notifyNative(
   options: NativeNotificationOptions,
 ): Promise<void> {
-  if (!isTauri) {
+  if (!notificationsSupported()) {
     return;
   }
   if (sentKeys.has(options.key) || inFlightKeys.has(options.key)) {
@@ -155,10 +189,7 @@ export async function notifyNative(
     const body = options.body
       ? sanitizeNotificationBody(options.body, "")
       : undefined;
-    const { sendNotification } = await import(
-      "@tauri-apps/plugin-notification"
-    );
-    sendNotification({ title: options.title, body });
+    await sendNotificationToChannel(options.title, body);
     rememberSentKey(options.key);
   } catch {
     // Native notifications are non-critical UI side effects.
