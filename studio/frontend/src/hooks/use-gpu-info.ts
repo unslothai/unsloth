@@ -65,15 +65,20 @@ async function fetchSystemOnce(): Promise<SystemPayload | null> {
 }
 
 function toGpuInfo(data: SystemPayload | null): GpuInfo {
+  const ramAvailableGb = data?.memory?.available_gb ?? 0;
   const gpuData = data?.gpu;
-  if (!gpuData?.available || !gpuData.devices?.length) return DEFAULT_GPU;
+  if (!gpuData?.available || !gpuData.devices?.length) {
+    // No discrete GPU (e.g. Mac): still surface system RAM so memory math
+    // (unified memory) has a budget to work with.
+    return { ...DEFAULT_GPU, systemRamAvailableGb: ramAvailableGb };
+  }
   const devices = gpuData.devices;
   const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
   return {
     available: true,
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb: totalGb,
-    systemRamAvailableGb: data?.memory?.available_gb ?? 0,
+    systemRamAvailableGb: ramAvailableGb,
   };
 }
 
