@@ -107,7 +107,6 @@ def read_masked_password(prompt: str) -> str:
     """
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         import getpass
-
         return getpass.getpass(prompt)
     try:
         if sys.platform == "win32":
@@ -115,7 +114,6 @@ def read_masked_password(prompt: str) -> str:
         return _read_masked_posix(prompt)
     except (ImportError, OSError):
         import getpass
-
         return getpass.getpass(prompt)
 
 
@@ -123,7 +121,7 @@ def prompt_new_admin_password(
     *,
     min_length: int = MIN_PASSWORD_LENGTH,
     attempts: int = 3,
-    reader=read_masked_password,
+    reader = read_masked_password,
 ) -> str:
     """Prompt for a new admin password twice and return it once both match.
 
@@ -133,11 +131,11 @@ def prompt_new_admin_password(
     for _ in range(attempts):
         pw = reader(f"Set a Studio admin password (min {min_length} chars): ")
         if len(pw) < min_length:
-            print(f"Password must be at least {min_length} characters.", file=sys.stderr)
+            print(f"Password must be at least {min_length} characters.", file = sys.stderr)
             continue
         confirm = reader("Confirm password: ")
         if pw != confirm:
-            print("Passwords do not match. Try again.", file=sys.stderr)
+            print("Passwords do not match. Try again.", file = sys.stderr)
             continue
         return pw
     raise SystemExit(
@@ -196,7 +194,7 @@ def ensure_admin_password_before_exposure(
     api_only: bool,
     frontend_served: bool,
     is_colab: bool,
-    logger=None,
+    logger = None,
 ) -> None:
     """Provision a non-bootstrap admin password before the server is exposed.
 
@@ -215,12 +213,12 @@ def ensure_admin_password_before_exposure(
 
     env_password = os.environ.get(ADMIN_PASSWORD_ENV_VAR)
     source = resolve_admin_password_source(
-        frontend_served=frontend_served,
-        exposed=exposed,
-        is_colab=is_colab,
-        requires_change=True,
-        has_tty=sys.stdin.isatty() and sys.stdout.isatty(),
-        env_password=env_password,
+        frontend_served = frontend_served,
+        exposed = exposed,
+        is_colab = is_colab,
+        requires_change = True,
+        has_tty = sys.stdin.isatty() and sys.stdout.isatty(),
+        env_password = env_password,
     )
 
     if source == "env":
@@ -233,7 +231,7 @@ def ensure_admin_password_before_exposure(
         print(
             f"Studio admin password set from {ADMIN_PASSWORD_ENV_VAR} before "
             "exposing the server.",
-            flush=True,
+            flush = True,
         )
         return
 
@@ -241,11 +239,11 @@ def ensure_admin_password_before_exposure(
         print(
             "\nThis launch exposes Unsloth Studio on the network. Set the admin "
             "password now (it will not be shown publicly).",
-            flush=True,
+            flush = True,
         )
         password = prompt_new_admin_password()
         storage.update_password(storage.DEFAULT_ADMIN_USERNAME, password)
-        print("Admin password set. Starting the server...", flush=True)
+        print("Admin password set. Starting the server...", flush = True)
         return
 
     # source == "backstop": cannot prompt and no env var. Do not block startup;
@@ -259,4 +257,4 @@ def ensure_admin_password_before_exposure(
     if logger is not None:
         logger.warning(message)
     else:
-        print(message, file=sys.stderr, flush=True)
+        print(message, file = sys.stderr, flush = True)
