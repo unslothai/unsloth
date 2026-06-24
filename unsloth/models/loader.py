@@ -102,6 +102,7 @@ from ._utils import (
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
     set_task_config_attr,
+    maybe_prefetch_hf_snapshot,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
@@ -862,6 +863,17 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
+            # Warm the adapter repo first: PeftModel.from_pretrained downloads it
+            # in-process and can hang on a stalled Xet transfer like the base model.
+            maybe_prefetch_hf_snapshot(
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+                fast_inference = fast_inference,
+                subfolder = kwargs.get("subfolder"),
+            )
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -1777,6 +1789,17 @@ class FastModel(FastBaseModel):
 
                 _LoraModel._create_and_replace = _patched_car
 
+            # Warm the adapter repo first: PeftModel.from_pretrained downloads it
+            # in-process and can hang on a stalled Xet transfer like the base model.
+            maybe_prefetch_hf_snapshot(
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+                fast_inference = fast_inference,
+                subfolder = kwargs.get("subfolder"),
+            )
             try:
                 model = PeftModel.from_pretrained(
                     model,

@@ -844,6 +844,7 @@ def maybe_prefetch_hf_snapshot(
     cache_dir = None,
     local_files_only = False,
     fast_inference = False,
+    subfolder = None,
 ):
     """Warm the Hugging Face cache for a remote repo before the in-process load.
 
@@ -883,13 +884,23 @@ def maybe_prefetch_hf_snapshot(
     if fast_inference:
         return
 
+    # A checkpoint-* subfolder is exactly what "checkpoint-*/*" would drop, so
+    # do not ignore it when the caller is explicitly loading from that subfolder.
+    ignore_patterns = [
+        pattern for pattern in _PREFETCH_IGNORE_PATTERNS
+        if not (
+            pattern == "checkpoint-*/*"
+            and isinstance(subfolder, str)
+            and subfolder.startswith("checkpoint-")
+        )
+    ]
     try:
         snapshot_download_with_xet_fallback(
             model_name,
             token = token,
             revision = revision,
             cache_dir = cache_dir,
-            ignore_patterns = list(_PREFETCH_IGNORE_PATTERNS),
+            ignore_patterns = ignore_patterns,
         )
     except DownloadStallError:
         # Both Xet and HTTP stalled: surface a clear network error instead of

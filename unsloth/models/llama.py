@@ -2383,6 +2383,7 @@ class FastLlamaModel:
             cache_dir = kwargs.get("cache_dir"),
             local_files_only = kwargs.get("local_files_only", False),
             fast_inference = fast_inference,
+            subfolder = kwargs.get("subfolder"),
         )
 
         if dtype is None:
