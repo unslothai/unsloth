@@ -2666,9 +2666,13 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     if not isinstance(data, dict):
         print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
         return set()
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
+        return set()
     keys: set[tuple[str, str, str, str]] = set()
     legacy = 0
-    for e in data.get("entries", []):
+    for e in entries:
         if not isinstance(e, dict):
             continue
         try:

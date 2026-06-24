@@ -454,6 +454,35 @@ def test_obfuscated_blob_key_reopens_on_changed_tail():
     assert snp._finding_key(of) != snp._finding_key(nf)
 
 
+def test_outbound_cred_surface_binds_context():
+    # The outbound cred-surface host finding records the host WITH its URL path /
+    # fetch call, so changing the outbound path or headers reopens the key rather
+    # than riding the bare host literal.
+    pkg = snp.PackageEntry(
+        name = "evil",
+        version = "1.0.0",
+        resolved = "https://registry.npmjs.org/evil/-/evil-1.0.0.tgz",
+        integrity = "sha512-test",
+        lockfile_key = "node_modules/evil",
+    )
+    old = "fetch('http://169.254.169.254/latest/meta-data/iam/security-credentials/old')\n"
+    new = (
+        "fetch('http://169.254.169.254/latest/meta-data/iam/security-credentials/evil', "
+        "{headers: steal})\n"
+    )
+    of = [
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", old)
+        if f.pattern == "cred-surface-host (outbound)"
+    ][0]
+    nf = [
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", new)
+        if f.pattern == "cred-surface-host (outbound)"
+    ][0]
+    assert snp._finding_key(of) != snp._finding_key(nf)
+
+
 def test_load_baseline_skips_non_dict_entries(tmp_path):
     # A malformed current-schema baseline (non-dict entries, or a non-object root)
     # must not crash the loader; bad entries are skipped, valid ones still load.

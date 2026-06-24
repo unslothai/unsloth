@@ -899,6 +899,17 @@ def test_load_baseline_missing_file_is_empty():
     assert sp._load_baseline("/nonexistent/path/bl.json") == set()
 
 
+def test_load_baseline_rejects_non_list_entries(tmp_path, capsys):
+    # A malformed baseline whose "entries" is not a list must warn and fail
+    # closed (empty), not raise TypeError when iterated.
+    import json
+
+    bl = tmp_path / "bad_entries.json"
+    bl.write_text(json.dumps({"version": 1, "entries": None}), encoding = "utf-8")
+    assert sp._load_baseline(str(bl)) == set()
+    assert "entries is not a list" in capsys.readouterr().err
+
+
 def test_committed_baseline_suppresses_known_but_not_a_new_payload():
     """End-to-end against the shipped allowlist: a reviewed benign finding stays
     suppressed, but a NEW malicious payload in the same baselined file/check is

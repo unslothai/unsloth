@@ -1240,6 +1240,27 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
     return False
 
 
+def _outbound_host_evidence(text: str, host: str) -> str:
+    """Evidence capturing the host WITH its outbound context (URL path, fetch
+    call, host config), so a changed path/headers/body reopens the key instead
+    of riding the bare host literal. Falls back to the host if none matches."""
+    host_re = re.escape(host)
+    patterns = (
+        re.compile(rf"(?:https?:)?//{host_re}(?:[:/\"'?#][^\n]*)?", re.IGNORECASE),
+        re.compile(
+            rf"(?:{_FETCH_VERBS_PAT})[^\n]{{0,200}}{host_re}[^\n]{{0,200}}"
+            rf"|{host_re}[^\n]{{0,200}}(?:{_FETCH_VERBS_PAT})[^\n]{{0,200}}",
+            re.IGNORECASE,
+        ),
+        re.compile(rf"(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`]", re.IGNORECASE),
+    )
+    for pat in patterns:
+        ev = _evidence(text, pat)
+        if ev:
+            return ev
+    return host
+
+
 def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
 
@@ -1292,7 +1313,7 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     package = pkg.display,
                     filename = rel,
                     pattern = "cred-surface-host (outbound)",
-                    evidence = needle,
+                    evidence = _outbound_host_evidence(text, needle),
                     detail = (
                         f"references {why} ({needle!r}) in an outbound "
                         "call / URL / host config; a defensive blocklist "
