@@ -46,6 +46,7 @@ studio = [
     "*.sh",
     "*.ps1",
     "*.bat",
+    "node_prebuilt_pins.json",
     "frontend/dist/**/*",
     "frontend/*.json",
     "frontend/*.ts",
