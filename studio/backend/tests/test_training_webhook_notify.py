@@ -161,6 +161,8 @@ class _RecordingSink:
 
 
 class _ExplodingSink:
+    url = "https://hook.test/x"
+
     def deliver(self, event):
         raise RuntimeError("sink failure")
 
@@ -225,10 +227,17 @@ def test_enabling_without_url_is_rejected(monkeypatch):
         notification_settings.set_training_webhook(True, "")
 
 
-def test_invalid_url_is_rejected(monkeypatch):
+def test_invalid_url_is_rejected_when_enabling(monkeypatch):
     _install_fake_studio_db(monkeypatch)
     with pytest.raises(ValueError):
-        notification_settings.set_training_webhook(False, "not-a-url")
+        notification_settings.set_training_webhook(True, "not-a-url")
+
+
+def test_disable_succeeds_with_partial_url(monkeypatch):
+    # Toggling off must not be blocked by a partial/dirty URL draft.
+    _install_fake_studio_db(monkeypatch)
+    config = notification_settings.set_training_webhook(False, "https://")
+    assert config == {"enabled": False, "url": "https://"}
 
 
 # ── Settings route ────────────────────────────────────────────────────────

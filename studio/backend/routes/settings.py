@@ -4,7 +4,7 @@
 from typing import Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
@@ -285,11 +285,14 @@ def test_notifications(
     try:
         sink.deliver(sample)
     except Exception as exc:
-        raise log_and_http_error(
-            exc,
-            502,
-            "Webhook test failed. Check the URL and try again.",
-            event = "settings.test_notifications_failed",
-            log = logger,
+        # Webhook URLs embed the secret token, so log only the type and host.
+        logger.warning(
+            "settings.test_notifications_failed: %s (%s)",
+            type(exc).__name__,
+            urlsplit(config["url"]).hostname or "?",
+        )
+        raise HTTPException(
+            status_code = 502,
+            detail = "Webhook test failed. Check the URL and try again.",
         ) from exc
     return TrainingWebhookTestResponse(ok = True)

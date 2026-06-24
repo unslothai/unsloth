@@ -529,7 +529,10 @@ export function GeneralTab() {
                 variant="outline"
                 size="sm"
                 disabled={
-                  !webhook?.enabled || !webhook?.url || isTestingWebhook
+                  !webhook?.enabled ||
+                  !webhook?.url ||
+                  webhookUrlDraft.trim() !== webhook.url ||
+                  isTestingWebhook
                 }
                 onClick={() => void testWebhook()}
               >

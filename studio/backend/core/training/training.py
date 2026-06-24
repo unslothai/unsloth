@@ -241,6 +241,7 @@ class TrainingBackend:
         # DB persistence
         self._metric_buffer: list[dict] = []
         self._run_finalized: bool = False
+        self._notification_sent: bool = False
         self._db_run_created: bool = False
         self._db_total_steps_set: bool = False
         self._db_config: Optional[dict] = None
@@ -462,6 +463,7 @@ class TrainingBackend:
         self._output_dir = None
         self._metric_buffer.clear()
         self._run_finalized = False
+        self._notification_sent = False
         self._db_run_created = False
         self._db_total_steps_set = False
         self._db_config = _sanitize_db_config(config)
@@ -1014,6 +1016,10 @@ class TrainingBackend:
                 self._notify_terminal(status, db_action_kwargs)
 
     def _notify_terminal(self, status: str, db_action_kwargs: dict) -> None:
+        # Fire at most once per run; both the event handler and exit-fallback reach this.
+        if self._notification_sent:
+            return
+        self._notification_sent = True
         try:
             from .notifications import TrainingTerminalEvent, get_training_notifier
 

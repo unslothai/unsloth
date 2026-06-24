@@ -98,7 +98,11 @@ def _format_slack(event: TrainingTerminalEvent) -> dict[str, Any]:
 
 
 def _format_discord(event: TrainingTerminalEvent) -> dict[str, Any]:
-    return {"content": _summary(event)}
+    # Discord rejects content longer than 2000 chars; long error text would 400.
+    content = _summary(event)
+    if len(content) > 1900:
+        content = content[:1897] + "..."
+    return {"content": content}
 
 
 FORMATTERS: dict[str, Callable[[TrainingTerminalEvent], dict[str, Any]]] = {
@@ -149,8 +153,13 @@ class TrainingNotifier:
     def _safe_deliver(sink: WebhookSink, event: TrainingTerminalEvent) -> None:
         try:
             sink.deliver(event)
-        except Exception:
-            logger.warning("Training notification sink failed", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            # Don't log the exception/URL: webhook URLs embed the secret token.
+            logger.warning(
+                "Training notification sink failed: %s (%s)",
+                type(exc).__name__,
+                urlparse(sink.url).hostname or "?",
+            )
 
 
 def get_training_notifier() -> TrainingNotifier:
