@@ -517,47 +517,31 @@ def _env_says_offline():
 
 
 def _get_effective_local_files_only(kwargs):
-    """Decide whether a load should stay local (cache only).
-
-    An explicit local_files_only kwarg wins, otherwise honor the HF offline env
-    vars. We only read kwargs here (never pop) because the model weight load
-    relies on the same key flowing through **kwargs.
-    """
+    """True if a load should stay on the local cache: a truthy local_files_only
+    kwarg or an HF offline env var. Read-only (never pop) so the weight load reuses
+    the same kwarg."""
     if kwargs.get("local_files_only", None):
         return True
     return _env_says_offline()
 
 
 def _is_offline_related_error(exc):
-    """True if exc (or anything in its cause/context chain) looks like a lost
-    network connection rather than a genuinely missing file.
-
-    Used to decide whether retrying a load with HF forced offline can recover the
-    files from the cache. A plain FileNotFoundError is deliberately never treated
-    as offline so real "file is missing" errors keep propagating. The one
-    exception is huggingface_hub's LocalEntryNotFoundError, which subclasses
-    FileNotFoundError but specifically means "not cached and the Hub is
-    unreachable" - i.e. genuinely offline.
-    """
+    """True if exc (or its cause/context chain) is a lost-connection error, not a
+    genuinely missing file. Plain FileNotFoundError stays non-offline; hub's
+    LocalEntryNotFoundError (not cached + Hub unreachable) is treated as offline."""
     _net_types = [ConnectionError, TimeoutError]
+    # FileNotFoundError subclasses that ARE offline (so not swallowed below). Empty
+    # if unavailable -> isinstance(_, ()) is False, preserving "all FNF propagate".
+    _offline_fnf_types = ()
+    # HTTP errors are judged by status code (below), not type: only a transient 5xx
+    # is offline; 401/403/404 are real responses that must propagate.
+    _http_types = ()
     try:
         import requests
-        _net_types += [
-            requests.exceptions.ConnectionError,
-            requests.exceptions.Timeout,
-        ]
+        _net_types += [requests.exceptions.ConnectionError, requests.exceptions.Timeout]
+        _http_types += (requests.exceptions.HTTPError,)
     except Exception:
         pass
-    # FileNotFoundError subclasses that ARE offline-related and so must NOT be
-    # swallowed by the generic FileNotFoundError exclusion below. Empty when the
-    # import is unavailable, which makes isinstance(..., ()) False and preserves
-    # the original "every FileNotFoundError propagates" behaviour.
-    _offline_fnf_types = ()
-    # HTTP errors are judged by status code, not type: only a transient 5xx is
-    # offline-ish (server briefly unreachable). A 401/403 (auth/gated) or 404
-    # (genuinely missing) is a real online response that must propagate instead of
-    # being masked by a forced local-cache retry that could serve stale files.
-    _http_types = ()
     try:
         from huggingface_hub.errors import (
             OfflineModeIsEnabled,
@@ -568,11 +552,6 @@ def _is_offline_related_error(exc):
         _net_types += [OfflineModeIsEnabled, LocalEntryNotFoundError]
         _offline_fnf_types = (LocalEntryNotFoundError,)
         _http_types += (HfHubHTTPError,)
-    except Exception:
-        pass
-    try:
-        import requests
-        _http_types += (requests.exceptions.HTTPError,)
     except Exception:
         pass
     _net_types = tuple(_net_types)
@@ -615,24 +594,18 @@ def _is_offline_related_error(exc):
     cur = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        # A plain FileNotFoundError is a genuine missing-file error and must keep
-        # propagating; LocalEntryNotFoundError is the documented exception (it
-        # subclasses FileNotFoundError but means offline + not cached).
+        # Plain FileNotFoundError propagates; LocalEntryNotFoundError (offline) does not.
         is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(cur, _offline_fnf_types)
         if isinstance(cur, _net_types) and not is_fnf:
             return True
-        # HTTP error: only a transient 5xx counts as offline; 4xx must propagate.
         if isinstance(cur, _http_types):
             code = _http_status(cur)
             if code is not None and 500 <= code < 600:
                 return True
-            # A status-less HTTP error (no response / unparseable code) never went
-            # through the 4xx-vs-5xx decision above, so fall back to the network
-            # wording check - a 4xx with a real code already returned/!=offline here.
+            # No parseable status -> fall back to wording (coded 4xx already decided above).
             if code is None and not is_fnf and any(w in str(cur).lower() for w in _wording):
                 return True
-        # Plain OSError wording fallback - never applied to HTTP errors with a known
-        # status (that code already decided) so a 4xx message can't be misread.
+        # OSError wording fallback (skipped for HTTP errors, whose status already decided).
         elif isinstance(cur, OSError) and not is_fnf:
             if any(w in str(cur).lower() for w in _wording):
                 return True
@@ -640,11 +613,9 @@ def _is_offline_related_error(exc):
     return False
 
 
-# Guards the process-wide HF offline state below. A depth counter lets nested or
-# concurrent _force_hf_offline() windows share one flip: only the first entrant
-# saves the real original values and only the last exit restores them, so
-# overlapping windows can never restore a stale value. The lock is held only
-# around the flip/restore, not around the wrapped load.
+# Process-wide HF offline state. The depth counter lets nested/concurrent
+# _force_hf_offline() windows share one flip: only the first entrant saves the
+# originals and only the last exit restores them. Lock guards flip/restore only.
 _force_offline_lock = _threading.RLock()
 _force_offline_depth = 0
 _force_offline_saved = []  # in-process module attributes
@@ -652,16 +623,10 @@ _force_offline_saved_env = {}  # HF offline env-var originals
 
 
 def _reset_hf_sessions():
-    """Clear huggingface_hub's per-thread cached requests.Session objects.
-
-    hf_hub caches one Session per thread and bakes the offline adapter in at
-    creation time (its backend factory reads constants.HF_HUB_OFFLINE and mounts
-    an OfflineAdapter or a real network adapter). So flipping the constant does
-    not re-mount an already-cached Session: one built while online keeps its live
-    network adapter inside this window (and one built while offline would stay
-    offline after restore). Resetting forces the next get_session() to rebuild
-    against the current flag. Best-effort: a no-op if the API is unavailable.
-    """
+    """Clear huggingface_hub's per-thread cached Session objects so the next
+    get_session() rebuilds against the current offline flag. On hub 0.x the offline
+    adapter is baked into the Session at creation, so flipping the constant alone
+    leaves an already-cached online Session able to hit the network. Best-effort."""
     try:
         from huggingface_hub.utils._http import reset_sessions
     except Exception:
@@ -677,22 +642,12 @@ def _reset_hf_sessions():
 
 @contextlib.contextmanager
 def _force_hf_offline():
-    """Temporarily force Hugging Face offline mode at runtime.
-
-    Passing local_files_only=True is not always enough: on transformers < 5
-    AutoProcessor / AutoTokenizer still issue a /api/models request during
-    processor-class resolution, which hangs or fails when there is no network
-    even though every file is already cached. This sets BOTH:
-      * the HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE env vars - so a spawned
-        subprocess (which inherits os.environ) and any code that reads the env
-        directly (raw urllib / requests guards) also see offline; and
-      * the in-process huggingface_hub / transformers offline constants - so code
-        that already imported them at start-up honors offline without a restart.
-
-    Caveat: the state is process-global for the (brief) duration, so a concurrent
-    load that legitimately needs the Hub during the window would also see offline.
-    Callers only enter when offline was requested / detected, and the refcount
-    keeps restore correct under nesting / overlap.
+    """Temporarily force Hugging Face offline at runtime. local_files_only=True
+    alone is not enough (transformers < 5 still issues a /api/models request that
+    hangs offline), so set BOTH the HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE env vars
+    (covers subprocesses + raw urllib/requests guards) AND the in-process
+    huggingface_hub / transformers offline constants. Process-global for the brief
+    window; the refcount keeps restore correct under nesting / overlap.
     """
     global _force_offline_depth, _force_offline_saved, _force_offline_saved_env
     with _force_offline_lock:
@@ -748,20 +703,11 @@ def _force_hf_offline():
                 _reset_hf_sessions()
 
 
-def _offline_context_if(offline):
-    """Return a _force_hf_offline() window when offline else a no-op context."""
-    return _force_hf_offline() if offline else contextlib.nullcontext()
-
-
 def _offline_aware_load(fn):
-    """Decorator for a from_pretrained-style entry point.
-
-    Decides HF-offline ONCE (explicit local_files_only kwarg or env var), forces
-    it ONCE around the whole load so every nested HF call inherits it, and - when
-    we started online - retries the load once forced-offline if it fails with a
-    genuinely network-related error (the no-env-var, network-down case). The
-    online path is unchanged when the network is up: no window, no retry.
-    """
+    """Decide HF-offline ONCE (explicit local_files_only kwarg or env var) and
+    force it ONCE around the whole load so every nested HF call inherits it. If we
+    started online and the load fails with a network error, retry once forced-
+    offline. Online-with-network-up is unchanged: no window, no retry."""
 
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
@@ -774,12 +720,9 @@ def _offline_aware_load(fn):
         except Exception as e:
             if not _is_offline_related_error(e):
                 raise
-        # Retry OUTSIDE the except block: an except-scoped exception still holds its
-        # __traceback__, which pins the failed attempt's frame locals (e.g. a
-        # partially loaded model) until the block exits. Loading the model a second
-        # time while the first copy is still alive can OOM a large VLM. Letting the
-        # except block close drops the traceback; collect + empty the device cache
-        # so the partial load is freed before the forced-offline retry reallocates.
+        # Retry OUTSIDE the except: the exception's __traceback__ pins the failed
+        # attempt's frame locals (a partial model), so free it before reallocating
+        # or a large VLM can OOM on the second load.
         try:
             gc.collect()
             if torch.cuda.is_available():
@@ -796,13 +739,9 @@ def _offline_aware_load(fn):
 
 
 def _has_local_tokenizer_files(path):
-    """True if a local directory has a self-sufficient (loadable) tokenizer.
-
-    A BPE vocab.json is only loadable together with its merges.txt (GPT-2 /
-    RoBERTa style); vocab.json alone is not. special_tokens_map.json is NOT
-    required - modern tokenizers (e.g. Gemma) store special tokens inside
-    tokenizer_config.json and often omit it.
-    """
+    """True if a local dir has a self-sufficient (loadable) tokenizer. vocab.json
+    needs its merges.txt (BPE); special_tokens_map.json is NOT required (modern
+    tokenizers like Gemma keep special tokens in tokenizer_config.json)."""
     return (
         os.path.exists(os.path.join(path, "tokenizer.json"))
         or os.path.exists(os.path.join(path, "tokenizer.model"))
@@ -816,15 +755,11 @@ def _has_local_tokenizer_files(path):
 
 
 def _resolve_checkpoint_tokenizer_name(old_model_name, kwargs):
-    """Pick tokenizer_name for a PEFT / checkpoint load.
-
-    tokenizer_name is ALWAYS popped from kwargs (it is also passed explicitly to
-    the downstream loader, so leaving it in kwargs would raise "multiple values
-    for keyword argument 'tokenizer_name'"). A caller-supplied override wins;
-    otherwise use the local checkpoint dir when it is self-sufficient (has
-    tokenizer_config.json + a loadable tokenizer file), else None so the load
-    falls back to the base model repo.
-    """
+    """Pick tokenizer_name for a PEFT / checkpoint load. tokenizer_name is ALWAYS
+    popped from kwargs (it is also passed explicitly downstream, else "multiple
+    values for keyword argument 'tokenizer_name'"). A caller override wins; else the
+    local checkpoint dir if self-sufficient (tokenizer_config.json + a loadable
+    tokenizer file), else None to fall back to the base repo."""
     explicit = kwargs.pop("tokenizer_name", None)
     if explicit is not None:
         return explicit

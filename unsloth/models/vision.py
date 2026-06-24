@@ -449,9 +449,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     return output
 
 
-# Offline-loading helpers now live in loader_utils.py (single source of truth,
-# shared with loader.py and the Studio exporter). Import only the ones used here;
-# other modules import the rest straight from loader_utils (the canonical source).
+# Offline helpers live in loader_utils.py (canonical source, shared with loader.py
+# and the Studio exporter). Import only the ones used here.
 from .loader_utils import (
     _get_effective_local_files_only,
     _is_offline_related_error,
@@ -1228,13 +1227,10 @@ class FastBaseModel:
                     except Exception:
                         pass
 
-        # Acquire the tokenizer/processor. Offline forcing is handled ONCE at the
-        # entry point (see @_offline_aware_load on from_pretrained): when offline,
-        # this whole load already runs inside _force_hf_offline(), so every leaf
-        # load reads straight from the cache. This helper only does the FUNCTIONAL
-        # chain (primary AutoProcessor -> get_auto_processor -> manual VLM fallback)
-        # and surfaces the underlying error so the entry point can decide whether an
-        # online attempt should be retried forced-offline.
+        # Acquire the tokenizer/processor. @_offline_aware_load already forces HF
+        # offline when needed, so this only does the functional chain (AutoProcessor
+        # -> get_auto_processor -> manual VLM fallback) and surfaces the error for the
+        # entry-point retry.
         def _acquire_processor(lfo):
             _err = None  # underlying load failure (used by the entry-point retry)
             if (whisper_language and whisper_task) or auto_model.__name__.endswith(
@@ -1297,12 +1293,8 @@ class FastBaseModel:
                 if _fallback is not None:
                     _tok = _fallback
                 elif _err is None or (_fb_err is not None and _is_offline_related_error(_fb_err)):
-                    # Surface the fallback's failure so the entry point can tell an
-                    # offline failure (retry from cache) from a permanent one. A
-                    # network _fb_err takes precedence even when the primary error
-                    # was permanent (e.g. unknown tokenizer class): the repo-id
-                    # files may be cached-but-needed-network, so the offline retry
-                    # must still fire instead of being masked by the primary error.
+                    # Prefer a network fallback error over a permanent primary one so the
+                    # offline retry still fires (cached repo files may need the network).
                     _err = _fb_err
             return _tok, _err
 
@@ -1312,22 +1304,18 @@ class FastBaseModel:
             return is_vlm and _t is not None and not hasattr(_t, "image_processor")
 
         tokenizer, _primary_err = _acquire_processor(local_files_only)
-        # If we are online (local_files_only False) and the load failed or degraded
-        # for a network reason, raise so the @_offline_aware_load entry point retries
-        # the whole load forced-offline (it then reads from the cache). A permanent
-        # error (bad config, unknown class) or a genuine missing file propagates
-        # as-is and is never treated as offline; when already offline we keep what we
-        # got and fall through to the last-resort / clear error below.
+        # Online + network-related failure/degrade: raise so @_offline_aware_load
+        # retries the whole load forced-offline (from cache). Permanent errors and
+        # genuine missing files propagate; when already offline we keep what we got.
         if (
             (tokenizer is None or _is_degraded_vlm(tokenizer))
             and not local_files_only
             and _is_offline_related_error(_primary_err)
         ):
             raise _primary_err
-        # Missing torchvision silently degrades the VLM processor to a text-only
-        # tokenizer; surface the real cause instead of the later collator error (#4202).
-        # _missing_torchvision_error checks find_spec first, so it also fires when the
-        # processor degraded silently without raising (_primary_err is None).
+        # Missing torchvision silently degrades a VLM processor to text-only; surface
+        # the real cause instead of the later collator error (#4202). find_spec is
+        # checked first, so this also fires on a silent degrade (_primary_err is None).
         if is_vlm and (tokenizer is None or not hasattr(tokenizer, "image_processor")):
             if _missing_torchvision_error(_primary_err):
                 raise ImportError(
@@ -1377,11 +1365,8 @@ class FastBaseModel:
         try:
             model, tokenizer = patch_tokenizer(model, tokenizer)
         except Exception as _patch_err:
-            # Some VLM processors (e.g., ERNIE VL) may fail during tokenizer patching.
-            # Try loading the tokenizer separately via AutoTokenizer as a fallback.
-            # Offline forcing is handled by the entry point, so just load with
-            # local_files_only; a network failure propagates so the entry point can
-            # retry the whole load forced-offline.
+            # Some VLM processors (e.g. ERNIE VL) fail tokenizer patching; fall back
+            # to a separate AutoTokenizer load (offline forcing handled upstream).
             try:
                 from transformers import AutoTokenizer as _AutoTokenizer
 
@@ -1399,9 +1384,8 @@ class FastBaseModel:
                 else:
                     tokenizer = _fallback_tok
             except Exception as _fb_err:
-                # If we are online and the network is down, let the offline error
-                # propagate so the entry point retries forced-offline; otherwise the
-                # original patch error is the most informative.
+                # Online network failure: let it propagate for the offline retry; else
+                # the original patch error is more informative.
                 if not local_files_only and _is_offline_related_error(_fb_err):
                     raise
                 raise _patch_err
@@ -1412,11 +1396,8 @@ class FastBaseModel:
             model.config.update({"unsloth_version": __version__})
         patch_saving_functions(model, vision = True)
         if tokenizer is None:
-            # Last resort: try AutoTokenizer, then PreTrainedTokenizerFast. Offline
-            # forcing is handled by the entry point; a network failure here is raised
-            # (chained into the error below) so the entry point can retry the load
-            # forced-offline instead of surfacing the misleading "weirdly not loaded"
-            # error.
+            # Last resort: AutoTokenizer, then PreTrainedTokenizerFast. A network
+            # failure is raised so @_offline_aware_load can retry forced-offline.
             def _last_resort_tokenizer(lfo):
                 from transformers import AutoTokenizer as _AutoTokenizer
                 try:

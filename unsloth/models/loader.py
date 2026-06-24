@@ -360,10 +360,8 @@ class FastLanguageModel(FastLlamaModel):
             if is_dist:
                 device_map = distributed_device_map
 
-        # Offline is decided once by @_offline_aware_load: when offline it has
-        # already set kwargs["local_files_only"] = True and entered _force_hf_offline()
-        # around this whole load, so the 8bit / full-finetuning / qat delegation and
-        # every nested HF call (including the text tokenizer load) inherit it.
+        # @_offline_aware_load already set local_files_only + forced HF offline when
+        # offline, so the 8bit / full-ft / qat delegation and nested loads inherit it.
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -599,11 +597,8 @@ class FastLanguageModel(FastLlamaModel):
                 f"AutoConfig error: {autoconfig_error}\n\n"
                 f"PeftConfig error: {peft_error}\n\n"
             )
-            # Chain the original probe exception so @_offline_aware_load can see a
-            # network/offline cause (ConnectionError / LocalEntryNotFoundError / 5xx)
-            # in __cause__ and retry the load forced-offline from cache. A permanent
-            # cause (404 / bad config) is not offline-classified, so it still
-            # propagates without a wasted retry.
+            # Chain the probe cause so @_offline_aware_load can spot a network error
+            # in __cause__ and retry forced-offline; a permanent cause still propagates.
             raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
 
         # Get base model for PEFT:
@@ -761,10 +756,8 @@ class FastLanguageModel(FastLlamaModel):
             use_gradient_checkpointing, max_seq_length, dtype
         )
 
-        # Check if this is a local model since the tokenizer gets overwritten. A
-        # caller-supplied tokenizer_name wins; otherwise keep the local checkpoint
-        # dir when it is self-sufficient, else fall back to the base repo id. See
-        # loader_utils._resolve_checkpoint_tokenizer_name for the exact rules.
+        # The tokenizer gets overwritten: keep the local checkpoint dir when it is
+        # self-sufficient, else the base repo id (see _resolve_checkpoint_tokenizer_name).
         tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, kwargs)
 
         if fast_inference:
@@ -1142,9 +1135,8 @@ class FastModel(FastBaseModel):
         peft_exc = None
         model_config = None
         peft_config = None
-        # Offline is decided once by @_offline_aware_load: when offline it has already
-        # set kwargs["local_files_only"] = True and entered _force_hf_offline() around
-        # this whole load, so every nested HF call inherits it.
+        # @_offline_aware_load already set local_files_only + forced HF offline when
+        # offline, so every nested HF call inherits it.
         local_files_only = kwargs.get("local_files_only", False)
 
         # Text-diffusion slow-path dispatch, factored so both the normal route (below) and the
@@ -1450,11 +1442,8 @@ class FastModel(FastBaseModel):
                 f"AutoConfig error: {autoconfig_error}\n\n"
                 f"PeftConfig error: {peft_error}\n\n"
             )
-            # Chain the original probe exception so @_offline_aware_load can see a
-            # network/offline cause (ConnectionError / LocalEntryNotFoundError / 5xx)
-            # in __cause__ and retry the load forced-offline from cache. A permanent
-            # cause (404 / bad config) is not offline-classified, so it still
-            # propagates without a wasted retry.
+            # Chain the probe cause so @_offline_aware_load can spot a network error
+            # in __cause__ and retry forced-offline; a permanent cause still propagates.
             raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
 
         # Get base model for PEFT:
@@ -1554,10 +1543,8 @@ class FastModel(FastBaseModel):
             if model_type in model_types_all:
                 supports_sdpa = False
 
-        # Check if this is a local model since the tokenizer gets overwritten. A
-        # caller-supplied tokenizer_name wins; otherwise keep the local checkpoint
-        # dir when it is self-sufficient, else fall back to the base repo id. See
-        # loader_utils._resolve_checkpoint_tokenizer_name for the exact rules.
+        # The tokenizer gets overwritten: keep the local checkpoint dir when it is
+        # self-sufficient, else the base repo id (see _resolve_checkpoint_tokenizer_name).
         tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, kwargs)
 
         # Capture task intent before text_only can replace a parent VLM config

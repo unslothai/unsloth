@@ -48,14 +48,9 @@ _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _env_offline() -> bool:
-    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value.
-
-    Matches the canonical parsing used by unsloth's offline helpers
-    (loader_utils._env_says_offline): strip + lowercase and accept on/true/yes/1.
-    This helper gates the raw requests.get tokenizer-config fallback and the
-    detection cache keys, so it must recognise the same values as those helpers
-    or HF_HUB_OFFLINE=on / " 1 " would still hit the network while "offline".
-    """
+    """True if HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE is truthy. Uses the canonical
+    parse (strip + lowercase, on/true/yes/1) shared with loader_utils._env_says_offline,
+    since this gates the raw requests.get fallback and the detection cache keys."""
     return (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
@@ -797,10 +792,8 @@ def _token_fingerprint(token: Optional[str]) -> Optional[str]:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-# Cache vision detection per session to avoid repeated subprocess spawns.
-# Keyed by (normalized_model_name, token_fingerprint) to handle gated models.
-# Only definitive results are cached; transient failures (network, timeouts)
-# are NOT cached so they can be retried.
+# Vision detection cache, keyed by (normalized_name, token_fingerprint,
+# local_files_only). Only definitive results are cached; transient failures retry.
 _vision_detection_cache: Dict[Tuple[str, Optional[str], bool], bool] = {}
 _vision_cache_lock = threading.Lock()
 
@@ -810,17 +803,11 @@ def is_vision_model(
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
 ) -> bool:
-    """
-    Detect vision-language models (VLMs) via architecture in config. Works for
-    fine-tuned models since they inherit the base architecture.
-
-    Models needing transformers 5.x are checked in a .venv_t5/ subprocess.
-    Results are cached per (model_name, token_fingerprint, local_files_only) for
-    the process lifetime; transient failures are not cached so they can be
-    retried. local_files_only is part of the key because an offline probe reads
-    only the on-disk cache and can differ from an online probe (e.g. a
-    transformers-5 VLM the offline path cannot run the subprocess for), so the
-    two results must never share a cache entry.
+    """Detect VLMs via the architecture in config (works for fine-tunes, which
+    inherit it). transformers-5.x models are checked in a .venv_t5/ subprocess.
+    Cached per (model_name, token_fingerprint, local_files_only); transient failures
+    are not cached. local_files_only is in the key because an offline probe (on-disk
+    cache only) can differ from an online one and must not share an entry.
 
     Args:
         model_name: Model identifier (HF repo or local path)
@@ -859,11 +846,9 @@ def is_vision_model(
             exc,
         )
         resolved_name = model_name
-    # Mirror detect_audio_type: an env-offline probe behaves offline (skips the
-    # transformers-5 network subprocess, stays on the local cache), so key on the
-    # EFFECTIVE offline state and pass it through - otherwise an env-offline negative
-    # is stored under the online (False) key and poisons a later online lookup once
-    # the env var is cleared.
+    # Key on the effective offline state (kwarg OR env), like detect_audio_type: an
+    # env-offline probe behaves offline, so caching it under the online key would
+    # poison a later online lookup after the env var is cleared.
     effective_offline = bool(local_files_only or _env_offline())
     cache_key = (resolved_name, _token_fingerprint(hf_token), effective_offline)
 
@@ -904,10 +889,9 @@ def _is_vision_model_uncached(
     if raw is not None:
         return raw
 
-    # Raw read failed transiently: fall back to AutoConfig with remote code DISABLED
-    # (in a transformers-5.x subprocess when the main process can't parse the arch).
-    # Skip the subprocess offline: it does its own network probe and would diverge
-    # from the online path, so offline we stay on the local cache via load_model_config.
+    # Raw read failed transiently: fall back to AutoConfig (remote code DISABLED), in a
+    # transformers-5.x subprocess if needed. Skip that subprocess offline (it probes the
+    # network and would diverge from the online path) and stay on the local cache below.
     from utils.transformers_version import needs_transformers_5
 
     if not local_files_only and needs_transformers_5(model_name):
@@ -1008,12 +992,9 @@ def detect_audio_type(
             resolved_name = resolve_cached_repo_id_case(model_name)
     except Exception:
         resolved_name = model_name
-    # _detect_audio_from_tokenizer skips the remote fetch when local_files_only OR
-    # the HF offline env vars are set, so its result reflects the EFFECTIVE offline
-    # state. Key on that (not just the kwarg): a local-only / env-offline probe only
-    # consults the on-disk cache, so its (possibly stale/partial) negative must not
-    # be stored under the online (False) key and reused by a later online probe -
-    # e.g. after HF_HUB_OFFLINE is cleared - that would otherwise fetch the config.
+    # _detect_audio_from_tokenizer skips the remote fetch when local_files_only OR an
+    # HF offline env var is set, so key on that effective state: an offline negative
+    # under the online key would poison a later online probe (e.g. after env cleared).
     effective_offline = bool(local_files_only or _env_offline())
     cache_key = (resolved_name, _token_fingerprint(hf_token), effective_offline)
     if cache_key in _audio_detection_cache:
@@ -1079,12 +1060,9 @@ def _detect_audio_from_tokenizer(
     except Exception as e:
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
-    # 2) Fall back to HuggingFace API (skipped offline so an offline export never
-    #    blocks on a 15s network read; the local cache above is authoritative).
-    #    This raw requests.get ignores the HF offline flag, so gate it on BOTH the
-    #    explicit local_files_only and the HF offline env vars - the forced-offline
-    #    window the exporter opens sets those env vars, so this is covered even if a
-    #    caller forgets to pass local_files_only.
+    # 2) Fall back to the HuggingFace API. This raw requests.get ignores the HF offline
+    #    flag, so gate it on local_files_only OR the env vars (which the exporter's
+    #    forced-offline window sets) to skip the network offline.
     if local_files_only or _env_offline():
         return None, read_any
 

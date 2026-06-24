@@ -105,12 +105,8 @@ def _hf_offline(timeout = 3):
         return True
 
 
-# Reuse Unsloth's single lock-guarded forced-offline context (same repo /
-# release). It sets BOTH the HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE env vars (so a
-# spawned subprocess and any raw urllib / requests guards that read the env see
-# offline) AND the in-process huggingface_hub / transformers offline flags, all
-# refcounted so nested / concurrent windows restore correctly. Fall back to a
-# no-op if the private helper ever moves.
+# Reuse Unsloth's lock-guarded forced-offline context (sets the HF offline env vars
+# + in-process flags, refcounted). No-op fallback if the private helper ever moves.
 try:
     from unsloth.models.loader_utils import _force_hf_offline
 except Exception:
@@ -268,14 +264,10 @@ class ExportBackend:
             # checkpoint dir / HF cache instead of hanging or crashing.
             local_files_only = _hf_offline()
 
-            # Token the type-detection probes too, else a gated multimodal base
-            # 404s here and falls through to the text loader. When offline we run
-            # them in a forced-offline window: it sets the HF offline env vars +
-            # in-process flags, so is_vision_model's hf_hub_download / AutoConfig /
-            # urllib probes and its transformers-5 subprocess all read the local
-            # cache instead of waiting out connection timeouts. detect_audio_type's
-            # remote fallback is a raw requests.get, so it is ALSO passed
-            # local_files_only (and itself honors the env vars) to skip the network.
+            # Run the type-detection probes in the forced-offline window when offline
+            # (else a gated base 404s and falls through to the text loader). The window
+            # covers is_vision_model's Hub reads + transformers-5 subprocess; pass
+            # local_files_only too so detect_audio_type's raw requests.get also skips.
             with _offline_window_if(local_files_only):
                 self._audio_type = detect_audio_type(
                     model_id, hf_token = token, local_files_only = local_files_only
