@@ -300,7 +300,7 @@ def list_empty_gguf_variant_dirs(repo_id: str) -> set[str]:
                 quant = extract_quant_token(sub.name)
                 if not quant:
                     continue
-                has_child = any(True for _ in sub.iterdir())
+                has_child = any(sub.iterdir())
             except OSError:
                 continue
             if has_child:

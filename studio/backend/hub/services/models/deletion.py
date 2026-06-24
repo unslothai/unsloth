@@ -143,7 +143,7 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> int:
                     ) or sub.name.lower() == variant.lower()
                     if not matches:
                         continue
-                    if any(True for _ in sub.iterdir()):
+                    if any(sub.iterdir()):
                         continue
                     sub.rmdir()
                     removed += 1
