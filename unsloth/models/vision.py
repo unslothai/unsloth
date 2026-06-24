@@ -450,18 +450,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
 
 # Offline-loading helpers now live in loader_utils.py (single source of truth,
-# shared with loader.py and the Studio exporter). Re-exported here so existing
-# imports such as `from unsloth.models.vision import _force_hf_offline` keep
-# working.
+# shared with loader.py and the Studio exporter). Import only the ones used here;
+# other modules import the rest straight from loader_utils (the canonical source).
 from .loader_utils import (
-    _env_says_offline,
     _get_effective_local_files_only,
     _is_offline_related_error,
-    _force_hf_offline,
-    _offline_context_if,
     _offline_aware_load,
-    _has_local_tokenizer_files,
-    _resolve_checkpoint_tokenizer_name,
 )
 
 

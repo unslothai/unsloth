@@ -112,7 +112,7 @@ def _hf_offline(timeout = 3):
 # refcounted so nested / concurrent windows restore correctly. Fall back to a
 # no-op if the private helper ever moves.
 try:
-    from unsloth.models.vision import _force_hf_offline
+    from unsloth.models.loader_utils import _force_hf_offline
 except Exception:
     import contextlib as _contextlib
 
