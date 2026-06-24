@@ -767,12 +767,9 @@ export function ImagesPage() {
                   alt={selected.prompt}
                   className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
                 />
-                {/* Metadata bottom-left, so it never sits under the actions. */}
-                <div className="absolute bottom-4 left-4 rounded-lg bg-background/80 px-2.5 py-1 text-xs tabular-nums text-muted-foreground shadow-sm ring-1 ring-border backdrop-blur">
-                  {selected.width}×{selected.height} · seed {selected.seed}
-                </div>
                 {/* Actions grouped in one glass toolbar so they stay legible over
-                    any image and read as a unit instead of blending into the canvas. */}
+                    any image and read as a unit instead of blending into the canvas.
+                    Size/seed live in the Recipe popover, so no separate chip here. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
                   <RecipePopover image={selected} onRestore={restoreSettings} />
                   <Button
