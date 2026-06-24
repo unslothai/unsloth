@@ -45,8 +45,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
+import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
+  ArrowRight02Icon,
+  BadgeInfoIcon,
   ChefHatIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
@@ -68,7 +71,7 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  Setting07Icon,
+  Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
   ZapIcon,
@@ -108,7 +111,7 @@ import {
 } from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
@@ -211,6 +214,7 @@ function NavItem({
   dataTour,
   className,
   spinner,
+  tooltip,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -221,12 +225,15 @@ function NavItem({
   dataTour?: string;
   className?: string;
   spinner?: boolean;
+  // Overrides the hover tooltip (defaults to `label`). Used to explain why a
+  // disabled item (e.g. Train/Export on a chat-only host) is greyed out.
+  tooltip?: string;
 }) {
   return (
     <SidebarMenuItem className={className}>
       <div className="relative">
         <SidebarMenuButton
-          tooltip={label}
+          tooltip={tooltip ?? label}
           disabled={disabled}
           onClick={onClick}
           isActive={active}
@@ -249,6 +256,19 @@ function NavItem({
   );
 }
 
+// TEMP DEV override: preview the update card on installs with no real update
+// (e.g. an editable checkout). In the browser console run
+// `localStorage.setItem("unsloth_force_update_card", "1")` and reload. Remove
+// before merge.
+function devForceUpdateCard(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("unsloth_force_update_card") === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
@@ -261,12 +281,49 @@ export function AppSidebar() {
   const { togglePinned, isMobile, setOpenMobile } = useSidebar();
   const navigate = useNavigate();
 
+  // Web update detection: `webUpdate` is non-null only when the installed
+  // (PyPI) version is behind the latest release, so the card is hidden by
+  // default. `forceUpdateCard` is a TEMP dev override to preview it on installs
+  // with no real update (e.g. an editable checkout); remove before merge.
+  const { status: webUpdate } = useWebUpdateCheck();
+  const [forceUpdateCard] = useState(devForceUpdateCard);
+  const showUpdateCard = Boolean(webUpdate) || forceUpdateCard;
+  const updateVersion =
+    webUpdate?.latestVersion ?? (forceUpdateCard ? "0.0.0" : null);
+
   // Auto-close mobile Sheet after navigation
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  // When Train/Export are greyed out (chat-only host), explain why on hover
+  // instead of disabling them silently. mlx_unavailable is the common macOS case
+  // after a reinstall/update dropped MLX and is recoverable via `unsloth studio update`.
+  const trainExportDisabledHint: string | undefined = !chatOnly
+    ? undefined
+    : chatOnlyReason === "mlx_unavailable"
+      ? "Training needs MLX. Run `unsloth studio update` to enable Train and Export."
+      : chatOnlyReason === "intel_mac"
+        ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
+        : chatOnlyReason === "no_gpu"
+          ? "Training needs an NVIDIA or AMD GPU."
+          : undefined;
+
+  // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX in the
+  // background and flip chat_only false without a restart. The platform store
+  // cached the initial /api/health, so re-poll while we are chat-only for the
+  // recoverable mlx_unavailable case; the effect stops once Train/Export become
+  // available (chatOnly flips false and this effect's guard returns early).
+  useEffect(() => {
+    if (!chatOnly || chatOnlyReason !== "mlx_unavailable") return;
+    const id = window.setInterval(() => {
+      void fetchDeviceType({ force: true }).catch(() => undefined);
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [chatOnly, chatOnlyReason]);
+
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
   const isChatRoute = pathname.startsWith("/chat");
@@ -397,6 +454,7 @@ export function AppSidebar() {
     chatOpen,
     trainOpen,
     runsOpen,
+    pinnedOpen,
     isStudioRoute,
   ]);
 
@@ -1046,6 +1104,16 @@ export function AppSidebar() {
       <SidebarContent
         ref={scrollRef}
         onScroll={(e) => syncScrollState(e.currentTarget)}
+        // Collapsible groups animate their height; re-measure the fade once the
+        // open/close animation settles, not on the (still-animating) state flip.
+        onAnimationEnd={(e) => {
+          if (
+            e.animationName === "collapsible-down" ||
+            e.animationName === "collapsible-up"
+          ) {
+            syncScrollState(e.currentTarget);
+          }
+        }}
         className={cn(
           // pb-2 keeps the last row's rounded highlight clear of the
           // overflow clip edge so its bottom corners aren't shaved off.
@@ -1105,6 +1173,7 @@ export function AppSidebar() {
                   pathname === "/studio" || pathname.startsWith("/studio/")
                 }
                 disabled={chatOnly}
+                tooltip={trainExportDisabledHint}
                 spinner={trainingInProgress}
                 onClick={() => {
                   if (chatOnly) return;
@@ -1133,6 +1202,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.train")}
                     active={pathname === "/studio" || pathname.startsWith("/studio/")}
                     disabled={chatOnly}
+                    tooltip={trainExportDisabledHint}
                     spinner={trainingInProgress}
                     onClick={() => {
                       if (chatOnly) return;
@@ -1154,6 +1224,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.export")}
                     active={pathname === "/export" || pathname.startsWith("/export/")}
                     disabled={chatOnly}
+                    tooltip={trainExportDisabledHint}
                     spinner={exportInProgress}
                     onClick={() => {
                       if (chatOnly) return;
@@ -1314,18 +1385,75 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter className="relative group-data-[collapsible=icon]:px-0">
+      <SidebarFooter
+        className={cn(
+          "relative pb-3 group-data-[collapsible=icon]:px-0",
+          // Tighter top with the update card so the fade hugs it; fuller top
+          // for the profile on its own.
+          showUpdateCard ? "pt-1.5" : "pt-2.5",
+        )}
+      >
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
             shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 right-2 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-transparent transition-opacity duration-200",
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
+            // Shorter fade when the update card sits above the profile so the
+            // list reads closer to it.
+            showUpdateCard ? "h-3" : "h-10",
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
-        <SidebarMenu>
+        <SidebarMenu className="gap-3 group-data-[collapsible=icon]:gap-2.5">
+          {/* Update affordance — shows only when a newer version is available. */}
+          {showUpdateCard && (
+            <SidebarMenuItem>
+              <button
+                type="button"
+                aria-label={t("shell.updateAvailable")}
+                onClick={() => {
+                  useSettingsDialogStore
+                    .getState()
+                    .openDialog("about", { scrollTarget: "about-updates" });
+                  closeMobileIfOpen();
+                }}
+                className="flex h-[44px] w-full items-center gap-[9px] rounded-[14px] border border-border/60 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
+              >
+                <span
+                  aria-hidden="true"
+                  className="flex size-[32px] shrink-0 items-center justify-center group-data-[collapsible=icon]:size-full"
+                >
+                  <HugeiconsIcon
+                    icon={BadgeInfoIcon}
+                    strokeWidth={1.75}
+                    className="size-[21px] text-nav-fg"
+                  />
+                </span>
+                <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
+                  <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
+                    {t("shell.updateAvailable")}
+                  </span>
+                  {updateVersion && (
+                    <span className="truncate text-[11.5px] text-muted-foreground">
+                      v{updateVersion}
+                    </span>
+                  )}
+                </div>
+                <span
+                  aria-hidden="true"
+                  className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+                >
+                  <HugeiconsIcon
+                    icon={ArrowRight02Icon}
+                    className="size-[17px]"
+                    strokeWidth={1.75}
+                  />
+                </span>
+              </button>
+            </SidebarMenuItem>
+          )}
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1347,11 +1475,16 @@ export function AppSidebar() {
                     <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
                   {/* settings cog (replaces the up/down chevron) */}
-                  <HugeiconsIcon
-                    icon={Setting07Icon}
-                    strokeWidth={1.5}
-                    className="ml-auto !size-[18px] text-muted-foreground group-data-[collapsible=icon]:hidden"
-                  />
+                  <span
+                    aria-hidden="true"
+                    className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+                  >
+                    <HugeiconsIcon
+                      icon={Settings02Icon}
+                      strokeWidth={1.5}
+                      className="!size-[18px]"
+                    />
+                  </span>
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
@@ -1364,7 +1497,7 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
-                    <HugeiconsIcon icon={Setting07Icon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.navigation.settings")}</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>

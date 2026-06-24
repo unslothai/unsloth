@@ -138,7 +138,6 @@ class TestFilterRequirements:
         req = self._write_req(
             tmp_path,
             """\
-            open_spiel
             triton_kernels
             torch-stoi
             timm
@@ -222,8 +221,8 @@ class TestRealRequirementsFiltering:
         filtered = self._non_blank_non_comment(Path(result))
         original = self._non_blank_non_comment(EXTRAS_TXT)
 
-        # These must be gone.
-        for pkg in ["torch-stoi", "timm", "openai-whisper", "transformers-cfg"]:
+        # Every NO_TORCH skip package present in extras.txt must be gone.
+        for pkg in ips.NO_TORCH_SKIP_PACKAGES:
             assert not any(
                 l.lower().startswith(pkg) for l in filtered
             ), f"{pkg} should be removed from extras.txt"
