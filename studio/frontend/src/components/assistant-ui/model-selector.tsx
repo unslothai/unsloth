@@ -126,6 +126,7 @@ interface ModelSelectorProps {
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void | Promise<void>;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onListen?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
@@ -273,6 +274,7 @@ function ModelSelectorContent({
   onPickLocalModel,
   onBrowseHub,
   onModelsChange,
+  onListen,
   deleteDisabled,
   className,
   dataTour,
@@ -288,6 +290,7 @@ function ModelSelectorContent({
   onPickLocalModel?: () => void;
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onListen?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   className?: string;
   dataTour?: string;
@@ -457,6 +460,7 @@ function ModelSelectorContent({
             onFoldersChange={onFoldersChange}
             onBrowseHub={onBrowseHub}
             onModelsChange={onModelsChange}
+            onListen={onListen}
             deleteDisabled={deleteDisabled}
             section={effectiveHubSection}
             onEject={hasSelection && onEject ? onEject : undefined}
@@ -529,6 +533,7 @@ export function ModelSelector({
   onFoldersChange,
   onPickLocalModel,
   onModelsChange,
+  onListen,
   deleteDisabled,
   variant = "outline",
   size = "default",
@@ -634,6 +639,11 @@ export function ModelSelector({
     void navigate({ to: "/hub", search: { tab: "discover" } });
   }
 
+  function handleListen(adapter: LoraModelOption) {
+    setOpen(false);
+    onListen?.(adapter);
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -657,6 +667,7 @@ export function ModelSelector({
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
         onBrowseHub={handleBrowseHub}
         onModelsChange={onModelsChange}
+        onListen={onListen ? handleListen : undefined}
         deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}

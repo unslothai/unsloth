@@ -65,7 +65,8 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, HeadphonesIcon } from "lucide-react";
+import { TTS_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
 import {
   type Dispatch,
   type KeyboardEvent,
@@ -1090,6 +1091,7 @@ export function HubModelPicker({
   onFoldersChange,
   onBrowseHub,
   onModelsChange,
+  onListen,
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
@@ -1106,6 +1108,8 @@ export function HubModelPicker({
   /** Open the full Hub page to browse more models. */
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  /** Preview a trained TTS model's voice. */
+  onListen?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "custom" | "connected";
@@ -2630,6 +2634,7 @@ export function HubModelPicker({
                       value={value}
                       onSelect={onSelect}
                       onModelsChange={onModelsChange}
+                      onListen={onListen}
                       deleteDisabled={deleteDisabled}
                       loraModelList={hubModelList}
                       expandedGguf={expandedGguf}
@@ -3390,6 +3395,7 @@ function FineTunedRows({
   value,
   onSelect,
   onModelsChange,
+  onListen,
   deleteDisabled = false,
   loraModelList,
   expandedGguf,
@@ -3400,6 +3406,7 @@ function FineTunedRows({
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onListen?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   loraModelList: ReturnType<typeof useRovingModelList>;
   expandedGguf: string | null;
@@ -3493,6 +3500,19 @@ function FineTunedRows({
                   }
                 />
               </div>
+              {onListen && TTS_AUDIO_TYPES.has(adapter.audioType ?? "") && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onListen(adapter);
+                  }}
+                  className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  aria-label={`Listen: ${adapter.name}`}
+                >
+                  <HeadphonesIcon className="size-3.5" />
+                </button>
+              )}
               {canDelete && (
                 <ModelDeleteAction
                   ariaLabel={`Delete ${adapter.name}`}

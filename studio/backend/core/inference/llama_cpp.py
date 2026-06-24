@@ -1343,6 +1343,9 @@ class LlamaCppBackend:
         self._is_audio: bool = False
         self._audio_type: Optional[str] = None
         self._audio_probed: bool = False
+        # Set when THIS instance called init_audio_codec(); guards codec teardown
+        # so the voice slot's codec survives main-slot unloads.
+        self._owns_codec: bool = False
         # Audio INPUT capability (distinct from _is_audio, which is TTS output).
         self._has_audio_input: bool = False
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
@@ -6579,14 +6582,15 @@ class LlamaCppBackend:
                 except Exception:
                     pass
                 self._chat_template_file = None
-            # Free audio codec GPU memory.
-            if LlamaCppBackend._codec_mgr is not None:
+            # Free audio codec GPU memory — only when THIS instance owns it.
+            if self._owns_codec and LlamaCppBackend._codec_mgr is not None:
                 LlamaCppBackend._codec_mgr.unload()
                 LlamaCppBackend._codec_mgr = None
                 import torch
 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+            self._owns_codec = False
             return True
 
     def _kill_process(self):
@@ -8979,6 +8983,7 @@ class LlamaCppBackend:
             model_repo_path = os.path.abspath(repo_path)
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
+        self._owns_codec = True
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
     def generate_audio_response(

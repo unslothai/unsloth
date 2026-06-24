@@ -8,10 +8,14 @@ import {
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
+import { ListenModal } from "@/components/assistant-ui/model-selector/listen-modal";
 import {
   loadRememberedLoadSettings,
   rememberedLoadSettingsKey,
 } from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
+import { authFetch } from "@/features/auth";
+import { TTS_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -1248,6 +1252,137 @@ export function ChatPage({
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
+  const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  const selectedVoiceModelId = useChatRuntimeStore(
+    (s) => s.selectedVoiceModelId,
+  );
+  const setSelectedVoiceModelId = useChatRuntimeStore(
+    (s) => s.setSelectedVoiceModelId,
+  );
+  const [voiceSlotLoading, setVoiceSlotLoading] = useState(false);
+  const [cachedGgufs, setCachedGgufs] = useState<LoraModelOption[]>([]);
+  const cachedGgufsFetchedRef = useRef(false);
+
+  const [listenAdapter, setListenAdapter] = useState<LoraModelOption | null>(null);
+  const handleListen = useCallback(
+    (adapter: LoraModelOption) => {
+      setListenAdapter(adapter);
+      if (adapter.id !== inferenceParams.checkpoint) {
+        void selectModel({
+          id: adapter.id,
+          isLora: adapter.exportType !== "merged",
+          isDownloaded: true,
+        });
+      }
+    },
+    [inferenceParams.checkpoint, selectModel],
+  );
+  const handleVoiceModelChange = useCallback(
+    async (id: string | null) => {
+      setSelectedVoiceModelId(id);
+      if (!id) {
+        // Browser voice — unload voice slot and activate the loop immediately.
+        void authFetch("/api/inference/voice/unload", { method: "POST" });
+        useChatRuntimeStore.getState().setVoiceMode("active");
+        return;
+      }
+
+      // Download-confirmation gate: skip if the repo is already in the local
+      // cache list (fast path). Otherwise ask gguf-variants for the default
+      // variant's size and whether it's already downloaded.
+      const isCached = cachedGgufs.some((g) => g.id === id);
+      if (!isCached) {
+        try {
+          const vr = await authFetch(
+            `/api/models/gguf-variants?repo_id=${encodeURIComponent(id)}`,
+          );
+          if (vr.ok) {
+            const vdata = (await vr.json()) as {
+              default_variant?: string;
+              variants?: { quant: string; size_bytes: number; downloaded: boolean }[];
+            };
+            const defaultVariant =
+              vdata.variants?.find((v) => v.quant === vdata.default_variant) ??
+              vdata.variants?.[0];
+            const HUNDRED_MB = 100 * 1024 * 1024;
+            if (
+              defaultVariant &&
+              !defaultVariant.downloaded &&
+              defaultVariant.size_bytes > HUNDRED_MB
+            ) {
+              const sizeMb = Math.round(defaultVariant.size_bytes / (1024 * 1024));
+              const modelName = id.includes("/") ? (id.split("/")[1] ?? id) : id;
+              const confirmed = window.confirm(
+                `Download ${modelName} (~${sizeMb} MB)? This downloads from HuggingFace.`,
+              );
+              if (!confirmed) {
+                setSelectedVoiceModelId(null);
+                return;
+              }
+            }
+          }
+        } catch {
+          // gguf-variants unavailable (e.g. local LoRA path) — proceed silently
+        }
+      }
+
+      setVoiceSlotLoading(true);
+      try {
+        const res = await authFetch("/api/inference/voice/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model_path: id }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          toast.error("Voice model failed to load", {
+            description: (body as { detail?: string }).detail ?? undefined,
+          });
+          setSelectedVoiceModelId(null);
+        } else {
+          // Model loaded — activate the conversation loop.
+          useChatRuntimeStore.getState().setVoiceMode("active");
+        }
+      } catch {
+        toast.error("Voice model failed to load");
+        setSelectedVoiceModelId(null);
+      } finally {
+        setVoiceSlotLoading(false);
+      }
+    },
+    [setSelectedVoiceModelId, cachedGgufs],
+  );
+
+  // Unload the voice slot whenever voice mode turns off.
+  useEffect(() => {
+    if (voiceMode === "off" && selectedVoiceModelId) {
+      void authFetch("/api/inference/voice/unload", { method: "POST" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceMode]);
+
+  // Fetch cached GGUFs once when voice mode is first activated.
+  useEffect(() => {
+    if (voiceMode === "off" || cachedGgufsFetchedRef.current) return;
+    cachedGgufsFetchedRef.current = true;
+    const TTS_REPO_KEYWORDS = ["orpheus", "kokoro", "csm", "spark", "bicodec", "dac", "tts"];
+    void authFetch("/api/models/cached-gguf")
+      .then((r) => (r.ok ? r.json() : { cached: [] }))
+      .then((data: { cached: { repo_id: string }[] }) => {
+        const lower = (s: string) => s.toLowerCase();
+        setCachedGgufs(
+          (data.cached ?? [])
+            .filter((c) => TTS_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
+            .map((c) => ({
+              id: c.repo_id,
+              name: c.repo_id.includes("/") ? (c.repo_id.split("/")[1] ?? c.repo_id) : c.repo_id,
+              isGguf: true,
+            })),
+        );
+      })
+      .catch(() => {});
+  }, [voiceMode]);
+
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
     const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
@@ -2237,9 +2372,17 @@ export function ChatPage({
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
+
+  const ttsModels = useMemo<LoraModelOption[]>(() => {
+    const fromLoras = loraModels.filter((m) =>
+      TTS_AUDIO_TYPES.has(m.audioType ?? ""),
+    );
+    return [...fromLoras, ...cachedGgufs];
+  }, [loraModels, cachedGgufs]);
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
@@ -2402,6 +2545,7 @@ export function ChatPage({
                 onFoldersChange={refreshLocalModels}
                 onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
+                onListen={handleListen}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
                 open={active && modelSelectorOpen}
@@ -2410,6 +2554,16 @@ export function ChatPage({
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
+              />
+            )}
+            {view.mode !== "compare" && voiceMode !== "off" && (
+              <VoiceModelSelector
+                models={ttsModels}
+                value={selectedVoiceModelId}
+                onValueChange={(id) => void handleVoiceModelChange(id)}
+                loading={voiceSlotLoading}
+                disabled={!hasActiveModel}
+                className="!h-[34px]"
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
@@ -2672,6 +2826,12 @@ export function ChatPage({
           )
         }
       />
+      {listenAdapter && (
+        <ListenModal
+          adapter={listenAdapter}
+          onClose={() => setListenAdapter(null)}
+        />
+      )}
     </div>
     </ChatActiveContext.Provider>
   );

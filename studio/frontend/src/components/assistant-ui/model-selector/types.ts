@@ -16,6 +16,7 @@ export interface LoraModelOption extends ModelOption {
   updatedAt?: number;
   source?: "training" | "exported" | "local";
   exportType?: "lora" | "merged" | "gguf";
+  audioType?: string | null;
 }
 
 export interface ExternalModelOption extends ModelOption {

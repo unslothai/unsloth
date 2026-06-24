@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
+from pydantic import BaseModel, Field
 from starlette.requests import ClientDisconnect
 from typing import Any, List, Optional, Union
 import json
@@ -2222,12 +2223,22 @@ def _resolve_model_identifier_for_request(
     return str(grant.canonical_path), display_label, True
 
 
-# GGUF inference backend (llama-server)
+# GGUF inference backend (llama-server) — chat / LLM slot
 _llama_cpp_backend = LlamaCppBackend()
+
+# Voice slot — independent llama-server subprocess for GGUF TTS models only
+_voice_llama_backend = LlamaCppBackend()
+
+# Audio types accepted by the voice slot (GGUF TTS via llama-server token generation)
+_VOICE_SLOT_AUDIO_TYPES: frozenset[str] = frozenset({"snac", "bicodec", "dac"})
 
 
 def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
+
+
+def get_voice_llama_backend() -> LlamaCppBackend:
+    return _voice_llama_backend
 
 
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
@@ -3300,6 +3311,151 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to unload model")
+
+
+# =====================================================================
+# Voice Slot  (/voice/load  /voice/unload  /voice/status)
+# =====================================================================
+
+
+class _VoiceLoadRequest(BaseModel):
+    model_path: str = Field(..., description = "GGUF model identifier or local .gguf path")
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
+    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
+    n_ctx: int = Field(4096, ge = 0, description = "Context length (0 = model default)")
+
+
+@router.post("/voice/load")
+async def voice_load_model(
+    request: _VoiceLoadRequest, current_subject: str = Depends(get_current_subject)
+):
+    """
+    Load a TTS model into the voice slot (independent of the main chat slot).
+
+    Only GGUF models whose detected audio_type is snac, bicodec, or dac are
+    accepted.  Any other model (text LLM, csm, whisper, audio_vlm) is rejected
+    with HTTP 400 after detection and the slot is left empty.
+    """
+    from utils.models import ModelConfig
+
+    voice_backend = get_voice_llama_backend()
+
+    model_identifier = request.model_path.strip()
+
+    # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
+    # exactly mirroring the ModelConfig.from_identifier() call in /load.
+    try:
+        config = ModelConfig.from_identifier(
+            model_id = model_identifier,
+            hf_token = request.hf_token,
+            gguf_variant = request.gguf_variant,
+        )
+    except Exception as e:
+        raise HTTPException(status_code = 400, detail = f"Could not resolve model: {e}")
+
+    if not config or not config.is_gguf:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Voice slot only accepts GGUF models. The provided identifier did not resolve to a GGUF.",
+        )
+
+    # Already loaded with the same resolved config — skip reload.
+    if (
+        voice_backend.is_loaded
+        and voice_backend.model_identifier
+        and voice_backend.model_identifier.lower() == config.identifier.lower()
+        and (not config.gguf_variant or voice_backend.hf_variant == config.gguf_variant)
+        and getattr(voice_backend, "_is_audio", False)
+    ):
+        return {
+            "status": "already_loaded",
+            "model": voice_backend.model_identifier,
+            "audio_type": getattr(voice_backend, "_audio_type", None),
+        }
+
+    try:
+        if config.gguf_hf_repo:
+            # HF repo mode: llama-server downloads/uses cached GGUF via -hf
+            ok = await asyncio.to_thread(
+                voice_backend.load_model,
+                hf_repo = config.gguf_hf_repo,
+                hf_variant = config.gguf_variant,
+                hf_token = request.hf_token,
+                model_identifier = config.identifier,
+                n_ctx = request.n_ctx,
+            )
+        else:
+            # Local file mode: llama-server loads via -m <path>
+            ok = await asyncio.to_thread(
+                voice_backend.load_model,
+                gguf_path = config.gguf_file,
+                hf_variant = config.gguf_variant,
+                model_identifier = config.identifier,
+                n_ctx = request.n_ctx,
+                hf_token = request.hf_token,
+            )
+    except Exception as e:
+        logger.error("Voice slot load error: %s", e, exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
+
+    if not ok:
+        raise HTTPException(status_code = 500, detail = "Voice model failed to start.")
+
+    audio_type = getattr(voice_backend, "_audio_type", None)
+    is_audio = getattr(voice_backend, "_is_audio", False)
+
+    if not is_audio or audio_type not in _VOICE_SLOT_AUDIO_TYPES:
+        # Not a supported TTS type — reject and leave slot empty.
+        try:
+            voice_backend.unload_model()
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"Model is not a supported TTS type for the voice slot "
+                f"(detected: {audio_type!r}). "
+                f"Only snac, bicodec, and dac GGUF models are accepted."
+            ),
+        )
+
+    logger.info("Voice slot loaded: %s (audio_type=%s)", voice_backend.model_identifier, audio_type)
+    return {
+        "status": "loaded",
+        "model": voice_backend.model_identifier,
+        "audio_type": audio_type,
+    }
+
+
+@router.post("/voice/unload")
+async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
+    """Unload whatever model is in the voice slot."""
+    voice_backend = get_voice_llama_backend()
+    if not voice_backend.is_active:
+        return {"status": "not_loaded"}
+    model_id = voice_backend.model_identifier
+    try:
+        voice_backend.unload_model()
+    except Exception as e:
+        logger.error("Voice slot unload error: %s", e, exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to unload voice model: {e}")
+    logger.info("Voice slot unloaded: %s", model_id)
+    return {"status": "unloaded", "model": model_id}
+
+
+@router.get("/voice/status")
+async def voice_slot_status(current_subject: str = Depends(get_current_subject)):
+    """Return the current state of the voice slot."""
+    voice_backend = get_voice_llama_backend()
+    loaded = voice_backend.is_loaded
+    return {
+        "loaded": loaded,
+        "loading": voice_backend.is_active and not loaded,
+        "model": voice_backend.model_identifier if loaded else None,
+        "audio_type": getattr(voice_backend, "_audio_type", None) if loaded else None,
+    }
 
 
 @studio_router.post("/cancel")

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { requestVoiceResume } from "@/components/assistant-ui/thread";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 
@@ -187,6 +188,16 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       const errorEvent = event as SpeechRecognitionErrorEvent;
       if (errorEvent.error === "aborted") {
         finish("cancelled");
+        return;
+      }
+      if (errorEvent.error === "no-speech") {
+        // The engine heard nothing for a few seconds and gave up. Don't fail the
+        // loop or toast — end this session quietly and re-arm dictation so the
+        // orb stays active and listening continues. requestVoiceResume is a
+        // no-op unless voice mode is still "active". Deferred so assistant-ui
+        // clears the just-ended session before resumeListen re-checks it.
+        finish("stopped");
+        setTimeout(() => requestVoiceResume(), 0);
         return;
       }
       const description = describeSpeechError(errorEvent.error, errorEvent.message);
