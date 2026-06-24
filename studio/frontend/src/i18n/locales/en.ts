@@ -23,6 +23,7 @@ export const en = {
     brand: "unsloth",
     product: "Unsloth Studio",
     accountMenu: "{name} account menu",
+    updateAvailable: "Update available",
     aria: {
       home: "Unsloth home",
       closeSidebar: "Close sidebar",
@@ -105,6 +106,7 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
+      tokenSaved: "Token saved",
       password: "Password",
       passwordDescription: "Change the password for this Studio account.",
       passwordDialog: {
