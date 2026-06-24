@@ -1029,8 +1029,13 @@ export function AppSidebar() {
                     if (chatDisabled) return;
                     openNewChat(null);
                   }}
-                  className="flex items-center gap-[6px] select-none"
+                  className={cn(
+                    "flex items-center gap-[6px] select-none transition-opacity",
+                    chatDisabled && "pointer-events-none opacity-50",
+                  )}
                   aria-label={t("shell.aria.home")}
+                  aria-disabled={chatDisabled}
+                  tabIndex={chatDisabled ? -1 : undefined}
                 >
                   <img
                     src="/circle-logo-small.png"

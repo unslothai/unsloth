@@ -9,6 +9,7 @@ import type {
   UpdateStatus,
 } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
+import { cn } from "@/lib/utils";
 import { CircleAlert, Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -21,6 +22,8 @@ interface UpdateBannerProps {
   isExternalServer?: boolean;
   updatePolicyMode: DesktopUpdatePolicyMode;
   manualReleaseUrl: string | null;
+  // false fills a shared overlay stack; true self-anchors.
+  positioned?: boolean;
   onInstall: () => void;
   onDismiss: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
@@ -41,6 +44,7 @@ export function UpdateBanner({
   isExternalServer = false,
   updatePolicyMode,
   manualReleaseUrl,
+  positioned = true,
   onInstall,
   onDismiss,
   onCopyDiagnostics,
@@ -89,7 +93,11 @@ export function UpdateBanner({
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
-          className="fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[400px]"
+          className={cn(
+            positioned
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[400px]"
+              : "pointer-events-auto w-full",
+          )}
           data-testid="tauri-update-banner"
         >
           <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">

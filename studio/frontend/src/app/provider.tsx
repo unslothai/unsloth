@@ -157,7 +157,13 @@ function getTauriWindowMode(
   }
 }
 
-function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
+function TauriUpdateLayer({
+  isExternalServer,
+  children,
+}: {
+  isExternalServer: boolean;
+  children?: ReactNode;
+}) {
   const update = useTauriUpdate(isExternalServer);
   const isUpdating =
     update.status === "updating-backend" ||
@@ -180,18 +186,22 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
   }
 
   return (
-    <UpdateBanner
-      status={update.status}
-      info={update.info}
-      dismissed={update.dismissed}
-      lastFailure={update.lastFailure}
-      isExternalServer={isExternalServer}
-      updatePolicyMode={update.updatePolicyMode}
-      manualReleaseUrl={update.manualReleaseUrl}
-      onInstall={update.installUpdate}
-      onDismiss={update.dismiss}
-      onCopyDiagnostics={update.copyDiagnostics}
-    />
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+      <UpdateBanner
+        status={update.status}
+        info={update.info}
+        dismissed={update.dismissed}
+        lastFailure={update.lastFailure}
+        isExternalServer={isExternalServer}
+        updatePolicyMode={update.updatePolicyMode}
+        manualReleaseUrl={update.manualReleaseUrl}
+        positioned={false}
+        onInstall={update.installUpdate}
+        onDismiss={update.dismiss}
+        onCopyDiagnostics={update.copyDiagnostics}
+      />
+      {children}
+    </div>
   );
 }
 
@@ -215,6 +225,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-mac-traffic-light-inset": "78px",
   "--studio-startup-top-inset": "58px",
   "--studio-content-top-inset": "0px",
+  "--studio-non-chat-content-top-inset": "34px",
   "--studio-chat-header-height": "44px",
   "--studio-chat-header-padding-top": "8px",
   "--studio-chat-control-height": "33px",
@@ -341,10 +352,19 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     status === "running" && !desktopAuthReady
       ? "Signing in to desktop session..."
       : progressDetail;
+  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
+  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
+  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   const content = showApp ? (
     <>
-      <TauriUpdateLayer isExternalServer={isExternalServer} />
+      <TauriUpdateLayer isExternalServer={isExternalServer}>
+        <LlamaUpdateBanner
+          positioned={false}
+          enabled={!hidesTitlebarSidebar}
+        />
+        <DownloadManagerPanel positioned={false} />
+      </TauriUpdateLayer>
       <NativeIntentDrain />
       {children}
     </>
@@ -365,10 +385,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     />
   );
 
-  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
-  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
-  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
-
   if (!usesCustomTitlebar) {
     // macOS desktop uses the native titlebar and returns here before the
     // custom-titlebar branch, so mount the updater banner on this path too.
@@ -383,24 +399,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           style={MAC_NATIVE_CHROME_STYLE}
         >
           {content}
-          <LlamaUpdateBanner
-            enabled={showApp && !hidesTitlebarSidebar}
-          />
         </div>
       );
     }
 
     return (
-      <>
-        {content}
-        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
-          <LlamaUpdateBanner
-            positioned={false}
-            enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
-          />
-          {showApp ? <DownloadManagerPanel positioned={false} /> : null}
-        </div>
-      </>
+      <>{content}</>
     );
   }
 
@@ -415,13 +419,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
       <div className="h-full min-h-0 overflow-hidden">
         {content}
-      </div>
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
-        <LlamaUpdateBanner
-          positioned={false}
-          enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
-        />
-        {showApp ? <DownloadManagerPanel positioned={false} /> : null}
       </div>
     </div>
   );
