@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
+import { buildAgentCommand } from "./agent-command";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -264,8 +265,6 @@ function buildSnippets(
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const MODEL_FALLBACK = "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL";
 
-const AGENT_COMMAND = "unsloth start claude";
-
 // Default ON: when a tunnel exists, examples should show the public base_url.
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
 
@@ -368,6 +367,11 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     () => buildSnippets(base, key, model, os),
     [base, key, model, os],
   );
+  // Agent command must target the server the panel shows, not the :8888 default.
+  const agentCommand = useMemo(
+    () => buildAgentCommand(base, key, os),
+    [base, key, os],
+  );
 
   const osAware = OS_AWARE[lang];
   const shikiLang = CURL_TYPES.has(lang)
@@ -396,7 +400,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   };
 
   const handleCopyAgent = async () => {
-    if (await copyToClipboard(AGENT_COMMAND)) {
+    if (await copyToClipboard(agentCommand)) {
       setCopiedAgent(true);
       setTimeout(() => setCopiedAgent(false), 1800);
     }
@@ -550,7 +554,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           </span>
           <div className="relative mt-0.5 min-w-0">
             <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-[11px] text-foreground">
-              {AGENT_COMMAND}
+              {agentCommand}
             </code>
             <button
               type="button"
