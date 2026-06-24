@@ -750,3 +750,31 @@ class TestAudioDetectionCacheTokenAware:
         assert mc.detect_audio_type("some/audio-model") == "snac"
         assert seen == [True, False]
         mc._audio_detection_cache.clear()
+
+
+class TestEnvOfflineParsing:
+    """_env_offline must recognise the same truthy set as unsloth's offline helpers
+    (strip + lowercase, accepting on/true/yes/1). It gates the raw requests.get
+    tokenizer-config fallback and the detection cache keys, so a value like 'on' or
+    a whitespace-padded ' 1 ' must still count as offline or those paths leak to the
+    network while 'offline'."""
+
+    def test_truthy_values_recognized(self, monkeypatch):
+        import utils.models.model_config as mc
+
+        for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            for val in ("1", "true", "TRUE", "yes", "Yes", "on", "ON", " 1 ", " on ", "\ttrue\n"):
+                monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+                monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+                monkeypatch.setenv(var, val)
+                assert mc._env_offline() is True, f"{var}={val!r} should be offline"
+
+    def test_falsy_values_not_offline(self, monkeypatch):
+        import utils.models.model_config as mc
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        assert mc._env_offline() is False
+        for val in ("", "0", "false", "no", "off", "2", "onn"):
+            monkeypatch.setenv("HF_HUB_OFFLINE", val)
+            assert mc._env_offline() is False, f"HF_HUB_OFFLINE={val!r} should not be offline"
