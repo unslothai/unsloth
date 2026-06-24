@@ -192,6 +192,9 @@ def test_chat_payload_sanitized(client, captured):
             "provider_base_url": "http://evil.example/v1",
             "external_model": "gpt-4o",
             "use_adapter": False,
+            "confirm_tool_calls": True,
+            "session_id": "abc",
+            "rag_scope": {"project_id": "x"},
         },
     )
     assert r.status_code == 200
@@ -203,6 +206,10 @@ def test_chat_payload_sanitized(client, captured):
     assert p.enabled_tools is None
     assert p.mcp_enabled is False
     assert p.bypass_permissions is False
+    # Tool-loop levers neutralized regardless of the tool gate.
+    assert p.confirm_tool_calls is False
+    assert p.session_id is None
+    assert p.rag_scope is None
     # Provider routing stripped so /p can't proxy an arbitrary endpoint.
     assert p.provider_id is None
     assert p.provider_type is None

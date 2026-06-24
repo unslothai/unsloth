@@ -34,7 +34,10 @@ def _resolve_or_4xx(run: str, checkpoint: str | None):
     try:
         return resolve_preview_checkpoint(run, checkpoint)
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc))
+        # Detail can carry the absolute install path on a symlink escape; log it,
+        # return a generic message on this public route.
+        logger.warning("preview path rejected: %s", exc)
+        raise HTTPException(status_code = 400, detail = "Invalid run or checkpoint")
     except FileNotFoundError as exc:
         raise HTTPException(status_code = 404, detail = str(exc))
 
@@ -53,6 +56,9 @@ def _sanitize_preview_payload(
             "enabled_tools": None,
             "mcp_enabled": False,
             "bypass_permissions": False,
+            "confirm_tool_calls": False,
+            "session_id": None,
+            "rag_scope": None,
             "openai_code_exec_container_id": None,
             "anthropic_code_exec_container_id": None,
             "provider_id": None,
@@ -157,7 +163,7 @@ _PREVIEW_ASSET_MEDIA_TYPES = {
 async def preview_asset(asset_path: str):
     target = (_FRONTEND_DIST / asset_path).resolve()
     media_type = _PREVIEW_ASSET_MEDIA_TYPES.get(target.suffix.lower())
-    if media_type is None or _FRONTEND_DIST not in target.parents or not target.is_file():
+    if media_type is None or not target.is_relative_to(_FRONTEND_DIST) or not target.is_file():
         raise HTTPException(status_code = 404, detail = "Not found")
     return FileResponse(target, media_type = media_type)
 
@@ -169,7 +175,7 @@ _PREVIEW_PAGE_HTML = (
 
 _PREVIEW_PAGE_CSP = (
     "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-    "connect-src 'self'; base-uri 'none'"
+    "img-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'"
 )
 
 
