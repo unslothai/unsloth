@@ -19,8 +19,13 @@ tensor mappings match the binaries -- the layout unsloth_zoo's
 check_llama_cpp() expects: binaries, converter and gguf-py/ at the install
 dir root.
 
+The tag may be the literal "latest" (or empty), in which case the newest
+published release of RELEASE_REPO is resolved at build time by following the
+/releases/latest redirect (no API token, no API rate limit). Pass a concrete
+tag for a reproducible build.
+
 Usage (in the Dockerfile):
-    python fetch_llama_prebuilt.py <tag> <targetarch> <install_dir>
+    python fetch_llama_prebuilt.py <tag|latest> <targetarch> <install_dir>
 """
 
 import hashlib
@@ -34,6 +39,20 @@ import tempfile
 import urllib.request
 
 RELEASE_REPO = "unslothai/llama.cpp"
+
+
+def resolve_latest_tag(repo: str) -> str:
+    # Follow the /releases/latest redirect to /releases/tag/<tag>. This needs no
+    # API token and is not subject to the GitHub API rate limit, so it works on
+    # any build host (CI, laptop, B200) without configuration.
+    url = f"https://github.com/{repo}/releases/latest"
+    request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-docker-build"})
+    with urllib.request.urlopen(request, timeout = 60) as response:
+        final_url = response.geturl()
+    marker = "/releases/tag/"
+    if marker not in final_url:
+        raise SystemExit(f"FAIL: could not resolve latest release of {repo} (landed on {final_url})")
+    return final_url.rsplit(marker, 1)[1].strip("/")
 
 
 def fetch(url: str, dest: str) -> None:
@@ -72,6 +91,9 @@ def extracted_root(extract_dir: str) -> str:
 
 def main() -> None:
     tag, target_arch, install_dir = sys.argv[1], sys.argv[2] or "amd64", sys.argv[3]
+    if tag in ("", "latest"):
+        tag = resolve_latest_tag(RELEASE_REPO)
+        print(f"resolved latest {RELEASE_REPO} release: {tag}")
     base_url = f"https://github.com/{RELEASE_REPO}/releases/download/{tag}"
     assets = {
         "amd64": f"app-{tag}-linux-x64-cuda12-portable.tar.gz",
@@ -121,6 +143,32 @@ def main() -> None:
         conversion = os.path.join(src_root, "conversion")
         if os.path.isdir(conversion):
             shutil.copytree(conversion, os.path.join(install_dir, "conversion"), dirs_exist_ok = True)
+
+    # Make the baked marker readable by Studio's llama.cpp freshness check
+    # (utils.llama_cpp_freshness.check_prebuilt_freshness) so the in-app
+    # "newer llama.cpp available" banner works inside the Docker image.
+    # The release tarball's UNSLOTH_PREBUILT_INFO.json carries upstream_tag /
+    # source_repo, but the freshness reader keys off tag / release_tag /
+    # published_repo -- the schema Studio's install_llama_prebuilt.py writes,
+    # which the image bypasses by baking the bundle directly. Without these
+    # keys the freshness check bails and can never report "behind", so the
+    # banner stays hidden even when a newer release exists. setdefault() so a
+    # future tarball that already ships these keys is left untouched, and we
+    # add no build timestamp -- behind/update_available do not need one, and
+    # omitting it keeps the layer byte-identical across build hosts.
+    marker_path = os.path.join(install_dir, "UNSLOTH_PREBUILT_INFO.json")
+    try:
+        with open(marker_path) as f:
+            marker = json.load(f)
+    except (OSError, ValueError):
+        marker = {}
+    marker.setdefault("tag", tag)
+    marker.setdefault("release_tag", tag)
+    marker.setdefault("published_repo", RELEASE_REPO)
+    with open(marker_path, "w") as f:
+        json.dump(marker, f, indent = 2)
+        f.write("\n")
+    print(f"marker augmented for freshness: tag={tag} published_repo={RELEASE_REPO}")
 
     # Mirror the install into build/bin/ via hardlinks (zero extra bytes).
     # Studio's setup.sh treats an executable build/bin/llama-server +

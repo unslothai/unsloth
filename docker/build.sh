@@ -18,10 +18,30 @@ PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 UNSLOTH_REF="${UNSLOTH_REF:-main}"
 UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 
+# llama.cpp prebuilt: default to the newest unslothai/llama.cpp release, resolved
+# here to a concrete tag so the build-arg changes only when upstream publishes a
+# new release (correct Docker layer caching) and the build stays reproducible.
+# Pin it explicitly for a frozen build: LLAMA_PREBUILT_TAG=b9596-mix-e6f2453 ./build.sh
+resolve_latest_llama_tag() {
+    curl -fsSL -o /dev/null -w '%{url_effective}' \
+        "https://github.com/unslothai/llama.cpp/releases/latest" 2>/dev/null \
+        | sed -n 's#.*/releases/tag/##p'
+}
+if [ -z "${LLAMA_PREBUILT_TAG:-}" ]; then
+    LLAMA_PREBUILT_TAG="$(resolve_latest_llama_tag || true)"
+    if [ -n "$LLAMA_PREBUILT_TAG" ]; then
+        echo "Resolved latest llama.cpp release: ${LLAMA_PREBUILT_TAG}"
+    else
+        LLAMA_PREBUILT_TAG="latest"
+        echo "Could not resolve latest llama.cpp tag here; passing 'latest' (resolved inside the build)"
+    fi
+fi
+
 echo "Building ${IMAGE_NAME}:${TAG}"
 echo "  CUDA           ${CUDA_VERSION}  Ubuntu ${UBUNTU_VERSION}  Python ${PYTHON_VERSION}"
 echo "  unsloth        @${UNSLOTH_REF}"
 echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
+echo "  llama.cpp      ${LLAMA_PREBUILT_TAG}"
 echo "  arch list      8.0;8.6;8.9;9.0;10.0;12.0+PTX"
 echo
 
@@ -32,6 +52,7 @@ DOCKER_BUILDKIT=1 docker build \
     --build-arg PYTHON_VERSION="${PYTHON_VERSION}" \
     --build-arg UNSLOTH_REF="${UNSLOTH_REF}" \
     --build-arg UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF}" \
+    --build-arg LLAMA_PREBUILT_TAG="${LLAMA_PREBUILT_TAG}" \
     -t "${IMAGE_NAME}:${TAG}" \
     .
 

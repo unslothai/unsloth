@@ -617,7 +617,12 @@ RUN set -eux \
 #     so the python-side tensor mappings match the binaries
 # /opt (not /root) so the install survives a `docker run --user` override;
 # UNSLOTH_LLAMA_CPP_PATH makes zoo find it regardless of $HOME.
-ARG LLAMA_PREBUILT_TAG=b9596-mix-e6f2453
+# Default "latest" -> fetch_llama_prebuilt.py resolves the newest
+# unslothai/llama.cpp release at build time (follows the /releases/latest
+# redirect, no API token). build.sh resolves this to a concrete tag before
+# invoking docker build so the layer cache busts only when upstream publishes;
+# pass --build-arg LLAMA_PREBUILT_TAG=<tag> for a frozen, reproducible build.
+ARG LLAMA_PREBUILT_TAG=latest
 COPY fetch_llama_prebuilt.py /tmp/fetch_llama_prebuilt.py
 RUN /opt/unsloth-venv/bin/python /tmp/fetch_llama_prebuilt.py \
         "${LLAMA_PREBUILT_TAG}" "${TARGETARCH:-amd64}" /opt/unsloth/llama.cpp \
