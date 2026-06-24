@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 from pathlib import Path
 from typing import Optional
 
@@ -106,11 +107,13 @@ def _has_remaining_main_gguf(target_repo) -> bool:
     )
 
 
-def _remove_empty_variant_dirs(target_repos: list, variant: str) -> int:
+def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, list[str]]:
     """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
-    quant label names the folder); only empty dirs go, so siblings are safe."""
+    quant label names the folder); only empty dirs go, so siblings are safe.
+    Returns (count removed, removal failures other than a concurrent refill)."""
     variant_key = (extract_quant_token(variant) or variant).lower()
     removed = 0
+    failures: list[str] = []
     for target_repo in target_repos:
         repo_path = getattr(target_repo, "repo_path", None)
         if not repo_path:
@@ -135,15 +138,19 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> int:
                     matches = (
                         folder_quant is not None and folder_quant.lower() == variant_key
                     ) or sub.name.lower() == variant.lower()
-                    if not matches:
+                    if not matches or any(sub.iterdir()):
                         continue
-                    if any(sub.iterdir()):
-                        continue
-                    sub.rmdir()
-                    removed += 1
                 except OSError:
                     continue
-    return removed
+                try:
+                    sub.rmdir()
+                    removed += 1
+                except OSError as e:
+                    # A concurrent download refilling the dir (ENOTEMPTY) is not a
+                    # failure; a read-only cache or locked dir is, so surface it.
+                    if e.errno != errno.ENOTEMPTY:
+                        failures.append(f"{sub.name}: {e}")
+    return removed, failures
 
 
 def _delete_gguf_variant_from_repos(
@@ -247,7 +254,16 @@ def _delete_gguf_variant_from_repos(
 
     state_purged = download_manifest.purge_state("model", repo_id, variant)
     # Reclaim the empty quant folder so it stops 404ing on delete.
-    removed_dirs = _remove_empty_variant_dirs(target_repos, variant)
+    removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
+    if dir_failures:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"Couldn't fully delete {variant} for {repo_id}: "
+                f"{len(dir_failures)} folder(s) could not be removed "
+                "(read-only cache or in use). Try again."
+            ),
+        )
     if (
         removed_snapshots == 0
         and deleted_blobs == 0

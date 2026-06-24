@@ -335,6 +335,30 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
+def _mark_empty_dir_cleanables(repo_id: str, response: GgufVariantsResponse) -> GgufVariantsResponse:
+    """Surface empty leftover ``<quant>/`` folders (interrupted downloads) as
+    partial so the UI can delete them -- on local/offline paths too, not just a
+    remote listing. A listed quant is flipped to partial; an unlisted one is
+    appended as a zero-byte cleanable entry."""
+    try:
+        empty_labels = list_empty_gguf_variant_dirs(repo_id)
+    except Exception as e:
+        logger.warning(f"Failed to scan empty GGUF variant folders for {repo_id}: {e}")
+        return response
+    if not empty_labels:
+        return response
+    empty_by_key = {label.lower(): label for label in empty_labels}
+    variants = list(response.variants)
+    listed = {v.quant.lower() for v in variants}
+    for i, v in enumerate(variants):
+        if v.quant.lower() in empty_by_key and not v.downloaded and not v.partial:
+            variants[i] = v.model_copy(update = {"partial": True})
+    for key, label in sorted(empty_by_key.items()):
+        if key not in listed:
+            variants.append(GgufVariantDetail(filename = f"{label}.gguf", quant = label, partial = True))
+    return response.model_copy(update = {"variants": variants})
+
+
 async def get_gguf_variants_response(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -631,19 +655,6 @@ async def get_gguf_variants_response(
                         _partial_transport_for_variant(repo_id, variant.quant),
                     )
 
-        # Surface empty leftover ``<quant>/`` folders (interrupted downloads),
-        # otherwise invisible/unremovable, as cleanable so the UI can delete them.
-        try:
-            empty_dir_quants = {q.lower() for q in list_empty_gguf_variant_dirs(repo_id)}
-        except Exception as e:
-            logger.warning(f"Failed to scan empty GGUF variant folders for {repo_id}: {e}")
-            empty_dir_quants = set()
-        if empty_dir_quants:
-            for variant in variants:
-                if variant.quant.lower() in empty_dir_quants and not _is_fully_downloaded(variant):
-                    partial_quants.add(variant.quant)
-                    partial_quant_transports.setdefault(variant.quant, None)
-
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
@@ -667,8 +678,14 @@ async def get_gguf_variants_response(
             default_variant = default_variant,
         )
 
+    def _compute_with_cleanables() -> GgufVariantsResponse:
+        response = _compute()
+        if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
+            return response
+        return _mark_empty_dir_cleanables(repo_id, response)
+
     try:
-        return await asyncio.to_thread(_compute)
+        return await asyncio.to_thread(_compute_with_cleanables)
     except HTTPException:
         raise
     except Exception as e:

@@ -3,10 +3,12 @@
 
 """Cleanup of empty leftover quant folders from interrupted split downloads."""
 
+import errno
 from pathlib import Path
 from types import SimpleNamespace
 
-from hub.services.models import deletion
+from hub.schemas.inventory import GgufVariantDetail, GgufVariantsResponse
+from hub.services.models import deletion, gguf_variants
 from hub.utils import gguf
 
 
@@ -45,8 +47,9 @@ def test_list_empty_ignores_non_quant_dirs(tmp_path, monkeypatch):
 def test_remove_empty_variant_dirs_removes_only_empty_match(tmp_path):
     snap = _make_snapshot(tmp_path)
     repo = SimpleNamespace(repo_path = str(tmp_path))
-    removed = deletion._remove_empty_variant_dirs([repo], "UD-IQ1_S")
+    removed, failures = deletion._remove_empty_variant_dirs([repo], "UD-IQ1_S")
     assert removed == 1
+    assert failures == []
     assert not (snap / "UD-IQ1_S").exists()
     assert (snap / "UD-IQ1_M").is_dir()
 
@@ -54,7 +57,56 @@ def test_remove_empty_variant_dirs_removes_only_empty_match(tmp_path):
 def test_remove_empty_variant_dirs_never_touches_populated_folder(tmp_path):
     snap = _make_snapshot(tmp_path)
     repo = SimpleNamespace(repo_path = str(tmp_path))
-    removed = deletion._remove_empty_variant_dirs([repo], "UD-IQ1_M")
+    removed, failures = deletion._remove_empty_variant_dirs([repo], "UD-IQ1_M")
     assert removed == 0
-    assert (snap / "UD-IQ1_M").is_dir()
+    assert failures == []
     assert len(list((snap / "UD-IQ1_M").iterdir())) == 2
+
+
+def test_remove_empty_variant_dirs_surfaces_real_failure(tmp_path, monkeypatch):
+    _make_snapshot(tmp_path)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    def _denied(self):
+        raise OSError(errno.EACCES, "permission denied")
+
+    monkeypatch.setattr(Path, "rmdir", _denied)
+    removed, failures = deletion._remove_empty_variant_dirs([repo], "UD-IQ1_S")
+    assert removed == 0
+    assert len(failures) == 1
+
+
+def test_remove_empty_variant_dirs_ignores_concurrent_refill(tmp_path, monkeypatch):
+    _make_snapshot(tmp_path)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    def _refilled(self):
+        raise OSError(errno.ENOTEMPTY, "directory not empty")
+
+    monkeypatch.setattr(Path, "rmdir", _refilled)
+    removed, failures = deletion._remove_empty_variant_dirs([repo], "UD-IQ1_S")
+    assert removed == 0
+    assert failures == []
+
+
+def test_mark_empty_dir_cleanables_appends_unlisted(monkeypatch):
+    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"})
+    resp = GgufVariantsResponse(
+        repo_id = "org/Repo-GGUF",
+        variants = [GgufVariantDetail(filename = "m-UD-IQ1_M.gguf", quant = "UD-IQ1_M", downloaded = True)],
+    )
+    out = gguf_variants._mark_empty_dir_cleanables("org/Repo-GGUF", resp)
+    by_q = {v.quant: v for v in out.variants}
+    assert by_q["UD-IQ1_M"].downloaded is True
+    assert by_q["UD-IQ1_S"].partial is True and by_q["UD-IQ1_S"].downloaded is False
+
+
+def test_mark_empty_dir_cleanables_flips_listed_variant(monkeypatch):
+    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"})
+    resp = GgufVariantsResponse(
+        repo_id = "org/Repo-GGUF",
+        variants = [GgufVariantDetail(filename = "m-UD-IQ1_S.gguf", quant = "UD-IQ1_S")],
+    )
+    out = gguf_variants._mark_empty_dir_cleanables("org/Repo-GGUF", resp)
+    assert len(out.variants) == 1
+    assert out.variants[0].partial is True
