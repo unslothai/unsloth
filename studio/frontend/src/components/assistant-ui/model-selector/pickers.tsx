@@ -570,18 +570,50 @@ function ModelRow({
 
 // ── GGUF Variant Expander ────────────────────────────────────
 
-function isValidGgufVariant(
-  variant: GgufVariantDetail | null | undefined,
-): variant is GgufVariantDetail {
+function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
+  if (!variant || typeof variant !== "object") return false;
+  const candidate = variant as Partial<GgufVariantDetail>;
   return (
-    typeof variant?.filename === "string" &&
-    variant.filename.length > 0 &&
-    typeof variant.quant === "string" &&
-    variant.quant.length > 0 &&
-    typeof variant.size_bytes === "number" &&
-    Number.isFinite(variant.size_bytes) &&
-    variant.size_bytes >= 0
+    typeof candidate.filename === "string" &&
+    candidate.filename.length > 0 &&
+    typeof candidate.quant === "string" &&
+    candidate.quant.length > 0 &&
+    typeof candidate.size_bytes === "number" &&
+    Number.isFinite(candidate.size_bytes) &&
+    candidate.size_bytes >= 0 &&
+    (candidate.downloaded === undefined ||
+      typeof candidate.downloaded === "boolean")
   );
+}
+
+function normalizeGgufVariantsResponse(res: {
+  variants?: unknown;
+  default_variant?: unknown;
+  has_vision?: unknown;
+  context_length?: unknown;
+} | null | undefined): {
+  variants: GgufVariantDetail[];
+  defaultVariant: string | null;
+  hasVision: boolean;
+  contextLength: number | null;
+} {
+  const contextLength = res?.context_length;
+  return {
+    variants: (Array.isArray(res?.variants) ? res.variants : []).filter(
+      isValidGgufVariant,
+    ),
+    defaultVariant:
+      typeof res?.default_variant === "string" && res.default_variant.length > 0
+        ? res.default_variant
+        : null,
+    hasVision: res?.has_vision === true,
+    contextLength:
+      typeof contextLength === "number" &&
+      Number.isFinite(contextLength) &&
+      contextLength >= 0
+        ? contextLength
+        : null,
+  };
 }
 
 function GgufVariantExpander({
@@ -636,11 +668,12 @@ function GgufVariantExpander({
     listGgufVariants(repoId)
       .then((res) => {
         if (canceled) return;
-        setVariants(Array.isArray(res.variants) ? res.variants : []);
-        setDefaultVariant(res.default_variant);
-        setHasVision(res.has_vision);
-        onHasVision?.(res.has_vision);
-        setNativeContext(res.context_length ?? null);
+        const normalized = normalizeGgufVariantsResponse(res);
+        setVariants(normalized.variants);
+        setDefaultVariant(normalized.defaultVariant);
+        setHasVision(normalized.hasVision);
+        onHasVision?.(normalized.hasVision);
+        setNativeContext(normalized.contextLength);
       })
       .catch((err) => {
         if (canceled) return;
@@ -682,11 +715,6 @@ function GgufVariantExpander({
     [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
   );
 
-  const validVariants = useMemo(() => {
-    if (!variants) return variants;
-    return variants.filter(isValidGgufVariant);
-  }, [variants]);
-
   // GGUF fit classification matching llama-server's _select_gpus logic:
   //   fits  = model <= 0.7 * total GPU memory
   //   tight = model > 0.7 * GPU but <= 0.7 * GPU + 0.7 * system RAM (--fit uses CPU offload)
@@ -713,14 +741,14 @@ function GgufVariantExpander({
   // If the recommended variant is OOM, pick the largest fitting one;
   // if all are OOM, recommend the smallest.
   const effectiveRecommended = useMemo(() => {
-    if (!validVariants || validVariants.length === 0 || totalBudgetGb <= 0) {
+    if (!variants || variants.length === 0 || totalBudgetGb <= 0) {
       return defaultVariant;
     }
-    const defaultV = validVariants.find((v) => v.quant === defaultVariant);
+    const defaultV = variants.find((v) => v.quant === defaultVariant);
     if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
       return defaultVariant;
     // Largest non-OOM variant (best quality that fits)
-    const fitting = validVariants.filter(
+    const fitting = variants.filter(
       (v) => getGgufFit(v.size_bytes) !== "oom",
     );
     if (fitting.length > 0) {
@@ -728,14 +756,14 @@ function GgufVariantExpander({
       return fitting[0].quant;
     }
     // All OOM -- recommend smallest (most likely to partially run)
-    const sorted = [...validVariants].sort(
+    const sorted = [...variants].sort(
       (a, b) => a.size_bytes - b.size_bytes,
     );
     return sorted[0]?.quant ?? defaultVariant;
-  }, [validVariants, defaultVariant, totalBudgetGb, getGgufFit]);
+  }, [variants, defaultVariant, totalBudgetGb, getGgufFit]);
 
   const sortedVariants = useMemo(() => {
-    if (!validVariants) return validVariants;
+    if (!variants) return variants;
     // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight, 4 = OOM
     const tierOf = (v: GgufVariantDetail) => {
       const f = getGgufFit(v.size_bytes);
@@ -743,7 +771,7 @@ function GgufVariantExpander({
       const base = f === "fits" ? 0 : 1;
       return v.downloaded ? base : base + 2;
     };
-    return [...validVariants].sort((a, b) => {
+    return [...variants].sort((a, b) => {
       const aTier = tierOf(a);
       const bTier = tierOf(b);
       if (aTier !== bTier) return aTier - bTier;
@@ -760,7 +788,7 @@ function GgufVariantExpander({
         ? b.size_bytes - a.size_bytes
         : a.size_bytes - b.size_bytes;
     });
-  }, [validVariants, effectiveRecommended, getGgufFit]);
+  }, [variants, effectiveRecommended, getGgufFit]);
 
   // On Device only: when Show all quantizations is off, list quants already on
   // disk. Recommended and other browse lists always show every quant.
