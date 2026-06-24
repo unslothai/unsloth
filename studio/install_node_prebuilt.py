@@ -828,8 +828,18 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             # A policy refusal, not a transient failure: fail closed, never keep-existing.
             raise
         except Exception as exc:  # noqa: BLE001
-            # Transient download/verify failure: keep an existing usable Node.
-            if not force and existing_install_usable(install_dir, host):
+            # Transient download/verify failure: keep an existing usable Node, but
+            # never keep a same-version install whose recorded digest is not the pin
+            # (the artifact the short-circuit above just rejected). A different usable
+            # version is still kept for offline resilience.
+            meta = load_metadata(install_dir)
+            pin_mismatch = (
+                pin is not None
+                and bool(meta)
+                and meta.get("version") == version
+                and meta.get("sha256") != pin
+            )
+            if not force and not pin_mismatch and existing_install_usable(install_dir, host):
                 log(f"Node download failed ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS
             raise
