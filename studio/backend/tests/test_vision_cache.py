@@ -761,7 +761,6 @@ class TestEnvOfflineParsing:
 
     def test_truthy_values_recognized(self, monkeypatch):
         import utils.models.model_config as mc
-
         for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
             for val in ("1", "true", "TRUE", "yes", "Yes", "on", "ON", " 1 ", " on ", "\ttrue\n"):
                 monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
