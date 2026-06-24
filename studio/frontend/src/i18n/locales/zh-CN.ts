@@ -23,6 +23,7 @@ export const zhCN = {
   },
   shell: {
     accountMenu: "{name} 账号菜单",
+    updateAvailable: "有可用更新",
     aria: {
       home: "Unsloth 首页",
       closeSidebar: "关闭侧边栏",
@@ -104,6 +105,7 @@ export const zhCN = {
       huggingFaceTokenDescription: "用于加载受限模型和推送产物。",
       hideToken: "隐藏 token",
       showToken: "显示 token",
+      tokenSaved: "Token 已保存",
       password: "密码",
       passwordDescription: "更改此 Studio 账号的密码。",
       passwordDialog: {

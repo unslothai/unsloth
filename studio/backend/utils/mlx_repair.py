@@ -36,6 +36,8 @@ from pathlib import Path
 
 import structlog
 
+from utils.uv_path_safety import uv_safe_path
+
 logger = structlog.get_logger(__name__)
 
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
@@ -48,6 +50,56 @@ _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
 MLX_PACKAGES = tuple(f"{name}>={version}" for name, version in _MLX_MIN_VERSIONS.items())
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
+)
+# Require pre-built wheels for the unattended self-heal. A source distribution's
+# PEP 517 build backend runs arbitrary code at install time, and this install is
+# default-on, resolver-driven, and runs before the post-install stack check can
+# reject anything. mlx/mlx-metal ship wheels only (no sdist on PyPI) and
+# mlx-lm/mlx-vlm publish py3-none-any wheels, so requiring wheels does not break a
+# healthy self-heal; if a wheel is genuinely unavailable the install fails and
+# Studio stays chat-only (the existing safe fallback) until `unsloth studio update`.
+_ONLY_BINARY_ARG = "--only-binary=:all:"
+# Allowlist of environment variables forwarded to the install subprocess. The
+# self-heal runs without confirmation on the default startup path, so it must not
+# hand resolver/build code the full Studio environment. Everything outside this
+# set is dropped, which excludes three dangerous classes by construction:
+#   * secrets (HF_TOKEN, AWS_*, WANDB_API_KEY, ...) that a malicious wheel/sdist
+#     build hook would otherwise read straight out of os.environ;
+#   * package-source redirects (UV_INDEX*, UV_DEFAULT_INDEX, UV_FIND_LINKS,
+#     PIP_INDEX_URL, ...) so a poisoned process env cannot silently repoint the
+#     install at an attacker-controlled index/find-links;
+#   * cache-dir redirects (UV_CACHE_DIR, XDG_CACHE_HOME) so a poisoned env cannot
+#     point uv at an attacker-staged cache (cache poisoning / symlink writes). uv
+#     falls back to its safe user-owned default cache, reused across runs anyway.
+# uv still honours on-disk config (uv.toml / pip.conf), so a corporate mirror
+# configured there keeps working; only process-env redirects are dropped. We set
+# UV_OVERRIDE ourselves in _mlx_install_env, so a poisoned one here is ignored.
+_MLX_ENV_ALLOWLIST = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        # proxies + custom CA bundles so installs behind a corporate gateway work
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "all_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    }
 )
 _REPAIR_TIMEOUT_S = 900
 
@@ -134,13 +186,22 @@ def _uv_install_cmd(*args: str) -> list[str] | None:
 
 
 def _mlx_install_env() -> dict[str, str]:
-    """Environment for the mlx install. Mirror the main installer
-    (install_python_stack.py) by pointing UV_OVERRIDE at overrides-darwin-arm64.txt,
-    which relaxes mlx-vlm/mlx-lm's transformers>=5 requirement to >=4.57.6. Without
-    it, uv keeps the Studio transformers pin only by silently backtracking mlx-vlm
-    to an old, unsupported version (uv honours UV_OVERRIDE; plain pip ignores it,
-    so the transformers constraint below is the pip-path safety net)."""
-    env = dict(os.environ)
+    """Minimal, allowlisted environment for the unattended mlx install.
+
+    The self-heal runs without confirmation on the default startup path, so it
+    forwards only the variables uv genuinely needs (see _MLX_ENV_ALLOWLIST) instead
+    of the full Studio environment: secrets and package-source redirects in
+    os.environ are dropped so a malicious resolver-selected artifact cannot read
+    Studio secrets or be steered to a hostile index.
+
+    Mirror the main installer (install_python_stack.py) by pointing UV_OVERRIDE at
+    overrides-darwin-arm64.txt, which relaxes mlx-vlm/mlx-lm's transformers>=5
+    requirement to >=4.57.6. Without it, uv keeps the Studio transformers pin only
+    by silently backtracking mlx-vlm to an old, unsupported version (uv honours
+    UV_OVERRIDE; plain pip ignores it, so the transformers constraint below is the
+    pip-path safety net). We set UV_OVERRIDE ourselves, so a poisoned one in the
+    process env is ignored."""
+    env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
     override = (
         Path(__file__).resolve().parents[1]
         / "requirements"
@@ -148,7 +209,8 @@ def _mlx_install_env() -> dict[str, str]:
         / "overrides-darwin-arm64.txt"
     )
     if override.is_file():
-        env.setdefault("UV_OVERRIDE", str(override))
+        # uv truncates UV_OVERRIDE at the first space (issue #6503).
+        env.setdefault("UV_OVERRIDE", uv_safe_path(override))
     return env
 
 
@@ -191,7 +253,13 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     constraint_path = None
     try:
         constraint_args, constraint_path = _transformers_constraint_args()
-        cmd = _uv_install_cmd("--upgrade", *_MLX_REINSTALL_ARGS, *constraint_args, *MLX_PACKAGES)
+        cmd = _uv_install_cmd(
+            "--upgrade",
+            _ONLY_BINARY_ARG,
+            *_MLX_REINSTALL_ARGS,
+            *constraint_args,
+            *MLX_PACKAGES,
+        )
         if cmd is None:
             logger.warning(
                 "MLX self-heal requires uv so Studio can apply dependency overrides; "

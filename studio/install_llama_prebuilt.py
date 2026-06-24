@@ -230,12 +230,15 @@ FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "m
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
-# Blackwell sm_120 capability thresholds. A host is Blackwell when its highest
-# compute capability is at least sm_120; ggml compiles sm_120 only at toolkit
-# >= 12.8, so an in-release windows-cuda build at or above that already covers
-# Blackwell, while cuda-12.4 does not and is dropped on a Blackwell host.
-_BLACKWELL_MIN_SM = 120
+# Blackwell floor is sm_100: data-center parts (B100/B200 sm_100, B300/GB300
+# sm_103) sit below consumer Blackwell (RTX 50 sm_120); the family needs toolkit
+# >= 12.8, except sm_103/sm_121 which need 12.9. (120 here wrongly excluded the
+# sm_100/103 data-center hosts.)
+_BLACKWELL_MIN_SM = 100
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
+# SMs that need a newer toolkit than the family floor (CUDA 12.9 added native
+# sm_103/sm_121 targets; 12.8 covers sm_100/101/120).
+_BLACKWELL_SM_MIN_TOOLKIT = {103: (12, 9), 121: (12, 9)}
 
 
 def _cuda_runtime_lines_for_major(major: int) -> list[str]:
@@ -3418,18 +3421,18 @@ def windows_cuda_attempts(
     return attempts
 
 
-def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
-    """True if an in-release windows-cuda attempt yields a Blackwell sm_120
-    capable build. The fork's app-named bundles declare their SM coverage
-    directly; legacy upstream-named bundles instead encode their CUDA toolkit
-    minor in the filename (covers Blackwell at toolkit >= 12.8)."""
+def _windows_cuda_attempt_covers_blackwell(
+    attempt: AssetChoice, min_toolkit: tuple[int, int] = _BLACKWELL_MIN_TOOLKIT
+) -> bool:
+    """True if a windows-cuda attempt is Blackwell-capable (app bundles via
+    declared SMs; legacy upstream bundles via toolkit minor >= min_toolkit:
+    12.8 for the family, 12.9 for sm_103/sm_121)."""
     if attempt.install_kind != "windows-cuda":
         return False
-    # Legacy upstream-named bundles encode their toolkit minor; it is the binding
-    # constraint (a 12.4 toolkit cannot offload sm_120 whatever its metadata says).
+    # Legacy bundle: the toolkit minor binds (12.4 cannot offload Blackwell).
     m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
     if m is not None:
-        return (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
+        return (int(m.group(1)), int(m.group(2))) >= min_toolkit
     # App-named bundles carry no minor and declare their SM coverage directly.
     return attempt.max_sm is not None and attempt.max_sm >= _BLACKWELL_MIN_SM
 
@@ -3439,22 +3442,30 @@ def _host_is_blackwell(host: HostInfo) -> bool:
     return bool(caps) and int(caps[-1]) >= _BLACKWELL_MIN_SM
 
 
+def _blackwell_min_toolkit_for_host(host: HostInfo) -> tuple[int, int]:
+    """Minimum CUDA toolkit this Blackwell host needs: 12.8 for the family,
+    12.9 if any of its SMs is sm_103/sm_121 (no native target before 12.9)."""
+    req = _BLACKWELL_MIN_TOOLKIT
+    for sm in normalize_compute_caps(host.compute_caps):
+        req = max(req, _BLACKWELL_SM_MIN_TOOLKIT.get(int(sm), _BLACKWELL_MIN_TOOLKIT))
+    return req
+
+
 def _drop_blackwell_incapable_windows_cuda(
     host: HostInfo, attempts: list[AssetChoice]
 ) -> list[AssetChoice]:
-    """On a Blackwell host, drop windows-cuda attempts that cannot offload
-    sm_120 (e.g. upstream cuda-12.4, toolkit 12.4). Such a build loads and
-    passes the functional validator but runs the model on a slow non-native
-    path (an RTX 5090 measured 7.1 tok/s vs 551.2 on cuda-13.3), so it must
-    not sit in the fallback chain behind the pin or an in-release cuda13.
-    Non-cuda attempts (windows-cpu, windows-hip, ...) pass through so the
-    host still degrades to an honest CPU install when no CUDA 13 exists."""
+    """On a Blackwell host, drop windows-cuda attempts that can't offload
+    Blackwell (e.g. cuda-12.4): they load and validate but run a slow non-native
+    path (RTX 5090: 7.1 vs 551.2 tok/s on cuda-13.3). Non-cuda attempts pass
+    through so the host can still fall back to an honest CPU install."""
     if not _host_is_blackwell(host):
         return attempts
+    min_toolkit = _blackwell_min_toolkit_for_host(host)
     return [
         attempt
         for attempt in attempts
-        if attempt.install_kind != "windows-cuda" or _windows_cuda_attempt_covers_blackwell(attempt)
+        if attempt.install_kind != "windows-cuda"
+        or _windows_cuda_attempt_covers_blackwell(attempt, min_toolkit)
     ]
 
 
@@ -4250,7 +4261,10 @@ def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
 
 
 def ensure_diffusion_visual_server(
-    install_dir: Path, host: HostInfo, release_tag: str | None
+    install_dir: Path,
+    host: HostInfo,
+    release_tag: str | None,
+    approved_checksums: ApprovedReleaseChecksums,
 ) -> None:
     """Best-effort placement of the DiffusionGemma visual-server binary next to
     llama-server in the install tree, so Studio can serve DiffusionGemma GGUFs
@@ -4282,6 +4296,7 @@ def ensure_diffusion_visual_server(
     try:
         assets = github_release_assets(DEFAULT_PUBLISHED_REPO, release_tag)
         match = None
+        unapproved_matches: list[str] = []
         for asset_name, url in assets.items():
             low = asset_name.lower()
             if "llama-diffusion-gemma-visual-server" not in low:
@@ -4290,19 +4305,39 @@ def ensure_diffusion_visual_server(
                 continue
             if (not host.is_windows) and low.endswith(".exe"):
                 continue
-            match = (asset_name, url)
+            # This binary is chmod'd executable and later launched by the
+            # backend, so it must be covered by the approved checksum manifest
+            # just like every other prebuilt artifact. An asset that matches the
+            # name but is missing from the manifest is refused rather than run.
+            approved = approved_checksums.artifacts.get(asset_name)
+            if approved is None:
+                unapproved_matches.append(asset_name)
+                continue
+            match = (asset_name, url, approved.sha256)
             break
         if match is None:
-            log(
-                "diffusion visual server not found in the published release; native "
-                "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
-            )
+            if unapproved_matches:
+                log(
+                    "diffusion visual server asset(s) were present but omitted from the "
+                    "approved checksum manifest; refusing unverified native executable: "
+                    + ", ".join(unapproved_matches)
+                )
+            else:
+                log(
+                    "diffusion visual server not found in the published release; native "
+                    "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
+                )
             return
         bin_dir.mkdir(parents = True, exist_ok = True)
-        download_file(match[1], target)
+        download_file_verified(
+            match[1],
+            target,
+            expected_sha256 = match[2],
+            label = f"diffusion visual server {match[0]}",
+        )
         if not host.is_windows:
             target.chmod(0o755)
-        log(f"installed diffusion visual server: {match[0]}")
+        log(f"installed verified diffusion visual server: {match[0]}")
     except Exception as exc:
         log(
             "diffusion visual server fetch skipped "
@@ -6626,7 +6661,9 @@ def install_prebuilt(
                             f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                         )
                     try:
-                        ensure_diffusion_visual_server(install_dir, host, plan.release_tag)
+                        ensure_diffusion_visual_server(
+                            install_dir, host, plan.release_tag, plan.approved_checksums
+                        )
                     except Exception as exc:
                         log(
                             "diffusion visual server step skipped; install remains valid "

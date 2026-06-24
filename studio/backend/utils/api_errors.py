@@ -125,6 +125,12 @@ def is_anthropic_path(path: str) -> bool:
     return path.startswith("/v1/messages")
 
 
+def wants_api_error_envelope(path: str) -> bool:
+    """True for the OpenAI/Anthropic-compatible surfaces: the ``/v1/*`` mount and
+    the preview ``/p/<run>[/<ckpt>]/v1/*`` mount."""
+    return path.startswith("/v1/") or (path.startswith("/p/") and "/v1/" in path)
+
+
 def error_body_for_path(
     path,
     message,
@@ -183,15 +189,16 @@ def _summarize_validation_errors(errors) -> tuple:
 def install_api_error_handlers(app) -> None:
     """Register validation + HTTPException handlers that emit ``/v1/*`` envelopes.
 
-    Both handlers are global but only transform responses for paths starting with
-    ``/v1/``. Non-``/v1/`` paths reproduce FastAPI's default ``{"detail": ...}``
-    behavior exactly so the Studio frontend keeps working.
+    Both handlers are global but only transform responses for OpenAI/Anthropic-
+    compatible surfaces (see :func:`wants_api_error_envelope`: the ``/v1/*`` mount
+    and the preview ``/p/.../v1/*`` mount). Every other path reproduces FastAPI's
+    default ``{"detail": ...}`` behavior exactly so the Studio frontend keeps working.
     """
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(request, exc):
         path = request.url.path
-        if path.startswith("/v1/"):
+        if wants_api_error_envelope(path):
             summary, param = _summarize_validation_errors(exc.errors())
             return JSONResponse(
                 status_code = 400,
@@ -211,7 +218,7 @@ def install_api_error_handlers(app) -> None:
         # default http_exception_handler, which returns a bodiless Response.
         if not is_body_allowed_for_status_code(exc.status_code):
             return Response(status_code = exc.status_code, headers = headers)
-        if path.startswith("/v1/"):
+        if wants_api_error_envelope(path):
             detail = exc.detail
             # Already a fully-formed envelope: pass through untouched.
             if isinstance(detail, dict) and ("error" in detail or detail.get("type") == "error"):
