@@ -22,6 +22,7 @@ from loggers import get_logger
 
 from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
+    _strip_gemma_native_spans,
     BUDGET_EXHAUSTED_NUDGE,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
@@ -60,6 +61,9 @@ def strip_tool_markup_streaming(
     """Strip open-ended tool XML from display text without trimming whitespace."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
+    # Quote-aware Gemma spans first, else a literal <tool_call|> inside a quoted
+    # argument truncates the regex match and leaks the suffix into display.
+    text = _strip_gemma_native_spans(text, final = True)
     for pat in _TOOL_ALL_PATS:
         text = pat.sub("", text)
     return text

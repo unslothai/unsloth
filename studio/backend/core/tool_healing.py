@@ -350,10 +350,15 @@ def parse_tool_calls_from_text(
         )
 
     if not tool_calls:
+        # Exclude <function=> markers inside any collected JSON/Gemma candidate
+        # span, even one that failed to parse: such a marker is that call's
+        # argument data, and promoting it here would let nested XML escape from a
+        # malformed Gemma call into an executable tool call.
         func_starts = [
             fm
             for fm in _TC_FUNC_START_RE.finditer(content)
             if not _inside_open_parameter(content, fm.start())
+            and not any(s <= fm.start() <= e for s, e in spans)
         ]
         for idx, fm in enumerate(func_starts):
             func_name = fm.group(1)
@@ -436,10 +441,13 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
             continue
         brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
         if brace_end < 0:
+            # Unbalanced: no complete span from here on. Drop the rest if final,
+            # else keep it, and stop -- later starts are inside this unclosed run,
+            # so rescanning them would re-walk to EOF each time (quadratic).
             if final:
                 out.append(text[cursor:start])
                 cursor = len(text)
-            continue
+            break
         tail = text[brace_end + 1 :]
         leading_ws = len(tail) - len(tail.lstrip())
         close = _TC_GEMMA_END_TAG_RE.match(tail, leading_ws)
@@ -461,11 +469,10 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     When ``final`` is True, trailing incomplete tool-call blocks are removed
     too, and the result is stripped of surrounding whitespace.
     """
-    # Gemma spans first (quote-aware); skip the non-quote-aware Gemma regex below.
+    # Well-formed Gemma spans first (quote-aware); the regex patterns below then
+    # mop up any malformed Gemma span the helper could not match.
     text = _strip_gemma_native_spans(text, final = final)
     patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in patterns:
-        if pat is _TC_GEMMA_CLOSED_PAT:
-            continue
         text = pat.sub("", text)
     return text.strip() if final else text

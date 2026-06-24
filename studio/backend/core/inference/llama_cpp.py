@@ -40,6 +40,7 @@ from core.inference.llama_server_args import (
 )
 from core.tool_healing import (
     _TOOL_ALL_PATS,
+    _strip_gemma_native_spans,
     strip_tool_call_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -7780,6 +7781,9 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
+            # Quote-aware Gemma spans first, else a literal <tool_call|> inside a
+            # quoted argument truncates the regex match and leaks the suffix.
+            text = _strip_gemma_native_spans(text, final = True)
             for pat in _TOOL_ALL_PATS:
                 text = pat.sub("", text)
             return text
