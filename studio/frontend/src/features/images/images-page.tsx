@@ -70,6 +70,15 @@ interface ResultItem {
   seed: number;
 }
 
+// Generated images live here (module scope) so they survive the page unmounting
+// when you switch tabs — the route is lazy and remounts otherwise empty.
+const imageSession: {
+  results: ResultItem[];
+  selectedId: number | null;
+  nextId: number;
+  quant: string | null;
+} = { results: [], selectedId: null, nextId: 0, quant: null };
+
 function downloadImage(src: string, seed: number) {
   const link = document.createElement("a");
   link.href = src;
@@ -112,7 +121,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 type Busy = "loading" | "unloading" | "generating" | null;
 
 export function ImagesPage() {
-  const [quant, setQuant] = useState<string | null>(null);
+  const [quant, setQuant] = useState<string | null>(imageSession.quant);
   const [prompt, setPrompt] = useState(
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
   );
@@ -125,12 +134,20 @@ export function ImagesPage() {
   const [busy, setBusy] = useState<Busy>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   const [loadProgress, setLoadProgress] = useState<DiffusionLoadProgress | null>(null);
-  const [results, setResults] = useState<ResultItem[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [results, setResults] = useState<ResultItem[]>(() => imageSession.results);
+  const [selectedId, setSelectedId] = useState<number | null>(() => imageSession.selectedId);
   // Stable, ever-increasing ids: results are prepended, so an array index would
   // re-key every existing image on each new generation.
-  const nextResultId = useRef(0);
+  const nextResultId = useRef(imageSession.nextId);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Persist the gallery to module scope so a tab switch doesn't drop it.
+  useEffect(() => {
+    imageSession.results = results;
+    imageSession.selectedId = selectedId;
+    imageSession.nextId = nextResultId.current;
+    imageSession.quant = quant;
+  }, [results, selectedId, quant]);
 
   const resolution = RESOLUTIONS[resolutionIdx];
   const selected = useMemo(
@@ -279,8 +296,8 @@ export function ImagesPage() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {/* ── Top: the chat-style model selector ─────────────── */}
-      <div className="flex items-center gap-3 px-4 py-2.5 sm:px-6">
+      {/* ── Top: the chat-style model selector (header padding mirrors chat) ── */}
+      <div className="flex h-[48px] shrink-0 items-start pl-2 pr-2 pt-[11px]">
         <ModelSelector
           models={MODELS}
           value={status?.loaded ? status.repo_id ?? undefined : undefined}
@@ -288,6 +305,7 @@ export function ImagesPage() {
           onValueChange={handleModelSelect}
           onEject={status?.loaded ? handleUnload : undefined}
           variant="ghost"
+          className="!h-[34px]"
           task={["text-to-image", "image-to-image", "image-text-to-image"]}
         />
       </div>
