@@ -898,7 +898,8 @@ def maybe_prefetch_hf_snapshot(
     # A checkpoint-* subfolder is exactly what "checkpoint-*/*" would drop, so
     # do not ignore it when the caller is explicitly loading from that subfolder.
     ignore_patterns = [
-        pattern for pattern in _PREFETCH_IGNORE_PATTERNS
+        pattern
+        for pattern in _PREFETCH_IGNORE_PATTERNS
         if not (
             pattern == "checkpoint-*/*"
             and isinstance(subfolder, str)
