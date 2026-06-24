@@ -14,6 +14,14 @@ export interface DiffusionStatus {
   cpu_offload: boolean;
 }
 
+export interface DiffusionGenerateProgress {
+  active: boolean;
+  step: number;
+  total_steps: number;
+  fraction: number;
+  eta_seconds: number | null;
+}
+
 export interface DiffusionLoadProgress {
   phase: "downloading" | "finalizing" | "ready" | "error" | null;
   bytes_downloaded: number;
@@ -75,6 +83,10 @@ export async function getDiffusionStatus(): Promise<DiffusionStatus> {
 
 export async function getDiffusionLoadProgress(): Promise<DiffusionLoadProgress> {
   return parseJson(await authFetch("/api/inference/images/load-progress"));
+}
+
+export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> {
+  return parseJson(await authFetch("/api/inference/images/generate-progress"));
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {

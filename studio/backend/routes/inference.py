@@ -1052,6 +1052,7 @@ from models.inference import (
     DiffusionLoadRequest,
     DiffusionGenerateRequest,
     DiffusionGenerateResponse,
+    DiffusionGenerateProgressResponse,
     DiffusionStatusResponse,
     DiffusionLoadProgressResponse,
     GalleryImage,
@@ -10213,3 +10214,10 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
     from core.inference.diffusion import get_diffusion_backend
 
     return DiffusionLoadProgressResponse(**get_diffusion_backend().load_progress())
+
+
+@studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
+async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
+    from core.inference.diffusion import get_diffusion_backend
+
+    return DiffusionGenerateProgressResponse(**get_diffusion_backend().generate_progress())

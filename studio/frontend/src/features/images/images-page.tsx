@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
 import {
+  type DiffusionGenerateProgress,
   type DiffusionLoadProgress,
   type DiffusionStatus,
   type GalleryImage,
@@ -52,6 +53,7 @@ import {
   getDiffusionLoadProgress,
   getDiffusionStatus,
   getGallery,
+  getGenerateProgress,
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
@@ -133,6 +135,18 @@ function downloadImage(src: string, image: GalleryImage) {
 
 function formatTimestamp(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleString();
+}
+
+function formatEta(seconds: number): string {
+  if (seconds < 1) return "<1s";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+}
+
+// Bar label for an in-flight generation: step count plus an ETA once it's known.
+function genStepLabel(p: DiffusionGenerateProgress): string {
+  const base = `Step ${p.step}/${p.total_steps}`;
+  return p.eta_seconds != null ? `${base} · ~${formatEta(p.eta_seconds)} left` : base;
 }
 
 // The chat tab's model-load toast styling, reused verbatim so the diffusion
@@ -359,6 +373,9 @@ export function ImagesPage() {
   const [busy, setBusy] = useState<Busy>(null);
   // {done, total} while a multi-run generation is in flight (for the button).
   const [genProgress, setGenProgress] = useState<{ done: number; total: number } | null>(null);
+  // Live per-step progress (step / total + ETA) polled during generation.
+  const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
+  const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   // Records come from the backend (durable); srcById maps each id to its object
   // URL (loaded images) or data URL (the one just generated).
@@ -491,9 +508,10 @@ export function ImagesPage() {
 
   useEffect(() => {
     void refreshStatus();
-    // Stop polling if the page unmounts mid-load.
+    // Stop polling if the page unmounts mid-load / mid-generate.
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
+      if (genPollTimer.current) clearInterval(genPollTimer.current);
     };
   }, [refreshStatus]);
 
@@ -602,6 +620,17 @@ export function ImagesPage() {
 
     setBusy("generating");
     setGenProgress({ done: 0, total: count });
+    setGenStep(null);
+    // Poll the backend's per-step progress across the whole run (all sequential
+    // generations), so the bar tracks the live denoising steps.
+    genPollTimer.current = setInterval(async () => {
+      try {
+        const p = await getGenerateProgress();
+        setGenStep(p.active ? p : null);
+      } catch {
+        // transient; keep polling
+      }
+    }, 300);
     try {
       for (let i = 0; i < count; i++) {
         const res = await generateDiffusionImage({
@@ -625,8 +654,11 @@ export function ImagesPage() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Image generation failed");
     } finally {
+      if (genPollTimer.current) clearInterval(genPollTimer.current);
+      genPollTimer.current = null;
       setBusy(null);
       setGenProgress(null);
+      setGenStep(null);
     }
   }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, ensureSrc]);
 
@@ -796,14 +828,13 @@ export function ImagesPage() {
                   </Button>
                 </div>
               </>
-            ) : busy === "generating" || selected ? (
-              // First image generating, or the selected record's blob is still
-              // loading — spin in place rather than flashing the empty state.
+            ) : selected ? (
+              // The selected record's blob is still loading — spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 <Spinner className="size-8" />
-                <p className="text-sm">{busy === "generating" ? "Generating…" : "Loading…"}</p>
+                <p className="text-sm">Loading…</p>
               </div>
-            ) : (
+            ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 <HugeiconsIcon icon={ImageAdd02Icon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
@@ -811,6 +842,30 @@ export function ImagesPage() {
                     ? "Enter a prompt and hit Generate."
                     : "Select a model quant to load, then generate."}
                 </p>
+              </div>
+            )}
+
+            {/* Live generation progress: a per-step bar with ETA, centered when
+                there's nothing else to show, tucked at the bottom over an image. */}
+            {busy === "generating" && (
+              <div
+                className={cn(
+                  "pointer-events-none absolute flex justify-center px-4",
+                  selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
+                )}
+              >
+                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
+                  <ModelLoadDescription
+                    title={
+                      genProgress && genProgress.total > 1
+                        ? `Generating · run ${genProgress.done + 1}/${genProgress.total}`
+                        : "Generating…"
+                    }
+                    message="Starting…"
+                    progressPercent={genStep ? genStep.fraction * 100 : null}
+                    progressLabel={genStep ? genStepLabel(genStep) : null}
+                  />
+                </div>
               </div>
             )}
           </div>

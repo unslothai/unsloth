@@ -1759,6 +1759,16 @@ class GalleryListResponse(BaseModel):
     images: list[GalleryImage] = Field(default_factory = list)
 
 
+class DiffusionGenerateProgressResponse(BaseModel):
+    """Live per-step progress for an in-flight generation."""
+
+    active: bool = Field(False, description = "Whether a generation is running")
+    step: int = Field(0, description = "Denoising steps completed so far")
+    total_steps: int = Field(0, description = "Total denoising steps for this run")
+    fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
+    eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+
+
 class DiffusionLoadProgressResponse(BaseModel):
     """Download/finalize progress for an in-flight diffusion load."""
 

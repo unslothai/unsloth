@@ -13,7 +13,9 @@ policy lives in the arbiter the routes call, not here.
 
 from __future__ import annotations
 
+import inspect
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -53,6 +55,17 @@ class _LoadingState:
     error: Optional[str] = None
 
 
+@dataclass
+class _GenState:
+    """An in-flight generation, updated per denoising step for the progress bar."""
+
+    total_steps: int
+    step: int = 0
+    # Set when the first step finishes; the ETA rate is measured from there so the
+    # slower first step (warmup) doesn't skew it.
+    first_step_at: float = 0.0
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -64,6 +77,9 @@ class DiffusionBackend:
         self._lock = threading.Lock()
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
+        # The callback mutates this and generate_progress() reads it, both without
+        # the lock (generate holds it for the whole call), so polling stays live.
+        self._gen: Optional[_GenState] = None
 
     @property
     def is_loaded(self) -> bool:
@@ -313,10 +329,46 @@ class DiffusionBackend:
             if negative_prompt:
                 kwargs["negative_prompt"] = negative_prompt
 
-            images = state.pipe(**kwargs).images
+            gen = _GenState(total_steps = steps)
+
+            def _on_step(pipe, step_index, timestep, callback_kwargs):
+                gen.step = step_index + 1
+                if gen.first_step_at == 0.0:
+                    gen.first_step_at = time.time()
+                return callback_kwargs
+
+            # Not every pipeline accepts the callback; only pass it where supported
+            # so the step counter never breaks generation.
+            if "callback_on_step_end" in inspect.signature(state.pipe.__call__).parameters:
+                kwargs["callback_on_step_end"] = _on_step
+
+            self._gen = gen
+            try:
+                images = state.pipe(**kwargs).images
+            finally:
+                self._gen = None
             # Return the PIL images (not yet encoded): the route embeds each
             # image's recipe and persists it via the gallery.
             return {"images": list(images), "seed": int(seed), "repo_id": state.repo_id}
+
+    def generate_progress(self) -> dict[str, Any]:
+        """Live per-step progress for an in-flight generation (lock-free read)."""
+        gen = self._gen
+        if gen is None or gen.total_steps <= 0:
+            return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
+        step, total = gen.step, gen.total_steps
+        eta = None
+        steps_since_first = step - 1
+        if gen.first_step_at and steps_since_first > 0:
+            per_step = (time.time() - gen.first_step_at) / steps_since_first
+            eta = max(0.0, (total - step) * per_step)
+        return {
+            "active": True,
+            "step": step,
+            "total_steps": total,
+            "fraction": min(step / total, 1.0),
+            "eta_seconds": eta,
+        }
 
     def unload(self) -> dict[str, Any]:
         with self._lock:

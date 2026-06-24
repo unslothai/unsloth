@@ -296,6 +296,22 @@ def test_load_progress_fraction_clamped(monkeypatch):
     assert p["bytes_downloaded"] == 1000  # clamped to the estimate
 
 
+def test_generate_progress_reports_step_and_eta():
+    import time as _time
+
+    from core.inference.diffusion import _GenState
+
+    backend = DiffusionBackend()
+    assert backend.generate_progress()["active"] is False
+
+    # Halfway through an 8-step run, ~1s/step measured since the first step.
+    backend._gen = _GenState(total_steps = 8, step = 4, first_step_at = _time.time() - 3)
+    p = backend.generate_progress()
+    assert p["active"] is True and p["step"] == 4 and p["total_steps"] == 8
+    assert abs(p["fraction"] - 0.5) < 1e-9
+    assert p["eta_seconds"] is not None and 0 < p["eta_seconds"] < 30  # ~4 steps left
+
+
 def test_begin_load_rejects_concurrent(monkeypatch):
     backend = DiffusionBackend()
     monkeypatch.setattr(DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: 0))
