@@ -319,6 +319,9 @@ export interface CachedModelRepo {
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
+  /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo
+   * (model_index.json present), so the chat picker can hide it. Absent = chat. */
+  task?: string | null;
 }
 
 export async function listCachedModels(): Promise<CachedModelRepo[]> {

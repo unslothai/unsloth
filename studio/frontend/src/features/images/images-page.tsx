@@ -89,27 +89,63 @@ function downloadImage(src: string, seed: number) {
   link.click();
 }
 
-// Title + percent/label for the chat progress component, from a progress poll.
-function progressView(p: DiffusionLoadProgress): {
-  title: string;
-  progressPercent: number | null;
-  progressLabel: string | null;
-} {
-  const title = p.phase === "finalizing" ? "Loading to GPU…" : "Downloading model…";
-  if (p.bytes_total > 0) {
-    return {
-      title,
-      progressPercent: p.fraction * 100,
-      progressLabel: `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`,
-    };
-  }
-  // Unknown total: show bytes counting up, no bar.
+// The chat tab's model-load toast styling, reused verbatim so the diffusion
+// load toast is visually identical (persistent, progress bar, same chrome).
+const LOAD_TOAST_CLASSNAMES = {
+  toast: "chat-model-load-toast items-center gap-2.5",
+  content: "gap-0.5 flex-1 min-w-0",
+  title: "leading-5",
+  description: "mt-0 w-full",
+} as const;
+
+// Render the chat ModelLoadDescription for a progress poll. The base text-
+// encoder/VAE repo downloads alongside the GGUF, so the total can exceed the
+// picked quant's size — that's the real one-time download.
+function loadToastDescription(p: DiffusionLoadProgress) {
+  // "Downloading" only when bytes actually remain to fetch — a cached model (or
+  // the pre-estimate window, total still 0) shouldn't claim a download.
+  const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
+  const title = downloading
+    ? "Downloading model…"
+    : p.phase === "finalizing"
+      ? "Loading to GPU…"
+      : "Starting model…";
+  const hasTotal = p.bytes_total > 0;
+  return (
+    <ModelLoadDescription
+      title={title}
+      message={`Loading ${MODEL.label}. This may include downloading its base model.`}
+      progressPercent={hasTotal ? p.fraction * 100 : null}
+      progressLabel={
+        hasTotal
+          ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
+          : p.bytes_downloaded > 0
+            ? `${formatBytes(p.bytes_downloaded)} downloaded`
+            : null
+      }
+    />
+  );
+}
+
+// Toast args mirroring chat's: persistent, closeable, content in `description`.
+// Pass `id` to update the existing toast in place instead of stacking a new one.
+function loadToastArgs(p: DiffusionLoadProgress, id?: string | number) {
   return {
-    title,
-    progressPercent: null,
-    progressLabel: p.bytes_downloaded > 0 ? `${formatBytes(p.bytes_downloaded)} downloaded` : null,
+    ...(id != null ? { id } : {}),
+    description: loadToastDescription(p),
+    duration: Infinity,
+    closeButton: true,
+    classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
+
+const IDLE_PROGRESS: DiffusionLoadProgress = {
+  phase: null,
+  bytes_downloaded: 0,
+  bytes_total: 0,
+  fraction: 0,
+  error: null,
+};
 
 // Mirrors the Train page's SliderRow (studio/sections/params-section.tsx):
 // label + standard Slider + number input, same classes.
@@ -179,13 +215,19 @@ export function ImagesPage() {
 
   const [busy, setBusy] = useState<Busy>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
-  const [loadProgress, setLoadProgress] = useState<DiffusionLoadProgress | null>(null);
   const [results, setResults] = useState<ResultItem[]>(() => imageSession.results);
   const [selectedId, setSelectedId] = useState<number | null>(() => imageSession.selectedId);
   // Stable, ever-increasing ids: results are prepended, so an array index would
   // re-key every existing image on each new generation.
   const nextResultId = useRef(imageSession.nextId);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The persistent load toast's id, so each poll updates it in place (chat-style).
+  const loadToastId = useRef<string | number | null>(null);
+
+  const dismissLoadToast = useCallback(() => {
+    if (loadToastId.current != null) toast.dismiss(loadToastId.current);
+    loadToastId.current = null;
+  }, []);
 
   // Persist the gallery to module scope so a tab switch doesn't drop it.
   useEffect(() => {
@@ -217,36 +259,39 @@ export function ImagesPage() {
     };
   }, [refreshStatus]);
 
-  // Poll load-progress until the background load reaches "ready" or "error".
+  // Poll load-progress until the background load reaches "ready" or "error",
+  // updating the persistent toast in place each tick.
   const pollLoadProgress = useCallback(async () => {
     try {
       const p = await getDiffusionLoadProgress();
-      setLoadProgress(p);
       if (p.phase === "ready") {
+        dismissLoadToast();
         setStatus(await getDiffusionStatus());
         toast.success("Model loaded");
         setBusy(null);
-        setLoadProgress(null);
         return;
       }
       if (p.phase === "error") {
+        dismissLoadToast();
         toast.error(p.error || "Failed to load model");
         setBusy(null);
-        setLoadProgress(null);
         return;
       }
+      if (loadToastId.current != null) toast(null, loadToastArgs(p, loadToastId.current));
     } catch {
       // Transient poll failure: keep trying.
     }
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, []);
+  }, [dismissLoadToast]);
 
   const handleLoad = useCallback(
     async (ggufFilename: string) => {
       // Cancel any prior poll loop so two can't run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
       setBusy("loading");
-      setLoadProgress(null);
+      // Show the chat-style toast immediately; the poll updates it by id.
+      dismissLoadToast();
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
       try {
         // Returns immediately — the load runs in the background; we poll for it.
         await loadDiffusionModel({
@@ -255,6 +300,7 @@ export function ImagesPage() {
           family_override: MODEL.family,
         });
       } catch (err) {
+        dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");
         setBusy(null);
         void refreshStatus();
@@ -262,7 +308,7 @@ export function ImagesPage() {
       }
       void pollLoadProgress();
     },
-    [pollLoadProgress, refreshStatus],
+    [pollLoadProgress, refreshStatus, dismissLoadToast],
   );
 
   // The chat picker emits (modelId, picked quant); load its matching GGUF.
@@ -346,7 +392,8 @@ export function ImagesPage() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {/* ── Top: the chat-style model selector (header padding mirrors chat) ── */}
+      {/* ── Top: the chat-style model selector (header padding mirrors chat). The
+          load progress shows in a chat-style toast, not here. ── */}
       <div className="flex h-[48px] shrink-0 items-start pl-2 pr-2 pt-[11px]">
         <ModelSelector
           models={MODELS}
@@ -442,6 +489,12 @@ export function ImagesPage() {
                   </Button>
                 </div>
               </>
+            ) : busy === "generating" ? (
+              // First image (no past result to keep showing): spin in place.
+              <div className="flex flex-col items-center gap-3 text-muted-foreground">
+                <Spinner className="size-8" />
+                <p className="text-sm">Generating…</p>
+              </div>
             ) : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 <HugeiconsIcon icon={ImageAdd02Icon} className="size-12" strokeWidth={1.5} />
@@ -452,33 +505,31 @@ export function ImagesPage() {
                 </p>
               </div>
             )}
-            {busy === "generating" && (
-              <div className="absolute inset-0 flex items-center justify-center bg-background/40 backdrop-blur-sm">
-                <Spinner className="size-8" />
-              </div>
-            )}
-            {/* Download progress, lower-right (chat-style). */}
-            {busy === "loading" && loadProgress && (
-              <div className="absolute bottom-4 right-4 w-72 rounded-xl bg-card p-3 shadow-lg ring-1 ring-foreground/10">
-                <ModelLoadDescription {...progressView(loadProgress)} />
-              </div>
-            )}
           </div>
 
-          {results.length > 0 && (
+          {(results.length > 0 || busy === "generating") && (
             <div className="flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3">
+              {/* In-progress generation: a placeholder tile at the front so past
+                  images stay visible and browsable while the new one renders. */}
+              {busy === "generating" && (
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-lg bg-muted/50 ring-2 ring-primary/30">
+                  <Spinner className="size-5 text-muted-foreground" />
+                </div>
+              )}
               {results.map((r) => (
                 <button
                   key={r.id}
                   type="button"
                   onClick={() => setSelectedId(r.id)}
                   title={`seed ${r.seed}`}
-                  className={cn(
-                    "size-16 shrink-0 overflow-hidden rounded-lg ring-2 transition-colors",
-                    r.id === selected?.id ? "ring-primary" : "ring-transparent hover:ring-border",
-                  )}
+                  className="relative size-16 shrink-0 overflow-hidden rounded-lg outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <img src={r.src} alt={r.prompt} className="size-full object-cover" />
+                  {/* Selection marker on a non-focusable overlay, so the button's
+                      own focus state can never mask it. */}
+                  {r.id === selected?.id && (
+                    <span className="pointer-events-none absolute inset-0 rounded-lg border-2 border-primary" />
+                  )}
                 </button>
               ))}
             </div>

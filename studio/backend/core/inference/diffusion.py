@@ -177,10 +177,12 @@ class DiffusionBackend:
 
         downloaded = self._cache_bytes(loading.repo_id) + self._cache_bytes(loading.base_repo)
         expected = loading.expected_bytes
-        # Downloads done but pipeline still dequantising / moving to GPU.
+        # Downloads done but pipeline still dequantising / moving to GPU. The cache
+        # scan can slightly exceed the estimate (extra cached quants, blob padding),
+        # so clamp the reported bytes/fraction so the bar never overshoots 100%.
         if expected > 0 and downloaded >= expected * 0.999:
-            return _progress("finalizing", downloaded, expected, 1.0)
-        fraction = downloaded / expected if expected > 0 else 0.0
+            return _progress("finalizing", min(downloaded, expected), expected, 1.0)
+        fraction = min(downloaded / expected, 1.0) if expected > 0 else 0.0
         return _progress("downloading", downloaded, expected, fraction)
 
     @staticmethod
@@ -196,12 +198,8 @@ class DiffusionBackend:
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
-            # The transformer subfolder is supplied by the GGUF, so from_pretrained
-            # never downloads it — exclude it from the expected total.
             total += sum(
-                s.size or 0
-                for s in base_info.siblings
-                if not s.rfilename.startswith("transformer/")
+                s.size or 0 for s in base_info.siblings if _base_file_downloaded(s.rfilename)
             )
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
@@ -371,6 +369,21 @@ class DiffusionBackend:
             "dtype": state.dtype,
             "cpu_offload": state.cpu_offload,
         }
+
+
+def _base_file_downloaded(rfilename: str) -> bool:
+    """True for base-repo files ``from_pretrained`` actually fetches.
+
+    The transformer is supplied by the GGUF, and repo docs (``assets/``, the
+    top-level README/PDF/images) are never downloaded — counting them would peg
+    the progress estimate above what lands on disk, so the bar would sit short of
+    100% for the whole pipeline-load phase instead of advancing to "finalizing".
+    """
+    if rfilename.startswith("transformer/"):
+        return False
+    if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
+        return rfilename == "model_index.json"
+    return not rfilename.startswith("assets/")
 
 
 def _progress(

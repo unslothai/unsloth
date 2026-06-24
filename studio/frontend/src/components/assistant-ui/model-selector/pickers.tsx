@@ -975,6 +975,22 @@ function taskMatchesFilter(repoTask: string | null | undefined, filter: HfTaskFi
   return repoTask != null && (wanted as readonly string[]).includes(repoTask);
 }
 
+// Image-generation pipeline tasks: handled by the Images page, never loadable as
+// chat models. The backend reports "text-to-image" for diffusion-arch GGUFs.
+const IMAGE_GEN_TASKS: readonly string[] = [
+  "text-to-image",
+  "image-to-image",
+  "image-text-to-image",
+];
+
+// Gate an on-device model by the picker's task scope. With a filter (the Images
+// page) keep only matching tasks; with no filter (chat) drop image-generation
+// models so a downloaded diffusion GGUF doesn't show up as a loadable chat model.
+function passesTaskGate(repoTask: string | null | undefined, filter: HfTaskFilter): boolean {
+  if (filter) return taskMatchesFilter(repoTask, filter);
+  return !(repoTask != null && IMAGE_GEN_TASKS.includes(repoTask));
+}
+
 // Module-level caches so re-mounting the popover shows results instantly
 let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
@@ -1720,22 +1736,30 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
-  // Ordered by the On Device dropdown (recent/download date/size/name). When a
-  // task filter is set (e.g. Images page), drop cached repos whose architecture
-  // is not that task so On Device matches the Recommended tab.
+  // Ordered by the On Device dropdown (recent/download date/size/name). The task
+  // gate keeps the Images picker to diffusion GGUFs and, conversely, hides those
+  // diffusion GGUFs from the chat picker (where they aren't loadable models).
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
-        task ? cachedGguf.filter((c) => taskMatchesFilter(c.task, task)) : cachedGguf,
+        cachedGguf.filter((c) => passesTaskGate(c.task, task)),
         downloadedSort,
         loadTimes,
       ),
     [cachedGguf, downloadedSort, loadTimes, task],
   );
   // Non-GGUF (safetensors) cached repos aren't single-file diffusion GGUFs, so
-  // hide them entirely when a task filter is active (the Images picker).
+  // hide them entirely when a task filter is active (the Images picker). In chat,
+  // drop cached diffusers pipeline repos (a Z-Image / FLUX base) the same way.
   const sortedCachedModels = useMemo(
-    () => (task ? [] : sortCachedRepos(cachedModels, downloadedSort, loadTimes)),
+    () =>
+      task
+        ? []
+        : sortCachedRepos(
+            cachedModels.filter((c) => passesTaskGate(c.task, task)),
+            downloadedSort,
+            loadTimes,
+          ),
     [cachedModels, downloadedSort, loadTimes, task],
   );
   // Each local section's search is scoped to its own models (matched by name).
@@ -1745,14 +1769,15 @@ export function HubModelPicker({
     normalizeForSearch(
       `${m.model_id ?? ""} ${m.display_name} ${m.id}`,
     ).includes(localQuery);
-  // A task filter (the Images page) wants diffusion GGUFs only, so local models
-  // are filtered to that task (by the GGUF architecture the backend reports).
+  // The Images page wants diffusion GGUFs only; chat wants everything but those.
+  // passesTaskGate handles both directions off the GGUF architecture the backend
+  // reports as each model's task.
   const sortedLmStudio = useMemo(
     () =>
       sortLocalModels(
         lmStudioModels.filter(
           (m) =>
-            (!task || taskMatchesFilter(m.task, task)) &&
+            passesTaskGate(m.task, task) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -1770,7 +1795,7 @@ export function HubModelPicker({
       sortLocalModels(
         localDirModels.filter(
           (m) =>
-            (!task || taskMatchesFilter(m.task, task)) &&
+            passesTaskGate(m.task, task) &&
             (!chatOnly ||
               localModelIsGguf(m) ||
               (isMac && localModelIsMlx(m))) &&
@@ -1797,7 +1822,7 @@ export function HubModelPicker({
       sortLocalModels(
         customFolderModels.filter(
           (m) =>
-            (!task || taskMatchesFilter(m.task, task)) &&
+            passesTaskGate(m.task, task) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),

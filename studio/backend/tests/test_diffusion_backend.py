@@ -15,7 +15,11 @@ import types
 
 import pytest
 
-from core.inference.diffusion import DiffusionBackend, encode_png_base64
+from core.inference.diffusion import (
+    DiffusionBackend,
+    _base_file_downloaded,
+    encode_png_base64,
+)
 from core.inference.diffusion_families import (
     detect_family,
     resolve_base_repo,
@@ -268,6 +272,31 @@ def test_load_progress_downloading_then_finalizing(monkeypatch):
 
     monkeypatch.setattr(DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: 500))
     assert backend.load_progress()["phase"] == "finalizing"  # 1000/1000
+
+
+def test_base_file_downloaded_excludes_undownloaded():
+    # Counted: the pipeline manifest + component subfolders from_pretrained fetches.
+    assert _base_file_downloaded("model_index.json")
+    assert _base_file_downloaded("text_encoder/model-00001-of-00003.safetensors")
+    assert _base_file_downloaded("vae/diffusion_pytorch_model.safetensors")
+    # Excluded: the GGUF supplies the transformer; docs/assets and top-level files
+    # are never downloaded, so counting them would peg the bar short of 100%.
+    assert not _base_file_downloaded("transformer/diffusion_pytorch_model-00001-of-00003.safetensors")
+    assert not _base_file_downloaded("assets/Z-Image-Gallery.pdf")
+    assert not _base_file_downloaded("README.md")
+    assert not _base_file_downloaded(".gitattributes")
+
+
+def test_load_progress_fraction_clamped(monkeypatch):
+    # The cache scan can exceed the estimate (e.g. a second cached quant); the
+    # reported fraction must still clamp to 1.0 rather than overshoot.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(repo_id = "r", base_repo = "b", expected_bytes = 1000)
+    monkeypatch.setattr(DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: 900))
+    p = backend.load_progress()  # summed 1800 > expected 1000
+    assert p["phase"] == "finalizing"
+    assert p["fraction"] == 1.0
+    assert p["bytes_downloaded"] == 1000  # clamped to the estimate
 
 
 def test_begin_load_rejects_concurrent(monkeypatch):

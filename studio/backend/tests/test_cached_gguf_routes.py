@@ -83,6 +83,7 @@ def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monk
             "size_bytes": 5_000,
             "cache_path": str(repo.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -105,6 +106,7 @@ def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_
             "size_bytes": 7_000,
             "cache_path": str(repo.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -200,6 +202,7 @@ def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(monkeypatch,
             "size_bytes": 6_000,
             "cache_path": str(larger.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -230,6 +233,7 @@ def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp
             "size_bytes": 5_000,
             "cache_path": str(repo.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -280,6 +284,7 @@ def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypa
             "size_bytes": 5_000,
             "cache_path": str(mixed.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -307,6 +312,7 @@ def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
             "size_bytes": 5_000,
             "cache_path": str(partial.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -343,6 +349,7 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypat
             "size_bytes": 5_000,
             "cache_path": str(healthy.repo_path),
             "has_vision": False,
+            "task": None,
         }
     ]
 
@@ -390,7 +397,35 @@ def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp
 
     result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
 
-    assert result["cached"] == [{"repo_id": "Org/MmprojAux", "size_bytes": 15_000}]
+    assert result["cached"] == [{"repo_id": "Org/MmprojAux", "size_bytes": 15_000, "task": None}]
+
+
+def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch, tmp_path):
+    """A cached diffusers pipeline repo (model_index.json present) is tagged
+    text-to-image so the chat picker hides it, while a plain checkpoint isn't."""
+    diffusion = _repo(
+        "Tongyi-MAI/Z-Image-Turbo",
+        [_file("model_index.json", 1_000), _file("text_encoder/model.safetensors", 9_000)],
+        tmp_path / "models--Tongyi-MAI--Z-Image-Turbo",
+    )
+    checkpoint = _repo(
+        "unsloth/Llama-3.2-1B-Instruct",
+        [_file("config.json", 1_000), _file("model.safetensors", 9_000)],
+        tmp_path / "models--unsloth--Llama-3.2-1B-Instruct",
+    )
+
+    monkeypatch.setattr(
+        models_route,
+        "_all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [diffusion, checkpoint])],
+    )
+
+    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    by_repo = {c["repo_id"]: c["task"] for c in result["cached"]}
+    assert by_repo == {
+        "Tongyi-MAI/Z-Image-Turbo": "text-to-image",
+        "unsloth/Llama-3.2-1B-Instruct": None,
+    }
 
 
 def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeypatch, tmp_path):
@@ -419,6 +454,7 @@ def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeyp
             "size_bytes": 5_000,
             "cache_path": str(vision_repo.repo_path),
             "has_vision": True,
+            "task": None,
         }
     ]
 
@@ -473,6 +509,7 @@ def test_all_hf_cache_scans_survives_inaccessible_aux_cache(monkeypatch, tmp_pat
             "size_bytes": 5_000,
             "cache_path": str(tmp_path / "active"),
             "has_vision": False,
+            "task": None,
         }
     ]
 

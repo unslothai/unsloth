@@ -3215,6 +3215,20 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
         return {"cached": []}
 
 
+def _repo_is_diffusers(repo_info) -> bool:
+    """A diffusers pipeline repo (e.g. a Z-Image / FLUX base) carries a top-level
+    model_index.json. These render images rather than chat, so the chat picker
+    hides them — mirroring how cached diffusion GGUFs are classified by arch."""
+    try:
+        for rev in repo_info.revisions:
+            for f in rev.files:
+                if f.file_name == "model_index.json" or f.file_name.endswith("/model_index.json"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 @router.get("/cached-models")
 async def list_cached_models(current_subject: str = Depends(get_current_subject)):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
@@ -3261,6 +3275,7 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
+                            "task": "text-to-image" if _repo_is_diffusers(repo_info) else None,
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
