@@ -75,8 +75,10 @@ def test_effective_lfo_is_read_only():
 # _is_offline_related_error
 # ---------------------------------------------------------------------------
 
+
 def _http_error(status):
     import requests
+
     resp = requests.Response()
     resp.status_code = status
     return requests.exceptions.HTTPError("http %s" % status, response = resp)
@@ -185,6 +187,7 @@ def test_cause_context_cycle_terminates():
 # _force_hf_offline
 # ---------------------------------------------------------------------------
 
+
 def _inprocess_offline_flags():
     flags = []
     try:
@@ -267,6 +270,7 @@ def test_reset_hf_sessions_is_safe():
 # ---------------------------------------------------------------------------
 # _has_local_tokenizer_files / _resolve_checkpoint_tokenizer_name
 # ---------------------------------------------------------------------------
+
 
 def _touch(path, name):
     open(os.path.join(path, name), "w").close()
