@@ -880,8 +880,19 @@ def maybe_prefetch_hf_snapshot(
 
     if not isinstance(model_name, str) or not model_name:
         return
-    # A local directory / file path has nothing to download.
-    if os.path.isdir(model_name) or os.path.exists(model_name):
+    # A local directory / file path has nothing to download. Expand ~ first, since
+    # os.path.exists does not, so a home-relative path is detected as local.
+    model_path = os.path.expanduser(model_name)
+    if os.path.isdir(model_path) or os.path.exists(model_path):
+        return
+    # A path that looks local but is not on disk yet (e.g. a not-created output
+    # dir) is still not a Hub repo id ("org/name"); leave it for from_pretrained
+    # to surface canonically rather than trying to download it.
+    if (
+        os.path.isabs(model_path)
+        or model_name.startswith(("~", "./", "../", ".\\", "..\\"))
+        or "\\" in model_name
+    ):
         return
     # Offline / cache-only: never reach out.
     if local_files_only:

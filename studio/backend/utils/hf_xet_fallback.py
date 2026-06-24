@@ -58,9 +58,23 @@ __all__ = [
 def _studio_prepare_for_http(repo_type: str, repo_id: str) -> None:
     """Make the partial safe for an HTTP resume using Studio's marker-aware purge,
     so the download manager's ``.transport`` marker accounting stays consistent
-    (vs the generic delete-incompletes default in unsloth_zoo)."""
-    from hub.utils.download_registry import prepare_cache_for_transport
-    prepare_cache_for_transport(repo_type, repo_id, "http")
+    (vs the generic delete-incompletes default in unsloth_zoo).
+
+    The shared orchestrator already wraps this hook, but guard it here too so a
+    purge failure (locked file, missing dir) is logged rather than aborting the
+    HTTP retry that is the whole point of the fallback."""
+    try:
+        from hub.utils.download_registry import prepare_cache_for_transport
+        prepare_cache_for_transport(repo_type, repo_id, "http")
+    except Exception as exc:
+        try:
+            from loggers import get_logger
+            get_logger(__name__).debug(
+                "Studio prepare_cache_for_transport failed for %s: %s", repo_id, exc
+            )
+        except ModuleNotFoundError as logger_exc:
+            if logger_exc.name != "loggers":
+                raise
 
 
 def hf_hub_download_with_xet_fallback(
