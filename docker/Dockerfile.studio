@@ -156,11 +156,20 @@ RUN set -eux \
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch
-# In-place Studio updater: `docker exec <container> unsloth-studio-update`
-# refreshes the Studio packages (backend + baked frontend) and restarts the
-# service, without pulling a new image or touching the torch/CUDA stack.
+# In-place updaters (no image pull):
+#   unsloth-studio-update  refreshes the Studio packages (backend + baked
+#                          frontend) and restarts the service.
+#   unsloth-llama-update   swaps the baked llama.cpp prebuilt to the latest
+#                          release (the same swap the in-app banner performs).
 COPY unsloth_studio_update.sh /usr/local/bin/unsloth-studio-update
-RUN chmod +x /usr/local/bin/unsloth-studio-launch /usr/local/bin/unsloth-studio-update
+COPY unsloth_llama_update.sh /usr/local/bin/unsloth-llama-update
+# unsloth-llama-update reuses the build-time fetcher (redirect-based, no GitHub
+# API, so it is not rate-limited; deterministic portable bundle that runs on CPU
+# and every supported GPU) rather than the host-probing installer.
+COPY fetch_llama_prebuilt.py /usr/local/lib/unsloth/fetch_llama_prebuilt.py
+RUN chmod +x /usr/local/bin/unsloth-studio-launch \
+             /usr/local/bin/unsloth-studio-update \
+             /usr/local/bin/unsloth-llama-update
 
 # Studio web UI, JupyterLab, sshd. All bind 0.0.0.0 inside the container's
 # network namespace; the operator publishes them explicitly with -p.
