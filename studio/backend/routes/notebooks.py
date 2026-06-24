@@ -11,6 +11,7 @@ from utils.notebooks import build_notebook_catalog
 
 router = APIRouter()
 
+
 class NotebookCatalogEntry(BaseModel):
     id: str
     title: str
@@ -29,8 +30,7 @@ class NotebookCatalogResponse(BaseModel):
 
 @router.get("", response_model = NotebookCatalogResponse)
 async def list_notebooks(
-    q: Optional[str] = Query(None),
-    _current_subject: str = Depends(get_current_subject),
+    q: Optional[str] = Query(None), _current_subject: str = Depends(get_current_subject)
 ) -> NotebookCatalogResponse:
     normalized_query = q.strip() if isinstance(q, str) and q.strip() else None
     raw_entries = build_notebook_catalog(normalized_query)

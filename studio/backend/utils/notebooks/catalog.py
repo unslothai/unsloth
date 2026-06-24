@@ -46,10 +46,7 @@ def notebook_colab_url(notebook_file: str) -> str:
 
 
 def notebook_github_url(notebook_file: str) -> str:
-    return (
-        f"https://github.com/{NOTEBOOKS_REPO}/blob/main/"
-        f"{NOTEBOOKS_NB_DIR}/{notebook_file}"
-    )
+    return f"https://github.com/{NOTEBOOKS_REPO}/blob/main/" f"{NOTEBOOKS_NB_DIR}/{notebook_file}"
 
 
 def _notebook_id(notebook_file: str) -> str:
@@ -152,8 +149,7 @@ def _make_entry(
 
 
 def _merge_entries(
-    existing: dict[str, Any] | None,
-    incoming: dict[str, Any] | None,
+    existing: dict[str, Any] | None, incoming: dict[str, Any] | None
 ) -> dict[str, Any]:
     if not existing:
         return dict(incoming or {})
@@ -209,10 +205,7 @@ def _load_notebooks_index() -> tuple[list[str], frozenset[str], dict[str, dict[s
 
 
 def _normalize_override(
-    notebook_file: str,
-    fields: dict[str, Any],
-    *,
-    featured_names: frozenset[str],
+    notebook_file: str, fields: dict[str, Any], *, featured_names: frozenset[str]
 ) -> dict[str, Any]:
     title = fields.get("title")
     if not isinstance(title, str) or not title.strip():
@@ -234,9 +227,7 @@ def _normalize_override(
 
 
 def _build_enriched_map(
-    *,
-    featured_names: frozenset[str],
-    overrides: dict[str, dict[str, Any]],
+    *, featured_names: frozenset[str], overrides: dict[str, dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
     by_file: dict[str, dict[str, Any]] = {}
 
