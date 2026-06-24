@@ -892,8 +892,12 @@ class TestAppleMtpFlatReserve:
         # Without the reserve the cap fills the whole budget with weights+main KV,
         # leaving nothing for the ~5% flat MTP draft reserve -> over-commit.
         kw = dict(
-            n_ctx = 0, model_gib = 15.7, gpus = [], native_ctx = 262144,
-            kv_per_token_bytes = 64_000, apple_budget_mib = 23_000,
+            n_ctx = 0,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            kv_per_token_bytes = 64_000,
+            apple_budget_mib = 23_000,
         )
         no_reserve = _drive(**kw, flat_mtp_reserve = 0.0)
         with_reserve = _drive(**kw, flat_mtp_reserve = 0.05)
@@ -910,8 +914,12 @@ class TestAppleMtpFlatReserve:
     def test_no_reserve_is_a_noop_when_mtp_absent(self):
         # flat_mtp_reserve == 0 (the common, non-MTP case) must not change the cap.
         kw = dict(
-            n_ctx = 0, model_gib = 15.7, gpus = [], native_ctx = 262144,
-            kv_per_token_bytes = 64_000, apple_budget_mib = 23_000,
+            n_ctx = 0,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            kv_per_token_bytes = 64_000,
+            apple_budget_mib = 23_000,
         )
         assert _drive(**kw, flat_mtp_reserve = 0.0) == _drive(**kw)
 
