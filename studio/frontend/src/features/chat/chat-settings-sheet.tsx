@@ -1567,6 +1567,10 @@ export function ChatSettingsPanel({
                               speculativeType,
                               specDraftNMax,
                               tensorParallel,
+                              gpuMemoryMode,
+                              gpuLayers,
+                              nCpuMoe,
+                              selectedGpuIds,
                             });
                           } else {
                             clearRememberedLoadSettings(pid);

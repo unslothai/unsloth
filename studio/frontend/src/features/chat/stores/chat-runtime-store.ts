@@ -1764,12 +1764,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   applyRememberedLoadSettings: (settings) =>
     // Coalesce every field: a blob persisted by an older/newer build can omit
     // keys, and a raw spread would push `undefined` into fields typed non-null.
+    // The GPU knobs are spread only when present so an older blob (which lacked
+    // them) leaves the staged baseline's GPU mode/knobs untouched rather than
+    // forcing them to Auto/defaults. selectedGpuIds keeps a meaningful null (all
+    // GPUs), so it keys off `undefined`, not nullishness.
     set({
       customContextLength: settings.contextLength ?? null,
       kvCacheDtype: settings.kvCacheDtype ?? null,
       speculativeType: settings.speculativeType ?? "auto",
       specDraftNMax: settings.specDraftNMax ?? null,
       tensorParallel: settings.tensorParallel ?? false,
+      ...(settings.gpuMemoryMode != null && {
+        gpuMemoryMode: settings.gpuMemoryMode,
+      }),
+      ...(settings.gpuLayers != null && { gpuLayers: settings.gpuLayers }),
+      ...(settings.nCpuMoe != null && { nCpuMoe: settings.nCpuMoe }),
+      ...(settings.selectedGpuIds !== undefined && {
+        selectedGpuIds: settings.selectedGpuIds,
+      }),
     }),
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
