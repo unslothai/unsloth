@@ -73,13 +73,6 @@
       "evidence": "Archive: L317: a['TarFileType'] = tarfile.open(fileobj=_fileW,mode='w')\nNetwork: L330: x['SocketType'] = _socket = socket.socket()"
     },
     {
-      "package": "evaluate",
-      "file": "evaluate/utils/file_utils.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L261: while True:"
-    },
-    {
       "package": "execnet",
       "file": "execnet/gateway_base.py",
       "check": "Reverse shell / bind shell pattern",
@@ -402,27 +395,6 @@
       "evidence": "Base64: L488: decoded_bytes = base64.b64decode(base64_encoded)\nSubprocess: L80: return subprocess.call(['which', name], | L100: p = subprocess.Popen(['pbcopy', 'w'], | L105: p = subprocess.Popen(['pbpaste', 'r'],"
     },
     {
-      "package": "pytest",
-      "file": "_pytest/_py/path.py",
-      "check": "Downloads and executes remote code",
-      "severity": "CRITICAL",
-      "evidence": "L1153: exec(f.read(), mod.__dict__)"
-    },
-    {
-      "package": "pytest",
-      "file": "_pytest/capture.py",
-      "check": "Reverse shell / bind shell pattern",
-      "severity": "CRITICAL",
-      "evidence": "L483: os.dup2(self.targetfd_invalid, targetfd) | L522: os.dup2(self.tmpfile.fileno(), self.targetfd) | L532: os.dup2(self.targetfd_save, self.targetfd)"
-    },
-    {
-      "package": "pytest",
-      "file": "_pytest/config/__init__.py",
-      "check": "Reverse shell / bind shell pattern",
-      "severity": "CRITICAL",
-      "evidence": "L260: os.dup2(devnull, sys.stdout.fileno())"
-    },
-    {
       "package": "python-dateutil",
       "file": "dateutil/__init__.py",
       "check": "Downloads and executes remote code",
@@ -523,6 +495,34 @@
     {
       "package": "scipy",
       "file": "scipy/_lib/array_api_compat/torch/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L13: __import__(__package__ + '.linalg') | L14: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_external/array_api_compat/cupy/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L12: __import__(__package__ + '.linalg') | L13: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_external/array_api_compat/dask/array/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L16: __import__(__package__ + '.linalg') | L17: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_external/array_api_compat/numpy/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L23: __import__(__package__ + \".linalg\") | L25: __import__(__package__ + \".fft\")"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_external/array_api_compat/torch/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
       "evidence": "L13: __import__(__package__ + '.linalg') | L14: __import__(__package__ + '.fft')"
@@ -816,6 +816,13 @@
     },
     {
       "package": "unsloth-zoo",
+      "file": "tests/test_mlx_save_export_regressions.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L164: temporary_location=\"/tmp/ignored\","
+    },
+    {
+      "package": "unsloth-zoo",
       "file": "tests/test_upstream_pinned_symbols_transformers.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
@@ -934,13 +941,6 @@
       "evidence": "Key: L187: \"-----BEGIN PUBLIC KEY-----\", | L188: \"-----BEGIN RSA PUBLIC KEY-----\",\nNetwork: L225: http_client: httpx.AsyncClient | None = None, | L411: else httpx.AsyncClient(timeout=httpx.Timeout(10.0))"
     },
     {
-      "package": "hypothesis",
-      "file": "hypothesis/internal/scrutineer.py",
-      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
-      "severity": "HIGH",
-      "evidence": "Anti: L76: return sys.gettrace() is None | L113: sys.settrace(self.trace) | L136: sys.settrace(None)"
-    },
-    {
       "package": "ipython",
       "file": "IPython/core/debugger.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
@@ -981,20 +981,6 @@
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
       "evidence": "Obfusc: L709: return compile(source, filename, \"exec\")\nExec: L1228: exec(code, namespace)"
-    },
-    {
-      "package": "kgb",
-      "file": "kgb/spies.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L934: eval(compile(func_code_str, '<string>', 'exec'),\nExec: L934: eval(compile(func_code_str, '<string>', 'exec'),"
-    },
-    {
-      "package": "langid",
-      "file": "langid/train/common.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L44: yield marshal.load(t)\nExec: L85: key = eval(row[0])"
     },
     {
       "package": "matplotlib",
@@ -1107,20 +1093,6 @@
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
       "evidence": "Obfusc: L45: mod = __import__(module_name, None, None, ['__all__'])\nExec: L154: exec(f.read(), custom_namespace)"
-    },
-    {
-      "package": "pytest",
-      "file": "_pytest/_py/path.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L626: mod = __import__(hashtype) | L1118: __import__(modname)\nExec: L1153: exec(f.read(), mod.__dict__)"
-    },
-    {
-      "package": "pytest",
-      "file": "_pytest/assertion/rewrite.py",
-      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
-      "severity": "HIGH",
-      "evidence": "Obfusc: L393: co = marshal.load(fp) | L395: trace(f\"_read_pyc({source}): marshal.load error {e}\")\nExec: L188: exec(co, module.__dict__)"
     },
     {
       "package": "scikit-learn",
@@ -1317,6 +1289,13 @@
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
       "evidence": "Obfusc: L3078: module = __import__('transformers', fromlist=[model_class_name])\nExec: L2960: exec(f\"from transformers.modeling_utils import ({', '.join(functions)})\", locals(), globals()) | L3006: exec(save_pretrained, globals(), functions)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_trainer_internals.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L430: assert ppl == pytest.approx(__import__(\"math\").exp(2.5))\nExec: L408: def eval(self):"
     },
     {
       "package": "werkzeug",
