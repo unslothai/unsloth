@@ -438,6 +438,12 @@ jobs:
             if (/\brpm\b|\.rpm/i.test(body)) {
               throw new Error('Desktop release body must not advertise RPM packages');
             }
+            if (/AppImage.*universal|universal.*AppImage/i.test(body)) {
+              throw new Error('Desktop release body must not advertise AppImage as universal');
+            }
+            if (!/AppImage.*experimental/i.test(body)) {
+              throw new Error('Desktop release body must mark AppImage as experimental');
+            }
           }
           JS
 
@@ -580,9 +586,10 @@ jobs:
 
             **macOS**: Download the Apple Silicon `.dmg`.
             **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+            **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
             > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+            > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
             > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
@@ -611,9 +618,10 @@ jobs:
 
             **macOS**: Download the Apple Silicon `.dmg`.
             **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+            **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
             > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+            > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
             > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
@@ -643,9 +651,10 @@ jobs:
 
             **macOS**: Download the Apple Silicon `.dmg`.
             **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+            **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
             > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+            > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
             > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
