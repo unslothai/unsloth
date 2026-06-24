@@ -1119,7 +1119,10 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
     if port and port > 0:
-        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        _direct_host = _resolve_external_ip() if host in ("0.0.0.0", "::") else host
+        # Bracket IPv6 literals so the URL is valid (http://[2405:...]:port).
+        if ":" in _direct_host and not _direct_host.startswith("["):
+            _direct_host = f"[{_direct_host}]"
         app.state.server_url = f"http://{_direct_host}:{port}"
     else:
         app.state.server_url = None
