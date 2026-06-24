@@ -1252,10 +1252,12 @@ def _outbound_host_evidence(text: str, host: str) -> str:
             rf"|{host_re}[^\n]{{0,200}}(?:{_FETCH_VERBS_PAT})[^\n]{{0,200}}",
             re.IGNORECASE,
         ),
-        re.compile(rf"(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`]", re.IGNORECASE),
+        # Host-config form: capture the whole line (path/headers/body), so a
+        # changed outbound payload on the same hostname line reopens the key.
+        re.compile(rf"[^\n]*(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`][^\n]*", re.IGNORECASE),
     )
     for pat in patterns:
-        ev = _evidence(text, pat)
+        ev = _evidence(text, pat, max_chars = 1000)
         if ev:
             return ev
     return host
@@ -1546,7 +1548,9 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     if not isinstance(entries, list):
         print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
         return set()
-    if entries and data.get("version") != _BASELINE_SCHEMA_VERSION:
+    # v2 shares v3's package-relative keying, so its entries migrate by recomputing
+    # the evidence hash from their stored evidence; only pre-v2 (basename) is rejected.
+    if entries and data.get("version") not in (_BASELINE_SCHEMA_VERSION, 2):
         print(
             f"  [WARN] baseline schema v{data.get('version')} predates package-relative "
             f"keys; ignoring {len(entries)} entr(y/ies). Regenerate with --write-baseline.",
@@ -1554,11 +1558,14 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
         )
         return set()
     keys: set[tuple[str, str, str, str]] = set()
+    legacy = 0
     for e in entries:
         if not isinstance(e, dict):
             continue
         try:
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
+            if not e.get("evidence_hash"):
+                legacy += 1
             keys.add(
                 (
                     _norm_pkg_name(e["package"]),
@@ -1569,6 +1576,13 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
             )
         except (KeyError, TypeError):
             continue
+    if legacy:
+        print(
+            f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash and may "
+            f"not suppress until regenerated with --write-baseline (findings reopen "
+            f"rather than risk hiding changed code under a coarse key)",
+            file = sys.stderr,
+        )
     return keys
 
 

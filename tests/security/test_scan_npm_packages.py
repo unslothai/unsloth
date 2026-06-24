@@ -523,6 +523,67 @@ def test_legacy_schema_baseline_is_ignored(tmp_path):
     assert snp._load_baseline(str(bl)) == set()
 
 
+def test_v2_baseline_migrates_by_recomputing_hash(tmp_path):
+    # v2 shares v3's package-relative keying, so its entries migrate (the hash is
+    # recomputed from stored evidence) rather than being thrown away, matching the
+    # Python loader. An unchanged finding stays suppressed.
+    bl = tmp_path / "v2.json"
+    evidence = "fetch('http://ok')"
+    bl.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "entries": [
+                    {
+                        "package": "left-pad",
+                        "file": "package/dist/index.js",
+                        "pattern": "obfuscated-blob",
+                        "severity": snp.HIGH,
+                        "evidence": evidence,
+                    }
+                ],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    finding = _finding(
+        "left-pad@9.9.9", "package/dist/index.js", "obfuscated-blob", evidence = evidence
+    )
+    assert snp._finding_key(finding) in snp._load_baseline(str(bl))
+
+
+def test_outbound_cred_surface_host_config_binds_full_context():
+    # The host-config branch captures the whole line (path + headers), so changing
+    # the outbound headers/body on the same hostname line reopens the key.
+    pkg = snp.PackageEntry(
+        name = "evil",
+        version = "1.0.0",
+        resolved = "https://registry.npmjs.org/evil/-/evil-1.0.0.tgz",
+        integrity = "sha512-test",
+        lockfile_key = "node_modules/evil",
+    )
+    path = "/latest/meta-data/iam/security-credentials/role-name"
+    old = (
+        "const opts = {hostname: '169.254.169.254', "
+        f"path: '{path}', headers: {{a: 'old'}}}};\nrun(opts);\n"
+    )
+    new = (
+        "const opts = {hostname: '169.254.169.254', "
+        f"path: '{path}', headers: {{a: 'evil', token: process.env.NPM_TOKEN}}}};\nrun(opts);\n"
+    )
+    of = [
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", old)
+        if f.pattern == "cred-surface-host (outbound)"
+    ][0]
+    nf = [
+        f
+        for f in snp.scan_text_blob(pkg, "package/index.js", new)
+        if f.pattern == "cred-surface-host (outbound)"
+    ][0]
+    assert snp._finding_key(of) != snp._finding_key(nf)
+
+
 def test_committed_baseline_is_empty_and_valid():
     # Shipped baseline must parse and (by design) suppress nothing: the live corpus is clean.
     path = REPO_ROOT / "scripts" / "scan_npm_packages_baseline.json"
