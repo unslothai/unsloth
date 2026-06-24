@@ -38,16 +38,41 @@ type WindowLayoutGuard = () => boolean;
 
 const MIN_WINDOW_WIDTH = 900;
 const MIN_WINDOW_HEIGHT = 600;
+const SETUP_WINDOW_WIDTH = 760;
+const SETUP_WINDOW_HEIGHT = 560;
 
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
+  await win.setResizable(false);
+  if (!isCurrent()) return;
+  await win.setSize(new LogicalSize(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT));
   if (!isCurrent()) return;
   await win.center();
   if (!isCurrent()) return;
   await win.show();
+}
+
+async function enforceMinimumWindowSize(
+  win: Awaited<ReturnType<typeof import("@tauri-apps/api/window")["getCurrentWindow"]>>,
+  LogicalSize: typeof import("@tauri-apps/api/window")["LogicalSize"],
+  isCurrent: WindowLayoutGuard,
+): Promise<void> {
+  const [innerSize, scaleFactor] = await Promise.all([
+    win.innerSize(),
+    win.scaleFactor(),
+  ]);
+  if (!isCurrent()) return;
+
+  const logicalWidth = Math.round(innerSize.width / scaleFactor);
+  const logicalHeight = Math.round(innerSize.height / scaleFactor);
+  const nextWidth = Math.max(logicalWidth, MIN_WINDOW_WIDTH);
+  const nextHeight = Math.max(logicalHeight, MIN_WINDOW_HEIGHT);
+  if (nextWidth !== logicalWidth || nextHeight !== logicalHeight) {
+    await win.setSize(new LogicalSize(nextWidth, nextHeight));
+  }
 }
 
 async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void> {
@@ -98,6 +123,8 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   // Apply constraints after restore/show: doing so before plugin restore can emit
   // a Resized event and overwrite the plugin's cached saved size.
   await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
+  if (!isCurrent()) return;
+  await enforceMinimumWindowSize(win, LogicalSize, isCurrent);
 }
 
 async function showWindowFallback(): Promise<void> {
@@ -186,6 +213,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-mac-titlebar-height": "34px",
   "--studio-mac-traffic-light-inset": "78px",
+  "--studio-startup-top-inset": "58px",
   "--studio-content-top-inset": "0px",
   "--studio-chat-header-height": "44px",
   "--studio-chat-header-padding-top": "8px",
@@ -198,6 +226,7 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-custom-titlebar-height": "34px",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
+  "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
   "--studio-chat-header-height": "48px",
   "--studio-chat-header-padding-top": "9px",
