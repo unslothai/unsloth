@@ -3,7 +3,7 @@
 
 """Terminal banner for Studio startup.
 
-Stdlib only — safe to import without the rest of the backend.
+Stdlib only -- safe to import without the rest of the backend.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def print_studio_stop_hint() -> None:
             [
                 "",
                 style(
-                    "  To stop Unsloth Studio: press Ctrl+C in this terminal "
+                    "  To stop Unsloth Studio: press Ctrl+C "
                     "(Control+C, not Command+C, on macOS).",
                     stop_hint_style,
                 ),
@@ -156,11 +156,11 @@ def print_studio_access_banner(
                     secondary,
                 ),
                 style(
-                    f"  To expose it: stop with Ctrl+C, relaunch with  unsloth studio -H 0.0.0.0 -p {port}",
+                    f"  To expose it, stop and relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
                     secondary,
                 ),
                 style(
-                    "  Only on trusted networks -- this exposes the API on every interface.",
+                    "  Only on trusted networks -- anyone who reaches this machine can use Studio.",
                     secondary,
                 ),
             ]
@@ -171,7 +171,7 @@ def print_studio_access_banner(
             [
                 "",
                 style(
-                    "  To stop Unsloth Studio: press Ctrl+C in this terminal "
+                    "  To stop Unsloth Studio: press Ctrl+C "
                     "(Control+C, not Command+C, on macOS).",
                     stop_hint_style,
                 ),

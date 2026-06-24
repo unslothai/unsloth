@@ -342,17 +342,21 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
             )
             print(
                 f"{dim}    Usually a cloud firewall (AWS security group, "
-                f"GCP/Azure rule) or home router isn't allowing inbound "
-                f"TCP {port}.{reset}",
+                f"GCP firewall / Azure NSG rule) or home router isn't "
+                f"allowing inbound TCP {port}.{reset}",
                 flush = True,
             )
             print(
-                f"{dim}    No firewall change needed -- SSH local-forward:  "
-                f"ssh -L {port}:localhost:{port} <user>@{display_host}{reset}",
+                f"{dim}    No firewall change needed -- SSH local-forward "
+                f"from your own computer:{reset}",
                 flush = True,
             )
             print(
-                f"{dim}    then open http://localhost:{port}/.{reset}",
+                f"{dim}        ssh -L {port}:localhost:{port} <user>@{display_host}{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}    then open http://localhost:{port}/ in your browser.{reset}",
                 flush = True,
             )
             # Only offer the local URL if loopback answers.
@@ -603,7 +607,7 @@ def _graceful_shutdown(server = None):
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
     _remove_pid_file()
-    logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
+    logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 1. Shut down uvicorn (releases the listening socket).
     if server is not None:
