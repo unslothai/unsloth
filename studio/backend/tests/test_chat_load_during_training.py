@@ -608,6 +608,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # on the GPU; the guard estimate scales down so a CPU-heavy pick isn't
         # over-blocked. auto mode (the default) must not scale.
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "model.gguf"
             p.write_bytes(b"x" * 1000)
@@ -766,7 +767,6 @@ class TestStripSplitPredicates(unittest.TestCase):
 
     def _req(self, **kw):
         from models.inference import LoadRequest
-
         return LoadRequest(model_path = "unsloth/Qwen3-1.7B", **kw)
 
     def test_should_strip_tensor_split_only_for_manual_ratio(self):
@@ -777,9 +777,7 @@ class TestStripSplitPredicates(unittest.TestCase):
             )
         )
         self.assertFalse(  # manual, no ratio
-            self.route._should_strip_tensor_split(
-                self._req(gpu_memory_mode = "manual", gpu_layers = 8)
-            )
+            self.route._should_strip_tensor_split(self._req(gpu_memory_mode = "manual", gpu_layers = 8))
         )
         self.assertFalse(self.route._should_strip_tensor_split(self._req()))  # auto
 
@@ -788,9 +786,7 @@ class TestStripSplitPredicates(unittest.TestCase):
         # survives), but the Tensor Parallelism toggle still owns the whole group.
         manual_ratio = self._req(gpu_memory_mode = "manual", gpu_layers = 8, tensor_split = [2, 1])
         self.assertFalse(self.route._should_strip_split_mode(manual_ratio, []))
-        self.assertTrue(
-            self.route._should_strip_split_mode(self._req(tensor_parallel = True), [])
-        )
+        self.assertTrue(self.route._should_strip_split_mode(self._req(tensor_parallel = True), []))
 
 
 if __name__ == "__main__":
