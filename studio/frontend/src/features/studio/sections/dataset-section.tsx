@@ -3,6 +3,7 @@
 
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
@@ -33,12 +34,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  useDebouncedValue,
-  useHfDatasetSearch,
-  useHfTokenValidation,
-  useInfiniteScroll,
-} from "@/hooks";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useHubDatasetSearch } from "@/features/hub/hooks/use-hub-dataset-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import {
   HfDatasetSubsetSplitSelectors,
   listLocalDatasets,
@@ -47,6 +45,9 @@ import {
   useTrainingConfigStore,
   type LocalDatasetInfo,
 } from "@/features/training";
+// Imported directly from the store module rather than the "@/features/training"
+// barrel to avoid an import cycle (the barrel re-exports this section's siblings).
+import { hasSeparateStreamingEvalSplit } from "@/features/training/stores/training-config-store";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown01Icon,
@@ -80,6 +81,7 @@ import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 import { translate, useT } from "@/i18n";
 import { S3ConfigForm } from "./s3-config-form";
+import { usePlatformStore } from "@/config/env";
 
 const TRAINING_UPLOAD_EXTENSIONS = [
   ".csv",
@@ -165,13 +167,21 @@ export function DatasetSection() {
     setDatasetSplit,
     datasetEvalSplit,
     setDatasetEvalSplit,
+    datasetStreaming,
+    setDatasetStreaming,
+    trainOnCompletions,
+    maxSteps,
+    evalSteps,
+    isVisionModel,
+    isAudioModel,
+    isEmbeddingModel,
+    isDatasetImage,
+    isDatasetAudio,
     uploadedFile,
     uploadedEvalFile,
     setUploadedEvalFile,
     hfToken,
     modelType,
-    isVisionModel,
-    isAudioModel,
     datasetSliceStart,
     setDatasetSliceStart,
     datasetSliceEnd,
@@ -191,19 +201,78 @@ export function DatasetSection() {
       setDatasetSplit: s.setDatasetSplit,
       datasetEvalSplit: s.datasetEvalSplit,
       setDatasetEvalSplit: s.setDatasetEvalSplit,
+      datasetStreaming: s.datasetStreaming,
+      setDatasetStreaming: s.setDatasetStreaming,
+      trainOnCompletions: s.trainOnCompletions,
+      maxSteps: s.maxSteps,
+      evalSteps: s.evalSteps,
+      isVisionModel: s.isVisionModel,
+      isAudioModel: s.isAudioModel,
+      isEmbeddingModel: s.isEmbeddingModel,
+      isDatasetImage: s.isDatasetImage,
+      isDatasetAudio: s.isDatasetAudio,
       uploadedFile: s.uploadedFile,
       uploadedEvalFile: s.uploadedEvalFile,
       setUploadedEvalFile: s.setUploadedEvalFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
-      isVisionModel: s.isVisionModel,
-      isAudioModel: s.isAudioModel,
       datasetSliceStart: s.datasetSliceStart,
       setDatasetSliceStart: s.setDatasetSliceStart,
       datasetSliceEnd: s.datasetSliceEnd,
       setDatasetSliceEnd: s.setDatasetSliceEnd,
     })),
   );
+
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+
+  // Streaming is only supported for Hugging Face text datasets. Rather than
+  // hiding the toggle when a constraint isn't met, keep it visible but disabled
+  // and list the exact unmet requirement(s) in its tooltip — a control that
+  // silently disappears is confusing. Downstream preprocessing
+  // (convert_to_vlm_format, audio collators) needs random access and would
+  // crash on an IterableDataset, hence the constraints below.
+  const streamingBlockers: string[] = [];
+  if (datasetSource !== "huggingface")
+    streamingBlockers.push(
+      "Use a Hugging Face dataset (not a local upload or S3 source).",
+    );
+  if (maxSteps <= 0)
+    streamingBlockers.push(
+      "Set Max Steps > 0 — streaming datasets have no known length.",
+    );
+  if (trainOnCompletions)
+    streamingBlockers.push('Turn off "Assistant completions only".');
+  if (!hasSeparateStreamingEvalSplit({ evalSteps, datasetSplit, datasetEvalSplit }))
+    streamingBlockers.push(
+      "Pick a separate eval split — evaluation is on but no distinct eval split is set.",
+    );
+  if (isVisionModel)
+    streamingBlockers.push("Vision models don't support streaming.");
+  if (isAudioModel)
+    streamingBlockers.push("Audio models don't support streaming.");
+  if (isEmbeddingModel)
+    streamingBlockers.push(
+      "Embedding models don't support streaming (training needs the full dataset).",
+    );
+  if (isDatasetImage)
+    streamingBlockers.push("This dataset looks like images, which can't stream.");
+  if (isDatasetAudio)
+    streamingBlockers.push("This dataset looks like audio, which can't stream.");
+  if (platformDeviceType === "mac")
+    streamingBlockers.push(
+      "Streaming isn't supported on Apple Silicon (MLX) yet.",
+    );
+
+  const isStreamingSupported = streamingBlockers.length === 0;
+
+  // If streaming was previously enabled but the config became incompatible
+  // (model switched to vision, dataset detected as image, etc.), clear it so
+  // the backend never receives a stale flag.
+  useEffect(() => {
+    if (datasetStreaming && !isStreamingSupported) {
+      setDatasetStreaming(false);
+    }
+  }, [datasetStreaming, isStreamingSupported, setDatasetStreaming]);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -311,8 +380,9 @@ export function DatasetSection() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
+  } = useHubDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
     modelType: effectiveModelType,
     accessToken: hfToken || undefined,
     enabled: pickerTab === "huggingface",
@@ -421,10 +491,12 @@ export function DatasetSection() {
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const evalFileInputRef = useRef<HTMLInputElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMore,
-    hfResults.length,
-  );
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
+    enabled: pickerTab === "huggingface",
+    isFetching: isLoading || isLoadingMore,
+    resultCount: hfResults.length,
+    resetKey: debouncedQuery,
+  });
 
   const [isUploading, setIsUploading] = useState(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
@@ -1115,6 +1187,56 @@ export function DatasetSection() {
                       <SelectItem value="raw">{t("studio.dataset.rawText")}</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="datasetStreaming"
+                    checked={datasetStreaming}
+                    disabled={!isStreamingSupported}
+                    onCheckedChange={(v) => setDatasetStreaming(!!v)}
+                  />
+                  <label
+                    htmlFor="datasetStreaming"
+                    className={`text-xs text-muted-foreground ${
+                      isStreamingSupported
+                        ? "cursor-pointer"
+                        : "cursor-not-allowed opacity-60"
+                    }`}
+                  >
+                    Enable streaming
+                  </label>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {isStreamingSupported ? (
+                        <span>
+                          Stream Hugging Face text datasets instead of
+                          downloading them.
+                        </span>
+                      ) : (
+                        <div className="max-w-xs">
+                          <p className="font-medium">
+                            Streaming unavailable. To enable:
+                          </p>
+                          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                            {streamingBlockers.map((reason) => (
+                              <li key={reason}>{reason}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">

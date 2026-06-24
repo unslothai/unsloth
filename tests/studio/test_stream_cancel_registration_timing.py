@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -145,24 +146,50 @@ def test_async_generators_cleanup_tracker_in_finally():
     )
 
 
-def test_streaming_responses_have_no_background_task():
-    top = None
-    for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
-            top = n
-            break
-    assert top is not None
+def test_chat_completions_streams_avoid_starlette_task_group():
+    top = _async_function("openai_chat_completions")
+    legacy_calls = []
+    same_task_calls = 0
     for sub in ast.walk(top):
         if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
             continue
-        if sub.func.id != "StreamingResponse":
+        if sub.func.id == "StreamingResponse":
+            legacy_calls.append(sub.lineno)
+        if sub.func.id == "_SameTaskStreamingResponse":
+            same_task_calls += 1
+    assert not legacy_calls, (
+        "Streaming /v1/chat/completions must use _SameTaskStreamingResponse, "
+        "not Starlette's legacy task-group StreamingResponse. Lines: "
+        f"{legacy_calls}"
+    )
+    assert same_task_calls >= 5
+
+
+def test_openai_passthrough_stream_avoids_starlette_task_group():
+    top = _async_function("_openai_passthrough_stream")
+    legacy_calls = []
+    same_task_calls = 0
+    for sub in ast.walk(top):
+        if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
             continue
-        kwargs = {kw.arg for kw in sub.keywords if kw.arg}
-        assert "background" not in kwargs, (
-            "StreamingResponse in openai_chat_completions must not pass "
-            "`background=` -- cleanup now lives in the generator's finally "
-            "block; a BackgroundTask would be skipped on abrupt disconnect"
-        )
+        if sub.func.id == "StreamingResponse":
+            legacy_calls.append(sub.lineno)
+        if sub.func.id == "_SameTaskStreamingResponse":
+            same_task_calls += 1
+    assert not legacy_calls, (
+        "OpenAI passthrough streams must use _SameTaskStreamingResponse, "
+        "not Starlette's legacy task-group StreamingResponse. Lines: "
+        f"{legacy_calls}"
+    )
+    assert same_task_calls >= 2
+
+
+def test_local_chat_streams_install_same_task_disconnect_watcher():
+    top = _async_function("openai_chat_completions")
+    assert _calls_name(top, "_await_disconnect_then_cancel"), (
+        "Local same-task streams must watch request disconnects themselves; "
+        "do not restore Starlette's task-group StreamingResponse for this."
+    )
 
 
 def test_direct_llama_server_streams_install_disconnect_watcher():
@@ -182,6 +209,33 @@ def test_direct_llama_server_streams_install_disconnect_watcher():
         "when the downstream client disconnects during prefill. Missing in: "
         f"{missing}"
     )
+
+
+def test_audio_input_stream_installs_disconnect_watcher():
+    audio = _async_function("audio_input_stream")
+    has_watcher = False
+    has_cleanup = False
+    for sub in ast.walk(audio):
+        if isinstance(sub, ast.Call):
+            fn = sub.func
+            if (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "create_task"
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "asyncio"
+                and sub.args
+                and isinstance(sub.args[0], ast.Call)
+                and isinstance(sub.args[0].func, ast.Name)
+                and sub.args[0].func.id == "_await_disconnect_then_cancel"
+            ):
+                has_watcher = True
+            if isinstance(fn, ast.Name) and fn.id == "_stop_local_disconnect_cancel_watcher":
+                has_cleanup = True
+    assert has_watcher, (
+        "audio_input_stream must install a disconnect watcher so client "
+        "disconnects set cancel_event while asyncio.to_thread(next, ...) is blocked"
+    )
+    assert has_cleanup, "audio_input_stream must stop its disconnect watcher in finally"
 
 
 # ── Behavioral helpers ───────────────────────────────────────
@@ -218,6 +272,21 @@ def _load_registry_module():
             chunks.append(seg)
     mod = {}
     exec("import threading, time\n" + "\n\n".join(chunks), mod)
+    return mod
+
+
+def _load_same_task_response_module():
+    for n in _TREE.body:
+        if isinstance(n, ast.ClassDef) and n.name == "_SameTaskStreamingResponse":
+            source = ast.get_source_segment(SRC, n)
+            break
+    else:
+        raise AssertionError("_SameTaskStreamingResponse missing")
+    mod = {}
+    exec(
+        "class StreamingResponse: pass\nclass ClientDisconnect(Exception): pass\n" + source,
+        mod,
+    )
     return mod
 
 
@@ -323,6 +392,39 @@ def test_finally_cleanup_on_aclose():
     asyncio.run(run())
     assert "cid-abort" not in m["_CANCEL_REGISTRY"]
     assert "sid-abort" not in m["_CANCEL_REGISTRY"]
+
+
+def test_same_task_response_closes_body_iterator_on_send_disconnect():
+    m = _load_same_task_response_module()
+    closed = False
+
+    async def body():
+        nonlocal closed
+        try:
+            yield "data: first\n\n"
+        finally:
+            closed = True
+
+    async def run():
+        agen = body()
+        await agen.__anext__()
+        response = m["_SameTaskStreamingResponse"].__new__(m["_SameTaskStreamingResponse"])
+        response.body_iterator = agen
+        response.background = None
+
+        async def stream_response(_send):
+            raise OSError("client disconnected")
+
+        response.stream_response = stream_response
+        try:
+            await response({}, None, lambda _message: None)
+        except m["ClientDisconnect"]:
+            pass
+        else:
+            raise AssertionError("expected ClientDisconnect")
+
+    asyncio.run(run())
+    assert closed
 
 
 def test_preset_cancel_event_exits_cleanly_with_done():
@@ -453,6 +555,147 @@ def test_audio_input_stream_offloads_blocking_next_to_thread():
     )
 
 
+def test_generate_stream_offloads_blocking_next_to_thread():
+    outer = None
+    for fn in ast.walk(_TREE):
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "generate_stream":
+            outer = fn
+            break
+    assert outer is not None, "generate_stream handler missing"
+
+    inner = None
+    for sub in ast.walk(outer):
+        if isinstance(sub, ast.AsyncFunctionDef) and sub.name == "stream":
+            inner = sub
+            break
+    assert inner is not None, "generate_stream inner stream() generator missing"
+
+    for sub in ast.walk(inner):
+        if isinstance(sub, (ast.For, ast.AsyncFor)):
+            it_src = ast.unparse(sub.iter)
+            assert "generate_chat_response" not in it_src, (
+                "generate_stream's inner stream() must not iterate "
+                "backend.generate_chat_response() directly -- that blocks the event "
+                "loop on every blocking subprocess read between tokens. Use "
+                "`await asyncio.to_thread(next, gen, _DONE)` inside a `while True` "
+                "loop instead"
+            )
+
+    found_to_thread_next = False
+    for sub in ast.walk(inner):
+        if not isinstance(sub, ast.Call):
+            continue
+        fn_expr = sub.func
+        if not (
+            isinstance(fn_expr, ast.Attribute)
+            and fn_expr.attr == "to_thread"
+            and isinstance(fn_expr.value, ast.Name)
+            and fn_expr.value.id == "asyncio"
+        ):
+            continue
+        if sub.args and isinstance(sub.args[0], ast.Name) and sub.args[0].id == "next":
+            found_to_thread_next = True
+            break
+    assert found_to_thread_next, (
+        "generate_stream's inner stream() must call "
+        "`asyncio.to_thread(next, gen, _DONE)` to keep the event loop free while the "
+        "worker subprocess produces the next token"
+    )
+
+
+def test_generate_stream_cancels_backend_on_stream_cancelled_error():
+    outer = None
+    for fn in ast.walk(_TREE):
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "generate_stream":
+            outer = fn
+            break
+    assert outer is not None, "generate_stream handler missing"
+
+    outer_src = ast.unparse(outer)
+    assert "cancel_event = threading.Event()" in outer_src
+
+    inner = None
+    for sub in ast.walk(outer):
+        if isinstance(sub, ast.AsyncFunctionDef) and sub.name == "stream":
+            inner = sub
+            break
+    assert inner is not None, "generate_stream inner stream() generator missing"
+
+    def _awaits_to_thread_gen_close(node: ast.AST) -> bool:
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Await):
+                continue
+            call = sub.value
+            if not isinstance(call, ast.Call):
+                continue
+            fn_expr = call.func
+            if not (
+                isinstance(fn_expr, ast.Attribute)
+                and fn_expr.attr == "to_thread"
+                and isinstance(fn_expr.value, ast.Name)
+                and fn_expr.value.id == "asyncio"
+            ):
+                continue
+            if not call.args:
+                continue
+            close_expr = call.args[0]
+            if (
+                isinstance(close_expr, ast.Attribute)
+                and close_expr.attr == "close"
+                and isinstance(close_expr.value, ast.Name)
+                and close_expr.value.id == "gen"
+            ):
+                return True
+        return False
+
+    found_cancel_kwarg = False
+    found_cancel_handler = False
+    found_finally_cleanup = False
+    for sub in ast.walk(inner):
+        if isinstance(sub, ast.Call):
+            call_src = ast.unparse(sub.func)
+            if call_src.endswith("generate_chat_response"):
+                found_cancel_kwarg = any(
+                    kw.arg == "cancel_event"
+                    and isinstance(kw.value, ast.Name)
+                    and kw.value.id == "cancel_event"
+                    for kw in sub.keywords
+                )
+        if isinstance(sub, ast.ExceptHandler):
+            exc_src = ast.unparse(sub.type) if sub.type is not None else ""
+            if exc_src != "asyncio.CancelledError":
+                continue
+            body_src = "\n".join(ast.unparse(stmt) for stmt in sub.body)
+            found_cancel_handler = (
+                "cancel_event.set()" in body_src
+                and "backend.reset_generation_state()" in body_src
+                and any(isinstance(stmt, ast.Raise) and stmt.exc is None for stmt in sub.body)
+            )
+        if isinstance(sub, ast.Try) and sub.finalbody:
+            final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
+            found_finally_cleanup = (
+                "not completed" in final_src
+                and "not cancel_event.is_set()" in final_src
+                and "cancel_event.set()" in final_src
+                and "backend.reset_generation_state()" in final_src
+                and _awaits_to_thread_gen_close(sub)
+            )
+
+    assert found_cancel_kwarg, (
+        "generate_stream must pass cancel_event into backend.generate_chat_response "
+        "so cancelled streams can stop backend generation"
+    )
+    assert found_cancel_handler, (
+        "generate_stream must catch asyncio.CancelledError, set cancel_event, "
+        "reset backend state, and re-raise"
+    )
+    assert found_finally_cleanup, (
+        "generate_stream cleanup must cancel/reset incomplete streams and "
+        "offload gen.close() with asyncio.to_thread so backend joins cannot "
+        "block the event loop"
+    )
+
+
 def test_stream_chunks_cancel_branch_resets_backend_state():
     # The cancel branch must call backend.reset_generation_state() to flush
     # GPU/KV-cache state, else cancel-via-POST leaves the subprocess dirty.
@@ -539,6 +782,106 @@ def test_unsloth_stream_loop_breaks_on_external_cancel_event():
     assert reset_calls[0] == 1, (
         f"backend.reset_generation_state() must be called exactly once on "
         f"cancel-via-POST, got {reset_calls[0]}"
+    )
+
+
+def test_generate_stream_stays_responsive_under_blocking_next():
+    # Same sync-generator shape as generate_stream, with resp_queue.get modeled
+    # by sleep. The output must stay unchanged while next() moves off-loop.
+    chunks = ["alpha", "beta", "gamma", "delta"]
+
+    def _generate_chat_response():
+        for chunk in chunks:
+            time.sleep(0.08)
+            yield chunk
+
+    def _sse(chunk):
+        return f"data: {json.dumps({'content': chunk})}\n\n"
+
+    async def _direct_loop():
+        out = []
+        for chunk in _generate_chat_response():
+            out.append(_sse(chunk))
+        out.append("data: [DONE]\n\n")
+        return out
+
+    async def _to_thread_loop():
+        _DONE = object()
+        gen = _generate_chat_response()
+        out = []
+        try:
+            while True:
+                chunk = await asyncio.to_thread(next, gen, _DONE)
+                if chunk is _DONE:
+                    break
+                out.append(_sse(chunk))
+            out.append("data: [DONE]\n\n")
+            return out
+        finally:
+            try:
+                gen.close()
+            except (RuntimeError, ValueError):
+                pass
+
+    async def _run_with_heartbeat(loop_coro):
+        ticks = 0
+        max_gap = 0.0
+
+        async def _heartbeat():
+            nonlocal ticks, max_gap
+            last = time.monotonic()
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                max_gap = max(max_gap, now - last)
+                last = now
+                ticks += 1
+
+        heartbeat = asyncio.create_task(_heartbeat())
+        await asyncio.sleep(0)
+        try:
+            out = await loop_coro()
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+        return out, ticks, max_gap
+
+    async def _main():
+        direct_out, direct_ticks, direct_max_gap = await _run_with_heartbeat(_direct_loop)
+        threaded_out, threaded_ticks, threaded_max_gap = await _run_with_heartbeat(_to_thread_loop)
+        return (
+            direct_out,
+            direct_ticks,
+            direct_max_gap,
+            threaded_out,
+            threaded_ticks,
+            threaded_max_gap,
+        )
+
+    (
+        direct_out,
+        direct_ticks,
+        direct_max_gap,
+        threaded_out,
+        threaded_ticks,
+        threaded_max_gap,
+    ) = asyncio.run(_main())
+
+    assert threaded_out == direct_out == [_sse(chunk) for chunk in chunks] + ["data: [DONE]\n\n"]
+    assert direct_ticks == 0, (
+        f"direct generate_stream loop should block the event loop; "
+        f"got {direct_ticks} heartbeat ticks and max gap {direct_max_gap:.3f}s"
+    )
+    assert threaded_ticks >= 8, (
+        f"to_thread generate_stream loop should let the event loop run; "
+        f"got {threaded_ticks} heartbeat ticks"
+    )
+    assert threaded_max_gap < 0.06, (
+        f"to_thread generate_stream loop should avoid long heartbeat gaps; "
+        f"got {threaded_max_gap:.3f}s"
     )
 
 
