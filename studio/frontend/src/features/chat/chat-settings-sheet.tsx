@@ -495,6 +495,7 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
+  const focusOpenTriggerOnCloseRef = useRef(false);
   const pendingSelection = useChatRuntimeStore((s) => s.pendingSelection);
   // "Loading" only when the in-flight load IS this staged pick (full id + GGUF
   // variant + native token match), not an unrelated load or a cancel's
@@ -859,6 +860,16 @@ export function ChatSettingsPanel({
   }, [open]);
 
   useEffect(() => {
+    if (open || !focusOpenTriggerOnCloseRef.current) {
+      return;
+    }
+    focusOpenTriggerOnCloseRef.current = false;
+    document
+      .querySelector<HTMLElement>("[data-chat-settings-open-trigger]")
+      ?.focus();
+  }, [open]);
+
+  useEffect(() => {
     const el = systemPromptBoxRef.current;
     setSystemPromptOverflows(
       params.systemPrompt.length > 0 &&
@@ -888,7 +899,10 @@ export function ChatSettingsPanel({
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
-                  onClick={() => onOpenChange?.(false)}
+                  onClick={() => {
+                    focusOpenTriggerOnCloseRef.current = true;
+                    onOpenChange?.(false);
+                  }}
                   className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
@@ -1783,6 +1797,8 @@ export function ChatSettingsPanel({
   return (
     <aside
       data-tour="chat-settings"
+      aria-hidden={!open}
+      inert={!open || undefined}
       className={`relative z-50 shrink-0 h-full overflow-hidden bg-panel-surface text-panel-surface-fg font-heading ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
     >
       <div className="h-full w-full">{settingsContent}</div>

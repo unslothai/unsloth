@@ -2523,6 +2523,7 @@ export function ChatPage({
                 <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
+                    data-chat-settings-open-trigger
                     onClick={() => setSettingsOpen(true)}
                     className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Open run settings"

@@ -237,6 +237,7 @@ function NavItem({
           disabled={disabled}
           onClick={onClick}
           isActive={active}
+          aria-label={label}
           data-tour={dataTour}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
@@ -278,7 +279,7 @@ export function AppSidebar() {
       search: s.location.search as Record<string, string | undefined>,
     }),
   });
-  const { togglePinned, isMobile, setOpenMobile } = useSidebar();
+  const { isMobile, setOpenMobile, setOpen, state } = useSidebar();
   const navigate = useNavigate();
 
   // Web update detection: `webUpdate` is non-null only when the installed
@@ -295,6 +296,21 @@ export function AppSidebar() {
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
+  const focusOpenSidebarTriggerRef = useRef(false);
+
+  useEffect(() => {
+    if (
+      !focusOpenSidebarTriggerRef.current ||
+      isMobile ||
+      state !== "collapsed"
+    ) {
+      return;
+    }
+    focusOpenSidebarTriggerRef.current = false;
+    document
+      .querySelector<HTMLElement>('[data-sidebar="open-trigger"]')
+      ?.focus();
+  }, [isMobile, state]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
@@ -980,11 +996,13 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       variant="sidebar"
+      role="navigation"
+      aria-label="Main navigation"
       className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
     >
       <SidebarHeader className="pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0">
         {/* Expanded: compact logo + close toggle */}
-        <div className="flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden">
+        {(state === "expanded" || isMobile) && <div className="flex items-center justify-between gap-[8.5px]">
           <Link
             to="/chat"
             onClick={(event) => {
@@ -1011,7 +1029,10 @@ export function AppSidebar() {
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
-                  onClick={togglePinned}
+                  onClick={() => {
+                    focusOpenSidebarTriggerRef.current = true;
+                    setOpen(false);
+                  }}
                   className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.closeSidebar")}
                 >
@@ -1027,16 +1048,17 @@ export function AppSidebar() {
               </TooltipContent>
             </Tooltip>
           )}
-        </div>
+        </div>}
 
         {/* Collapsed: panel icon doubles as expand trigger */}
-        {!isMobile && (
-          <div className="hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
+        {!isMobile && state === "collapsed" && (
+          <div className="flex h-[33px] items-center justify-center w-full">
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
-                  onClick={togglePinned}
+                  data-sidebar="open-trigger"
+                  onClick={() => setOpen(true)}
                   className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.openSidebar")}
                 >
