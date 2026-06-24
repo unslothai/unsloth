@@ -27,7 +27,6 @@ __all__ = [
     "test_construct_chat_template",
 ]
 
-from transformers import StoppingCriteria, StoppingCriteriaList
 from transformers.utils import logging
 try:
     from torch import LongTensor, FloatTensor
@@ -38,10 +37,15 @@ import os
 import shutil
 import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
-from unsloth_zoo.dataset_utils import (
-    train_on_responses_only,
-    standardize_data_formats,
-)
+try:
+    from unsloth_zoo.dataset_utils import (
+        train_on_responses_only,
+        standardize_data_formats,
+    )
+except ImportError:
+    # dataset_utils pulls torch; keep chat_templates importable on torch-free
+    # (MLX) hosts, which expose these via the backend-specific wrappers instead.
+    train_on_responses_only = standardize_data_formats = None
 standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
 DEFAULT_SYSTEM_MESSAGE = {}
@@ -2779,6 +2783,7 @@ extra_eos_tokens = None,
 def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
     try:
         import torch
+        from transformers import StoppingCriteria, StoppingCriteriaList
     except ImportError as exc:
         raise ImportError(
             "Unsloth: create_stopping_criteria requires PyTorch and is only "
