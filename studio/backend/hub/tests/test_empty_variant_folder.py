@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cleanup of empty leftover quant folders from interrupted split downloads.
-
-An interrupted/cancelled split download leaves ``snapshots/<rev>/<quant>/`` with
-no shards. Such a folder is neither downloaded nor a tracked partial, so before
-this it was invisible and a variant-delete 404'd, leaving it on disk forever.
-"""
+"""Cleanup of empty leftover quant folders from interrupted split downloads."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,7 +30,7 @@ def test_list_empty_excludes_quant_with_files_in_another_snapshot(tmp_path, monk
     (snap1 / "UD-IQ1_S").mkdir(parents = True)  # empty here
     snap2 = tmp_path / "s2" / "snapshots" / "rev"
     (snap2 / "UD-IQ1_S").mkdir(parents = True)
-    (snap2 / "UD-IQ1_S" / "m-UD-IQ1_S-00001-of-00001.gguf").write_bytes(b"z")  # populated there
+    (snap2 / "UD-IQ1_S" / "m-UD-IQ1_S-00001-of-00001.gguf").write_bytes(b"z")  # has shards
     monkeypatch.setattr(gguf, "iter_hf_cache_snapshots", lambda repo_id: iter([snap1, snap2]))
     assert gguf.list_empty_gguf_variant_dirs("org/Repo-GGUF") == set()
 
@@ -53,13 +48,12 @@ def test_remove_empty_variant_dirs_removes_only_empty_match(tmp_path):
     removed = deletion._remove_empty_variant_dirs([repo], "UD-IQ1_S")
     assert removed == 1
     assert not (snap / "UD-IQ1_S").exists()
-    assert (snap / "UD-IQ1_M").is_dir()  # sibling with files untouched
+    assert (snap / "UD-IQ1_M").is_dir()
 
 
 def test_remove_empty_variant_dirs_never_touches_populated_folder(tmp_path):
     snap = _make_snapshot(tmp_path)
     repo = SimpleNamespace(repo_path = str(tmp_path))
-    # Even when explicitly asked, a quant folder that still has shards stays.
     removed = deletion._remove_empty_variant_dirs([repo], "UD-IQ1_M")
     assert removed == 0
     assert (snap / "UD-IQ1_M").is_dir()

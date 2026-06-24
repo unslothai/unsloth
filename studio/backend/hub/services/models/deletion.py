@@ -107,14 +107,8 @@ def _has_remaining_main_gguf(target_repo) -> bool:
 
 
 def _remove_empty_variant_dirs(target_repos: list, variant: str) -> int:
-    """Remove snapshot subfolders for *variant* that are now empty.
-
-    HF lays out a split quant as one ``snapshots/<rev>/<quant>/`` directory, so
-    the folder name is the quant label. This reclaims both the folder left behind
-    by an interrupted/cancelled download (empty from the start) and the folder
-    emptied by unlinking this variant's shards above. Only genuinely empty
-    directories are removed, so a sibling quant's files are never touched.
-    """
+    """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
+    quant label names the folder); only empty dirs go, so siblings are safe."""
     variant_key = (extract_quant_token(variant) or variant).lower()
     removed = 0
     for target_repo in target_repos:
@@ -252,8 +246,7 @@ def _delete_gguf_variant_from_repos(
         )
 
     state_purged = download_manifest.purge_state("model", repo_id, variant)
-    # Reclaim the now-empty (or always-empty) quant subfolder so an interrupted
-    # download's leftover directory does not linger and 404 forever.
+    # Reclaim the empty quant folder so it stops 404ing on delete.
     removed_dirs = _remove_empty_variant_dirs(target_repos, variant)
     if (
         removed_snapshots == 0

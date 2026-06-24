@@ -631,10 +631,8 @@ async def get_gguf_variants_response(
                         _partial_transport_for_variant(repo_id, variant.quant),
                     )
 
-        # An interrupted split download can leave an empty ``<quant>/`` folder
-        # with no shards: not downloaded, not a tracked partial, so otherwise
-        # invisible and unremovable. Surface it as cleanable so the UI exposes a
-        # delete affordance (deletion removes the empty folder).
+        # Surface empty leftover ``<quant>/`` folders (interrupted downloads),
+        # otherwise invisible/unremovable, as cleanable so the UI can delete them.
         try:
             empty_dir_quants = {q.lower() for q in list_empty_gguf_variant_dirs(repo_id)}
         except Exception as e:
