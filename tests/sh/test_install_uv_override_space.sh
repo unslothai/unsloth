@@ -17,9 +17,9 @@ bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 # Extract the UV_OVERRIDE hardening block (outer case ... esac plus the export)
 # and run it directly, so the test tracks install.sh rather than a copy of it.
 BLOCK=$(awk '
-    /case "\$_OVERRIDES_FILE" in/ { grab = 1 }
+    /case "[$]_OVERRIDES_FILE" in/ { grab = 1 }
     grab { print }
-    grab && /export UV_OVERRIDE="\$_OVERRIDES_FILE"/ { exit }
+    grab && /export UV_OVERRIDE="[$]_OVERRIDES_FILE"/ { exit }
 ' "$INSTALL_SH")
 if ! printf '%s' "$BLOCK" | grep -q 'export UV_OVERRIDE'; then
     echo "  FAIL: could not extract UV_OVERRIDE block from install.sh"
@@ -42,8 +42,8 @@ SRC="$WORK/Open Source/overrides-darwin-arm64.txt"
 printf 'transformers>=4.57.6\n' > "$SRC"
 run_block "$SRC"
 case "$UV_OVERRIDE" in
-    *" "*) bad "spaced path: UV_OVERRIDE still contains a space ($UV_OVERRIDE)" ;;
-    *)     ok  "spaced path: UV_OVERRIDE is space-free" ;;
+    *[[:space:]]*) bad "spaced path: UV_OVERRIDE still contains whitespace ($UV_OVERRIDE)" ;;
+    *)             ok  "spaced path: UV_OVERRIDE is whitespace-free" ;;
 esac
 [ "$UV_OVERRIDE" != "$SRC" ] && ok "spaced path: points at a copy" || bad "spaced path: not copied"
 [ "$(cat "$UV_OVERRIDE" 2>/dev/null)" = "transformers>=4.57.6" ] \
@@ -79,6 +79,20 @@ echo "$RES" | grep -qx "TMPDIR_VAR=" \
 _leftover=$(find "$WORK2/tmp dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n1)
 [ -z "$_leftover" ] && ok "spaced TMPDIR: no leaked temp dir" || bad "spaced TMPDIR: leaked $_leftover"
 rm -rf "$WORK2"
+
+# 4. A tab in the path is whitespace uv also splits on -> copied like a space.
+WORK3=$(mktemp -d)
+TABDIR=$(printf 'Open\tSource')
+mkdir -p "$WORK3/$TABDIR"
+SRC3="$WORK3/$TABDIR/overrides-darwin-arm64.txt"
+printf 'transformers>=4.57.6\n' > "$SRC3"
+run_block "$SRC3"
+case "$UV_OVERRIDE" in
+    *[[:space:]]*) bad "tab path: UV_OVERRIDE still contains whitespace" ;;
+    *)             ok  "tab path: UV_OVERRIDE is whitespace-free" ;;
+esac
+[ -n "$_UV_OVERRIDE_TMPDIR" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+rm -rf "$WORK3"
 
 echo ""
 echo "  PASS: $PASS"
