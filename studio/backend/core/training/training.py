@@ -294,6 +294,9 @@ class TrainingBackend:
                 logger.warning("Previous pump thread did not exit within 5s — refusing to start")
                 return False
         self._pump_thread = None
+        # Clear any stale crash flag from a prior abnormally-died pump so the
+        # start-time watchdog can't treat this fresh setup as a recoverable death.
+        self._pump_running = False
 
         # Build config dict for the subprocess
         config = {
@@ -477,16 +480,21 @@ class TrainingBackend:
         self._xet_fallback_used = False
         self._needs_xet_respawn = False
 
-        # Assign subprocess handles after state reset.
-        self._event_queue = event_queue
-        self._stop_queue = stop_queue
-        self._proc = proc
+        # Assign subprocess handles and start the pump together under the lock, so
+        # a concurrent is_training_active()/_ensure_pump_alive() poll can never
+        # observe a live _proc with a not-yet-started pump and spawn a duplicate.
+        new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+        with self._lock:
+            self._pump_running = False
+            self._event_queue = event_queue
+            self._stop_queue = stop_queue
+            self._proc = proc
+            self._pump_thread = new_pump
+            new_pump.start()
 
         # Eagerly create DB run row so it appears in history during model loading.
+        # Done after the pump is live; the pump also creates it on the first event.
         self._ensure_db_run_created()
-
-        self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
-        self._pump_thread.start()
 
         return True
 
@@ -611,6 +619,10 @@ class TrainingBackend:
         except Exception:
             logger.error("Failed to respawn training subprocess", exc_info = True)
             with self._lock:
+                # No replacement pump will run; clear the liveness flag so a later
+                # run can't inherit a stale _pump_running=True (which would let the
+                # start-time watchdog spawn a duplicate pump).
+                self._pump_running = False
                 self._progress.is_training = False
                 self._progress.error = "Failed to recover stalled model download"
             self._ensure_db_run_created()
@@ -1172,10 +1184,11 @@ class TrainingBackend:
             return q.get(timeout = timeout_sec)
         except queue.Empty:
             return None
-        except Exception:
-            # A closed/broken queue (EOFError/OSError/ValueError) or an
-            # unpickleable payload from a crashing child must read as "no event"
-            # rather than propagating into the pump loop and killing it.
+        except (EOFError, OSError, ValueError):
+            # A closed/broken queue reads as "no event". Any *other* unexpected
+            # error is deliberately left to _pump_loop's guarded read block,
+            # which logs and backs off (time.sleep) so a persistently raising
+            # queue can't spin this into a hot loop.
             return None
 
     @staticmethod
@@ -1186,7 +1199,14 @@ class TrainingBackend:
                 events.append(q.get_nowait())
             except queue.Empty:
                 return events
-            except (EOFError, OSError, ValueError):
+            except Exception:
+                # Unlike the live read, a drain error must not abort the caller:
+                # _pump_loop drains here right before finalizing a worker exit, so
+                # return what we have and let finalization proceed rather than
+                # leaving the run wedged as "active" with a dead worker.
+                logger.exception(
+                    "Training event pump: queue drain failed; finalizing with drained events"
+                )
                 return events
 
     # ------------------------------------------------------------------

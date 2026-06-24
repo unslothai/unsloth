@@ -188,14 +188,107 @@ def test_pump_survives_handler_exception_and_keeps_processing(monkeypatch):
     assert b._pump_running is False, "clean exit must clear the running flag"
 
 
-def test_read_queue_swallows_arbitrary_exception():
-    class _ExplodingQueue:
-        def get(self, *a, **k):
-            raise RuntimeError("queue exploded")
+def test_read_queue_narrow_contract():
+    class _Q:
+        def __init__(self, exc):
+            self.exc = exc
 
-    # An unexpected error (not just Empty/EOFError/OSError/ValueError) must read
-    # as "no event", never bubble up to the pump loop.
-    assert TrainingBackend._read_queue(_ExplodingQueue(), 0.01) is None
+        def get(self, *a, **k):
+            raise self.exc
+
+    # Expected closed/broken-queue signals read as "no event".
+    for exc in (queue.Empty(), EOFError(), OSError(), ValueError()):
+        assert TrainingBackend._read_queue(_Q(exc), 0.01) is None
+
+    # Anything *unexpected* propagates on purpose, so _pump_loop's guarded read
+    # block can log and back off (time.sleep) instead of _read_queue swallowing
+    # it into a hot, frozen loop.
+    with pytest.raises(RuntimeError):
+        TrainingBackend._read_queue(_Q(RuntimeError("boom")), 0.01)
+
+
+def test_pump_survives_queue_read_exception_and_recovers(monkeypatch):
+    # _read_queue raising an unexpected error must be caught by the pump's outer
+    # guard (log + backoff), not kill the pump; once reads recover it processes.
+    b = TrainingBackend()
+    _silence_db(monkeypatch, b)
+    handled: list = []
+    monkeypatch.setattr(b, "_handle_event", lambda ev: handled.append(ev.get("type")))
+
+    class _FlakyQueue:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, *a, **k):
+            self.calls += 1
+            if self.calls <= 3:
+                raise RuntimeError("transient queue read error")
+            if self.calls == 4:
+                return {"type": "progress", "step": 1}
+            raise queue.Empty
+
+        def get_nowait(self, *a, **k):
+            raise queue.Empty
+
+    proc = _FakeProc(alive = True)
+    b._proc = proc
+    b._event_queue = _FlakyQueue()
+
+    pump = threading.Thread(target = b._pump_loop, daemon = True)
+    pump.start()
+    try:
+        assert _wait_until(lambda: handled == ["progress"]), (
+            "pump must recover after read errors and process the next event"
+        )
+        assert pump.is_alive()
+    finally:
+        proc._alive = False
+        pump.join(timeout = 5)
+
+
+def test_pump_finalizes_when_drain_queue_raises_unexpected_error(monkeypatch):
+    # Worker has exited; the final drain hits an unexpected error. The run must
+    # still be finalized (not wedged "active" with a dead worker).
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    class _BadDrainQueue:
+        def get(self, *a, **k):
+            raise queue.Empty
+
+        def get_nowait(self, *a, **k):
+            raise RuntimeError("corrupt drain payload")
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _BadDrainQueue()
+    b._progress.is_training = True
+
+    b._pump_loop()  # returns once it sees the dead worker
+
+    assert b._progress.is_training is False
+    assert b._progress.error == "Training process exited unexpectedly"
+    assert finalized.get("status") == "error"
+    assert b._pump_running is False
+    assert b.is_training_active() is False
+
+
+def test_start_training_clears_stale_pump_running_flag():
+    # A prior pump that died abnormally leaves _pump_running True. The next
+    # start_training must clear it during reset so the start-time watchdog can't
+    # treat the fresh setup as a recoverable crash and spawn a duplicate pump.
+    b = TrainingBackend()
+    b._pump_running = True
+    b._pump_thread = None
+    b._proc = None
+
+    # No model_name -> start_training bails at kwargs["model_name"] (KeyError),
+    # but only AFTER the reset block that clears the stale flag.
+    with pytest.raises(KeyError):
+        b.start_training("job_stale_flag_test")
+
+    assert b._pump_running is False
 
 
 # ----------------------------------------------------------------------------
