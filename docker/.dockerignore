@@ -7,6 +7,7 @@
 !studio_launch.sh
 !unsloth_studio_update.sh
 !unsloth_llama_update.sh
+!unsloth_jupyter_tunnel.sh
 !unsloth_nb_compat.py
 !unsloth_pip_shim.py
 !unsloth_ipython_startup.py

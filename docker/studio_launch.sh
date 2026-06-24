@@ -17,6 +17,9 @@ set -euo pipefail
 
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
+# Default off so supervisord's %(ENV_UNSLOTH_JUPYTER_CLOUDFLARE)s autostart gate
+# resolves; set to 1 (docker run -e) to expose JupyterLab on a trycloudflare URL.
+export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 
 # Make the runtime env visible to SSH sessions, which get a fresh login shell
 # without the `docker run -e` vars. Secrets are excluded on purpose: tokens,
@@ -79,6 +82,11 @@ fi
 mkdir -p /workspace
 echo "Unsloth Studio  -> http://localhost:8000   (first-boot password below)"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
+if [[ "${UNSLOTH_JUPYTER_CLOUDFLARE}" == "1" ]]; then
+    echo "JupyterLab tunnel-> enabled; public trycloudflare URL appears below once it is up"
+else
+    echo "JupyterLab tunnel-> off (set UNSLOTH_JUPYTER_CLOUDFLARE=1 for a public link)"
+fi
 if [[ "${UNSLOTH_ENABLE_SSHD}" == "true" ]]; then
     echo "sshd            -> port 22 (key-only)"
 fi

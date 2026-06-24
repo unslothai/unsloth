@@ -167,9 +167,13 @@ COPY unsloth_llama_update.sh /usr/local/bin/unsloth-llama-update
 # API, so it is not rate-limited; deterministic portable bundle that runs on CPU
 # and every supported GPU) rather than the host-probing installer.
 COPY fetch_llama_prebuilt.py /usr/local/lib/unsloth/fetch_llama_prebuilt.py
+# Optional public Cloudflare tunnel for JupyterLab (UNSLOTH_JUPYTER_CLOUDFLARE=1,
+# or `unsloth-jupyter-tunnel --force`); supervisord runs it as jupyter-cloudflare.
+COPY unsloth_jupyter_tunnel.sh /usr/local/bin/unsloth-jupyter-tunnel
 RUN chmod +x /usr/local/bin/unsloth-studio-launch \
              /usr/local/bin/unsloth-studio-update \
-             /usr/local/bin/unsloth-llama-update
+             /usr/local/bin/unsloth-llama-update \
+             /usr/local/bin/unsloth-jupyter-tunnel
 
 # Studio web UI, JupyterLab, sshd. All bind 0.0.0.0 inside the container's
 # network namespace; the operator publishes them explicitly with -p.
