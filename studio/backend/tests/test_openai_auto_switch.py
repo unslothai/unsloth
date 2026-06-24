@@ -1467,3 +1467,37 @@ def test_ui_training_not_blocked_by_active_inference(monkeypatch):
         training_route.start_training(_training_request(), current_subject = "t", via_api_key = False)
     )
     assert resp.status == "error" and "already" in (resp.error or "").lower()
+
+
+# ── UNSLOTH_MODEL_IDLE_TTL env override (borrowed from PR 6517) ──
+
+
+def test_env_idle_ttl_standalone_when_no_stored_value(monkeypatch):
+    # With nothing stored, the env var enables idle-unload even while auto-switch
+    # is off (headless/ops default), and the UI reader reflects it.
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: d)  # nothing stored
+    monkeypatch.setenv("UNSLOTH_MODEL_IDLE_TTL", "600")
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    assert settings.get_auto_unload_idle_seconds() == 600
+    assert settings.get_stored_auto_unload_idle_seconds() == 600
+
+
+def test_stored_idle_value_overrides_env_and_stays_gated(monkeypatch):
+    # An explicit stored value wins over the env default and remains gated on the
+    # auto-switch toggle.
+    store = {settings.AUTO_UNLOAD_IDLE_SETTING_KEY: 30}
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setenv("UNSLOTH_MODEL_IDLE_TTL", "600")
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    assert settings.get_auto_unload_idle_seconds() == 30  # stored wins, not env
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    assert settings.get_auto_unload_idle_seconds() == 0  # explicit value still gated off
+
+
+def test_env_idle_ttl_invalid_is_ignored(monkeypatch):
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: d)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    monkeypatch.setenv("UNSLOTH_MODEL_IDLE_TTL", "not-a-number")
+    assert settings.get_auto_unload_idle_seconds() == 0
+    monkeypatch.delenv("UNSLOTH_MODEL_IDLE_TTL", raising = False)
+    assert settings.get_auto_unload_idle_seconds() == 0

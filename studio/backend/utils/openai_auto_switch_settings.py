@@ -10,12 +10,18 @@ Two settings, both off by default so existing API behavior is unchanged:
 - ``openai_api_auto_unload_idle_seconds``: when > 0, the loaded GGUF is
   unloaded after this many idle seconds to free VRAM.
 
+The idle TTL can also be set at startup via the ``UNSLOTH_MODEL_IDLE_TTL`` env
+var. Unlike the stored setting (which stays gated on auto-switch), the env value
+is a standalone default that enables idle-unload even with auto-switch off, for
+headless/container deploys; an explicit UI/API value still overrides it.
+
 Reads are cached for a short window because these are consulted on the
 per-request hot path; writes invalidate the cache.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any, Optional
@@ -23,6 +29,7 @@ from typing import Any, Optional
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
 MODEL_OVERRIDES_SETTING_KEY = "openai_api_auto_switch_overrides"
+MODEL_IDLE_TTL_ENV_VAR = "UNSLOTH_MODEL_IDLE_TTL"
 
 DEFAULT_OPENAI_AUTO_SWITCH_ENABLED = False
 DEFAULT_AUTO_UNLOAD_IDLE_SECONDS = 0
@@ -90,23 +97,44 @@ def set_openai_auto_switch_enabled(value: Any) -> bool:
     return parsed
 
 
+def _stored_idle_seconds() -> Optional[int]:
+    """The persisted idle TTL as an int, or None when never set."""
+    return _coerce_int(_cached_setting(AUTO_UNLOAD_IDLE_SETTING_KEY, None))
+
+
+def _env_idle_seconds() -> Optional[int]:
+    """UNSLOTH_MODEL_IDLE_TTL as a non-negative seconds value, or None if unset/invalid."""
+    raw = os.environ.get(MODEL_IDLE_TTL_ENV_VAR)
+    if raw is None or not raw.strip():
+        return None
+    return _coerce_int(raw)
+
+
 def get_stored_auto_unload_idle_seconds() -> int:
     """The persisted idle-unload TTL, independent of whether auto-switch is on.
 
     The settings UI reads this so it can display and round-trip the saved value;
-    toggling auto-switch off must not erase it. The idle loop uses the gated
-    reader below instead, so it still never unloads while the feature is off.
+    toggling auto-switch off must not erase it. Falls back to the env override so
+    the UI shows the startup default. The idle loop uses the gated reader below.
     """
-    parsed = _coerce_int(_cached_setting(AUTO_UNLOAD_IDLE_SETTING_KEY, None))
-    return parsed if parsed is not None else DEFAULT_AUTO_UNLOAD_IDLE_SECONDS
+    stored = _stored_idle_seconds()
+    if stored is not None:
+        return stored
+    env = _env_idle_seconds()
+    return env if env is not None else DEFAULT_AUTO_UNLOAD_IDLE_SECONDS
 
 
 def get_auto_unload_idle_seconds() -> int:
-    # Gate idle-unload on auto-switch: when off, report 0 so the feature can
-    # never unload a model, keeping the off state identical to pre-feature.
-    if not get_openai_auto_switch_enabled():
-        return 0
-    return get_stored_auto_unload_idle_seconds()
+    """Effective idle TTL the idle loop runs on (0 = never unload)."""
+    stored = _stored_idle_seconds()
+    if stored is not None:
+        # An explicit UI/API value stays gated on auto-switch: off reports 0 so the
+        # off state is identical to pre-feature.
+        return stored if get_openai_auto_switch_enabled() else 0
+    # No stored value: UNSLOTH_MODEL_IDLE_TTL is a standalone startup default that
+    # enables idle-unload even with auto-switch off (headless/container deploys).
+    env = _env_idle_seconds()
+    return env if env is not None else 0
 
 
 def set_auto_unload_idle_seconds(value: Any) -> int:
