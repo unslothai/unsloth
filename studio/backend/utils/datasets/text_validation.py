@@ -100,9 +100,7 @@ def validate_non_empty_text_field(
 
     first_row_index, first_issue_text = first_issue
     scanned_label = (
-        f"{issue_count} invalid row(s) in the first {scan_rows} rows. "
-        if issue_count > 1
-        else ""
+        f"{issue_count} invalid row(s) in the first {scan_rows} rows. " if issue_count > 1 else ""
     )
     raise ValueError(
         f"Dataset validation failed: {split_name} row {first_row_index} "
