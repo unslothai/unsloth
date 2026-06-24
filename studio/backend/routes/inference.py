@@ -5949,7 +5949,7 @@ def _openai_model_objects() -> list[dict]:
             "id": public_model_id(llama_backend.model_identifier),
             "object": "model",
             "created": _created,
-            "owned_by": "local",
+            "owned_by": "unsloth-studio",
         }
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
@@ -5970,7 +5970,7 @@ def _openai_model_objects() -> list[dict]:
             "id": public_model_id(backend.active_model_name),
             "object": "model",
             "created": _created,
-            "owned_by": "local",
+            "owned_by": "unsloth-studio",
         }
         _ctx = _positive_int_or_none(model_info.get("context_length"))
         if _ctx is None:
@@ -6045,7 +6045,7 @@ async def _openai_catalog_objects() -> list[dict]:
             "id": cid,
             "object": "model",
             "created": _created,
-            "owned_by": "local",
+            "owned_by": "unsloth-studio",
             "loaded": False,
         }
         display = getattr(info, "display_name", None)
