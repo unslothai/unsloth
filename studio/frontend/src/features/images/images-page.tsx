@@ -611,7 +611,9 @@ export function ImagesPage() {
       for (let i = 0; i < count; i++) {
         const res = await generateDiffusionImage({
           prompt: prompt.trim(),
-          negative_prompt: negativePrompt.trim() || undefined,
+          // Only send a negative prompt when guidance uses it, so the recipe
+          // doesn't record one the model ignored.
+          negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
           width: w,
           height: h,
           steps,
@@ -635,8 +637,9 @@ export function ImagesPage() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {/* ── Top: the chat-style model selector (header padding mirrors chat). The
-          load progress shows in a chat-style toast, not here. ── */}
+      {/* ── Top: the model selector, kept at the chat tab's exact position so the
+          shared element matches. The load progress shows in a chat-style toast,
+          not here. ── */}
       <div className="flex h-[48px] shrink-0 items-start pl-2 pr-2 pt-[11px]">
         <ModelSelector
           models={MODELS}
@@ -650,8 +653,9 @@ export function ImagesPage() {
         />
       </div>
 
-      {/* ── Controls rail + preview canvas ─────────────────── */}
-      <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-4 pb-4 sm:px-6 sm:pb-6">
+      {/* ── Controls rail + preview canvas. Padding mirrors the other tabs
+          (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. ── */}
+      <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 sm:px-9">
         <SectionCard
           icon={<HugeiconsIcon icon={ImageAdd02Icon} className="size-5" strokeWidth={1.5} />}
           title="Generate"
@@ -662,17 +666,21 @@ export function ImagesPage() {
           <Field label="Prompt">
             <Textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
           </Field>
-          <Field
-            label="Negative prompt"
-            hint="Ignored by Z-Image-Turbo, which runs with guidance off. It only has an effect when guidance is above 0."
-          >
-            <Textarea
-              rows={2}
-              placeholder="What to avoid (optional)"
-              value={negativePrompt}
-              onChange={(e) => setNegativePrompt(e.target.value)}
-            />
-          </Field>
+          {/* A negative prompt only does anything with guidance on, so hide it at
+              guidance 0 (Z-Image-Turbo's default) instead of showing a dead field. */}
+          {guidance > 0 && (
+            <Field
+              label="Negative prompt"
+              hint="What to steer the image away from. Only used when guidance is above 0."
+            >
+              <Textarea
+                rows={2}
+                placeholder="What to avoid (optional)"
+                value={negativePrompt}
+                onChange={(e) => setNegativePrompt(e.target.value)}
+              />
+            </Field>
+          )}
 
           <Field
             label="Aspect ratio"
