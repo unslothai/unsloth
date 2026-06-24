@@ -1745,20 +1745,20 @@ export function HubModelPicker({
     normalizeForSearch(
       `${m.model_id ?? ""} ${m.display_name} ${m.id}`,
     ).includes(localQuery);
-  // A task filter (the Images page) wants diffusion GGUFs only; local folders /
-  // LM Studio / fine-tuned models aren't that, so drop them in that mode.
+  // A task filter (the Images page) wants diffusion GGUFs only, so local models
+  // are filtered to that task (by the GGUF architecture the backend reports).
   const sortedLmStudio = useMemo(
     () =>
-      task
-        ? []
-        : sortLocalModels(
-            lmStudioModels.filter(
-              (m) =>
-                localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
-            ),
-            downloadedSort,
-            loadTimes,
-          ),
+      sortLocalModels(
+        lmStudioModels.filter(
+          (m) =>
+            (!task || taskMatchesFilter(m.task, task)) &&
+            localModelMatchesFormat(m, formatFilter) &&
+            matchesLocalQuery(m),
+        ),
+        downloadedSort,
+        loadTimes,
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery, task],
   );
@@ -1767,20 +1767,19 @@ export function HubModelPicker({
   // rule). An MLX build a Mac user dropped in ./models stays selectable.
   const sortedLocalDir = useMemo(
     () =>
-      task
-        ? []
-        : sortLocalModels(
-            localDirModels.filter(
-              (m) =>
-                (!chatOnly ||
-                  localModelIsGguf(m) ||
-                  (isMac && localModelIsMlx(m))) &&
-                localModelMatchesFormat(m, formatFilter) &&
-                matchesLocalQuery(m),
-            ),
-            downloadedSort,
-            loadTimes,
-          ),
+      sortLocalModels(
+        localDirModels.filter(
+          (m) =>
+            (!task || taskMatchesFilter(m.task, task)) &&
+            (!chatOnly ||
+              localModelIsGguf(m) ||
+              (isMac && localModelIsMlx(m))) &&
+            localModelMatchesFormat(m, formatFilter) &&
+            matchesLocalQuery(m),
+        ),
+        downloadedSort,
+        loadTimes,
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       localDirModels,
@@ -1795,16 +1794,16 @@ export function HubModelPicker({
   );
   const sortedCustomFolderModels = useMemo(
     () =>
-      task
-        ? []
-        : sortLocalModels(
-            customFolderModels.filter(
-              (m) =>
-                localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
-            ),
-            customSort,
-            loadTimes,
-          ),
+      sortLocalModels(
+        customFolderModels.filter(
+          (m) =>
+            (!task || taskMatchesFilter(m.task, task)) &&
+            localModelMatchesFormat(m, formatFilter) &&
+            matchesLocalQuery(m),
+        ),
+        customSort,
+        loadTimes,
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [customFolderModels, customSort, formatFilter, loadTimes, localQuery, task],
   );
@@ -2208,9 +2207,7 @@ export function HubModelPicker({
   // On Device owns the downloaded and custom-folder models; the Unsloth tab
   // searches the HF listing (below). Both filter locally by the query.
   const showDownloaded = section === "downloaded";
-  // Custom Folders (server-side scan dirs) hold arbitrary local models, not
-  // diffusion GGUFs — hide the whole section under a task filter (Images).
-  const showCustom = section === "downloaded" && !task;
+  const showCustom = section === "downloaded";
   const showRecommendedSection = !showHfSection && section === "recommended";
   const downloadedEmpty =
     visibleCachedGguf.length === 0 &&
@@ -2611,6 +2608,7 @@ export function HubModelPicker({
                             </TooltipContent>
                           </Tooltip>
                         ) : null}
+                        {!task && (
                         <Tooltip delayDuration={0}>
                           <TooltipTrigger asChild={true}>
                             <button
@@ -2632,6 +2630,7 @@ export function HubModelPicker({
                             Go to fine-tuned models
                           </TooltipContent>
                         </Tooltip>
+                        )}
                         <Tooltip delayDuration={0}>
                           <TooltipTrigger asChild={true}>
                             <button

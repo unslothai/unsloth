@@ -17,7 +17,6 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { SectionCard } from "@/components/section-card";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
 import type {
   ModelOption,
@@ -312,13 +311,7 @@ export function ImagesPage() {
 
       {/* ── Controls rail + preview canvas ─────────────────── */}
       <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-4 pb-4 sm:px-6 sm:pb-6">
-        <SectionCard
-          icon={<HugeiconsIcon icon={ImageAdd02Icon} className="size-5" strokeWidth={1.5} />}
-          title="Generate"
-          description="Prompt and settings"
-          accent="indigo"
-          className="w-[360px] shrink-0 gap-4 overflow-y-auto"
-        >
+        <div className="flex w-[340px] shrink-0 flex-col gap-4 overflow-y-auto">
           <Field label="Prompt">
             <Textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
           </Field>
@@ -370,7 +363,7 @@ export function ImagesPage() {
             {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
             Generate
           </Button>
-        </SectionCard>
+        </div>
 
         <div className="bg-card corner-squircle relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
           <div className="relative flex flex-1 items-center justify-center overflow-auto p-6">

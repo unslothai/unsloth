@@ -843,6 +843,11 @@ async def list_local_models(
             reverse = True,
         )
         models = [m for m in models if not _is_hidden_model(m.id, m.path)]
+        # Tag each GGUF with its task so the Images picker can filter to diffusion.
+        models = [
+            m.model_copy(update = {"task": _local_model_task(m.path, m.model_format)})
+            for m in models
+        ]
 
         return LocalModelListResponse(
             models_dir = str(models_root),
@@ -3117,6 +3122,12 @@ def _gguf_architecture(path: str) -> Optional[str]:
     return None
 
 
+def _arch_to_task(arch: Optional[str]) -> Optional[str]:
+    if arch is None:
+        return None
+    return "text-to-image" if arch.lower() in _DIFFUSION_GGUF_ARCHS else "text-generation"
+
+
 def _repo_gguf_task(repo_info) -> Optional[str]:
     """HF pipeline task of a cached GGUF repo, from its architecture:
     'text-to-image' for diffusion archs, else 'text-generation' (None if unreadable)."""
@@ -3124,10 +3135,29 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
         for path in _iter_gguf_paths(Path(repo_info.repo_path)):
             if _is_mmproj_filename(path.name):
                 continue
-            arch = _gguf_architecture(str(path))
-            if arch is None:
+            task = _arch_to_task(_gguf_architecture(str(path)))
+            if task is not None:
+                return task
+    except Exception:
+        pass
+    return None
+
+
+def _local_model_task(path: str, model_format: Optional[str]) -> Optional[str]:
+    """Same classification for a local model: read its GGUF architecture. The
+    path may be the .gguf file itself or a folder containing one."""
+    if model_format != "gguf":
+        return None
+    try:
+        p = Path(path)
+        if p.suffix.lower() == ".gguf" and p.is_file():
+            return _arch_to_task(_gguf_architecture(str(p)))
+        for f in _iter_gguf_paths(p):
+            if _is_mmproj_filename(f.name):
                 continue
-            return "text-to-image" if arch.lower() in _DIFFUSION_GGUF_ARCHS else "text-generation"
+            task = _arch_to_task(_gguf_architecture(str(f)))
+            if task is not None:
+                return task
     except Exception:
         pass
     return None
