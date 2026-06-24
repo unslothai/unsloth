@@ -789,9 +789,7 @@ class TrainingBackend:
             self._handle_event(event)
         except Exception:
             etype = event.get("type") if isinstance(event, dict) else type(event).__name__
-            logger.exception(
-                "Training event pump: failed to handle %s event; skipping", etype
-            )
+            logger.exception("Training event pump: failed to handle %s event; skipping", etype)
 
     def _pump_loop(self) -> None:
         """Background thread: consume events from subprocess → update state.
