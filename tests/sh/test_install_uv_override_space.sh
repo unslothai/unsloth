@@ -94,6 +94,14 @@ esac
 [ -n "$_UV_OVERRIDE_TMPDIR" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
 rm -rf "$WORK3"
 
+# 5. install.sh must clear _UV_OVERRIDE_TMPDIR before registering the exit trap,
+# so an inherited value can never reach the trap's rm -rf.
+_init_line=$(grep -n '^_UV_OVERRIDE_TMPDIR=""' "$INSTALL_SH" | head -n1 | cut -d: -f1)
+_trap_line=$(grep -n '^trap _on_install_exit EXIT' "$INSTALL_SH" | head -n1 | cut -d: -f1)
+{ [ -n "$_init_line" ] && [ -n "$_trap_line" ] && [ "$_init_line" -lt "$_trap_line" ]; } \
+    && ok "init: _UV_OVERRIDE_TMPDIR cleared before exit trap" \
+    || bad "init: _UV_OVERRIDE_TMPDIR not cleared before exit trap (init=$_init_line trap=$_trap_line)"
+
 echo ""
 echo "  PASS: $PASS"
 echo "  FAIL: $FAIL"

@@ -450,6 +450,9 @@ _on_install_exit() {
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
     exit "$_status"
 }
+# Empty so an inherited value can never reach the trap's rm; only a temp dir
+# this script creates below (Apple Silicon, spaced path) is ever removed.
+_UV_OVERRIDE_TMPDIR=""
 trap _on_install_exit EXIT
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
