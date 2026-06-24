@@ -1111,6 +1111,10 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     return findings
 
 
+# Cap a DOTALL match's recorded span; longer spans fall back to head + digest.
+_MAX_MULTILINE_LINES = 12
+
+
 def _extract_evidence(
     content: str,
     pattern: re.Pattern,
@@ -1122,8 +1126,11 @@ def _extract_evidence(
     match (or extra code on a long line) appended to an already-flagged file
     changes the evidence and the baseline key instead of riding the first few.
     Leading whitespace is kept so a flagged line moved out of a guarded block
-    reads as changed. Falls back to a whole-content search (recording every
-    distinct match line) when the pattern only matches across line boundaries.
+    reads as changed. For patterns that only match across line boundaries
+    (DOTALL IOC regexes) each distinct match records every full line it spans,
+    so a change on a continuation line (the URL inside a baselined C2 loop)
+    reopens the finding. A pathological greedy span is bounded to its head line
+    plus a digest of the rest.
     """
     lines = content.splitlines()
     matches = []
@@ -1134,16 +1141,21 @@ def _extract_evidence(
                 break
     if matches:
         return " | ".join(matches)
-    # Multiline (DOTALL) match: record the line where each distinct match begins.
-    seen: set[int] = set()
+    seen: set[tuple[int, int]] = set()
     out = []
     for m in pattern.finditer(content):
-        line_no = content.count("\n", 0, m.start()) + 1
-        if line_no in seen:
+        key = (m.start(), m.end())
+        if key in seen:
             continue
-        seen.add(line_no)
-        snippet = lines[line_no - 1].rstrip() if line_no - 1 < len(lines) else ""
-        out.append(f"L{line_no}: {snippet}" if snippet else f"L{line_no}: <multiline match>")
+        seen.add(key)
+        start = content.count("\n", 0, m.start()) + 1
+        end = content.count("\n", 0, m.end()) + 1
+        span = lines[start - 1 : end] or ["<multiline match>"]
+        rendered = "\n".join(f"L{start + i}: {ln.rstrip()}" for i, ln in enumerate(span))
+        if len(span) > _MAX_MULTILINE_LINES:
+            digest = hashlib.sha256(rendered.encode("utf-8", "replace")).hexdigest()
+            rendered = f"L{start}: {span[0].rstrip()} sha256:{digest}"
+        out.append(rendered)
         if max_matches and len(out) >= max_matches:
             break
     return " | ".join(out)
@@ -2559,24 +2571,25 @@ def _relpath_in_package(filename: str) -> str:
 # Evidence joins matched spans with " | " and a newline between labelled groups,
 # each span tagged "L<NN>: ". Split only on those real delimiters (a " | " before
 # a marker, or a newline), never on a bare "|" -- matched code may contain a
-# bitwise-or or union type. A span's prefix up to and including the first marker
-# (delimiter space, optional "Label: ", line number) is metadata; a later L<NN>:
-# inside the code is kept.
+# bitwise-or or union type. The prefix strips only a genuine leading marker, an
+# optional "Label: " then "L<NN>: "; a marker-like "L<NN>:" inside raw code (e.g.
+# a .pth import line) has no leading marker and is left intact.
 _RE_EVIDENCE_SPLIT = re.compile(r" \| (?=L\d+:)|\n")
-_RE_EVIDENCE_PREFIX = re.compile(r"^.*?L\d+:\s?")
+_RE_EVIDENCE_PREFIX = re.compile(r"^(?:[A-Za-z][A-Za-z0-9 _/-]*:\s*)?L\d+:\s?")
 
 
 def _canon_evidence(evidence: str) -> str:
-    """Sorted, deduped set of matched code lines, line-number markers removed.
+    """Sorted matched code lines (markers removed), duplicates kept.
 
-    Splits evidence on its real span delimiters, drops each span's prefix up to
-    the first ``L<NN>:`` marker, and keeps the code with its indentation, so the
-    key tracks the exact set of flagged code regardless of line number or order."""
-    spans = set()
+    Splits evidence on its real span delimiters, drops each span's leading
+    label / line-number marker, and keeps the code with its indentation. Sorting
+    absorbs match reordering and line shifts; keeping duplicates means an
+    appended identical occurrence still changes the key."""
+    spans = []
     for s in _RE_EVIDENCE_SPLIT.split(evidence or ""):
         s = _RE_EVIDENCE_PREFIX.sub("", s, count = 1).rstrip()
         if s:
-            spans.add(s)
+            spans.append(s)
     return "\n".join(sorted(spans))
 
 
@@ -2635,8 +2648,9 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
             continue
     if legacy:
         print(
-            f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash; "
-            f"regenerate with --write-baseline",
+            f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash and may "
+            f"not suppress until regenerated with --write-baseline (findings reopen "
+            f"rather than risk hiding changed code under a coarse key)",
             file = sys.stderr,
         )
     return keys

