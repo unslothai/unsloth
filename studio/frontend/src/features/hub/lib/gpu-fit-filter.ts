@@ -44,8 +44,18 @@ export function classifyGpuFit(opts: {
   if (!sizeBytes || sizeBytes <= 0) return null; // can't determine
 
   const sizeGb = sizeBytes / 1024 ** 3;
-  const comfortBudget = gpuGb * 0.7;
-  const fitBudget = gpuGb * 0.7 + ramGb * 0.7;
+  let comfortBudget: number;
+  let fitBudget: number;
+
+  if (!gpu.available || gpuGb <= 0) {
+    // Unified memory system (no discrete GPU)
+    comfortBudget = ramGb * 0.7;
+    fitBudget = ramGb * 0.7;
+  } else {
+    // Discrete GPU
+    comfortBudget = gpuGb * 0.7;
+    fitBudget = gpuGb * 0.7 + ramGb * 0.7;
+  }
 
   if (sizeGb <= comfortBudget) return "comfortable";
   if (sizeGb <= fitBudget) return "fits";
