@@ -20,8 +20,6 @@ routes call, not here.
 
 from __future__ import annotations
 
-import base64
-import io
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,13 +35,6 @@ from .diffusion_families import (
 )
 
 logger = get_logger(__name__)
-
-
-def encode_png_base64(image: Any) -> str:
-    """PIL image -> base64-encoded PNG string."""
-    buf = io.BytesIO()
-    image.save(buf, format = "PNG")
-    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 @dataclass(frozen = True)

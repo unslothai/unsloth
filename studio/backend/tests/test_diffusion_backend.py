@@ -18,7 +18,6 @@ import pytest
 from core.inference.diffusion import (
     DiffusionBackend,
     _base_file_downloaded,
-    encode_png_base64,
 )
 from core.inference.diffusion_families import (
     detect_family,
@@ -103,8 +102,8 @@ class _FakeGenerator:
 
 
 class _FakeImage:
-    def save(self, buf, format = None) -> None:
-        buf.write(b"\x89PNG\r\n fake image bytes")
+    """Stand-in for a generated PIL image (the route persists it; here we only
+    count how many come back)."""
 
 
 class _FakePipe:
@@ -237,13 +236,6 @@ def test_load_unknown_family_raises():
     backend = DiffusionBackend()
     with pytest.raises(ValueError):
         backend.load_pipeline("some/unrecognised-repo", gguf_filename = "x.gguf")
-
-
-def test_encode_png_base64_roundtrips():
-    encoded = encode_png_base64(_FakeImage())
-    import base64
-
-    assert base64.b64decode(encoded).startswith(b"\x89PNG")
 
 
 # load_progress state machine (no threads / network / real cache)

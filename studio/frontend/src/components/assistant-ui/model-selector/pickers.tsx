@@ -976,19 +976,20 @@ function taskMatchesFilter(repoTask: string | null | undefined, filter: HfTaskFi
 }
 
 // Image-generation pipeline tasks: handled by the Images page, never loadable as
-// chat models. The backend reports "text-to-image" for diffusion-arch GGUFs.
-const IMAGE_GEN_TASKS: readonly string[] = [
+// chat models. The backend reports "text-to-image" for diffusion-arch GGUFs. The
+// Images page reuses this as its picker's `task` filter, so it lives here.
+export const IMAGE_GEN_TASKS = [
   "text-to-image",
   "image-to-image",
   "image-text-to-image",
-];
+] as const;
 
 // Gate an on-device model by the picker's task scope. With a filter (the Images
 // page) keep only matching tasks; with no filter (chat) drop image-generation
 // models so a downloaded diffusion GGUF doesn't show up as a loadable chat model.
 function passesTaskGate(repoTask: string | null | undefined, filter: HfTaskFilter): boolean {
   if (filter) return taskMatchesFilter(repoTask, filter);
-  return !(repoTask != null && IMAGE_GEN_TASKS.includes(repoTask));
+  return !(repoTask != null && (IMAGE_GEN_TASKS as readonly string[]).includes(repoTask));
 }
 
 // Module-level caches so re-mounting the popover shows results instantly

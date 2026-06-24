@@ -32,6 +32,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { SectionCard } from "@/components/section-card";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
+import { IMAGE_GEN_TASKS } from "@/components/assistant-ui/model-selector/pickers";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -649,7 +650,7 @@ export function ImagesPage() {
           onEject={status?.loaded ? handleUnload : undefined}
           variant="ghost"
           className="!h-[34px]"
-          task={["text-to-image", "image-to-image", "image-text-to-image"]}
+          task={IMAGE_GEN_TASKS}
         />
       </div>
 
