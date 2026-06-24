@@ -2926,7 +2926,7 @@ export function HubModelPicker({
                               }
                             }}
                             onArrowDownIntoChildren={
-                              isGgufExpanded(m.id)
+                              isGguf && !isDirectGguf && isGgufExpanded(m.id)
                                 ? () => {
                                     const focused =
                                       focusFirstChildOption(optionKey);
@@ -2936,7 +2936,7 @@ export function HubModelPicker({
                             }
                             vramStatus={null}
                           />
-                          {isGgufExpanded(m.id) && (
+                          {isGguf && !isDirectGguf && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
                               onDevice={true}
@@ -3013,7 +3013,7 @@ export function HubModelPicker({
                               }
                             }}
                             onArrowDownIntoChildren={
-                              !isGgufFile && isGgufExpanded(m.id)
+                              isGguf && !isGgufFile && isGgufExpanded(m.id)
                                 ? () => {
                                     const focused =
                                       focusFirstChildOption(optionKey);
@@ -3023,7 +3023,7 @@ export function HubModelPicker({
                             }
                             vramStatus={null}
                           />
-                          {!isGgufFile && isGgufExpanded(m.id) && (
+                          {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
                               onDevice={true}
@@ -3094,13 +3094,13 @@ export function HubModelPicker({
                               }
                             }}
                             onArrowDownIntoChildren={
-                              !isGgufFile && isGgufExpanded(m.id)
+                              isGguf && !isGgufFile && isGgufExpanded(m.id)
                                 ? () => focusFirstChildOption(optionKey)
                                 : undefined
                             }
                             vramStatus={null}
                           />
-                          {!isGgufFile && isGgufExpanded(m.id) && (
+                          {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
                               onDevice={true}
