@@ -23,6 +23,8 @@ from .schemas import ValidateChatTemplateResponse
 logger = logging.getLogger(__name__)
 
 _TOKENIZER_CONFIG_PATHS = ("tokenizer_config.json", "LLM/tokenizer_config.json")
+_JINJA_TEMPLATE_PATHS = ("chat_template.jinja", "LLM/chat_template.jinja")
+_PROCESSOR_TEMPLATE_PATHS = ("chat_template.json", "LLM/chat_template.json")
 
 
 def validate_chat_template(template: str) -> ValidateChatTemplateResponse:
@@ -63,8 +65,22 @@ def _chat_template_from_tokenizer_config(config: dict) -> Optional[str]:
     return None
 
 
-def _chat_template_from_tokenizer_dir(dir_path: Path) -> Optional[str]:
-    for rel in _TOKENIZER_CONFIG_PATHS:
+def _chat_template_from_jinja_file(dir_path: Path) -> Optional[str]:
+    for rel in _JINJA_TEMPLATE_PATHS:
+        template_file = dir_path / rel
+        if not template_file.exists():
+            continue
+        try:
+            template = template_file.read_text(encoding = "utf-8")
+        except Exception:
+            continue
+        if template.strip():
+            return template
+    return None
+
+
+def _chat_template_from_processor_json(dir_path: Path) -> Optional[str]:
+    for rel in _PROCESSOR_TEMPLATE_PATHS:
         config_file = dir_path / rel
         if not config_file.exists():
             continue
@@ -76,6 +92,24 @@ def _chat_template_from_tokenizer_dir(dir_path: Path) -> Optional[str]:
         if template:
             return template
     return None
+
+
+def _chat_template_from_tokenizer_dir(dir_path: Path) -> Optional[str]:
+    jinja = _chat_template_from_jinja_file(dir_path)
+    if jinja:
+        return jinja
+    for rel in _TOKENIZER_CONFIG_PATHS:
+        config_file = dir_path / rel
+        if not config_file.exists():
+            continue
+        try:
+            config = json.loads(config_file.read_text(encoding = "utf-8"))
+        except Exception:
+            continue
+        template = _chat_template_from_tokenizer_config(config)
+        if template:
+            return template
+    return _chat_template_from_processor_json(dir_path)
 
 
 def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[Path]:
@@ -147,6 +181,16 @@ def read_default_chat_template(
 
     try:
         from huggingface_hub import hf_hub_download
+
+        try:
+            jinja_path = hf_hub_download(
+                resolved, "chat_template.jinja", token = hf_token
+            )
+            template = Path(jinja_path).read_text(encoding = "utf-8")
+            if template.strip():
+                return template
+        except Exception:
+            pass
 
         downloaded = hf_hub_download(
             resolved, "tokenizer_config.json", token = hf_token

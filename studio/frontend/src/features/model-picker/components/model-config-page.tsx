@@ -285,29 +285,31 @@ export function ModelConfigPage({
           </>
         )}
 
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Chat Template</span>
-            <InfoHint>
-              Override the model's chat template with custom Jinja. Applies when
-              the model loads.
-            </InfoHint>
+        {target.isGguf && (
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>Chat Template</span>
+              <InfoHint>
+                Override the model's chat template with custom Jinja. Applies
+                when the model loads.
+              </InfoHint>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="text-[12px] text-muted-foreground">
+                {config.chatTemplateOverride ? "Custom" : "Default"}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={`h-7 px-3 text-[13px] ${CONTROL_SURFACE}`}
+                onClick={() => setTemplateOpen(true)}
+              >
+                Edit
+              </Button>
+            </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="text-[12px] text-muted-foreground">
-              {config.chatTemplateOverride ? "Custom" : "Default"}
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className={`h-7 px-3 text-[13px] ${CONTROL_SURFACE}`}
-              onClick={() => setTemplateOpen(true)}
-            >
-              Edit
-            </Button>
-          </div>
-        </div>
+        )}
       </div>
 
       <div className="mt-4 flex items-center justify-between gap-3 border-t border-border/60 pt-4">
