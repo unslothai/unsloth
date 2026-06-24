@@ -335,7 +335,9 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
-def _mark_empty_dir_cleanables(repo_id: str, response: GgufVariantsResponse) -> GgufVariantsResponse:
+def _mark_empty_dir_cleanables(
+    repo_id: str, response: GgufVariantsResponse
+) -> GgufVariantsResponse:
     """Surface empty leftover ``<quant>/`` folders (interrupted downloads) as
     partial so the UI can delete them -- on local/offline paths too, not just a
     remote listing. A listed quant is flipped to partial; an unlisted one is
