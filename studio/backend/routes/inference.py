@@ -4488,6 +4488,18 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            # Surface the failure to the client instead of ending the stream
+            # silently. A bare EOF (e.g. after the read-timeout fires on a stalled
+            # provider) is treated by the chat client as a successful completion,
+            # so a timed-out/partial answer would be saved with no error shown.
+            yield (
+                "data: "
+                + json.dumps(
+                    {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+                )
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
         finally:
             try:
                 await gen.aclose()

@@ -282,8 +282,8 @@ def job_events(job_id: str):
     Uses a timed ``get`` so the generator can't block forever: it wakes to
     heartbeat, to let the server notice a disconnected client, and to stop if the
     job already reached a terminal DB status (covering a hard worker death that
-    skipped the ``None`` sentinel in ``_run``'s ``finally``). Always removes the
-    per-job queue on exit.
+    skipped the ``None`` sentinel in ``_run``'s ``finally``). Removes the per-job
+    queue only on a terminal exit, never on an early client disconnect.
 
     It deliberately does *not* end the stream on idle alone: a long, silent stage
     (e.g. embedding a large document, which emits no per-batch progress) is not a
@@ -297,6 +297,7 @@ def job_events(job_id: str):
         q = _jobs.get(job_id)
     if q is None:
         return
+    terminal = False
     try:
         while True:
             try:
@@ -306,15 +307,24 @@ def job_events(job_id: str):
                 if row is None or row.get("status") in _TERMINAL_JOB_STATUSES:
                     # Worker finished (or the row is gone); the frontend reconciles
                     # the final state via its getJob poll. Stop rather than park.
+                    terminal = True
                     break
                 yield {"type": "heartbeat"}
                 continue
             if event is None:
+                terminal = True
                 break
             yield event
     finally:
-        with _jobs_lock:
-            _jobs.pop(job_id, None)
+        # Only drop the queue once the job is actually finished. On an early
+        # disconnect (a tab/scope switch aborting the fetch) the worker is still
+        # running and _emit() needs this queue: removing it would strand the
+        # worker's events, and a reconnect (or another subscriber) would then find
+        # no queue and receive only [DONE], which the client treats as completion.
+        # Finished jobs that nobody drains are swept by _reap_finished_jobs().
+        if terminal:
+            with _jobs_lock:
+                _jobs.pop(job_id, None)
 
 
 def get_job_status(job_id: str) -> dict | None:

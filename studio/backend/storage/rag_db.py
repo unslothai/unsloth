@@ -158,6 +158,29 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _delete_document_chunks(conn, document_id: str) -> None:
+    """Delete a document's chunk rows (``chunks`` + ``chunks_fts`` + ``chunks_vec``),
+    keeping the ``documents`` row itself. Used when reconciling a half-ingested
+    document to ``failed``: ``store.add_chunks`` may have already committed, and
+    retrieval filters by scope (not document status), so those chunks would stay
+    searchable and citable under a failed document until the file is re-ingested.
+    """
+    chunk_ids = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM chunks WHERE document_id=?", (document_id,)
+        ).fetchall()
+    ]
+    if not chunk_ids:
+        return
+    has_vec = vec_table_exists(conn)
+    for chunk_id in chunk_ids:
+        conn.execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
+        if has_vec:
+            conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
+    conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+
+
 def reconcile_orphaned_ingestion_jobs() -> int:
     """Fail ingestion jobs (and their documents) left mid-flight by a crash.
 
@@ -187,6 +210,10 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                 "WHERE id=? AND status NOT IN ('completed', 'failed')",
                 (row["document_id"],),
             )
+            # A crash can land after add_chunks() committed but before the document
+            # was marked completed; drop any chunks so the failed document can't be
+            # retrieved/cited (retrieval filters by scope, not status).
+            _delete_document_chunks(conn, row["document_id"])
         conn.commit()
         return len(rows)
     finally:
