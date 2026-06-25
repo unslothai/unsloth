@@ -425,5 +425,13 @@ export async function streamExportLogs(options: {
   } catch (err) {
     if (isAbortError(err)) return;
     throw err;
+  } finally {
+    // Release the reader on complete / abort / early return / thrown error so
+    // the stream lock isn't held until GC (matches the chat / RAG SSE readers).
+    try {
+      await reader.cancel();
+    } catch {
+      // reader already closed/errored; nothing to release.
+    }
   }
 }
