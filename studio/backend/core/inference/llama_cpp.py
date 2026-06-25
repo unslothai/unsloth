@@ -2649,9 +2649,10 @@ class LlamaCppBackend:
         for idx, free_mib in ranked:
             selected.append(idx)
             cumulative += _usable(idx, free_mib)
-            if len(selected) >= min_gpus and cumulative >= model_size_mib + (
-                len(selected) - 1
-            ) * overhead_mib:
+            if (
+                len(selected) >= min_gpus
+                and cumulative >= model_size_mib + (len(selected) - 1) * overhead_mib
+            ):
                 return sorted(selected), False
 
         # Too large even for all GPUs; let --fit handle it

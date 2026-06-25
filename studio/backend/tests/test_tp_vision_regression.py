@@ -51,13 +51,21 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 _httpx_stub = _types.ModuleType("httpx")
-for _exc in ("ConnectError", "TimeoutException", "ReadTimeout", "ReadError",
-             "RemoteProtocolError", "CloseError"):
+for _exc in (
+    "ConnectError",
+    "TimeoutException",
+    "ReadTimeout",
+    "ReadError",
+    "RemoteProtocolError",
+    "CloseError",
+):
     setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
 _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-_httpx_stub.Client = type("C", (), {"__init__": lambda s, **kw: None,
-                                    "__enter__": lambda s: s,
-                                    "__exit__": lambda s, *a: None})
+_httpx_stub.Client = type(
+    "C",
+    (),
+    {"__init__": lambda s, **kw: None, "__enter__": lambda s: s, "__exit__": lambda s, *a: None},
+)
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
@@ -78,14 +86,20 @@ def _tensor_parallel_false_drop_guards() -> list[str]:
 
     def _body_drops_tp(body) -> bool:
         for n in body:
-            if isinstance(n, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "tensor_parallel" for t in n.targets
-            ) and isinstance(n.value, ast.Constant) and n.value.value is False:
+            if (
+                isinstance(n, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "tensor_parallel" for t in n.targets)
+                and isinstance(n.value, ast.Constant)
+                and n.value.value is False
+            ):
                 return True
         return False
 
-    return [ast.unparse(node.test) for node in ast.walk(fn)
-            if isinstance(node, ast.If) and _body_drops_tp(node.body)]
+    return [
+        ast.unparse(node.test)
+        for node in ast.walk(fn)
+        if isinstance(node, ast.If) and _body_drops_tp(node.body)
+    ]
 
 
 # Every condition under which load_model may flip a requested tensor_parallel=True
@@ -130,14 +144,19 @@ def test_every_tp_drop_is_logged_not_silent():
         return any(
             isinstance(n, ast.Assign)
             and any(isinstance(t, ast.Name) and t.id == "tensor_parallel" for t in n.targets)
-            and isinstance(n.value, ast.Constant) and n.value.value is False
+            and isinstance(n.value, ast.Constant)
+            and n.value.value is False
             for n in body
         )
 
     def _body_logs(body) -> bool:
-        for n in ast.walk(ast.Module(body=list(body), type_ignores=[])):
-            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-                    and isinstance(n.func.value, ast.Name) and n.func.value.id == "logger"):
+        for n in ast.walk(ast.Module(body = list(body), type_ignores = [])):
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and isinstance(n.func.value, ast.Name)
+                and n.func.value.id == "logger"
+            ):
                 return True
         return False
 
@@ -168,7 +187,7 @@ def test_vision_skip_documents_layer_split_fallback():
     src = inspect.getsource(LlamaCppBackend.load_model)
     gate = src.find("self._vision_tensor_split_aborts(binary)")
     assert gate != -1
-    block = src[gate:gate + 600]
+    block = src[gate : gate + 600]
     assert "layer split" in block, "the vision skip should state it falls back to layer split"
 
 
@@ -178,7 +197,7 @@ def test_vision_tensor_abort_is_recorded_on_startup_crash():
     src = inspect.getsource(LlamaCppBackend.load_model)
     idx = src.find("_record_vision_tensor_split_abort(binary)")
     assert idx != -1, "load_model must record a binary that aborts on vision + tensor"
-    guard = src[max(0, idx - 300):idx]
+    guard = src[max(0, idx - 300) : idx]
     assert "_startup_crashed" in guard
     assert "self._tensor_parallel" in guard
     assert "launched_with_mmproj" in guard
@@ -222,14 +241,14 @@ def test_select_gpus_min_gpus_keeps_multi_gpu_for_fitting_model():
     """Fix: an explicit multi-GPU/TP intent (min_gpus>=2) must NOT collapse to one
     GPU for a model that happens to fit on one. (Was xfail before the fix.)"""
     gpus = [(0, 180000), (1, 180000), (2, 180000), (3, 180000)]
-    gpu_indices, _ = LlamaCppBackend._select_gpus(int(39 * _GB), gpus, min_gpus=2)
+    gpu_indices, _ = LlamaCppBackend._select_gpus(int(39 * _GB), gpus, min_gpus = 2)
     assert gpu_indices is not None and len(gpu_indices) >= 2
 
 
 def test_select_gpus_min_gpus_capped_to_available():
     """min_gpus larger than the GPU count is capped, not an error."""
     gpus = [(0, 180000), (1, 180000)]
-    gi, _ = LlamaCppBackend._select_gpus(int(10 * _GB), gpus, min_gpus=8)
+    gi, _ = LlamaCppBackend._select_gpus(int(10 * _GB), gpus, min_gpus = 8)
     assert gi is not None and len(gi) == 2
 
 
