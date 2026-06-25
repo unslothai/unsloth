@@ -242,7 +242,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # CPU torch (vllm/peft/st all depend on it).
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchcodec<0.10'
           # torchcodec is a hard requirement on transformers 5.x:
           # transformers/audio_utils.py:55 does
