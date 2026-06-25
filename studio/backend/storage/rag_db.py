@@ -197,14 +197,17 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                 "error='Server restarted during ingestion' WHERE id=?",
                 (row["id"],),
             )
-            conn.execute(
+            doc_failed = conn.execute(
                 "UPDATE documents SET status='failed' "
                 "WHERE id=? AND status NOT IN ('completed', 'failed')",
                 (row["document_id"],),
-            )
-            # A crash can commit chunks before the doc is marked completed; drop them
-            # so a failed doc can't be retrieved (retrieval filters by scope, not status).
-            _delete_document_chunks(conn, row["document_id"])
+            ).rowcount
+            # Only purge chunks for a doc we actually flipped to failed. A doc the
+            # worker already marked 'completed' (only the job row was left
+            # non-terminal) finished indexing; dropping its chunks would leave a
+            # completed-but-empty source that dedup blocks from re-ingest.
+            if doc_failed:
+                _delete_document_chunks(conn, row["document_id"])
         conn.commit()
         return len(rows)
     finally:
