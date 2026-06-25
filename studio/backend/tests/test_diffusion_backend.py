@@ -216,6 +216,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
         gguf_filename = "model.gguf",
         base_repo = "base/repo",
         family_override = "z-image",
+        hf_token = "hf_secret",
     )
     assert status["loaded"] is True
     assert status["family"] == "z-image"
@@ -226,6 +227,8 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     # Transformer built from the local GGUF, pipeline assembled from the base repo.
     assert _FakeTransformer.last["path"] == str((tmp_path / "model.gguf").resolve())
     assert _FakeTransformer.last["subfolder"] == "transformer"
+    # The token reaches the (possibly gated) base config fetch and the pipeline.
+    assert _FakeTransformer.last["token"] == "hf_secret"
     assert _FakePipeline.last["base"] == "base/repo"
     assert "transformer" in _FakePipeline.last
 
@@ -398,10 +401,12 @@ def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
 
 def test_begin_load_rejects_concurrent(monkeypatch):
     backend = DiffusionBackend()
-    # The worker resolves the base via a network lookup; stub it so the test is offline.
+    # The worker resolves the base + downloads, both over the network; stub them
+    # so the test is offline.
     monkeypatch.setattr("core.inference.diffusion._hf_base_model", lambda *a, **k: None)
+    monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda self, *a, **k: None)
     monkeypatch.setattr(
-        DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: 0)
+        DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: (0, []))
     )
     # Block the spawned worker so the load stays "in progress".
     monkeypatch.setattr(
@@ -429,3 +434,60 @@ def test_unload_cancels_in_flight_load(fake_runtime):
             base_repo = fam.base_repo,
             _load_token = token,
         )
+
+
+def test_pick_dtype_bf16_only_on_ampere(fake_runtime, monkeypatch):
+    # BF16 only on Ampere+ (cc >= 8); pre-Ampere cards must fall back to FP16.
+    torch = sys.modules["torch"]
+    backend = DiffusionBackend()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True, raising = False)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (8, 0), raising = False)
+    assert backend._pick_device_and_dtype() == ("cuda", torch.bfloat16)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5), raising = False)
+    assert backend._pick_device_and_dtype() == ("cuda", torch.float16)
+
+
+def test_unload_sets_cancel_event(fake_runtime):
+    # unload signals an in-flight download (which runs without the lock) to abort.
+    backend = DiffusionBackend()
+    assert not backend._cancel_event.is_set()
+    backend.unload()
+    assert backend._cancel_event.is_set()
+
+
+def test_prefetch_aborts_when_cancelled(tmp_path):
+    # A prefetch interrupted by unload (cancel event set) raises rather than
+    # downloading the whole base, so the load can be preempted mid-download.
+    backend = DiffusionBackend()
+    backend._cancel_event.set()
+    # Local gguf path so the transformer download is skipped; the base loop hits
+    # the cancel check on its first file (no network).
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "Cancelled"):
+        backend._prefetch_files(
+            str(tmp_path), "model.gguf", "Tongyi-MAI/Z-Image-Turbo",
+            ["vae/diffusion_pytorch_model.safetensors"], None,
+        )
+
+
+def test_prefetch_downloads_gguf_and_base(monkeypatch, tmp_path):
+    backend = DiffusionBackend()
+    calls: list = []
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **k: (calls.append((repo, fn)), f"/cache/{fn}")[1],
+    )
+    # Hub repo: the GGUF transformer and each base file are fetched.
+    backend._prefetch_files(
+        "unsloth/Z-Image-Turbo-GGUF", "model.gguf", "base/repo",
+        ["vae/x.safetensors", "text_encoder/y.safetensors"], "hf_tok",
+    )
+    assert ("unsloth/Z-Image-Turbo-GGUF", "model.gguf") in calls
+    assert ("base/repo", "vae/x.safetensors") in calls
+    assert ("base/repo", "text_encoder/y.safetensors") in calls
+    # Local GGUF path: the transformer download is skipped, base still fetched.
+    calls.clear()
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend._prefetch_files(str(tmp_path), "model.gguf", "base/repo", ["vae/x.safetensors"], None)
+    assert all(repo != str(tmp_path) for repo, _ in calls)
+    assert ("base/repo", "vae/x.safetensors") in calls

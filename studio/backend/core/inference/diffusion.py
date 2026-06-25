@@ -94,6 +94,10 @@ class DiffusionBackend:
         # superseded (a new load) or cancelled (unload, incl. an arbiter eviction)
         # neither commits its pipeline nor stamps progress onto the current load.
         self._load_token = 0
+        # Set by unload() to abort an in-flight download (which runs without the
+        # lock, like the chat backend), so an eviction/unload can preempt a slow
+        # load instead of blocking on the lock for the whole download.
+        self._cancel_event = threading.Event()
         # The callback mutates this and generate_progress() reads it, both without
         # the lock (generate holds it for the whole call), so polling stays live.
         self._gen: Optional[_GenState] = None
@@ -106,7 +110,12 @@ class DiffusionBackend:
         import torch
 
         if torch.cuda.is_available():
-            return "cuda", torch.bfloat16
+            # BF16 needs Ampere+ (compute capability >= 8); pre-Ampere cards
+            # (Turing/Volta/Pascal) only emulate it, so use FP16 there. (Checked by
+            # capability, not torch.cuda.is_bf16_supported(), which returns True via
+            # emulation on those cards and would still pick BF16.)
+            dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+            return "cuda", dtype
         mps = getattr(torch.backends, "mps", None)
         if mps is not None and mps.is_available():
             return "mps", torch.float16
@@ -119,6 +128,24 @@ class DiffusionBackend:
         from huggingface_hub import hf_hub_download
 
         return hf_hub_download(repo_id, gguf_filename, token = hf_token)
+
+    def _prefetch_files(
+        self, repo_id: str, gguf_filename: Optional[str], base: str, base_files: list[str], hf_token: Optional[str]
+    ) -> None:
+        """Pre-download the GGUF + the given ``base_files`` into the HF cache,
+        WITHOUT the lock and honoring ``_cancel_event``, so load_pipeline's
+        from_single_file / from_pretrained hit the cache and the heavy download can
+        be preempted by an unload/eviction. Raises ``RuntimeError("Cancelled")``."""
+        from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+        # GGUF transformer (hub repos only; a local path is already on disk).
+        if gguf_filename and not Path(repo_id).expanduser().exists():
+            hf_hub_download_with_xet_fallback(repo_id, gguf_filename, hf_token, cancel_event = self._cancel_event)
+        # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
+        for rfilename in base_files:
+            if self._cancel_event.is_set():
+                raise RuntimeError("Cancelled")
+            hf_hub_download_with_xet_fallback(base, rfilename, hf_token, cancel_event = self._cancel_event)
 
     # ── Background load + progress ─────────────────────────────────────────
 
@@ -149,6 +176,9 @@ class DiffusionBackend:
                 raise RuntimeError("A diffusion load is already in progress.")
             self._load_token += 1
             token = self._load_token
+            # Best-effort download preemption only; the token (not this event) is
+            # the real guard that a superseded worker can't commit its pipeline.
+            self._cancel_event.clear()
             # Seed with the family fallback; the worker resolves the real base
             # (a network lookup) and updates this, so begin_load never blocks.
             self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
@@ -179,15 +209,18 @@ class DiffusionBackend:
                 kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
             )
             kwargs["base_repo"] = base
+            expected, base_files = self._estimate_download_bytes(
+                kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
+            )
             loading = self._loading
             if loading is not None:
                 loading.base_repo = base
-                loading.expected_bytes = self._estimate_download_bytes(
-                    kwargs["repo_id"],
-                    kwargs.get("gguf_filename"),
-                    base,
-                    kwargs.get("hf_token"),
-                )
+                loading.expected_bytes = expected
+            # Download outside the lock so unload()/an eviction can preempt the
+            # multi-GB pull; load_pipeline below then assembles from the cache.
+            self._prefetch_files(
+                kwargs["repo_id"], kwargs.get("gguf_filename"), base, base_files, kwargs.get("hf_token")
+            )
             self.load_pipeline(**kwargs)
             with self._lock:
                 # Only clear the marker if this load is still the current one; a
@@ -225,22 +258,26 @@ class DiffusionBackend:
     @staticmethod
     def _estimate_download_bytes(
         repo_id: str, gguf_filename: Optional[str], base_repo: str, hf_token: Optional[str]
-    ) -> int:
+    ) -> tuple[int, list[str]]:
+        """Total download size for the progress bar, plus the base-repo files to
+        fetch (the prefetch reuses this list, so the base is listed only once)."""
         from huggingface_hub import HfApi
 
         api = HfApi()
         total = 0
+        base_files: list[str] = []
         try:
             if gguf_filename:
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
-            total += sum(
-                s.size or 0 for s in base_info.siblings if _base_file_downloaded(s.rfilename)
-            )
+            for s in base_info.siblings:
+                if _base_file_downloaded(s.rfilename):
+                    base_files.append(s.rfilename)
+                    total += s.size or 0
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
-        return total
+        return total, base_files
 
     @staticmethod
     def _cache_bytes(repo_id: str) -> int:
@@ -306,6 +343,9 @@ class DiffusionBackend:
                 torch_dtype = dtype,
                 config = base,
                 subfolder = "transformer",
+                # Forward the token: the config is fetched from the (possibly gated)
+                # base repo before from_pretrained gets a chance to authenticate.
+                token = hf_token,
             )
 
             pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
@@ -427,6 +467,9 @@ class DiffusionBackend:
         }
 
     def unload(self) -> dict[str, Any]:
+        # Abort an in-flight download (it runs without the lock and checks this),
+        # so unload/an eviction returns promptly instead of waiting it out.
+        self._cancel_event.set()
         with self._lock:
             self._unload_locked()
             # Cancel any in-flight load (its worker checks this token before

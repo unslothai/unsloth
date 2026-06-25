@@ -37,6 +37,7 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/components/assistant-ui/model-selector/types";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
@@ -630,7 +631,12 @@ export function ImagesPage() {
       try {
         // Returns immediately — the load runs in the background; we poll for it.
         // The backend infers the family + base diffusers repo from the repo id.
-        await loadDiffusionModel({ model_path: repoId, gguf_filename: ggufFilename });
+        // Forward the saved HF token so gated bases (FLUX dev/klein) can download.
+        await loadDiffusionModel({
+          model_path: repoId,
+          gguf_filename: ggufFilename,
+          hf_token: hfApiToken(getHfToken()),
+        });
       } catch (err) {
         dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");

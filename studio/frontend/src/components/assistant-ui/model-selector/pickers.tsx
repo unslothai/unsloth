@@ -985,11 +985,28 @@ export const IMAGE_GEN_TASKS = [
   "image-text-to-image",
 ] as const;
 
+// Editing/inpaint checkpoints are tagged image-to-image but need an input image,
+// which the text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by
+// id so they don't show in the Images picker only to 400 on load. Keeping the
+// image-to-image task itself is required: some supported models (FLUX.2-klein)
+// carry that tag too.
+const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint"] as const;
+function isImageEditModel(repoId: string | null | undefined): boolean {
+  if (!repoId) return false;
+  const id = repoId.toLowerCase();
+  return IMAGE_EDIT_KEYWORDS.some((kw) => id.includes(kw));
+}
+
 // Gate an on-device model by the picker's task scope. With a filter (the Images
-// page) keep only matching tasks; with no filter (chat) drop image-generation
-// models so a downloaded diffusion GGUF doesn't show up as a loadable chat model.
-function passesTaskGate(repoTask: string | null | undefined, filter: HfTaskFilter): boolean {
-  if (filter) return taskMatchesFilter(repoTask, filter);
+// page) keep only matching, non-editing tasks; with no filter (chat) drop
+// image-generation models so a downloaded diffusion GGUF doesn't show up as a
+// loadable chat model.
+function passesTaskGate(
+  repoTask: string | null | undefined,
+  repoId: string | null | undefined,
+  filter: HfTaskFilter,
+): boolean {
+  if (filter) return taskMatchesFilter(repoTask, filter) && !isImageEditModel(repoId);
   return !(repoTask != null && (IMAGE_GEN_TASKS as readonly string[]).includes(repoTask));
 }
 
@@ -1563,7 +1580,9 @@ export function HubModelPicker({
   // the chat classifier marks image tasks "unsupported".
   const isChatSupported = useCallback(
     (r: HfModelResult) => {
-      if (task && taskMatchesFilter(r.pipelineTag, task)) return true;
+      // Image tab: keep task-matching results, but drop editing checkpoints the
+      // backend rejects (so they don't appear in Hub search only to 400 on load).
+      if (task && taskMatchesFilter(r.pipelineTag, task)) return !isImageEditModel(r.id);
       return (
         classifyUnslothSupport({
           modelId: r.id,
@@ -1744,7 +1763,7 @@ export function HubModelPicker({
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
-        cachedGguf.filter((c) => passesTaskGate(c.task, task)),
+        cachedGguf.filter((c) => passesTaskGate(c.task, c.repo_id, task)),
         downloadedSort,
         loadTimes,
       ),
@@ -1758,7 +1777,7 @@ export function HubModelPicker({
       task
         ? []
         : sortCachedRepos(
-            cachedModels.filter((c) => passesTaskGate(c.task, task)),
+            cachedModels.filter((c) => passesTaskGate(c.task, c.repo_id, task)),
             downloadedSort,
             loadTimes,
           ),
@@ -1779,7 +1798,7 @@ export function HubModelPicker({
       sortLocalModels(
         lmStudioModels.filter(
           (m) =>
-            passesTaskGate(m.task, task) &&
+            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -1797,7 +1816,7 @@ export function HubModelPicker({
       sortLocalModels(
         localDirModels.filter(
           (m) =>
-            passesTaskGate(m.task, task) &&
+            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
             (!chatOnly ||
               localModelIsGguf(m) ||
               (isMac && localModelIsMlx(m))) &&
@@ -1824,7 +1843,7 @@ export function HubModelPicker({
       sortLocalModels(
         customFolderModels.filter(
           (m) =>
-            passesTaskGate(m.task, task) &&
+            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
