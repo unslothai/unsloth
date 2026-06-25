@@ -2659,15 +2659,19 @@ class LlamaCppBackend:
         is non-None here."""
         return self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
 
-    def _resolve_ctx_checkpoints(self, cli_val: Optional[int], extra_args: list[str] = None) -> int:
+    def _resolve_ctx_checkpoints(
+        self,
+        cli_val: Optional[int],
+        extra_args: list[str] = None,
+    ) -> int:
         """Resolve effective checkpoint count using CLI flag > Extra Args > Env > Default precedence."""
         if cli_val is not None:
             return cli_val
         if extra_args:
             for i, arg in enumerate(extra_args):
-                if arg == '--ctx-checkpoints' and i + 1 < len(extra_args):
+                if arg == "--ctx-checkpoints" and i + 1 < len(extra_args):
                     try:
-                        return int(extra_args[i+1])
+                        return int(extra_args[i + 1])
                     except ValueError:
                         pass
         env_val = os.environ.get("LLAMA_ARG_CTX_CHECKPOINTS")
@@ -2992,7 +2996,7 @@ class LlamaCppBackend:
         mtp_overhead_fn: Optional[Callable[[int], int]] = None,
         budget_frac: Optional[float] = None,
         total_mib: Optional[int] = None,
-    , extra_args: list[str] = None) -> int:
+    ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
         Budget caps occupancy at ``_CTX_FIT_VRAM_FRACTION`` of the card: an
@@ -3006,7 +3010,9 @@ class LlamaCppBackend:
         ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(
+            ctx_checkpoints, extra_args if "extra_args" in locals() else None
+        )
 
         if not self._can_estimate_kv():
             logger.debug(
@@ -4176,7 +4182,7 @@ class LlamaCppBackend:
         total_by_idx: Optional[dict[int, int]] = None,
         n_ubatch: Optional[int] = None,
         ctx_checkpoints: Optional[int] = None,
-    , extra_args: list[str] = None) -> tuple[int, int, list[int], Optional[list[int]]]:
+    ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
         ``gpus`` is a list of ``(gpu_index, free_mib)``; ``model_size`` is the
@@ -4200,7 +4206,9 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(
+            ctx_checkpoints, extra_args if "extra_args" in locals() else None
+        )
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
@@ -4265,7 +4273,7 @@ class LlamaCppBackend:
                     # kv(ctx)+mtp(ctx) is not single-linear, so binary search.
                     def _consumer(c: int) -> int:
                         return self._estimate_kv_cache_bytes(
-                            c, cache_type_kv, n_parallel = n_parallel
+                            c, cache_type_kv, n_parallel = n_parallel, ctx_checkpoints = ctx_checkpoints
                         ) + _mtp_at(c)
 
                     if _consumer(ctx) <= kv_budget_b:
@@ -4279,7 +4287,7 @@ class LlamaCppBackend:
                         else:
                             hi = mid - 1
                     return best
-                kv_at = self._estimate_kv_cache_bytes(ctx, cache_type_kv, n_parallel = n_parallel)
+                kv_at = self._estimate_kv_cache_bytes(ctx, cache_type_kv, n_parallel = n_parallel, ctx_checkpoints = ctx_checkpoints)
                 if kv_at <= kv_budget_b:
                     return ctx
                 return max(ctx_floor, int(ctx * kv_budget_b / kv_at))
@@ -4295,7 +4303,7 @@ class LlamaCppBackend:
 
         min_usable_mib = min(usable_by_idx.values())
         kv_bytes = (
-            self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel = n_parallel)
+            self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel = n_parallel, ctx_checkpoints = ctx_checkpoints)
             if (self._can_estimate_kv() and effective_ctx > 0)
             else 0
         )
