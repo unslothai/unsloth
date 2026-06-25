@@ -52,13 +52,17 @@ def test_rate_limit_window_rolls_off(monkeypatch):
 
 
 class _Req:
-    def __init__(self, host, headers=None):
-        self.client = _types.SimpleNamespace(host=host) if host else None
+    def __init__(
+        self,
+        host,
+        headers = None,
+    ):
+        self.client = _types.SimpleNamespace(host = host) if host else None
         self.headers = headers or {}
 
 
 def test_client_ip_uses_socket_peer_by_default(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     # Forwarded header is ignored unless the operator opts in.
     req = _Req("203.0.113.9", {"x-forwarded-for": "198.51.100.7"})
     assert client_ip(req) == "203.0.113.9"
