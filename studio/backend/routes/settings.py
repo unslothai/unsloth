@@ -32,6 +32,11 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils.preview_sharing_settings import (
+    DEFAULT_PREVIEW_SHARING_ENABLED,
+    get_preview_sharing_enabled,
+    set_preview_sharing_enabled,
+)
 
 router = APIRouter()
 
@@ -135,6 +140,41 @@ def rotate_preview_links(
     rotate_preview_link_secret()
     logger.info("settings.preview_links_rotated subject=%s", current_subject)
     return PreviewLinkRotateResponse(rotated = True)
+
+
+class PreviewSharingPayload(BaseModel):
+    enabled: bool
+
+
+class PreviewSharingResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
+
+
+@router.get("/preview-sharing", response_model = PreviewSharingResponse)
+def get_preview_sharing(
+    current_subject: str = Depends(get_current_subject),
+) -> PreviewSharingResponse:
+    return PreviewSharingResponse(enabled = get_preview_sharing_enabled())
+
+
+@router.put("/preview-sharing", response_model = PreviewSharingResponse)
+def update_preview_sharing(
+    payload: PreviewSharingPayload, current_subject: str = Depends(get_current_subject)
+) -> PreviewSharingResponse:
+    """Enable/disable the public `/p` preview surface. When off, links 404 even with a token."""
+    try:
+        enabled = set_preview_sharing_enabled(payload.enabled)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid preview sharing setting."),
+            event = "settings.update_preview_sharing_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
+    return PreviewSharingResponse(enabled = enabled)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:

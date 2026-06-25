@@ -19,7 +19,10 @@ from auth.storage import DEFAULT_ADMIN_USERNAME
 from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import load_model, openai_chat_completions
 from state.tool_policy import tools_force_disabled
+from utils.client_ip import client_ip
 from utils.models.checkpoints import list_preview_targets, resolve_preview_checkpoint
+from utils.preview_rate_limit import check_rate_limit
+from utils.preview_sharing_settings import get_preview_sharing_enabled
 from utils.preview_token import sign_preview_ref, verify_preview_ref
 
 logger = get_logger(__name__)
@@ -51,11 +54,26 @@ def _verify_or_404(run: str, checkpoint: str | None, request: Request) -> None:
     """Require a valid preview capability BEFORE any checkpoint resolve / model load.
 
     Missing or invalid tokens get a generic 404 -- identical to a non-existent ref --
-    so the public surface never confirms whether a run/checkpoint exists.
+    so the public surface never confirms whether a run/checkpoint exists. When an
+    admin has switched public sharing off, every public request 404s regardless of
+    token.
     """
+    if not get_preview_sharing_enabled():
+        raise HTTPException(status_code = 404, detail = "Not found")
     ref = run if not checkpoint else f"{run}/{checkpoint}"
     if not verify_preview_ref(ref, _extract_token(request)):
         raise HTTPException(status_code = 404, detail = "Not found")
+
+
+def _enforce_rate_limit(request: Request) -> None:
+    """Throttle the GPU-backed preview chat per client IP (429 on exceed)."""
+    retry_after = check_rate_limit(client_ip(request))
+    if retry_after:
+        raise HTTPException(
+            status_code = 429,
+            detail = "Too many preview requests. Please slow down.",
+            headers = {"Retry-After": str(retry_after)},
+        )
 
 
 def _resolve_or_4xx(run: str, checkpoint: str | None):
@@ -171,6 +189,7 @@ async def list_previews(request: Request, current_subject: str = Depends(get_cur
 @router.post("/{run}/v1/chat/completions")
 async def preview_chat_latest(run: str, payload: ChatCompletionRequest, request: Request):
     _verify_or_404(run, None, request)
+    _enforce_rate_limit(request)
     return await _serve_chat(run, None, payload, request)
 
 
@@ -179,6 +198,7 @@ async def preview_chat_checkpoint(
     run: str, checkpoint: str, payload: ChatCompletionRequest, request: Request
 ):
     _verify_or_404(run, checkpoint, request)
+    _enforce_rate_limit(request)
     return await _serve_chat(run, checkpoint, payload, request)
 
 

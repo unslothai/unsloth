@@ -29,6 +29,7 @@ from storage.studio_db import (
     update_run_display_name,
 )
 from utils.models.checkpoints import has_preview_model, preview_ref
+from utils.preview_sharing_settings import get_preview_sharing_enabled
 from utils.preview_token import sign_preview_ref
 
 logger = get_logger(__name__)
@@ -36,17 +37,19 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-def _preview_fields(output_dir: Optional[str]) -> dict:
+def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
     """Previewability + the signed `/p` share ref for a run's output dir.
 
     The signature is what makes the share link a capability: these routes are
-    authenticated, so only the run's owner ever receives it.
+    authenticated, so only the run's owner ever receives it. When public sharing
+    is switched off, omit the signature so the UI hides the copy-link affordance
+    (and the link would 404 anyway). ``sharing_on`` is resolved once per request.
     """
     ref = preview_ref(output_dir)
     return {
         "has_preview_model": has_preview_model(output_dir),
         "preview_ref": ref,
-        "preview_sig": sign_preview_ref(ref) if ref else None,
+        "preview_sig": sign_preview_ref(ref) if (ref and sharing_on) else None,
     }
 
 
@@ -58,13 +61,14 @@ async def list_training_runs(
 ):
     """List training runs, newest first."""
     result = list_runs(limit = limit, offset = offset)
+    sharing_on = get_preview_sharing_enabled()
     return TrainingRunListResponse(
         runs = [
             TrainingRunSummary(
                 **{
                     **r,
                     "can_resume": can_resume_run(r),
-                    **_preview_fields(r.get("output_dir")),
+                    **_preview_fields(r.get("output_dir"), sharing_on),
                 }
             )
             for r in result["runs"]

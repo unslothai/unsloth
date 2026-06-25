@@ -77,6 +77,12 @@ def client(tmp_path, monkeypatch, captured):
 
     _use_test_secret(monkeypatch)
 
+    # Public sharing on by default; reset the per-IP rate buckets each test.
+    monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: True)
+    import utils.preview_rate_limit as _rl
+
+    _rl.reset()
+
     # resolve_preview_checkpoint -> resolve_output_dir -> outputs_root().
     from utils.paths import storage_roots as _sr
 
@@ -415,3 +421,39 @@ def test_generation_clamp_honors_lower_completion_tokens(client, captured):
     p = captured["payload"]
     assert p.max_tokens == 32
     assert p.max_completion_tokens == 32
+
+
+# ── Public-sharing kill switch ───────────────────────────────────────────────
+
+
+def test_chat_blocked_when_sharing_disabled(client, monkeypatch, captured):
+    # Admin turned public sharing off: even a valid token 404s, with no model load.
+    monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: False)
+    r = client.post(
+        f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
+        json = {"messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 404
+    assert "load_path" not in captured
+
+
+def test_page_blocked_when_sharing_disabled(client, monkeypatch):
+    monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: False)
+    assert client.get(f"/p/demorun?k={_sig('demorun')}").status_code == 404
+
+
+# ── Rate limiting ────────────────────────────────────────────────────────────
+
+
+def test_chat_rate_limited_returns_429(client, monkeypatch):
+    import utils.preview_rate_limit as rl
+
+    monkeypatch.setattr(rl, "_MAX_REQUESTS", 2)
+    rl.reset()
+    url = f"/p/demorun/v1/chat/completions?k={_sig('demorun')}"
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    assert client.post(url, json = body).status_code == 200
+    assert client.post(url, json = body).status_code == 200
+    r = client.post(url, json = body)
+    assert r.status_code == 429
+    assert r.headers.get("retry-after")
