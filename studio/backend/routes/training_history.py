@@ -97,7 +97,7 @@ async def get_training_run_detail(run_id: str, current_subject: str = Depends(ge
             **{
                 **{k: v for k, v in run.items() if k != "config_json"},
                 "can_resume": can_resume_run(run),
-                **_preview_fields(run.get("output_dir")),
+                **_preview_fields(run.get("output_dir"), get_preview_sharing_enabled()),
             }
         ),
         config = config,
@@ -129,7 +129,7 @@ async def update_training_run(
         **{
             **{k: v for k, v in refreshed.items() if k != "config_json"},
             "can_resume": can_resume_run(refreshed),
-            **_preview_fields(refreshed.get("output_dir")),
+            **_preview_fields(refreshed.get("output_dir"), get_preview_sharing_enabled()),
         }
     )
 

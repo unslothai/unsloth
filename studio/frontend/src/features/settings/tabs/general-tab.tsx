@@ -16,6 +16,7 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import { openModelsDir } from "@/features/native-intents";
+import { emitTrainingRunsChanged } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
@@ -330,6 +331,9 @@ export function GeneralTab() {
     setIsRevokingPreview(true);
     try {
       await rotatePreviewLinks();
+      // The secret rotated, so any preview_sig the history grid still holds is
+      // now stale. Refresh so copied links use freshly minted signatures.
+      emitTrainingRunsChanged();
       setRevokePreviewOpen(false);
       toast.success(t("settings.general.previewSharing.revoked"));
     } catch (error) {
