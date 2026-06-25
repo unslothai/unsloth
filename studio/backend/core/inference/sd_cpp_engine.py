@@ -203,9 +203,14 @@ class SdCppEngine:
         each line of sd-cli's progress output as it arrives.
         """
         cmd = build_sd_cpp_command(
-            self._require_binary(), files, params,
-            output_path = str(self._prepare_out(output_path)), offload = offload,
-            threads = threads, verbose = verbose, extra_args = extra_args,
+            self._require_binary(),
+            files,
+            params,
+            output_path = str(self._prepare_out(output_path)),
+            offload = offload,
+            threads = threads,
+            verbose = verbose,
+            extra_args = extra_args,
         )
         return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
 
@@ -222,9 +227,11 @@ class SdCppEngine:
     ) -> Path:
         """Upscale an image with an ESRGAN model; return the written path."""
         cmd = build_sd_cpp_upscale_command(
-            self._require_binary(), params,
+            self._require_binary(),
+            params,
             output_path = str(self._prepare_out(output_path)),
-            verbose = verbose, extra_args = extra_args,
+            verbose = verbose,
+            extra_args = extra_args,
         )
         return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
 

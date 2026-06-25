@@ -105,13 +105,21 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         t0 = time.time()
         result = engine.upscale(
-            SdCppUpscaleParams(input_image = args.init_img, upscale_model = args.upscale_model,
-                               repeats = args.upscale_repeats),
-            output_path = str(out), verbose = True, timeout = args.timeout,
+            SdCppUpscaleParams(
+                input_image = args.init_img,
+                upscale_model = args.upscale_model,
+                repeats = args.upscale_repeats,
+            ),
+            output_path = str(out),
+            verbose = True,
+            timeout = args.timeout,
             on_log = lambda ln: print(f"  [sd] {ln}", flush = True),
         )
         dt = time.time() - t0
-        print(f"\nOK: upscaled {result} ({result.stat().st_size/1024:.0f} KB) in {dt:.1f}s", flush = True)
+        print(
+            f"\nOK: upscaled {result} ({result.stat().st_size/1024:.0f} KB) in {dt:.1f}s",
+            flush = True,
+        )
         print("SD-CPP-SMOKE-OK", flush = True)
         return 0
 
@@ -129,9 +137,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     is_img2img = args.task == "img2img"
     params = SdCppGenParams(
-        prompt = args.prompt, negative_prompt = args.negative_prompt,
-        width = args.width, height = args.height, steps = args.steps,
-        cfg_scale = args.cfg_scale, seed = args.seed,
+        prompt = args.prompt,
+        negative_prompt = args.negative_prompt,
+        width = args.width,
+        height = args.height,
+        steps = args.steps,
+        cfg_scale = args.cfg_scale,
+        seed = args.seed,
         init_img = args.init_img if is_img2img else None,
         strength = args.strength if is_img2img else None,
     )
@@ -140,7 +152,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     policy = _MODE_TO_POLICY[args.memory_mode]
     off = offload_flags(policy)
-    print(f"task:      {args.task}" + (f" (init={args.init_img}, strength={args.strength})" if is_img2img else ""), flush = True)
+    print(
+        f"task:      {args.task}"
+        + (f" (init={args.init_img}, strength={args.strength})" if is_img2img else ""),
+        flush = True,
+    )
     print(f"memory:    {args.memory_mode} -> policy={policy} -> flags={off}", flush = True)
 
     t0 = time.time()

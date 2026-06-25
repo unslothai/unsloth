@@ -248,9 +248,11 @@ def test_img2img_generate_passes_init_image(tmp_path, monkeypatch):
     src = tmp_path / "src.png"
     src.write_bytes(b"\x89PNG\r\n")
     _patch_popen(monkeypatch, lines = ["img2img"], returncode = 0, out_file = out)
-    e.generate(SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-               SdCppGenParams(prompt = "x", init_img = str(src), strength = 0.5),
-               output_path = str(out))
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "x", init_img = str(src), strength = 0.5),
+        output_path = str(out),
+    )
     assert "--init-img" in _FakePopen.captured_cmd
     assert str(src) == _FakePopen.captured_cmd[_FakePopen.captured_cmd.index("--init-img") + 1]
 
@@ -271,8 +273,10 @@ def test_upscale_runs_and_returns_path(tmp_path, monkeypatch):
 def test_upscale_raises_when_binary_missing():
     e = SdCppEngine(binary = None)
     with pytest.raises(RuntimeError, match = "not found"):
-        e.upscale(SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth"),
-                  output_path = "/tmp/x.png")
+        e.upscale(
+            SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth"),
+            output_path = "/tmp/x.png",
+        )
 
 
 # ── engine routing ──────────────────────────────────────────────────────────

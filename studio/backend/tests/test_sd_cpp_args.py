@@ -183,8 +183,12 @@ def test_build_requires_diffusion_model_and_prompt():
             output_path = "/o.png",
         )
     with pytest.raises(ValueError):
-        build_sd_cpp_command("/bin/sd-cli", SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-                             SdCppGenParams(prompt = "   "), output_path = "/o.png")
+        build_sd_cpp_command(
+            "/bin/sd-cli",
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "   "),
+            output_path = "/o.png",
+        )
 
 
 # ── img2img / inpaint / edit / LoRA (Phase 6) ───────────────────────────────
@@ -220,7 +224,9 @@ def test_build_edit_repeats_ref_image():
 def test_build_lora_dir_and_apply_mode():
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     params = SdCppGenParams(
-        prompt = "a portrait <lora:mystyle:0.8>", lora_dir = "/loras", lora_apply_mode = "at_runtime",
+        prompt = "a portrait <lora:mystyle:0.8>",
+        lora_dir = "/loras",
+        lora_apply_mode = "at_runtime",
     )
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
     assert _pair(cmd, "--lora-model-dir") == "/loras"
@@ -231,7 +237,9 @@ def test_build_lora_dir_and_apply_mode():
 
 def test_txt2img_omits_image_conditioning_flags():
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
-    cmd = build_sd_cpp_command("/bin/sd-cli", files, SdCppGenParams(prompt = "x"), output_path = "/o.png")
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli", files, SdCppGenParams(prompt = "x"), output_path = "/o.png"
+    )
     for flag in ("--init-img", "--strength", "--mask", "--ref-image", "--lora-model-dir"):
         assert flag not in cmd
 
@@ -240,7 +248,9 @@ def test_txt2img_omits_image_conditioning_flags():
 
 
 def test_build_upscale_command():
-    params = SdCppUpscaleParams(input_image = "/in/small.png", upscale_model = "/m/esrgan.pth", repeats = 2)
+    params = SdCppUpscaleParams(
+        input_image = "/in/small.png", upscale_model = "/m/esrgan.pth", repeats = 2
+    )
     cmd = build_sd_cpp_upscale_command("/bin/sd-cli", params, output_path = "/out/big.png")
     assert _pair(cmd, "--mode") == "upscale"
     assert _pair(cmd, "--init-img") == "/in/small.png"
@@ -253,10 +263,14 @@ def test_build_upscale_command():
 
 def test_build_upscale_requires_input_and_model():
     with pytest.raises(ValueError):
-        build_sd_cpp_upscale_command("/bin/sd-cli",
-                                     SdCppUpscaleParams(input_image = "", upscale_model = "/m/e.pth"),
-                                     output_path = "/o.png")
+        build_sd_cpp_upscale_command(
+            "/bin/sd-cli",
+            SdCppUpscaleParams(input_image = "", upscale_model = "/m/e.pth"),
+            output_path = "/o.png",
+        )
     with pytest.raises(ValueError):
-        build_sd_cpp_upscale_command("/bin/sd-cli",
-                                     SdCppUpscaleParams(input_image = "/i.png", upscale_model = ""),
-                                     output_path = "/o.png")
+        build_sd_cpp_upscale_command(
+            "/bin/sd-cli",
+            SdCppUpscaleParams(input_image = "/i.png", upscale_model = ""),
+            output_path = "/o.png",
+        )

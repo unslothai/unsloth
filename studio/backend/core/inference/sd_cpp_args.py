@@ -252,9 +252,13 @@ def build_sd_cpp_upscale_command(
     if not params.upscale_model:
         raise ValueError("upscale_model is required for upscale")
     cmd: list[str] = [
-        binary, "--mode", "upscale",
-        "--init-img", params.input_image,
-        "--upscale-model", params.upscale_model,
+        binary,
+        "--mode",
+        "upscale",
+        "--init-img",
+        params.input_image,
+        "--upscale-model",
+        params.upscale_model,
     ]
     if params.repeats and params.repeats != 1:
         cmd += ["--upscale-repeats", str(int(params.repeats))]
