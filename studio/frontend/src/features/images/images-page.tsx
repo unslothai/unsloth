@@ -115,9 +115,10 @@ const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
 // Z-Image accepts 256–2048, in multiples of 16. Snap any value into range.
 const MIN_DIM = 256;
 const MAX_DIM = 2048;
-// Sequential runs are a frontend loop the backend never sees, so cap them here
-// (every other generate field is bounded by the backend's request validators).
-const MAX_RUNS = 128;
+// Convenient drag range for the Runs slider. The number box accepts higher typed
+// values on purpose (set it large to generate all night); the loop only floors at
+// 1 and ignores non-numeric input.
+const RUNS_SLIDER_MAX = 128;
 function snapDim(value: number): number {
   if (!Number.isFinite(value)) return 1024;
   return Math.min(MAX_DIM, Math.max(MIN_DIM, Math.round(value / 16) * 16));
@@ -706,10 +707,10 @@ export function ImagesPage() {
     const w = snapDim(width);
     const h = snapDim(height);
 
-    // Bound the run loop: the number input accepts typed values past the slider
-    // max (e.g. 10000) or non-numeric ones (NaN), and runs are a frontend loop
-    // with no backend limit.
-    const runs = Math.max(1, Math.min(Number.isFinite(count) ? count : 1, MAX_RUNS));
+    // A large run count (generate all night) is a legitimate choice, so there's
+    // no upper cap; just floor at 1 and ignore non-numeric input (the number box
+    // can yield NaN), which would otherwise make the loop a silent no-op.
+    const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
     if (runs !== count) setCount(runs);
 
     setBusy("generating");
@@ -868,7 +869,7 @@ export function ImagesPage() {
             hint="How many times to repeat the generation, one after another. Each run uses the next seed, so the images differ and can be reproduced."
             value={count}
             min={1}
-            max={MAX_RUNS}
+            max={RUNS_SLIDER_MAX}
             step={1}
             onChange={setCount}
           />
