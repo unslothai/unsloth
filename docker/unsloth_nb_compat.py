@@ -34,8 +34,13 @@ def _logging_enabled() -> bool:
     `[unsloth-nb] activated transformers sidecar ...` line noisy. Set
     UNSLOTH_ENABLE_LOGGING=1 to surface it (and other [unsloth-nb] diagnostics)."""
     return os.environ.get("UNSLOTH_ENABLE_LOGGING", "").strip().lower() not in (
-        "", "0", "false", "no", "off",
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
     )
+
 
 # Model-name -> minimum transformers tier, ported from Studio's
 # transformers_version.py (substring match on the lowered model id). Used as a

@@ -68,11 +68,11 @@ def parse_readme(readme_path):
 
     filename is the urldecoded basename under nb/ (literal parens, matching disk).
     """
-    with open(readme_path, "r", encoding="utf-8") as f:
+    with open(readme_path, "r", encoding = "utf-8") as f:
         text = f.read()
 
     rows = []
-    seen_pairs = set()        # (section, filename) already emitted
+    seen_pairs = set()  # (section, filename) already emitted
     section = None
     for line in text.splitlines():
         m = re.match(r"^###\s+(.*)$", line)
@@ -102,7 +102,11 @@ def _ordered_sections(rows):
     return order
 
 
-def build_view(dest, view, amd=False):
+def build_view(
+    dest,
+    view,
+    amd = False,
+):
     nb_dir = os.path.join(dest, "nb")
     readme = os.path.join(dest, "README.md")
     if not os.path.isdir(nb_dir):
@@ -138,23 +142,23 @@ def build_view(dest, view, amd=False):
 
     # Rebuild VIEW from scratch.
     _rmtree(view)
-    os.makedirs(view, exist_ok=True)
+    os.makedirs(view, exist_ok = True)
 
     n_links = 0
-    for i, section in enumerate(order, start=1):
+    for i, section in enumerate(order, start = 1):
         folder = os.path.join(view, f"{i:02d} {section}")
-        os.makedirs(folder, exist_ok=True)
+        os.makedirs(folder, exist_ok = True)
         for fname in by_section[section]:
             link = os.path.join(folder, fname)
             target = os.path.join(nb_dir, fname)
-            rel = os.path.relpath(target, folder)   # ../../unsloth-notebooks/nb/<file>
+            rel = os.path.relpath(target, folder)  # ../../unsloth-notebooks/nb/<file>
             try:
                 if os.path.islink(link) or os.path.exists(link):
                     os.remove(link)
                 os.symlink(rel, link)
                 n_links += 1
             except OSError as e:
-                print(f"[unsloth-nb] view: skip {fname}: {e}", file=sys.stderr)
+                print(f"[unsloth-nb] view: skip {fname}: {e}", file = sys.stderr)
     return len(order), n_links
 
 
@@ -165,7 +169,7 @@ def _rmtree(path):
         if os.path.islink(path):
             os.remove(path)
         return
-    for root, dirs, files in os.walk(path, topdown=False):
+    for root, dirs, files in os.walk(path, topdown = False):
         for name in files:
             try:
                 os.remove(os.path.join(root, name))
@@ -184,12 +188,16 @@ def _rmtree(path):
 
 
 def main(argv):
-    ap = argparse.ArgumentParser(description="Build the categorized notebook view.")
-    ap.add_argument("dest", help="notebooks dir (contains README.md and nb/)")
-    ap.add_argument("view", nargs="?", help="output view dir (omit with --print)")
-    ap.add_argument("--amd", action="store_true", help="include AMD-* notebooks")
-    ap.add_argument("--print", dest="do_print", action="store_true",
-                    help="print section<TAB>file rows instead of building")
+    ap = argparse.ArgumentParser(description = "Build the categorized notebook view.")
+    ap.add_argument("dest", help = "notebooks dir (contains README.md and nb/)")
+    ap.add_argument("view", nargs = "?", help = "output view dir (omit with --print)")
+    ap.add_argument("--amd", action = "store_true", help = "include AMD-* notebooks")
+    ap.add_argument(
+        "--print",
+        dest = "do_print",
+        action = "store_true",
+        help = "print section<TAB>file rows instead of building",
+    )
     args = ap.parse_args(argv)
 
     if args.do_print:
@@ -200,7 +208,7 @@ def main(argv):
 
     if not args.view:
         ap.error("view dir is required unless --print is given")
-    n_sections, n_links = build_view(args.dest, args.view, amd=args.amd)
+    n_sections, n_links = build_view(args.dest, args.view, amd = args.amd)
     print(f"[unsloth-nb] view: {n_links} notebooks in {n_sections} folders -> {args.view}")
     return 0
 

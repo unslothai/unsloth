@@ -49,14 +49,14 @@ CURATED = [
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--src", required=True, help="Studio 'Sloth emojis' dir")
-    parser.add_argument("--dest", required=True, help="output dir (static/sloth)")
+    parser = argparse.ArgumentParser(description = __doc__)
+    parser.add_argument("--src", required = True, help = "Studio 'Sloth emojis' dir")
+    parser.add_argument("--dest", required = True, help = "output dir (static/sloth)")
     args = parser.parse_args()
 
-    os.makedirs(args.dest, exist_ok=True)
+    os.makedirs(args.dest, exist_ok = True)
     installed = 0
-    for index, name in enumerate(CURATED, start=1):
+    for index, name in enumerate(CURATED, start = 1):
         source = os.path.join(args.src, name)
         target = os.path.join(args.dest, "%02d.png" % index)
         if not os.path.isfile(source):

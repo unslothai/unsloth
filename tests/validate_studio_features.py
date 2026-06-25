@@ -11,6 +11,7 @@ login branding fails CI on every device.
 Usage:  python tests/validate_studio_features.py
 Exit 0 = all checks pass; non-zero = at least one failed.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -27,7 +28,11 @@ sys.path.insert(0, DOCKER)
 _failures: list[str] = []
 
 
-def check(name: str, cond: bool, detail: str = "") -> None:
+def check(
+    name: str,
+    cond: bool,
+    detail: str = "",
+) -> None:
     status = "PASS" if cond else "FAIL"
     print(f"  [{status}] {name}" + (f"  -- {detail}" if detail and not cond else ""))
     if not cond:
@@ -40,13 +45,13 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 def test_colab_compat() -> None:
     print("colab cell-magic compat (unsloth_colab_compat):")
     m = importlib.import_module("unsloth_colab_compat")
-    out = m.colab_cell_magic_fix(['#@title Setup\n', '%%capture\n', '!pip install x\n'])
-    check("magic hoisted above #@title", out[0] == '%%capture\n' and '#@title Setup\n' in out)
+    out = m.colab_cell_magic_fix(["#@title Setup\n", "%%capture\n", "!pip install x\n"])
+    check("magic hoisted above #@title", out[0] == "%%capture\n" and "#@title Setup\n" in out)
     # idempotent / already on top
-    same = ['%%capture\n', 'print(1)\n']
+    same = ["%%capture\n", "print(1)\n"]
     check("no-op when magic already first", m.colab_cell_magic_fix(same) == same)
     # non-magic cell untouched
-    plain = ['x = 1\n', 'y = 2\n']
+    plain = ["x = 1\n", "y = 2\n"]
     check("plain cell untouched", m.colab_cell_magic_fix(plain) == plain)
 
 
@@ -56,11 +61,16 @@ def test_colab_compat() -> None:
 def test_nb_view() -> None:
     print("notebook view (unsloth_nb_view):")
     v = importlib.import_module("unsloth_nb_view")
-    check("clean_section dash/slash -> space",
-          v.clean_section("### GRPO-Reinforcement/Learning Notebooks")
-          == "GRPO Reinforcement Learning Notebooks",
-          v.clean_section("### GRPO-Reinforcement/Learning Notebooks"))
-    check("clean_section strips hashes/space", v.clean_section("##  Main Notebooks  ") == "Main Notebooks")
+    check(
+        "clean_section dash/slash -> space",
+        v.clean_section("### GRPO-Reinforcement/Learning Notebooks")
+        == "GRPO Reinforcement Learning Notebooks",
+        v.clean_section("### GRPO-Reinforcement/Learning Notebooks"),
+    )
+    check(
+        "clean_section strips hashes/space",
+        v.clean_section("##  Main Notebooks  ") == "Main Notebooks",
+    )
 
 
 # --------------------------------------------------------------------------
@@ -72,27 +82,52 @@ def test_strip() -> None:
     nb = {
         "metadata": {"widgets": {"application/vnd.jupyter.widget-state+json": {"x": 1}}},
         "cells": [
-            {"cell_type": "markdown",
-             "source": ['To run this, press "Runtime" ... Tesla T4 Google Colab instance!\n',
-                        '\n', 'You will learn how to ...\n']},
-            {"cell_type": "code", "source": ["print(1)\n"], "outputs": [
-                {"output_type": "stream", "name": "stdout", "text": "ok\n"},
-                {"output_type": "display_data",
-                 "data": {"application/vnd.jupyter.widget-view+json": {"model_id": "abc"},
-                          "text/plain": "0%| | 0/10"}},
-            ]},
+            {
+                "cell_type": "markdown",
+                "source": [
+                    'To run this, press "Runtime" ... Tesla T4 Google Colab instance!\n',
+                    "\n",
+                    "You will learn how to ...\n",
+                ],
+            },
+            {
+                "cell_type": "code",
+                "source": ["print(1)\n"],
+                "outputs": [
+                    {"output_type": "stream", "name": "stdout", "text": "ok\n"},
+                    {
+                        "output_type": "display_data",
+                        "data": {
+                            "application/vnd.jupyter.widget-view+json": {"model_id": "abc"},
+                            "text/plain": "0%| | 0/10",
+                        },
+                    },
+                ],
+            },
         ],
     }
     changed1 = s._strip_intro(nb)
     changed2 = s._clean_widgets(nb)
-    check("intro line stripped", changed1 and not any(
-        "to run this, press" in (l.lower()) for l in nb["cells"][0]["source"]))
+    check(
+        "intro line stripped",
+        changed1 and not any("to run this, press" in (l.lower()) for l in nb["cells"][0]["source"]),
+    )
     check("intro body kept", any("You will learn" in l for l in nb["cells"][0]["source"]))
-    wv = sum(1 for c in nb["cells"] for o in (c.get("outputs", []) or [])
-             if "application/vnd.jupyter.widget-view+json" in (o.get("data", {}) or {}))
+    wv = sum(
+        1
+        for c in nb["cells"]
+        for o in (c.get("outputs", []) or [])
+        if "application/vnd.jupyter.widget-view+json" in (o.get("data", {}) or {})
+    )
     check("widget-view outputs removed", changed2 and wv == 0)
-    check("non-widget outputs kept", any(
-        o.get("output_type") == "stream" for c in nb["cells"] for o in (c.get("outputs", []) or [])))
+    check(
+        "non-widget outputs kept",
+        any(
+            o.get("output_type") == "stream"
+            for c in nb["cells"]
+            for o in (c.get("outputs", []) or [])
+        ),
+    )
     check("metadata.widgets removed", "widgets" not in nb["metadata"])
     # idempotent
     check("strip idempotent", not s._strip_intro(nb) and not s._clean_widgets(nb))
@@ -126,21 +161,34 @@ def test_overrides() -> None:
     check("overrides.json exists", os.path.isfile(path))
     if not os.path.isfile(path):
         return
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding = "utf-8") as f:
         d = json.load(f)  # raises -> CI fails if invalid JSON
     themes = d.get("@jupyterlab/apputils-extension:themes", {})
-    check("default theme = Unsloth Dark", themes.get("theme") == "Unsloth Dark", str(themes.get("theme")))
+    check(
+        "default theme = Unsloth Dark",
+        themes.get("theme") == "Unsloth Dark",
+        str(themes.get("theme")),
+    )
     check("adaptive theme on", themes.get("adaptive-theme") is True)
     check("preferred dark = Unsloth Dark", themes.get("preferred-dark-theme") == "Unsloth Dark")
     tracker = d.get("@jupyterlab/notebook-extension:tracker", {})
-    check("windowingMode none", tracker.get("windowingMode") == "none", str(tracker.get("windowingMode")))
+    check(
+        "windowingMode none",
+        tracker.get("windowingMode") == "none",
+        str(tracker.get("windowingMode")),
+    )
     notif = d.get("@jupyterlab/apputils-extension:notification", {})
-    check("news prompt off", str(notif.get("fetchNews")) == "false" and notif.get("checkForUpdates") is False)
+    check(
+        "news prompt off",
+        str(notif.get("fetchNews")) == "false" and notif.get("checkForUpdates") is False,
+    )
     panel = d.get("@jupyterlab/notebook-extension:panel", {})
     labels = [t.get("label", "") for t in panel.get("toolbar", [])]
-    check("Restart & Run All label (single >>)",
-          any(l == "Restart & Run All" for l in labels) and not any(">>" in l for l in labels),
-          str(labels))
+    check(
+        "Restart & Run All label (single >>)",
+        any(l == "Restart & Run All" for l in labels) and not any(">>" in l for l in labels),
+        str(labels),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -151,7 +199,7 @@ def test_labext_and_branding() -> None:
     pkg = os.path.join(LABEXT, "package.json")
     check("labext package.json exists", os.path.isfile(pkg))
     if os.path.isfile(pkg):
-        with open(pkg, encoding="utf-8") as f:
+        with open(pkg, encoding = "utf-8") as f:
             p = json.load(f)
         check("labext name unsloth-jupyterlab", p.get("name") == "unsloth-jupyterlab")
         check("labext themePath set", bool(p.get("jupyterlab", {}).get("themePath")))
@@ -162,15 +210,20 @@ def test_labext_and_branding() -> None:
     if os.path.isdir(src_dir):
         for fn in sorted(os.listdir(src_dir)):
             if fn.endswith(".ts"):
-                with open(os.path.join(src_dir, fn), encoding="utf-8") as f:
+                with open(os.path.join(src_dir, fn), encoding = "utf-8") as f:
                     all_src += f.read() + "\n"
-    for plug in ["unsloth-jupyterlab:theme", "unsloth-jupyterlab:cell-nav",
-                 "unsloth-jupyterlab:logo", "unsloth-jupyterlab:colab-title",
-                 "unsloth-jupyterlab:output-select-all", "unsloth-jupyterlab:ui-chrome"]:
+    for plug in [
+        "unsloth-jupyterlab:theme",
+        "unsloth-jupyterlab:cell-nav",
+        "unsloth-jupyterlab:logo",
+        "unsloth-jupyterlab:colab-title",
+        "unsloth-jupyterlab:output-select-all",
+        "unsloth-jupyterlab:ui-chrome",
+    ]:
         check(f"plugin present: {plug}", plug in all_src)
     # The two newest plugins are also exported from index.ts (wired in).
     index = os.path.join(src_dir, "index.ts")
-    index_src = open(index, encoding="utf-8").read() if os.path.isfile(index) else ""
+    index_src = open(index, encoding = "utf-8").read() if os.path.isfile(index) else ""
     check("outputSelect wired in index.ts", "outputSelectPlugin" in index_src)
     check("uiChrome wired in index.ts", "uiChromePlugin" in index_src)
     # uiChrome hides the right activity bar; CTRL+A output-select selects nodes.
@@ -178,18 +231,30 @@ def test_labext_and_branding() -> None:
     check("ctrl+A output select", "selectNodeContents" in all_src)
     # branding assets
     login = os.path.join(JUPYTER, "login.html")
-    login_src = open(login, encoding="utf-8").read() if os.path.isfile(login) else ""
+    login_src = open(login, encoding = "utf-8").read() if os.path.isfile(login) else ""
     check("login.html branded", "unsloth-login-card" in login_src)
-    check("login.html uses sloth stickers", 'static_url("sloth/' in login_src or "static_url('sloth/" in login_src)
+    check(
+        "login.html uses sloth stickers",
+        'static_url("sloth/' in login_src or "static_url('sloth/" in login_src,
+    )
     check("favicon.ico present", os.path.isfile(os.path.join(JUPYTER, "favicon.ico")))
     check("logo.png present", os.path.isfile(os.path.join(JUPYTER, "logo.png")))
-    check("sloth sticker installer present", os.path.isfile(os.path.join(JUPYTER, "install_sloth_stickers.py")))
+    check(
+        "sloth sticker installer present",
+        os.path.isfile(os.path.join(JUPYTER, "install_sloth_stickers.py")),
+    )
 
 
 def main() -> int:
     print("=== Unsloth Studio/notebook feature validation ===")
-    for t in (test_colab_compat, test_nb_view, test_strip, test_sidecar_log_gate,
-              test_overrides, test_labext_and_branding):
+    for t in (
+        test_colab_compat,
+        test_nb_view,
+        test_strip,
+        test_sidecar_log_gate,
+        test_overrides,
+        test_labext_and_branding,
+    ):
         try:
             t()
         except Exception as e:  # a thrown exception is a failure, not a crash

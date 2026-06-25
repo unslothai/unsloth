@@ -60,9 +60,9 @@ def _strip_lines(lines):
     or None if there was nothing to strip."""
     for i, line in enumerate(lines):
         if line.lstrip().lower().startswith(_INTRO_PREFIX):
-            out = lines[:i] + lines[i + 1:]
+            out = lines[:i] + lines[i + 1 :]
             if i < len(out) and out[i].strip() == "":
-                out = out[:i] + out[i + 1:]
+                out = out[:i] + out[i + 1 :]
             return out
     return None
 
@@ -77,7 +77,7 @@ def _strip_intro(nb):
         return False
     src = cell.get("source")
     if isinstance(src, str):
-        lines = src.splitlines(keepends=True)
+        lines = src.splitlines(keepends = True)
         as_str = True
     elif isinstance(src, list):
         lines = list(src)
@@ -104,7 +104,8 @@ def _clean_widgets(nb):
             if not isinstance(outs, list):
                 continue
             kept = [
-                o for o in outs
+                o
+                for o in outs
                 if not (isinstance(o, dict) and _WIDGET_VIEW_MIME in (o.get("data") or {}))
             ]
             if len(kept) != len(outs):
@@ -120,7 +121,7 @@ def _clean_widgets(nb):
 def strip_notebook(path):
     """Return True if the notebook was modified and written back."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding = "utf-8") as f:
             nb = json.load(f)
     except Exception:
         return False
@@ -133,8 +134,8 @@ def strip_notebook(path):
 
     tmp = path + ".tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(nb, f, indent=1, ensure_ascii=False)
+        with open(tmp, "w", encoding = "utf-8") as f:
+            json.dump(nb, f, indent = 1, ensure_ascii = False)
             f.write("\n")
         os.replace(tmp, path)
     except Exception:
@@ -157,7 +158,7 @@ def _sha256(path):
 def migrate(state_path, dest):
     """Strip owned+unedited notebooks listed in STATE and update their hashes."""
     try:
-        with open(state_path, "r", encoding="utf-8") as f:
+        with open(state_path, "r", encoding = "utf-8") as f:
             lines = f.read().splitlines()
     except OSError:
         return 0
@@ -165,7 +166,7 @@ def migrate(state_path, dest):
     out = []
     changed = 0
     for line in lines:
-        parts = line.split("  ", 1)               # "<sha256>  <relpath>"
+        parts = line.split("  ", 1)  # "<sha256>  <relpath>"
         if len(parts) != 2:
             out.append(line)
             continue
@@ -173,7 +174,7 @@ def migrate(state_path, dest):
         path = os.path.join(dest, rel)
         if rel.endswith(".ipynb") and os.path.isfile(path):
             try:
-                if _sha256(path) == rec:          # we own it and it is unedited
+                if _sha256(path) == rec:  # we own it and it is unedited
                     if strip_notebook(path):
                         rec = _sha256(path)
                         changed += 1
@@ -184,7 +185,7 @@ def migrate(state_path, dest):
     if changed:
         tmp = state_path + ".tmp"
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding = "utf-8") as f:
                 f.write("\n".join(out) + "\n")
             os.replace(tmp, state_path)
         except OSError:
@@ -194,10 +195,10 @@ def migrate(state_path, dest):
 
 
 def main(argv):
-    ap = argparse.ArgumentParser(description="Strip the Colab-only intro sentence.")
-    ap.add_argument("--state", help="sync state file (enables migration mode)")
-    ap.add_argument("--dest", help="notebooks dir (with --state)")
-    ap.add_argument("paths", nargs="*", help="notebooks to strip in place")
+    ap = argparse.ArgumentParser(description = "Strip the Colab-only intro sentence.")
+    ap.add_argument("--state", help = "sync state file (enables migration mode)")
+    ap.add_argument("--dest", help = "notebooks dir (with --state)")
+    ap.add_argument("paths", nargs = "*", help = "notebooks to strip in place")
     args = ap.parse_args(argv)
 
     if args.state:

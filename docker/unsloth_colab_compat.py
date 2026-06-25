@@ -38,14 +38,14 @@ def colab_cell_magic_fix(lines):
         for i, line in enumerate(lines):
             stripped = line.strip()
             if stripped == "" or stripped.startswith("#"):
-                skipped.append(line)            # blank or comment (incl. #@title)
+                skipped.append(line)  # blank or comment (incl. #@title)
                 continue
             # First real line. Only act if it is a cell magic that is not yet on
             # top (i.e. something was skipped before it).
             if stripped.startswith("%%") and i > 0:
-                return [line] + skipped + lines[i + 1:]
-            return lines                        # already on top, or not a magic
-        return lines                            # all blank/comment -> nothing to do
+                return [line] + skipped + lines[i + 1 :]
+            return lines  # already on top, or not a magic
+        return lines  # all blank/comment -> nothing to do
     except Exception:
         return lines
 
@@ -62,4 +62,4 @@ def register_ipython():
         ip.input_transformers_cleanup.append(colab_cell_magic_fix)
         ip._unsloth_colab_fix = True
     except Exception as e:  # never break a kernel because of the helper
-        print(f"[unsloth-nb] colab-compat hook skipped: {e!r}", file=sys.stderr)
+        print(f"[unsloth-nb] colab-compat hook skipped: {e!r}", file = sys.stderr)

@@ -51,7 +51,9 @@ def resolve_latest_tag(repo: str) -> str:
         final_url = response.geturl()
     marker = "/releases/tag/"
     if marker not in final_url:
-        raise SystemExit(f"FAIL: could not resolve latest release of {repo} (landed on {final_url})")
+        raise SystemExit(
+            f"FAIL: could not resolve latest release of {repo} (landed on {final_url})"
+        )
     return final_url.rsplit(marker, 1)[1].strip("/")
 
 
