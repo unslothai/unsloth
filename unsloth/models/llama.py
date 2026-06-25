@@ -28,7 +28,7 @@ from ._utils import (
     is_bfloat16_supported,
     get_quant_type,
 )
-from .loader_utils import _get_fp8_mode_and_check_settings
+from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_sequence_boundaries,
@@ -3045,6 +3045,7 @@ class FastLlamaModel:
                 # Pre-wrapped PEFT model passes through here; still arm the detector so an RL
                 # trainer can reset a compile cache poisoned by a pre-train forward.
                 _unsloth_install_pretrain_detector(model)
+                model = _exclude_rope_inv_freq_from_ddp(model)
                 return model
             else:
                 raise TypeError(
@@ -3400,6 +3401,7 @@ class FastLlamaModel:
         # Detect a stray pre-train forward so train() can drop the torch.compile
         # graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model
 
     @staticmethod
