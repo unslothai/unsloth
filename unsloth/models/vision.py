@@ -466,7 +466,7 @@ def _missing_torchvision_error(error = None):
     return False
 
 
-def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code):
+def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code, cache_dir = None):
     """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
 
     Some VLMs (e.g., LFM2.5-VL) have tokenizer_class entries that AutoTokenizer
@@ -483,6 +483,7 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
             tokenizer_name,
             token = token,
             trust_remote_code = trust_remote_code,
+            cache_dir = cache_dir,
         )
         # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check)
         tok = PreTrainedTokenizerFast.from_pretrained(
@@ -490,12 +491,13 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
             padding_side = "left",
             token = token,
             trust_remote_code = trust_remote_code,
+            cache_dir = cache_dir,
         )
         # Read tokenizer_config.json for model-specific special tokens
         try:
             from huggingface_hub import hf_hub_download
 
-            config_path = hf_hub_download(tokenizer_name, "tokenizer_config.json", token = token)
+            config_path = hf_hub_download(tokenizer_name, "tokenizer_config.json", token = token, cache_dir = cache_dir)
             with open(config_path, "r", encoding = "utf-8") as f:
                 tok_config = json.load(f)
             # Set model-specific special tokens and their IDs
@@ -525,6 +527,7 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
                     tokenizer_name,
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    cache_dir = cache_dir,
                 )
                 proc_class_name = PROCESSOR_MAPPING_NAMES.get(config.model_type)
             except Exception:
@@ -1238,6 +1241,7 @@ class FastBaseModel:
                 model_type_arch,
                 token,
                 trust_remote_code,
+                cache_dir = kwargs.get("cache_dir"),
             )
             if _fallback is not None:
                 tokenizer = _fallback
@@ -1302,6 +1306,7 @@ class FastBaseModel:
                     padding_side = "left",
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    cache_dir = kwargs.get("cache_dir"),
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
                 # Re-attach as processor wrapper if original was a processor
@@ -1327,6 +1332,7 @@ class FastBaseModel:
                     padding_side = "left",
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    cache_dir = kwargs.get("cache_dir"),
                 )
             except Exception:
                 try:
@@ -1336,6 +1342,7 @@ class FastBaseModel:
                         padding_side = "left",
                         token = token,
                         trust_remote_code = trust_remote_code,
+                        cache_dir = kwargs.get("cache_dir"),
                     )
                 except Exception:
                     del model

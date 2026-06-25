@@ -880,6 +880,16 @@ class FastLanguageModel(FastLlamaModel):
             # the in-process load reuses that warm cache instead of re-forcing.
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
+            # Read the adapter from the same place the prefetch warmed: forward
+            # cache_dir / subfolder when set and local_files_only when on, while
+            # leaving PEFT's own defaults untouched otherwise.
+            peft_load_kwargs = {}
+            if kwargs.get("cache_dir") is not None:
+                peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            if kwargs.get("subfolder") is not None:
+                peft_load_kwargs["subfolder"] = kwargs["subfolder"]
+            if local_files_only:
+                peft_load_kwargs["local_files_only"] = True
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -887,6 +897,7 @@ class FastLanguageModel(FastLlamaModel):
                 revision = revision,
                 is_trainable = True,
                 trust_remote_code = trust_remote_code,
+                **peft_load_kwargs,
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
@@ -1812,6 +1823,16 @@ class FastModel(FastBaseModel):
             # the in-process load reuses that warm cache instead of re-forcing.
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
+            # Read the adapter from the same place the prefetch warmed: forward
+            # cache_dir / subfolder when set and local_files_only when on, while
+            # leaving PEFT's own defaults untouched otherwise.
+            peft_load_kwargs = {}
+            if kwargs.get("cache_dir") is not None:
+                peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            if kwargs.get("subfolder") is not None:
+                peft_load_kwargs["subfolder"] = kwargs["subfolder"]
+            if local_files_only:
+                peft_load_kwargs["local_files_only"] = True
             try:
                 model = PeftModel.from_pretrained(
                     model,
@@ -1820,6 +1841,7 @@ class FastModel(FastBaseModel):
                     revision = revision,
                     is_trainable = True,
                     trust_remote_code = trust_remote_code,
+                    **peft_load_kwargs,
                 )
             finally:
                 # Always restore original PEFT method, even if loading fails

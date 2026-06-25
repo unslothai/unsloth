@@ -847,6 +847,22 @@ _PREFETCH_IGNORE_PATTERNS = (
 )
 
 
+def _in_requested_load_scope(filename, subfolder):
+    """True if a repo-relative *filename* belongs to the location being loaded.
+
+    The load reads from *subfolder* when one is given, otherwise the repo root.
+    Used so the ".bin is redundant when safetensors exist" decision is keyed off
+    the files that load actually uses, not any safetensors elsewhere in the repo
+    (a subfolder that ships only .bin must keep its .bin even when an unrelated
+    subfolder ships safetensors).
+    """
+    filename = filename.replace("\\", "/")
+    if isinstance(subfolder, str) and subfolder.strip("/"):
+        return filename.startswith(subfolder.strip("/") + "/")
+    # Root load: only files at the repo root (no directory component).
+    return "/" not in filename
+
+
 def _prefetch_ignore_patterns(
     model_name,
     *,
@@ -887,8 +903,12 @@ def _prefetch_ignore_patterns(
                 .siblings
                 or []
             )
+            # Only count safetensors that the load will actually read (same
+            # subfolder / root), so a .bin-only subfolder is not stripped of its
+            # weights because some other path in the repo ships safetensors.
             has_safetensors = any(
                 sibling.rfilename.endswith((".safetensors", ".safetensors.index.json"))
+                and _in_requested_load_scope(sibling.rfilename, subfolder)
                 for sibling in siblings
             )
             if has_safetensors:
