@@ -26,6 +26,13 @@ BASE = "http://127.0.0.1:8888"
 MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 
 
+def test_connect_module_is_deprecated_shim_for_start():
+    # The old `unsloth_cli.commands.connect` import path keeps working post-rename.
+    from unsloth_cli.commands.connect import connect_app
+
+    assert connect_app is start.start_app
+
+
 # --no-launch prints shell setup as POSIX (export/unset) on Unix/WSL and
 # PowerShell ($env:/Remove-Item) on native Windows; assert the host's form.
 def _assert_env_set(output: str, name: str, value: str) -> None:
