@@ -79,10 +79,10 @@ def _serialize_pil_image(image):
     preview.thumbnail(_IMAGE_PREVIEW_THUMBNAIL_SIZE)
     buffer = io.BytesIO()
     if _pil_image_has_transparency(preview):
-        preview.save(buffer, format = "PNG")
+        preview.save(buffer, format="PNG")
         mime = "image/png"
     else:
-        preview.convert("RGB").save(buffer, format = "JPEG", quality = 85)
+        preview.convert("RGB").save(buffer, format="JPEG", quality=85)
         mime = "image/jpeg"
     return {
         "type": "image",
@@ -102,6 +102,7 @@ def _serialize_binary_value(data):
 
     try:
         from PIL import Image as PILImageModule
+
         with PILImageModule.open(io.BytesIO(data)) as image:
             return _serialize_pil_image(image)
     except Exception:
@@ -117,6 +118,7 @@ def _serialize_preview_value(value):
 
     try:
         from PIL.Image import Image as PILImage
+
         if isinstance(value, PILImage):
             return _serialize_pil_image(value)
     except Exception:
@@ -155,10 +157,10 @@ def _cached_dataset_candidates(
 ) -> list[Path]:
     return _shared_cached_dataset_candidates(
         snapshot,
-        subset = subset,
-        train_split = train_split,
-        extensions = DATA_EXTS,
-        preferred_extensions = _TABULAR_EXTS,
+        subset=subset,
+        train_split=train_split,
+        extensions=DATA_EXTS,
+        preferred_extensions=_TABULAR_EXTS,
     )
 
 
@@ -202,8 +204,8 @@ def _load_cached_hf_preview_slice(request: CheckFormatRequest, preview_size: int
     train_split = request.train_split or "train"
     for candidate in _cached_dataset_candidates(
         snapshot,
-        subset = request.subset,
-        train_split = train_split,
+        subset=request.subset,
+        train_split=train_split,
     ):
         try:
             preview = _stream_file_preview_slice(candidate, preview_size)
@@ -233,7 +235,7 @@ def _load_processed_hf_preview_slice(
     load_kwargs = {
         "path": request.dataset_name,
         "split": request.train_split or "train",
-        "download_config": DownloadConfig(local_files_only = True),
+        "download_config": DownloadConfig(local_files_only=True),
     }
     if request.subset:
         load_kwargs["name"] = request.subset
@@ -288,15 +290,15 @@ def check_format_response(
         except ValueError as e:
             # Malformed path (null bytes, '..', outside roots) is a client error:
             # surface 400 rather than the generic 500 below.
-            raise HTTPException(status_code = 400, detail = str(e)) from e
+            raise HTTPException(status_code=400, detail=str(e)) from e
         total_rows = None
 
         if dataset_path.exists():
             train_split = request.train_split or "train"
             preview_slice, total_rows = _load_local_preview_slice(
-                dataset_path = dataset_path,
-                train_split = train_split,
-                preview_size = PREVIEW_SIZE,
+                dataset_path=dataset_path,
+                train_split=train_split,
+                preview_size=PREVIEW_SIZE,
             )
         else:
             from datasets import Dataset, load_dataset
@@ -311,8 +313,8 @@ def check_format_response(
                 preview_slice, total_rows = cached_preview
             elif request.prefer_local_cache:
                 raise HTTPException(
-                    status_code = 404,
-                    detail = "Dataset is not available in the local cache.",
+                    status_code=404,
+                    detail="Dataset is not available in the local cache.",
                 )
             else:
                 preview_slice = None
@@ -323,14 +325,14 @@ def check_format_response(
                     api = HfApi()
                     repo_files = api.list_repo_files(
                         request.dataset_name,
-                        repo_type = "dataset",
-                        token = hf_token or None,
+                        repo_type="dataset",
+                        token=hf_token or None,
                     )
                     train_split = request.train_split or "train"
                     first_file = _select_tier1_repo_file(
                         repo_files,
-                        subset = request.subset,
-                        train_split = train_split,
+                        subset=request.subset,
+                        train_split=train_split,
                     )
                     if first_file:
                         logger.info(f"Tier 1: loading single file {first_file}")
@@ -350,7 +352,7 @@ def check_format_response(
                 except Exception as e:
                     logger.warning(
                         "Tier 1 (single-file) failed: %s",
-                        download_registry.scrub_secrets(str(e), hf_token = hf_token),
+                        download_registry.scrub_secrets(str(e), hf_token=hf_token),
                     )
 
             if preview_slice is None:
@@ -372,8 +374,8 @@ def check_format_response(
                     rows = list(islice(streamed_ds, PREVIEW_SIZE))
                     if not rows:
                         raise HTTPException(
-                            status_code = 400,
-                            detail = "Dataset appears to be empty or could not be streamed",
+                            status_code=400,
+                            detail="Dataset appears to be empty or could not be streamed",
                         )
 
                     preview_slice = Dataset.from_list(rows)
@@ -388,7 +390,7 @@ def check_format_response(
                         raise
                     preview_slice, total_rows = cached_preview
 
-        result = check_dataset_format(preview_slice, is_vlm = request.is_vlm)
+        result = check_dataset_format(preview_slice, is_vlm=request.is_vlm)
 
         logger.info(
             f"Format check result: requires_mapping={result['requires_manual_mapping']}, format={result['detected_format']}, is_image={result.get('is_image', False)}"
@@ -427,26 +429,26 @@ def check_format_response(
                 pass
 
         return CheckFormatResponse(
-            requires_manual_mapping = result["requires_manual_mapping"],
-            detected_format = result["detected_format"],
-            columns = result["columns"],
-            is_image = result.get("is_image", False),
-            is_audio = result.get("is_audio", False),
-            multimodal_columns = result.get("multimodal_columns"),
-            suggested_mapping = result.get("suggested_mapping"),
-            detected_image_column = result.get("detected_image_column"),
-            detected_audio_column = result.get("detected_audio_column"),
-            detected_text_column = result.get("detected_text_column"),
-            detected_speaker_column = result.get("detected_speaker_column"),
-            preview_samples = preview_samples,
-            total_rows = total_rows,
-            warning = warning,
+            requires_manual_mapping=result["requires_manual_mapping"],
+            detected_format=result["detected_format"],
+            columns=result["columns"],
+            is_image=result.get("is_image", False),
+            is_audio=result.get("is_audio", False),
+            multimodal_columns=result.get("multimodal_columns"),
+            suggested_mapping=result.get("suggested_mapping"),
+            detected_image_column=result.get("detected_image_column"),
+            detected_audio_column=result.get("detected_audio_column"),
+            detected_text_column=result.get("detected_text_column"),
+            detected_speaker_column=result.get("detected_speaker_column"),
+            preview_samples=preview_samples,
+            total_rows=total_rows,
+            warning=warning,
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
+        scrubbed = download_registry.scrub_secrets(str(e), hf_token=hf_token)
         # Missing/gated/bad-token and malformed names are client errors, not 500s.
         status = hf_error_status(e)
         if (
@@ -461,11 +463,11 @@ def check_format_response(
         elif status is None and isinstance(e, ValueError):
             status = 400
         if status is not None:
-            raise HTTPException(status_code = status, detail = scrubbed)
+            raise HTTPException(status_code=status, detail=scrubbed)
         logger.error("Error checking dataset format: %s", scrubbed)
         raise HTTPException(
-            status_code = 500,
-            detail = "Failed to check dataset format: " + scrubbed,
+            status_code=500,
+            detail="Failed to check dataset format: " + scrubbed,
         )
 
 
@@ -487,44 +489,44 @@ def ai_assist_mapping_response(
         ]
 
         result = llm_conversion_advisor(
-            column_names = request.columns,
-            samples = truncated,
-            dataset_name = request.dataset_name,
-            hf_token = hf_token,
-            model_name = request.model_name,
-            model_type = request.model_type,
+            column_names=request.columns,
+            samples=truncated,
+            dataset_name=request.dataset_name,
+            hf_token=hf_token,
+            model_name=request.model_name,
+            model_type=request.model_type,
         )
 
         if result and result.get("success"):
             return AiAssistMappingResponse(
-                success = True,
-                suggested_mapping = result.get("suggested_mapping"),
-                system_prompt = result.get("system_prompt"),
-                user_template = result.get("user_template"),
-                assistant_template = result.get("assistant_template"),
-                label_mapping = result.get("label_mapping"),
-                dataset_type = result.get("dataset_type"),
-                is_conversational = result.get("is_conversational"),
-                user_notification = result.get("user_notification"),
-                warning = result.get("warning"),
+                success=True,
+                suggested_mapping=result.get("suggested_mapping"),
+                system_prompt=result.get("system_prompt"),
+                user_template=result.get("user_template"),
+                assistant_template=result.get("assistant_template"),
+                label_mapping=result.get("label_mapping"),
+                dataset_type=result.get("dataset_type"),
+                is_conversational=result.get("is_conversational"),
+                user_notification=result.get("user_notification"),
+                warning=result.get("warning"),
             )
 
         return AiAssistMappingResponse(
-            success = False,
-            warning = "AI could not determine column roles. Please assign them manually.",
+            success=False,
+            warning="AI could not determine column roles. Please assign them manually.",
         )
 
     except Exception as e:
-        scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
+        scrubbed = download_registry.scrub_secrets(str(e), hf_token=hf_token)
         status = hf_error_status(e)
         if status is None and isinstance(e, FileNotFoundError):
             status = 404
         elif status is None and isinstance(e, ValueError):
             status = 400
         if status is not None:
-            raise HTTPException(status_code = status, detail = scrubbed)
+            raise HTTPException(status_code=status, detail=scrubbed)
         logger.error("AI assist mapping failed: %s", scrubbed)
         raise HTTPException(
-            status_code = 500,
-            detail = "AI assist failed: " + scrubbed,
+            status_code=500,
+            detail="AI assist failed: " + scrubbed,
         )

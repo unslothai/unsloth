@@ -12,18 +12,18 @@ class _MockTokenizer:
     def __call__(
         self,
         text,
-        add_special_tokens = False,
+        add_special_tokens=False,
     ):
-        return SimpleNamespace(input_ids = list(range(len(text.split()))))
+        return SimpleNamespace(input_ids=list(range(len(text.split()))))
 
     def decode(self, token_ids):
         return " ".join(f"w{i}" for i in token_ids)
 
 
 def _make_kit(
-    max_seq_length = 2048,
-    max_generation_tokens = 512,
-    overlap = 64,
+    max_seq_length=2048,
+    max_generation_tokens=512,
+    overlap=64,
 ):
     kit = SyntheticDataKit.__new__(SyntheticDataKit)
     kit.tokenizer = _MockTokenizer()
@@ -33,19 +33,19 @@ def _make_kit(
     return kit
 
 
-def _chunk(text, kit = None):
+def _chunk(text, kit=None):
     """Returns (chunk_filenames, chunk_contents); reads content before cleanup."""
     if kit is None:
         kit = _make_kit()
-    with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write(text)
         path = f.name
     created = []
     try:
-        created = kit.chunk_data(filename = path)
+        created = kit.chunk_data(filename=path)
         contents = []
         for fn in created:
-            with open(fn, encoding = "utf-8") as fh:
+            with open(fn, encoding="utf-8") as fh:
                 contents.append(fh.read())
         return list(created), contents
     finally:
@@ -79,8 +79,8 @@ def test_chunk_data_short_document_is_not_split_into_fragments():
     # A document shorter than the overlap previously reached the multi-chunk path
     # (n_chunks >= 3) where linspace produced negative start indices, slicing the
     # wrong tail tokens. It must be emitted as one chunk covering the whole document.
-    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 920, overlap = 64)  # max_tokens = 80
-    out, contents = _chunk("word " * 50, kit = kit)  # 50 tokens < overlap (would be 4 chunks)
+    kit = _make_kit(max_seq_length=2048, max_generation_tokens=920, overlap=64)  # max_tokens = 80
+    out, contents = _chunk("word " * 50, kit=kit)  # 50 tokens < overlap (would be 4 chunks)
     assert len(out) == 1, f"sub-overlap doc should yield 1 chunk, got {len(out)}"
     assert contents[0].split() == [
         f"w{i}" for i in range(50)
@@ -90,13 +90,13 @@ def test_chunk_data_short_document_is_not_split_into_fragments():
 def test_chunk_data_rejects_overlap_not_smaller_than_chunk():
     # If overlap >= chunk size the stride is non-positive, which would divide by zero
     # or emit one oversized chunk. The config must be rejected with a clear error.
-    kit = _make_kit(max_seq_length = 2048, max_generation_tokens = 950, overlap = 64)  # max_tokens = 20
-    with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
+    kit = _make_kit(max_seq_length=2048, max_generation_tokens=950, overlap=64)  # max_tokens = 20
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("word " * 50)
         path = f.name
     try:
         try:
-            kit.chunk_data(filename = path)
+            kit.chunk_data(filename=path)
             raise AssertionError("expected RuntimeError when overlap >= chunk size")
         except RuntimeError as e:
             assert "overlap" in str(e), f"error should mention overlap, got: {e}"

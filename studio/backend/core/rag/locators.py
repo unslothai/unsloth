@@ -22,7 +22,7 @@ MAX_ANCHOR_WORDS = 12
 MIN_ANCHOR_WORDS = 4
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class LocatorMatch:
     page_index: int
     page_number: int | None
@@ -154,6 +154,7 @@ def pdf_regions_for_chunks(pdf_path: Path, pages: list, chunks: list) -> list[li
         return [[] for _ in chunks]
     try:
         import pymupdf
+
         doc = pymupdf.open(str(pdf_path))
     except Exception:
         return [[] for _ in chunks]
@@ -171,10 +172,10 @@ def pdf_regions_for_chunks(pdf_path: Path, pages: list, chunks: list) -> list[li
                 regions.append([])
                 continue
             match = LocatorMatch(
-                page_index = int(page_index),
-                page_number = getattr(chunk, "page_number", None),
-                start = int(start),
-                end = int(end),
+                page_index=int(page_index),
+                page_number=getattr(chunk, "page_number", None),
+                start=int(start),
+                end=int(end),
             )
             regions.append(_regions_for_match(doc, pages[page_index].text, match))
         return regions

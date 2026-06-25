@@ -93,7 +93,7 @@ def test_parse_overflow_counts_missing_fields():
 
 def test_truncation_drops_middle_keeps_anchors():
     msgs = _conversation()
-    new, dropped = _truncate_middle_messages(msgs, keep_ratio = 0.5)
+    new, dropped = _truncate_middle_messages(msgs, keep_ratio=0.5)
     assert dropped > 0
     assert len(new) == len(msgs) - dropped
     # System prompt and task anchor survive.
@@ -106,7 +106,7 @@ def test_truncation_drops_middle_keeps_anchors():
 
 def test_truncation_never_orphans_tool_results():
     msgs = _conversation()
-    new, dropped = _truncate_middle_messages(msgs, keep_ratio = 0.4)
+    new, dropped = _truncate_middle_messages(msgs, keep_ratio=0.4)
     assert dropped > 0
     surviving_call_ids = {
         tc["id"] for m in new if m.get("role") == "assistant" for tc in (m.get("tool_calls") or [])
@@ -119,7 +119,7 @@ def test_truncation_never_orphans_tool_results():
 def test_truncation_reduces_estimated_size_toward_target():
     msgs = _conversation()
     total = sum(_estimate_message_tokens(m) for m in msgs)
-    new, dropped = _truncate_middle_messages(msgs, keep_ratio = 0.5)
+    new, dropped = _truncate_middle_messages(msgs, keep_ratio=0.5)
     new_total = sum(_estimate_message_tokens(m) for m in new)
     assert dropped > 0
     assert new_total < total
@@ -133,7 +133,7 @@ def test_truncation_reduces_estimated_size_toward_target():
 
 def test_truncation_noop_when_keep_ratio_full():
     msgs = _conversation()
-    new, dropped = _truncate_middle_messages(msgs, keep_ratio = 1.0)
+    new, dropped = _truncate_middle_messages(msgs, keep_ratio=1.0)
     assert dropped == 0
     assert new == msgs
 
@@ -145,7 +145,7 @@ def test_truncation_noop_when_only_protected_turns_remain():
         *_tool_turn(0),
         {"role": "user", "content": "latest"},
     ]
-    new, dropped = _truncate_middle_messages(msgs, keep_ratio = 0.1)
+    new, dropped = _truncate_middle_messages(msgs, keep_ratio=0.1)
     assert dropped == 0
     assert new == msgs
 
@@ -181,8 +181,8 @@ def test_apply_overflow_truncation_clips_giant_protected_tool_results():
     msgs = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "task"},
-        *_tool_turn(0, result_chars = 60000),
-        *_tool_turn(1, result_chars = 60000),
+        *_tool_turn(0, result_chars=60000),
+        *_tool_turn(1, result_chars=60000),
     ]
     body = {"messages": msgs, "max_tokens": 32000}
     n_before = len(msgs)
@@ -206,11 +206,11 @@ def test_clip_long_contents_reaches_target_and_keeps_structure():
     msgs = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "task"},
-        *_tool_turn(0, result_chars = 40000),
+        *_tool_turn(0, result_chars=40000),
         {"role": "user", "content": "latest question"},
     ]
     total = sum(_estimate_message_tokens(m) for m in msgs)
-    clipped = _clip_long_contents(msgs, target_est = total // 4)
+    clipped = _clip_long_contents(msgs, target_est=total // 4)
     assert clipped >= 1
     assert sum(_estimate_message_tokens(m) for m in msgs) <= total // 4
     # Roles and count unchanged; the short final user message untouched.
@@ -219,7 +219,7 @@ def test_clip_long_contents_reaches_target_and_keeps_structure():
 
 
 def test_overflow_truncation_requested_reads_field(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_CONTEXT_OVERFLOW", raising = False)
+    monkeypatch.delenv("UNSLOTH_CONTEXT_OVERFLOW", raising=False)
 
     class _P:
         context_overflow = "truncate_middle"

@@ -75,17 +75,17 @@ GIB = 1024**3
 
 def _make_mla_backend(
     *,
-    n_layers = 79,
-    n_kv_heads = 1,
-    n_heads = 64,
-    kv_key_length = 576,
-    kv_value_length = 512,
-    kv_lora_rank = 512,
-    key_length_mla = 256,
-    nextn = 1,
-    embedding_length = 6144,
-    vocab = 154880,
-    native_ctx = 1048576,
+    n_layers=79,
+    n_kv_heads=1,
+    n_heads=64,
+    kv_key_length=576,
+    kv_value_length=512,
+    kv_lora_rank=512,
+    key_length_mla=256,
+    nextn=1,
+    embedding_length=6144,
+    vocab=154880,
+    native_ctx=1048576,
 ):
     """GLM-5.2-class backend: MLA attention + an embedded MTP head."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -115,13 +115,13 @@ def _make_mla_backend(
 def _make_non_mla_backend(**kw):
     """Qwen3.6-MTP-class embedded head: no MLA (kv_lora_rank is None)."""
     b = _make_mla_backend(
-        n_kv_heads = 4,
-        n_heads = 24,
-        kv_key_length = 256,
-        kv_value_length = 256,
-        embedding_length = 5120,
-        n_layers = 65,
-        native_ctx = 262144,
+        n_kv_heads=4,
+        n_heads=24,
+        kv_key_length=256,
+        kv_value_length=256,
+        embedding_length=5120,
+        n_layers=65,
+        native_ctx=262144,
         **kw,
     )
     b._kv_lora_rank = None
@@ -181,7 +181,7 @@ class TestMlaTargetCtxReserve:
         b = _make_mla_backend()
         ctx = 262144
         mtp = b._estimate_mtp_overhead_bytes(ctx)  # default True == MTP draft
-        separate = b._estimate_mtp_overhead_bytes(ctx, mtp_keeps_target_ctx = False)
+        separate = b._estimate_mtp_overhead_bytes(ctx, mtp_keeps_target_ctx=False)
         # Separate-drafter overhead is exactly the draft KV (no target copy)...
         assert separate == b._mtp_draft_kv_bytes(ctx)
         # ...and the MTP reserve is that plus the full f16 target copy.
@@ -205,18 +205,18 @@ class TestMlaFitPreventsOom:
             self.REQ_CTX,
             self.AVAIL_MIB,
             self.MODEL_BYTES,
-            mtp_engaged = True,
-            total_mib = self.TOTAL_MIB,
-            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
+            mtp_engaged=True,
+            total_mib=self.TOTAL_MIB,
+            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
         )
         # The old behaviour (draft head only, no target copy) kept the full ctx.
         draft_only = b._fit_context_to_vram(
             self.REQ_CTX,
             self.AVAIL_MIB,
             self.MODEL_BYTES,
-            mtp_engaged = True,
-            total_mib = self.TOTAL_MIB,
-            mtp_overhead_fn = lambda c: b._mtp_draft_kv_bytes(c) or 0,
+            mtp_engaged=True,
+            total_mib=self.TOTAL_MIB,
+            mtp_overhead_fn=lambda c: b._mtp_draft_kv_bytes(c) or 0,
         )
         assert draft_only == self.REQ_CTX  # reproduces the over-advertised context
         assert with_copy < self.REQ_CTX  # corrected reserve backs the context off

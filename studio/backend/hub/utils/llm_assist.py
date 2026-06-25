@@ -31,10 +31,10 @@ def _helper_disabled() -> bool:
 def _strip_think_tags(text: str) -> str:
     if "<think>" not in text:
         return text
-    stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags = re.DOTALL).strip()
+    stripped = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
     if stripped:
         return stripped
-    matches = re.findall(r"<think>(.*?)</think>", text, flags = re.DOTALL)
+    matches = re.findall(r"<think>(.*?)</think>", text, flags=re.DOTALL)
     return matches[-1].strip() if matches else text
 
 
@@ -64,13 +64,13 @@ def _parse_json_response(text: str) -> Optional[dict[str, Any]]:
 def _generate_with_backend(backend, messages: list[dict[str, str]], max_tokens: int) -> str:
     cumulative = ""
     for chunk in backend.generate_chat_completion(
-        messages = messages,
-        temperature = 0.1,
-        top_p = 0.9,
-        top_k = 20,
-        max_tokens = max_tokens,
-        repetition_penalty = 1.0,
-        enable_thinking = False,
+        messages=messages,
+        temperature=0.1,
+        top_p=0.9,
+        top_k=20,
+        max_tokens=max_tokens,
+        repetition_penalty=1.0,
+        enable_thinking=False,
     ):
         if isinstance(chunk, dict):
             continue
@@ -84,7 +84,7 @@ def _fetch_hf_dataset_card(
     try:
         from huggingface_hub import DatasetCard
 
-        card = DatasetCard.load(dataset_name, token = hf_token)
+        card = DatasetCard.load(dataset_name, token=hf_token)
         readme = card.text or ""
         if len(readme) > README_MAX_CHARS:
             cut = readme[:README_MAX_CHARS].rfind(".")
@@ -111,7 +111,7 @@ def _fetch_hf_dataset_card(
         logger.warning(
             "Could not fetch dataset card for %s: %s",
             dataset_name,
-            download_registry.scrub_secrets(str(exc), hf_token = hf_token),
+            download_registry.scrub_secrets(str(exc), hf_token=hf_token),
         )
         return None, None
 
@@ -167,19 +167,19 @@ def _run_multi_pass_advisor(
         backend = LlamaCppBackend()
         started = time.monotonic()
         if not backend.load_model(
-            hf_repo = repo,
-            hf_variant = variant,
-            model_identifier = f"hub-advisor:{repo}:{variant}",
-            is_vision = False,
-            n_ctx = 2048,
-            n_gpu_layers = -1,
+            hf_repo=repo,
+            hf_variant=variant,
+            model_identifier=f"hub-advisor:{repo}:{variant}",
+            is_vision=False,
+            n_ctx=2048,
+            n_gpu_layers=-1,
         ):
             return None
         logger.info("Hub advisor model loaded in %.1fs", time.monotonic() - started)
 
         samples_text = _sample_text(columns, samples)
         metadata_text = (
-            json.dumps(dataset_metadata, indent = 2, default = str)[:500] if dataset_metadata else "N/A"
+            json.dumps(dataset_metadata, indent=2, default=str)[:500] if dataset_metadata else "N/A"
         )
         card_excerpt = (dataset_card or "")[:1200] or "N/A"
         hints = _target_hints(model_name, model_type)
@@ -414,13 +414,13 @@ def llm_conversion_advisor(
         dataset_card, dataset_metadata = _fetch_hf_dataset_card(dataset_name, hf_token)
 
     result = _run_multi_pass_advisor(
-        columns = column_names,
-        samples = samples,
-        dataset_name = dataset_name,
-        dataset_card = dataset_card,
-        dataset_metadata = dataset_metadata,
-        model_name = model_name,
-        model_type = model_type,
+        columns=column_names,
+        samples=samples,
+        dataset_name=dataset_name,
+        dataset_card=dataset_card,
+        dataset_metadata=dataset_metadata,
+        model_name=model_name,
+        model_type=model_type,
     )
     if result and result.get("success"):
         return result

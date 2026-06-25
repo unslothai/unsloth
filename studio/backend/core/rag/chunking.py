@@ -16,7 +16,7 @@ TokenCounter = Callable[[str], int]
 SEPARATORS = ("\n# ", "\n## ", "\n### ", "\n\n", "\n", ". ", " ", "")
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Chunk:
     text: str
     token_count: int
@@ -109,13 +109,13 @@ def chunk_pages(
         for text, char_start, char_end in _merge(pieces, starts, max_tokens, overlap, count):
             out.append(
                 Chunk(
-                    text = text,
-                    token_count = count(text),
-                    page_number = page.page_number,
-                    source_page_index = page_index,
-                    chunk_index = len(out),
-                    page_char_start = char_start,
-                    page_char_end = char_end,
+                    text=text,
+                    token_count=count(text),
+                    page_number=page.page_number,
+                    source_page_index=page_index,
+                    chunk_index=len(out),
+                    page_char_start=char_start,
+                    page_char_end=char_end,
                 )
             )
     return out

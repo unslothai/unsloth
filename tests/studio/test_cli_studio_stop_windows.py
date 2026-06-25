@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 _STUDIO_CMD_PY = Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
-_SOURCE = _STUDIO_CMD_PY.read_text(encoding = "utf-8")
+_SOURCE = _STUDIO_CMD_PY.read_text(encoding="utf-8")
 
 
 def _func_source(name: str) -> str:
@@ -30,12 +30,12 @@ def _func_source(name: str) -> str:
     raise AssertionError(f"function {name!r} not found in studio.py")
 
 
-def _load_pid_alive(platform: str, fake_run = None):
+def _load_pid_alive(platform: str, fake_run=None):
     """Exec just `_pid_alive` with injectable sys/subprocess to drive the win32
     branch on any host without importing unsloth_cli."""
     src = _func_source("_pid_alive")
-    fake_sys = types.SimpleNamespace(platform = platform)
-    fake_sub = types.SimpleNamespace(run = fake_run) if fake_run is not None else subprocess
+    fake_sys = types.SimpleNamespace(platform=platform)
+    fake_sub = types.SimpleNamespace(run=fake_run) if fake_run is not None else subprocess
     ns = {"os": os, "sys": fake_sys, "subprocess": fake_sub}
     exec(src, ns)
     return ns["_pid_alive"]
@@ -82,9 +82,9 @@ def test_pid_alive_helper_is_defined_and_used_by_stop():
 def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
     def _run(
         cmd,
-        capture_output = False,
-        text = False,
-        timeout = None,
+        capture_output=False,
+        text=False,
+        timeout=None,
     ):
         assert cmd[0] == "tasklist"
         assert "/FI" in cmd  # filtered by PID
@@ -94,31 +94,31 @@ def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
             stdout = "INFO: No tasks are running which match the specified criteria.\n"
         else:
             stdout = f'"python.exe","{returns_pid}","Console","1","12,345 K"\n'
-        return types.SimpleNamespace(stdout = stdout, returncode = 0)
+        return types.SimpleNamespace(stdout=stdout, returncode=0)
 
     return _run
 
 
 def test_pid_alive_windows_true_when_tasklist_lists_pid():
-    pid_alive = _load_pid_alive("win32", fake_run = _fake_tasklist(4242))
+    pid_alive = _load_pid_alive("win32", fake_run=_fake_tasklist(4242))
     assert pid_alive(4242) is True
 
 
 def test_pid_alive_windows_false_when_tasklist_empty():
-    pid_alive = _load_pid_alive("win32", fake_run = _fake_tasklist(None))
+    pid_alive = _load_pid_alive("win32", fake_run=_fake_tasklist(None))
     assert pid_alive(4242) is False
 
 
 def test_pid_alive_windows_assumes_alive_when_tasklist_errors():
     # Can't determine -> assume alive; taskkill is the source of truth.
-    pid_alive = _load_pid_alive("win32", fake_run = _fake_tasklist(None, raises = True))
+    pid_alive = _load_pid_alive("win32", fake_run=_fake_tasklist(None, raises=True))
     assert pid_alive(4242) is True
 
 
 # ── Behavioral: the POSIX signal-0 branch (skip on Windows runners) ───────────
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX os.kill(pid,0) branch")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX os.kill(pid,0) branch")
 def test_pid_alive_posix_true_for_self_false_for_dead():
     pid_alive = _load_pid_alive("linux")
     assert pid_alive(os.getpid()) is True

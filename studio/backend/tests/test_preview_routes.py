@@ -39,7 +39,7 @@ from models.inference import ChatCompletionRequest
 
 def _make_run(outputs: Path, name: str = "demorun") -> Path:
     run = outputs / name
-    run.mkdir(parents = True)
+    run.mkdir(parents=True)
     (run / "adapter_config.json").write_text(
         json.dumps({"base_model_name_or_path": "HuggingFaceTB/SmolLM-135M"})
     )
@@ -76,10 +76,10 @@ def client(tmp_path, monkeypatch, captured):
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
-    app.include_router(preview.router, prefix = "/p")
+    app.include_router(preview.router, prefix="/p")
     app.dependency_overrides[preview.get_current_subject] = lambda: "admin"
     # raise_server_exceptions=False so a 5xx surfaces as a response, not a throw.
-    return TestClient(app, raise_server_exceptions = False)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 # ── Page rendering ────────────────────────────────────────────────────────
@@ -97,14 +97,14 @@ def test_page_renders_with_csp(client):
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.
-    _make_run(outputs, name = "a<b")
+    _make_run(outputs, name="a<b")
     from utils.paths import storage_roots as _sr
 
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
 
     app = FastAPI()
-    app.include_router(preview.router, prefix = "/p")
-    c = TestClient(app, raise_server_exceptions = False)
+    app.include_router(preview.router, prefix="/p")
+    c = TestClient(app, raise_server_exceptions=False)
 
     r = c.get("/p/a%3Cb")
     assert r.status_code == 200
@@ -153,7 +153,7 @@ def test_traversal_and_missing_rejected(client, path):
 def test_chat_traversal_rejected(client):
     r = client.post(
         "/p/..%2f..%2fetc/v1/chat/completions",
-        json = {"messages": [{"role": "user", "content": "hi"}]},
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code in (400, 404)
 
@@ -180,7 +180,7 @@ def test_asset_path_contained(client, asset):
 def test_chat_payload_sanitized(client, captured):
     r = client.post(
         "/p/demorun/v1/chat/completions",
-        json = {
+        json={
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"type": "function", "function": {"name": "rm", "parameters": {}}}],
             "enable_tools": True,
@@ -225,7 +225,7 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
     # Merged (non-LoRA) checkpoint: no adapter to toggle, so use_adapter -> None.
     outputs = tmp_path / "outputs"
     merged = outputs / "mergedrun"
-    merged.mkdir(parents = True)
+    merged.mkdir(parents=True)
     (merged / "config.json").write_text(json.dumps({"_name_or_path": "some/base"}))
 
     from utils.paths import storage_roots as _sr
@@ -243,11 +243,11 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
-    app.include_router(preview.router, prefix = "/p")
-    c = TestClient(app, raise_server_exceptions = False)
+    app.include_router(preview.router, prefix="/p")
+    c = TestClient(app, raise_server_exceptions=False)
     r = c.post(
         "/p/mergedrun/v1/chat/completions",
-        json = {"messages": [{"role": "user", "content": "hi"}], "use_adapter": False},
+        json={"messages": [{"role": "user", "content": "hi"}], "use_adapter": False},
     )
     assert r.status_code == 200
     assert captured["payload"].use_adapter is None
@@ -278,8 +278,8 @@ def test_streaming_holds_lock_until_drained(tmp_path, monkeypatch, captured):
 
     async def _run():
         assert not preview._preview_lock.locked()
-        payload = ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
-        resp = await preview._serve_chat("demorun", None, payload, request = None)
+        payload = ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}])
+        resp = await preview._serve_chat("demorun", None, payload, request=None)
         # Lock must still be held: a second checkpoint must not swap the backend
         # mid-stream.
         assert preview._preview_lock.locked()

@@ -28,9 +28,9 @@ from scripts import scan_npm_packages as snp  # noqa: E402
 def _run_scanner(lockfile: Path, *, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--lockfile", str(lockfile)],
-        capture_output = True,
-        text = True,
-        timeout = timeout,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
 
 
@@ -81,7 +81,7 @@ _BLOCKED_AVAILABLE = hasattr(snp, "BLOCKED_NPM_VERSIONS")
 
 @pytest.mark.skipif(
     not _BLOCKED_AVAILABLE,
-    reason = "Fork 1 (BLOCKED_NPM_VERSIONS constant) not merged yet",
+    reason="Fork 1 (BLOCKED_NPM_VERSIONS constant) not merged yet",
 )
 def test_blocked_npm_versions_complete():
     table = snp.BLOCKED_NPM_VERSIONS
@@ -143,12 +143,12 @@ def test_blocked_npm_versions_complete():
 
 @pytest.mark.skipif(
     not _BLOCKED_AVAILABLE,
-    reason = "Fork 1 (BLOCKED_NPM_VERSIONS pre-fetch hook) not merged yet",
+    reason="Fork 1 (BLOCKED_NPM_VERSIONS pre-fetch hook) not merged yet",
 )
 def test_blocked_npm_versions_short_circuits_download():
     """Pre-fetch hook flags the malicious tanstack entry (exit 1) without hitting the npm registry."""
     fixture = FIXTURES / "malicious_lockfile.json"
-    proc = _run_scanner(fixture, timeout = 10)
+    proc = _run_scanner(fixture, timeout=10)
     assert proc.returncode == 1
     combined = proc.stdout + proc.stderr
     assert "blocked-known-malicious" in combined or "BLOCKED_NPM_VERSIONS" in combined
@@ -167,10 +167,10 @@ def _extract_pkg_with_ioc(ioc: str, tmp_path: Path) -> Path:
         "description": f"contains literal: {ioc}",
     }
     root = tmp_path / f"pkg_{abs(hash(ioc)) % 10**8}"
-    (root / "package").mkdir(parents = True)
+    (root / "package").mkdir(parents=True)
     (root / "package" / "package.json").write_text(
         json.dumps(pkg_json),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     return root
 
@@ -181,16 +181,16 @@ def test_every_known_ioc_string_caught(tmp_path):
     assert iocs, "KNOWN_IOC_STRINGS unexpectedly empty"
 
     pkg = snp.PackageEntry(
-        name = "ioc-fixture",
-        version = "0.0.1",
-        resolved = "https://registry.npmjs.org/ioc-fixture/-/ioc-fixture-0.0.1.tgz",
-        integrity = "sha512-stub",
-        lockfile_key = "node_modules/ioc-fixture",
+        name="ioc-fixture",
+        version="0.0.1",
+        resolved="https://registry.npmjs.org/ioc-fixture/-/ioc-fixture-0.0.1.tgz",
+        integrity="sha512-stub",
+        lockfile_key="node_modules/ioc-fixture",
     )
 
     for ioc in iocs:
         root = _extract_pkg_with_ioc(ioc, tmp_path)
-        findings = snp.scan_extracted_tree(pkg = pkg, root = root)
+        findings = snp.scan_extracted_tree(pkg=pkg, root=root)
         hit = any(ioc in f.evidence or ioc in f.detail for f in findings)
         assert hit, (
             f"KNOWN_IOC_STRINGS[{ioc!r}] not detected by scan_extracted_tree; "
@@ -263,11 +263,11 @@ def test_strip_fails_open_on_unterminated_block_comment():
 def test_strip_only_applies_to_js_family():
     # A `//`-containing JSON/YAML string must be left intact (JS lexer must not apply).
     PKG = snp.PackageEntry(
-        name = "x",
-        version = "1.0.0",
-        resolved = "https://registry.npmjs.org/x/-/x-1.0.0.tgz",
-        integrity = "sha512-z",
-        lockfile_key = "node_modules/x",
+        name="x",
+        version="1.0.0",
+        resolved="https://registry.npmjs.org/x/-/x-1.0.0.tgz",
+        integrity="sha512-z",
+        lockfile_key="node_modules/x",
     )
     # scan_text_blob strips for .js but not for .json.
     yaml_like = 'url: "http://h"  # a yaml comment, not JS\n'
@@ -282,11 +282,11 @@ def test_strip_only_applies_to_js_family():
 
 
 _PKG = snp.PackageEntry(
-    name = "x",
-    version = "1.0.0",
-    resolved = "https://registry.npmjs.org/x/-/x-1.0.0.tgz",
-    integrity = "sha512-z",
-    lockfile_key = "node_modules/x",
+    name="x",
+    version="1.0.0",
+    resolved="https://registry.npmjs.org/x/-/x-1.0.0.tgz",
+    integrity="sha512-z",
+    lockfile_key="node_modules/x",
 )
 _BLOB = "QWxhZGRpbg" * 240  # ~2.4 KiB base64-ish
 
@@ -327,9 +327,9 @@ def _finding(
     pkg,
     fn,
     pattern,
-    sev = snp.HIGH,
+    sev=snp.HIGH,
 ):
-    return snp.Finding(severity = sev, package = pkg, filename = fn, pattern = pattern)
+    return snp.Finding(severity=sev, package=pkg, filename=fn, pattern=pattern)
 
 
 def test_norm_pkg_name_strips_version_keeps_scope():
@@ -372,7 +372,7 @@ def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
                 ],
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     baseline = snp._load_baseline(str(bl))
 
@@ -413,7 +413,7 @@ def test_legacy_schema_baseline_is_ignored(tmp_path):
                 ],
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     assert snp._load_baseline(str(bl)) == set()
 
@@ -422,6 +422,6 @@ def test_committed_baseline_is_empty_and_valid():
     # Shipped baseline must parse and (by design) suppress nothing: the live corpus is clean.
     path = REPO_ROOT / "scripts" / "scan_npm_packages_baseline.json"
     assert path.is_file()
-    doc = json.loads(path.read_text(encoding = "utf-8"))
+    doc = json.loads(path.read_text(encoding="utf-8"))
     assert doc.get("entries") == []
     assert snp._load_baseline(str(path)) == set()

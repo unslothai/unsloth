@@ -25,11 +25,11 @@ def test_vlm_lora_regex_respects_language_only_with_explicit_targets():
 
     regex = get_peft_regex(
         FakeVLM(),
-        finetune_vision_layers = False,
-        finetune_language_layers = True,
-        finetune_attention_modules = True,
-        finetune_mlp_modules = True,
-        target_modules = ["q_proj"],
+        finetune_vision_layers=False,
+        finetune_language_layers=True,
+        finetune_attention_modules=True,
+        finetune_mlp_modules=True,
+        target_modules=["q_proj"],
     )
 
     assert re.search(regex, "language_model.layers.0.self_attn.q_proj")

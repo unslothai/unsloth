@@ -51,7 +51,7 @@ class RemoteCodeDecision:
     max_severity: Optional[str]
     findings_summary: str
     reason: str
-    findings: list = field(default_factory = list)  # structured [{severity,file,check,evidence}]
+    findings: list = field(default_factory=list)  # structured [{severity,file,check,evidence}]
     approvable: bool = True  # False only for CRITICAL (user cannot override)
 
     def response_payload(self) -> dict:
@@ -116,6 +116,7 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
         return False
     try:
         from utils.paths import is_local_path
+
         if is_local_path(name):
             return True
     except Exception:
@@ -151,7 +152,7 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
         configs = []
         for name in _REMOTE_CODE_CONFIG_FILES:
             try:
-                p = hf_hub_download(repo_id = model_name, filename = name, token = hf_token)
+                p = hf_hub_download(repo_id=model_name, filename=name, token=hf_token)
             except EntryNotFoundError:
                 continue  # genuine 404 -> truly absent
             except Exception:
@@ -182,9 +183,9 @@ def evaluate_remote_code_consent(
     return evaluate_remote_code_consent_for_targets(
         [model_name],
         hf_token,
-        trust_remote_code = trust_remote_code,
-        approved_fingerprint = approved_fingerprint,
-        subject = subject,
+        trust_remote_code=trust_remote_code,
+        approved_fingerprint=approved_fingerprint,
+        subject=subject,
     )
 
 
@@ -196,6 +197,7 @@ def _fingerprint_target_key(target: str) -> str:
     """
     try:
         from utils.paths import is_local_path
+
         if is_local_path(target):
             return target
     except Exception:
@@ -257,7 +259,7 @@ def evaluate_remote_code_consent_for_targets(
             continue
         has_remote_code = True
         try:
-            files = repo_remote_code_files(target, hf_token = hf_token)
+            files = repo_remote_code_files(target, hf_token=hf_token)
         except RemoteCodeUnscannable:
             logger.warning(
                 "Blocking trust_remote_code load of '%s': remote code present (auto_map) "
@@ -274,7 +276,7 @@ def evaluate_remote_code_consent_for_targets(
                 "scanned. Retry when the repo is reachable and the correct Hugging Face "
                 "token is set.",
                 "blocked: remote code could not be scanned",
-                approvable = False,
+                approvable=False,
             )
         # Namespace filenames by (casing-normalized) target so two repos' same-named
         # files stay distinct and the pin tracks code, not the repo-id spelling.
@@ -337,13 +339,14 @@ def evaluate_remote_code_consent_for_targets(
     # the code or the ruleset changes.
     if approved and subject and caller_approved_fingerprint == fingerprint:
         from utils.security import remote_code_approvals
+
         remote_code_approvals.record(
             subject,
             remote_code_approvals.approval_target_key(targets),
-            commit_sha = remote_code_approvals.resolve_combined_sha(targets, hf_token),
-            fingerprint = fingerprint,
-            max_severity = sev,
-            scanner_version = remote_code_approvals.SCANNER_VERSION,
+            commit_sha=remote_code_approvals.resolve_combined_sha(targets, hf_token),
+            fingerprint=fingerprint,
+            max_severity=sev,
+            scanner_version=remote_code_approvals.SCANNER_VERSION,
         )
 
     return RemoteCodeDecision(
@@ -354,6 +357,6 @@ def evaluate_remote_code_consent_for_targets(
         sev,
         result.summary(),
         reason,
-        findings = result.findings_payload(),
-        approvable = approvable,
+        findings=result.findings_payload(),
+        approvable=approvable,
     )

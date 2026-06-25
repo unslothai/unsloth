@@ -39,8 +39,8 @@ def show_version(value: bool):
 
 
 app = typer.Typer(
-    help = "Command-line interface for Unsloth training, inference, and export.",
-    context_settings = {"help_option_names": ["-h", "--help"]},
+    help="Command-line interface for Unsloth training, inference, and export.",
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 
@@ -50,9 +50,9 @@ def main(
         None,
         "--version",
         "-V",
-        callback = show_version,
-        is_eager = True,
-        help = "Show version and exit.",
+        callback=show_version,
+        is_eager=True,
+        help="Show version and exit.",
     ),
 ):
     if (
@@ -66,10 +66,10 @@ def main(
             typer.secho(
                 "Refusing to run Unsloth inside System32 as it will lead to Errors.\n"
                 "cd to a normal working directory and try again.",
-                fg = "red",
-                err = True,
+                fg="red",
+                err=True,
             )
-            raise typer.Exit(code = 1)
+            raise typer.Exit(code=1)
 
 
 app.command()(train)
@@ -77,20 +77,20 @@ app.command()(inference)
 app.command()(chat)
 app.command()(export)
 app.command("list-checkpoints")(list_checkpoints)
-app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
+app.add_typer(studio_app, name="studio", help="Unsloth Studio commands.")
 app.add_typer(
     connect_app,
-    name = "connect",
-    help = "Connect a coding agent (Claude Code, Codex) to Studio.",
+    name="connect",
+    help="Connect a coding agent (Claude Code, Codex) to Studio.",
 )
 
 # Top-level `unsloth run` aliases `unsloth studio run`; same context
 # so unknown flags still pass through to llama-server.
 app.command(
     "run",
-    context_settings = {
+    context_settings={
         "allow_extra_args": True,
         "ignore_unknown_options": True,
     },
-    help = "Alias for `unsloth studio run`.",
+    help="Alias for `unsloth studio run`.",
 )(studio_run)

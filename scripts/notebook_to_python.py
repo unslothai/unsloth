@@ -48,7 +48,7 @@ def github_blob_to_raw(url: str) -> str:
         return url
     new_path = parsed.path.replace("/blob/", "/", 1)
     return urllib.parse.urlunparse(
-        parsed._replace(netloc = "raw.githubusercontent.com", path = new_path)
+        parsed._replace(netloc="raw.githubusercontent.com", path=new_path)
     )
 
 
@@ -68,7 +68,7 @@ def download_notebook(url: str) -> tuple[str, str]:
         )
 
     print(f"Downloading {url}...")
-    with urllib.request.urlopen(raw_url, timeout = 60) as response:
+    with urllib.request.urlopen(raw_url, timeout=60) as response:
         content = response.read().decode("utf-8")
 
     return content, filename
@@ -155,7 +155,7 @@ def convert_cell_to_python(source: str, *, allow_shell: bool = True) -> str:
                 cmd_lines.append(lines[i].strip())
             full_cmd = "\n".join(cmd_lines)
 
-            result.extend(_emit_shell_command(indent, full_cmd, allow_shell = allow_shell))
+            result.extend(_emit_shell_command(indent, full_cmd, allow_shell=allow_shell))
 
         # %cd path -> os.chdir(path)
         elif stripped.startswith("%cd "):
@@ -195,7 +195,7 @@ def convert_notebook(
     """Convert notebook JSON content to Python script."""
     # Parse notebook
     if isinstance(notebook_content, str):
-        notebook = nbformat.reads(notebook_content, as_version = 4)
+        notebook = nbformat.reads(notebook_content, as_version=4)
     else:
         notebook = notebook_content
 
@@ -227,7 +227,7 @@ def convert_notebook(
             continue
 
         if cell.cell_type == "code":
-            converted = convert_cell_to_python(source, allow_shell = allow_shell)
+            converted = convert_cell_to_python(source, allow_shell=allow_shell)
             converted = replace_colab_paths(converted)
             lines.append(converted)
             lines.append("")
@@ -273,7 +273,7 @@ def convert_notebook_to_script(
         source_name = source
     else:
         filename = os.path.basename(source)
-        with open(source, "r", encoding = "utf-8") as f:
+        with open(source, "r", encoding="utf-8") as f:
             content = f.read()
         source_name = source
 
@@ -285,9 +285,9 @@ def convert_notebook_to_script(
     else:
         output_path = output_filename
 
-    script = convert_notebook(content, source_name, allow_shell = allow_shell)
+    script = convert_notebook(content, source_name, allow_shell=allow_shell)
 
-    with open(output_path, "w", encoding = "utf-8") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write(script)
 
     print(f"Converted {source} -> {output_path}")
@@ -301,9 +301,9 @@ def main():
         pass
 
     parser = argparse.ArgumentParser(
-        description = __doc__,
-        formatter_class = Formatter,
-        epilog = """
+        description=__doc__,
+        formatter_class=Formatter,
+        epilog="""
 Examples:
   python notebook_to_python.py notebook.ipynb
   python notebook_to_python.py -o scripts/ notebook1.ipynb notebook2.ipynb
@@ -311,27 +311,27 @@ Examples:
   python notebook_to_python.py https://github.com/unslothai/notebooks/blob/main/nb/Oute_TTS_(1B).ipynb
 """,
     )
-    parser.add_argument("notebooks", nargs = "+", help = "Notebook files or URLs to convert.")
-    parser.add_argument("-o", "--output", dest = "output_dir", default = ".", help = "Output directory.")
+    parser.add_argument("notebooks", nargs="+", help="Notebook files or URLs to convert.")
+    parser.add_argument("-o", "--output", dest="output_dir", default=".", help="Output directory.")
     # Default True for backwards compat; pass --no-allow-shell for untrusted notebooks.
     parser.add_argument(
         "--allow-shell",
-        dest = "allow_shell",
-        action = "store_true",
-        default = True,
-        help = "Allow emitting subprocess.run(..., shell=True) for cells "
+        dest="allow_shell",
+        action="store_true",
+        default=True,
+        help="Allow emitting subprocess.run(..., shell=True) for cells "
         "that use shell metacharacters or interpolation (default).",
     )
     parser.add_argument(
         "--no-allow-shell",
-        dest = "allow_shell",
-        action = "store_false",
-        help = "Refuse to emit shell=True; cells with metacharacters error out.",
+        dest="allow_shell",
+        action="store_false",
+        help="Refuse to emit shell=True; cells with metacharacters error out.",
     )
 
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok = True)
+    os.makedirs(args.output_dir, exist_ok=True)
 
     # Track per-notebook failures; continue the loop and exit 1 if any failed.
     failures: list[tuple[str, str]] = []
@@ -341,8 +341,8 @@ Examples:
         try:
             convert_notebook_to_script(
                 source,
-                output_dir = args.output_dir if args.output_dir != "." else None,
-                allow_shell = args.allow_shell,
+                output_dir=args.output_dir if args.output_dir != "." else None,
+                allow_shell=args.allow_shell,
             )
             ok += 1
         except Exception as e:
@@ -351,7 +351,7 @@ Examples:
 
     print(
         f"converted {ok}/{total}, {len(failures)} failed",
-        file = sys.stderr if failures else sys.stdout,
+        file=sys.stderr if failures else sys.stdout,
     )
     sys.exit(1 if failures else 0)
 

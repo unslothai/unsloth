@@ -95,6 +95,7 @@ def ssm_probe_identifier(model_name: str, base: str | None = None) -> str:
     if probe == model_name:
         try:
             from utils.paths import is_local_path
+
             if is_local_path(model_name):
                 probe = os.path.basename((model_name or "").rstrip("/\\")) or model_name
         except Exception:
@@ -123,7 +124,7 @@ def _emit(status_cb: StatusCb, message: str) -> None:
     try:
         status_cb(message)
     except Exception:  # status is best-effort; never fail a load over a UI message
-        logger.debug("ssm_runtime status callback raised", exc_info = True)
+        logger.debug("ssm_runtime status callback raised", exc_info=True)
 
 
 def _hipcc_gcc_install_dir() -> Optional[str]:
@@ -148,7 +149,7 @@ def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
         while not done.wait(60):
             _emit(status_cb, f"Still building {display_name} (this can take several minutes)...")
 
-    threading.Thread(target = _beat, daemon = True).start()
+    threading.Thread(target=_beat, daemon=True).start()
     try:
         return run(cmd, **kwargs)
     finally:
@@ -172,21 +173,21 @@ def _install_kernel(
         logger.info("%s already installed", display_name)
         return True
 
-    env = probe_torch_wheel_env(timeout = 30)
+    env = probe_torch_wheel_env(timeout=30)
     wheel_url = direct_wheel_url(
-        filename_prefix = import_name,
-        package_version = package_version,
-        release_tag = release_tag,
-        release_base_url = release_base_url,
-        env = env,
+        filename_prefix=import_name,
+        package_version=package_version,
+        release_tag=release_tag,
+        release_base_url=release_base_url,
+        env=env,
     )
     if wheel_url and url_exists(wheel_url):
         _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
         for installer, result in install_wheel(
             wheel_url,
-            python_executable = sys.executable,
-            use_uv = bool(shutil.which("uv")),
-            run = run,
+            python_executable=sys.executable,
+            use_uv=bool(shutil.which("uv")),
+            run=run,
         ):
             if getattr(result, "returncode", 1) == 0:
                 # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before
@@ -303,25 +304,25 @@ def ensure_ssm_runtime(
 
     # causal-conv1d first (SSM modeling files lazy-import it; mamba-ssm's fast path uses it).
     if wants_causal_conv1d and not _install_kernel(
-        import_name = "causal_conv1d",
-        display_name = "causal-conv1d",
-        pypi_name = "causal-conv1d",
-        package_version = CAUSAL_CONV1D_PACKAGE_VERSION,
-        release_tag = CAUSAL_CONV1D_RELEASE_TAG,
-        release_base_url = CAUSAL_CONV1D_RELEASE_BASE_URL,
-        status_cb = status_cb,
-        run = run,
+        import_name="causal_conv1d",
+        display_name="causal-conv1d",
+        pypi_name="causal-conv1d",
+        package_version=CAUSAL_CONV1D_PACKAGE_VERSION,
+        release_tag=CAUSAL_CONV1D_RELEASE_TAG,
+        release_base_url=CAUSAL_CONV1D_RELEASE_BASE_URL,
+        status_cb=status_cb,
+        run=run,
     ):
         logger.warning("causal-conv1d unavailable; continuing on the model's torch fallback")
 
     if is_ssm and not _install_kernel(
-        import_name = "mamba_ssm",
-        display_name = "mamba-ssm",
-        pypi_name = "mamba-ssm",
-        package_version = MAMBA_SSM_PACKAGE_VERSION,
-        release_tag = MAMBA_SSM_RELEASE_TAG,
-        release_base_url = MAMBA_SSM_RELEASE_BASE_URL,
-        status_cb = status_cb,
-        run = run,
+        import_name="mamba_ssm",
+        display_name="mamba-ssm",
+        pypi_name="mamba-ssm",
+        package_version=MAMBA_SSM_PACKAGE_VERSION,
+        release_tag=MAMBA_SSM_RELEASE_TAG,
+        release_base_url=MAMBA_SSM_RELEASE_BASE_URL,
+        status_cb=status_cb,
+        run=run,
     ):
         raise RuntimeError("Could not install mamba-ssm, required by this Mamba model.")

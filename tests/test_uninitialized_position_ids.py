@@ -23,13 +23,13 @@ _TEMPLATE = (
 
 def _record(keys_repr: str) -> logging.LogRecord:
     return logging.LogRecord(
-        name = "transformers.modeling_utils",
-        level = logging.WARNING,
-        pathname = "modeling_utils.py",
-        lineno = 1,
-        msg = _TEMPLATE.format(keys = keys_repr),
-        args = None,
-        exc_info = None,
+        name="transformers.modeling_utils",
+        level=logging.WARNING,
+        pathname="modeling_utils.py",
+        lineno=1,
+        msg=_TEMPLATE.format(keys=keys_repr),
+        args=None,
+        exc_info=None,
     )
 
 
@@ -52,7 +52,7 @@ def _record(keys_repr: str) -> logging.LogRecord:
     ],
 )
 def test_all_missing_keys_are_position_ids(keys_repr, expected):
-    assert _all_missing_keys_are_position_ids(_TEMPLATE.format(keys = keys_repr)) is expected
+    assert _all_missing_keys_are_position_ids(_TEMPLATE.format(keys=keys_repr)) is expected
 
 
 def test_emit_suppresses_position_ids_only_record():
@@ -64,7 +64,7 @@ def test_emit_suppresses_position_ids_only_record():
 def test_emit_raises_when_real_weight_missing_alongside_position_ids():
     # The core fix: one benign position_ids key must not mask a real missing weight.
     handler = _RaiseUninitialized()
-    with pytest.raises(Exception, match = "some weights are not initialized"):
+    with pytest.raises(Exception, match="some weights are not initialized"):
         handler.emit(
             _record("['model.vision_model.embeddings.position_ids', 'model.layers.5.mlp.weight']")
         )
@@ -72,5 +72,5 @@ def test_emit_raises_when_real_weight_missing_alongside_position_ids():
 
 def test_emit_raises_on_real_missing_weight():
     handler = _RaiseUninitialized()
-    with pytest.raises(Exception, match = "some weights are not initialized"):
+    with pytest.raises(Exception, match="some weights are not initialized"):
         handler.emit(_record("['model.layers.5.mlp.weight']"))

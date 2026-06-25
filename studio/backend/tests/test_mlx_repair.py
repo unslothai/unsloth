@@ -20,10 +20,10 @@ if str(_BACKEND) not in sys.path:
 import utils.mlx_repair as mr  # noqa: E402
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset_attempt_guard(monkeypatch):
     monkeypatch.setattr(mr, "_attempted", False)
-    monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising = False)
+    monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising=False)
 
 
 def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
@@ -39,8 +39,8 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
 
 def test_uv_executable_finds_installer_location_when_path_is_minimal(monkeypatch, tmp_path):
     uv = tmp_path / ".local" / "bin" / "uv"
-    uv.parent.mkdir(parents = True)
-    uv.write_text("#!/bin/sh\n", encoding = "utf-8")
+    uv.parent.mkdir(parents=True)
+    uv.write_text("#!/bin/sh\n", encoding="utf-8")
     uv.chmod(0o755)
     monkeypatch.setattr(mr.shutil, "which", lambda _x: None)
     monkeypatch.setattr(mr.Path, "home", lambda: tmp_path)
@@ -70,7 +70,7 @@ def test_constraint_pins_installed_transformers(monkeypatch):
         assert Path(path).read_text().strip() == f"transformers=={transformers.__version__}"
     finally:
         if path:
-            Path(path).unlink(missing_ok = True)
+            Path(path).unlink(missing_ok=True)
 
 
 def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
@@ -134,7 +134,7 @@ def test_install_requires_prebuilt_wheels(monkeypatch):
 
     monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
     monkeypatch.setattr(
-        mr.subprocess, "run", lambda cmd, **k: captured.update(cmd = cmd) or _Result()
+        mr.subprocess, "run", lambda cmd, **k: captured.update(cmd=cmd) or _Result()
     )
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
 
@@ -323,7 +323,7 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
     # Join the daemon thread deterministically.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
-            thread.join(timeout = 5)
+            thread.join(timeout=5)
 
     assert repaired["called"] is True
     assert redetected["called"] is True
@@ -349,7 +349,7 @@ def test_mlx_install_env_routes_uv_override_through_safe_path(monkeypatch):
         return "/space free/marker.txt".replace(" ", "_")
 
     monkeypatch.setattr(mr, "uv_safe_path", _spy)
-    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    monkeypatch.delenv("UV_OVERRIDE", raising=False)
 
     env = mr._mlx_install_env()
 

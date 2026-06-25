@@ -53,11 +53,11 @@ def _job_status(
     state, error, generation = download_lifecycle.idle_status(
         _registry,
         key,
-        repo_type = "model",
-        repo_id = repo_id,
-        variant = variant,
+        repo_type="model",
+        repo_id=repo_id,
+        variant=variant,
     )
-    return DownloadJobStatus(state = state, error = error, generation = generation)
+    return DownloadJobStatus(state=state, error=error, generation=generation)
 
 
 def _spawn_download_worker(
@@ -73,8 +73,8 @@ def _spawn_download_worker(
     return download_lifecycle.spawn_worker(
         args,
         hf_token,
-        use_xet = use_xet,
-        protected_blob_hashes = protected_blob_hashes,
+        use_xet=use_xet,
+        protected_blob_hashes=protected_blob_hashes,
     )
 
 
@@ -83,17 +83,17 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
-            status_code = 400,
-            detail = f"Invalid repo_id: {repo_id!r}",
+            status_code=400,
+            detail=f"Invalid repo_id: {repo_id!r}",
         )
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="model")
 
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(
-            status_code = 400,
-            detail = f"Invalid gguf_variant: {variant!r}",
+            status_code=400,
+            detail=f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
     use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
@@ -108,14 +108,14 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
                 repo_id,
                 variant,
                 hf_token,
-                include_companions = False,
+                include_companions=False,
             )
             variant_progress_blob_hashes = await asyncio.to_thread(
                 gguf_variants.gguf_variant_blob_hashes,
                 repo_id,
                 variant,
                 hf_token,
-                include_companions = True,
+                include_companions=True,
             )
         except Exception as e:
             logger.warning(
@@ -124,7 +124,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
                 "re-resolves its own blobs before purging): %s",
                 repo_id,
                 variant,
-                download_registry.scrub_secrets(str(e), hf_token = hf_token),
+                download_registry.scrub_secrets(str(e), hf_token=hf_token),
             )
         has_variant_resume_state = (
             download_manifest.has_cancel_marker("model", repo_id, variant)
@@ -141,12 +141,12 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     claimed, claim_state = _registry.claim(
         key,
         transport,
-        repo_type = "model",
-        repo_id = repo_id,
-        variant = variant,
-        blob_hashes = variant_blob_hashes,
-        progress_blob_hashes = variant_progress_blob_hashes,
-        completed_baseline_bytes = completed_baseline_bytes,
+        repo_type="model",
+        repo_id=repo_id,
+        variant=variant,
+        blob_hashes=variant_blob_hashes,
+        progress_blob_hashes=variant_progress_blob_hashes,
+        completed_baseline_bytes=completed_baseline_bytes,
     )
     generation = _registry.current_generation(key)
     if not claimed:
@@ -168,21 +168,21 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     state = download_lifecycle.launch_worker(
         _registry,
         key,
-        spawn = lambda: _spawn_download_worker(
+        spawn=lambda: _spawn_download_worker(
             repo_id,
             variant,
             hf_token,
-            use_xet = use_xet,
-            protected_blob_hashes = protected_blob_hashes,
+            use_xet=use_xet,
+            protected_blob_hashes=protected_blob_hashes,
         ),
-        hf_token = hf_token,
-        label = label,
-        log_prefix = "Download",
-        logger = logger,
-        repo_type = "model",
-        repo_id = repo_id,
-        transport = transport,
-        watch_name = f"hf-download-watch-{repo_id}",
+        hf_token=hf_token,
+        label=label,
+        log_prefix="Download",
+        logger=logger,
+        repo_type="model",
+        repo_id=repo_id,
+        transport=transport,
+        watch_name=f"hf-download-watch-{repo_id}",
     )
 
     return {
@@ -198,24 +198,24 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
-            status_code = 400,
-            detail = f"Invalid repo_id: {repo_id!r}",
+            status_code=400,
+            detail=f"Invalid repo_id: {repo_id!r}",
         )
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="model")
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(
-            status_code = 400,
-            detail = f"Invalid gguf_variant: {variant!r}",
+            status_code=400,
+            detail=f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
 
     state = download_lifecycle.cancel_worker(
         _registry,
         key,
-        generation = body.generation,
-        label = repo_id,
-        logger = logger,
+        generation=body.generation,
+        label=repo_id,
+        logger=logger,
     )
     return {"job_key": key, "state": state}
 
@@ -224,28 +224,28 @@ async def get_download_status_response(repo_id: str, gguf_variant: str = "") -> 
     """Return the latest state of a background download job."""
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
-        return DownloadJobStatus(state = "idle")
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+        return DownloadJobStatus(state="idle")
+    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="model")
     variant = (gguf_variant or "").strip() or None
     key = _download_job_key(repo_id, variant)
-    return _job_status(key, repo_id = repo_id, variant = variant)
+    return _job_status(key, repo_id=repo_id, variant=variant)
 
 
 async def get_active_downloads_response(repo_id: str = "") -> ActiveDownloadsResponse:
     """Return every in-flight download for a repo in a single call."""
     repo_id = repo_id.strip()
     if repo_id and not _is_valid_repo_id(repo_id):
-        return ActiveDownloadsResponse(downloads = [])
+        return ActiveDownloadsResponse(downloads=[])
     canonical_repo_id = (
-        await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+        await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="model")
         if repo_id
         else None
     )
     return ActiveDownloadsResponse(
-        downloads = download_lifecycle.active_download_refs(
+        downloads=download_lifecycle.active_download_refs(
             _registry,
             canonical_repo_id,
-            with_variant = True,
+            with_variant=True,
         )
     )
 
@@ -254,19 +254,19 @@ def _variant_transport_status(repo_id: str, variant: str, hf_token: Optional[str
     incomplete_hashes = download_registry.incomplete_blob_hashes(
         "model",
         repo_id,
-        active_only = True,
+        active_only=True,
     )
     variant_hashes = gguf_variants.gguf_variant_blob_hashes(
         repo_id,
         variant,
         hf_token,
-        allow_remote = False,
+        allow_remote=False,
     )
     has_partial = hf_cache_scan.is_variant_partial(
         repo_id,
         variant,
-        incomplete_blob_hashes = incomplete_hashes,
-        variant_blob_hashes = variant_hashes,
+        incomplete_blob_hashes=incomplete_hashes,
+        variant_blob_hashes=variant_hashes,
     )
     last_transport = hf_cache_scan.partial_transport_for("model", repo_id, variant)
     if (
@@ -368,19 +368,19 @@ async def get_gguf_download_progress_response(
                 resolved_repo_id,
                 progress_variant,
                 token,
-                allow_remote = False,
+                allow_remote=False,
             ),
         )
 
     return await snapshot_progress.snapshot_progress_response(
-        repo_type = "model",
-        repo_id = repo_id,
-        job_key = _download_job_key(repo_id, progress_variant),
-        expected_bytes = expected_total,
-        hf_token = hf_token,
-        registry = _registry,
-        metadata_resolver = _metadata_resolver,
-        variant = progress_variant,
+        repo_type="model",
+        repo_id=repo_id,
+        job_key=_download_job_key(repo_id, progress_variant),
+        expected_bytes=expected_total,
+        hf_token=hf_token,
+        registry=_registry,
+        metadata_resolver=_metadata_resolver,
+        variant=progress_variant,
     )
 
 
@@ -399,13 +399,13 @@ async def get_download_progress_response(
     show users where the weights actually live on disk.
     """
     return await snapshot_progress.snapshot_progress_response(
-        repo_type = "model",
-        repo_id = repo_id,
-        job_key = _download_job_key(repo_id, None),
-        expected_bytes = expected_bytes,
-        hf_token = hf_token,
-        registry = _registry,
-        metadata_resolver = cache_inventory.get_repo_snapshot_metadata_cached,
+        repo_type="model",
+        repo_id=repo_id,
+        job_key=_download_job_key(repo_id, None),
+        expected_bytes=expected_bytes,
+        hf_token=hf_token,
+        registry=_registry,
+        metadata_resolver=cache_inventory.get_repo_snapshot_metadata_cached,
     )
 
 

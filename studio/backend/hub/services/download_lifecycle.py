@@ -46,7 +46,7 @@ def resolve_transport(use_xet: bool) -> str:
     transport = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
     unavailable_reason = download_registry.download_transport_unavailable_reason(transport)
     if unavailable_reason is not None:
-        raise HTTPException(status_code = 400, detail = unavailable_reason)
+        raise HTTPException(status_code=400, detail=unavailable_reason)
     return transport
 
 
@@ -102,11 +102,11 @@ def spawn_worker(
             "--transport",
             mode,
         ],
-        env = env,
-        cwd = str(cwd),
-        stdout = subprocess.DEVNULL,
-        stderr = subprocess.PIPE,
-        start_new_session = sys.platform != "win32",
+        env=env,
+        cwd=str(cwd),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        start_new_session=sys.platform != "win32",
     )
 
 
@@ -221,9 +221,9 @@ def finalize_worker_exit(
         return
     stderr_text = download_registry.scrub_secrets(
         (stderr_data or b"").decode("utf-8", "replace").strip(),
-        hf_token = hf_token,
+        hf_token=hf_token,
     )
-    state = classify_exit(rc, cancel_requested = cancel_requested)
+    state = classify_exit(rc, cancel_requested=cancel_requested)
     if state == "complete":
         registry.set_job(key, "complete")
         if stderr_text:
@@ -259,7 +259,7 @@ def finalize_worker_exit(
             if metadata is not None and metadata.variant
             else download_registry.variant_from_key(key),
             transport,
-            logger = logger,
+            logger=logger,
         )
     else:
         registry.set_job(
@@ -286,7 +286,7 @@ def kill_and_reap_process(
     except Exception as exc:
         logger.warning(f"Cancel SIGKILL for {label} failed: {exc}")
     try:
-        proc.wait(timeout = timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         logger.warning(f"Cancelled worker for {label} did not exit after SIGKILL")
     except Exception:
@@ -308,7 +308,7 @@ def register_worker(
     watch_name: str,
 ) -> bool:
     if not registry.register_process(key, proc):
-        kill_and_reap_process(proc, label = label, logger = logger)
+        kill_and_reap_process(proc, label=label, logger=logger)
         return False
 
     worker_token = hf_token
@@ -318,13 +318,13 @@ def register_worker(
             registry,
             key,
             proc,
-            hf_token = worker_token,
-            label = label,
-            log_prefix = log_prefix,
-            logger = logger,
-            repo_type = repo_type,
-            repo_id = repo_id,
-            transport = transport,
+            hf_token=worker_token,
+            label=label,
+            log_prefix=log_prefix,
+            logger=logger,
+            repo_type=repo_type,
+            repo_id=repo_id,
+            transport=transport,
         )
         if registry.get_job(key).state in ("error", "cancelled"):
             download_registry.purge_empty_marker_dir(
@@ -334,7 +334,7 @@ def register_worker(
             )
         hf_cache_scan.invalidate_hf_cache_scans()
 
-    threading.Thread(target = _watch, name = watch_name, daemon = True).start()
+    threading.Thread(target=_watch, name=watch_name, daemon=True).start()
     return True
 
 
@@ -355,28 +355,28 @@ def launch_worker(
     try:
         proc = spawn()
     except Exception as e:
-        scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
+        scrubbed = download_registry.scrub_secrets(str(e), hf_token=hf_token)
         logger.error(
             f"Failed to spawn {log_prefix.lower()} worker for {label}: {scrubbed}",
-            exc_info = True,
+            exc_info=True,
         )
         registry.set_job(key, "error", scrubbed)
         raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to start {log_prefix.lower()}: {scrubbed}",
+            status_code=500,
+            detail=f"Failed to start {log_prefix.lower()}: {scrubbed}",
         ) from e
     register_worker(
         registry,
         key,
         proc,
-        hf_token = hf_token,
-        label = label,
-        log_prefix = log_prefix,
-        logger = logger,
-        repo_type = repo_type,
-        repo_id = repo_id,
-        transport = transport,
-        watch_name = watch_name,
+        hf_token=hf_token,
+        label=label,
+        log_prefix=log_prefix,
+        logger=logger,
+        repo_type=repo_type,
+        repo_id=repo_id,
+        transport=transport,
+        watch_name=watch_name,
     )
     return registry.get_job(key).state
 
@@ -456,11 +456,11 @@ def active_download_refs(
             variant = None
         downloads.append(
             ActiveDownload(
-                repo_id = ref_repo_id,
-                variant = variant,
-                transport = metadata.transport if metadata is not None else None,
-                state = ref.state,
-                generation = ref.generation,
+                repo_id=ref_repo_id,
+                variant=variant,
+                transport=metadata.transport if metadata is not None else None,
+                state=ref.state,
+                generation=ref.generation,
             )
         )
     return downloads

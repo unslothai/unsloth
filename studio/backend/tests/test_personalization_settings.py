@@ -91,13 +91,13 @@ def test_get_read_errors_propagate(monkeypatch):
 
     monkeypatch.setattr("storage.studio_db.get_app_setting", fail)
 
-    with pytest.raises(RuntimeError, match = "read failed"):
+    with pytest.raises(RuntimeError, match="read failed"):
         pers.get_personalization()
 
 
 def test_get_set_roundtrip(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d=None: store.get(k, d))
     monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
 
     assert pers.get_personalization() == {}
@@ -113,12 +113,12 @@ def test_get_set_roundtrip(monkeypatch):
 
 def test_personalization_route_roundtrip_real_shape(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d=None: store.get(k, d))
     monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
 
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
+    app.include_router(settings_routes.router, prefix="/api/settings")
     client = TestClient(app)
 
     initial = client.get("/api/settings/personalization")
@@ -135,7 +135,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
         },
         "appearance": {"theme": "dark", "language": "en"},
     }
-    put = client.put("/api/settings/personalization", json = payload)
+    put = client.put("/api/settings/personalization", json=payload)
     assert put.status_code == 200
 
     saved = client.get("/api/settings/personalization")
