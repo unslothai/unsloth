@@ -109,9 +109,9 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
 # Default (steps, guidance) per model for callers that can't pass them — namely
 # the OpenAI /v1/images/generations endpoint, whose spec has no step/guidance
 # knobs. Distilled "turbo/schnell" models want few steps and no CFG; the full
-# "dev" models want more steps and real CFG. Matched by repo-id substring, most
-# specific first. This mirrors the UI's MODEL_DEFAULTS table
-# (studio/frontend/src/features/images/images-page.tsx) — keep the two in sync.
+# "dev" models want more steps and real CFG. Matched by substring, most specific
+# first — the same scheme and values as the UI's MODEL_DEFAULTS table
+# (studio/frontend/src/features/images/images-page.tsx); keep the two in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image-turbo", 9, 0.0),
     ("flux.1-schnell", 4, 0.0),
@@ -124,12 +124,17 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
 
 
-def default_generation_params(repo_id: str) -> tuple[int, float]:
-    """Default ``(steps, guidance)`` for a loaded model, by repo-id substring."""
-    needle = (repo_id or "").lower()
-    for match, steps, guidance in _GENERATION_DEFAULTS:
-        if match in needle:
-            return steps, guidance
+def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
+    """Default ``(steps, guidance)`` for a loaded model. The first identifier that
+    names a known model wins (the repo id, then the resolved base repo), so a
+    local-path load — whose repo id is just a filesystem path that may not name
+    the model — still resolves via its base repo. Within an identifier, keys are
+    matched as substrings, most specific first (the same scheme as the UI)."""
+    for identifier in identifiers:
+        needle = (identifier or "").lower()
+        for key, steps, guidance in _GENERATION_DEFAULTS:
+            if key in needle:
+                return steps, guidance
     return _GENERATION_DEFAULT_FALLBACK
 
 

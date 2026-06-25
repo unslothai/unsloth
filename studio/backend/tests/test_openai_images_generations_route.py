@@ -52,6 +52,19 @@ def test_default_generation_params_specificity_ordering():
     )
 
 
+def test_default_generation_params_falls_back_to_base_repo():
+    # A local-path load: repo_id is a filesystem path that names no model, so the
+    # resolved base repo is what identifies it (and distinguishes dev from schnell).
+    assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-dev") == (28, 3.5)
+    assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-schnell") == (4, 0.0)
+    assert default_generation_params("/models/my-ckpt", "Qwen/Qwen-Image") == (20, 4.0)
+    # repo_id wins when it already names the model; base repo is only a fallback.
+    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image") == (9, 0.0)
+    # Nothing identifiable -> fallback; None identifiers are skipped.
+    assert default_generation_params(None, None) == (9, 0.0)
+    assert default_generation_params("/models/x", None) == (9, 0.0)
+
+
 @pytest.mark.parametrize(
     "size, expected",
     [
@@ -83,9 +96,11 @@ class _FakeBackend:
         self,
         loaded = True,
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        base_repo = None,
     ) -> None:
         self._loaded = loaded
         self._repo_id = repo_id
+        self._base_repo = base_repo
         self.calls = []
 
     def status(self):
@@ -93,7 +108,7 @@ class _FakeBackend:
             "loaded": self._loaded,
             "repo_id": self._repo_id if self._loaded else None,
             "family": "z-image" if self._loaded else None,
-            "base_repo": None,
+            "base_repo": self._base_repo if self._loaded else None,
             "device": "cpu",
             "dtype": "float32",
             "cpu_offload": False,
@@ -181,6 +196,18 @@ def test_b64_response_shape(client):
     item = resp.json()["data"][0]
     assert "b64_json" in item and "url" not in item
     assert item["b64_json"] == "QUJD"
+
+
+def test_local_load_uses_base_repo_for_defaults(monkeypatch):
+    # repo_id is a local path that names no model; base_repo identifies FLUX.1-dev,
+    # so the route must pick 28 steps / 3.5 guidance, not the 9/0 fallback.
+    backend = _FakeBackend(repo_id = "/models/my-flux", base_repo = "black-forest-labs/FLUX.1-dev")
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    assert resp.status_code == 200
+    assert backend.calls[0]["steps"] == 28 and backend.calls[0]["guidance"] == 3.5
 
 
 def test_n_maps_to_batch(client):

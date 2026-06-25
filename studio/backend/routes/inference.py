@@ -10321,7 +10321,9 @@ async def openai_image_generations(
             status_code = 503, detail = "No image model loaded. Load an image model first."
         )
 
-    steps, guidance = default_generation_params(status.get("repo_id") or "")
+    # Fall back to the resolved base repo so a local-path load (whose repo_id is a
+    # filesystem path) still gets the right per-model steps/guidance.
+    steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
     try:
         result = await asyncio.to_thread(
             backend.generate,
