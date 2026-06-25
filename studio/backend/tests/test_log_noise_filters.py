@@ -33,13 +33,13 @@ def logs(monkeypatch):
     return capture
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _not_verbose(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_VERBOSE", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_VERBOSE", raising = False)
     monkeypatch.setenv("LOG_LEVEL", "INFO")
 
 
-def _scope(path, method="GET"):
+def _scope(path, method = "GET"):
     return {"type": "http", "path": path, "method": method}
 
 
@@ -62,12 +62,16 @@ async def _send(message):
 
 # ── scanner request skip (B3) ──────────────────────────────────────────
 
-@pytest.mark.parametrize("scope", [
-    _scope("www.baidu.com:443", method="CONNECT"),
-    _scope("*", method="PRI"),
-    _scope("/", method="FOOBAR"),
-    _scope("http://example.com/", method="GET"),  # absolute-form
-])
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        _scope("www.baidu.com:443", method = "CONNECT"),
+        _scope("*", method = "PRI"),
+        _scope("/", method = "FOOBAR"),
+        _scope("http://example.com/", method = "GET"),  # absolute-form
+    ],
+)
 def test_scanner_requests_are_not_logged(logs, scope):
     _run(LoggingMiddleware(_ok_app)(scope, _noop_receive, _send))
     assert logs.events == []
@@ -82,16 +86,20 @@ def test_normal_404_is_still_logged(logs):
 
 def test_verbose_keeps_scanner_requests(logs, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_VERBOSE", "1")
-    _run(LoggingMiddleware(_ok_app)(_scope("www.baidu.com:443", method="CONNECT"),
-                                    _noop_receive, _send))
+    _run(
+        LoggingMiddleware(_ok_app)(
+            _scope("www.baidu.com:443", method = "CONNECT"), _noop_receive, _send
+        )
+    )
     assert len(logs.events) == 1
     assert logs.events[0][2]["method"] == "CONNECT"
 
 
 # ── verbose helper (B1/B2) ─────────────────────────────────────────────
 
+
 def test_logs_verbose_env_and_debug(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_VERBOSE", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_VERBOSE", raising = False)
     monkeypatch.setenv("LOG_LEVEL", "INFO")
     assert logs_verbose() is False
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
@@ -102,6 +110,7 @@ def test_logs_verbose_env_and_debug(monkeypatch):
 
 
 # ── uvicorn h11 drop-filter (B2) ───────────────────────────────────────
+
 
 def _uvicorn_record(msg):
     return logging.LogRecord("uvicorn.error", logging.WARNING, __file__, 0, msg, None, None)
@@ -133,10 +142,11 @@ def test_uvicorn_drop_filter_verbose_keeps_all(monkeypatch):
 
 # ── library quieting (B1) ──────────────────────────────────────────────
 
+
 def test_setup_logging_quiets_libraries(monkeypatch):
     for name in _NOISY_LIBS:
         logging.getLogger(name).setLevel(logging.NOTSET)
-    monkeypatch.delenv("UNSLOTH_STUDIO_VERBOSE", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_VERBOSE", raising = False)
     monkeypatch.setenv("LOG_LEVEL", "INFO")
     LogConfig.setup_logging()
     assert logging.getLogger("httpx").level == logging.WARNING

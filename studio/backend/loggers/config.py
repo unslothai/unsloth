@@ -22,8 +22,18 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # (per-request "HTTP Request: ... 200 OK", HF/transformers banners, multipart
 # part dumps). Raised to WARNING unless verbose, so their errors still surface.
 _NOISY_LIBS = (
-    "httpx", "httpcore", "huggingface_hub", "transformers", "datasets",
-    "multipart", "watchfiles", "urllib3", "filelock", "fsspec", "asyncio", "PIL",
+    "httpx",
+    "httpcore",
+    "huggingface_hub",
+    "transformers",
+    "datasets",
+    "multipart",
+    "watchfiles",
+    "urllib3",
+    "filelock",
+    "fsspec",
+    "asyncio",
+    "PIL",
 )
 
 

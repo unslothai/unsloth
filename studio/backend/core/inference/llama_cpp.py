@@ -3135,7 +3135,6 @@ class LlamaCppBackend:
         """
         try:
             from loggers.config import logs_verbose
-
             mirror = logs_verbose()
             for line in self._process.stdout:
                 line = line.rstrip()
