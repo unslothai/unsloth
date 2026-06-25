@@ -1641,7 +1641,7 @@ export UV_HTTP_TIMEOUT
 # present their own CA certificate. rustls (uv's default) ignores the Keychain
 # and rejects intercepted connections with "invalid peer certificate: UnknownIssuer".
 # Users can opt out by setting UV_NATIVE_TLS=0 before running the installer.
-if [ "$_PLATFORM" = "macos" ] && [ -z "${UV_NATIVE_TLS:-}" ]; then
+if [ "$OS" = "macos" ] && [ -z "${UV_NATIVE_TLS:-}" ]; then
     UV_NATIVE_TLS=1
 fi
 : "${UV_NATIVE_TLS:=}"
