@@ -34,6 +34,16 @@ from .diffusion_device import (
     diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
 )
+from .diffusion_memory import (
+    OFFLOAD_NONE,
+    apply_memory_plan,
+    estimate_gguf_dense_mib,
+    estimate_image_runtime_mib,
+    file_size_mib,
+    infer_gguf_quant_label,
+    plan_diffusion_memory,
+    snapshot_device_memory,
+)
 
 logger = get_logger(__name__)
 
@@ -49,6 +59,11 @@ class _LoadState:
     device: str
     dtype: str
     cpu_offload: bool
+    # The resolved memory profile (Phase 2A). Appended with defaults so older
+    # positional constructions (and the back-compat status shape) keep working.
+    offload_policy: str = OFFLOAD_NONE
+    vae_tiling: bool = False
+    memory_mode: str = "auto"
 
 
 @dataclass
@@ -232,6 +247,7 @@ class DiffusionBackend:
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
         cpu_offload: bool = False,
+        memory_mode: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         fam = self.validate_load_request(
@@ -260,6 +276,7 @@ class DiffusionBackend:
                 family_override = family_override,
                 hf_token = hf_token,
                 cpu_offload = cpu_offload,
+                memory_mode = memory_mode,
                 _load_token = token,
             ),
             daemon = True,
@@ -378,6 +395,7 @@ class DiffusionBackend:
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
         cpu_offload: bool = False,
+        memory_mode: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -431,11 +449,18 @@ class DiffusionBackend:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
                 pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
 
-                use_offload = bool(cpu_offload and target.supports_model_cpu_offload)
-                if use_offload:
-                    pipe.enable_model_cpu_offload()
-                else:
-                    pipe.to(device)
+                # Decide placement from MEASURED free device memory vs the model's
+                # estimated resident size (transformer GGUF dequantised + the
+                # companion text-encoder / VAE already cached for `base`), then
+                # apply it. Computed here, after the build but before placement,
+                # because the weights are still on CPU so free VRAM is the real
+                # budget. `cpu_offload=True` stays an explicit override.
+                plan = self._plan_memory(
+                    target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
+                )
+                # apply_memory_plan returns the policy ACTUALLY engaged (it may fall
+                # back from sequential to whole-module offload), so status stays honest.
+                effective_policy = apply_memory_plan(pipe, plan, device = device, logger = logger)
 
                 self._state = _LoadState(
                     pipe = pipe,
@@ -444,11 +469,52 @@ class DiffusionBackend:
                     base_repo = base,
                     device = device,
                     dtype = str(dtype).replace("torch.", ""),
-                    cpu_offload = use_offload,
+                    cpu_offload = effective_policy != OFFLOAD_NONE,
+                    offload_policy = effective_policy,
+                    vae_tiling = plan.vae_tiling,
+                    memory_mode = plan.requested_mode,
                 )
 
-        logger.info("diffusion.loaded: repo=%s base=%s device=%s", repo_id, base, device)
+        logger.info(
+            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s",
+            repo_id, base, device, effective_policy, plan.vae_tiling, "; ".join(plan.reasons),
+        )
         return self.status()
+
+    def _plan_memory(
+        self,
+        target: DiffusionDeviceTarget,
+        gguf_path: str,
+        gguf_filename: Optional[str],
+        base: str,
+        fam: DiffusionFamily,
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+    ):
+        """Build the memory plan for this load: snapshot free device memory and
+        estimate the model's resident footprint, then let the planner pick an
+        offload policy + VAE memory savers. Kept on the backend so the cached base
+        repo (companion text-encoder / VAE) feeds the size estimate."""
+        device_memory = snapshot_device_memory(target)
+        transformer_dense = estimate_gguf_dense_mib(
+            file_size_mib(gguf_path), infer_gguf_quant_label(gguf_filename)
+        )
+        # The companion components (VAE + text encoders) load near their on-disk
+        # size; sum whatever the prefetch already placed in the base-repo cache.
+        companion = self._cache_bytes(base)
+        companion_mib = int(companion // (1024 * 1024)) if companion else None
+        model_dense_mib = None
+        if transformer_dense is not None:
+            model_dense_mib = transformer_dense + (companion_mib or 0)
+        runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = fam.name)
+        return plan_diffusion_memory(
+            target = target,
+            device_memory = device_memory,
+            model_dense_mib = model_dense_mib,
+            runtime_headroom_mib = runtime_headroom,
+            requested_mode = memory_mode,
+            explicit_offload = cpu_offload,
+        )
 
     def generate(
         self,
@@ -610,6 +676,9 @@ class DiffusionBackend:
                 "device": None,
                 "dtype": None,
                 "cpu_offload": False,
+                "offload_policy": None,
+                "vae_tiling": False,
+                "memory_mode": None,
             }
         return {
             "loaded": True,
@@ -619,6 +688,9 @@ class DiffusionBackend:
             "device": state.device,
             "dtype": state.dtype,
             "cpu_offload": state.cpu_offload,
+            "offload_policy": state.offload_policy,
+            "vae_tiling": state.vae_tiling,
+            "memory_mode": state.memory_mode,
         }
 
 

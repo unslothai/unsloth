@@ -129,6 +129,9 @@ class _FakePipe:
     def __init__(self) -> None:
         self.moved_to = None
         self.offloaded = False
+        self.sequential_offloaded = False
+        self.vae_tiled = False
+        self.vae_sliced = False
         self.last_kwargs = None
 
     def to(self, device):
@@ -137,6 +140,15 @@ class _FakePipe:
 
     def enable_model_cpu_offload(self) -> None:
         self.offloaded = True
+
+    def enable_sequential_cpu_offload(self) -> None:
+        self.sequential_offloaded = True
+
+    def enable_vae_tiling(self) -> None:
+        self.vae_tiled = True
+
+    def enable_vae_slicing(self) -> None:
+        self.vae_sliced = True
 
     # Explicit signature (not just **kwargs) so generate()'s signature-gated
     # guards for negative_prompt / callback_on_step_end actually take effect —
@@ -761,3 +773,73 @@ def test_replacement_load_waits_for_inflight_generation(fake_runtime, tmp_path):
     assert "exc" in gen_out and "cancelled" in str(gen_out["exc"]).lower()
     assert backend.status()["loaded"] is True
     assert backend.status()["repo_id"] == str(tmp_path)
+
+
+# ── Phase 2A: memory policy wiring (load -> planner -> placement) ──────────────
+
+
+def test_load_reports_memory_plan_fields_on_cpu(fake_runtime, tmp_path):
+    # The default stub resolves to a CPU target: no offload is possible, but VAE
+    # tiling is on (no separate device pool), and status carries the new fields.
+    (tmp_path / "m.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    assert status["offload_policy"] == "none"
+    assert status["cpu_offload"] is False
+    assert status["vae_tiling"] is True
+    assert status["memory_mode"] == "auto"
+    pipe = backend._state.pipe
+    assert pipe.moved_to == "cpu" and pipe.vae_tiled and pipe.vae_sliced
+
+
+def _force_cuda_target(backend, monkeypatch):
+    """Drive the loader down the CUDA (offload-capable) path under the stub."""
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cuda", torch.bfloat16))
+
+
+def test_load_memory_mode_balanced_engages_model_offload(fake_runtime, tmp_path, monkeypatch):
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    status = backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", memory_mode = "balanced"
+    )
+    assert status["offload_policy"] == "model" and status["cpu_offload"] is True
+    assert status["memory_mode"] == "balanced"
+    pipe = backend._state.pipe
+    assert pipe.offloaded is True and pipe.moved_to is None  # offload owns placement
+
+
+def test_load_memory_mode_low_vram_uses_sequential_offload(fake_runtime, tmp_path, monkeypatch):
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    status = backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", memory_mode = "low_vram"
+    )
+    assert status["offload_policy"] == "sequential" and status["cpu_offload"] is True
+    assert backend._state.pipe.sequential_offloaded is True
+
+
+def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(fake_runtime, tmp_path, monkeypatch):
+    # cpu_offload=True with no mode: auto would stay resident (budget unknown under
+    # the stub), but the explicit flag forces whole-module offload.
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    status = backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", cpu_offload = True
+    )
+    assert status["offload_policy"] == "model" and status["cpu_offload"] is True
+
+
+def test_load_fast_mode_stays_resident_on_cuda(fake_runtime, tmp_path, monkeypatch):
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    status = backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", memory_mode = "fast"
+    )
+    assert status["offload_policy"] == "none" and status["cpu_offload"] is False
+    assert backend._state.pipe.moved_to == "cuda"

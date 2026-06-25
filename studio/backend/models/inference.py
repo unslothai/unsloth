@@ -1701,6 +1701,12 @@ class DiffusionLoadRequest(BaseModel):
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated repos")
     cpu_offload: bool = Field(False, description = "Enable model CPU offload to fit low-VRAM cards")
+    memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
+        None,
+        description = "Memory policy: auto (measured), fast (resident), balanced "
+                      "(model CPU offload), low_vram (sequential CPU offload). "
+                      "Overrides cpu_offload when set.",
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -1796,3 +1802,8 @@ class DiffusionStatusResponse(BaseModel):
     device: Optional[str] = Field(None, description = "Device the pipeline is on")
     dtype: Optional[str] = Field(None, description = "Compute dtype")
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
+    offload_policy: Optional[str] = Field(
+        None, description = "Resolved offload policy: none | model | sequential"
+    )
+    vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
+    memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
