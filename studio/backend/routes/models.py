@@ -844,8 +844,7 @@ async def list_local_models(
         models = [m for m in models if not _is_hidden_model(m.id, m.path)]
         # Tag each GGUF with its task so the Images picker can filter to diffusion.
         models = [
-            m.model_copy(update = {"task": _local_model_task(m.path, m.model_format)})
-            for m in models
+            m.model_copy(update = {"task": _local_model_task(m.path, m.model_format)}) for m in models
         ]
 
         return LocalModelListResponse(
@@ -3063,11 +3062,24 @@ def _repo_gguf_last_modified(repo_info) -> float:
 # GGUF general.architecture values that denote a diffusion (image) model;
 # everything else is treated as a text model. Lets the Images picker show only
 # image GGUFs in its On Device list.
-_DIFFUSION_GGUF_ARCHS = frozenset({
-    "flux", "flux2", "sd1", "sd2", "sd3", "sdxl", "stable_diffusion",
-    "lumina2", "qwen_image", "qwenimage", "auraflow", "pixart",
-    "hunyuan_video", "wan",
-})
+_DIFFUSION_GGUF_ARCHS = frozenset(
+    {
+        "flux",
+        "flux2",
+        "sd1",
+        "sd2",
+        "sd3",
+        "sdxl",
+        "stable_diffusion",
+        "lumina2",
+        "qwen_image",
+        "qwenimage",
+        "auraflow",
+        "pixart",
+        "hunyuan_video",
+        "wan",
+    }
+)
 
 
 def _gguf_architecture(path: str) -> Optional[str]:

@@ -134,7 +134,9 @@ class DiffusionBackend:
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         if not gguf_filename:
-            raise ValueError("gguf_filename is required: this backend loads single-file GGUF checkpoints only.")
+            raise ValueError(
+                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
+            )
         fam = detect_family(repo_id, family_override)
         if fam is None:
             raise ValueError(
@@ -173,7 +175,9 @@ class DiffusionBackend:
             # calls) so begin_load returns instantly; the bar shows raw bytes until
             # the total lands. This is the only writer of _loading's fields here.
             fam = detect_family(kwargs["repo_id"], kwargs.get("family_override"))
-            base = _resolve_base_repo(kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token"))
+            base = _resolve_base_repo(
+                kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
+            )
             kwargs["base_repo"] = base
             loading = self._loading
             if loading is not None:
@@ -270,7 +274,9 @@ class DiffusionBackend:
         import diffusers
 
         if not gguf_filename:
-            raise ValueError("gguf_filename is required: this backend loads single-file GGUF checkpoints only.")
+            raise ValueError(
+                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
+            )
         fam = detect_family(repo_id, family_override)
         if fam is None:
             raise ValueError(
@@ -343,7 +349,6 @@ class DiffusionBackend:
         batch_size: int = 1,
     ) -> dict[str, Any]:
         import torch
-
         with self._lock:
             state = self._state
             if state is None:
@@ -406,7 +411,13 @@ class DiffusionBackend:
         """Live per-step progress for an in-flight generation (lock-free read)."""
         gen = self._gen
         if gen is None or gen.total_steps <= 0:
-            return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
+            return {
+                "active": False,
+                "step": 0,
+                "total_steps": 0,
+                "fraction": 0.0,
+                "eta_seconds": None,
+            }
         return {
             "active": True,
             "step": gen.step,
@@ -474,7 +485,6 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
         return None
     try:
         from huggingface_hub import HfApi
-
         meta = HfApi().model_info(repo_id, token = hf_token).cardData or {}
     except Exception:  # noqa: BLE001 — best-effort; fall back to the family default
         return None

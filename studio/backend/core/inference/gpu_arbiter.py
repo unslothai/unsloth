@@ -52,7 +52,6 @@ def _evict_chat() -> None:
 
 def _evict_diffusion() -> None:
     from core.inference.diffusion import get_diffusion_backend
-
     get_diffusion_backend().unload()
 
 

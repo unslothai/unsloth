@@ -1690,7 +1690,9 @@ class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
     model_path: str = Field(..., description = "Diffusion GGUF repo id or local path")
-    gguf_filename: str = Field(..., description = "The chosen single-file GGUF quant inside model_path")
+    gguf_filename: str = Field(
+        ..., description = "The chosen single-file GGUF quant inside model_path"
+    )
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
     )
@@ -1705,9 +1707,13 @@ class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""
 
     prompt: str = Field(..., min_length = 1, description = "Text prompt")
-    negative_prompt: Optional[str] = Field(None, description = "What to avoid (if the model supports it)")
+    negative_prompt: Optional[str] = Field(
+        None, description = "What to avoid (if the model supports it)"
+    )
     width: int = Field(1024, ge = 256, le = 2048, description = "Image width in pixels (multiple of 16)")
-    height: int = Field(1024, ge = 256, le = 2048, description = "Image height in pixels (multiple of 16)")
+    height: int = Field(
+        1024, ge = 256, le = 2048, description = "Image height in pixels (multiple of 16)"
+    )
     steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
     guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
     seed: Optional[int] = Field(
@@ -1748,9 +1754,7 @@ class GalleryImage(BaseModel):
 class DiffusionGenerateResponse(BaseModel):
     """The persisted gallery records for one generation call (a batch)."""
 
-    images: list[GalleryImage] = Field(
-        ..., description = "Saved records, one per image in the batch"
-    )
+    images: list[GalleryImage] = Field(..., description = "Saved records, one per image in the batch")
 
 
 class GalleryListResponse(BaseModel):

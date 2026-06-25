@@ -143,7 +143,7 @@ def list_images(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, 
     except OSError:
         return []
     paths.sort(key = _mtime, reverse = True)
-    window = paths[offset:] if limit is None else paths[offset:offset + limit]
+    window = paths[offset:] if limit is None else paths[offset : offset + limit]
     records = []
     for path in window:
         meta = _read_meta(path)

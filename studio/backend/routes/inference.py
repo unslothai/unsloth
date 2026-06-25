@@ -2524,6 +2524,7 @@ async def load_model(
         # ownership is asserted without depending on chat/diffusion exclusivity
         # holding. No-op when diffusion isn't loaded.
         from core.inference.gpu_arbiter import acquire_for, CHAT
+
         await asyncio.to_thread(acquire_for, CHAT)
 
         # ── Already-loaded check: skip reload if the exact model is active ──
@@ -10054,8 +10055,7 @@ async def _openai_passthrough_non_streaming(
 
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
 async def load_diffusion_model(
-    request: DiffusionLoadRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference.diffusion import get_diffusion_backend
     from core.inference.gpu_arbiter import acquire_for, DIFFUSION
@@ -10085,8 +10085,7 @@ async def load_diffusion_model(
 
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 async def generate_diffusion_image(
-    request: DiffusionGenerateRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference import image_gallery
     from core.inference.diffusion import get_diffusion_backend
@@ -10119,20 +10118,25 @@ async def generate_diffusion_image(
     def _persist() -> list[dict]:
         records = []
         for index, image in enumerate(result["images"]):
-            records.append(image_gallery.save(image, {
-                "prompt": request.prompt,
-                "negative_prompt": request.negative_prompt,
-                "width": request.width,
-                "height": request.height,
-                "steps": request.steps,
-                "guidance": request.guidance,
-                "seed": result["seed"],
-                # Position within the batch: images here share a seed + timestamp,
-                # so the export filename needs this to stay unique.
-                "batch_index": index,
-                "model": result.get("repo_id"),
-                "created_at": created_at,
-            }))
+            records.append(
+                image_gallery.save(
+                    image,
+                    {
+                        "prompt": request.prompt,
+                        "negative_prompt": request.negative_prompt,
+                        "width": request.width,
+                        "height": request.height,
+                        "steps": request.steps,
+                        "guidance": request.guidance,
+                        "seed": result["seed"],
+                        # Position within the batch: images here share a seed + timestamp,
+                        # so the export filename needs this to stay unique.
+                        "batch_index": index,
+                        "model": result.get("repo_id"),
+                        "created_at": created_at,
+                    },
+                )
+            )
         return records
 
     try:
@@ -10165,8 +10169,7 @@ async def list_gallery_images(
 
 @studio_router.get("/images/gallery/{image_id}/file")
 async def get_gallery_image_file(
-    image_id: str,
-    current_subject: str = Depends(get_current_subject),
+    image_id: str, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference import image_gallery
 
@@ -10183,10 +10186,7 @@ async def get_gallery_image_file(
 
 
 @studio_router.delete("/images/gallery/{image_id}")
-async def delete_gallery_image(
-    image_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def delete_gallery_image(image_id: str, current_subject: str = Depends(get_current_subject)):
     from core.inference import image_gallery
 
     deleted = await asyncio.to_thread(image_gallery.delete, image_id)
@@ -10198,7 +10198,6 @@ async def delete_gallery_image(
 @studio_router.delete("/images/gallery")
 async def clear_gallery_images(current_subject: str = Depends(get_current_subject)):
     from core.inference import image_gallery
-
     removed = await asyncio.to_thread(image_gallery.clear)
     return {"removed": removed}
 
@@ -10216,19 +10215,16 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
 async def diffusion_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion import get_diffusion_backend
-
     return DiffusionStatusResponse(**get_diffusion_backend().status())
 
 
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
 async def diffusion_load_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion import get_diffusion_backend
-
     return DiffusionLoadProgressResponse(**get_diffusion_backend().load_progress())
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion import get_diffusion_backend
-
     return DiffusionGenerateProgressResponse(**get_diffusion_backend().generate_progress())

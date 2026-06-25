@@ -280,12 +280,21 @@ def test_resolve_base_repo_prefers_caller_then_hf_tag_then_fallback(monkeypatch)
     fam = detect_family("unsloth/Qwen-Image-2512-GGUF")
     monkeypatch.setattr(diffusion, "_hf_base_model", lambda repo, tok: "Qwen/Qwen-Image-2512")
     # Caller's explicit base wins and the HF tag is not consulted.
-    assert diffusion._resolve_base_repo("unsloth/Qwen-Image-2512-GGUF", "my/base", fam, None) == "my/base"
+    assert (
+        diffusion._resolve_base_repo("unsloth/Qwen-Image-2512-GGUF", "my/base", fam, None)
+        == "my/base"
+    )
     # No caller base: the repo's base_model tag (the variant base) is used.
-    assert diffusion._resolve_base_repo("unsloth/Qwen-Image-2512-GGUF", None, fam, None) == "Qwen/Qwen-Image-2512"
+    assert (
+        diffusion._resolve_base_repo("unsloth/Qwen-Image-2512-GGUF", None, fam, None)
+        == "Qwen/Qwen-Image-2512"
+    )
     # No caller base and no tag: the family fallback.
     monkeypatch.setattr(diffusion, "_hf_base_model", lambda repo, tok: None)
-    assert diffusion._resolve_base_repo("unsloth/Qwen-Image-2512-GGUF", "  ", fam, None) == fam.base_repo
+    assert (
+        diffusion._resolve_base_repo("unsloth/Qwen-Image-2512-GGUF", "  ", fam, None)
+        == fam.base_repo
+    )
 
 
 def test_load_without_gguf_raises():
@@ -340,7 +349,9 @@ def test_base_file_downloaded_excludes_undownloaded():
     assert _base_file_downloaded("vae/diffusion_pytorch_model.safetensors")
     # Excluded: the GGUF supplies the transformer; docs/assets and top-level files
     # are never downloaded, so counting them would peg the bar short of 100%.
-    assert not _base_file_downloaded("transformer/diffusion_pytorch_model-00001-of-00003.safetensors")
+    assert not _base_file_downloaded(
+        "transformer/diffusion_pytorch_model-00001-of-00003.safetensors"
+    )
     assert not _base_file_downloaded("assets/Z-Image-Gallery.pdf")
     assert not _base_file_downloaded("README.md")
     assert not _base_file_downloaded(".gitattributes")
@@ -374,7 +385,10 @@ def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "Qwen/Qwen-Image", family_override = "qwen-image"
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Qwen/Qwen-Image",
+        family_override = "qwen-image",
     )
     backend.generate(prompt = "a sloth", guidance = 4.0)
     # Qwen-Image's distilled guidance is off; the real CFG must land on true_cfg_scale.
@@ -386,9 +400,13 @@ def test_begin_load_rejects_concurrent(monkeypatch):
     backend = DiffusionBackend()
     # The worker resolves the base via a network lookup; stub it so the test is offline.
     monkeypatch.setattr("core.inference.diffusion._hf_base_model", lambda *a, **k: None)
-    monkeypatch.setattr(DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: 0))
+    monkeypatch.setattr(
+        DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: 0)
+    )
     # Block the spawned worker so the load stays "in progress".
-    monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **k: __import__("time").sleep(0.2))
+    monkeypatch.setattr(
+        DiffusionBackend, "load_pipeline", lambda self, **k: __import__("time").sleep(0.2)
+    )
     backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
     with pytest.raises(RuntimeError):
         backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")

@@ -51,7 +51,13 @@ class _FakeBackend:
             "error": None,
         }
 
-    def generate(self, *, seed = None, batch_size = 1, **kwargs):
+    def generate(
+        self,
+        *,
+        seed = None,
+        batch_size = 1,
+        **kwargs,
+    ):
         if not self.loaded:
             raise RuntimeError("No diffusion model is loaded.")
         # The real backend returns the PIL images; the route persists them. The
@@ -110,13 +116,15 @@ def client(monkeypatch, tmp_path):
 
     monkeypatch.setattr(gallery_module, "save", _save)
     monkeypatch.setattr(gallery_module, "image_b64", lambda i: "QUJD" if i in store else None)
+
     def _list_images(limit = None, offset = 0):
         ordered = sorted(store.values(), key = lambda r: r.get("created_at", 0.0), reverse = True)
-        return ordered[offset:] if limit is None else ordered[offset:offset + limit]
+        return ordered[offset:] if limit is None else ordered[offset : offset + limit]
 
     monkeypatch.setattr(gallery_module, "list_images", _list_images)
     monkeypatch.setattr(
-        gallery_module, "image_path",
+        gallery_module,
+        "image_path",
         lambda i: (tmp_path / f"{i}.png") if i in store else None,
     )
     monkeypatch.setattr(gallery_module, "delete", lambda i: store.pop(i, None) is not None)
@@ -129,11 +137,14 @@ def client(monkeypatch, tmp_path):
 
 
 def test_load_generate_status_unload_roundtrip(client):
-    loaded = client.post("/api/inference/images/load", json = {
-        "model_path": "unsloth/Z-Image-Turbo-GGUF",
-        "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
-        "base_repo": "base/repo",
-    })
+    loaded = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+            "base_repo": "base/repo",
+        },
+    )
     assert loaded.status_code == 200
     body = loaded.json()
     assert body["loaded"] is True and body["family"] == "z-image"
@@ -161,7 +172,9 @@ def test_load_generate_status_unload_roundtrip(client):
 
 
 def test_generate_batch_size_persists_each_image(client):
-    client.post("/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"})
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
     resp = client.post(
         "/api/inference/images/generate",
         json = {"prompt": "p", "batch_size": 3, "seed": 5},
@@ -175,7 +188,9 @@ def test_generate_batch_size_persists_each_image(client):
 
 
 def test_gallery_pagination(client):
-    client.post("/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"})
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
     client.post("/api/inference/images/generate", json = {"prompt": "p", "batch_size": 5, "seed": 1})
     page1 = client.get("/api/inference/images/gallery?limit=2&offset=0").json()
     assert len(page1["images"]) == 2 and page1["has_more"] is True
@@ -184,7 +199,9 @@ def test_gallery_pagination(client):
 
 
 def test_generate_rejects_non_multiple_of_16(client):
-    client.post("/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"})
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
     # Odd, and a multiple of 8 that isn't a multiple of 16: both rejected, since
     # Z-Image requires dimensions divisible by 16.
     for bad in (1001, 1000):
@@ -213,7 +230,9 @@ def test_load_unknown_family_returns_400(client, monkeypatch):
     backend = _FakeBackend()
     backend.begin_load = _raise
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
-    resp = client.post("/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"})
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
+    )
     assert resp.status_code == 400
     assert "family" in resp.json()["detail"]
 
@@ -223,7 +242,9 @@ def test_load_progress_route(client):
     idle = client.get("/api/inference/images/load-progress")
     assert idle.status_code == 200 and idle.json()["phase"] is None
     # After load: the fake reports ready.
-    client.post("/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"})
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
     ready = client.get("/api/inference/images/load-progress")
     assert ready.json()["phase"] == "ready"
 
