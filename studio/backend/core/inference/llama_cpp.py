@@ -2999,7 +2999,7 @@ class LlamaCppBackend:
         ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
-    ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints)
 
         if not self._can_estimate_kv():
             logger.debug(
@@ -4193,7 +4193,7 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
-    ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints)
 
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
