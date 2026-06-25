@@ -2678,6 +2678,9 @@ class LlamaCppBackend:
                 pass
         return 0
 
+    def _estimate_kv_cache_bytes(
+        self,
+        n_ctx: int,
         cache_type_kv: Optional[str] = None,
         *,
         swa_full: bool = False,
