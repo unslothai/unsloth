@@ -681,8 +681,22 @@ async def get_gguf_variants_response(
         )
 
     def _compute_with_cleanables() -> GgufVariantsResponse:
-        response = _compute()
-        if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
+        skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
+        try:
+            response = _compute()
+        except Exception:
+            # Offline / metadata fetch failed with only an empty leftover
+            # <quant>/ folder cached: still surface it so the UI can delete it,
+            # otherwise re-raise the original error.
+            if skip:
+                raise
+            enriched = _mark_empty_dir_cleanables(
+                repo_id, GgufVariantsResponse(repo_id = repo_id, variants = [])
+            )
+            if enriched.variants:
+                return enriched
+            raise
+        if skip:
             return response
         return _mark_empty_dir_cleanables(repo_id, response)
 
