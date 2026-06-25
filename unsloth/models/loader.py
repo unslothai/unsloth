@@ -282,6 +282,34 @@ def _fix_rope_inv_freq(model):
     return model
 
 
+# Rotary inv_freq buffers are deliberately kept on CPU - Unsloth pre-builds a
+# cos/sin cache per GPU instead (see LlamaRotaryEmbedding.multi_gpu_cos_cached)
+# so the GPU-resident lookup never needs to move the tiny inv_freq tensor itself.
+# torch.nn.parallel.DistributedDataParallel ignores device entirely when it
+# broadcasts buffers across ranks, so a CPU buffer crashes NCCL's
+# _broadcast_coalesced with "No backend type associated with device type cpu".
+# Telling DDP to skip these specific buffers avoids that crash without moving
+# inv_freq to GPU (which would break the per-GPU cache design) and without
+# disabling buffer broadcast for every other module (the user's workaround).
+# https://github.com/unslothai/unsloth/issues/6656
+_ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
+
+
+def _exclude_rope_inv_freq_from_ddp(model):
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    for module_name, module in model.named_modules():
+        for buffer_name, _ in module.named_buffers(recurse = False):
+            if buffer_name in _ROTARY_INV_FREQ_BUFFER_NAMES:
+                fqn = f"{module_name}.{buffer_name}" if module_name else buffer_name
+                if fqn not in ignored:
+                    ignored.append(fqn)
+    if ignored:
+        from torch.nn.parallel import DistributedDataParallel
+
+        DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored)
+    return model
+
+
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
@@ -882,6 +910,7 @@ class FastLanguageModel(FastLlamaModel):
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         model = _fix_rope_inv_freq(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model, tokenizer
 
 
@@ -1810,6 +1839,7 @@ class FastModel(FastBaseModel):
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         model = _fix_rope_inv_freq(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model, tokenizer
 
 
