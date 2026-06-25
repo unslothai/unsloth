@@ -2676,9 +2676,7 @@ async def get_gguf_variants(
                             cached_revision_ids.append(str(snap.relative_to(snapshots)))
                     blobs = entry / "blobs"
                     if blobs.is_dir():
-                        cached_blob_ids = [
-                            str(blob.relative_to(blobs)) for blob in blobs.iterdir()
-                        ]
+                        cached_blob_ids = [str(blob.relative_to(blobs)) for blob in blobs.iterdir()]
                     break
         except Exception:
             pass
@@ -2724,9 +2722,7 @@ async def get_gguf_variants(
         # Update check is best-effort: a network/rate-limit/offline failure
         # must not break variant listing (mirrors list_cached_models).
         try:
-            updates_dict: dict[str, bool] = await asyncio.to_thread(
-                _check_available_updates
-            )
+            updates_dict: dict[str, bool] = await asyncio.to_thread(_check_available_updates)
         except Exception as e:
             logger.warning(f"Skipping update check for GGUF repo '{repo_id}': {e}")
             updates_dict = {}
@@ -3225,9 +3221,7 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                             "update_available": False,
                         }
                         try:
-                            commits = await asyncio.to_thread(
-                                list_repo_commits, repo_id
-                            )
+                            commits = await asyncio.to_thread(list_repo_commits, repo_id)
                             latest_remote_commit = commits[0].commit_id
                             local_commit_list = [
                                 i.commit_hash for i in repo_info.revisions
@@ -3260,8 +3254,7 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
 
 @router.post("/update", response_model = UpdateResponse)
 async def update_hf_model(
-    request: UpdateRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: UpdateRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Update a cached model repo (or a specific GGUF variant) from the HF cache."""
     try:
@@ -3309,13 +3302,8 @@ async def update_hf_model(
                 llama_backend._cancel_event.set()
         else:
             from huggingface_hub import snapshot_download
-
             if config.is_audio and config.audio_type == "bicodec":
-                hf_repo = (
-                    config.base_model
-                    if config.is_lora and config.base_model
-                    else config.path
-                )
+                hf_repo = config.base_model if config.is_lora and config.base_model else config.path
                 local_dir = hf_repo.split("/")[-1]
                 model_path = await asyncio.to_thread(
                     snapshot_download,
