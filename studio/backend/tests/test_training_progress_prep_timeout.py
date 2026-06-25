@@ -134,8 +134,10 @@ def test_reconnect_to_stepped_run_still_times_out(monkeypatch, _fast_short_timeo
     backend = _Backend(active_polls = 100, step_history = [10], live_step = 10)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
-    raw = _raw(asyncio.run(rt.stream_training_progress(_ReconnectRequest(), current_subject = "tester")))
-
-    assert "event: error" in raw, (
-        "a reconnect to an already-stepped run that then stalls must still time out"
+    raw = _raw(
+        asyncio.run(rt.stream_training_progress(_ReconnectRequest(), current_subject = "tester"))
     )
+
+    assert (
+        "event: error" in raw
+    ), "a reconnect to an already-stepped run that then stalls must still time out"
