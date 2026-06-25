@@ -83,6 +83,13 @@ app.add_typer(
     name = "start",
     help = "Start a coding agent (Claude Code, Codex) against Studio.",
 )
+# Backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
+app.add_typer(
+    start_app,
+    name = "connect",
+    hidden = True,
+    help = "Deprecated alias for `unsloth start`.",
+)
 
 # Top-level `unsloth run` aliases `unsloth studio run`; same context
 # so unknown flags still pass through to llama-server.
