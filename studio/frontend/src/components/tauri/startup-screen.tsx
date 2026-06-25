@@ -433,12 +433,12 @@ export function StartupScreen({
   }
 
   return (
-    <div className="flex h-full w-full flex-col items-center bg-background">
-      <div className="flex flex-1 w-full max-w-md items-center justify-center px-6">
+    <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
+      <div className="flex min-h-0 flex-1 w-full max-w-md items-center justify-center px-6">
         <AnimatePresence mode="wait">
           <motion.div
             key={status}
-            className="flex h-full w-full flex-col items-center text-center"
+            className="flex h-full w-full flex-col items-center justify-center text-center"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
