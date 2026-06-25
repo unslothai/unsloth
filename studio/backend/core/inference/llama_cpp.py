@@ -2662,29 +2662,54 @@ class LlamaCppBackend:
         only via the legacy branch of _can_estimate_kv(), so _embedding_length
         is non-None here."""
         return self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
-
     def _resolve_ctx_checkpoints(
         self,
         cli_val: Optional[int],
         extra_args: list[str] = None,
+        supported: bool = True,
     ) -> int:
-        """Resolve effective checkpoint count using CLI flag > Extra Args > Env > Default precedence."""
+        """
+        Resolves checkpoint count with priority: 
+        CLI Flag -> Extra Args (Last-Wins) -> Env Var -> Default (if supported).
+        """
+        # 1. CLI Flag has highest priority
         if cli_val is not None:
             return cli_val
+
+        # 2. Extra Args (Last-Wins semantics to match llama-server's internal parser)
+        resolved_extra = None
+        checkpoint_aliases = {"--ctx-checkpoints", "-ctxcp", "--swa-checkpoints"}
+        
         if extra_args:
             for i, arg in enumerate(extra_args):
-                if arg == "--ctx-checkpoints" and i + 1 < len(extra_args):
-                    try:
-                        return int(extra_args[i + 1])
-                    except ValueError:
-                        pass
+                for alias in checkpoint_aliases:
+                    # Case A: --ctx-checkpoints 32
+                    if arg == alias and i + 1 < len(extra_args):
+                        try:
+                            resolved_extra = int(extra_args[i+1])
+                        except ValueError:
+                            pass
+                    # Case B: --ctx-checkpoints=32
+                    elif arg.startswith(alias + "="):
+                        try:
+                            resolved_extra = int(arg.split("=")[1])
+                        except (ValueError, IndexError):
+                            pass
+        
+        if resolved_extra is not None:
+            return resolved_extra
+
+        # 3. Environment Variable
         env_val = os.environ.get("LLAMA_ARG_CTX_CHECKPOINTS")
         if env_val and env_val.strip():
             try:
                 return int(env_val)
             except ValueError:
                 pass
-        return 32
+
+        # 4. Default (Only if the binary actually supports the feature)
+        return 32 if supported else 0
+
 
     def _estimate_kv_cache_bytes(
         self,
@@ -2713,6 +2738,8 @@ class LlamaCppBackend:
 
         Returns 0 if metadata is insufficient.
         """
+        cp_count = ctx_checkpoints if ctx_checkpoints is not None else 0
+
         ctx_checkpoints = ctx_checkpoints or 0
         if not self._can_estimate_kv() or n_ctx <= 0:
             return 0
@@ -2983,24 +3010,7 @@ class LlamaCppBackend:
             compute = act_scratch + out_buffer * max(0, par - 1)
         return int(compute * self._COMPUTE_BUFFER_SAFETY)
 
-    def _fit_context_to_vram(
-        self,
-        requested_ctx: int,
-        available_mib: int,
-        model_size_bytes: int,
-        cache_type_kv: Optional[str] = None,
-        min_ctx: int = 4096,
-        *,
-        swa_full: bool = False,
-        n_parallel: int = 1,
-        kv_unified: bool = True,
-        ctx_checkpoints: Optional[int] = None,
-        kv_on_gpu: bool = True,
-        mtp_engaged: bool = False,
-        mtp_overhead_fn: Optional[Callable[[int], int]] = None,
-        budget_frac: Optional[float] = None,
-        total_mib: Optional[int] = None,
-    ) -> int:
+    def _fit_context_to_vram(self, requested_ctx: int, available_mib: int, model_size_bytes: int, cache_type_kv: Optional[str] = None, min_ctx: int = 4096, *, swa_full: bool = False, n_parallel: int = 1, kv_unified: bool = True, ctx_checkpoints: Optional[int] = None, kv_on_gpu: bool = True, mtp_engaged: bool = False, mtp_overhead_fn: Optional[Callable[[int], int]] = None, budget_frac: Optional[float] = None, total_mib: Optional[int] = None, extra_args: list[str] = None) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
         Budget caps occupancy at ``_CTX_FIT_VRAM_FRACTION`` of the card: an
