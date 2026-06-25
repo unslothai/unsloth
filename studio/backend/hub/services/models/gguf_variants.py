@@ -113,7 +113,7 @@ def _variant_requirement_neg_cache_set(key: tuple[str, str]) -> None:
         _VARIANT_REQUIREMENT_NEG_CACHE[key] = time.monotonic()
         _VARIANT_REQUIREMENT_NEG_CACHE.move_to_end(key)
         while len(_VARIANT_REQUIREMENT_NEG_CACHE) > _VARIANT_HASH_MAX:
-            _VARIANT_REQUIREMENT_NEG_CACHE.popitem(last=False)
+            _VARIANT_REQUIREMENT_NEG_CACHE.popitem(last = False)
 
 
 def _variant_requirement_neg_cache_clear(key: tuple[str, str]) -> None:
@@ -139,7 +139,7 @@ def _variant_hash_cache_set(key: tuple[str, str, str, bool], hashes: frozenset[s
         _VARIANT_HASH_CACHE[key] = (hashes, time.monotonic())
         _VARIANT_HASH_CACHE.move_to_end(key)
         while len(_VARIANT_HASH_CACHE) > _VARIANT_HASH_MAX:
-            _VARIANT_HASH_CACHE.popitem(last=False)
+            _VARIANT_HASH_CACHE.popitem(last = False)
 
 
 def _variant_requirement_cache_get(key: tuple[str, str, str]) -> Optional[_GgufVariantRequirement]:
@@ -165,7 +165,7 @@ def _variant_requirement_cache_set_many(
             _VARIANT_REQUIREMENT_CACHE[key] = (requirement, now)
             _VARIANT_REQUIREMENT_CACHE.move_to_end(key)
         while len(_VARIANT_REQUIREMENT_CACHE) > _VARIANT_HASH_MAX:
-            _VARIANT_REQUIREMENT_CACHE.popitem(last=False)
+            _VARIANT_REQUIREMENT_CACHE.popitem(last = False)
 
 
 def _build_gguf_variant_requirements(siblings: list) -> dict[str, _GgufVariantRequirement]:
@@ -197,17 +197,16 @@ def _fetch_gguf_variant_requirements(
             return {}
         try:
             from huggingface_hub import HfApi
-
-            info = HfApi(token=hf_token).model_info(
+            info = HfApi(token = hf_token).model_info(
                 repo_id,
-                files_metadata=True,
-                timeout=_GGUF_METADATA_TIMEOUT_SECONDS,
+                files_metadata = True,
+                timeout = _GGUF_METADATA_TIMEOUT_SECONDS,
             )
         except Exception as e:
             logger.warning(
                 "model_info failed resolving GGUF files for %s: %s",
                 repo_id,
-                download_registry.scrub_secrets(str(e), hf_token=hf_token),
+                download_registry.scrub_secrets(str(e), hf_token = hf_token),
             )
             _variant_requirement_neg_cache_set(repo_key)
             return {}
@@ -225,7 +224,7 @@ def _gguf_all_variant_requirements(
     *,
     siblings: Optional[list] = None,
 ) -> dict[str, _GgufVariantRequirement]:
-    return _fetch_gguf_variant_requirements(repo_id, hf_token, siblings=siblings)
+    return _fetch_gguf_variant_requirements(repo_id, hf_token, siblings = siblings)
 
 
 def _manifest_variant_blob_hashes(
@@ -270,7 +269,7 @@ def gguf_variant_blob_hashes(
     hashes = _manifest_variant_blob_hashes(
         repo_id,
         variant,
-        include_companions=include_companions,
+        include_companions = include_companions,
     )
     if hashes:
         _variant_hash_cache_set(key, hashes)
@@ -302,20 +301,20 @@ def delete_variant_incomplete_blobs_result(
     # With a sibling still downloading, ``companions=False`` keeps a shared mmproj
     # from being unlinked out from under it; the repo's last delete reclaims it.
     target_hashes = (
-        gguf_variant_blob_hashes(repo_id, variant, hf_token, include_companions=companions)
+        gguf_variant_blob_hashes(repo_id, variant, hf_token, include_companions = companions)
         | extra_hashes
     )
     if not target_hashes:
         has_variant_partial_state = hf_cache_scan.is_variant_partial(
             repo_id,
             variant,
-            incomplete_blob_hashes=set(),
-            variant_blob_hashes=frozenset(),
+            incomplete_blob_hashes = set(),
+            variant_blob_hashes = frozenset(),
         )
         has_repo_partials = bool(download_registry.incomplete_blob_hashes("model", repo_id))
         return VariantIncompleteDeleteResult(
-            deleted=0,
-            unresolved=has_variant_partial_state and has_repo_partials,
+            deleted = 0,
+            unresolved = has_variant_partial_state and has_repo_partials,
         )
     deleted = 0
     # Destructive iterator: only the exact-case match (or abort if ambiguous),
@@ -332,7 +331,7 @@ def delete_variant_incomplete_blobs_result(
                     deleted += 1
                 except OSError as e:
                     logger.warning(f"Failed to unlink {incomplete}: {e}")
-    return VariantIncompleteDeleteResult(deleted=deleted, unresolved=False)
+    return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
 async def get_gguf_variants_response(
@@ -359,20 +358,20 @@ async def get_gguf_variants_response(
             best = pick_best_gguf(filenames)
             default_variant = extract_quant_label(best) if best else None
             return GgufVariantsResponse(
-                repo_id=response_repo_id,
-                variants=[
+                repo_id = response_repo_id,
+                variants = [
                     GgufVariantDetail(
-                        filename=v.filename,
-                        quant=v.quant,
-                        display_label=v.display_label,
-                        size_bytes=v.size_bytes,
-                        download_size_bytes=v.size_bytes,
-                        downloaded=True,
+                        filename = v.filename,
+                        quant = v.quant,
+                        display_label = v.display_label,
+                        size_bytes = v.size_bytes,
+                        download_size_bytes = v.size_bytes,
+                        downloaded = True,
                     )
                     for v in variants
                 ],
-                has_vision=has_vision,
-                default_variant=default_variant,
+                has_vision = has_vision,
+                default_variant = default_variant,
             )
 
         def _partial_local_response(
@@ -382,25 +381,25 @@ async def get_gguf_variants_response(
             best = pick_best_gguf(filenames)
             default_variant = extract_quant_label(best) if best else None
             return GgufVariantsResponse(
-                repo_id=response_repo_id,
-                variants=[
+                repo_id = response_repo_id,
+                variants = [
                     GgufVariantDetail(
-                        filename=v.filename,
-                        quant=v.quant,
-                        display_label=v.display_label,
-                        size_bytes=v.size_bytes,
-                        download_size_bytes=v.download_size_bytes or v.size_bytes,
-                        downloaded=False,
-                        partial=True,
-                        partial_transport=_partial_transport_for_variant(
+                        filename = v.filename,
+                        quant = v.quant,
+                        display_label = v.display_label,
+                        size_bytes = v.size_bytes,
+                        download_size_bytes = v.download_size_bytes or v.size_bytes,
+                        downloaded = False,
+                        partial = True,
+                        partial_transport = _partial_transport_for_variant(
                             response_repo_id,
                             v.quant,
                         ),
                     )
                     for v in variants
                 ],
-                has_vision=has_vision,
-                default_variant=default_variant,
+                has_vision = has_vision,
+                default_variant = default_variant,
             )
 
         # Local directory path (e.g. LM Studio models) — scan filesystem
@@ -412,7 +411,7 @@ async def get_gguf_variants_response(
         # Reject invalid remote repo_ids up front (like download/delete) so a
         # malformed id returns 400 instead of a 500 from the HF client.
         if not _is_valid_repo_id(repo_id):
-            raise HTTPException(status_code=400, detail=f"Invalid repo_id: {repo_id!r}")
+            raise HTTPException(status_code = 400, detail = f"Invalid repo_id: {repo_id!r}")
 
         local_only = prefer_local_cache or offline
         if local_only:
@@ -430,19 +429,19 @@ async def get_gguf_variants_response(
                 return _partial_local_response(repo_id, variants, has_vision)
             if local_path and offline:
                 return GgufVariantsResponse(
-                    repo_id=repo_id,
-                    variants=[],
-                    has_vision=False,
-                    default_variant=None,
+                    repo_id = repo_id,
+                    variants = [],
+                    has_vision = False,
+                    default_variant = None,
                 )
             if offline:
                 raise HTTPException(
-                    status_code=404,
-                    detail="No cached GGUF variants available while offline.",
+                    status_code = 404,
+                    detail = "No cached GGUF variants available while offline.",
                 )
 
         try:
-            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token=hf_token)
+            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
         except Exception:
             cached = list_gguf_variants_from_hf_cache(repo_id)
             if cached is not None:
@@ -502,7 +501,7 @@ async def get_gguf_variants_response(
         }
         if any(req is None for req in requirements_by_quant.values()):
             fetched_requirements = _gguf_all_variant_requirements(
-                repo_id, hf_token, siblings=siblings
+                repo_id, hf_token, siblings = siblings
             )
             for v in variants:
                 key = v.quant.lower()
@@ -594,14 +593,14 @@ async def get_gguf_variants_response(
                         repo_id,
                         variant.quant,
                         hf_token,
-                        include_companions=False,
+                        include_companions = False,
                     )
                 if hf_cache_scan.is_variant_partial(
                     repo_id,
                     variant.quant,
                     scan_snapshot_dir,
-                    incomplete_blob_hashes=incomplete_hashes,
-                    variant_blob_hashes=variant_hashes,
+                    incomplete_blob_hashes = incomplete_hashes,
+                    variant_blob_hashes = variant_hashes,
                 ):
                     partial_quants.add(variant.quant)
                     partial_quant_transports[variant.quant] = _partial_transport_for_variant(
@@ -635,23 +634,23 @@ async def get_gguf_variants_response(
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
             return GgufVariantDetail(
-                filename=v.filename,
-                quant=v.quant,
-                display_label=v.display_label,
-                size_bytes=v.size_bytes,
-                download_size_bytes=(
+                filename = v.filename,
+                quant = v.quant,
+                display_label = v.display_label,
+                size_bytes = v.size_bytes,
+                download_size_bytes = (
                     requirement.download_size_bytes if requirement is not None else v.size_bytes
                 ),
-                downloaded=_is_fully_downloaded(v) and not is_partial,
-                partial=is_partial,
-                partial_transport=(partial_quant_transports.get(v.quant) if is_partial else None),
+                downloaded = _is_fully_downloaded(v) and not is_partial,
+                partial = is_partial,
+                partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
             )
 
         return GgufVariantsResponse(
-            repo_id=repo_id,
-            variants=[_variant_detail(v) for v in variants],
-            has_vision=has_vision,
-            default_variant=default_variant,
+            repo_id = repo_id,
+            variants = [_variant_detail(v) for v in variants],
+            has_vision = has_vision,
+            default_variant = default_variant,
         )
 
     try:
@@ -659,13 +658,13 @@ async def get_gguf_variants_response(
     except HTTPException:
         raise
     except Exception as e:
-        scrubbed = download_registry.scrub_secrets(str(e), hf_token=hf_token)
+        scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
         # Client-side HF error (missing repo, gated, bad token): pass the status through.
         status = hf_error_status(e)
         if status is not None:
-            raise HTTPException(status_code=status, detail=scrubbed)
+            raise HTTPException(status_code = status, detail = scrubbed)
         logger.error("Error listing GGUF variants for %s: %s", repo_id, scrubbed)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to list GGUF variants: " + scrubbed,
+            status_code = 500,
+            detail = "Failed to list GGUF variants: " + scrubbed,
         )

@@ -71,11 +71,11 @@ def fast_geglu_inference(self, X):
 
     gate = fast_linear_forward(self.gate_proj, X)  # , out = temp[0])
     up = fast_linear_forward(self.up_proj, X)  # , out = temp[1])
-    gate = torch_nn_functional_gelu(gate, approximate="tanh")
+    gate = torch_nn_functional_gelu(gate, approximate = "tanh")
     gate *= up
 
     # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate, out=up[:, :, :hd])
+    down = fast_linear_forward(self.down_proj, gate, out = up[:, :, :hd])
     return down
 
 
@@ -96,8 +96,8 @@ def GemmaDecoderLayer_fast_forward(
     if use_cache and hasattr(self, "_flag_for_generation"):  # past_key_value is not None:
         out_weight = torch.empty(
             self.input_layernorm.weight.shape,
-            dtype=torch.float32,
-            device=f"{DEVICE_TYPE_TORCH}:0",
+            dtype = torch.float32,
+            device = f"{DEVICE_TYPE_TORCH}:0",
         )
 
         # Self Attention
@@ -106,14 +106,14 @@ def GemmaDecoderLayer_fast_forward(
             self.input_layernorm, hidden_states, out_weight
         )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
+            hidden_states = hidden_states,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_value = past_key_value,
+            output_attentions = output_attentions,
+            use_cache = use_cache,
+            padding_mask = padding_mask,
             **kwargs,
         )
         hidden_states += residual
@@ -127,23 +127,23 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma=True)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
+            hidden_states = hidden_states,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_value = past_key_value,
+            output_attentions = output_attentions,
+            use_cache = use_cache,
+            padding_mask = padding_mask,
             **kwargs,
         )
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma=True)
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -165,14 +165,14 @@ def GemmaModel_fast_forward_inference(
     input_ids,
     past_key_values,
     position_ids,
-    attention_mask=None,
+    attention_mask = None,
     **kwargs,
 ):
     out_weights = tuple(
         torch.empty_like(
             self.model.layers[0].input_layernorm.weight,
-            dtype=torch.float32,
-            device=torch.device(x),
+            dtype = torch.float32,
+            device = torch.device(x),
         )
         for x in range(DEVICE_COUNT)
     )
@@ -181,7 +181,7 @@ def GemmaModel_fast_forward_inference(
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype=hidden_states.dtype)
+    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
@@ -211,12 +211,12 @@ def GemmaModel_fast_forward_inference(
         )
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             decoder_layer.self_attn,
-            hidden_states=hidden_states,
-            past_key_value=past_key_values[idx],
-            position_ids=position_ids,
-            attention_mask=attention_mask,
-            do_prefill=not hasattr(decoder_layer.self_attn, "paged_attention"),
-            rotary_seq_len=rotary_seq_len,
+            hidden_states = hidden_states,
+            past_key_value = past_key_values[idx],
+            position_ids = position_ids,
+            attention_mask = attention_mask,
+            do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+            rotary_seq_len = rotary_seq_len,
         )
         hidden_states += residual
 
@@ -235,10 +235,10 @@ def GemmaModel_fast_forward_inference(
     )
 
     return BaseModelOutputWithPast(
-        last_hidden_state=hidden_states,
-        past_key_values=next_decoder_cache,
-        hidden_states=[],
-        attentions=[],
+        last_hidden_state = hidden_states,
+        past_key_values = next_decoder_cache,
+        hidden_states = [],
+        attentions = [],
     )
 
 
@@ -250,11 +250,11 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
     # The precision of RoPE buffers is not correct, so we cast to int64.
     def __init__(
         self,
-        dim=None,
-        max_position_embeddings=2048,
-        base=10000,
-        device=None,
-        config=None,  # [TODO] Hack to pass in config - need to remove later
+        dim = None,
+        max_position_embeddings = 2048,
+        base = 10000,
+        device = None,
+        config = None,  # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
         # In transformers 5.0+, RotaryEmbedding(config) passes config as first positional arg (dim)
@@ -263,7 +263,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             dim = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = _get_rope_theta(config, default=base)
+            base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             )
@@ -283,17 +283,17 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         # Build here to make `torch.jit.trace` work.
         for device in range(DEVICE_COUNT):
             self._set_cos_sin_cache(
-                seq_len=self.current_rope_size,
-                device=torch.device(device),
-                dtype=torch.get_default_dtype(),
+                seq_len = self.current_rope_size,
+                device = torch.device(device),
+                dtype = torch.get_default_dtype(),
             )
 
         # dummy so that patch_utils doesn't fail for now
         self.cos_cached = torch.empty(
-            1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype()
+            1, device = torch.cuda.current_device(), dtype = torch.get_default_dtype()
         )
         self.sin_cached = torch.empty(
-            1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype()
+            1, device = torch.cuda.current_device(), dtype = torch.get_default_dtype()
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -303,17 +303,17 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 
         # The difference is we do division explicitly instead of t * (1/x) ie we do t/x.
         freq_exponents = (2.0 / self.dim) * (
-            torch.arange(self.dim // 2, dtype=torch.int64, device="cpu").float()
+            torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
         timescale = self.base**freq_exponents
-        positions = torch.arange(self.current_rope_size, device="cpu", dtype=torch.int64).float()
+        positions = torch.arange(self.current_rope_size, device = "cpu", dtype = torch.int64).float()
         radians_new = positions[..., None] / timescale[None, None, :]
         radians_new = radians_new.squeeze(0)
 
-        emb = torch.cat((radians_new, radians_new), dim=-1)
+        emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device=device, non_blocking=True)  # , dtype = dtype)
-        sin = emb.sin().to(device=device, non_blocking=True)  # , dtype = dtype)
+        cos = emb.cos().to(device = device, non_blocking = True)  # , dtype = dtype)
+        sin = emb.sin().to(device = device, non_blocking = True)  # , dtype = dtype)
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
@@ -321,12 +321,12 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
     def forward(
         self,
         x,
-        position_ids=None,
-        seq_len=None,
+        position_ids = None,
+        seq_len = None,
     ):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
-            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
+            self._set_cos_sin_cache(seq_len = seq_len, device = x.device, dtype = x.dtype)
 
         device_index = x.device.index
 
@@ -337,8 +337,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 
     def get_cached(
         self,
-        seq_len=None,
-        device_index=None,
+        seq_len = None,
+        device_index = None,
     ):
         if device_index is None:
             device_index = torch.cuda.current_device()
@@ -351,7 +351,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.current_rope_size = math.ceil(seq_len / 8192) * 8192
         for device in range(DEVICE_COUNT):
             self._set_cos_sin_cache(
-                self.current_rope_size, device=torch.device(device), dtype=x.dtype
+                self.current_rope_size, device = torch.device(device), dtype = x.dtype
             )
 
 
@@ -363,20 +363,20 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
     # The precision of RoPE buffers is not correct, so we cast to int64.
     def __init__(
         self,
-        dim=None,
-        max_position_embeddings=2048,
-        base=10000,
-        device=None,
-        scaling_factor=1.0,
-        config=None,  # [TODO] Hack to pass in config - need to remove later
+        dim = None,
+        max_position_embeddings = 2048,
+        base = 10000,
+        device = None,
+        scaling_factor = 1.0,
+        config = None,  # [TODO] Hack to pass in config - need to remove later
     ):
         self.scaling_factor = scaling_factor
         super().__init__(
-            dim=dim,
-            max_position_embeddings=max_position_embeddings,
-            base=base,
-            device=device,
-            config=config,
+            dim = dim,
+            max_position_embeddings = max_position_embeddings,
+            base = base,
+            device = device,
+            config = config,
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -386,18 +386,18 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
 
         # The difference is we do division explicitly instead of t * (1/x) ie we do t/x.
         freq_exponents = (2.0 / self.dim) * (
-            torch.arange(self.dim // 2, dtype=torch.int64, device="cpu").float()
+            torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
         timescale = self.base**freq_exponents
-        positions = torch.arange(self.current_rope_size, device="cpu", dtype=torch.int64).float()
+        positions = torch.arange(self.current_rope_size, device = "cpu", dtype = torch.int64).float()
         positions = positions / self.scaling_factor
         radians_new = positions[..., None] / timescale[None, None, :]
         radians_new = radians_new.squeeze(0)
 
-        emb = torch.cat((radians_new, radians_new), dim=-1)
+        emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device=device, non_blocking=True)  # , dtype = dtype)
-        sin = emb.sin().to(device=device, non_blocking=True)  # , dtype = dtype)
+        cos = emb.cos().to(device = device, non_blocking = True)  # , dtype = dtype)
+        sin = emb.sin().to(device = device, non_blocking = True)  # , dtype = dtype)
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
@@ -407,10 +407,10 @@ class FastGemmaModel(FastLlamaModel):
     @staticmethod
     def pre_patch():
         init_name, function = patch_linear_scaling(
-            model_name="gemma",
-            rope_module=GemmaFixedRotaryEmbedding,
-            scaled_rope_module=GemmaFixedLinearScalingRotaryEmbedding,
-            attention_module=GemmaAttention,
+            model_name = "gemma",
+            rope_module = GemmaFixedRotaryEmbedding,
+            scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
+            attention_module = GemmaAttention,
         )
         if init_name is not None:
             exec(function, globals())
@@ -438,11 +438,11 @@ class FastGemmaModel(FastLlamaModel):
     def post_patch(
         model,
         tokenizer,
-        correct_dtype=None,
+        correct_dtype = None,
     ):
         # Gemma does not downcast RoPE
         model, tokenizer = patch_model_and_tokenizer(
-            model, tokenizer, downcast_rope=False, correct_dtype=correct_dtype
+            model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
 
         # Add 1 to weight

@@ -4287,7 +4287,9 @@ class LlamaCppBackend:
                         else:
                             hi = mid - 1
                     return best
-                kv_at = self._estimate_kv_cache_bytes(ctx, cache_type_kv, n_parallel = n_parallel, ctx_checkpoints = ctx_checkpoints)
+                kv_at = self._estimate_kv_cache_bytes(
+                    ctx, cache_type_kv, n_parallel = n_parallel, ctx_checkpoints = ctx_checkpoints
+                )
                 if kv_at <= kv_budget_b:
                     return ctx
                 return max(ctx_floor, int(ctx * kv_budget_b / kv_at))
@@ -4303,7 +4305,9 @@ class LlamaCppBackend:
 
         min_usable_mib = min(usable_by_idx.values())
         kv_bytes = (
-            self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel = n_parallel, ctx_checkpoints = ctx_checkpoints)
+            self._estimate_kv_cache_bytes(
+                effective_ctx, cache_type_kv, n_parallel = n_parallel, ctx_checkpoints = ctx_checkpoints
+            )
             if (self._can_estimate_kv() and effective_ctx > 0)
             else 0
         )

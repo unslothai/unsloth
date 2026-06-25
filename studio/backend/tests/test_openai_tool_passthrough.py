@@ -65,9 +65,9 @@ from state.tool_policy import reset_tool_policy
 class TestChatMessageToolRoles:
     def test_tool_role_with_tool_call_id(self):
         msg = ChatMessage(
-            role="tool",
-            tool_call_id="call_abc123",
-            content='{"temperature": 72}',
+            role = "tool",
+            tool_call_id = "call_abc123",
+            content = '{"temperature": 72}',
         )
         assert msg.role == "tool"
         assert msg.tool_call_id == "call_abc123"
@@ -75,18 +75,18 @@ class TestChatMessageToolRoles:
 
     def test_tool_role_with_name(self):
         msg = ChatMessage(
-            role="tool",
-            tool_call_id="call_abc123",
-            name="get_weather",
-            content='{"temperature": 72}',
+            role = "tool",
+            tool_call_id = "call_abc123",
+            name = "get_weather",
+            content = '{"temperature": 72}',
         )
         assert msg.name == "get_weather"
 
     def test_assistant_with_tool_calls_no_content(self):
         msg = ChatMessage(
-            role="assistant",
-            content=None,
-            tool_calls=[
+            role = "assistant",
+            content = None,
+            tool_calls = [
                 {
                     "id": "call_1",
                     "type": "function",
@@ -105,9 +105,9 @@ class TestChatMessageToolRoles:
 
     def test_assistant_with_content_and_tool_calls(self):
         msg = ChatMessage(
-            role="assistant",
-            content="Let me check the weather.",
-            tool_calls=[
+            role = "assistant",
+            content = "Let me check the weather.",
+            tool_calls = [
                 {
                     "id": "call_1",
                     "type": "function",
@@ -119,7 +119,7 @@ class TestChatMessageToolRoles:
         assert msg.tool_calls[0]["id"] == "call_1"
 
     def test_plain_user_message_still_works(self):
-        msg = ChatMessage(role="user", content="Hello")
+        msg = ChatMessage(role = "user", content = "Hello")
         assert msg.role == "user"
         assert msg.tool_call_id is None
         assert msg.tool_calls is None
@@ -127,14 +127,14 @@ class TestChatMessageToolRoles:
 
     def test_invalid_role_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role="function", content="x")
+            ChatMessage(role = "function", content = "x")
 
     def test_content_absent_on_assistant_tool_call_defaults_to_none(self):
         # Assistant messages carrying only tool_calls are the one documented
         # case where `content=None` is permitted.
         msg = ChatMessage(
-            role="assistant",
-            tool_calls=[
+            role = "assistant",
+            tool_calls = [
                 {
                     "id": "call_1",
                     "type": "function",
@@ -149,15 +149,15 @@ class TestChatMessageToolRoles:
         # ChatCompletionRequest's walkback fills it from the prior assistant
         # tool_calls; see test_inference_model_validation.py for resolution
         # coverage.
-        msg = ChatMessage(role="tool", content='{"temperature": 72}')
+        msg = ChatMessage(role = "tool", content = '{"temperature": 72}')
         assert msg.tool_call_id is None
         assert msg.content == '{"temperature": 72}'
 
     def test_tool_role_empty_tool_call_id_left_for_request_validator(self):
         msg = ChatMessage(
-            role="tool",
-            tool_call_id="",
-            content='{"temperature": 72}',
+            role = "tool",
+            tool_call_id = "",
+            content = '{"temperature": 72}',
         )
         # Empty-string is treated the same as missing by the walkback.
         assert msg.tool_call_id in (None, "")
@@ -166,35 +166,35 @@ class TestChatMessageToolRoles:
 
     @pytest.mark.parametrize("role", ["user", "system"])
     def test_empty_string_content_allowed(self, role):
-        msg = ChatMessage(role=role, content="")
+        msg = ChatMessage(role = role, content = "")
         assert msg.content == ""
 
     def test_user_missing_content_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role="user")
+            ChatMessage(role = "user")
 
     def test_user_empty_list_content_rejected(self):
         with pytest.raises(ValidationError):
-            ChatMessage(role="user", content=[])
+            ChatMessage(role = "user", content = [])
 
     def test_tool_empty_content_accepted(self):
         # Empty tool output (mkdir, git add, ...) is routine in agentic loops;
         # OpenAI and llama-server both accept it, so Studio must not 400.
-        msg = ChatMessage(role="tool", tool_call_id="call_1", content="")
+        msg = ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
         assert msg.content == ""
 
     def test_assistant_without_content_or_tool_calls_tolerated(self):
         # Stop-button leaves an empty assistant turn; tolerate for replay.
-        msg = ChatMessage(role="assistant")
+        msg = ChatMessage(role = "assistant")
         assert msg.content is None
         assert msg.tool_calls is None
 
     def test_assistant_empty_string_content_normalised_to_none(self):
-        msg = ChatMessage(role="assistant", content="")
+        msg = ChatMessage(role = "assistant", content = "")
         assert msg.content is None
 
     def test_assistant_empty_list_content_normalised_to_none(self):
-        msg = ChatMessage(role="assistant", content=[])
+        msg = ChatMessage(role = "assistant", content = [])
         assert msg.content is None
 
     # ── Role-constrained tool-call metadata ────────────────────────
@@ -202,9 +202,9 @@ class TestChatMessageToolRoles:
     def test_tool_calls_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
             ChatMessage(
-                role="user",
-                content="Hi",
-                tool_calls=[
+                role = "user",
+                content = "Hi",
+                tool_calls = [
                     {
                         "id": "c1",
                         "type": "function",
@@ -216,12 +216,12 @@ class TestChatMessageToolRoles:
 
     def test_tool_call_id_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role="user", content="Hi", tool_call_id="call_1")
+            ChatMessage(role = "user", content = "Hi", tool_call_id = "call_1")
         assert "tool_call_id" in str(exc_info.value)
 
     def test_name_on_user_rejected(self):
         with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role="user", content="Hi", name="get_weather")
+            ChatMessage(role = "user", content = "Hi", name = "get_weather")
         assert "name" in str(exc_info.value)
 
 
@@ -238,7 +238,7 @@ class TestChatCompletionRequestToolFields:
 
     def test_tools_parses(self):
         req = self._make(
-            tools=[
+            tools = [
                 {
                     "type": "function",
                     "function": {
@@ -259,30 +259,30 @@ class TestChatCompletionRequestToolFields:
 
     def test_image_base64_allows_empty_user_text(self):
         req = ChatCompletionRequest(
-            messages=[{"role": "user", "content": ""}],
-            image_base64="aW1hZ2U=",
+            messages = [{"role": "user", "content": ""}],
+            image_base64 = "aW1hZ2U=",
         )
         assert req.messages[0].content == ""
         assert req.image_base64 == "aW1hZ2U="
 
     def test_tool_choice_string_auto(self):
-        assert self._make(tool_choice="auto").tool_choice == "auto"
+        assert self._make(tool_choice = "auto").tool_choice == "auto"
 
     def test_tool_choice_string_required(self):
-        assert self._make(tool_choice="required").tool_choice == "required"
+        assert self._make(tool_choice = "required").tool_choice == "required"
 
     def test_tool_choice_string_none(self):
-        assert self._make(tool_choice="none").tool_choice == "none"
+        assert self._make(tool_choice = "none").tool_choice == "none"
 
     def test_tool_choice_named_function(self):
         tc = {"type": "function", "function": {"name": "get_weather"}}
-        assert self._make(tool_choice=tc).tool_choice == tc
+        assert self._make(tool_choice = tc).tool_choice == tc
 
     def test_stop_string(self):
-        assert self._make(stop="\nUser:").stop == "\nUser:"
+        assert self._make(stop = "\nUser:").stop == "\nUser:"
 
     def test_stop_list(self):
-        assert self._make(stop=["\nUser:", "\nAssistant:"]).stop == ["\nUser:", "\nAssistant:"]
+        assert self._make(stop = ["\nUser:", "\nAssistant:"]).stop == ["\nUser:", "\nAssistant:"]
 
     def test_tools_default_none(self):
         req = self._make()
@@ -295,9 +295,9 @@ class TestChatCompletionRequestToolFields:
         # declared but must survive Pydantic parsing now that extra="allow" is
         # set. `seed` is declared and should land on the typed field instead.
         req = self._make(
-            frequency_penalty=0.5,
-            seed=42,
-            response_format={"type": "json_object"},
+            frequency_penalty = 0.5,
+            seed = 42,
+            response_format = {"type": "json_object"},
         )
         assert req.seed == 42
         # Extras land in model_extra
@@ -308,9 +308,9 @@ class TestChatCompletionRequestToolFields:
 
     def test_unsloth_extensions_still_work(self):
         req = self._make(
-            enable_tools=True,
-            enabled_tools=["web_search", "python"],
-            session_id="abc",
+            enable_tools = True,
+            enabled_tools = ["web_search", "python"],
+            session_id = "abc",
         )
         assert req.enable_tools is True
         assert req.enabled_tools == ["web_search", "python"]
@@ -350,7 +350,7 @@ class TestChatCompletionRequestToolFields:
         client = TestClient(app)
         resp = client.post(
             "/chat/completions",
-            json={
+            json = {
                 "messages": [{"role": "user", "content": "hi"}],
                 "provider_type": "openai",
             },
@@ -364,7 +364,7 @@ class TestChatCompletionRequestToolFields:
         self,
         monkeypatch,
         llama_backend,
-        inference_backend=None,
+        inference_backend = None,
     ):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -378,7 +378,7 @@ class TestChatCompletionRequestToolFields:
             monkeypatch.setattr(inference_route, "get_inference_backend", lambda: inference_backend)
 
         app = FastAPI()
-        app.include_router(inference_route.router, prefix="/v1")
+        app.include_router(inference_route.router, prefix = "/v1")
         install_api_error_handlers(app)
         app.dependency_overrides[get_current_subject] = lambda: "test-user"
         return TestClient(app)
@@ -393,10 +393,10 @@ class TestChatCompletionRequestToolFields:
         self._assert_unsupported_param(response, "n")
 
     def test_n_allows_openai_chat_completion_range(self):
-        req = self._make(n=128)
+        req = self._make(n = 128)
         assert req.n == 128
         with pytest.raises(ValidationError):
-            self._make(n=129)
+            self._make(n = 129)
 
     def test_n_rejected_for_external_provider_path(self, monkeypatch):
         class _UnusedBackend:
@@ -405,7 +405,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json={
+            json = {
                 "messages": [{"role": "user", "content": "hi"}],
                 "provider_type": "openai",
                 "n": 2,
@@ -420,7 +420,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json={
+            json = {
                 "messages": [{"role": "user", "content": "hi"}],
                 "provider_type": "openai",
                 "external_model": "gpt-4.1",
@@ -442,7 +442,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json={
+            json = {
                 "messages": [{"role": "user", "content": "hi"}],
                 "provider_type": "openai",
                 "logprobs": True,
@@ -457,7 +457,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _UnusedBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json={
+            json = {
                 "messages": [{"role": "user", "content": "hi"}],
                 "provider_type": "openai",
                 "top_logprobs": 3,
@@ -477,7 +477,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _GGUFBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json={
+            json = {
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": True,
                 "n": 2,
@@ -496,12 +496,12 @@ class TestChatCompletionRequestToolFields:
             _is_audio = False
             context_length = 4096
 
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
         client = self._v1_client(monkeypatch, _GGUFBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json={
+            json = {
                 "messages": [{"role": "user", "content": "hi"}],
                 "tools": [
                     {
@@ -533,7 +533,7 @@ class TestChatCompletionRequestToolFields:
         client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json={
+            json = {
                 "messages": [{"role": "user", "content": "hi"}],
                 "n": 2,
             },
@@ -562,12 +562,12 @@ class TestChatCompletionRequestToolFields:
             "_detect_safetensors_features",
             lambda backend, chat_template: {"supports_tools": True},
         )
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
         client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json={
+            json = {
                 "messages": [{"role": "user", "content": "hi"}],
                 "enable_tools": True,
                 "enabled_tools": ["web_search"],
@@ -587,7 +587,7 @@ class TestChatCompletionRequestToolFields:
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
-            messages=[
+            messages = [
                 {"role": "user", "content": "What's the weather in Paris?"},
                 {
                     "role": "assistant",
@@ -609,7 +609,7 @@ class TestChatCompletionRequestToolFields:
                     "content": '{"temperature": 14, "unit": "celsius"}',
                 },
             ],
-            tools=[
+            tools = [
                 {
                     "type": "function",
                     "function": {
@@ -666,18 +666,18 @@ class TestAnthropicToolChoiceToOpenAI:
 class TestBuildPassthroughPayloadToolChoice:
     def _args(self):
         return dict(
-            openai_messages=[{"role": "user", "content": "Hi"}],
-            openai_tools=[
+            openai_messages = [{"role": "user", "content": "Hi"}],
+            openai_tools = [
                 {
                     "type": "function",
                     "function": {"name": "f", "parameters": {"type": "object"}},
                 }
             ],
-            temperature=0.6,
-            top_p=0.95,
-            top_k=20,
-            max_tokens=128,
-            stream=False,
+            temperature = 0.6,
+            top_p = 0.95,
+            top_k = 20,
+            max_tokens = 128,
+            stream = False,
         )
 
     def test_default_tool_choice_is_auto(self):
@@ -685,16 +685,16 @@ class TestBuildPassthroughPayloadToolChoice:
         assert body["tool_choice"] == "auto"
 
     def test_override_tool_choice_required(self):
-        body = _build_passthrough_payload(**self._args(), tool_choice="required")
+        body = _build_passthrough_payload(**self._args(), tool_choice = "required")
         assert body["tool_choice"] == "required"
 
     def test_override_tool_choice_none(self):
-        body = _build_passthrough_payload(**self._args(), tool_choice="none")
+        body = _build_passthrough_payload(**self._args(), tool_choice = "none")
         assert body["tool_choice"] == "none"
 
     def test_override_tool_choice_named_function(self):
         tc = {"type": "function", "function": {"name": "f"}}
-        body = _build_passthrough_payload(**self._args(), tool_choice=tc)
+        body = _build_passthrough_payload(**self._args(), tool_choice = tc)
         assert body["tool_choice"] == tc
 
     def test_stream_omits_usage_options_when_client_did_not_request_them(self):
@@ -708,7 +708,7 @@ class TestBuildPassthroughPayloadToolChoice:
         args["stream"] = True
         body = _build_passthrough_payload(
             **args,
-            stream_options={"include_usage": True},
+            stream_options = {"include_usage": True},
         )
         assert body.get("stream_options") == {"include_usage": True}
 
@@ -717,27 +717,27 @@ class TestBuildPassthroughPayloadToolChoice:
         args["stream"] = True
         body = _build_passthrough_payload(
             **args,
-            stream_options={"include_usage": False},
+            stream_options = {"include_usage": False},
         )
         assert body.get("stream_options") == {"include_usage": False}
 
     def test_repetition_penalty_renamed(self):
-        body = _build_passthrough_payload(**self._args(), repetition_penalty=1.1)
+        body = _build_passthrough_payload(**self._args(), repetition_penalty = 1.1)
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
 
     def test_passthrough_body_merges_system_and_developer_messages(self):
         payload = ChatCompletionRequest(
-            model="default",
-            messages=[
+            model = "default",
+            messages = [
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
             ],
-            tools=self._args()["openai_tools"],
+            tools = self._args()["openai_tools"],
         )
 
-        body = _build_openai_passthrough_body(payload, backend_ctx=4096)
+        body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
 
         assert body["messages"] == [
             {"role": "system", "content": "original system\n\ndeveloper rules"},
@@ -753,10 +753,10 @@ class TestBuildPassthroughPayloadToolChoice:
 
 
 def _reasoning_backend(
-    supports_reasoning=True,
-    reasoning_style="enable_thinking",
-    reasoning_always_on=False,
-    supports_preserve_thinking=False,
+    supports_reasoning = True,
+    reasoning_style = "enable_thinking",
+    reasoning_always_on = False,
+    supports_preserve_thinking = False,
 ):
     """Bare LlamaCppBackend with just the reasoning capability flags set,
     so _build_openai_passthrough_body exercises the real
@@ -774,24 +774,24 @@ def _reasoning_backend(
 class TestPassthroughReasoningKwargs:
     def _payload(self, **fields):
         return ChatCompletionRequest(
-            model="default",
-            messages=[{"role": "user", "content": "hi"}],
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
             **fields,
         )
 
     def test_enable_thinking_forwarded(self):
         body = _build_openai_passthrough_body(
-            self._payload(enable_thinking=False),
-            backend_ctx=4096,
-            llama_backend=_reasoning_backend(),
+            self._payload(enable_thinking = False),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(),
         )
         assert body["chat_template_kwargs"] == {"enable_thinking": False}
 
     def test_preserve_thinking_forwarded_when_template_supports_it(self):
         body = _build_openai_passthrough_body(
-            self._payload(enable_thinking=True, preserve_thinking=True),
-            backend_ctx=4096,
-            llama_backend=_reasoning_backend(supports_preserve_thinking=True),
+            self._payload(enable_thinking = True, preserve_thinking = True),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(supports_preserve_thinking = True),
         )
         assert body["chat_template_kwargs"] == {
             "enable_thinking": True,
@@ -800,57 +800,57 @@ class TestPassthroughReasoningKwargs:
 
     def test_preserve_thinking_dropped_when_template_lacks_it(self):
         body = _build_openai_passthrough_body(
-            self._payload(preserve_thinking=True),
-            backend_ctx=4096,
-            llama_backend=_reasoning_backend(supports_preserve_thinking=False),
+            self._payload(preserve_thinking = True),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(supports_preserve_thinking = False),
         )
         assert "chat_template_kwargs" not in body
 
     def test_reasoning_effort_forwarded_for_effort_style_models(self):
         body = _build_openai_passthrough_body(
-            self._payload(reasoning_effort="high"),
-            backend_ctx=4096,
-            llama_backend=_reasoning_backend(reasoning_style="reasoning_effort"),
+            self._payload(reasoning_effort = "high"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
         )
         assert body["chat_template_kwargs"] == {"reasoning_effort": "high"}
 
     def test_reasoning_effort_none_forwarded_for_effort_style_models(self):
         body = _build_openai_passthrough_body(
-            self._payload(enable_thinking=False, reasoning_effort="none"),
-            backend_ctx=4096,
-            llama_backend=_reasoning_backend(reasoning_style="reasoning_effort"),
+            self._payload(enable_thinking = False, reasoning_effort = "none"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
         )
         assert body["chat_template_kwargs"] == {"reasoning_effort": "none"}
 
     def test_reasoning_effort_minimal_maps_to_low_for_effort_style_models(self):
         body = _build_openai_passthrough_body(
-            self._payload(enable_thinking=True, reasoning_effort="minimal"),
-            backend_ctx=4096,
-            llama_backend=_reasoning_backend(reasoning_style="reasoning_effort"),
+            self._payload(enable_thinking = True, reasoning_effort = "minimal"),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
         )
         assert body["chat_template_kwargs"] == {"reasoning_effort": "low"}
 
     def test_enable_thinking_maps_to_effort_for_effort_style_models(self):
         body = _build_openai_passthrough_body(
-            self._payload(enable_thinking=False),
-            backend_ctx=4096,
-            llama_backend=_reasoning_backend(reasoning_style="reasoning_effort"),
+            self._payload(enable_thinking = False),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_style = "reasoning_effort"),
         )
         assert body["chat_template_kwargs"] == {"reasoning_effort": "low"}
 
     def test_always_on_reasoning_skips_thinking_kwargs(self):
         body = _build_openai_passthrough_body(
-            self._payload(enable_thinking=False),
-            backend_ctx=4096,
-            llama_backend=_reasoning_backend(reasoning_always_on=True),
+            self._payload(enable_thinking = False),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(reasoning_always_on = True),
         )
         assert "chat_template_kwargs" not in body
 
     def test_no_reasoning_fields_omits_chat_template_kwargs(self):
         body = _build_openai_passthrough_body(
             self._payload(),
-            backend_ctx=4096,
-            llama_backend=_reasoning_backend(supports_preserve_thinking=True),
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(supports_preserve_thinking = True),
         )
         assert "chat_template_kwargs" not in body
 
@@ -862,7 +862,7 @@ class TestPassthroughReasoningKwargs:
 
 class TestOpenAICompatibilityHelpers:
     def test_max_completion_tokens_wins_over_deprecated_max_tokens(self):
-        payload = SimpleNamespace(max_tokens=128, max_completion_tokens=64)
+        payload = SimpleNamespace(max_tokens = 128, max_completion_tokens = 64)
         assert _effective_max_tokens(payload) == 64
 
     @pytest.mark.parametrize(
@@ -878,15 +878,15 @@ class TestOpenAICompatibilityHelpers:
 
     def test_non_streaming_completion_choice_accepts_tool_calls_finish_reason(self):
         choice = CompletionChoice(
-            index=0,
-            message=CompletionMessage(content=""),
-            finish_reason="tool_calls",
+            index = 0,
+            message = CompletionMessage(content = ""),
+            finish_reason = "tool_calls",
         )
         assert choice.finish_reason == "tool_calls"
 
     def test_stream_usage_chunk_requires_include_usage(self):
         usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
-        payload = SimpleNamespace(stream_options=None)
+        payload = SimpleNamespace(stream_options = None)
         assert (
             _openai_stream_usage_chunk(payload, "chatcmpl-test", 123, "model", usage, None) is None
         )
@@ -898,7 +898,7 @@ class TestOpenAICompatibilityHelpers:
         assert '"usage"' in line
 
     def test_stream_usage_chunk_coerces_nullable_counts(self):
-        payload = SimpleNamespace(stream_options={"include_usage": True})
+        payload = SimpleNamespace(stream_options = {"include_usage": True})
         line = _openai_stream_usage_chunk(
             payload,
             "chatcmpl-test",
@@ -918,22 +918,22 @@ class TestOpenAICompatibilityHelpers:
     def test_completion_stream_monitor_reads_usage_before_client_strip(self, monkeypatch):
         import routes.inference as inf_mod
 
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
-            endpoint="/v1/completions",
-            method="POST",
-            model="m",
-            prompt="hi",
-            context_length=100,
+            endpoint = "/v1/completions",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+            context_length = 100,
         )
         event = (
             b'data: {"id":"chatcmpl-test","choices":[{"text":"done","finish_reason":"stop"}],'
             b'"usage":{"prompt_tokens":4,"completion_tokens":6,"total_tokens":10}}\n'
         )
 
-        _monitor_openai_sse_event(monitor_id, event, context_length=100)
-        out = _cmpl_stream_event_out(event, include_usage=False)
+        _monitor_openai_sse_event(monitor_id, event, context_length = 100)
+        out = _cmpl_stream_event_out(event, include_usage = False)
 
         assert out is not None
         assert b'"usage"' not in out
@@ -946,7 +946,7 @@ class TestOpenAICompatibilityHelpers:
 
     def test_developer_message_preserves_existing_system_prompt(self):
         payload = ChatCompletionRequest(
-            messages=[
+            messages = [
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
@@ -973,19 +973,19 @@ class TestFriendlyErrorHttpx:
         return httpx.Request("POST", "http://127.0.0.1:65535/v1/chat/completions")
 
     def test_connect_error_mapped(self):
-        exc = httpx.ConnectError("All connection attempts failed", request=self._req())
+        exc = httpx.ConnectError("All connection attempts failed", request = self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_read_error_mapped(self):
-        exc = httpx.ReadError("EOF", request=self._req())
+        exc = httpx.ReadError("EOF", request = self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_remote_protocol_error_mapped(self):
-        exc = httpx.RemoteProtocolError("peer closed", request=self._req())
+        exc = httpx.RemoteProtocolError("peer closed", request = self._req())
         assert "Lost connection" in _friendly_error(exc)
 
     def test_read_timeout_mapped(self):
-        exc = httpx.ReadTimeout("timed out", request=self._req())
+        exc = httpx.ReadTimeout("timed out", request = self._req())
         assert "first token within 20 minutes" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
@@ -1067,11 +1067,11 @@ class TestDropEmptyAssistantSentinels:
     def test_openai_messages_for_passthrough_drops_sentinel(self):
         """End-to-end: Stop-sentinel must not reach the wire."""
         req = ChatCompletionRequest(
-            model="default",
-            messages=[
-                ChatMessage(role="user", content="hi"),
-                ChatMessage(role="assistant", content=""),
-                ChatMessage(role="user", content="again"),
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
             ],
         )
         out = _openai_messages_for_passthrough(req)
@@ -1089,9 +1089,9 @@ class TestGgufVisionMessages:
 
     def test_preserves_multiturn_image_parts_on_original_turns(self):
         req = ChatCompletionRequest(
-            model="default",
-            image_base64=self._PNG_B64,
-            messages=[
+            model = "default",
+            image_base64 = self._PNG_B64,
+            messages = [
                 {
                     "role": "user",
                     "content": [
@@ -1120,7 +1120,7 @@ class TestGgufVisionMessages:
             ],
         )
 
-        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision=True)
+        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision = True)
 
         assert has_image is True
         assert messages[0]["content"][0] == {"type": "text", "text": "describe image one"}
@@ -1141,12 +1141,12 @@ class TestGgufVisionMessages:
 
     def test_legacy_image_base64_is_injected_when_messages_are_text_only(self):
         req = ChatCompletionRequest(
-            model="default",
-            image_base64=self._PNG_B64,
-            messages=[{"role": "user", "content": "describe this image"}],
+            model = "default",
+            image_base64 = self._PNG_B64,
+            messages = [{"role": "user", "content": "describe this image"}],
         )
 
-        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision=True)
+        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision = True)
 
         assert has_image is True
         assert messages[0]["content"][0] == {"type": "text", "text": "describe this image"}
@@ -1155,8 +1155,8 @@ class TestGgufVisionMessages:
 
     def test_rejects_image_parts_for_text_only_gguf(self):
         req = ChatCompletionRequest(
-            model="default",
-            messages=[
+            model = "default",
+            messages = [
                 {
                     "role": "user",
                     "content": [
@@ -1173,7 +1173,7 @@ class TestGgufVisionMessages:
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            _openai_messages_for_gguf_chat(req, is_vision=False)
+            _openai_messages_for_gguf_chat(req, is_vision = False)
         assert "does not support vision" in str(exc_info.value)
 
     def test_tool_nudge_system_update_preserves_image_parts(self):
@@ -1226,7 +1226,7 @@ class TestGgufVisionMessages:
 class TestGgufVisionToolRouting:
     class _Request:
         state = SimpleNamespace()
-        url = SimpleNamespace(path="/v1/chat/completions")
+        url = SimpleNamespace(path = "/v1/chat/completions")
         method = "POST"
 
         async def is_disconnected(self):
@@ -1268,10 +1268,10 @@ class TestGgufVisionToolRouting:
         self,
         monkeypatch,
         *,
-        generate=None,
-        tool_generate=None,
-        payload_kwargs=None,
-        backend_kwargs=None,
+        generate = None,
+        tool_generate = None,
+        payload_kwargs = None,
+        backend_kwargs = None,
     ):
         import routes.inference as inf_mod
 
@@ -1297,7 +1297,7 @@ class TestGgufVisionToolRouting:
             backend_data.update(backend_kwargs)
         backend = SimpleNamespace(**backend_data)
 
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
@@ -1309,9 +1309,9 @@ class TestGgufVisionToolRouting:
             request_data.update(payload_kwargs)
         payload = ChatCompletionRequest(**request_data)
         response = self._drive(
-            openai_chat_completions(payload, request=self._Request(), current_subject="test")
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
-        result = SimpleNamespace(response=response, monitor=monitor, backend=backend)
+        result = SimpleNamespace(response = response, monitor = monitor, backend = backend)
         if request_data.get("stream"):
             result.chunks = self._consume_response(response)
             result.payloads = self._sse_payloads(result.chunks)
@@ -1333,24 +1333,24 @@ class TestGgufVisionToolRouting:
             yield {"type": "content", "text": "done"}
 
         backend = SimpleNamespace(
-            is_loaded=True,
-            is_vision=True,
-            supports_tools=True,
-            model_identifier="gemma-4-12b-it-GGUF",
-            context_length=4096,
-            generate_chat_completion=_plain,
-            generate_chat_completion_with_tools=_tools,
+            is_loaded = True,
+            is_vision = True,
+            supports_tools = True,
+            model_identifier = "gemma-4-12b-it-GGUF",
+            context_length = 4096,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
         )
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
-            model="default",
-            enable_tools=True,
-            enabled_tools=["web_search"],
-            stream=True,
-            messages=[
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            stream = True,
+            messages = [
                 {
                     "role": "user",
                     "content": [
@@ -1367,7 +1367,7 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request=self._Request(), current_subject="test")
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
         self._consume_response(response)
 
@@ -1392,29 +1392,29 @@ class TestGgufVisionToolRouting:
             yield {"type": "content", "text": "done"}
 
         backend = SimpleNamespace(
-            is_loaded=True,
-            is_vision=False,
-            supports_tools=True,
-            model_identifier="test-gguf",
-            context_length=4096,
-            generate_chat_completion=_plain,
-            generate_chat_completion_with_tools=_tools,
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
         )
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
-            model="default",
-            enable_tools=True,
-            enabled_tools=["web_search"],
-            parallel_tool_calls=False,
-            stream=True,
-            messages=[{"role": "user", "content": "search once"}],
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            parallel_tool_calls = False,
+            stream = True,
+            messages = [{"role": "user", "content": "search once"}],
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request=self._Request(), current_subject="test")
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
         self._consume_response(response)
 
@@ -1430,33 +1430,33 @@ class TestGgufVisionToolRouting:
             raise AssertionError("tool loop should be rejected before starting")
 
         backend = SimpleNamespace(
-            is_loaded=True,
-            is_vision=False,
-            supports_tools=True,
-            model_identifier="test-gguf",
-            context_length=4096,
-            generate_chat_completion=_plain,
-            generate_chat_completion_with_tools=_tools,
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
 
         payload = ChatCompletionRequest(
-            model="default",
-            enable_tools=True,
-            enabled_tools=["web_search"],
-            confirm_tool_calls=True,
-            stream=False,
-            messages=[{"role": "user", "content": "search once"}],
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            confirm_tool_calls = True,
+            stream = False,
+            messages = [{"role": "user", "content": "search once"}],
         )
 
         with pytest.raises(HTTPException) as exc:
             self._drive(
                 openai_chat_completions(
                     payload,
-                    request=self._Request(),
-                    current_subject="test",
+                    request = self._Request(),
+                    current_subject = "test",
                 )
             )
         assert exc.value.status_code == 400
@@ -1480,8 +1480,8 @@ class TestGgufVisionToolRouting:
 
         result = self._run_gguf_case(
             monkeypatch,
-            generate=_generate,
-            payload_kwargs={"stream": True},
+            generate = _generate,
+            payload_kwargs = {"stream": True},
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
@@ -1502,9 +1502,9 @@ class TestGgufVisionToolRouting:
 
         result = self._run_gguf_case(
             monkeypatch,
-            generate=_generate,
-            payload_kwargs={"stream": True},
-            backend_kwargs={"reasoning_always_on": False},
+            generate = _generate,
+            payload_kwargs = {"stream": True},
+            backend_kwargs = {"reasoning_always_on": False},
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
@@ -1524,9 +1524,9 @@ class TestGgufVisionToolRouting:
 
         result = self._run_gguf_case(
             monkeypatch,
-            generate=_generate,
-            payload_kwargs={"stream": True, "enable_thinking": False},
-            backend_kwargs={"reasoning_always_on": False},
+            generate = _generate,
+            payload_kwargs = {"stream": True, "enable_thinking": False},
+            backend_kwargs = {"reasoning_always_on": False},
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
@@ -1550,8 +1550,8 @@ class TestGgufVisionToolRouting:
 
         result = self._run_gguf_case(
             monkeypatch,
-            tool_generate=_tools,
-            payload_kwargs={
+            tool_generate = _tools,
+            payload_kwargs = {
                 "stream": True,
                 "enable_tools": True,
                 "enabled_tools": ["terminal"],
@@ -1579,8 +1579,8 @@ class TestGgufVisionToolRouting:
 
         result = self._run_gguf_case(
             monkeypatch,
-            tool_generate=_tools,
-            payload_kwargs={
+            tool_generate = _tools,
+            payload_kwargs = {
                 "stream": True,
                 "enable_tools": True,
                 "enabled_tools": ["terminal"],
@@ -1603,7 +1603,7 @@ class TestGgufVisionToolRouting:
                 "finish_reason": "stop",
             }
 
-        result = self._run_gguf_case(monkeypatch, generate=_generate)
+        result = self._run_gguf_case(monkeypatch, generate = _generate)
         body = result.body
         message = body["choices"][0]["message"]
 
@@ -1631,29 +1631,29 @@ class TestGgufVisionToolRouting:
             }
 
         backend = SimpleNamespace(
-            is_loaded=True,
-            is_vision=False,
-            supports_tools=False,
-            _is_audio=False,
-            model_identifier="test-gguf",
-            context_length=4096,
-            generate_chat_completion=_generate,
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
         )
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
-            model="default",
-            n=2,
-            messages=[{"role": "user", "content": "two please"}],
+            model = "default",
+            n = 2,
+            messages = [{"role": "user", "content": "two please"}],
         )
 
         response = self._drive(
             openai_chat_completions(
                 payload,
-                request=self._Request(),
-                current_subject="test",
+                request = self._Request(),
+                current_subject = "test",
             )
         )
         body = json.loads(response.body)
@@ -1679,18 +1679,18 @@ class TestGgufVisionToolRouting:
             }
 
         backend = SimpleNamespace(
-            is_loaded=True,
-            is_vision=False,
-            supports_tools=False,
-            model_identifier="test-gguf",
-            context_length=4096,
-            generate_chat_completion=_generate,
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
-            model="default",
-            messages=[
+            model = "default",
+            messages = [
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
@@ -1698,7 +1698,7 @@ class TestGgufVisionToolRouting:
         )
 
         self._drive(
-            openai_chat_completions(payload, request=self._Request(), current_subject="test")
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
 
         assert captured["messages"] == [
@@ -1717,7 +1717,7 @@ class TestGgufVisionToolRouting:
         import routes.inference as inf_mod
 
         seen_seeds = []
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
 
         def _generate(**kwargs):
@@ -1734,24 +1734,24 @@ class TestGgufVisionToolRouting:
             }
 
         backend = SimpleNamespace(
-            is_loaded=True,
-            is_vision=False,
-            supports_tools=False,
-            model_identifier="test-gguf",
-            context_length=4096,
-            generate_chat_completion=_generate,
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
-            model="default",
-            messages=[{"role": "user", "content": "hi"}],
-            n=3,
-            seed=seed,
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            n = 3,
+            seed = seed,
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request=self._Request(), current_subject="test")
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
         body = json.loads(response.body)
 
@@ -1768,7 +1768,7 @@ class TestGgufVisionToolRouting:
 class TestApiMonitorProviderAndCompletionStreams:
     class _Request:
         state = SimpleNamespace()
-        url = SimpleNamespace(path="/v1/chat/completions")
+        url = SimpleNamespace(path = "/v1/chat/completions")
         method = "POST"
 
         async def is_disconnected(self):
@@ -1782,27 +1782,27 @@ class TestApiMonitorProviderAndCompletionStreams:
                 return False
 
         async def fake_send(*_args, **_kwargs):
-            return httpx.Response(200, content=b"")
+            return httpx.Response(200, content = b"")
 
         async def fake_items(*_args, **_kwargs):
             for line in lines:
                 yield line
 
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
         monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
         monitor_id = monitor.start(
-            endpoint="/v1/chat/completions",
-            method="POST",
-            model="gguf",
-            prompt="hi",
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
         )
         payload = ChatCompletionRequest(
-            model="default",
-            messages=[ChatMessage(role="user", content="hi")],
-            stream=True,
-            tools=[
+            model = "default",
+            messages = [ChatMessage(role = "user", content = "hi")],
+            stream = True,
+            tools = [
                 {
                     "type": "function",
                     "function": {
@@ -1817,17 +1817,17 @@ class TestApiMonitorProviderAndCompletionStreams:
             Request(),
             threading.Event(),
             SimpleNamespace(
-                base_url="http://llama.test",
-                context_length=4096,
-                _request_reasoning_kwargs=lambda *_args, **_kwargs: None,
+                base_url = "http://llama.test",
+                context_length = 4096,
+                _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
             ),
             payload,
             "gguf",
             "chatcmpl-test",
-            monitor_id=monitor_id,
+            monitor_id = monitor_id,
         )
         chunks = [chunk async for chunk in response.body_iterator]
-        return SimpleNamespace(chunks=chunks, body="".join(chunks), monitor=monitor)
+        return SimpleNamespace(chunks = chunks, body = "".join(chunks), monitor = monitor)
 
     def test_external_non_streaming_json_updates_monitor(self, monkeypatch):
         async def _run():
@@ -1853,15 +1853,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def close(self):
                     pass
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "ExternalProviderClient", DummyExternalClient)
             payload = ChatCompletionRequest(
-                model="default",
-                external_model="gpt-test",
-                provider_type="openai",
-                provider_base_url="https://api.openai.com/v1",
-                messages=[ChatMessage(role="user", content="hi")],
+                model = "default",
+                external_model = "gpt-test",
+                provider_type = "openai",
+                provider_base_url = "https://api.openai.com/v1",
+                messages = [ChatMessage(role = "user", content = "hi")],
             )
 
             response = await _proxy_to_external_provider(payload, self._Request())
@@ -1894,16 +1894,16 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def close(self):
                     pass
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "ExternalProviderClient", DummyExternalClient)
             payload = ChatCompletionRequest(
-                model="default",
-                external_model="gpt-test",
-                provider_type="openai",
-                provider_base_url="https://api.openai.com/v1",
-                messages=[ChatMessage(role="user", content="hi")],
-                stream=True,
+                model = "default",
+                external_model = "gpt-test",
+                provider_type = "openai",
+                provider_base_url = "https://api.openai.com/v1",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
             )
 
             response = await _proxy_to_external_provider(payload, self._Request())
@@ -1930,7 +1930,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             class Request:
                 state = SimpleNamespace()
-                url = SimpleNamespace(path="/v1/completions")
+                url = SimpleNamespace(path = "/v1/completions")
                 method = "POST"
 
                 async def json(self):
@@ -1942,21 +1942,21 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def fake_send(*_args, **_kwargs):
                 return None
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
                 lambda: SimpleNamespace(
-                    is_loaded=True,
-                    base_url="http://llama.test",
-                    context_length=4096,
-                    model_identifier="gguf",
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
                 ),
             )
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
 
-            response = await openai_completions(Request(), current_subject="test")
+            response = await openai_completions(Request(), current_subject = "test")
             chunks = []
             async for chunk in response.body_iterator:
                 chunks.append(chunk)
@@ -1974,7 +1974,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             class Request:
                 state = SimpleNamespace()
-                url = SimpleNamespace(path="/v1/completions")
+                url = SimpleNamespace(path = "/v1/completions")
                 method = "POST"
 
                 async def json(self):
@@ -1984,28 +1984,28 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content=b"")
+                return httpx.Response(200, content = b"")
 
             async def fake_items(*_args, **_kwargs):
                 yield b'data: {"choices":[{"text":"hello"}]}\n\n'
                 await asyncio.sleep(3600)
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
                 lambda: SimpleNamespace(
-                    is_loaded=True,
-                    base_url="http://llama.test",
-                    context_length=4096,
-                    model_identifier="gguf",
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
                 ),
             )
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
 
-            response = await openai_completions(Request(), current_subject="test")
+            response = await openai_completions(Request(), current_subject = "test")
             iterator = response.body_iterator
             first = await anext(iterator)
             assert b"hello" in first
@@ -2029,7 +2029,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             class Request:
                 state = SimpleNamespace()
-                url = SimpleNamespace(path="/v1/completions")
+                url = SimpleNamespace(path = "/v1/completions")
                 method = "POST"
 
                 async def json(self):
@@ -2045,7 +2045,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def post(self, *_args, **_kwargs):
                     raise httpx.ConnectError("llama down")
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
@@ -2056,15 +2056,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 inf_mod,
                 "get_llama_cpp_backend",
                 lambda: SimpleNamespace(
-                    is_loaded=True,
-                    base_url="http://llama.test",
-                    context_length=4096,
-                    model_identifier="gguf",
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
                 ),
             )
 
             with pytest.raises(httpx.ConnectError):
-                await openai_completions(Request(), current_subject="test")
+                await openai_completions(Request(), current_subject = "test")
 
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
@@ -2076,13 +2076,13 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_monitor_openai_chunk_records_all_choice_replies(self, monkeypatch):
         import routes.inference as inf_mod
 
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
-            endpoint="/v1/completions",
-            method="POST",
-            model="gguf",
-            prompt="hi",
+            endpoint = "/v1/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
         )
 
         _monitor_openai_chunk(
@@ -2110,13 +2110,13 @@ class TestApiMonitorProviderAndCompletionStreams:
     def test_monitor_openai_chunk_records_tool_call_reply(self, monkeypatch):
         import routes.inference as inf_mod
 
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monitor_id = monitor.start(
-            endpoint="/v1/chat/completions",
-            method="POST",
-            model="gguf",
-            prompt="hi",
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
         )
 
         _monitor_openai_chunk(
@@ -2150,7 +2150,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             class Request:
                 state = SimpleNamespace()
-                url = SimpleNamespace(path="/v1/embeddings")
+                url = SimpleNamespace(path = "/v1/embeddings")
                 method = "POST"
 
                 async def json(self):
@@ -2167,13 +2167,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                     assert monitor.active_count() == 1
                     return httpx.Response(
                         200,
-                        json={
+                        json = {
                             "data": [{"embedding": [0.1]}],
                             "usage": {"prompt_tokens": 4, "total_tokens": 4},
                         },
                     )
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
@@ -2184,14 +2184,14 @@ class TestApiMonitorProviderAndCompletionStreams:
                 inf_mod,
                 "get_llama_cpp_backend",
                 lambda: SimpleNamespace(
-                    is_loaded=True,
-                    base_url="http://llama.test",
-                    context_length=4096,
-                    model_identifier="gguf",
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
                 ),
             )
 
-            response = await openai_embeddings(Request(), current_subject="test")
+            response = await openai_embeddings(Request(), current_subject = "test")
 
             assert response.status_code == 200
             [entry] = monitor.snapshot()
@@ -2213,27 +2213,27 @@ class TestApiMonitorProviderAndCompletionStreams:
                     return False
 
             async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content=b"")
+                return httpx.Response(200, content = b"")
 
             async def fake_items(*_args, **_kwargs):
                 yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
                 await asyncio.sleep(3600)
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
             monitor_id = monitor.start(
-                endpoint="/v1/chat/completions",
-                method="POST",
-                model="gguf",
-                prompt="hi",
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
             )
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="hi")],
-                stream=True,
-                tools=[
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                tools = [
                     {
                         "type": "function",
                         "function": {
@@ -2248,14 +2248,14 @@ class TestApiMonitorProviderAndCompletionStreams:
                 Request(),
                 threading.Event(),
                 SimpleNamespace(
-                    base_url="http://llama.test",
-                    context_length=4096,
-                    _request_reasoning_kwargs=lambda *_args, **_kwargs: None,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
                 ),
                 payload,
                 "gguf",
                 "chatcmpl-test",
-                monitor_id=monitor_id,
+                monitor_id = monitor_id,
             )
             assert isinstance(response, _SameTaskStreamingResponse)
             iterator = response.body_iterator
@@ -2371,7 +2371,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def post(self, *_args, **_kwargs):
                     raise asyncio.CancelledError()
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
@@ -2379,15 +2379,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 lambda: CancellingAsyncClient(),
             )
             monitor_id = monitor.start(
-                endpoint="/v1/chat/completions",
-                method="POST",
-                model="gguf",
-                prompt="hi",
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
             )
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="hi")],
-                tools=[
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                tools = [
                     {
                         "type": "function",
                         "function": {
@@ -2401,13 +2401,13 @@ class TestApiMonitorProviderAndCompletionStreams:
             with pytest.raises(asyncio.CancelledError):
                 await _openai_passthrough_non_streaming(
                     SimpleNamespace(
-                        base_url="http://llama.test",
-                        context_length=4096,
-                        _request_reasoning_kwargs=lambda *_args, **_kwargs: None,
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
                     ),
                     payload,
                     "gguf",
-                    monitor_id=monitor_id,
+                    monitor_id = monitor_id,
                 )
 
             [entry] = monitor.snapshot()
@@ -2439,7 +2439,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 class TestApiMonitorSafetensorsUsage:
     class _Request:
         state = SimpleNamespace()
-        url = SimpleNamespace(path="/v1/chat/completions")
+        url = SimpleNamespace(path = "/v1/chat/completions")
         method = "POST"
 
     def test_non_streaming_safetensors_records_usage(self, monkeypatch):
@@ -2463,16 +2463,16 @@ class TestApiMonitorSafetensorsUsage:
                 def reset_generation_state(self):
                     pass
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
                 lambda: SimpleNamespace(
-                    is_loaded=False,
-                    supports_tools=False,
-                    is_vision=False,
-                    context_length=None,
+                    is_loaded = False,
+                    supports_tools = False,
+                    is_vision = False,
+                    context_length = None,
                 ),
             )
             monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyBackend())
@@ -2482,14 +2482,14 @@ class TestApiMonitorSafetensorsUsage:
                 lambda *_args, **_kwargs: {"supports_tools": False},
             )
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="hi")],
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
             )
 
             response = await openai_chat_completions(
                 payload,
-                request=self._Request(),
-                current_subject="test",
+                request = self._Request(),
+                current_subject = "test",
             )
             body = json.loads(response.body)
 
@@ -2534,16 +2534,16 @@ class TestApiMonitorSafetensorsUsage:
                 def reset_generation_state(self):
                     pass
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
                 lambda: SimpleNamespace(
-                    is_loaded=False,
-                    supports_tools=False,
-                    is_vision=False,
-                    context_length=None,
+                    is_loaded = False,
+                    supports_tools = False,
+                    is_vision = False,
+                    context_length = None,
                 ),
             )
             monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyBackend())
@@ -2553,17 +2553,17 @@ class TestApiMonitorSafetensorsUsage:
                 lambda *_args, **_kwargs: {"supports_tools": True},
             )
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="hi")],
-                enable_tools=True,
-                enabled_tools=["web_search"],
-                cancel_id="safe-cancel",
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                enable_tools = True,
+                enabled_tools = ["web_search"],
+                cancel_id = "safe-cancel",
             )
 
             response = await openai_chat_completions(
                 payload,
-                request=self._Request(),
-                current_subject="test",
+                request = self._Request(),
+                current_subject = "test",
             )
             body = json.loads(response.body)
 
@@ -2599,17 +2599,17 @@ class TestApiMonitorSafetensorsUsage:
             async def fake_to_thread(*_args, **_kwargs):
                 raise asyncio.CancelledError()
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod.asyncio, "to_thread", fake_to_thread)
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
                 lambda: SimpleNamespace(
-                    is_loaded=False,
-                    supports_tools=False,
-                    is_vision=False,
-                    context_length=None,
+                    is_loaded = False,
+                    supports_tools = False,
+                    is_vision = False,
+                    context_length = None,
                 ),
             )
             monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyBackend())
@@ -2619,18 +2619,18 @@ class TestApiMonitorSafetensorsUsage:
                 lambda *_args, **_kwargs: {"supports_tools": True},
             )
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="hi")],
-                enable_tools=True,
-                enabled_tools=["web_search"],
-                cancel_id="safe-cancel",
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                enable_tools = True,
+                enabled_tools = ["web_search"],
+                cancel_id = "safe-cancel",
             )
 
             with pytest.raises(asyncio.CancelledError):
                 await openai_chat_completions(
                     payload,
-                    request=self._Request(),
-                    current_subject="test",
+                    request = self._Request(),
+                    current_subject = "test",
                 )
 
             [entry] = monitor.snapshot()
@@ -2660,7 +2660,7 @@ class TestApiMonitorAudioInput:
         monkeypatch.setattr(
             inf_mod,
             "get_llama_cpp_backend",
-            lambda: SimpleNamespace(is_loaded=False),
+            lambda: SimpleNamespace(is_loaded = False),
         )
         monkeypatch.setattr(
             inf_mod,
@@ -2677,24 +2677,24 @@ class TestApiMonitorAudioInput:
     def test_audio_input_non_streaming_records_active_monitor(self, monkeypatch):
         async def _run():
             inf_mod = self._patch_audio_backend(monkeypatch, ["hello", " world"])
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
 
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="describe this audio")],
-                audio_base64="ZmFrZQ==",
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "describe this audio")],
+                audio_base64 = "ZmFrZQ==",
             )
             request = SimpleNamespace(
-                state=SimpleNamespace(),
-                url=SimpleNamespace(path="/v1/chat/completions"),
-                method="POST",
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
             )
 
             response = await openai_chat_completions(
                 payload,
-                request=request,
-                current_subject="test",
+                request = request,
+                current_subject = "test",
             )
             body = json.loads(response.body)
 
@@ -2709,29 +2709,29 @@ class TestApiMonitorAudioInput:
     def test_audio_input_streaming_records_monitor_reply(self, monkeypatch):
         async def _run():
             inf_mod = self._patch_audio_backend(monkeypatch, ["hello", " world"])
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
 
             async def is_disconnected():
                 return False
 
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="describe this audio")],
-                audio_base64="ZmFrZQ==",
-                stream=True,
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "describe this audio")],
+                audio_base64 = "ZmFrZQ==",
+                stream = True,
             )
             request = SimpleNamespace(
-                state=SimpleNamespace(),
-                url=SimpleNamespace(path="/v1/chat/completions"),
-                method="POST",
-                is_disconnected=is_disconnected,
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = is_disconnected,
             )
 
             response = await openai_chat_completions(
                 payload,
-                request=request,
-                current_subject="test",
+                request = request,
+                current_subject = "test",
             )
             chunks = []
             async for chunk in response.body_iterator:
@@ -2761,10 +2761,10 @@ class TestApiMonitorAudioInput:
             async def fake_generate_audio(
                 _payload,
                 _request,
-                current_subject=None,
+                current_subject = None,
             ):
                 return inf_mod.JSONResponse(
-                    content={
+                    content = {
                         "choices": [
                             {
                                 "message": {
@@ -2775,30 +2775,30 @@ class TestApiMonitorAudioInput:
                     }
                 )
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
-                lambda: SimpleNamespace(is_loaded=False),
+                lambda: SimpleNamespace(is_loaded = False),
             )
             monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyTtsBackend())
             monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
 
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="say hello")],
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "say hello")],
             )
             request = SimpleNamespace(
-                state=SimpleNamespace(),
-                url=SimpleNamespace(path="/v1/chat/completions"),
-                method="POST",
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
             )
 
             response = await inf_mod.openai_chat_completions(
                 payload,
-                request=request,
-                current_subject="test",
+                request = request,
+                current_subject = "test",
             )
 
             assert json.loads(response.body)["choices"][0]["message"]["content"] == (
@@ -2828,35 +2828,35 @@ class TestApiMonitorAudioInput:
             async def fake_generate_audio(
                 _payload,
                 _request,
-                current_subject=None,
+                current_subject = None,
             ):
                 raise asyncio.CancelledError()
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
-                lambda: SimpleNamespace(is_loaded=False),
+                lambda: SimpleNamespace(is_loaded = False),
             )
             monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyTtsBackend())
             monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
 
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="say hello")],
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "say hello")],
             )
             request = SimpleNamespace(
-                state=SimpleNamespace(),
-                url=SimpleNamespace(path="/v1/chat/completions"),
-                method="POST",
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
             )
 
             with pytest.raises(asyncio.CancelledError):
                 await inf_mod.openai_chat_completions(
                     payload,
-                    request=request,
-                    current_subject="test",
+                    request = request,
+                    current_subject = "test",
                 )
 
             [entry] = monitor.snapshot()
@@ -2873,10 +2873,10 @@ class TestApiMonitorAudioInput:
             async def fake_generate_audio(
                 _payload,
                 _request,
-                current_subject=None,
+                current_subject = None,
             ):
                 return inf_mod.JSONResponse(
-                    content={
+                    content = {
                         "choices": [
                             {
                                 "message": {
@@ -2887,34 +2887,34 @@ class TestApiMonitorAudioInput:
                     }
                 )
 
-            monitor = ApiMonitor(max_entries=3)
+            monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
                 lambda: SimpleNamespace(
-                    is_loaded=True,
-                    _is_audio=True,
-                    model_identifier="gguf-tts",
-                    context_length=2048,
+                    is_loaded = True,
+                    _is_audio = True,
+                    model_identifier = "gguf-tts",
+                    context_length = 2048,
                 ),
             )
             monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
 
             payload = ChatCompletionRequest(
-                model="default",
-                messages=[ChatMessage(role="user", content="say hello")],
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "say hello")],
             )
             request = SimpleNamespace(
-                state=SimpleNamespace(),
-                url=SimpleNamespace(path="/v1/chat/completions"),
-                method="POST",
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
             )
 
             await inf_mod.openai_chat_completions(
                 payload,
-                request=request,
-                current_subject="test",
+                request = request,
+                current_subject = "test",
             )
 
             [entry] = monitor.snapshot()
@@ -2936,38 +2936,38 @@ class TestApiMonitorAudioInput:
 
 
 class TestResponsesChatTemplateKwargs:
-    _messages = [ChatMessage(role="user", content="What is 100 - 67?")]
+    _messages = [ChatMessage(role = "user", content = "What is 100 - 67?")]
 
     def test_enable_thinking_lifted_from_extra_body(self):
         payload = ResponsesRequest(
-            model="qwen-local",
-            input="What is 100 - 67?",
-            chat_template_kwargs={"enable_thinking": True},
+            model = "qwen-local",
+            input = "What is 100 - 67?",
+            chat_template_kwargs = {"enable_thinking": True},
         )
-        chat_req = _build_chat_request(payload, self._messages, stream=False)
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
         assert chat_req.enable_thinking is True
 
     def test_enable_thinking_false_lifted_from_extra_body(self):
         payload = ResponsesRequest(
-            model="qwen-local",
-            input="hi",
-            chat_template_kwargs={"enable_thinking": False},
+            model = "qwen-local",
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": False},
         )
-        chat_req = _build_chat_request(payload, self._messages, stream=True)
+        chat_req = _build_chat_request(payload, self._messages, stream = True)
         assert chat_req.enable_thinking is False
 
     def test_no_chat_template_kwargs_leaves_enable_thinking_unset(self):
-        payload = ResponsesRequest(model="qwen-local", input="hi")
-        chat_req = _build_chat_request(payload, self._messages, stream=False)
+        payload = ResponsesRequest(model = "qwen-local", input = "hi")
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
         assert chat_req.enable_thinking is None
 
     def test_chat_template_kwargs_without_enable_thinking_is_ignored(self):
         payload = ResponsesRequest(
-            model="qwen-local",
-            input="hi",
-            chat_template_kwargs={"some_other_flag": True},
+            model = "qwen-local",
+            input = "hi",
+            chat_template_kwargs = {"some_other_flag": True},
         )
-        chat_req = _build_chat_request(payload, self._messages, stream=False)
+        chat_req = _build_chat_request(payload, self._messages, stream = False)
         assert chat_req.enable_thinking is None
 
 
@@ -3068,70 +3068,70 @@ class TestCoalesceConsecutiveUserTurns:
 class TestGgufChatHistoryAlternation:
     def test_empty_assistant_turn_dropped_then_users_coalesced(self):
         req = ChatCompletionRequest(
-            model="default",
-            messages=[
-                ChatMessage(role="user", content="hi"),
-                ChatMessage(role="assistant", content=""),
-                ChatMessage(role="user", content="again"),
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
             ],
         )
-        out, _ = _openai_messages_for_gguf_chat(req, is_vision=False)
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
         roles = [m["role"] for m in out]
         assert roles == ["user"]
         assert out[0]["content"] == "hi\n\nagain"
 
     def test_bare_stop_sentinel_also_coalesced(self):
         req = ChatCompletionRequest(
-            model="default",
-            messages=[
-                ChatMessage(role="user", content="hi"),
-                ChatMessage(role="assistant"),
-                ChatMessage(role="user", content="again"),
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant"),
+                ChatMessage(role = "user", content = "again"),
             ],
         )
-        out, _ = _openai_messages_for_gguf_chat(req, is_vision=False)
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
         roles = [m["role"] for m in out]
         assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
         assert roles == ["user"]
 
     def test_system_prompt_preserved(self):
         req = ChatCompletionRequest(
-            model="default",
-            messages=[
-                ChatMessage(role="system", content="be brief"),
-                ChatMessage(role="user", content="hi"),
-                ChatMessage(role="assistant", content=""),
-                ChatMessage(role="user", content="again"),
+            model = "default",
+            messages = [
+                ChatMessage(role = "system", content = "be brief"),
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
             ],
         )
-        out, _ = _openai_messages_for_gguf_chat(req, is_vision=False)
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
         assert [m["role"] for m in out] == ["system", "user"]
         assert out[1]["content"] == "hi\n\nagain"
 
     def test_normal_history_unchanged(self):
         req = ChatCompletionRequest(
-            model="default",
-            messages=[
-                ChatMessage(role="user", content="hi"),
-                ChatMessage(role="assistant", content="hello"),
-                ChatMessage(role="user", content="again"),
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = "hello"),
+                ChatMessage(role = "user", content = "again"),
             ],
         )
-        out, _ = _openai_messages_for_gguf_chat(req, is_vision=False)
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
         assert [m["role"] for m in out] == ["user", "assistant", "user"]
 
     def test_tool_path_rebuild_stays_alternating(self):
         # Tool path rebuilds via _set_or_prepend_system_message over the coalesced
         # history, so it stays alternating too.
         req = ChatCompletionRequest(
-            model="default",
-            messages=[
-                ChatMessage(role="user", content="hi"),
-                ChatMessage(role="assistant", content=""),
-                ChatMessage(role="user", content="again"),
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
             ],
         )
-        normalized, _ = _openai_messages_for_gguf_chat(req, is_vision=False)
+        normalized, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
         rebuilt = _set_or_prepend_system_message(normalized, "You have access to tools.")
         roles = [m["role"] for m in rebuilt]
         assert roles == ["system", "user"]

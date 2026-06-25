@@ -17,7 +17,7 @@ class CheckFormatRequest(BaseModel):
     subset: Optional[str] = None
     train_split: Optional[str] = "train"
 
-    @model_validator(mode="before")
+    @model_validator(mode = "before")
     @classmethod
     def _compat_split(cls, values: Any) -> Any:
         """Accept legacy 'split' field as alias for 'train_split'."""
@@ -74,8 +74,8 @@ class AiAssistMappingResponse(BaseModel):
 class UploadDatasetResponse(BaseModel):
     """Response with stored dataset path for training."""
 
-    filename: str = Field(..., description="Original filename")
-    stored_path: str = Field(..., description="Absolute path stored on backend")
+    filename: str = Field(..., description = "Original filename")
+    stored_path: str = Field(..., description = "Absolute path stored on backend")
 
 
 class LocalDatasetItem(BaseModel):
@@ -95,4 +95,4 @@ class LocalDatasetItem(BaseModel):
 
 
 class LocalDatasetsResponse(BaseModel):
-    datasets: List[LocalDatasetItem] = Field(default_factory=list)
+    datasets: List[LocalDatasetItem] = Field(default_factory = list)

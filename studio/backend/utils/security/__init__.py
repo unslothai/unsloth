@@ -60,12 +60,12 @@ __all__ = [
 
 def preflight_remote_code_consent(
     model_name: str,
-    hf_token=None,
+    hf_token = None,
     *,
     trust_remote_code: bool = True,
-    approved_fingerprint=None,
-    trusted_org=None,
-    subject=None,
+    approved_fingerprint = None,
+    trusted_org = None,
+    subject = None,
 ) -> "RemoteCodeDecision":
     """Scan a model's ``auto_map`` for the consent dialog. Thin wrapper over
     ``evaluate_remote_code_consent`` defaulting ``trust_remote_code=True`` so the scan
@@ -75,20 +75,20 @@ def preflight_remote_code_consent(
     return evaluate_remote_code_consent(
         model_name,
         hf_token,
-        trust_remote_code=trust_remote_code,
-        approved_fingerprint=approved_fingerprint,
-        trusted_org=trusted_org,
-        subject=subject,
+        trust_remote_code = trust_remote_code,
+        approved_fingerprint = approved_fingerprint,
+        trusted_org = trusted_org,
+        subject = subject,
     )
 
 
 def preflight_remote_code_consent_for_targets(
     targets,
-    hf_token=None,
+    hf_token = None,
     *,
     trust_remote_code: bool = True,
-    approved_fingerprint=None,
-    subject=None,
+    approved_fingerprint = None,
+    subject = None,
 ) -> "RemoteCodeDecision":
     """Preflight consent over multiple repos (a LoRA adapter plus its base) scanned as
     one combined unit with a single pinning fingerprint. Wrapper defaulting
@@ -97,9 +97,9 @@ def preflight_remote_code_consent_for_targets(
     return evaluate_remote_code_consent_for_targets(
         targets,
         hf_token,
-        trust_remote_code=trust_remote_code,
-        approved_fingerprint=approved_fingerprint,
-        subject=subject,
+        trust_remote_code = trust_remote_code,
+        approved_fingerprint = approved_fingerprint,
+        subject = subject,
     )
 
 

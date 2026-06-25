@@ -21,13 +21,13 @@ def parse_tool_calls_from_text(
 ) -> list[dict]:
     return _tool_healing.parse_tool_calls_from_text(
         content,
-        id_offset=id_offset,
-        allow_incomplete=allow_incomplete,
+        id_offset = id_offset,
+        allow_incomplete = allow_incomplete,
     )
 
 
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
-    return _tool_healing.strip_tool_call_markup(text, final=final)
+    return _tool_healing.strip_tool_call_markup(text, final = final)
 
 
 # Prefixes the streaming buffer watches for to gate in-progress text.

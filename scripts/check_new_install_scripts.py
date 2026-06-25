@@ -106,7 +106,7 @@ def _collect_install_script_entries(lock: dict) -> dict[str, str]:
             if lifecycle:
                 ver = entry.get("version") or "<unversioned>"
                 seen[f"{name}@{ver}"] = name
-            _walk_v1(entry.get("dependencies"), depth=depth + 1)
+            _walk_v1(entry.get("dependencies"), depth = depth + 1)
 
     if version == 1 or "dependencies" in lock:
         _walk_v1(lock.get("dependencies") or {})
@@ -118,7 +118,7 @@ def _load_lockfile(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"lockfile not found: {path}")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding = "utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"{path}: not valid JSON: {exc}") from exc
 
@@ -128,10 +128,10 @@ def _load_lockfile(path: Path) -> dict:
 
 def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
     """Return {hook: command} for lifecycle hooks in registry metadata; None on any error (never raises)."""
-    safe_name = urllib.parse.quote(name, safe="@/")
+    safe_name = urllib.parse.quote(name, safe = "@/")
     url = f"{REGISTRY_BASE}{safe_name}/{urllib.parse.quote(version)}"
     try:
-        with urllib.request.urlopen(url, timeout=REGISTRY_TIMEOUT_SECS) as resp:
+        with urllib.request.urlopen(url, timeout = REGISTRY_TIMEOUT_SECS) as resp:
             body = resp.read()
     except (urllib.error.URLError, OSError, ValueError, TimeoutError):
         return None
@@ -173,11 +173,11 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
             )
         findings.append(
             Finding(
-                severity=CRITICAL,
-                name=name,
-                version=version,
-                kind="new-install-script",
-                detail=detail,
+                severity = CRITICAL,
+                name = name,
+                version = version,
+                kind = "new-install-script",
+                detail = detail,
             )
         )
     return findings
@@ -188,19 +188,19 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description=(
+        description = (
             "Diff two package-lock.json files and refuse any newly-added install-script dep."
         ),
     )
     parser.add_argument(
         "--base",
-        required=True,
-        help="Path to the BASE package-lock.json (e.g. main branch).",
+        required = True,
+        help = "Path to the BASE package-lock.json (e.g. main branch).",
     )
     parser.add_argument(
         "--head",
-        required=True,
-        help="Path to the HEAD package-lock.json (this PR).",
+        required = True,
+        help = "Path to the HEAD package-lock.json (this PR).",
     )
     args = parser.parse_args(argv)
 
@@ -208,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         base_lock = _load_lockfile(Path(args.base))
         head_lock = _load_lockfile(Path(args.head))
     except (FileNotFoundError, ValueError) as exc:
-        print(f"[install-script-diff] ERROR: {exc}", file=sys.stderr)
+        print(f"[install-script-diff] ERROR: {exc}", file = sys.stderr)
         return 2
 
     findings = diff_new_install_scripts(base_lock, head_lock)
@@ -216,24 +216,24 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "[install-script-diff] OK: no newly-added install-script "
             "dependencies between base and head",
-            flush=True,
+            flush = True,
         )
         return 0
 
     print(
         f"\n[install-script-diff] FAIL: {len(findings)} newly-added "
         f"install-script dependency(ies):\n",
-        file=sys.stderr,
+        file = sys.stderr,
     )
     for f in findings:
-        print(str(f), file=sys.stderr)
-        print(file=sys.stderr)
+        print(str(f), file = sys.stderr)
+        print(file = sys.stderr)
     print(
         "[install-script-diff] Refusing to proceed. Every new "
         "install-script dep is a postinstall lifecycle hook that "
         "would run on the next `npm ci`. Review each finding above, "
         "confirm the maintainer + version, and re-run.",
-        file=sys.stderr,
+        file = sys.stderr,
     )
     return 1
 

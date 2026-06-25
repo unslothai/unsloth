@@ -25,7 +25,7 @@ _UV_SAFE_PATH_TMPDIRS: list[str] = []
 @atexit.register
 def _cleanup_uv_safe_path_tmpdirs() -> None:
     while _UV_SAFE_PATH_TMPDIRS:
-        shutil.rmtree(_UV_SAFE_PATH_TMPDIRS.pop(), ignore_errors=True)
+        shutil.rmtree(_UV_SAFE_PATH_TMPDIRS.pop(), ignore_errors = True)
 
 
 def uv_safe_path(path: object) -> str:
@@ -51,9 +51,9 @@ def uv_safe_path(path: object) -> str:
     try:
         if not os.path.isfile(s):
             return s
-        tmp_dir = tempfile.mkdtemp(prefix="unsloth_uv_")
+        tmp_dir = tempfile.mkdtemp(prefix = "unsloth_uv_")
         if " " in tmp_dir:  # e.g. TMPDIR itself has a space
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            shutil.rmtree(tmp_dir, ignore_errors = True)
             return s
         dst = os.path.join(tmp_dir, (os.path.basename(s) or "uv_args.txt").replace(" ", "_"))
         shutil.copyfile(s, dst)
@@ -62,5 +62,5 @@ def uv_safe_path(path: object) -> str:
         return dst
     except Exception:
         if tmp_dir is not None:  # don't leak the temp dir if the copy failed
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            shutil.rmtree(tmp_dir, ignore_errors = True)
         return s

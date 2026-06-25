@@ -107,7 +107,7 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
             return None, f"{label}: null environment values are not supported by import."
         url = join_stdio_command([command, *(str(a) for a in args)])
         headers = _coerce_str_dict(env) if env else None
-        return ParsedMcpEntry(label, url, headers, True, is_enabled=is_enabled), None
+        return ParsedMcpEntry(label, url, headers, True, is_enabled = is_enabled), None
 
     url = spec["url"]
     if not isinstance(url, str):
@@ -140,8 +140,8 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
         url,
         headers,
         False,
-        is_enabled=is_enabled,
-        use_oauth=oauth_raw is not None,
+        is_enabled = is_enabled,
+        use_oauth = oauth_raw is not None,
     ), None
 
 

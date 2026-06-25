@@ -69,8 +69,8 @@ def dataset_snapshot_from_cache_path(local_path: Optional[str], repo_id: str) ->
         if not candidates:
             return None
         candidates.sort(
-            key=lambda path: path.stat().st_mtime if path.exists() else 0,
-            reverse=True,
+            key = lambda path: path.stat().st_mtime if path.exists() else 0,
+            reverse = True,
         )
         return candidates[0].resolve()
     except Exception:
@@ -142,4 +142,4 @@ def cached_dataset_candidates(
             rel,
         )
 
-    return sorted(files, key=score)
+    return sorted(files, key = score)

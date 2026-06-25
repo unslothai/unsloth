@@ -19,17 +19,17 @@ import pytest
 def _extract_fns_via_ast(
     source_path,
     fn_names,
-    extra_ns=None,
+    extra_ns = None,
 ):
     """Exec the named top-level functions from a .py file so their mutual references resolve."""
-    source = source_path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(source_path))
+    source = source_path.read_text(encoding = "utf-8")
+    tree = ast.parse(source, filename = str(source_path))
     wanted = set(fn_names)
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     missing = wanted - {n.name for n in nodes}
     if missing:
         pytest.fail(f"{sorted(missing)} not found in {source_path}")
-    mini = ast.Module(body=nodes, type_ignores=[])
+    mini = ast.Module(body = nodes, type_ignores = [])
     ast.fix_missing_locations(mini)
     ns = {"os": os, "warnings": warnings, "__name__": "_extracted"}
     if extra_ns:
@@ -41,17 +41,16 @@ def _extract_fns_via_ast(
 def _extract_fn_via_ast(
     source_path,
     fn_name,
-    extra_ns=None,
+    extra_ns = None,
 ):
     return _extract_fns_via_ast(source_path, [fn_name], extra_ns)[fn_name]
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def check_dataset_for_missing_videos():
     """Direct import when possible, else AST extraction from vision.py."""
     try:
         from unsloth.models.vision import check_dataset_for_missing_videos as fn
-
         return fn
     except Exception:
         pass
@@ -69,12 +68,12 @@ def check_dataset_for_missing_videos():
     return fns["check_dataset_for_missing_videos"]
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def make_auto_validating_collator(check_dataset_for_missing_videos):
     """Factory for a minimal collator mirroring the trainer.py wrapper."""
 
     class _FakeBase:
-        def __init__(self, formatting_func=None):
+        def __init__(self, formatting_func = None):
             self.formatting_func = formatting_func
 
         def __call__(self, examples):
@@ -83,8 +82,8 @@ def make_auto_validating_collator(check_dataset_for_missing_videos):
             return {"ok": True, "examples": examples}
 
     class _AutoValidatingCollator(_FakeBase):
-        def __init__(self, formatting_func=None):
-            super().__init__(formatting_func=formatting_func)
+        def __init__(self, formatting_func = None):
+            super().__init__(formatting_func = formatting_func)
             self._checked_video_paths = set()
 
         def __call__(self, examples):
@@ -93,8 +92,8 @@ def make_auto_validating_collator(check_dataset_for_missing_videos):
                 examples = [formatting_func(e) for e in examples]
             check_dataset_for_missing_videos(
                 examples,
-                raise_error=True,
-                checked=self._checked_video_paths,
+                raise_error = True,
+                checked = self._checked_video_paths,
             )
             if formatting_func is None:
                 return super().__call__(examples)
@@ -139,7 +138,7 @@ def test_remote_url_skipped(check_dataset_for_missing_videos):
 
 def test_existing_file_accepted(check_dataset_for_missing_videos):
     """Existing local file passes without error."""
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False) as f:
         f.write(b"fake video bytes")
         tmp = f.name
     try:
@@ -159,9 +158,9 @@ def test_file_uri_scheme_stripped(check_dataset_for_missing_videos):
 def test_warn_only_mode(check_dataset_for_missing_videos):
     """raise_error=False warns and returns the missing paths."""
     ds = _make_video_dataset("/nonexistent/videos/clip.mp4")
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
-        missing = check_dataset_for_missing_videos(ds, raise_error=False)
+        missing = check_dataset_for_missing_videos(ds, raise_error = False)
 
     assert len(caught) == 1
     assert "could not be found" in str(caught[0].message)
@@ -189,7 +188,7 @@ def test_collator_raises_on_first_batch_with_missing_video(make_auto_validating_
 
 def test_collator_passes_on_first_batch_with_valid_video(make_auto_validating_collator):
     """Collator passes a valid batch through."""
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False) as f:
         f.write(b"fake video bytes")
         tmp = f.name
     try:
@@ -203,7 +202,7 @@ def test_collator_passes_on_first_batch_with_valid_video(make_auto_validating_co
 
 def test_collator_validates_every_batch(make_auto_validating_collator):
     """A missing video first appearing after batch 0 must still raise."""
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False) as f:
         f.write(b"fake video bytes")
         tmp = f.name
     try:
@@ -217,7 +216,7 @@ def test_collator_validates_every_batch(make_auto_validating_collator):
 
 def test_collator_dedupes_across_batches(make_auto_validating_collator):
     """The checked-path set is shared across batches."""
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False) as f:
         f.write(b"fake video bytes")
         tmp = f.name
     try:
@@ -307,9 +306,9 @@ def test_checked_set_reused_across_calls(check_dataset_for_missing_videos, tmp_p
     target.write_bytes(b"x")
     shared = set()
     ds = [{"messages": [{"role": "user", "content": [{"type": "video", "video": str(target)}]}]}]
-    check_dataset_for_missing_videos(ds, checked=shared)
+    check_dataset_for_missing_videos(ds, checked = shared)
     assert str(target) in shared
-    check_dataset_for_missing_videos(ds, checked=shared)
+    check_dataset_for_missing_videos(ds, checked = shared)
     assert len(shared) == 1
 
 
@@ -390,7 +389,7 @@ def test_windows_style_absolute_path_not_mistaken_for_scheme(
 
 def test_iterable_dataset_warns_and_skips(check_dataset_for_missing_videos):
     """Streaming IterableDataset: warn, return [], do not exhaust it."""
-    datasets_mod = pytest.importorskip("datasets", reason="real datasets package required")
+    datasets_mod = pytest.importorskip("datasets", reason = "real datasets package required")
     if not hasattr(datasets_mod, "IterableDataset"):
         pytest.skip("datasets.IterableDataset not available in this environment")
     IterableDataset = datasets_mod.IterableDataset
@@ -400,7 +399,7 @@ def test_iterable_dataset_warns_and_skips(check_dataset_for_missing_videos):
             yield {"messages": [{"role": "user", "content": [{"type": "video", "video": p}]}]}
 
     ds = IterableDataset.from_generator(gen)
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
         result = check_dataset_for_missing_videos(ds)
     assert result == []
@@ -424,15 +423,15 @@ def test_collator_applies_formatting_func_before_validation(make_auto_validating
             ]
         }
 
-    raise_collator = make_auto_validating_collator(formatting_func=fmt)
+    raise_collator = make_auto_validating_collator(formatting_func = fmt)
     with pytest.raises(FileNotFoundError):
         raise_collator([{"video_id": "/nonexistent/formatted.mp4"}])
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False) as f:
         f.write(b"x")
         tmp = f.name
     try:
-        ok_collator = make_auto_validating_collator(formatting_func=fmt)
+        ok_collator = make_auto_validating_collator(formatting_func = fmt)
         before = ok_collator.formatting_func
         result = ok_collator([{"video_id": tmp}])
         assert result["ok"] is True
@@ -468,9 +467,9 @@ def test_tuple_content_entries_checked(check_dataset_for_missing_videos):
 def test_duplicate_missing_deduped_in_warn_mode(check_dataset_for_missing_videos):
     """Warn mode returns each missing path once."""
     ds = _make_video_dataset("/nonexistent/dup.mp4", "/nonexistent/dup.mp4")
-    with warnings.catch_warnings(record=True):
+    with warnings.catch_warnings(record = True):
         warnings.simplefilter("always")
-        missing = check_dataset_for_missing_videos(ds, raise_error=False)
+        missing = check_dataset_for_missing_videos(ds, raise_error = False)
     assert missing == ["/nonexistent/dup.mp4"]
 
 
@@ -479,7 +478,7 @@ def test_duplicate_missing_deduped_in_warn_mode(check_dataset_for_missing_videos
 # above don't cover super()/formatting_func); skip when unsloth can't import.
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def real_collator_classes():
     try:
         from unsloth.trainer import UnslothVisionDataCollator
@@ -491,7 +490,7 @@ def real_collator_classes():
     return UnslothVisionDataCollator, ZooBase
 
 
-def _make_real_collator(real_collator_classes, formatting_func=None):
+def _make_real_collator(real_collator_classes, formatting_func = None):
     """Build the real subclass without its heavy __init__ (needs a processor)."""
     subclass, _ = real_collator_classes
     collator = subclass.__new__(subclass)
@@ -534,11 +533,11 @@ def test_real_collator_calls_super_with_formatting_disabled(real_collator_classe
             ]
         }
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False) as f:
         f.write(b"x")
         tmp = f.name
     try:
-        collator = _make_real_collator(real_collator_classes, formatting_func=fmt)
+        collator = _make_real_collator(real_collator_classes, formatting_func = fmt)
         result = collator([{"video_id": tmp}])
         assert result == {"ok": True}
         assert seen["formatting_func"] is None
@@ -563,7 +562,7 @@ def test_real_collator_restores_formatting_func_when_super_raises(
     def fmt(example):
         return {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}
 
-    collator = _make_real_collator(real_collator_classes, formatting_func=fmt)
+    collator = _make_real_collator(real_collator_classes, formatting_func = fmt)
     with pytest.raises(RuntimeError):
         collator([{"anything": 1}])
     assert collator.formatting_func is fmt

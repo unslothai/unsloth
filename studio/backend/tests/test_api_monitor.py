@@ -5,21 +5,21 @@ from core.inference.api_monitor import ApiMonitor, _trim
 
 
 def test_api_monitor_tracks_reply_usage_and_context():
-    monitor = ApiMonitor(max_entries=3)
+    monitor = ApiMonitor(max_entries = 3)
 
     entry_id = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="local-model",
-        prompt="user: hello",
-        context_length=100,
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+        context_length = 100,
     )
     monitor.append_reply(entry_id, "hi")
     monitor.append_reply(entry_id, " there")
     monitor.set_usage(
         entry_id,
-        prompt_tokens=4,
-        completion_tokens=6,
+        prompt_tokens = 4,
+        completion_tokens = 6,
     )
     monitor.finish(entry_id)
 
@@ -32,16 +32,16 @@ def test_api_monitor_tracks_reply_usage_and_context():
 
 
 def test_api_monitor_summary_omits_full_prompt_and_reply():
-    monitor = ApiMonitor(max_entries=3)
+    monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="local-model",
-        prompt="p" * 500,
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "p" * 500,
     )
     monitor.set_reply(entry_id, "r" * 500)
 
-    [summary] = monitor.snapshot(include_details=False)
+    [summary] = monitor.snapshot(include_details = False)
     assert "prompt" not in summary
     assert "reply" not in summary
     assert summary["prompt_preview"].endswith("...")
@@ -56,51 +56,51 @@ def test_api_monitor_summary_omits_full_prompt_and_reply():
 
 
 def test_api_monitor_filters_entries_by_subject():
-    monitor = ApiMonitor(max_entries=3)
+    monitor = ApiMonitor(max_entries = 3)
     alice = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="alice prompt",
-        subject="alice",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "alice prompt",
+        subject = "alice",
     )
     bob = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="bob prompt",
-        subject="bob",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "bob prompt",
+        subject = "bob",
     )
     monitor.finish(bob)
 
-    alice_entries = monitor.snapshot(subject="alice")
+    alice_entries = monitor.snapshot(subject = "alice")
     assert [entry["id"] for entry in alice_entries] == [alice]
-    assert monitor.get(bob, subject="alice") is None
-    assert monitor.get(bob, subject="bob")["id"] == bob
-    assert monitor.active_count(subject="alice") == 1
-    assert monitor.active_count(subject="bob") == 0
+    assert monitor.get(bob, subject = "alice") is None
+    assert monitor.get(bob, subject = "bob")["id"] == bob
+    assert monitor.active_count(subject = "alice") == 1
+    assert monitor.active_count(subject = "bob") == 0
 
 
 def test_api_monitor_keeps_bounded_recent_history():
-    monitor = ApiMonitor(max_entries=2)
+    monitor = ApiMonitor(max_entries = 2)
 
     first = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="first",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "first",
     )
     second = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="second",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "second",
     )
     third = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="third",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "third",
     )
     monitor.finish(first)
     monitor.finish(second)
@@ -115,20 +115,20 @@ def test_api_monitor_keeps_bounded_recent_history():
 
 
 def test_api_monitor_keeps_running_entries_beyond_history_limit():
-    monitor = ApiMonitor(max_entries=1)
+    monitor = ApiMonitor(max_entries = 1)
 
     running = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="running",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "running",
     )
     for prompt in ("done-1", "done-2", "done-3"):
         entry_id = monitor.start(
-            endpoint="/v1/chat/completions",
-            method="POST",
-            model="m",
-            prompt=prompt,
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "m",
+            prompt = prompt,
         )
         monitor.finish(entry_id)
 
@@ -145,12 +145,12 @@ def test_api_monitor_keeps_running_entries_beyond_history_limit():
 
 
 def test_api_monitor_finish_is_idempotent():
-    monitor = ApiMonitor(max_entries=2)
+    monitor = ApiMonitor(max_entries = 2)
     entry_id = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="hi",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
     )
     monitor.finish(entry_id)
     first = monitor.snapshot()[0]
@@ -161,36 +161,36 @@ def test_api_monitor_finish_is_idempotent():
 
 
 def test_api_monitor_preserves_authoritative_total_tokens():
-    monitor = ApiMonitor(max_entries=2)
+    monitor = ApiMonitor(max_entries = 2)
     entry_id = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="hi",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
     )
     monitor.set_usage(
         entry_id,
-        prompt_tokens=10,
-        completion_tokens=20,
-        total_tokens=33,
+        prompt_tokens = 10,
+        completion_tokens = 20,
+        total_tokens = 33,
     )
     # A later partial chunk omitting `total_tokens` must not clobber 33.
-    monitor.set_usage(entry_id, prompt_tokens=11)
+    monitor.set_usage(entry_id, prompt_tokens = 11)
     assert monitor.snapshot()[0]["total_tokens"] == 33
 
 
 def test_api_monitor_recomputes_derived_total_tokens():
-    monitor = ApiMonitor(max_entries=2)
+    monitor = ApiMonitor(max_entries = 2)
     entry_id = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="hi",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
     )
-    monitor.set_usage(entry_id, prompt_tokens=10)
+    monitor.set_usage(entry_id, prompt_tokens = 10)
     assert monitor.snapshot()[0]["total_tokens"] == 10
 
-    monitor.set_usage(entry_id, completion_tokens=20)
+    monitor.set_usage(entry_id, completion_tokens = 20)
     entry = monitor.snapshot()[0]
     assert entry["prompt_tokens"] == 10
     assert entry["completion_tokens"] == 20
@@ -202,12 +202,12 @@ def test_api_monitor_duration_non_negative_under_clock_step(monkeypatch):
 
     fake_now = [1000.0]
     monkeypatch.setattr(m.time, "time", lambda: fake_now[0])
-    monitor = ApiMonitor(max_entries=1)
+    monitor = ApiMonitor(max_entries = 1)
     entry_id = monitor.start(
-        endpoint="/x",
-        method="POST",
-        model="m",
-        prompt="hi",
+        endpoint = "/x",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
     )
     fake_now[0] = 500.0
     monitor.finish(entry_id)
@@ -225,12 +225,12 @@ def test_api_monitor_trim_guards_tiny_limit():
 def test_api_monitor_append_reply_caps_without_regrowing():
     import core.inference.api_monitor as m
 
-    monitor = ApiMonitor(max_entries=1)
+    monitor = ApiMonitor(max_entries = 1)
     entry_id = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="go",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "go",
     )
     monitor.append_reply(entry_id, "x" * (m._MAX_REPLY_CHARS + 500))
     capped = monitor.snapshot()[0]["reply"]
@@ -244,12 +244,12 @@ def test_api_monitor_append_reply_caps_without_regrowing():
 def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     import core.inference.api_monitor as m
 
-    monitor = ApiMonitor(max_entries=1)
+    monitor = ApiMonitor(max_entries = 1)
     entry_id = monitor.start(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        model="m",
-        prompt="go",
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "go",
     )
     # A reply landing exactly on the cap has no "..." marker yet.
     monitor.append_reply(entry_id, "x" * m._MAX_REPLY_CHARS)

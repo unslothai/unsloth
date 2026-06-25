@@ -26,13 +26,13 @@ router = APIRouter()
 
 
 class LlamaUpdateJob(BaseModel):
-    state: str = Field("idle", description="idle | running | success | error")
+    state: str = Field("idle", description = "idle | running | success | error")
     message: str = ""
     from_tag: Optional[str] = None
     to_tag: Optional[str] = None
     reload_required: Optional[bool] = None
     error: Optional[str] = None
-    progress: Optional[float] = Field(None, description="0..1 while running, 1 on success.")
+    progress: Optional[float] = Field(None, description = "0..1 while running, 1 on success.")
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
 
@@ -40,13 +40,13 @@ class LlamaUpdateJob(BaseModel):
 class LlamaUpdateStatusResponse(BaseModel):
     supported: bool = Field(
         False,
-        description="True when the install came from an Unsloth prebuilt (has a marker).",
+        description = "True when the install came from an Unsloth prebuilt (has a marker).",
     )
     update_available: bool = Field(
-        False, description="True when the latest release is genuinely newer than the install."
+        False, description = "True when the latest release is genuinely newer than the install."
     )
     stale: bool = Field(
-        False, description="Update available AND install older than the staleness threshold."
+        False, description = "Update available AND install older than the staleness threshold."
     )
     installed_tag: Optional[str] = None
     latest_tag: Optional[str] = None
@@ -54,34 +54,34 @@ class LlamaUpdateStatusResponse(BaseModel):
     installed_at_utc: Optional[str] = None
     age_days: Optional[int] = None
     source_build: bool = Field(
-        False, description="True when there is no marker (source build) but a prebuilt is offered."
+        False, description = "True when there is no marker (source build) but a prebuilt is offered."
     )
     update_size_bytes: Optional[int] = Field(
-        None, description="Download size of the prebuilt Update would fetch, in bytes."
+        None, description = "Download size of the prebuilt Update would fetch, in bytes."
     )
-    job: LlamaUpdateJob = Field(default_factory=LlamaUpdateJob)
+    job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 
 
 class LlamaUpdateActionResponse(BaseModel):
     started: bool
     reason: Optional[str] = None
     message: Optional[str] = None
-    job: LlamaUpdateJob = Field(default_factory=LlamaUpdateJob)
+    job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 
 
-@router.get("/update-status", response_model=LlamaUpdateStatusResponse)
+@router.get("/update-status", response_model = LlamaUpdateStatusResponse)
 async def llama_update_status(
     force_refresh: bool = Query(
-        False, description="Bypass the 24h release cache for an explicit check."
+        False, description = "Bypass the 24h release cache for an explicit check."
     ),
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateStatusResponse:
     # Off the event loop: detection may probe the host and read GitHub.
-    status = await asyncio.to_thread(get_update_status, force_refresh=force_refresh)
+    status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
     return LlamaUpdateStatusResponse(**status)
 
 
-@router.post("/update", response_model=LlamaUpdateActionResponse)
+@router.post("/update", response_model = LlamaUpdateActionResponse)
 async def llama_update(
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateActionResponse:

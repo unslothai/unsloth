@@ -28,7 +28,7 @@ IS_POSIX = os.name == "posix"
 IS_LINUX = sys.platform.startswith("linux")
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _reset_module_state():
     pl._tracked_pids.clear()
     pl._win_job_handle = None
@@ -113,7 +113,7 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
 
 
-@pytest.mark.skipif(not IS_LINUX, reason="PR_SET_PDEATHSIG is Linux-only")
+@pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
 def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
     mid = tmp_path / "mid.py"
     mid.write_text(
@@ -124,18 +124,18 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
         "print(p.pid, flush = True)\n"
         "time.sleep(300)\n"
     )
-    proc = subprocess.Popen([sys.executable, str(mid)], stdout=subprocess.PIPE, text=True)
+    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
     try:
         sleeper_pid = int(proc.stdout.readline().strip())
         assert _alive(sleeper_pid)
         proc.kill()  # hard-kill the parent (no graceful shutdown runs)
-        proc.wait(timeout=5)
+        proc.wait(timeout = 5)
         assert _wait_dead(sleeper_pid, 5.0), "child orphaned after parent SIGKILL"
     finally:
         proc.kill()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object")
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows Job Object")
 def test_windows_job_kills_child_when_parent_dies(tmp_path):
     # Real kill-on-job-close: the parent installs the job and assigns itself, a
     # child inherits it automatically, and terminating the parent must reap the
@@ -150,14 +150,14 @@ def test_windows_job_kills_child_when_parent_dies(tmp_path):
         "print(p.pid, int(pl._win_job_handle is not None), flush = True)\n"
         "time.sleep(300)\n"
     )
-    proc = subprocess.Popen([sys.executable, str(mid)], stdout=subprocess.PIPE, text=True)
+    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
     try:
         first = proc.stdout.readline().split()
         child_pid, installed = int(first[0]), first[1] == "1"
         assert installed, "Windows Job Object was not installed"
         assert _alive(child_pid)
         proc.kill()  # TerminateProcess the parent -> last job handle closes
-        proc.wait(timeout=5)
+        proc.wait(timeout = 5)
         assert _wait_dead(child_pid, 5.0), "child orphaned after parent killed"
     finally:
         proc.kill()
@@ -166,16 +166,16 @@ def test_windows_job_kills_child_when_parent_dies(tmp_path):
 # ── terminate_all backstop sweep ──
 
 
-@pytest.mark.skipif(not IS_POSIX, reason="POSIX process sweep")
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
 def test_terminate_all_signals_tracked_and_is_idempotent():
     p = subprocess.Popen(["sleep", "300"])
     pl.adopt_pid(p.pid)
     pl.terminate_all()
-    assert p.wait(timeout=5) is not None  # reap + confirm it died
+    assert p.wait(timeout = 5) is not None  # reap + confirm it died
     pl.terminate_all()  # registry now empty; must not raise
 
 
-@pytest.mark.skipif(not IS_POSIX, reason="POSIX process sweep")
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
 def test_terminate_all_escalates_to_sigkill():
     # A child that ignores SIGTERM must still be reaped via SIGKILL after timeout.
     p = subprocess.Popen(
@@ -187,11 +187,11 @@ def test_terminate_all_escalates_to_sigkill():
     )
     time.sleep(0.5)  # let the handler install
     pl.adopt_pid(p.pid)
-    pl.terminate_all(timeout=0.3)
-    assert p.wait(timeout=5) == -signal.SIGKILL  # SIGTERM ignored, SIGKILL wins
+    pl.terminate_all(timeout = 0.3)
+    assert p.wait(timeout = 5) == -signal.SIGKILL  # SIGTERM ignored, SIGKILL wins
 
 
-@pytest.mark.skipif(not IS_POSIX, reason="POSIX process sweep")
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
 def test_terminate_all_lets_cooperative_child_exit_cleanly(tmp_path):
     # A child that handles SIGTERM gets `timeout` to exit cleanly (not -SIGKILL).
     marker = tmp_path / "clean.txt"
@@ -207,8 +207,8 @@ def test_terminate_all_lets_cooperative_child_exit_cleanly(tmp_path):
     )
     time.sleep(0.5)
     pl.adopt_pid(p.pid)
-    pl.terminate_all(timeout=3.0)
-    assert p.wait(timeout=3) == 0  # exited via its own handler, not SIGKILL
+    pl.terminate_all(timeout = 3.0)
+    assert p.wait(timeout = 3) == 0  # exited via its own handler, not SIGKILL
     assert marker.read_text() == "clean"
 
 
@@ -219,7 +219,7 @@ def test_forget_pid_unregisters():
     assert 4242 not in pl._tracked_pids
 
 
-@pytest.mark.skipif(not IS_POSIX, reason="POSIX process sweep")
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
 def test_terminate_all_skips_recycled_pid(monkeypatch):
     # A tracked pid whose identity changed (recycled) must not be signalled.
     p = subprocess.Popen(["sleep", "300"])
@@ -228,10 +228,10 @@ def test_terminate_all_skips_recycled_pid(monkeypatch):
     pl.terminate_all()
     assert _alive(p.pid)  # left untouched: identity mismatch
     p.kill()
-    p.wait(timeout=5)
+    p.wait(timeout = 5)
 
 
-@pytest.mark.skipif(not IS_LINUX, reason="PR_SET_PDEATHSIG is Linux-only")
+@pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
 def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
     # multiprocessing workers can't take a preexec_fn, so the child binds itself
     # via bind_current_process_to_parent_lifetime(). Killing the parent must reap
@@ -250,12 +250,12 @@ def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
         "    print(p.pid, flush = True)\n"
         "    time.sleep(300)\n"
     )
-    proc = subprocess.Popen([sys.executable, str(mid)], stdout=subprocess.PIPE, text=True)
+    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
     try:
         child_pid = int(proc.stdout.readline().strip())
         assert _alive(child_pid)
         proc.kill()
-        proc.wait(timeout=5)
+        proc.wait(timeout = 5)
         assert _wait_dead(child_pid, 5.0), "mp child orphaned after parent SIGKILL"
     finally:
         proc.kill()
@@ -278,9 +278,9 @@ class _FakeKernel32:
     def __init__(
         self,
         log,
-        create_ret=4321,
-        set_ret=1,
-        assign_ret=1,
+        create_ret = 4321,
+        set_ret = 1,
+        assign_ret = 1,
     ):
         self.CreateJobObjectW = _Call("create", log, create_ret)
         self.SetInformationJobObject = _Call("set", log, set_ret)
@@ -291,9 +291,8 @@ class _FakeKernel32:
 
 def _patch_windows(monkeypatch, fake):
     import ctypes
-
     monkeypatch.setattr(pl, "_is_windows", lambda: True)
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: fake, raising=False)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: fake, raising = False)
 
 
 def test_windows_job_install_order(monkeypatch):
@@ -306,7 +305,7 @@ def test_windows_job_install_order(monkeypatch):
 
 def test_windows_job_install_degrades_on_create_failure(monkeypatch):
     log: list[str] = []
-    _patch_windows(monkeypatch, _FakeKernel32(log, create_ret=0))
+    _patch_windows(monkeypatch, _FakeKernel32(log, create_ret = 0))
     pl._install_windows_job()  # must not raise
     assert pl._win_job_handle is None
     assert "set" not in log  # short-circuited after the failed create
@@ -314,7 +313,7 @@ def test_windows_job_install_degrades_on_create_failure(monkeypatch):
 
 def test_windows_job_install_degrades_on_assign_failure(monkeypatch):
     log: list[str] = []
-    _patch_windows(monkeypatch, _FakeKernel32(log, assign_ret=0))
+    _patch_windows(monkeypatch, _FakeKernel32(log, assign_ret = 0))
     pl._install_windows_job()
     assert pl._win_job_handle is None  # not retained when assignment fails
     assert "close" in log  # the orphaned job handle is closed

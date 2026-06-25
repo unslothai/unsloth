@@ -52,7 +52,7 @@ class S3DatasetDownload:
     def cleanup(self) -> None:
         if not self.temp_dir:
             return
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        shutil.rmtree(self.temp_dir, ignore_errors = True)
         self.temp_dir = None
 
 
@@ -77,12 +77,12 @@ def _build_s3_client(s3_config: dict):
     if not use_iam_role and access_key_id and secret_access_key:
         return boto3.client(
             "s3",
-            region_name=region,
-            aws_access_key_id=access_key_id,
-            aws_secret_access_key=secret_access_key,
+            region_name = region,
+            aws_access_key_id = access_key_id,
+            aws_secret_access_key = secret_access_key,
         )
     # IAM role / instance profile / ambient credentials
-    return boto3.client("s3", region_name=region)
+    return boto3.client("s3", region_name = region)
 
 
 def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
@@ -181,9 +181,9 @@ def prepare_s3_dataset_download(
     _validate_single_extension_family(keys)
 
     owns_temp_dir = dest_dir is None
-    target_dir = dest_dir or tempfile.mkdtemp(prefix="unsloth_s3_dataset_")
+    target_dir = dest_dir or tempfile.mkdtemp(prefix = "unsloth_s3_dataset_")
     try:
-        os.makedirs(target_dir, exist_ok=True)
+        os.makedirs(target_dir, exist_ok = True)
 
         local_files: list[str] = []
         used_paths: set[str] = set()
@@ -199,7 +199,7 @@ def prepare_s3_dataset_download(
             local_files.append(local_path)
     except Exception:
         if owns_temp_dir:
-            shutil.rmtree(target_dir, ignore_errors=True)
+            shutil.rmtree(target_dir, ignore_errors = True)
         raise
 
     logger.info(
@@ -210,8 +210,8 @@ def prepare_s3_dataset_download(
         target_dir,
     )
     return S3DatasetDownload(
-        files=local_files,
-        temp_dir=target_dir if owns_temp_dir else None,
+        files = local_files,
+        temp_dir = target_dir if owns_temp_dir else None,
     )
 
 
@@ -222,7 +222,7 @@ def download_s3_dataset(
 ) -> list[str]:
     download = prepare_s3_dataset_download(
         s3_config,
-        dest_dir=dest_dir,
-        cancel_callback=cancel_callback,
+        dest_dir = dest_dir,
+        cancel_callback = cancel_callback,
     )
     return download.files

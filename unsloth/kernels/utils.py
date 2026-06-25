@@ -45,12 +45,12 @@ if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
     torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
 else:
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="cuda")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="cuda")
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 
 if DEVICE_TYPE == "xpu":
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type="xpu")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type="xpu")
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 
 
 # tl.math.tanh now is libdevice.tanh
@@ -62,7 +62,6 @@ if Version(triton.__version__) >= Version("3.0.0"):
         triton_tanh = tl.extra.intel.libdevice.tanh
     else:
         from triton.language.extra import libdevice
-
         triton_tanh = libdevice.tanh
     triton_cast = tl.cast
 else:
@@ -150,7 +149,6 @@ if DEVICE_COUNT > 1:
         torch_gpu_device = torch.xpu.device
 else:
     from contextlib import nullcontext
-
     def torch_gpu_device(device):
         return nullcontext()
 
@@ -160,7 +158,7 @@ if DEVICE_TYPE == "xpu":
     _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
 elif DEVICE_TYPE == "mlx":
 
-    def _gpu_getCurrentRawStream(_index=0):
+    def _gpu_getCurrentRawStream(_index = 0):
         return 0
 # NVIDIA GPU Default Logic
 elif hasattr(torch._C, "_cuda_getCurrentRawStream"):
@@ -168,7 +166,7 @@ elif hasattr(torch._C, "_cuda_getCurrentRawStream"):
 else:
     # CPU-only torch wheel (no compiled CUDA backend). _get_tensor_stream
     # is only invoked during real GPU work, so a no-op binding is safe.
-    def _gpu_getCurrentRawStream(_index=0):
+    def _gpu_getCurrentRawStream(_index = 0):
         return 0
 
 
@@ -271,7 +269,6 @@ if importlib.util.find_spec("torchao") is not None:
         from torchao.quantization import Float8Tensor
     except:
         import torchao
-
         if Version(torchao.__version__) >= Version("0.15.0"):
             print(
                 f"Unsloth: `from torchao.quantization import Float8Tensor` failed on version={torchao.__version__}"
@@ -400,9 +397,9 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
     @torch.inference_mode
     def fast_dequantize(
         W,
-        quant_state=None,
-        out=None,
-        use_global_buffer=False,
+        quant_state = None,
+        out = None,
+        use_global_buffer = False,
     ):
         # TODO: After adding XPU BNB support, check this function
         if isinstance(W, Float8Tensor):
@@ -444,13 +441,13 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
             if WEIGHT_BUFFER is None or WEIGHT_BUFFER.dtype != dtype:
                 WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(
-                    size, dtype=dtype, device=device, requires_grad=False
+                    size, dtype = dtype, device = device, requires_grad = False
                 )
                 ABSMAX_BUFFERS[device_index] = ABSMAX_BUFFER = torch_empty(
                     n_elements_absmax,
-                    dtype=torch.float32,
-                    device=device,
-                    requires_grad=False,
+                    dtype = torch.float32,
+                    device = device,
+                    requires_grad = False,
                 )
 
             if size > WEIGHT_BUFFER.numel():
@@ -462,15 +459,15 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
         else:
             if out is None:
-                out = torch_empty(shape, dtype=dtype, device=device, requires_grad=False)
+                out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
             else:
                 assert out.shape == shape
                 assert out.dtype == dtype
             out_absmax = torch_empty(
                 n_elements_absmax,
-                dtype=torch_float32,
-                device=device,
-                requires_grad=False,
+                dtype = torch_float32,
+                device = device,
+                requires_grad = False,
             )
 
         # NF4 dequantization of statistics
@@ -512,9 +509,9 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(
         W,
-        quant_state=None,
-        out=None,
-        use_global_buffer=False,
+        quant_state = None,
+        out = None,
+        use_global_buffer = False,
     ):
         if isinstance(W, Float8Tensor):
             return W.dequantize()
@@ -557,13 +554,13 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
             if WEIGHT_BUFFER is None or WEIGHT_BUFFER.dtype != dtype:
                 WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(
-                    size, dtype=dtype, device=device, requires_grad=False
+                    size, dtype = dtype, device = device, requires_grad = False
                 )
                 ABSMAX_BUFFERS[device_index] = ABSMAX_BUFFER = torch_empty(
                     n_elements_absmax,
-                    dtype=torch_float32,
-                    device=device,
-                    requires_grad=False,
+                    dtype = torch_float32,
+                    device = device,
+                    requires_grad = False,
                 )
 
             if size > WEIGHT_BUFFER.numel():
@@ -575,15 +572,15 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
         else:
             if out is None:
-                out = torch_empty(shape, dtype=dtype, device=device, requires_grad=False)
+                out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
             else:
                 assert out.shape == shape
                 assert out.dtype == dtype
             out_absmax = torch_empty(
                 n_elements_absmax,
-                dtype=torch_float32,
-                device=device,
-                requires_grad=False,
+                dtype = torch_float32,
+                device = device,
+                requires_grad = False,
             )
         pass
 
@@ -627,9 +624,9 @@ else:
     @torch.inference_mode
     def fast_dequantize(
         W,
-        quant_state=None,
-        out=None,
-        use_global_buffer=False,
+        quant_state = None,
+        out = None,
+        use_global_buffer = False,
     ):
         if isinstance(W, Float8Tensor):
             return W.dequantize()
@@ -661,12 +658,12 @@ else:
 
         # Create weight matrix
         if out is None:
-            out = torch_empty(shape, dtype=dtype, device=device, requires_grad=False)
+            out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
         else:
             assert out.shape == shape
             assert out.dtype == dtype
         out_absmax = torch_empty(
-            n_elements_absmax, dtype=torch_float32, device=device, requires_grad=False
+            n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False
         )
 
         # Do dequantization
@@ -709,10 +706,10 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         X,
         W,
         quant_state,
-        out=None,
+        out = None,
     ):
         if quant_state is None:
-            return torch_matmul(X, W, out=out)
+            return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
         # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
         _, q_len, hd = X.shape
@@ -749,8 +746,8 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
                     1,
                     bout,
                 ),
-                dtype=dtype,
-                device=device,
+                dtype = dtype,
+                device = device,
             )
         # else:
         #     assert(out.shape == (1, 1, bout,))
@@ -773,7 +770,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype=torch_float32, device=device)
+        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         with torch_gpu_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2),
@@ -818,10 +815,10 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         X,
         W,
         quant_state,
-        out=None,
+        out = None,
     ):
         if quant_state is None:
-            return torch_matmul(X, W, out=out)
+            return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
         # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
         _, q_len, hd = X.shape
@@ -859,8 +856,8 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
                     1,
                     bout,
                 ),
-                dtype=dtype,
-                device=device,
+                dtype = dtype,
+                device = device,
             )
         # else:
         #     assert(out.shape == (1, 1, bout,))
@@ -879,7 +876,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype=torch_float32, device=device)
+        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         with torch_gpu_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2),
@@ -926,10 +923,10 @@ else:
         X,
         W,
         quant_state,
-        out=None,
+        out = None,
     ):
         if quant_state is None:
-            return torch_matmul(X, W, out=out)
+            return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
         # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
         _, q_len, hd = X.shape
@@ -963,8 +960,8 @@ else:
                     1,
                     bout,
                 ),
-                dtype=dtype,
-                device=device,
+                dtype = dtype,
+                device = device,
             )
         # else:
         #     assert(out.shape == (1, 1, bout,))
@@ -983,7 +980,7 @@ else:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype=torch_float32, device=device)
+        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         cdequantize_blockwise_fp32(
             get_ptr(code2),
             get_ptr(absmax),
@@ -1025,8 +1022,8 @@ else:
 def fast_linear_forward(
     proj,
     X,
-    temp_lora=None,
-    out=None,
+    temp_lora = None,
+    out = None,
 ):
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
     bsz, q_len, in_dim = X.shape
@@ -1034,14 +1031,14 @@ def fast_linear_forward(
         return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
 
     if W_quant is None:
-        out = torch_matmul(X, W.t(), out=out)
+        out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant, bias)
     elif bsz == 1 and q_len == 1:
-        out = fast_gemv(X, W, W_quant, out=out)
+        out = fast_gemv(X, W, W_quant, out = out)
     else:
-        W = fast_dequantize(W.t(), W_quant, use_global_buffer=True)
-        out = torch_matmul(X, W, out=out)
+        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
+        out = torch_matmul(X, W, out = out)
 
     # Add in LoRA weights
     if lora_A is not None:
@@ -1054,12 +1051,12 @@ def fast_linear_forward(
 
         if bsz == 1:
             out = out.view(out_dim)
-            temp_lora = torch_mv(lora_A._fast_lora, X.ravel(), out=temp_lora)
-            out.addmv_(lora_B._fast_lora, temp_lora, alpha=lora_S)
+            temp_lora = torch_mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
+            out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
-            temp_lora = torch_mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out=temp_lora)
-            out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha=lora_S)
+            temp_lora = torch_mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora)
+            out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha = lora_S)
         out = out.view(bsz, 1, out_dim)
 
     if bias is not None:
@@ -1075,7 +1072,7 @@ def matmul_lora(
     A,
     B,
     s,
-    out=None,
+    out = None,
 ):
     dtype = X.dtype
 
@@ -1094,12 +1091,12 @@ def matmul_lora(
             W = W.dequantize()
         else:
             W = W.contiguous()
-        out = torch_matmul(X, W.t(), out=out)
+        out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer=True)
-        out = torch_matmul(X, W.t(), out=out)
+        W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
 
@@ -1107,7 +1104,7 @@ def matmul_lora(
         # LoRA is enabled
         A, B = A.t(), B.t()
         XA = torch_matmul(X, A.to(dtype))
-        out.addmm_(XA, B.to(dtype), alpha=s)
+        out.addmm_(XA, B.to(dtype), alpha = s)
         # out += (X @ A.to(dtype)) @ (s * B.to(dtype))
 
     return out.view(batch, seq_len, -1) if reshape else out

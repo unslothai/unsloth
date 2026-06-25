@@ -119,7 +119,7 @@ def test_r_inst_005_fires_no_deps_transformers_55_without_tokenizers_pin(monkeyp
 !pip install --no-deps transformers==5.5.0
 """
     # Colab snapshot where tokenizers bumped past transformers 5.5.0's window.
-    colab = dict(COLAB_2026_05, tokenizers="0.23.5")
+    colab = dict(COLAB_2026_05, tokenizers = "0.23.5")
 
     def fake_meta(name, version):
         if name.lower() == "transformers" and version == "5.5.0":
@@ -144,7 +144,7 @@ def test_r_inst_005_silent_when_no_deps_pins_tokenizers(monkeypatch):
 
     monkeypatch.setattr(nv, "pypi_metadata", fake_meta)
     # Cell wins over Colab; resolved tokenizers will be 0.23.0.
-    colab = dict(COLAB_2026_05, tokenizers="0.23.5")
+    colab = dict(COLAB_2026_05, tokenizers = "0.23.5")
 
     findings = nv.rule_inst_005_transformers_tokenizers(cell, colab, "fixture", 0)
     assert findings == []
@@ -237,7 +237,7 @@ def _live_notebooks_dir() -> Path | None:
 
 @pytest.mark.skipif(
     _live_notebooks_dir() is None,
-    reason="unslothai/notebooks not cloned at sibling path",
+    reason = "unslothai/notebooks not cloned at sibling path",
 )
 def test_exceptions_passes_on_head():
     """L1.2 must be silent on live unslothai/notebooks HEAD; a fire means a DONT_UPDATE_EXCEPTIONS notebook lost its policy clause or the clause set is stale."""
@@ -247,7 +247,7 @@ def test_exceptions_passes_on_head():
 
 @pytest.mark.skipif(
     _live_notebooks_dir() is None,
-    reason="unslothai/notebooks not cloned at sibling path",
+    reason = "unslothai/notebooks not cloned at sibling path",
 )
 def test_lint_smoke_no_module_errors():
     """The lint subcommand walks every nb/kaggle without crashing (findings are fine)."""
@@ -264,9 +264,9 @@ def test_lint_smoke_no_module_errors():
             "--colab-pin",
             str(SCRIPTS_DIR / "data" / "colab_pip_freeze.gpu.txt"),
         ],
-        capture_output=True,
-        text=True,
-        timeout=120,
+        capture_output = True,
+        text = True,
+        timeout = 120,
     )
     # rc=0 means clean, rc=1 means findings reported, rc=2 means crash.
     assert rc.returncode in (0, 1), rc.stderr[-2000:]

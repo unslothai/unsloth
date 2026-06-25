@@ -184,7 +184,7 @@ def add_chunks(
     document_id: str,
     chunks,
     vectors,
-    regions=None,
+    regions = None,
 ) -> None:
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
     ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
@@ -275,7 +275,7 @@ def search_dense(conn: sqlite3.Connection, scope, vector, k: int):
             (s, _f32(vector), k),
         ).fetchall()
         out.extend((r["chunk_id"], 1.0 - r["distance"]) for r in rows)
-    out.sort(key=lambda t: t[1], reverse=True)
+    out.sort(key = lambda t: t[1], reverse = True)
     return out[:k]
 
 
