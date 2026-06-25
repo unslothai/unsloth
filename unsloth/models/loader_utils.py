@@ -539,6 +539,7 @@ def _is_offline_related_error(exc):
     _ssl_types = [ssl.SSLError]
     try:
         import requests
+
         _net_types += [requests.exceptions.ConnectionError, requests.exceptions.Timeout]
         _http_types += (requests.exceptions.HTTPError,)
         _ssl_types.append(requests.exceptions.SSLError)

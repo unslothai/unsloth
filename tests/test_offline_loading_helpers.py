@@ -157,7 +157,6 @@ def test_urllib_httperror_503_is_offline():
 def test_ssl_error_is_not_offline():
     # TLS/cert failure must surface, not silently fall back to cached files.
     import ssl
-
     assert L._is_offline_related_error(ssl.SSLError("certificate verify failed")) is False
 
 
