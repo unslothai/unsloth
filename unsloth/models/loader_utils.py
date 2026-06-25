@@ -517,7 +517,6 @@ def _exclude_rope_inv_freq_from_ddp(model):
     if ignored:
         try:
             from torch.nn.parallel import DistributedDataParallel
-
             DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored)
         except Exception:
             # Private PyTorch API - fall back to setting the attribute DDP reads
