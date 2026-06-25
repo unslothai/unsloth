@@ -516,7 +516,9 @@ def test_outbound_host_config_multiline_object_reopens():
         integrity = "sha512-test",
         lockfile_key = "node_modules/evil",
     )
-    obj = "const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nhttps.request(opts);\n"
+    obj = (
+        "const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nhttps.request(opts);\n"
+    )
     old = obj % "/latest/meta-data/iam/security-credentials/old"
     new = obj % "/latest/meta-data/iam/security-credentials/evil"
     of = [

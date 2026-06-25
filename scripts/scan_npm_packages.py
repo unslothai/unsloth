@@ -906,14 +906,7 @@ _RE_JS_STR = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)
 
 def _bracket_depth(line: str) -> int:
     s = _RE_JS_STR.sub("", line)
-    return (
-        s.count("(")
-        + s.count("[")
-        + s.count("{")
-        - s.count(")")
-        - s.count("]")
-        - s.count("}")
-    )
+    return s.count("(") + s.count("[") + s.count("{") - s.count(")") - s.count("]") - s.count("}")
 
 
 def _logical_line_text(text: str, line_start: int) -> str:
