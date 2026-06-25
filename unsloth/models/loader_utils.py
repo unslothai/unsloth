@@ -597,7 +597,11 @@ def _is_offline_related_error(exc):
         is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(cur, _offline_fnf_types)
         # urllib HTTPError is a URLError (net type) but must be judged by status code below,
         # unlike LocalEntryNotFoundError (an HfHubHTTPError that is always offline).
-        if isinstance(cur, _net_types) and not is_fnf and not isinstance(cur, urllib.error.HTTPError):
+        if (
+            isinstance(cur, _net_types)
+            and not is_fnf
+            and not isinstance(cur, urllib.error.HTTPError)
+        ):
             return True
         if isinstance(cur, _http_types):
             code = _http_status(cur)

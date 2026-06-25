@@ -139,20 +139,17 @@ def test_gaierror_without_wording_is_offline_by_type():
 
 def test_urllib_urlerror_is_offline():
     import urllib.error
-
     assert L._is_offline_related_error(urllib.error.URLError("connection failed")) is True
 
 
 def test_urllib_httperror_404_propagates():
     import urllib.error
-
     err = urllib.error.HTTPError("http://x", 404, "Not Found", {}, None)
     assert L._is_offline_related_error(err) is False
 
 
 def test_urllib_httperror_503_is_offline():
     import urllib.error
-
     err = urllib.error.HTTPError("http://x", 503, "Service Unavailable", {}, None)
     assert L._is_offline_related_error(err) is True
 
