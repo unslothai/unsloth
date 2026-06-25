@@ -3041,7 +3041,7 @@ class LlamaCppBackend:
         ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args, supported=getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True))
 
         if not self._can_estimate_kv():
             logger.debug(
@@ -4236,7 +4236,7 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args, supported=getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True))
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
@@ -5261,6 +5261,10 @@ class LlamaCppBackend:
                             total_by_idx = total_by_idx,
                             n_ubatch = _effective_ubatch,
                             extra_args = extra_args,)
+                    # When tensor-parallel mode is active, disable --fit
+                    # (llama.cpp does not support --fit with tensor parallelism)
+                    if gpu_indices is not None:
+                        use_fit = False
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
                         # native context across all usable GPU subsets (for UI
