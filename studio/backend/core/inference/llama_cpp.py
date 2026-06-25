@@ -1422,7 +1422,11 @@ class LlamaCppBackend:
         """Extra llama-server flags from the last load (a copy). None =
         never set, [] = explicitly cleared. Used by the route for
         inheritance."""
-        return list(getattr(self, '_extra_args', None)) if getattr(self, '_extra_args', None) is not None else None
+        return (
+            list(getattr(self, "_extra_args", None))
+            if getattr(self, "_extra_args", None) is not None
+            else None
+        )
 
     @property
     def requested_n_ctx(self) -> int:
