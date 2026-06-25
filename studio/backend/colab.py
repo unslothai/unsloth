@@ -131,11 +131,37 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
     return url
 
 
+def _publish_cloudflare_url(cloudflare_url: "str | None") -> None:
+    """Mirror a directly-started tunnel URL onto the running app so /api/health
+    advertises it.
+
+    ``run_server`` only sets ``app.state.cloudflare_url`` when it opens the tunnel
+    itself, but on Colab it suppresses the tunnel by design — so ``colab.start()``
+    opens it directly and must publish the URL here. Without this the frontend
+    reads ``cloudflare_url = None`` from /api/health and its API-key examples fall
+    back to the raw Colab/internal ``server_url``, which isn't reachable from
+    another device — defeating the point of the shareable link. Best-effort.
+    """
+    if not cloudflare_url:
+        return
+    try:
+        from main import app as _studio_app
+        _studio_app.state.cloudflare_url = cloudflare_url
+    except Exception as e:
+        logger.info(f"Could not publish Cloudflare URL to /api/health ({e}).")
+
+
 def _stop_cloudflare_tunnel() -> None:
     """Best-effort teardown of the Cloudflare tunnel started by start_cloudflare_tunnel."""
     try:
         from cloudflare_tunnel import stop_studio_tunnel
         stop_studio_tunnel()
+    except Exception:
+        pass
+    # Clear the published URL so /api/health stops advertising a dead tunnel.
+    try:
+        from main import app as _studio_app
+        _studio_app.state.cloudflare_url = None
     except Exception:
         pass
 
@@ -268,14 +294,18 @@ def start(port: int = 8888, *, cloudflare: bool = False):
     # the port, so just re-show the link and iframe.
     if _is_studio_healthy(port):
         logger.info(f"   Studio is already running on port {port} — reusing existing server.")
-        cf_url = start_cloudflare_tunnel(port) if cloudflare else None
-        _show_and_embed(port, cloudflare_url = cf_url)
+        # try/finally so an interrupt while the tunnel is starting or the iframe is
+        # rendering still tears the tunnel down instead of orphaning the process.
         try:
+            cf_url = start_cloudflare_tunnel(port) if cloudflare else None
+            _publish_cloudflare_url(cf_url)
+            _show_and_embed(port, cloudflare_url = cf_url)
             for _ in range(10000):
                 time.sleep(300)
                 print("=", end = "", flush = True)
         except KeyboardInterrupt:
             logger.info("\nUnsloth Studio keepalive stopped.")
+        finally:
             _stop_cloudflare_tunnel()
         return
 
@@ -327,19 +357,23 @@ def start(port: int = 8888, *, cloudflare: bool = False):
         return
 
     # Start the shareable Cloudflare tunnel now that the server is healthy. Studio's
-    # run_server suppresses the tunnel on Colab by design, so we open it directly.
-    cf_url = start_cloudflare_tunnel(actual_port) if cloudflare else None
-
-    _show_and_embed(actual_port, cloudflare_url = cf_url)
-
-    # Keep kernel alive so the daemon server thread runs; handle KeyboardInterrupt
-    # cleanly so interrupting the cell gives a readable message.
+    # run_server suppresses the tunnel on Colab by design, so we open it directly,
+    # then publish the URL onto the app so /api/health (and the frontend) advertise it.
+    #
+    # try/finally so an interrupt while the tunnel is starting or the iframe is
+    # rendering still tears the tunnel down instead of orphaning the process.
     try:
+        cf_url = start_cloudflare_tunnel(actual_port) if cloudflare else None
+        _publish_cloudflare_url(cf_url)
+        _show_and_embed(actual_port, cloudflare_url = cf_url)
+
+        # Keep kernel alive so the daemon server thread runs.
         for _ in range(10000):
             time.sleep(300)
             print("=", end = "", flush = True)
     except KeyboardInterrupt:
         logger.info("\nUnsloth Studio keepalive stopped.")
+    finally:
         _stop_cloudflare_tunnel()
 
 
