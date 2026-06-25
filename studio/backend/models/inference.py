@@ -1848,7 +1848,9 @@ class ImageGenerationData(BaseModel):
     ``url`` / ``b64_json`` is set, per the request's ``response_format``; the
     route serializes with ``exclude_none`` so the unused key is omitted."""
 
-    b64_json: Optional[str] = Field(None, description = "Base64-encoded PNG (response_format=b64_json).")
+    b64_json: Optional[str] = Field(
+        None, description = "Base64-encoded PNG (response_format=b64_json)."
+    )
     url: Optional[str] = Field(None, description = "URL to the PNG bytes (response_format=url).")
 
 

@@ -29,13 +29,13 @@ from utils.api_errors import install_api_error_handlers
 @pytest.mark.parametrize(
     "repo_id, expected",
     [
-        ("unsloth/Z-Image-Turbo-GGUF", (9, 0.0)),   # turbo entry, before the z-image fallback
+        ("unsloth/Z-Image-Turbo-GGUF", (9, 0.0)),  # turbo entry, before the z-image fallback
         ("unsloth/Z-Image-GGUF", (20, 4.0)),
-        ("unsloth/FLUX.1-schnell-GGUF", (4, 0.0)),   # schnell entry, before the flux.1 entry
+        ("unsloth/FLUX.1-schnell-GGUF", (4, 0.0)),  # schnell entry, before the flux.1 entry
         ("black-forest-labs/FLUX.1-dev", (28, 3.5)),
         ("unsloth/FLUX.2-klein-4B-GGUF", (4, 0.0)),
         ("unsloth/Qwen-Image-2512-GGUF", (20, 4.0)),
-        ("some/unknown-model", (9, 0.0)),            # fallback
+        ("some/unknown-model", (9, 0.0)),  # fallback
         ("", (9, 0.0)),
     ],
 )
@@ -47,7 +47,9 @@ def test_default_generation_params_specificity_ordering():
     # The "-turbo" / "-schnell" entries must win over their broader siblings; a
     # reorder that broke this would silently mis-default.
     assert default_generation_params("x/Z-Image-Turbo") != default_generation_params("x/Z-Image")
-    assert default_generation_params("x/FLUX.1-schnell") != default_generation_params("x/FLUX.1-dev")
+    assert default_generation_params("x/FLUX.1-schnell") != default_generation_params(
+        "x/FLUX.1-dev"
+    )
 
 
 @pytest.mark.parametrize(
@@ -58,7 +60,7 @@ def test_default_generation_params_specificity_ordering():
         ("AUTO", (1024, 1024)),
         ("512x512", (512, 512)),
         ("512x256", (512, 256)),
-        ("1792x1024", (1792, 1024)),   # dall-e-3 named size: must pass the bounds
+        ("1792x1024", (1792, 1024)),  # dall-e-3 named size: must pass the bounds
         ("1024x1792", (1024, 1792)),
         (" 256 x 256 ", (256, 256)),
     ],
@@ -77,7 +79,11 @@ def test_parse_image_size_rejects(size):
 
 
 class _FakeBackend:
-    def __init__(self, loaded = True, repo_id = "unsloth/Z-Image-Turbo-GGUF") -> None:
+    def __init__(
+        self,
+        loaded = True,
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+    ) -> None:
         self._loaded = loaded
         self._repo_id = repo_id
         self.calls = []
@@ -87,14 +93,34 @@ class _FakeBackend:
             "loaded": self._loaded,
             "repo_id": self._repo_id if self._loaded else None,
             "family": "z-image" if self._loaded else None,
-            "base_repo": None, "device": "cpu", "dtype": "float32", "cpu_offload": False,
+            "base_repo": None,
+            "device": "cpu",
+            "dtype": "float32",
+            "cpu_offload": False,
         }
 
-    def generate(self, *, prompt, width, height, steps, guidance, batch_size = 1):
+    def generate(
+        self,
+        *,
+        prompt,
+        width,
+        height,
+        steps,
+        guidance,
+        batch_size = 1,
+    ):
         if not self._loaded:
             raise RuntimeError("No diffusion model is loaded.")
-        self.calls.append(dict(prompt = prompt, width = width, height = height,
-                               steps = steps, guidance = guidance, batch_size = batch_size))
+        self.calls.append(
+            dict(
+                prompt = prompt,
+                width = width,
+                height = height,
+                steps = steps,
+                guidance = guidance,
+                batch_size = batch_size,
+            )
+        )
         return {
             "images": [object() for _ in range(batch_size)],
             "seed": 4242,
@@ -141,7 +167,7 @@ def test_url_response_shape(client):
     assert isinstance(body["created"], int) and body["created"] > 0
     assert len(body["data"]) == 1
     item = body["data"][0]
-    assert "url" in item and "b64_json" not in item      # exclude_none drops the unused key
+    assert "url" in item and "b64_json" not in item  # exclude_none drops the unused key
     assert item["url"].endswith("/file")
     # Z-Image-Turbo defaults (9 steps, 0 guidance) flow into the backend call.
     assert client.backend.calls[0] == dict(
@@ -176,11 +202,11 @@ def test_null_fields_coalesce_to_defaults(client):
 @pytest.mark.parametrize(
     "body, param",
     [
-        ({"size": "256x256"}, "prompt"),               # missing prompt
+        ({"size": "256x256"}, "prompt"),  # missing prompt
         ({"prompt": "", "size": "256x256"}, "prompt"),  # empty prompt
-        ({"prompt": "p", "size": "300x300"}, "size"),   # not multiple of 16
-        ({"prompt": "p", "size": "abc"}, "size"),       # unparseable
-        ({"prompt": "p", "stream": True}, "stream"),    # streaming unsupported
+        ({"prompt": "p", "size": "300x300"}, "size"),  # not multiple of 16
+        ({"prompt": "p", "size": "abc"}, "size"),  # unparseable
+        ({"prompt": "p", "stream": True}, "stream"),  # streaming unsupported
     ],
 )
 def test_validation_400_with_param(client, body, param):
