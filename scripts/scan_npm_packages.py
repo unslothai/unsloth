@@ -899,29 +899,52 @@ def safe_extract(
 
 _MAX_CONT_LINES = 12  # cap continuation lines bound into one logical line
 
+# JS string literal (single / double / template), blanked before counting
+# brackets so a bracket inside a string is not mistaken for code.
+_RE_JS_STR = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
+
+
+def _bracket_depth(line: str) -> int:
+    s = _RE_JS_STR.sub("", line)
+    return (
+        s.count("(")
+        + s.count("[")
+        + s.count("{")
+        - s.count(")")
+        - s.count("]")
+        - s.count("}")
+    )
+
 
 def _logical_line_text(text: str, line_start: int) -> str:
-    """The physical line at ``line_start`` plus any bracket-continuation lines,
-    so a multi-line call's option/header/body lines are bound into the evidence
-    digest. Over-extends on brackets-in-strings (fail-closed: binds more, never
-    less); capped at ``_MAX_CONT_LINES`` so an unclosed bracket cannot swallow
-    the file."""
+    """The matched line plus the bracket group it belongs to: the enclosing
+    multi-line object/call it sits inside (so a changed ``path``/``headers``/body
+    on another line of the same outbound config binds) and any continuation lines
+    after it. String literals are blanked before counting so a bracket inside a
+    string does not miscount; bounded by ``_MAX_CONT_LINES`` each way."""
+    lines = text.split("\n")
+    idx = text.count("\n", 0, line_start)  # 0-based line index of the match
+
+    # Backward: find the line that opens a bracket still unclosed at the match,
+    # so a match inside a multi-line object starts from the object opener.
+    start = idx
     depth = 0
-    pos = line_start
-    end = line_start
-    n = len(text)
-    for _ in range(_MAX_CONT_LINES):
-        nl = text.find("\n", pos)
-        if nl == -1:
-            nl = n
-        ln = text[pos:nl]
-        depth += ln.count("(") + ln.count("[") + ln.count("{")
-        depth -= ln.count(")") + ln.count("]") + ln.count("}")
-        end = nl
-        if depth <= 0 or nl >= n:
+    for j in range(max(0, idx - _MAX_CONT_LINES), idx):
+        depth += _bracket_depth(lines[j])
+        if depth <= 0:
+            start = idx  # any bracket already closed before the match
+        elif start == idx:
+            start = j  # first still-open opener
+
+    # Forward: extend until the group opened at `start` closes past the match.
+    depth = 0
+    end = start
+    for j in range(start, min(len(lines), start + 2 * _MAX_CONT_LINES)):
+        depth += _bracket_depth(lines[j])
+        end = j
+        if j >= idx and depth <= 0:
             break
-        pos = nl + 1
-    return text[line_start:end].replace("\n", " ")
+    return " ".join(lines[start : end + 1])
 
 
 def _evidence(

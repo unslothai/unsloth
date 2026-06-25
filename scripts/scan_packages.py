@@ -1144,21 +1144,30 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
 
 # Cap a DOTALL match's recorded span; longer spans fall back to head + digest.
+# Single-line quoted string literal, used to blank string contents (so brackets
+# inside a string are not counted as code) before measuring a logical line.
+_RE_STR_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+
 _MAX_MULTILINE_LINES = 12
+# A span larger than this is a greedy DOTALL match bridging anchors across
+# unrelated code (e.g. ``import socket`` near the top and ``subprocess`` near the
+# bottom of a multi-thousand-line test file), not a single appended payload, so
+# it is not recorded when the per-line pass already bound the signal lines.
+_GIANT_SPAN_LINES = 60
 
 
 def _logical_line_end(lines: list[str], start: int) -> int:
     """1-based line where the statement opened at ``start`` closes its brackets,
     so a multi-line call binds its argument lines (a changed URL/body on a
-    continuation line reopens, not just the line with the API name). Bracket
-    counting is whitespace-simple and over-extends on brackets-in-strings
-    (fail-closed: binds more, never less); the span is capped at
+    continuation line reopens, not just the line with the API name). String
+    literals are blanked first so a bracket inside a string (``'.../path)'``)
+    does not close the line early and drop later arguments; the span is capped at
     ``_MAX_MULTILINE_LINES`` so a stray unclosed bracket cannot swallow the file.
     """
     depth = 0
     limit = min(len(lines), start + _MAX_MULTILINE_LINES - 1)
     for j in range(start, limit + 1):
-        ln = lines[j - 1]
+        ln = _RE_STR_LITERAL.sub("", lines[j - 1])
         depth += ln.count("(") + ln.count("[") + ln.count("{")
         depth -= ln.count(")") + ln.count("]") + ln.count("}")
         if depth <= 0:
@@ -1215,11 +1224,12 @@ def _extract_evidence(
         end = content.count("\n", 0, m.end()) + 1
         if end <= start or (start, end) in seen:
             continue  # single-line matches are already covered by the pass above
-        if had_perline and end - start + 1 > _MAX_MULTILINE_LINES:
+        if had_perline and end - start + 1 > _GIANT_SPAN_LINES:
             # Per-line already bound the signal lines; a giant greedy DOTALL span
             # bridging them only adds a whole-file digest that drifts on any
             # unrelated edit (e.g. a dep bump moving the matched lines), so skip
-            # it. A genuinely appended multi-line construct stays under the cap.
+            # it. A genuinely appended multi-line construct (<= _GIANT_SPAN_LINES)
+            # is still recorded below, so its payload reopens the finding.
             continue
         seen.add((start, end))
         out.append(_render(start, end))
@@ -2676,18 +2686,20 @@ _RE_EVIDENCE_PREFIX = re.compile(r"^(?:[A-Za-z][A-Za-z0-9 _/+.-]*:\s*)?L\d+:\s?"
 
 
 def _canon_evidence(evidence: str) -> str:
-    """Sorted matched code lines (markers removed), duplicates kept.
+    """Matched code lines in discovery order (markers removed), duplicates kept.
 
     Splits evidence on its real span delimiters, drops each span's leading
-    label / line-number marker, and keeps the code with its indentation. Sorting
-    absorbs match reordering and line shifts; keeping duplicates means an
-    appended identical occurrence still changes the key."""
+    label / line-number marker, and keeps the code with its indentation. Line
+    shifts are absorbed by stripping the L<NN>: markers, not by sorting, so order
+    stays significant: reordering matched lines (executable context, e.g. the
+    arguments of a multi-line call) reopens the finding. Keeping duplicates means
+    an appended identical occurrence still changes the key."""
     spans = []
     for s in _RE_EVIDENCE_SPLIT.split(evidence or ""):
         s = _RE_EVIDENCE_PREFIX.sub("", s, count = 1).rstrip()
         if s:
             spans.append(s)
-    return "\n".join(sorted(spans))
+    return "\n".join(spans)
 
 
 def _evidence_hash(evidence: str) -> str:
