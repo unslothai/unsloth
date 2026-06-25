@@ -80,7 +80,10 @@ def hf_endpoint_unreachable(timeout: int = 3) -> bool:
         except Exception:
             bypass = False
         proxy_url = (
-            proxies.get(ep.scheme) or proxies.get("https") or proxies.get("http") or proxies.get("all")
+            proxies.get(ep.scheme)
+            or proxies.get("https")
+            or proxies.get("http")
+            or proxies.get("all")
         )
         if proxy_url and not bypass:
             pp = urlparse(proxy_url if "://" in proxy_url else "http://" + proxy_url)
