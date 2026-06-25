@@ -8,12 +8,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -188,50 +183,37 @@ function ModelSelectorTrigger({
       >
         {isLoaded &&
           (onEject ? (
-            // Loaded status doubles as the eject control: green checkmark at
-            // rest, red eject icon on pill hover, click to eject.
-            // stopPropagation keeps the popover from toggling; a span (not a
-            // nested button) keeps the trigger valid HTML.
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    aria-label="Eject model"
-                    data-eject-hit={true}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onEject();
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onEject();
-                      }
-                    }}
-                    // Hit area larger than the icon, with a hover circle.
-                    // Negative margin keeps the icon in the dot's original spot.
-                    className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10"
-                  >
-                    <HugeiconsIcon
-                      icon={CheckmarkCircle02Icon}
-                      strokeWidth={1.75}
-                      className="size-3.5 text-emerald-500 group-hover/trigger:hidden"
-                    />
-                    <HugeiconsIcon
-                      icon={RemoveCircleIcon}
-                      strokeWidth={1.75}
-                      className="hidden size-3.5 text-red-500 group-hover/trigger:block"
-                    />
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>Eject model</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+            // Loaded status doubles as a mouse eject shortcut: green checkmark
+            // at rest, red eject icon on pill hover, click to eject. A plain
+            // span (no role/tabIndex) keeps it out of the trigger button's
+            // content model, which forbids focusable descendants. Keyboard and
+            // screen-reader users eject via the picker's "Eject model" button.
+            // aria-hidden marks it decorative; stopPropagation stops the
+            // popover from toggling.
+            <span
+              aria-hidden={true}
+              title="Eject model"
+              data-eject-hit={true}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onEject();
+              }}
+              // Hit area larger than the icon, with a hover circle. Negative
+              // margin keeps the icon in the dot's original spot.
+              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+            >
+              <HugeiconsIcon
+                icon={CheckmarkCircle02Icon}
+                strokeWidth={1.75}
+                className="size-3.5 text-emerald-500 group-hover/trigger:hidden"
+              />
+              <HugeiconsIcon
+                icon={RemoveCircleIcon}
+                strokeWidth={1.75}
+                className="hidden size-3.5 text-red-500 group-hover/trigger:block"
+              />
+            </span>
           ) : (
             <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
           ))}
