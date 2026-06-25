@@ -2559,7 +2559,7 @@ extra_eos_tokens = None,
         if part.endswith(which):
             part = "'" + part[:part.find(which)] + f"' + {content}"
         elif part.startswith(which):
-            part = f"{content} + '" + part[part.find(which):] + "'"
+            part = f"{content} + '" + part[len(which):] + "'"
         else:
             part = "'" + part.replace(which, f"' + {content} + '") + "'"
         if part.startswith("'' + "): part = part[5:]
