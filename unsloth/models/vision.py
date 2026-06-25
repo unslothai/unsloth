@@ -466,7 +466,13 @@ def _missing_torchvision_error(error = None):
     return False
 
 
-def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code, cache_dir = None):
+def _construct_vlm_processor_fallback(
+    tokenizer_name,
+    model_type,
+    token,
+    trust_remote_code,
+    cache_dir = None,
+):
     """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
 
     Some VLMs (e.g., LFM2.5-VL) have tokenizer_class entries that AutoTokenizer
@@ -497,7 +503,9 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
         try:
             from huggingface_hub import hf_hub_download
 
-            config_path = hf_hub_download(tokenizer_name, "tokenizer_config.json", token = token, cache_dir = cache_dir)
+            config_path = hf_hub_download(
+                tokenizer_name, "tokenizer_config.json", token = token, cache_dir = cache_dir
+            )
             with open(config_path, "r", encoding = "utf-8") as f:
                 tok_config = json.load(f)
             # Set model-specific special tokens and their IDs
