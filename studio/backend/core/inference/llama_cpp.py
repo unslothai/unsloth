@@ -4282,6 +4282,7 @@ class LlamaCppBackend:
             # toggle before this); be defensive and never emit a split here.
             return (
                 target_ctx if target_ctx > 0 else 4096,
+                target_ctx if target_ctx > 0 else 4096,
                 gpu_indices,
                 None,
             )
