@@ -151,26 +151,38 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
 
 
 def _shareable_link_html(cloudflare_url: str) -> str:
-    """A small branded card advertising the shareable Cloudflare HTTPS link.
+    """A branded card advertising the shareable Cloudflare HTTPS link.
 
-    Rendered above the Colab-proxy iframe so the user can copy a URL that works
-    from any device, not just the tab that owns the runtime.
+    Reuses the original Colab proxy banner skin (see ``show_link``) — white card,
+    black border, Unsloth gem, big black "Open" button — retrofitted for the
+    Cloudflare ``trycloudflare.com`` URL. Unlike the in-tab Colab proxy iframe
+    rendered below, this link can be opened from any device by anyone you share
+    it with, so it gets the same prominent treatment as the proxy "Ready!" banner.
     """
     return f"""
-<div style="font-family:system-ui,-apple-system,sans-serif;margin:8px 0;padding:14px 16px;
-            background:#0b0b0b;border:2px solid #000;border-radius:12px;">
-  <div style="color:#fff;font-weight:800;font-size:15px;margin-bottom:6px;">
-    🔗 Shareable link (works from any device)
-  </div>
-  <a href="{cloudflare_url}" target="_blank"
-     style="color:#7fd1ff;font-family:monospace;font-size:14px;font-weight:700;word-break:break-all;">
-    {cloudflare_url}
-  </a>
-  <div style="color:#999;font-size:12px;margin-top:6px;">
-    Unlike the in-tab view below, this Cloudflare HTTPS link can be opened by anyone you share it with.
-  </div>
-</div>
-"""
+    <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
+                border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
+        <h2 style="color: #000000; margin: 0 0 12px 0; font-size: 26px; font-weight: 800;
+                   display: flex; align-items: center; gap: 12px;">
+            <img src="https://github.com/unslothai/unsloth/raw/main/studio/frontend/public/unsloth-gem.png"
+                 height="48" style="display:block;">
+            Shareable Studio Link is Ready!
+        </h2>
+        <a href="{cloudflare_url}" onclick="var w=window.open(this.href,'_blank');if(!w){{return true;}}return false;"
+           style="display: inline-flex; align-items: center; gap: 10px; padding: 14px 28px;
+                  background: #000000; color: white; text-decoration: none; border-radius: 8px;
+                  font-weight: 800; font-size: 16px; cursor: pointer;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
+            Open Unsloth Studio
+        </a>
+        <p style="color: #333333; margin: 12px 0 0 0; font-size: 14px; font-weight: bold;">
+            This Cloudflare HTTPS link works from any device — share it with anyone. The Colab view below only works in this tab.
+        </p>
+        <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace; font-weight: bold;">
+            🔗 {cloudflare_url}
+        </p>
+    </div>
+    """
 
 
 def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
