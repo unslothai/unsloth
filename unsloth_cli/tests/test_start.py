@@ -29,7 +29,6 @@ MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 def test_connect_module_is_deprecated_shim_for_start():
     # The old `unsloth_cli.commands.connect` import path keeps working post-rename.
     from unsloth_cli.commands.connect import connect_app
-
     assert connect_app is start.start_app
 
 
