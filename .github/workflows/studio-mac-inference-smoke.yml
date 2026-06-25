@@ -66,7 +66,7 @@ jobs:
       STUDIO_PORT: '18888'
       HF_HOME: ${{ github.workspace }}/hf-cache
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
@@ -323,7 +323,7 @@ jobs:
       GGUF_FILE: Qwen3.5-2B-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18898'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
@@ -687,7 +687,7 @@ jobs:
       MMPROJ_FILE: mmproj-F16.gguf
       STUDIO_PORT: '18899'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
