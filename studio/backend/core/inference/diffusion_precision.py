@@ -1,85 +1,120 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in FP8 layerwise casting for the diffusion pipeline's text encoder(s).
+"""Opt-in low-precision casting of the diffusion pipeline's text encoder(s).
 
 The transformer arrives quantised in the GGUF, but the companion text encoder loads
 dense (bf16) from the base repo and is often the largest resident component (a Qwen3
-/ T5-XXL / Mistral encoder runs to many GB). Layerwise casting stores its linear
-weights in 8-bit (e4m3) and upcasts each layer to the compute dtype on the fly,
-roughly halving the encoder's footprint while normalisations and embeddings stay
-full precision. This pairs especially well with streamed (group) offload, where the
-text encoder stays resident: on Z-Image it dropped generation peak VRAM ~37%
-(10.8 -> 6.8 GB), taking the balanced tier below the lowest-VRAM offload while
-keeping its near-resident speed.
+/ T5-XXL / Mistral encoder runs to many GB). This shrinks it in place, with two
+backends:
 
-It is a memory-vs-quality tradeoff, NOT free: fp8's ~3-bit mantissa perturbs the
-text embeddings enough to shift fine detail (on Z-Image, ~20 dB PSNR vs the bf16
-encoder -- a larger change than one transformer quant step). Hence off by default;
-use the quality harness (scripts/diffusion_quality.py) to confirm it stays within
-budget for a given model. Gated to CUDA with a bf16 compute dtype and fp8 dtype
-support, and best-effort: any failure leaves the encoder dense. torch / diffusers
-are imported lazily so the module stays importable in a no-torch runtime.
+  fp8   - diffusers layerwise casting: 8-bit (e4m3) storage, upcast per layer to the
+          compute dtype. ~2x smaller. Works on any fp8-capable CUDA card (cc >= 8.9).
+  nvfp4 - torchao NVFP4 weight-only: 4-bit float with two-level microscaling, run on
+          Blackwell's (sm_100+) FP4 tensor cores. ~4x smaller and the lowest-VRAM
+          option, but a steeper quality cost than fp8.
+
+Both keep normalisations / embeddings full precision and are a memory-vs-quality
+tradeoff, not free, so both are off by default. They pair especially well with
+streamed (group) offload, where the text encoder stays resident -- this is where the
+companion footprint dominates. Quantify the quality cost per model with the quality
+harness (scripts/diffusion_quality.py). torch / diffusers / torchao are imported
+lazily so the module stays importable in a no-torch runtime.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
+
+TE_QUANT_FP8 = "fp8"
+TE_QUANT_NVFP4 = "nvfp4"
+TE_QUANT_MODES = (TE_QUANT_FP8, TE_QUANT_NVFP4)
 
 # Pipeline attributes that hold a text encoder, in order.
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
 
-def fp8_text_encoder_supported(target: Any) -> bool:
-    """Whether fp8 layerwise casting is usable for ``target``: a CUDA device, a bf16
-    compute dtype (fp16 + fp8 is too lossy to pair), and torch fp8 dtype support."""
+def normalize_te_quant(value: Optional[str]) -> Optional[str]:
+    """Lower/strip a requested text-encoder quant; None / "" / "none" -> None.
+
+    Raises ValueError for an unsupported value so a bad request is rejected cheaply."""
+    if value is None:
+        return None
+    normalized = str(value).strip().lower().replace("-", "_")
+    if not normalized or normalized == "none":
+        return None
+    if normalized not in TE_QUANT_MODES:
+        raise ValueError(
+            f"Unsupported text_encoder_quant '{value}'. Use one of: {', '.join(TE_QUANT_MODES)}."
+        )
+    return normalized
+
+
+def te_quant_supported(target: Any, mode: str) -> bool:
+    """Whether ``mode`` is usable for ``target``: a CUDA device with a bf16 compute
+    dtype, plus fp8 dtype support (fp8) or Blackwell sm_100+ tensor cores (nvfp4)."""
     if getattr(target, "device", None) != "cuda":
         return False
     try:
         import torch
-        return getattr(target, "dtype", None) is torch.bfloat16 and hasattr(torch, "float8_e4m3fn")
+
+        if getattr(target, "dtype", None) is not torch.bfloat16:
+            return False
+        if mode == TE_QUANT_FP8:
+            return hasattr(torch, "float8_e4m3fn")
+        if mode == TE_QUANT_NVFP4:
+            # NVFP4 tensor cores need Blackwell (compute capability major >= 10).
+            return torch.cuda.get_device_capability()[0] >= 10
     except Exception:
         return False
+    return False
 
 
-def apply_fp8_text_encoder(
-    pipe: Any,
-    target: Any,
-    *,
-    enable: bool,
-    logger: Any = None,
-) -> list[str]:
-    """Cast each text encoder's linear weights to fp8 storage (compute stays the
-    target dtype). Returns the names of the encoders actually cast (empty when
-    disabled, unsupported, or none present)."""
-    if not enable or not fp8_text_encoder_supported(target):
-        return []
-    try:
-        import torch
-        from diffusers.hooks import apply_layerwise_casting
-        from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
-    except Exception as exc:  # noqa: BLE001 — optimisation only
-        _warn(logger, "import", exc)
-        return []
-
+def quantize_text_encoders(
+    pipe: Any, target: Any, *, mode: Optional[str], logger: Any = None,
+) -> Optional[str]:
+    """Quantise each present text encoder in place with ``mode`` (fp8 / nvfp4).
+    Returns the mode actually applied, or None when disabled, unsupported, or no
+    encoder was cast. Best-effort: any failure leaves the encoder dense."""
+    mode = normalize_te_quant(mode)
+    if mode is None or not te_quant_supported(target, mode):
+        return None
+    caster = _cast_fp8 if mode == TE_QUANT_FP8 else _cast_nvfp4
     cast: list[str] = []
     for attr in _TEXT_ENCODER_ATTRS:
         encoder = getattr(pipe, attr, None)
         if encoder is None:
             continue
         try:
-            apply_layerwise_casting(
-                encoder,
-                storage_dtype = torch.float8_e4m3fn,
-                compute_dtype = target.dtype,
-                skip_modules_pattern = DEFAULT_SKIP_MODULES_PATTERN,
-            )
+            caster(encoder, target)
             cast.append(attr)
         except Exception as exc:  # noqa: BLE001 — leave this encoder dense
-            _warn(logger, attr, exc)
-    return cast
+            _warn(logger, f"{mode}:{attr}", exc)
+    return mode if cast else None
+
+
+def _cast_fp8(encoder: Any, target: Any) -> None:
+    import torch
+    from diffusers.hooks import apply_layerwise_casting
+    from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
+
+    apply_layerwise_casting(
+        encoder,
+        storage_dtype = torch.float8_e4m3fn,
+        compute_dtype = target.dtype,
+        skip_modules_pattern = DEFAULT_SKIP_MODULES_PATTERN,
+    )
+
+
+def _cast_nvfp4(encoder: Any, target: Any) -> None:
+    # Weight-only NVFP4: linear weights become 4-bit (packed) NVFP4 tensors and run
+    # on Blackwell FP4 tensor cores; norms / embeddings (not nn.Linear) are untouched.
+    from torchao.quantization import quantize_
+    from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
+
+    quantize_(encoder, NVFP4WeightOnlyConfig())
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:
     if logger is not None:
-        logger.warning("diffusion.precision: fp8 text-encoder (%s) failed: %s", what, exc)
+        logger.warning("diffusion.precision: text-encoder quant (%s) failed: %s", what, exc)

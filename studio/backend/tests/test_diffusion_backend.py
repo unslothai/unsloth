@@ -853,8 +853,15 @@ def test_load_speed_mode_threads_and_defaults_off(fake_runtime, tmp_path):
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", speed_mode = "max"
     )
     assert status2["speed_mode"] == "max"
-    # fp8 text-encoder defaults off and reports an empty list.
-    assert status2["fp8_text_encoder"] == []
+    # Text-encoder quant defaults off (None); a requested mode threads through (the
+    # actual engagement is GPU-verified, since it needs real torch/torchao).
+    assert status2["text_encoder_quant"] is None
+    status3 = backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image",
+        text_encoder_quant = "nvfp4",
+    )
+    # Under the CPU stub nvfp4 is unsupported, so it engages nothing -> None.
+    assert status3["text_encoder_quant"] is None
 
 
 def test_load_fast_mode_stays_resident_on_cuda(fake_runtime, tmp_path, monkeypatch):

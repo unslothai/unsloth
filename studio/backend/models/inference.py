@@ -1714,11 +1714,12 @@ class DiffusionLoadRequest(BaseModel):
         "default (channels_last + regional torch.compile where eligible), "
         "max (also TF32 + fused QKV).",
     )
-    text_encoder_fp8: bool = Field(
-        False,
-        description = "Cast the companion text encoder(s) to fp8 storage (~2x smaller, "
-        "CUDA + bf16 only). A memory-vs-quality tradeoff (shifts fine "
-        "detail), not free; pairs well with balanced mode.",
+    text_encoder_quant: Optional[Literal["fp8", "nvfp4"]] = Field(
+        None,
+        description = "Quantise the companion text encoder(s): fp8 (~2x smaller, "
+                      "CUDA cc>=8.9) or nvfp4 (~4x smaller, Blackwell sm_100+). A "
+                      "memory-vs-quality tradeoff (shifts fine detail), not free; "
+                      "pairs well with balanced mode.",
     )
 
 
@@ -1824,6 +1825,6 @@ class DiffusionStatusResponse(BaseModel):
     speed_optims: list[str] = Field(
         default_factory = list, description = "Speed optimisations actually engaged"
     )
-    fp8_text_encoder: list[str] = Field(
-        default_factory = list, description = "Text encoders cast to fp8 storage"
+    text_encoder_quant: Optional[str] = Field(
+        None, description = "Text-encoder quantisation engaged: fp8 | nvfp4 | null"
     )

@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for fp8 text-encoder casting (``diffusion_precision.py``).
+"""Unit tests for text-encoder quantisation (``diffusion_precision.py``).
 
-Hermetic: torch + diffusers.hooks are stubbed via ``sys.modules`` so the gating and
-the apply path run without a GPU or real diffusers.
+Hermetic: torch + the diffusers / torchao casters are stubbed via ``sys.modules`` so
+gating and the apply path run without a GPU, real diffusers, or real torchao.
 """
 
 from __future__ import annotations
@@ -15,97 +15,130 @@ import types
 import pytest
 
 from core.inference.diffusion_precision import (
-    apply_fp8_text_encoder,
-    fp8_text_encoder_supported,
+    TE_QUANT_FP8,
+    TE_QUANT_NVFP4,
+    normalize_te_quant,
+    quantize_text_encoders,
+    te_quant_supported,
 )
 
 
-def _target(*, device = "cuda", dtype = "bfloat16"):
-    return types.SimpleNamespace(device = device, dtype = dtype)
+def _target(*, device = "cuda", dtype = "bfloat16", cc = (10, 0)):
+    return types.SimpleNamespace(device = device, dtype = dtype, _cc = cc)
 
 
-def _stub_torch(monkeypatch, *, with_fp8 = True):
+def _stub_torch(monkeypatch, *, with_fp8 = True, cc = (10, 0)):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
     torch.float16 = "float16"
     if with_fp8:
         torch.float8_e4m3fn = "float8_e4m3fn"
+    torch.cuda = types.SimpleNamespace(get_device_capability = lambda *a: cc)
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
 
 
-def _stub_diffusers_hooks(monkeypatch, recorder):
+def _stub_casters(monkeypatch, recorder):
+    # diffusers fp8 layerwise casting
     hooks = types.ModuleType("diffusers.hooks")
     casting = types.ModuleType("diffusers.hooks.layerwise_casting")
     casting.DEFAULT_SKIP_MODULES_PATTERN = ("norm",)
-
-    def _apply(module, *, storage_dtype, compute_dtype, skip_modules_pattern):
-        recorder.append((module, storage_dtype, compute_dtype, skip_modules_pattern))
-
-    hooks.apply_layerwise_casting = _apply
+    hooks.apply_layerwise_casting = lambda module, **kw: recorder.append(("fp8", module))
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
     monkeypatch.setitem(sys.modules, "diffusers.hooks.layerwise_casting", casting)
+    # torchao nvfp4
+    tq = types.ModuleType("torchao.quantization")
+    tq.quantize_ = lambda module, config: recorder.append(("nvfp4", module))
+    mx = types.ModuleType("torchao.prototype.mx_formats")
+    mx.NVFP4WeightOnlyConfig = lambda: "nvfp4cfg"
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tq)
+    monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", mx)
+
+
+# ── normalisation ─────────────────────────────────────────────────────────────
+
+
+def test_normalize_te_quant():
+    assert normalize_te_quant(None) is None
+    assert normalize_te_quant("") is None
+    assert normalize_te_quant("none") is None
+    assert normalize_te_quant("FP8") == TE_QUANT_FP8
+    assert normalize_te_quant("NVFP4") == TE_QUANT_NVFP4
+    with pytest.raises(ValueError):
+        normalize_te_quant("int2")
 
 
 # ── gating ────────────────────────────────────────────────────────────────────
 
 
-def test_fp8_supported_requires_cuda_bf16_and_fp8_dtype(monkeypatch):
+def test_fp8_supported_requires_cuda_bf16_and_fp8(monkeypatch):
     _stub_torch(monkeypatch, with_fp8 = True)
-    assert fp8_text_encoder_supported(_target()) is True
-    assert fp8_text_encoder_supported(_target(device = "cpu")) is False
-    assert fp8_text_encoder_supported(_target(dtype = "float16")) is False
+    assert te_quant_supported(_target(), TE_QUANT_FP8) is True
+    assert te_quant_supported(_target(device = "cpu"), TE_QUANT_FP8) is False
+    assert te_quant_supported(_target(dtype = "float16"), TE_QUANT_FP8) is False
 
 
-def test_fp8_unsupported_without_fp8_dtype(monkeypatch):
-    _stub_torch(monkeypatch, with_fp8 = False)
-    assert fp8_text_encoder_supported(_target()) is False
+def test_nvfp4_supported_requires_blackwell(monkeypatch):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    assert te_quant_supported(_target(), TE_QUANT_NVFP4) is True
+    # Hopper (cc 9.0) has no NVFP4 tensor cores.
+    _stub_torch(monkeypatch, cc = (9, 0))
+    assert te_quant_supported(_target(), TE_QUANT_NVFP4) is False
 
 
 # ── apply ─────────────────────────────────────────────────────────────────────
 
 
-def test_apply_disabled_returns_empty(monkeypatch):
+def test_quantize_disabled_returns_none(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = types.SimpleNamespace(text_encoder = object())
-    assert apply_fp8_text_encoder(pipe, _target(), enable = False) == []
+    assert quantize_text_encoders(pipe, _target(), mode = None) is None
+    assert quantize_text_encoders(pipe, _target(), mode = "none") is None
 
 
-def test_apply_casts_all_present_text_encoders(monkeypatch):
+def test_quantize_fp8_casts_all_encoders(monkeypatch):
     _stub_torch(monkeypatch)
     recorder: list = []
-    _stub_diffusers_hooks(monkeypatch, recorder)
+    _stub_casters(monkeypatch, recorder)
     te1, te3 = object(), object()
-    # text_encoder + text_encoder_3 present, text_encoder_2 absent.
     pipe = types.SimpleNamespace(text_encoder = te1, text_encoder_2 = None, text_encoder_3 = te3)
-    cast = apply_fp8_text_encoder(pipe, _target(), enable = True)
-    assert cast == ["text_encoder", "text_encoder_3"]
-    # Casts to fp8 storage with bf16 compute and skips norms.
-    assert {r[0] for r in recorder} == {te1, te3}
-    assert all(r[1] == "float8_e4m3fn" and r[2] == "bfloat16" for r in recorder)
+    mode = quantize_text_encoders(pipe, _target(), mode = "fp8")
+    assert mode == TE_QUANT_FP8
+    assert recorder == [("fp8", te1), ("fp8", te3)]
 
 
-def test_apply_unsupported_target_is_noop(monkeypatch):
-    _stub_torch(monkeypatch)
+def test_quantize_nvfp4_uses_torchao(monkeypatch):
+    _stub_torch(monkeypatch, cc = (10, 0))
     recorder: list = []
-    _stub_diffusers_hooks(monkeypatch, recorder)
+    _stub_casters(monkeypatch, recorder)
+    te = object()
+    pipe = types.SimpleNamespace(text_encoder = te)
+    mode = quantize_text_encoders(pipe, _target(), mode = "nvfp4")
+    assert mode == TE_QUANT_NVFP4
+    assert recorder == [("nvfp4", te)]
+
+
+def test_quantize_nvfp4_unsupported_on_hopper_is_noop(monkeypatch):
+    _stub_torch(monkeypatch, cc = (9, 0))
+    recorder: list = []
+    _stub_casters(monkeypatch, recorder)
     pipe = types.SimpleNamespace(text_encoder = object())
-    assert apply_fp8_text_encoder(pipe, _target(device = "cpu"), enable = True) == []
+    assert quantize_text_encoders(pipe, _target(cc = (9, 0)), mode = "nvfp4") is None
     assert recorder == []
 
 
-def test_apply_tolerates_casting_failure(monkeypatch):
+def test_quantize_tolerates_caster_failure(monkeypatch):
     _stub_torch(monkeypatch)
     hooks = types.ModuleType("diffusers.hooks")
     casting = types.ModuleType("diffusers.hooks.layerwise_casting")
     casting.DEFAULT_SKIP_MODULES_PATTERN = ("norm",)
 
     def _boom(module, **kwargs):
-        raise RuntimeError("fp8 not supported for this layer")
+        raise RuntimeError("fp8 unsupported for this layer")
 
     hooks.apply_layerwise_casting = _boom
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
     monkeypatch.setitem(sys.modules, "diffusers.hooks.layerwise_casting", casting)
     pipe = types.SimpleNamespace(text_encoder = object())
-    # A casting failure leaves the encoder dense and reports nothing cast.
-    assert apply_fp8_text_encoder(pipe, _target(), enable = True) == []
+    # The only encoder fails to cast -> nothing applied -> None.
+    assert quantize_text_encoders(pipe, _target(), mode = "fp8") is None
