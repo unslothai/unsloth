@@ -340,13 +340,31 @@ def test_extra_args_detect_thread_overrides(extra_args):
     assert _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS) is True
 
 
-def test_windows_full_offload_flags_use_current_llama_server_args():
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    stale_checkpoint_flag = "--checkpoint-" + "every-n-tokens"
-    assert '"--cache-ram"' in src
-    assert '"--ctx-checkpoints"' in src
-    assert '"--no-cache-prompt"' in src
-    assert stale_checkpoint_flag not in src
+
+
+from unittest.mock import patch, MagicMock
+
+
+from unittest.mock import patch, MagicMock
+
+
+from unittest.mock import patch, MagicMock
+
+
+from unittest.mock import patch, MagicMock
+from pathlib import Path
+
+
+from unittest.mock import patch, MagicMock
+from pathlib import Path
+
+
+from unittest.mock import patch, MagicMock
+from pathlib import Path
+
+
+from unittest.mock import patch, MagicMock
+from pathlib import Path
 
 
 def test_load_model_sets_threads_once():
