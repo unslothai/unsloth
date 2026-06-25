@@ -20,14 +20,42 @@ from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import load_model, openai_chat_completions
 from state.tool_policy import tools_force_disabled
 from utils.models.checkpoints import list_preview_targets, resolve_preview_checkpoint
+from utils.preview_token import sign_preview_ref, verify_preview_ref
 
 logger = get_logger(__name__)
 
 router = APIRouter()
 
-# Public (no key); resolve_preview_checkpoint pins `run` under outputs_root.
-# One model loads at a time, so serialize load+generate across previews.
+# A shared preview link is a public bearer capability; cap per-request generation
+# so a single call can't tie up the (serialized) preview GPU indefinitely.
+_PREVIEW_MAX_OUTPUT_TOKENS = 1024
+
+# Capability-gated (signed ref required); resolve_preview_checkpoint pins `run`
+# under outputs_root. One model loads at a time, so serialize load+generate.
 _preview_lock = asyncio.Lock()
+
+
+def _extract_token(request: Request) -> str | None:
+    """Capability token from the ``?k=`` query (browser link + preview page) or an
+    ``Authorization: Bearer`` header (OpenAI-compatible clients using it as api_key)."""
+    token = request.query_params.get("k")
+    if token:
+        return token
+    header = request.headers.get("authorization", "")
+    if header[:7].lower() == "bearer ":
+        return header[7:].strip() or None
+    return None
+
+
+def _verify_or_404(run: str, checkpoint: str | None, request: Request) -> None:
+    """Require a valid preview capability BEFORE any checkpoint resolve / model load.
+
+    Missing or invalid tokens get a generic 404 -- identical to a non-existent ref --
+    so the public surface never confirms whether a run/checkpoint exists.
+    """
+    ref = run if not checkpoint else f"{run}/{checkpoint}"
+    if not verify_preview_ref(ref, _extract_token(request)):
+        raise HTTPException(status_code = 404, detail = "Not found")
 
 
 def _resolve_or_4xx(run: str, checkpoint: str | None):
@@ -67,6 +95,13 @@ def _sanitize_preview_payload(
             "encrypted_api_key": None,
             "provider_base_url": None,
             "use_adapter": True if is_lora else None,
+            # Cap generation cost on this public, GPU-backed surface.
+            "max_tokens": min(payload.max_tokens or _PREVIEW_MAX_OUTPUT_TOKENS, _PREVIEW_MAX_OUTPUT_TOKENS),
+            "max_completion_tokens": min(
+                payload.max_completion_tokens or _PREVIEW_MAX_OUTPUT_TOKENS,
+                _PREVIEW_MAX_OUTPUT_TOKENS,
+            ),
+            "n": 1,
         }
     )
 
@@ -108,12 +143,23 @@ async def list_previews(request: Request, current_subject: str = Depends(get_cur
     previews = []
     for target in list_preview_targets():
         ref = quote(target["ref"], safe = "/")
-        previews.append({**target, "url": f"{base}p/{ref}/v1"})
+        # Mint the capability for the authenticated owner: ``key`` for OpenAI
+        # clients (Bearer / api_key), ``share_url`` for the browser link.
+        token = sign_preview_ref(target["ref"])
+        previews.append(
+            {
+                **target,
+                "url": f"{base}p/{ref}/v1",
+                "key": token,
+                "share_url": f"{base}p/{ref}?k={token}",
+            }
+        )
     return {"object": "list", "data": previews}
 
 
 @router.post("/{run}/v1/chat/completions")
 async def preview_chat_latest(run: str, payload: ChatCompletionRequest, request: Request):
+    _verify_or_404(run, None, request)
     return await _serve_chat(run, None, payload, request)
 
 
@@ -121,6 +167,7 @@ async def preview_chat_latest(run: str, payload: ChatCompletionRequest, request:
 async def preview_chat_checkpoint(
     run: str, checkpoint: str, payload: ChatCompletionRequest, request: Request
 ):
+    _verify_or_404(run, checkpoint, request)
     return await _serve_chat(run, checkpoint, payload, request)
 
 
@@ -141,12 +188,14 @@ def _models_response(run: str, checkpoint: str | None):
 
 
 @router.get("/{run}/v1/models")
-async def preview_models_latest(run: str):
+async def preview_models_latest(run: str, request: Request):
+    _verify_or_404(run, None, request)
     return _models_response(run, None)
 
 
 @router.get("/{run}/{checkpoint}/v1/models")
-async def preview_models_checkpoint(run: str, checkpoint: str):
+async def preview_models_checkpoint(run: str, checkpoint: str, request: Request):
+    _verify_or_404(run, checkpoint, request)
     return _models_response(run, checkpoint)
 
 
@@ -183,14 +232,24 @@ def _preview_page(run: str, checkpoint: str | None) -> HTMLResponse:
     _resolve_or_4xx(run, checkpoint)
     title = run if not checkpoint else f"{run}/{checkpoint}"
     page = _PREVIEW_PAGE_HTML.replace("__TITLE__", html.escape(title))
-    return HTMLResponse(page, headers = {"Content-Security-Policy": _PREVIEW_PAGE_CSP})
+    # no-referrer: the capability token rides in the query string, so keep it out
+    # of the Referer header on any outbound navigation.
+    return HTMLResponse(
+        page,
+        headers = {
+            "Content-Security-Policy": _PREVIEW_PAGE_CSP,
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 @router.get("/{run}", response_class = HTMLResponse)
-async def preview_page_latest(run: str):
+async def preview_page_latest(run: str, request: Request):
+    _verify_or_404(run, None, request)
     return _preview_page(run, None)
 
 
 @router.get("/{run}/{checkpoint}", response_class = HTMLResponse)
-async def preview_page_checkpoint(run: str, checkpoint: str):
+async def preview_page_checkpoint(run: str, checkpoint: str, request: Request):
+    _verify_or_404(run, checkpoint, request)
     return _preview_page(run, checkpoint)

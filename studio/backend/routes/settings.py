@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
+from auth.storage import rotate_preview_link_secret
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
@@ -120,6 +121,20 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+class PreviewLinkRotateResponse(BaseModel):
+    rotated: bool = True
+
+
+@router.post("/preview-links/rotate", response_model = PreviewLinkRotateResponse)
+def rotate_preview_links(
+    current_subject: str = Depends(get_current_subject),
+) -> PreviewLinkRotateResponse:
+    """Rotate the preview-link signing secret, revoking every previously shared `/p` link."""
+    rotate_preview_link_secret()
+    logger.info("settings.preview_links_rotated subject=%s", current_subject)
+    return PreviewLinkRotateResponse(rotated = True)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:
