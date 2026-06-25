@@ -426,14 +426,22 @@ jobs:
           }
           // A pinned version/path is reproducibility, not integrity: the asset
           // can be replaced after upload. Require the immutable SHA-256 digest
-          // to be pinned AND verified (sha256sum -c) before chmod +x, so the
-          // guard fails if a future edit drops the integrity check.
+          // to be pinned AND verified before chmod +x. The assertions below
+          // must match the real step content, not this guard's own text, or
+          // deleting the env pin / verification command would still pass.
           const expectedLinuxdeployDigest = '4648f278ab3ef31f819e67c30d50f462640e5365a77637d7e6f2ad9fd0b4522a';
-          if (!lines.some((line) => line.includes(expectedLinuxdeployDigest))) {
-            throw new Error('Desktop Linux release must pin the linuxdeploy SHA-256 digest');
+          const isComment = (line) => {
+            const trimmed = line.trim();
+            return trimmed.startsWith('#') || trimmed.startsWith('//');
+          };
+          const digestEnvRe = /^\s*LINUXDEPLOY_SHA256:\s*["']([0-9a-f]{64})["']\s*$/;
+          const digestEnvLine = lines.find((line) => digestEnvRe.test(line));
+          if (!digestEnvLine || digestEnvLine.match(digestEnvRe)[1] !== expectedLinuxdeployDigest) {
+            throw new Error('Desktop Linux release must pin the linuxdeploy SHA-256 digest in the LINUXDEPLOY_SHA256 env');
           }
-          if (!lines.some((line) => line.includes('sha256sum -c'))) {
-            throw new Error('Desktop Linux release must verify the linuxdeploy digest before use');
+          const verifiesDigest = lines.some((line) => !isComment(line) && line.includes('sha256sum -c'));
+          if (!verifiesDigest) {
+            throw new Error('Desktop Linux release must verify the linuxdeploy digest with sha256sum -c before use');
           }
           const releaseBodies = [];
           for (let i = 0; i < lines.length; i += 1) {
