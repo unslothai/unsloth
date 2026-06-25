@@ -4494,9 +4494,7 @@ async def _proxy_to_external_provider(
             # so a timed-out/partial answer would be saved with no error shown.
             yield (
                 "data: "
-                + json.dumps(
-                    {"error": {"message": _friendly_error(exc), "type": "server_error"}}
-                )
+                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
                 + "\n\n"
             )
             yield "data: [DONE]\n\n"

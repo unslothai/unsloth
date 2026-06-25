@@ -33,7 +33,9 @@ def test_early_disconnect_keeps_queue_registered(monkeypatch):
         gen = ing.job_events(jid)
         next(gen)  # enter loop: Empty -> non-terminal -> heartbeat
         gen.close()  # client disconnects before the job finishes
-        assert jid in ing._jobs, "queue must survive an early disconnect so the worker can still emit"
+        assert (
+            jid in ing._jobs
+        ), "queue must survive an early disconnect so the worker can still emit"
     finally:
         ing._jobs.pop(jid, None)
 
