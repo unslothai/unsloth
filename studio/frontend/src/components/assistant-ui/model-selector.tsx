@@ -189,7 +189,9 @@ function ModelSelectorTrigger({
             // content model, which forbids focusable descendants. Keyboard and
             // screen-reader users eject via the picker's "Eject model" button.
             // aria-hidden marks it decorative; stopPropagation stops the
-            // popover from toggling.
+            // popover from toggling. On touch (no hover) the eject icon and
+            // tooltip never reveal, so pointer-events-none disables the
+            // shortcut there and taps open the picker instead of ejecting.
             <span
               aria-hidden={true}
               title="Eject model"
@@ -201,7 +203,7 @@ function ModelSelectorTrigger({
               }}
               // Hit area larger than the icon, with a hover circle. Negative
               // margin keeps the icon in the dot's original spot.
-              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10 [@media(hover:none)]:pointer-events-none"
             >
               <HugeiconsIcon
                 icon={CheckmarkCircle02Icon}
