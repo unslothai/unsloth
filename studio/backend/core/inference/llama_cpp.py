@@ -2992,7 +2992,7 @@ class LlamaCppBackend:
         mtp_overhead_fn: Optional[Callable[[int], int]] = None,
         budget_frac: Optional[float] = None,
         total_mib: Optional[int] = None,
-    ) -> int:
+    , extra_args: list[str] = None) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
         Budget caps occupancy at ``_CTX_FIT_VRAM_FRACTION`` of the card: an
@@ -3006,7 +3006,7 @@ class LlamaCppBackend:
         ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args if "extra_args" in locals() else None)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args)
 
         if not self._can_estimate_kv():
             logger.debug(
@@ -4176,7 +4176,7 @@ class LlamaCppBackend:
         total_by_idx: Optional[dict[int, int]] = None,
         n_ubatch: Optional[int] = None,
         ctx_checkpoints: Optional[int] = None,
-    ) -> tuple[int, int, list[int], Optional[list[int]]]:
+    , extra_args: list[str] = None) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
         ``gpus`` is a list of ``(gpu_index, free_mib)``; ``model_size`` is the
@@ -4200,7 +4200,7 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args if "extra_args" in locals() else None)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args)
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
