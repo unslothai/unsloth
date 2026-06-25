@@ -329,8 +329,7 @@ export function ArtifactSurface({
             code={artifact.code}
             title={artifact.title}
             fill={true}
-            // Only tool-rendered canvases may opt into network mode; fences
-            // auto-extracted from assistant text never get it.
+            // Network mode only for tool-rendered canvases, never fences.
             allowNetworkAccess={artifact.source === "tool"}
             className="h-full"
           />

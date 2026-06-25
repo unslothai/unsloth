@@ -1235,17 +1235,12 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
 async def artifact_preview_frame(allow_network: bool = False):
-    """Serve the opaque sandbox shell used for client-side HTML canvases.
+    """Serve the opaque sandbox shell for client-side HTML canvases.
 
-    No auth token is accepted here, by design. This shell is a static document
-    that only renders HTML posted to it via postMessage by its embedder, and the
-    CSP restricts embedding to Studio itself (frame-ancestors) inside a
-    no-same-origin sandbox. A bearer token in this frame's URL would be readable
-    by the untrusted canvas HTML through window.location.href, so the
-    network-mode CSP is chosen from allow_network alone and the frame never
-    receives a credential it could exfiltrate. Authenticating the request would
-    add no protection (the shell exposes no server resource) while reintroducing
-    that leak."""
+    No auth token by design: the URL is readable by the untrusted canvas via
+    location.href, and this static shell exposes no server resource (frame-ancestors
+    plus the sandbox already gate it), so the CSP is chosen from allow_network alone.
+    """
 
     csp = (
         _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP

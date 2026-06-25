@@ -35,9 +35,7 @@ export function ArtifactHtmlFrame({
   title = "HTML canvas preview",
   className,
   fill = false,
-  // Only artifacts the user explicitly rendered (the render_html tool) may opt
-  // into network mode. Auto-extracted fence cards default to no network so
-  // prompt-injected assistant text can never reach the network-enabled frame.
+  // Tool-rendered canvases only; default off so fences never get network.
   allowNetworkAccess = false,
 }: {
   code: string;
@@ -54,17 +52,13 @@ export function ArtifactHtmlFrame({
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
   const src = useMemo(() => {
     const query = new URLSearchParams({ v: hashArtifactCode(code) });
-    // No auth token is ever placed in the frame URL: untrusted canvas HTML runs
-    // in this frame and could read it back via window.location.href. The
-    // backend selects the network CSP from allow_network alone.
+    // Never put the auth token in the URL: in-frame code can read location.href.
     if (allowNetworkAccess && networkAccessEnabled) {
       query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
   }, [allowNetworkAccess, networkAccessEnabled, code]);
-  // Only feed loads WE initiated (mount or a src change). Untrusted canvas code
-  // can self-navigate the frame to ?allow_network=1, which also fires onLoad;
-  // reposting there would let a strict frame self-upgrade into a network one.
+  // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {
     pendingPostRef.current = true;
