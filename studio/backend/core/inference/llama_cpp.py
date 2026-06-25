@@ -3041,7 +3041,11 @@ class LlamaCppBackend:
         ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args, supported=getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True))
+        ctx_checkpoints = self._resolve_ctx_checkpoints(
+            ctx_checkpoints,
+            extra_args,
+            supported = getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True),
+        )
 
         if not self._can_estimate_kv():
             logger.debug(
@@ -4236,7 +4240,11 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args, supported=getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True))
+        ctx_checkpoints = self._resolve_ctx_checkpoints(
+            ctx_checkpoints,
+            extra_args,
+            supported = getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True),
+        )
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
@@ -5260,7 +5268,8 @@ class LlamaCppBackend:
                             max_target_ctx = self._context_length or target_ctx,
                             total_by_idx = total_by_idx,
                             n_ubatch = _effective_ubatch,
-                            extra_args = extra_args,)
+                            extra_args = extra_args,
+                        )
                     # When tensor-parallel mode is active, disable --fit
                     # (llama.cpp does not support --fit with tensor parallelism)
                     if gpu_indices is not None:
@@ -5268,8 +5277,11 @@ class LlamaCppBackend:
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Resolve checkpoint count once for consistent budgeting
                         resolved_ctx_checkpoints = self._resolve_ctx_checkpoints(
-                            None, extra_args,
-                            supported=getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True)
+                            None,
+                            extra_args,
+                            supported = getattr(self, "_server_flags", {}).get(
+                                "supports_ctx_checkpoints", True
+                            ),
                         )
                         # Compute the largest hardware-aware cap from the model's
                         # native context across all usable GPU subsets (for UI
@@ -5302,10 +5314,13 @@ class LlamaCppBackend:
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     budget_frac = 1.0,
                                     total_mib = None,
-                                    extra_args=extra_args,                                )
+                                    extra_args = extra_args,
+                                )
                                 kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv, n_parallel = n_parallel,
-                                    ctx_checkpoints = resolved_ctx_checkpoints
+                                    capped,
+                                    cache_type_kv,
+                                    n_parallel = n_parallel,
+                                    ctx_checkpoints = resolved_ctx_checkpoints,
                                 )
                                 footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (1024 * 1024)
                                 if footprint_mib <= pool_budget:
@@ -5325,8 +5340,10 @@ class LlamaCppBackend:
                             requested_total = (
                                 model_size_fit
                                 + self._estimate_kv_cache_bytes(
-                                    effective_ctx, cache_type_kv, n_parallel = n_parallel,
-                                    ctx_checkpoints = resolved_ctx_checkpoints
+                                    effective_ctx,
+                                    cache_type_kv,
+                                    n_parallel = n_parallel,
+                                    ctx_checkpoints = resolved_ctx_checkpoints,
                                 )
                                 + _mtp_bytes(effective_ctx)
                             )
@@ -5360,10 +5377,13 @@ class LlamaCppBackend:
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     budget_frac = 1.0,
                                     total_mib = None,
-                                    extra_args=extra_args,                                )
+                                    extra_args = extra_args,
+                                )
                                 kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv, n_parallel = n_parallel,
-                                    ctx_checkpoints = resolved_ctx_checkpoints
+                                    capped,
+                                    cache_type_kv,
+                                    n_parallel = n_parallel,
+                                    ctx_checkpoints = resolved_ctx_checkpoints,
                                 )
                                 footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (1024 * 1024)
                                 if footprint_mib <= pool_budget:
@@ -5383,7 +5403,7 @@ class LlamaCppBackend:
                                             effective_ctx,
                                             cache_type_kv,
                                             n_parallel = n_parallel,
-                                            ctx_checkpoints = resolved_ctx_checkpoints
+                                            ctx_checkpoints = resolved_ctx_checkpoints,
                                         )
                                         footprint_mib = (
                                             _subset_model_size(n_gpus)
@@ -5427,8 +5447,11 @@ class LlamaCppBackend:
                         # auto context shrinks, explicit is honored.
                         # Resolve checkpoint count once for consistent budgeting
                         resolved_ctx_checkpoints_apple = self._resolve_ctx_checkpoints(
-                            None, extra_args,
-                            supported=getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True)
+                            None,
+                            extra_args,
+                            supported = getattr(self, "_server_flags", {}).get(
+                                "supports_ctx_checkpoints", True
+                            ),
                         )
                         native_ctx_for_cap = self._context_length or effective_ctx
                         # Reserve the flat MTP fraction up front like the discrete
@@ -5449,12 +5472,15 @@ class LlamaCppBackend:
                                 mtp_overhead_fn = mtp_overhead_fn,
                                 budget_frac = 1.0,
                                 total_mib = None,
-                                extra_args=extra_args,                            )
+                                extra_args = extra_args,
+                            )
                             _cap_footprint_mib = (
                                 model_size_fit
                                 + self._estimate_kv_cache_bytes(
-                                    cap, cache_type_kv, n_parallel = n_parallel,
-                                    ctx_checkpoints = resolved_ctx_checkpoints_apple
+                                    cap,
+                                    cache_type_kv,
+                                    n_parallel = n_parallel,
+                                    ctx_checkpoints = resolved_ctx_checkpoints_apple,
                                 )
                                 + _mtp_bytes(cap)
                             ) / (1024 * 1024)
@@ -5486,8 +5512,10 @@ class LlamaCppBackend:
 
                     if effective_ctx < original_ctx:
                         kv_est = self._estimate_kv_cache_bytes(
-                            effective_ctx, cache_type_kv, n_parallel = n_parallel,
-                            ctx_checkpoints = resolved_ctx_checkpoints_apple
+                            effective_ctx,
+                            cache_type_kv,
+                            n_parallel = n_parallel,
+                            ctx_checkpoints = resolved_ctx_checkpoints_apple,
                         )
                         logger.info(
                             f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
@@ -5498,8 +5526,10 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = self._estimate_kv_cache_bytes(
-                        effective_ctx, cache_type_kv, n_parallel = n_parallel,
-                        ctx_checkpoints = resolved_ctx_checkpoints_apple
+                        effective_ctx,
+                        cache_type_kv,
+                        n_parallel = n_parallel,
+                        ctx_checkpoints = resolved_ctx_checkpoints_apple,
                     )
                     mmproj_note = (
                         f"mmproj: {mmproj_size / (1024**3):.1f} GB, " if mmproj_size else ""
