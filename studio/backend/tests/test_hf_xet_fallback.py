@@ -125,7 +125,12 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
     import importlib
 
     class _BlockShared:
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "unsloth_zoo.hf_xet_fallback":
                 raise ModuleNotFoundError(f"No module named '{name}'", name = name)
             return None

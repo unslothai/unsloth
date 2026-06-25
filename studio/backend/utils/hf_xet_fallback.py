@@ -79,7 +79,6 @@ except ModuleNotFoundError as exc:
         **_ignored: Any,
     ) -> str:
         from huggingface_hub import hf_hub_download
-
         return hf_hub_download(
             repo_id = repo_id,
             filename = filename,
@@ -103,7 +102,6 @@ except ModuleNotFoundError as exc:
         **_ignored: Any,
     ) -> str:
         from huggingface_hub import snapshot_download
-
         return snapshot_download(
             repo_id = repo_id,
             repo_type = repo_type,
@@ -114,6 +112,7 @@ except ModuleNotFoundError as exc:
             ignore_patterns = ignore_patterns,
             force_download = force_download,
         )
+
 
 __all__ = [
     "DEFAULT_GRACE_PERIOD",
