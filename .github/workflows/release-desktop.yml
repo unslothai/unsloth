@@ -411,13 +411,19 @@ jobs:
           }
 
           const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
-          if (workflow.includes('libayatana-appindicator3-dev')) {
-            throw new Error('Desktop Linux release must use libappindicator3-dev, not libayatana-appindicator3-dev');
+          const lines = workflow.split(/\r?\n/);
+          const linuxInstallLines = lines.filter((line) => line.includes('sudo apt-get install'));
+          const ayatanaPackage = ['libayatana', 'appindicator3-dev'].join('-');
+          if (linuxInstallLines.some((line) => line.includes(ayatanaPackage))) {
+            throw new Error('Desktop Linux release must not install the Ayatana appindicator dev package');
           }
-          if (!workflow.includes('linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage')) {
+          if (!linuxInstallLines.some((line) => line.includes('libappindicator3-dev'))) {
+            throw new Error('Desktop Linux release must install libappindicator3-dev');
+          }
+          const linuxdeployLines = lines.filter((line) => line.includes('github.com/linuxdeploy/linuxdeploy/releases/download'));
+          if (!linuxdeployLines.some((line) => line.includes('1-alpha-20250213-2/linuxdeploy-x86_64.AppImage'))) {
             throw new Error('Desktop Linux release must pin linuxdeploy 1-alpha-20250213-2');
           }
-          const lines = workflow.split(/\r?\n/);
           const releaseBodies = [];
           for (let i = 0; i < lines.length; i += 1) {
             const match = lines[i].match(/^(\s*)releaseBody:\s*\|\s*$/);
