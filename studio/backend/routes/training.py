@@ -840,11 +840,16 @@ async def stream_training_progress(
         # ── Live polling loop ────────────────────────────────────
         last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
-        # The stall timeout only applies once we have actually seen a live step in
-        # this stream; before the first step the run is still preparing and may
+        # The stall timeout only applies once the run has actually started
+        # stepping. Before the first step the run is still preparing and may
         # legitimately emit no step for a long time (large model load / dataset
-        # tokenization), which must not be mistaken for a stall.
-        seen_live_step = False
+        # tokenization), which must not be mistaken for a stall. On a reconnect to
+        # an already-stepping run, seed this from the resume point / existing
+        # history: otherwise a worker that hangs after step N would never time out
+        # for a client that reconnects past that step and only receives heartbeats.
+        seen_live_step = (resume_from_step is not None and resume_from_step > 0) or bool(
+            backend.step_history
+        )
 
         while backend.is_training_active():
             try:

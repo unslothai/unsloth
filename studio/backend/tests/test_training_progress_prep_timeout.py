@@ -74,6 +74,11 @@ class _FakeRequest:
     headers = {}
 
 
+class _ReconnectRequest:
+    # Reconnect carrying the last step the client already received.
+    headers = {"last-event-id": "10"}
+
+
 def _raw(response):
     async def _drain():
         chunks = []
@@ -119,3 +124,18 @@ def test_stall_after_first_step_still_times_out(monkeypatch, _fast_short_timeout
     raw = _raw(asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester")))
 
     assert "event: error" in raw, "a real post-step stall should still time out"
+
+
+def test_reconnect_to_stepped_run_still_times_out(monkeypatch, _fast_short_timeout):
+    # Client reconnects at step 10 (Last-Event-ID) to a run that has already
+    # stepped and then hangs: no new step is emitted, only heartbeats, but the
+    # post-step stall timeout must still fire. Without seeding seen_live_step from
+    # the resume point it would reset to False and never time out for this client.
+    backend = _Backend(active_polls = 100, step_history = [10], live_step = 10)
+    monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
+
+    raw = _raw(asyncio.run(rt.stream_training_progress(_ReconnectRequest(), current_subject = "tester")))
+
+    assert "event: error" in raw, (
+        "a reconnect to an already-stepped run that then stalls must still time out"
+    )
