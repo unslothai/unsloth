@@ -307,9 +307,15 @@ def job_events(job_id: str):
                 break
             yield event
     finally:
-        # Only drop the queue once the job is finished. On an early disconnect the
-        # worker is still emitting into it; dropping would strand its events and a
-        # reconnect would see only [DONE]. Idle finished queues are reaped elsewhere.
+        # Drop the queue once nothing more will be emitted into it: either a
+        # terminal exit, or a disconnect after the job already finished (the UI
+        # stops on the terminal event, before [DONE], so terminal is still False
+        # here -- _run writes the terminal DB status before emitting it). Keep it
+        # only while the worker is still running, so an early disconnect can
+        # reconnect and resume its events.
+        if not terminal:
+            row = get_job_status(job_id)
+            terminal = row is None or row.get("status") in _TERMINAL_JOB_STATUSES
         if terminal:
             with _jobs_lock:
                 _jobs.pop(job_id, None)

@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""job_events keeps the per-job queue registered until the job is terminal.
+"""job_events keeps the per-job queue registered only while the worker runs.
 
 ``_emit()`` writes to ``_jobs[job_id]`` while the worker runs; if an early SSE
 disconnect removed that queue, later events would be dropped and a reconnect
-would see only ``[DONE]`` and mark a running job complete. Remove only on a
-terminal exit; ``_reap_finished_jobs`` sweeps leftovers.
+would see only ``[DONE]`` and mark a running job complete. So keep it on an early
+disconnect of a running job, but drop it on a terminal exit or a disconnect after
+the job already finished; ``_reap_finished_jobs`` sweeps any leftovers.
 """
 
 import queue
@@ -48,6 +49,26 @@ def test_terminal_sentinel_removes_queue(monkeypatch):
         events = list(ing.job_events(jid))  # drains progress, then None -> terminal
         assert any(e.get("type") == "progress" for e in events)
         assert jid not in ing._jobs, "queue must be removed once the job is terminal"
+    finally:
+        ing._jobs.pop(jid, None)
+
+
+def test_disconnect_after_terminal_event_removes_queue(monkeypatch):
+    monkeypatch.setattr(ing, "_SSE_POLL_SECONDS", 0.01)
+    # Worker finished: the DB row is terminal and a complete event is queued. The
+    # UI reads that event and disconnects (reader.cancel) before the None sentinel,
+    # so the queue must still drop rather than linger until the next reap.
+    monkeypatch.setattr(ing, "get_job_status", lambda _jid: {"status": "completed"})
+    jid = "job-disconnect-after-complete"
+    q = queue.Queue()
+    q.put({"type": "complete", "num_chunks": 3})
+    q.put(None)
+    ing._jobs[jid] = q
+    try:
+        gen = ing.job_events(jid)
+        assert next(gen)["type"] == "complete"  # client receives the terminal event
+        gen.close()  # disconnects before draining the sentinel
+        assert jid not in ing._jobs, "a finished job's queue must drop on disconnect"
     finally:
         ing._jobs.pop(jid, None)
 
