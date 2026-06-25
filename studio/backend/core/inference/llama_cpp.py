@@ -2998,6 +2998,13 @@ class LlamaCppBackend:
         if not kv_on_gpu:
             return requested_ctx
 
+        if ctx_checkpoints == 0:
+            env_val = os.environ.get("LLAMA_ARG_CTX_CHECKPOINTS")
+            if env_val and env_val.strip():
+                try:
+                    ctx_checkpoints = int(env_val)
+                except ValueError:
+                    pass
         kv_kwargs = dict(
             swa_full = swa_full,
             n_parallel = n_parallel,
