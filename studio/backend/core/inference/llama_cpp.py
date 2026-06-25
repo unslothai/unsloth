@@ -2659,10 +2659,17 @@ class LlamaCppBackend:
         is non-None here."""
         return self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
 
-    def _resolve_ctx_checkpoints(self, cli_val: Optional[int]) -> int:
-        """Resolve effective checkpoint count using CLI > Env > Default precedence."""
+    def _resolve_ctx_checkpoints(self, cli_val: Optional[int], extra_args: list[str] = None) -> int:
+        """Resolve effective checkpoint count using CLI flag > Extra Args > Env > Default precedence."""
         if cli_val is not None:
             return cli_val
+        if extra_args:
+            for i, arg in enumerate(extra_args):
+                if arg == '--ctx-checkpoints' and i + 1 < len(extra_args):
+                    try:
+                        return int(extra_args[i+1])
+                    except ValueError:
+                        pass
         env_val = os.environ.get("LLAMA_ARG_CTX_CHECKPOINTS")
         if env_val and env_val.strip():
             try:
@@ -2671,9 +2678,6 @@ class LlamaCppBackend:
                 pass
         return 0
 
-    def _estimate_kv_cache_bytes(
-        self,
-        n_ctx: int,
         cache_type_kv: Optional[str] = None,
         *,
         swa_full: bool = False,
@@ -2999,7 +3003,7 @@ class LlamaCppBackend:
         ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args if "extra_args" in locals() else None)
 
         if not self._can_estimate_kv():
             logger.debug(
@@ -4193,7 +4197,7 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints)
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, extra_args if "extra_args" in locals() else None)
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
