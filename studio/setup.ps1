@@ -897,7 +897,14 @@ function Show-NpmRegistryHint {
     if ($env:UNSLOTH_NPM_REGISTRY) { return }
     $mirror = $env:NPM_CONFIG_REGISTRY
     if (-not $mirror) {
-        try { $mirror = (& npm config get registry 2>$null | Out-String).Trim() } catch { $mirror = "" }
+        # Read npm config from a dir with no project .npmrc so the frontend's pinned
+        # registry= does not mask the user's ~/.npmrc / global mirror.
+        $pushed = $false
+        try {
+            Push-Location ([System.IO.Path]::GetTempPath()) -ErrorAction Stop
+            $pushed = $true
+            $mirror = (& npm config get registry 2>$null | Out-String).Trim()
+        } catch { $mirror = "" } finally { if ($pushed) { Pop-Location } }
     }
     if ($mirror -in @("", "undefined", "null", "https://registry.npmjs.org", "https://registry.npmjs.org/")) {
         $mirror = ""

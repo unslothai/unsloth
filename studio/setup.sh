@@ -104,9 +104,12 @@ _suggest_npm_registry() {
         return 0
     fi
     # Best-effort: surface a mirror the user already configured (env or ~/.npmrc).
+    # Read npm config from / (a dir with no project .npmrc) so the frontend's pinned
+    # registry= does not mask the user's ~/.npmrc / global mirror -- the caller is
+    # still inside studio/frontend when this runs.
     local _mirror="${NPM_CONFIG_REGISTRY:-${npm_config_registry:-}}"
     if [ -z "$_mirror" ] && command -v npm >/dev/null 2>&1; then
-        _mirror="$(npm config get registry 2>/dev/null || true)"
+        _mirror="$( (cd / 2>/dev/null && npm config get registry) 2>/dev/null || true )"
     fi
     case "$_mirror" in
         ""|undefined|null|https://registry.npmjs.org|https://registry.npmjs.org/) _mirror="" ;;
