@@ -305,7 +305,6 @@ def _exclude_rope_inv_freq_from_ddp(model):
                     ignored.append(fqn)
     if ignored:
         from torch.nn.parallel import DistributedDataParallel
-
         DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored)
     return model
 
