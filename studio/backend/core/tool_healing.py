@@ -448,16 +448,19 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
                 out.append(text[cursor:start])
                 cursor = len(text)
             break
-        tail = text[brace_end + 1 :]
-        leading_ws = len(tail) - len(tail.lstrip())
-        close = _TC_GEMMA_END_TAG_RE.match(tail, leading_ws)
+        # Match the close marker via re pos (no remainder copy): streaming
+        # re-scans a growing buffer per token, so slicing here is quadratic.
+        close_idx = brace_end + 1
+        while close_idx < len(text) and text[close_idx].isspace():
+            close_idx += 1
+        close = _TC_GEMMA_END_TAG_RE.match(text, close_idx)
         if close is None:
             if final:
                 out.append(text[cursor:start])
                 cursor = len(text)
             continue
         out.append(text[cursor:start])
-        cursor = brace_end + 1 + close.end()
+        cursor = close.end()
     out.append(text[cursor:])
     return "".join(out)
 
