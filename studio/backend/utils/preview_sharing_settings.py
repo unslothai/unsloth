@@ -27,16 +27,19 @@ def _coerce_bool(value: Any) -> bool | None:
 
 
 def get_preview_sharing_enabled() -> bool:
-    """Read the persisted public-preview-sharing preference (default enabled).
+    """Read the persisted public-preview-sharing preference.
 
-    Missing or unreadable settings default to enabled so the feature keeps
-    working as before unless an admin explicitly turns it off.
+    A *missing* setting defaults to enabled so the feature keeps working as
+    before unless an admin explicitly turns it off. A *read failure* (e.g. a
+    transient SQLite/permission error) fails closed -- this is a kill switch, so
+    an unreadable settings DB must not silently reopen the public surface.
     """
     try:
         from storage.studio_db import get_app_setting
+
         stored = get_app_setting(PREVIEW_SHARING_SETTING_KEY, None)
     except Exception:
-        stored = None
+        return False
     parsed = _coerce_bool(stored)
     return parsed if parsed is not None else DEFAULT_PREVIEW_SHARING_ENABLED
 

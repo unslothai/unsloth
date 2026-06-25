@@ -316,6 +316,9 @@ export function GeneralTab() {
     try {
       const settings = await updatePreviewSharing(enabled);
       setPreviewSharing(settings);
+      // Toggling sharing changes whether /api/train/runs returns preview_sig, so
+      // refresh the history grid (hide/show the Copy preview link buttons).
+      emitTrainingRunsChanged();
     } catch (error) {
       setPreviewSharingError(
         error instanceof Error

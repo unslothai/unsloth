@@ -18,7 +18,11 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 import utils.preview_rate_limit as rl
 from utils.client_ip import client_ip
-from utils.preview_sharing_settings import DEFAULT_PREVIEW_SHARING_ENABLED, _coerce_bool
+from utils.preview_sharing_settings import (
+    DEFAULT_PREVIEW_SHARING_ENABLED,
+    _coerce_bool,
+    get_preview_sharing_enabled,
+)
 
 
 # ── Rate limiter ─────────────────────────────────────────────────────────────
@@ -75,6 +79,25 @@ def test_client_ip_honors_forwarded_when_trusted(monkeypatch):
     assert client_ip(req) == "198.51.100.7"
 
 
+def test_client_ip_uses_cf_connecting_ip_on_loopback(monkeypatch):
+    # Managed Cloudflare tunnel terminates at loopback; key by the real visitor.
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
+    req = _Req("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
+    assert client_ip(req) == "198.51.100.7"
+
+
+def test_client_ip_ignores_cf_header_from_non_loopback(monkeypatch):
+    # A direct (non-loopback) caller can't spoof CF-Connecting-IP to skew the limit.
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
+    req = _Req("203.0.113.9", {"cf-connecting-ip": "198.51.100.7"})
+    assert client_ip(req) == "203.0.113.9"
+
+
+def test_client_ip_loopback_without_cf_returns_peer(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
+    assert client_ip(_Req("127.0.0.1")) == "127.0.0.1"
+
+
 # ── Kill-switch setting ──────────────────────────────────────────────────────
 
 
@@ -84,3 +107,21 @@ def test_sharing_defaults_enabled_and_coerces():
     assert _coerce_bool("on") is True
     assert _coerce_bool(True) is True
     assert _coerce_bool("nonsense") is None
+
+
+def test_sharing_missing_key_defaults_enabled(monkeypatch):
+    import storage.studio_db as sdb
+
+    monkeypatch.setattr(sdb, "get_app_setting", lambda key, fallback = None: None)
+    assert get_preview_sharing_enabled() is True
+
+
+def test_sharing_read_error_fails_closed(monkeypatch):
+    # A transient settings-DB failure must not reopen the public surface.
+    import storage.studio_db as sdb
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("settings db unavailable")
+
+    monkeypatch.setattr(sdb, "get_app_setting", _boom)
+    assert get_preview_sharing_enabled() is False

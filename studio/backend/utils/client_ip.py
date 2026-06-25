@@ -3,10 +3,16 @@
 
 """Resolve the caller's IP for rate limiting.
 
-Mirrors the trust model used by the login limiter in ``routes/auth.py``: the
-socket peer is used by default, and ``X-Forwarded-For`` is only honored when the
-operator opts in (Studio behind a known reverse proxy / Cloudflare tunnel), so a
-direct caller can't spoof the header to dodge a per-IP limit.
+Trust model, in order:
+  1. If the operator opts in via ``UNSLOTH_STUDIO_TRUST_FORWARDED`` (Studio behind
+     their own reverse proxy), honor ``X-Forwarded-For``.
+  2. If the socket peer is loopback, honor ``CF-Connecting-IP``. Studio's managed
+     Cloudflare tunnel terminates at 127.0.0.1, so every tunneled visitor would
+     otherwise collapse onto the same socket peer (the local cloudflared process)
+     and share one rate-limit bucket. ``CF-Connecting-IP`` is set by Cloudflare's
+     edge and can't be forged by a tunneled client.
+  3. Otherwise the socket peer, so a direct LAN caller can't spoof a header to
+     dodge a per-IP limit.
 """
 
 from __future__ import annotations
@@ -19,6 +25,13 @@ _TRUST_FORWARDED_ENV = "UNSLOTH_STUDIO_TRUST_FORWARDED"
 
 def _trust_forwarded_for() -> bool:
     return os.environ.get(_TRUST_FORWARDED_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_loopback(host: str | None) -> bool:
+    try:
+        return bool(host) and ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _normalize_addr(value: str | None) -> str | None:
@@ -40,10 +53,15 @@ def client_ip(request) -> str:
     """Best-effort client IP, or ``"_unknown"`` when it can't be determined."""
     if request is None:
         return "_unknown"
+    peer = request.client.host if request.client else None
     if _trust_forwarded_for():
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
             normalized = _normalize_addr(xff.split(",", 1)[0])
             if normalized:
                 return normalized
-    return (request.client.host if request.client else None) or "_unknown"
+    if _is_loopback(peer):
+        cf = _normalize_addr(request.headers.get("cf-connecting-ip"))
+        if cf:
+            return cf
+    return peer or "_unknown"

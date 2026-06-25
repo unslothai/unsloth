@@ -164,6 +164,22 @@ def test_list_previews_builds_urls(client, monkeypatch):
     assert data[0]["share_url"].endswith(f"/p/demorun?k={_sig('demorun')}")
 
 
+def test_list_previews_omits_capability_when_sharing_disabled(client, monkeypatch):
+    monkeypatch.setattr(
+        preview,
+        "list_preview_targets",
+        lambda: [{"ref": "demorun", "is_latest": True}],
+    )
+    monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: False)
+    r = client.get("/p")
+    assert r.status_code == 200
+    body = r.json()
+    # Don't hand out credentials that 404; signal the disabled state instead.
+    assert body["sharing_enabled"] is False
+    assert body["data"][0]["key"] is None
+    assert body["data"][0]["share_url"] is None
+
+
 # ── Path traversal / containment ────────────────────────────────────────────
 
 

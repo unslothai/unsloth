@@ -169,21 +169,24 @@ async def _serve_chat(
 @router.get("")
 async def list_previews(request: Request, current_subject: str = Depends(get_current_subject)):
     base = str(request.base_url)
+    sharing_on = get_preview_sharing_enabled()
     previews = []
     for target in list_preview_targets():
         ref = quote(target["ref"], safe = "/")
         # Mint the capability for the authenticated owner: ``key`` for OpenAI
-        # clients (Bearer / api_key), ``share_url`` for the browser link.
-        token = sign_preview_ref(target["ref"])
+        # clients (Bearer / api_key), ``share_url`` for the browser link. When
+        # public sharing is off, every public /p request 404s, so don't hand out
+        # dead credentials -- omit the capability and signal the disabled state.
+        token = sign_preview_ref(target["ref"]) if sharing_on else None
         previews.append(
             {
                 **target,
                 "url": f"{base}p/{ref}/v1",
                 "key": token,
-                "share_url": f"{base}p/{ref}?k={token}",
+                "share_url": f"{base}p/{ref}?k={token}" if token else None,
             }
         )
-    return {"object": "list", "data": previews}
+    return {"object": "list", "data": previews, "sharing_enabled": sharing_on}
 
 
 @router.post("/{run}/v1/chat/completions")
