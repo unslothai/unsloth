@@ -62,7 +62,9 @@ def _git_commit() -> Optional[str]:
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd = str(Path(__file__).resolve().parent),
-            capture_output = True, text = True, timeout = 10,
+            capture_output = True,
+            text = True,
+            timeout = 10,
         )
         return out.stdout.strip() or None if out.returncode == 0 else None
     except Exception:
@@ -85,40 +87,34 @@ def _is_cuda(device: Optional[str]) -> bool:
 
 def _cuda_reset_peak() -> None:
     import torch
-
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
 
 def _cuda_sync() -> None:
     import torch
-
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
 
 def _cuda_peak_alloc() -> Optional[int]:
     import torch
-
     return int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else None
 
 
 def _cuda_peak_reserved() -> Optional[int]:
     import torch
-
     return int(torch.cuda.max_memory_reserved()) if torch.cuda.is_available() else None
 
 
 def _cuda_alloc() -> Optional[int]:
     import torch
-
     return int(torch.cuda.memory_allocated()) if torch.cuda.is_available() else None
 
 
 def _gpu_name() -> Optional[str]:
     try:
         import torch
-
         if torch.cuda.is_available():
             return torch.cuda.get_device_name(0)
     except Exception:
@@ -130,13 +126,11 @@ def _versions() -> dict[str, Optional[str]]:
     out: dict[str, Optional[str]] = {"torch": None, "diffusers": None}
     try:
         import torch
-
         out["torch"] = torch.__version__
     except Exception:
         pass
     try:
         import diffusers
-
         out["diffusers"] = diffusers.__version__
     except Exception:
         pass
@@ -255,7 +249,9 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             "latencies_s": [round(x, 4) for x in latencies],
             "median_latency_s": round(_percentile(latencies, 50), 4),
             "p90_latency_s": round(_percentile(latencies, 90), 4),
-            "images_per_sec": round((args.batch_size * len(latencies)) / total, 4) if total > 0 else None,
+            "images_per_sec": round((args.batch_size * len(latencies)) / total, 4)
+            if total > 0
+            else None,
             "peak_vram_bytes": _cuda_peak_alloc(),
         }
 
@@ -282,10 +278,17 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         "load": load_metrics,
         "generate": gen_metrics,
         "config": {
-            "model": args.model, "gguf": args.gguf, "base_repo": args.base_repo,
-            "family_override": args.family_override, "prompt": args.prompt,
-            "width": args.width, "height": args.height, "steps": args.steps,
-            "guidance": args.guidance, "seed": args.seed, "batch_size": args.batch_size,
+            "model": args.model,
+            "gguf": args.gguf,
+            "base_repo": args.base_repo,
+            "family_override": args.family_override,
+            "prompt": args.prompt,
+            "width": args.width,
+            "height": args.height,
+            "steps": args.steps,
+            "guidance": args.guidance,
+            "seed": args.seed,
+            "batch_size": args.batch_size,
         },
     }
 
@@ -301,8 +304,10 @@ def _write_baseline(args: argparse.Namespace) -> int:
     metrics = _run(args)
     metrics["accuracy"] = {
         "reference_png": str(ref_png),
-        "width": args.width, "height": args.height,
-        "steps": args.steps, "seed": args.seed,
+        "width": args.width,
+        "height": args.height,
+        "steps": args.steps,
+        "seed": args.seed,
         "dtype": (metrics["env"]["status"] or {}).get("dtype"),
     }
 
@@ -312,10 +317,13 @@ def _write_baseline(args: argparse.Namespace) -> int:
     print(f"  json:      {baseline_path}", flush = True)
     print(f"  reference: {ref_png}", flush = True)
     print(f"  load: {metrics['load']}", flush = True)
-    print(f"  generate: median={metrics['generate'].get('median_latency_s')}s "
-          f"p90={metrics['generate'].get('p90_latency_s')}s "
-          f"img/s={metrics['generate'].get('images_per_sec')} "
-          f"peak_vram={metrics['generate'].get('peak_vram_bytes')}", flush = True)
+    print(
+        f"  generate: median={metrics['generate'].get('median_latency_s')}s "
+        f"p90={metrics['generate'].get('p90_latency_s')}s "
+        f"img/s={metrics['generate'].get('images_per_sec')} "
+        f"peak_vram={metrics['generate'].get('peak_vram_bytes')}",
+        flush = True,
+    )
     return 0
 
 
@@ -362,14 +370,22 @@ def _compare(args: argparse.Namespace) -> int:
 
     print("\n=== REGRESSION REPORT ===", flush = True)
     print(f"  {'metric':<22}{'baseline':>16}{'current':>16}{'delta':>12}", flush = True)
-    print(f"  {'median_latency_s':<22}{base_median:>16.4f}{cur_median:>16.4f}{latency_reg * 100:>11.1f}%", flush = True)
+    print(
+        f"  {'median_latency_s':<22}{base_median:>16.4f}{cur_median:>16.4f}{latency_reg * 100:>11.1f}%",
+        flush = True,
+    )
     if base_peak and cur_peak:
-        print(f"  {'peak_vram_MB':<22}{base_peak / 1e6:>16.1f}{cur_peak / 1e6:>16.1f}{vram_reg * 100:>11.1f}%", flush = True)
+        print(
+            f"  {'peak_vram_MB':<22}{base_peak / 1e6:>16.1f}{cur_peak / 1e6:>16.1f}{vram_reg * 100:>11.1f}%",
+            flush = True,
+        )
     print(f"  {'psnr_dB(vs ref)':<22}{'-':>16}{psnr:>16.2f}{'':>12}", flush = True)
 
     failures = []
     if latency_reg > args.max_latency_regression:
-        failures.append(f"latency +{latency_reg * 100:.1f}% > {args.max_latency_regression * 100:.0f}%")
+        failures.append(
+            f"latency +{latency_reg * 100:.1f}% > {args.max_latency_regression * 100:.0f}%"
+        )
     if base_peak and cur_peak and vram_reg > args.max_vram_regression:
         failures.append(f"peak VRAM +{vram_reg * 100:.1f}% > {args.max_vram_regression * 100:.0f}%")
     if not math.isnan(psnr) and psnr < args.min_psnr:
@@ -390,15 +406,21 @@ def _build_parser() -> argparse.ArgumentParser:
         description = "Benchmark + regression guard for the Studio diffusion backend.",
         formatter_class = argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--model", default = "unsloth/Z-Image-Turbo-GGUF",
-                   help = "GGUF repo id or local path")
-    p.add_argument("--gguf", default = "z-image-turbo-Q4_K_M.gguf",
-                   help = "transformer GGUF filename inside --model")
+    p.add_argument(
+        "--model", default = "unsloth/Z-Image-Turbo-GGUF", help = "GGUF repo id or local path"
+    )
+    p.add_argument(
+        "--gguf",
+        default = "z-image-turbo-Q4_K_M.gguf",
+        help = "transformer GGUF filename inside --model",
+    )
     p.add_argument("--base-repo", default = None, help = "override the diffusers base repo")
     p.add_argument("--family-override", default = None, help = "force a diffusion family")
-    p.add_argument("--prompt",
-                   default = "A cozy reading nook by a rain-streaked window, warm lamplight, "
-                             "a cat asleep on a stack of books, highly detailed")
+    p.add_argument(
+        "--prompt",
+        default = "A cozy reading nook by a rain-streaked window, warm lamplight, "
+        "a cat asleep on a stack of books, highly detailed",
+    )
     p.add_argument("--width", type = int, default = 1024)
     p.add_argument("--height", type = int, default = 1024)
     p.add_argument("--steps", type = int, default = 9)
@@ -407,20 +429,41 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type = int, default = 1)
     p.add_argument("--warmup", type = int, default = 1, help = "discarded warmup generations")
     p.add_argument("--iters", type = int, default = 3, help = "measured generations")
-    p.add_argument("--write-baseline", metavar = "PATH", default = None,
-                   help = "run once and save metrics JSON + reference.png")
-    p.add_argument("--compare", metavar = "PATH", default = None,
-                   help = "run again and diff against a baseline JSON")
-    p.add_argument("--max-latency-regression", type = float, default = 0.10,
-                   help = "fail if median latency rises by more than this fraction")
-    p.add_argument("--max-vram-regression", type = float, default = 0.10,
-                   help = "fail if peak generation VRAM rises by more than this fraction")
-    p.add_argument("--min-psnr", type = float, default = 35.0,
-                   help = "fail if the fixed-seed image PSNR vs reference drops below this")
-    p.add_argument("--force-compare", action = "store_true",
-                   help = "compare even when GPU/device/dtype differ from the baseline")
-    p.add_argument("--out-dir", default = "outputs/diffusion_bench",
-                   help = "where compare.png is written")
+    p.add_argument(
+        "--write-baseline",
+        metavar = "PATH",
+        default = None,
+        help = "run once and save metrics JSON + reference.png",
+    )
+    p.add_argument(
+        "--compare", metavar = "PATH", default = None, help = "run again and diff against a baseline JSON"
+    )
+    p.add_argument(
+        "--max-latency-regression",
+        type = float,
+        default = 0.10,
+        help = "fail if median latency rises by more than this fraction",
+    )
+    p.add_argument(
+        "--max-vram-regression",
+        type = float,
+        default = 0.10,
+        help = "fail if peak generation VRAM rises by more than this fraction",
+    )
+    p.add_argument(
+        "--min-psnr",
+        type = float,
+        default = 35.0,
+        help = "fail if the fixed-seed image PSNR vs reference drops below this",
+    )
+    p.add_argument(
+        "--force-compare",
+        action = "store_true",
+        help = "compare even when GPU/device/dtype differ from the baseline",
+    )
+    p.add_argument(
+        "--out-dir", default = "outputs/diffusion_bench", help = "where compare.png is written"
+    )
     return p
 
 

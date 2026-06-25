@@ -65,13 +65,13 @@ class _FakeTensor:
 def _make_torch(
     *,
     cuda_available: bool = False,
-    capability=(8, 0),
+    capability = (8, 0),
     capability_raises: bool = False,
     bf16_supported: bool = False,
-    hip=None,
+    hip = None,
     mps_available: bool = False,
     mps_probe: str = "pass",  # "pass" | "raise" | "nonfinite"
-    xpu_available=None,  # None -> no xpu attr; True/False -> present
+    xpu_available = None,  # None -> no xpu attr; True/False -> present
     xpu_bf16: bool = False,
 ) -> types.ModuleType:
     torch = types.ModuleType("torch")
@@ -110,7 +110,14 @@ def _make_torch(
     return torch
 
 
-def _install(monkeypatch, torch, *, studio_device=None, is_rocm=False, hardware_fails=False):
+def _install(
+    monkeypatch,
+    torch,
+    *,
+    studio_device = None,
+    is_rocm = False,
+    hardware_fails = False,
+):
     """Install the fake torch and either a fake or failing `utils.hardware`."""
     monkeypatch.setitem(sys.modules, "torch", torch)
     if hardware_fails:
@@ -139,7 +146,11 @@ def test_cuda_ampere_bf16(monkeypatch):
     _install(monkeypatch, torch, studio_device = "cuda")
     t = dd.resolve_diffusion_device_target()
     assert (t.device, t.dtype, t.backend, t.vendor) == ("cuda", BF16, "cuda", "nvidia")
-    assert t.supports_model_cpu_offload and t.supports_default_torch_compile and t.supports_pinned_transfer
+    assert (
+        t.supports_model_cpu_offload
+        and t.supports_default_torch_compile
+        and t.supports_pinned_transfer
+    )
 
 
 def test_cuda_pre_ampere_fp16(monkeypatch):
@@ -185,7 +196,11 @@ def test_xpu_bf16(monkeypatch):
     _install(monkeypatch, torch, studio_device = "xpu")
     t = dd.resolve_diffusion_device_target()
     assert (t.device, t.backend, t.vendor, t.dtype) == ("xpu", "xpu", "intel", BF16)
-    assert t.supports_model_cpu_offload and not t.supports_default_torch_compile and not t.supports_pinned_transfer
+    assert (
+        t.supports_model_cpu_offload
+        and not t.supports_default_torch_compile
+        and not t.supports_pinned_transfer
+    )
 
 
 def test_xpu_without_bf16_fp16(monkeypatch):

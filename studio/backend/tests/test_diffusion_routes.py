@@ -29,7 +29,13 @@ class _FakeBackend:
     def is_loaded(self) -> bool:
         return self.loaded
 
-    def validate_load_request(self, model_path, *, gguf_filename = None, family_override = None):
+    def validate_load_request(
+        self,
+        model_path,
+        *,
+        gguf_filename = None,
+        family_override = None,
+    ):
         # Mirror the real backend's cheap validation so the route's
         # validate-before-evict ordering is exercised.
         from core.inference.diffusion_families import detect_family

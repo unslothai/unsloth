@@ -565,8 +565,13 @@ def test_generate_lock_split_keeps_status_and_unload_responsive(fake_runtime):
 
     fam = detect_family("unsloth/Z-Image-GGUF")
     backend._state = _LoadState(
-        pipe = _BlockingPipe(), family = fam, repo_id = "r", base_repo = "b",
-        device = "cpu", dtype = "float32", cpu_offload = False,
+        pipe = _BlockingPipe(),
+        family = fam,
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
     )
 
     out: dict = {}
@@ -610,7 +615,13 @@ def test_callback_cancellation_interrupts_denoise(fake_runtime):
             self._interrupt = False
             self.steps_run = 0
 
-        def __call__(self, *, callback_on_step_end = None, num_inference_steps = 8, **kwargs):
+        def __call__(
+            self,
+            *,
+            callback_on_step_end = None,
+            num_inference_steps = 8,
+            **kwargs,
+        ):
             for i in range(num_inference_steps):
                 if self._interrupt:  # diffusers' interrupt protocol
                     break
@@ -625,8 +636,13 @@ def test_callback_cancellation_interrupts_denoise(fake_runtime):
     pipe = _SteppingPipe()
     fam = detect_family("unsloth/Z-Image-GGUF")
     backend._state = _LoadState(
-        pipe = pipe, family = fam, repo_id = "r", base_repo = "b",
-        device = "cpu", dtype = "float32", cpu_offload = False,
+        pipe = pipe,
+        family = fam,
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
     )
 
     out: dict = {}
@@ -658,18 +674,22 @@ def test_validate_load_request(tmp_path):
         backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF")
     with pytest.raises(ValueError, match = "family"):
         backend.validate_load_request("meta/Llama-3", gguf_filename = "q.gguf")
-    assert backend.validate_load_request(
-        "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf"
-    ).name == "z-image"
+    assert (
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf").name
+        == "z-image"
+    )
     # A local path with a missing child fails here (before any GPU/network work).
     with pytest.raises(FileNotFoundError):
         backend.validate_load_request(
             str(tmp_path), gguf_filename = "missing.gguf", family_override = "z-image"
         )
     (tmp_path / "m.gguf").write_bytes(b"x")
-    assert backend.validate_load_request(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image"
-    ).name == "z-image"
+    assert (
+        backend.validate_load_request(
+            str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image"
+        ).name
+        == "z-image"
+    )
     # A path-shaped repo_id that does not exist is rejected here (it would otherwise
     # be treated as remote, evict chat, and only fail in the background load).
     with pytest.raises(FileNotFoundError):
@@ -698,8 +718,13 @@ def test_replacement_load_waits_for_inflight_generation(fake_runtime, tmp_path):
 
     fam = detect_family("unsloth/Z-Image-GGUF")
     backend._state = _LoadState(
-        pipe = _BlockingPipe(), family = fam, repo_id = "r", base_repo = "b",
-        device = "cpu", dtype = "float32", cpu_offload = False,
+        pipe = _BlockingPipe(),
+        family = fam,
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
     )
 
     gen_out: dict = {}

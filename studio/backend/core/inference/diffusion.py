@@ -466,6 +466,7 @@ class DiffusionBackend:
         batch_size: int = 1,
     ) -> dict[str, Any]:
         import torch
+
         # A per-generation cancel Event: unload()/a superseding load set THIS event
         # (registered under _lock below) to abort just this denoise. _generate_lock
         # serialises generations and is the only lock the denoise holds, so a slow
@@ -521,7 +522,9 @@ class DiffusionBackend:
                     gen.step = step_index + 1
                     if gen.first_step_at == 0.0:
                         gen.first_step_at = now
-                    gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
+                    gen.eta_seconds = _estimate_eta(
+                        gen.total_steps, gen.step, gen.first_step_at, now
+                    )
                     # Preempt a long denoise on unload/eviction or a superseding load:
                     # diffusers checks pipe._interrupt and stops after the current step.
                     if cancel.is_set():

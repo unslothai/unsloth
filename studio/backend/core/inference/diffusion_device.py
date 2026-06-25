@@ -109,7 +109,6 @@ def diffusion_device_target_from_torch_device(
     if device == "cuda":
         try:
             import torch
-
             is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
         except Exception:
             is_rocm = False
