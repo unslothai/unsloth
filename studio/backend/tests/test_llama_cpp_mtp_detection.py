@@ -340,7 +340,6 @@ def test_extra_args_detect_thread_overrides(extra_args):
     assert _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS) is True
 
 
-from unittest.mock import patch, MagicMock
 
 
 def test_load_model_sets_threads_once():
