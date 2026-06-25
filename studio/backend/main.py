@@ -491,7 +491,6 @@ async def lifespan(app: FastAPI):
     # crash so they don't show as permanently "processing".
     try:
         from storage.rag_db import reconcile_orphaned_ingestion_jobs
-
         reconcile_orphaned_ingestion_jobs()
     except Exception as exc:
         import structlog
