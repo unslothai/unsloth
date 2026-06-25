@@ -2826,13 +2826,9 @@ async def load_model(
                     **_source_load_kwargs,
                     **attempt_kwargs,
                     tensor_parallel = tensor_parallel,
-                    # This run is the tensor->layer fallback retry: tensor was
-                    # effectively requested overall (toggle, --split-mode tensor in
-                    # extras, or inherited LLAMA_ARG_SPLIT_MODE env) but this attempt
-                    # is not engaging it (the helper forces --split-mode layer). Keep
-                    # the multi-GPU intent so a downgraded load still spreads across
-                    # GPUs -- using the same effective-tensor check the fallback keys
-                    # its retry on, so extra/env-driven tensor users get it too.
+                    # True on the tensor->layer fallback retry (tensor requested
+                    # overall via toggle/extras/env, but not on this attempt): keep
+                    # the multi-GPU intent. Same check the fallback keys its retry on.
                     preserve_multi_gpu_on_layer = bool(
                         _effective_tensor_parallel(extra_llama_args, request.tensor_parallel)
                         and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
