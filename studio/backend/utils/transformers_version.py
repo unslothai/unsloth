@@ -57,6 +57,54 @@ def _env_offline() -> bool:
     )
 
 
+def hf_endpoint_unreachable(timeout: int = 3) -> bool:
+    """Bounded TCP reachability probe to the HF endpoint (or the configured proxy egress).
+    DNS + connect run in a daemon thread joined with a deadline, so a resolver blackhole
+    cannot block past ~timeout+1s. True if unreachable. No ML imports, so it is safe to call
+    before transformers version activation. Mirrors the probe in export._hf_offline."""
+    import socket
+    import threading
+    from urllib.parse import urlparse
+    from urllib.request import getproxies, proxy_bypass
+
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+    ep = urlparse(endpoint if "://" in endpoint else "https://" + endpoint)
+    hf_host = ep.hostname or "huggingface.co"
+    hf_port = ep.port or (80 if ep.scheme == "http" else 443)
+
+    target_host, target_port = hf_host, hf_port
+    try:
+        proxies = getproxies()  # reads *_PROXY env (and system proxy on Win/macOS)
+        try:
+            bypass = bool(proxy_bypass(hf_host))
+        except Exception:
+            bypass = False
+        proxy_url = (
+            proxies.get(ep.scheme) or proxies.get("https") or proxies.get("http") or proxies.get("all")
+        )
+        if proxy_url and not bypass:
+            pp = urlparse(proxy_url if "://" in proxy_url else "http://" + proxy_url)
+            if pp.hostname:
+                target_host = pp.hostname
+                target_port = pp.port or (443 if pp.scheme == "https" else 80)
+    except Exception:
+        target_host, target_port = hf_host, hf_port
+
+    result = {"online": False}
+
+    def _probe():
+        try:
+            socket.create_connection((target_host, target_port), timeout = timeout).close()
+            result["online"] = True
+        except Exception:
+            result["online"] = False
+
+    t = threading.Thread(target = _probe, daemon = True)
+    t.start()
+    t.join(timeout + 1)
+    return t.is_alive() or not result["online"]
+
+
 def _safe_is_file(p: Path) -> bool:
     """``p.is_file()`` returning False instead of raising on a bad path."""
     try:

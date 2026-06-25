@@ -52,67 +52,11 @@ def _hf_offline(timeout = 3):
     if os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() in {"0", "false", "no", "off"}:
         return False  # probe disabled -> assume online; loads still pass local_files_only on env
 
-    import socket
-    from urllib.parse import urlparse
-    from urllib.request import getproxies, proxy_bypass
+    # Shared bounded, proxy-aware probe (also used by the export worker before version activation).
+    from utils.transformers_version import hf_endpoint_unreachable
 
-    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
-    ep = urlparse(endpoint if "://" in endpoint else "https://" + endpoint)
-    hf_host = ep.hostname or "huggingface.co"
-    hf_port = ep.port or (80 if ep.scheme == "http" else 443)
-
-    target_host, target_port = hf_host, hf_port
-    try:
-        proxies = getproxies()  # reads *_PROXY env (and system proxy on Win/macOS)
-        bypass = False
-        try:
-            bypass = bool(proxy_bypass(hf_host))
-        except Exception:
-            bypass = False
-        proxy_url = (
-            proxies.get(ep.scheme)
-            or proxies.get("https")
-            or proxies.get("http")
-            or proxies.get("all")
-        )
-        if proxy_url and not bypass:
-            pp = urlparse(proxy_url if "://" in proxy_url else "http://" + proxy_url)
-            if pp.hostname:
-                target_host = pp.hostname
-                target_port = pp.port or (443 if pp.scheme == "https" else 80)
-    except Exception:
-        target_host, target_port = hf_host, hf_port
-
-    # Bound the whole probe (DNS getaddrinfo + connect) in a daemon thread: a resolver
-    # blackhole makes getaddrinfo block past the socket timeout, which would re-hang the
-    # offline export. If the probe does not finish in time, treat it as offline.
-    import threading
-
-    result = {"online": False}
-
-    def _probe():
-        try:
-            socket.create_connection((target_host, target_port), timeout = timeout).close()
-            result["online"] = True
-        except Exception:
-            result["online"] = False
-
-    t = threading.Thread(target = _probe, daemon = True)
-    t.start()
-    t.join(timeout + 1)
-    if t.is_alive():
-        logger.warning(
-            "Hugging Face reachability probe timed out (%s:%s); loading checkpoint in offline mode",
-            target_host,
-            target_port,
-        )
-        return True
-    if not result["online"]:
-        logger.warning(
-            "Hugging Face endpoint (%s:%s) unreachable; loading checkpoint in offline mode",
-            target_host,
-            target_port,
-        )
+    if hf_endpoint_unreachable(timeout):
+        logger.warning("Hugging Face endpoint unreachable; loading checkpoint in offline mode")
         return True
     return False
 

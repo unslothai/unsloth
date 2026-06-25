@@ -686,6 +686,27 @@ def _force_hf_offline():
                 _reset_hf_sessions()
 
 
+def _progress_bars_were_disabled():
+    """Snapshot HF progress-bar state (None if unknown); pairs with _restore_progress_bars."""
+    try:
+        from huggingface_hub.utils import are_progress_bars_disabled
+        return are_progress_bars_disabled()
+    except Exception:
+        return None
+
+
+def _restore_progress_bars(were_disabled):
+    """Re-enable HF progress bars only if a failed attempt left them disabled after they
+    were enabled (a loader disables them around config probes and skips re-enabling on
+    error). No-op if the user had them disabled or the state is unknown."""
+    if were_disabled is False:
+        try:
+            from huggingface_hub.utils import enable_progress_bars
+            enable_progress_bars()
+        except Exception:
+            pass
+
+
 def _offline_aware_load(fn):
     """Decide offline ONCE (local_files_only kwarg or env) and force it around the
     whole load. If we started online and hit a network error, retry once forced-offline.
@@ -697,6 +718,7 @@ def _offline_aware_load(fn):
             kwargs["local_files_only"] = True
             with _force_hf_offline():
                 return fn(*args, **kwargs)
+        _pb_were_disabled = _progress_bars_were_disabled()  # restore before any retry
         try:
             return fn(*args, **kwargs)
         except Exception as e:
@@ -714,6 +736,8 @@ def _offline_aware_load(fn):
                 torch.xpu.empty_cache()
         except Exception:
             pass
+        # A failed attempt may have left HF progress bars disabled; restore before retry.
+        _restore_progress_bars(_pb_were_disabled)
         kwargs["local_files_only"] = True
         try:
             with _force_hf_offline():

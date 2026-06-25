@@ -547,8 +547,8 @@ def _construct_vlm_processor_fallback(
                     token_id = tok.convert_tokens_to_ids(tok_config[key])
                     if not hasattr(tok, id_key):
                         setattr(tok, id_key, token_id)
-        except Exception:
-            pass
+        except Exception as _e:
+            _fb_err = _e  # remember (non-fatal here); surfaced only if no processor is built
 
         # Find the processor class - try model_type first, then top-level config model_type
         proc_class_name = PROCESSOR_MAPPING_NAMES.get(model_type)
@@ -563,8 +563,8 @@ def _construct_vlm_processor_fallback(
                     local_files_only = local_files_only,
                 )
                 proc_class_name = PROCESSOR_MAPPING_NAMES.get(config.model_type)
-            except Exception:
-                pass
+            except Exception as _e:
+                _fb_err = _e  # surface a network/cache miss so the offline retry can fire
 
         if proc_class_name is not None:
             import transformers

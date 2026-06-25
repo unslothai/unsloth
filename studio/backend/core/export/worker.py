@@ -459,6 +459,25 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     checkpoint_path = config["checkpoint_path"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
+    # Decide offline BEFORE activation: its config probes (urllib) run before
+    # load_checkpoint's own probe, so a no-network export would otherwise hang here.
+    try:
+        from utils.transformers_version import _env_offline, hf_endpoint_unreachable
+        _probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        if not _env_offline() and _probe_enabled and hf_endpoint_unreachable():
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            logger.warning(
+                "Hugging Face endpoint unreachable; activating transformers and loading checkpoint offline"
+            )
+    except Exception:
+        pass
+
     try:
         _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
     except Exception as exc:
