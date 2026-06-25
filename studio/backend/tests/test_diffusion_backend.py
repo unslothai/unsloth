@@ -40,6 +40,8 @@ def test_detect_family_from_repo_id():
     assert klein.name == "flux.2-klein"
     assert klein.pipeline_class == "Flux2KleinPipeline"
     assert klein.cfg_kwarg == "guidance_scale"
+    # Both klein sizes share the one family (base repo resolved per-variant).
+    assert detect_family("unsloth/FLUX.2-klein-9B-GGUF").name == "flux.2-klein"
     # Only klein is wired up; the Mistral-based FLUX.2-dev base repo is gated.
     assert detect_family("unsloth/FLUX.2-dev-GGUF") is None
     # Qwen-Image guides via true_cfg_scale, not guidance_scale.

@@ -74,6 +74,7 @@ const MODELS: ModelOption[] = [
   txt2img("unsloth/FLUX.1-schnell-GGUF", "FLUX.1 schnell"),
   txt2img("unsloth/FLUX.1-dev-GGUF", "FLUX.1 dev"),
   txt2img("unsloth/FLUX.2-klein-4B-GGUF", "FLUX.2 klein 4B"),
+  txt2img("unsloth/FLUX.2-klein-9B-GGUF", "FLUX.2 klein 9B"),
 ];
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring,
