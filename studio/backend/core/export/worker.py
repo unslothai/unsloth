@@ -13,6 +13,7 @@ Pattern follows core/inference/worker.py and core/training/worker.py.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import structlog
 from loggers import get_logger
@@ -169,6 +170,38 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
     from utils.transformers_version import activate_transformers_for_subprocess
 
     activate_transformers_for_subprocess(model_name, hf_token)
+
+
+@contextlib.contextmanager
+def _offline_window_for_activation():
+    """Force HF offline ONLY while activating the transformers version, when the endpoint
+    is unreachable. Its config probes (urllib) run before load_checkpoint's own probe, so a
+    no-network export would otherwise hang here. The prior env is restored on exit: this
+    worker is persistent and each later load/export re-decides via load_checkpoint's probe."""
+    saved: dict[str, str | None] = {}
+    try:
+        from utils.transformers_version import _env_offline, hf_endpoint_unreachable
+        probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
+            logger.warning("Hugging Face endpoint unreachable; activating transformers offline")
+            for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+                saved[k] = os.environ.get(k)
+                os.environ[k] = "1"
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
@@ -459,38 +492,20 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     checkpoint_path = config["checkpoint_path"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
-    # Decide offline BEFORE activation: its config probes (urllib) run before
-    # load_checkpoint's own probe, so a no-network export would otherwise hang here.
-    try:
-        from utils.transformers_version import _env_offline, hf_endpoint_unreachable
-        _probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
-            "0",
-            "false",
-            "no",
-            "off",
-        )
-        if not _env_offline() and _probe_enabled and hf_endpoint_unreachable():
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
-            logger.warning(
-                "Hugging Face endpoint unreachable; activating transformers and loading checkpoint offline"
+    with _offline_window_for_activation():
+        try:
+            _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
+        except Exception as exc:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "error",
+                    "error": f"Failed to activate transformers version: {exc}",
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                },
             )
-    except Exception:
-        pass
-
-    try:
-        _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
-    except Exception as exc:
-        _send_response(
-            resp_queue,
-            {
-                "type": "error",
-                "error": f"Failed to activate transformers version: {exc}",
-                "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
-            },
-        )
-        return
+            return
 
     # ── 1b. Check Triton on Windows (must precede import torch) ──
     if sys.platform == "win32":
