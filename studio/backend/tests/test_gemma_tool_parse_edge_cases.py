@@ -187,6 +187,27 @@ def test_nested_xml_in_malformed_gemma_call_does_not_execute():
         assert "terminal" not in [c["function"]["name"] for c in calls], calls
 
 
+def test_unbalanced_gemma_call_with_xml_does_not_execute():
+    # An unbalanced Gemma call (braces never close) records no candidate span,
+    # so the XML fallback must exclude its trailing <function=> through EOF
+    # rather than promote it to an executable call.
+    text = (
+        "<|tool_call>call:outer{code:<function=terminal>"
+        "<parameter=command>id</parameter></function>"
+    )
+    for allow_incomplete in (True, False):
+        calls = parse_tool_calls_from_text(text, allow_incomplete = allow_incomplete)
+        assert "terminal" not in [c["function"]["name"] for c in calls], calls
+
+
+def test_standalone_function_xml_still_parses():
+    # The exclusion must not over-block: a real <function=> call with no
+    # preceding unclosed Gemma/JSON start is still a valid tool call.
+    text = "<function=terminal><parameter=command>id</parameter></function>"
+    calls = parse_tool_calls_from_text(text)
+    assert [c["function"]["name"] for c in calls] == ["terminal"], calls
+
+
 def test_malformed_closed_gemma_span_is_stripped():
     # A closed Gemma span the quote-aware helper cannot match (no call:NAME{)
     # must still be stripped, not leak its opener/payload into visible text.

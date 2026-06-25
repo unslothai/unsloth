@@ -303,18 +303,25 @@ def parse_tool_calls_from_text(
     # document order (tools run in returned order). A marker inside an open
     # <function=...><parameter=> value is that parameter's data, so skip it.
     candidates = []  # (start, brace_end, kind, match)
+    # Unclosed starts (braces never balance): everything after is the call's
+    # argument data through EOF, so the XML fallback must treat it as excluded.
+    unclosed_starts = []
     for m in _TC_JSON_START_RE.finditer(content):
         if _inside_open_parameter(content, m.start()):
             continue
         end = _balanced_brace_end(content, m.end() - 1)
         if end >= 0:
             candidates.append((m.start(), end, "json", m))
+        else:
+            unclosed_starts.append(m.start())
     for m in _TC_GEMMA_START_RE.finditer(content):
         if _inside_open_parameter(content, m.start()):
             continue
         end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = True)
         if end >= 0:
             candidates.append((m.start(), end, "gemma", m))
+        else:
+            unclosed_starts.append(m.start())
     candidates.sort(key = lambda c: c[0])
 
     spans = [(s, e) for s, e, _kind, _m in candidates]
@@ -351,14 +358,15 @@ def parse_tool_calls_from_text(
 
     if not tool_calls:
         # Exclude <function=> markers inside any collected JSON/Gemma candidate
-        # span, even one that failed to parse: such a marker is that call's
-        # argument data, and promoting it here would let nested XML escape from a
-        # malformed Gemma call into an executable tool call.
+        # span (its argument data, even if it failed to parse) and inside any
+        # unclosed start through EOF; otherwise nested XML in a malformed call
+        # escapes into an executable tool call.
+        exclusion_spans = spans + [(s, len(content)) for s in unclosed_starts]
         func_starts = [
             fm
             for fm in _TC_FUNC_START_RE.finditer(content)
             if not _inside_open_parameter(content, fm.start())
-            and not any(s <= fm.start() <= e for s, e in spans)
+            and not any(s <= fm.start() <= e for s, e in exclusion_spans)
         ]
         for idx, fm in enumerate(func_starts):
             func_name = fm.group(1)
