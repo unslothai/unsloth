@@ -4211,7 +4211,8 @@ class LlamaCppBackend:
         total_by_idx: Optional[dict[int, int]] = None,
         n_ubatch: Optional[int] = None,
         ctx_checkpoints: Optional[int] = None,
-extra_args: list[str] = None) -> tuple[int, int, list[int], Optional[list[int]]]:
+        extra_args: list[str] = None,
+    ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
         ``gpus`` is a list of ``(gpu_index, free_mib)``; ``model_size`` is the
@@ -5260,7 +5261,7 @@ extra_args: list[str] = None) -> tuple[int, int, list[int], Optional[list[int]]]
                             total_by_idx = total_by_idx,
                             n_ubatch = _effective_ubatch,
                             extra_args = extra_args,
-                        use_fit = False,
+                            use_fit = False,
                         )
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
