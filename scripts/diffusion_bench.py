@@ -281,11 +281,19 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         "load": load_metrics,
         "generate": gen_metrics,
         "config": {
-            "model": args.model, "gguf": args.gguf, "base_repo": args.base_repo,
-            "family_override": args.family_override, "prompt": args.prompt,
-            "width": args.width, "height": args.height, "steps": args.steps,
-            "guidance": args.guidance, "seed": args.seed, "batch_size": args.batch_size,
-            "memory_mode": args.memory_mode, "cpu_offload": args.cpu_offload,
+            "model": args.model,
+            "gguf": args.gguf,
+            "base_repo": args.base_repo,
+            "family_override": args.family_override,
+            "prompt": args.prompt,
+            "width": args.width,
+            "height": args.height,
+            "steps": args.steps,
+            "guidance": args.guidance,
+            "seed": args.seed,
+            "batch_size": args.batch_size,
+            "memory_mode": args.memory_mode,
+            "cpu_offload": args.cpu_offload,
             "text_encoder_quant": args.text_encoder_quant,
         },
     }
@@ -427,27 +435,56 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type = int, default = 1)
     p.add_argument("--warmup", type = int, default = 1, help = "discarded warmup generations")
     p.add_argument("--iters", type = int, default = 3, help = "measured generations")
-    p.add_argument("--memory-mode", default = None,
-                   choices = ["auto", "fast", "balanced", "low_vram"],
-                   help = "memory policy (default: backend auto)")
-    p.add_argument("--text-encoder-quant", default = None, choices = ["fp8", "nvfp4"],
-                   help = "quantise the companion text encoder (fp8 or nvfp4)")
-    p.add_argument("--cpu-offload", action = "store_true",
-                   help = "legacy: force whole-module CPU offload")
-    p.add_argument("--write-baseline", metavar = "PATH", default = None,
-                   help = "run once and save metrics JSON + reference.png")
-    p.add_argument("--compare", metavar = "PATH", default = None,
-                   help = "run again and diff against a baseline JSON")
-    p.add_argument("--max-latency-regression", type = float, default = 0.10,
-                   help = "fail if median latency rises by more than this fraction")
-    p.add_argument("--max-vram-regression", type = float, default = 0.10,
-                   help = "fail if peak generation VRAM rises by more than this fraction")
-    p.add_argument("--min-psnr", type = float, default = 35.0,
-                   help = "fail if the fixed-seed image PSNR vs reference drops below this")
-    p.add_argument("--force-compare", action = "store_true",
-                   help = "compare even when GPU/device/dtype differ from the baseline")
-    p.add_argument("--out-dir", default = "outputs/diffusion_bench",
-                   help = "where compare.png is written")
+    p.add_argument(
+        "--memory-mode",
+        default = None,
+        choices = ["auto", "fast", "balanced", "low_vram"],
+        help = "memory policy (default: backend auto)",
+    )
+    p.add_argument(
+        "--text-encoder-quant",
+        default = None,
+        choices = ["fp8", "nvfp4"],
+        help = "quantise the companion text encoder (fp8 or nvfp4)",
+    )
+    p.add_argument(
+        "--cpu-offload", action = "store_true", help = "legacy: force whole-module CPU offload"
+    )
+    p.add_argument(
+        "--write-baseline",
+        metavar = "PATH",
+        default = None,
+        help = "run once and save metrics JSON + reference.png",
+    )
+    p.add_argument(
+        "--compare", metavar = "PATH", default = None, help = "run again and diff against a baseline JSON"
+    )
+    p.add_argument(
+        "--max-latency-regression",
+        type = float,
+        default = 0.10,
+        help = "fail if median latency rises by more than this fraction",
+    )
+    p.add_argument(
+        "--max-vram-regression",
+        type = float,
+        default = 0.10,
+        help = "fail if peak generation VRAM rises by more than this fraction",
+    )
+    p.add_argument(
+        "--min-psnr",
+        type = float,
+        default = 35.0,
+        help = "fail if the fixed-seed image PSNR vs reference drops below this",
+    )
+    p.add_argument(
+        "--force-compare",
+        action = "store_true",
+        help = "compare even when GPU/device/dtype differ from the baseline",
+    )
+    p.add_argument(
+        "--out-dir", default = "outputs/diffusion_bench", help = "where compare.png is written"
+    )
     return p
 
 

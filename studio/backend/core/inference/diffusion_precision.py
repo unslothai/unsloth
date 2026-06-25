@@ -71,7 +71,11 @@ def te_quant_supported(target: Any, mode: str) -> bool:
 
 
 def quantize_text_encoders(
-    pipe: Any, target: Any, *, mode: Optional[str], logger: Any = None,
+    pipe: Any,
+    target: Any,
+    *,
+    mode: Optional[str],
+    logger: Any = None,
 ) -> Optional[str]:
     """Quantise each present text encoder in place with ``mode`` (fp8 / nvfp4).
     Returns the mode actually applied, or None when disabled, unsupported, or no
@@ -111,7 +115,6 @@ def _cast_nvfp4(encoder: Any, target: Any) -> None:
     # on Blackwell FP4 tensor cores; norms / embeddings (not nn.Linear) are untouched.
     from torchao.quantization import quantize_
     from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
-
     quantize_(encoder, NVFP4WeightOnlyConfig())
 
 

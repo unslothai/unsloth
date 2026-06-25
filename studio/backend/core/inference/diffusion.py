@@ -475,7 +475,10 @@ class DiffusionBackend:
                 # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
                 # also before placement so the offload hooks move the smaller weights.
                 te_quant = quantize_text_encoders(
-                    pipe, target, mode = text_encoder_quant, logger = logger,
+                    pipe,
+                    target,
+                    mode = text_encoder_quant,
+                    logger = logger,
                 )
 
                 # Decide placement from MEASURED free device memory vs the model's

@@ -857,7 +857,9 @@ def test_load_speed_mode_threads_and_defaults_off(fake_runtime, tmp_path):
     # actual engagement is GPU-verified, since it needs real torch/torchao).
     assert status2["text_encoder_quant"] is None
     status3 = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image",
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
         text_encoder_quant = "nvfp4",
     )
     # Under the CPU stub nvfp4 is unsupported, so it engages nothing -> None.

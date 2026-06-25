@@ -23,11 +23,21 @@ from core.inference.diffusion_precision import (
 )
 
 
-def _target(*, device = "cuda", dtype = "bfloat16", cc = (10, 0)):
+def _target(
+    *,
+    device = "cuda",
+    dtype = "bfloat16",
+    cc = (10, 0),
+):
     return types.SimpleNamespace(device = device, dtype = dtype, _cc = cc)
 
 
-def _stub_torch(monkeypatch, *, with_fp8 = True, cc = (10, 0)):
+def _stub_torch(
+    monkeypatch,
+    *,
+    with_fp8 = True,
+    cc = (10, 0),
+):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
     torch.float16 = "float16"

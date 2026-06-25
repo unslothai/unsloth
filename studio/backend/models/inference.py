@@ -1717,9 +1717,9 @@ class DiffusionLoadRequest(BaseModel):
     text_encoder_quant: Optional[Literal["fp8", "nvfp4"]] = Field(
         None,
         description = "Quantise the companion text encoder(s): fp8 (~2x smaller, "
-                      "CUDA cc>=8.9) or nvfp4 (~4x smaller, Blackwell sm_100+). A "
-                      "memory-vs-quality tradeoff (shifts fine detail), not free; "
-                      "pairs well with balanced mode.",
+        "CUDA cc>=8.9) or nvfp4 (~4x smaller, Blackwell sm_100+). A "
+        "memory-vs-quality tradeoff (shifts fine detail), not free; "
+        "pairs well with balanced mode.",
     )
 
 
