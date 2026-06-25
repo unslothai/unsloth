@@ -2687,6 +2687,13 @@ class FastLlamaModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
+        # When the caller set a custom cache_dir, the prefetch warmed it (incl.
+        # tokenizer files); route the tokenizer load there too so it reuses that
+        # warm cache instead of doing its own in-process Hub/Xet download. With no
+        # custom cache_dir, keep load_correct_tokenizer's own default.
+        _tokenizer_cache_kwargs = {}
+        if kwargs.get("cache_dir") is not None:
+            _tokenizer_cache_kwargs["cache_dir"] = kwargs["cache_dir"]
         tokenizer = load_correct_tokenizer(
             tokenizer_name = tokenizer_name,
             model_max_length = max_position_embeddings,
@@ -2694,6 +2701,7 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             fix_tokenizer = fix_tokenizer,
+            **_tokenizer_cache_kwargs,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)

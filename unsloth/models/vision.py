@@ -1202,6 +1202,7 @@ class FastBaseModel:
                     language = whisper_language,
                     task = whisper_task,
                     trust_remote_code = trust_remote_code,
+                    cache_dir = kwargs.get("cache_dir"),
                 )
             except Exception as e:
                 _processor_load_error = e
@@ -1213,6 +1214,7 @@ class FastBaseModel:
                     padding_side = "left",
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    cache_dir = kwargs.get("cache_dir"),
                 )
             except Exception as e:
                 _processor_load_error = e
