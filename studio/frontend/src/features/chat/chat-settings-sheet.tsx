@@ -1788,7 +1788,14 @@ export function ChatSettingsPanel({
   return (
     <aside
       data-tour="chat-settings"
-      className={`relative z-50 shrink-0 h-full overflow-hidden bg-panel-surface text-panel-surface-fg font-heading ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
+      className={cn(
+        "relative z-50 shrink-0 overflow-hidden bg-panel-surface text-panel-surface-fg font-heading",
+        open ? "w-[17rem] border-l border-sidebar-border" : "w-0",
+      )}
+      style={{
+        height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+        marginTop: "var(--studio-custom-titlebar-height, 0px)",
+      }}
     >
       <div className="h-full w-full">{settingsContent}</div>
     </aside>

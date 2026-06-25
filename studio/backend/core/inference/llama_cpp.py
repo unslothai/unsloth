@@ -8044,13 +8044,18 @@ class LlamaCppBackend:
                     _mt["predicted_per_second"] = _mt["predicted_n"] / (
                         _mt["predicted_ms"] / 1000.0
                     )
+            _usage = {
+                "prompt_tokens": _fp,
+                "completion_tokens": _tc,
+                "total_tokens": _fp + _tc,
+            }
+            # Preserve KV-cache hit details (cached_tokens) so the tool path
+            # reports them like the standard non-tool path does, not always 0.
+            if _fu.get("prompt_tokens_details"):
+                _usage["prompt_tokens_details"] = _fu["prompt_tokens_details"]
             return {
                 "type": "metadata",
-                "usage": {
-                    "prompt_tokens": _fp,
-                    "completion_tokens": _tc,
-                    "total_tokens": _fp + _tc,
-                },
+                "usage": _usage,
                 "timings": _mt,
                 "finish_reason": finish_reason,
             }

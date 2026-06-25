@@ -5438,15 +5438,123 @@ async def openai_chat_completions(
                             pass
                     _tracker.__exit__(None, None, None)
 
-            return _SameTaskStreamingResponse(
-                gguf_tool_stream(),
-                media_type = "text/event-stream",
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Connection": "close",
-                    "X-Accel-Buffering": "no",
-                },
-            )
+            if payload.stream:
+                return _SameTaskStreamingResponse(
+                    gguf_tool_stream(),
+                    media_type = "text/event-stream",
+                    headers = {
+                        "Cache-Control": "no-cache",
+                        "Connection": "close",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+
+            # Non-streaming JSON: drain the agentic generator into one
+            # ChatCompletion, like the standard GGUF `else` branch. stream:false
+            # with tools enabled used to return an SSE body, breaking
+            # non-streaming clients; `unsloth studio run --model` forces tools on
+            # process-wide, so plain requests reach this path (#6570).
+            def _drain_gguf_tool_loop():
+                full_text = ""
+                usage = None
+                finish = None
+                gen = gguf_generate_with_tools()
+                try:
+                    for event in gen:
+                        if cancel_event.is_set():
+                            break
+                        if event.get("type") == "metadata":
+                            usage = event.get("usage")
+                            finish = event.get("finish_reason")
+                        elif event.get("type") == "content":
+                            # Content is cumulative within a turn and resets
+                            # between turns, so the last event holds the final
+                            # turn's text. As in the safetensors drain, a visible
+                            # preamble emitted before a tool call (its own earlier
+                            # turn) isn't carried -- only the final turn is.
+                            full_text = _strip_tool_xml_for_display(
+                                event.get("text", ""),
+                                auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                            )
+                    return full_text, usage, finish
+                finally:
+                    # Close the generator on early break/cancel so the underlying
+                    # llama-server stream socket is released, like the SSE path.
+                    try:
+                        gen.close()
+                    except (RuntimeError, ValueError):
+                        pass
+
+            try:
+                full_text, completion_usage, completion_finish = await asyncio.to_thread(
+                    _drain_gguf_tool_loop
+                )
+                reasoning_text, visible_text = _extract_responses_reasoning(
+                    full_text,
+                    parse_think_markers = _responses_should_parse_think_markers(
+                        payload, llama_backend
+                    ),
+                )
+                message_kwargs = {"content": visible_text}
+                if reasoning_text:
+                    message_kwargs["reasoning_content"] = reasoning_text
+                _usage = completion_usage or {}
+                _prompt_tokens = _usage.get("prompt_tokens") or 0
+                _completion_tokens = _usage.get("completion_tokens") or 0
+                response = ChatCompletion(
+                    id = completion_id,
+                    created = created,
+                    model = model_name,
+                    choices = [
+                        CompletionChoice(
+                            message = CompletionMessage(**message_kwargs),
+                            finish_reason = _clamp_finish_reason(completion_finish),
+                        )
+                    ],
+                    usage = CompletionUsage(
+                        prompt_tokens = _prompt_tokens,
+                        completion_tokens = _completion_tokens,
+                        total_tokens = _prompt_tokens + _completion_tokens,
+                        prompt_tokens_details = _prompt_tokens_details(
+                            _usage.get("prompt_tokens_details")
+                        ),
+                    ),
+                )
+                api_monitor.set_reply(monitor_id, visible_text)
+                _monitor_usage(
+                    monitor_id,
+                    {
+                        "prompt_tokens": _prompt_tokens,
+                        "completion_tokens": _completion_tokens,
+                        "total_tokens": _prompt_tokens + _completion_tokens,
+                    },
+                    _monitor_context_length(),
+                )
+                api_monitor.finish(
+                    monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                )
+                return _model_json_response(response)
+            except Exception as e:
+                logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
+                api_monitor.fail(monitor_id, _friendly_error(e))
+                # Recover if an MTP+tensor crash killed the server.
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                # An over-context prompt makes llama-server return 400; map any
+                # upstream 4xx to a 400 client error rather than leaking a 500.
+                _cls = _classify_llama_generation_error(e)
+                if _cls is not None:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = openai_error_body(
+                            _friendly_error(e),
+                            status = 400,
+                            code = "context_length_exceeded" if _cls else None,
+                            param = "messages",
+                        ),
+                    )
+                raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+            finally:
+                _tracker.__exit__(None, None, None)
 
         # ── Standard GGUF path (no tools) ─────────────────────
 
