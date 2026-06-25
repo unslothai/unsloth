@@ -68,11 +68,9 @@ from state.tool_approvals import (
 
 logger = get_logger(__name__)
 
-
 class LlamaServerNotFoundError(RuntimeError):
     """GGUF model needs the llama.cpp runtime but no llama-server is installed.
     Subclasses RuntimeError so existing handlers still catch it."""
-
 
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
 LLAMA_SERVER_NOT_FOUND_DETAIL = (
@@ -80,7 +78,6 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
     "installed. Run `unsloth studio setup` to download the prebuilt runtime, "
     "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
 )
-
 
 # llama-server can serve HTTP 200 while running a model entirely on CPU when a
 # GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
@@ -117,7 +114,6 @@ _GPU_DEVICE_PREFIXES = (
     "musa",
     "cann",
 )
-
 
 def classify_gpu_offload_lines(lines: "list[str]") -> Optional[bool]:
     """True if the model landed on a GPU, False if it stayed on CPU despite GPU
@@ -174,7 +170,6 @@ def classify_gpu_offload_lines(lines: "list[str]") -> Optional[bool]:
         return False
     return None
 
-
 def _wsl_system_rocm_lib_dirs() -> "list[str]":
     """System ROCm lib dir(s) to load before a prebuilt's bundled HIP, on WSL.
 
@@ -200,7 +195,6 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
         ):
             out.append(d)
     return out
-
 
 # ── Pre-compiled patterns for plan-without-action re-prompt ──
 # Forward-looking intent signals: the model is describing what it *will*
@@ -241,11 +235,9 @@ _FINAL_ANSWER_SIGNAL = re.compile(
     re.I,
 )
 
-
 def _is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
     return 0 < len(stripped) < _REPROMPT_MAX_CHARS and _INTENT_SIGNAL.search(stripped) is not None
-
 
 def _should_suppress_forced_no_tool_output(text: str) -> bool:
     """Suppress only repeated forced-turn planning text, not final answers."""
@@ -256,11 +248,9 @@ def _should_suppress_forced_no_tool_output(text: str) -> bool:
         return False
     return _FORCED_REPEAT_PLAN_SIGNAL.search(stripped) is not None
 
-
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
-
 
 # ── Sliding-window-pattern resolver ───────────────────────────
 # Resolves the per-layer SWA mask when a GGUF reports a sliding window but
@@ -284,7 +274,6 @@ _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
 _SWA_CACHE: Optional[dict] = None
 _SWA_CACHE_LOCK = threading.Lock()
 
-
 def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
     """Quick DNS check on a daemon thread, so concurrent sockets aren't
     affected by socket.setdefaulttimeout."""
@@ -302,7 +291,6 @@ def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
     t.join(timeout)
     # Thread still running -> resolver wedged -> dead.
     return True if result[0] is None else result[0]
-
 
 @contextlib.contextmanager
 def _hf_offline_if_dns_dead():
@@ -328,12 +316,10 @@ def _hf_offline_if_dns_dead():
         if not transformers_was_set:
             os.environ.pop("TRANSFORMERS_OFFLINE", None)
 
-
 def _swa_cache_path() -> Path:
     home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     base = Path(home) if home else Path.home() / ".unsloth" / "studio"
     return base / "swa_cache.json"
-
 
 def _load_swa_cache() -> dict:
     global _SWA_CACHE
@@ -349,7 +335,6 @@ def _load_swa_cache() -> dict:
             _SWA_CACHE = {}
         return _SWA_CACHE
 
-
 def _save_swa_cache(cache: dict) -> None:
     try:
         path = _swa_cache_path()
@@ -360,7 +345,6 @@ def _save_swa_cache(cache: dict) -> None:
         tmp.replace(path)
     except OSError:
         pass
-
 
 def _period_from_layer_types(layer_types: list) -> Optional[int]:
     """Smallest period N where `(i+1) % N != 0` matches the SWA mask, else None."""
@@ -373,13 +357,11 @@ def _period_from_layer_types(layer_types: list) -> Optional[int]:
             return N
     return None
 
-
 def _swa_entry_from_layer_types(lt) -> Optional[object]:
     """Period int, or per-layer bool mask, from a transformers ``layer_types`` list."""
     if isinstance(lt, list) and lt:
         return _period_from_layer_types(lt) or ["full" not in str(t).lower() for t in lt]
     return None
-
 
 def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     try:
@@ -396,7 +378,6 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
         return period
     return _swa_entry_from_layer_types(src.get("layer_types"))
 
-
 def _arch_aliases(arch: str) -> tuple:
     # GGUF emits `falcon-h1`; HF model_type is `falcon_h1`. Normalise both ways.
     seen = []
@@ -405,7 +386,6 @@ def _arch_aliases(arch: str) -> tuple:
             seen.append(a)
     return tuple(seen)
 
-
 def _swa_entry_from_config_obj(cfg) -> Optional[object]:
     src = getattr(cfg, "text_config", None) or cfg
     period = getattr(src, "sliding_window_pattern", None)
@@ -413,9 +393,7 @@ def _swa_entry_from_config_obj(cfg) -> Optional[object]:
         return period
     return _swa_entry_from_layer_types(getattr(src, "layer_types", None))
 
-
 _SWA_PATTERN_SOURCE_RE = re.compile(r"sliding_window_pattern\s*(?::\s*[\w\[\], ]*)?\s*=\s*(\d+)")
-
 
 def _resolve_swa_entry_from_transformers(arch: str) -> Optional[object]:
     """Default-instantiate the matching Config; on failure, regex-parse its
@@ -461,7 +439,6 @@ def _resolve_swa_entry_from_transformers(arch: str) -> Optional[object]:
             if period > 0:
                 return period
     return None
-
 
 def _resolve_swa_pattern(
     arch: Optional[str],
@@ -518,7 +495,6 @@ def _resolve_swa_pattern(
 
     return None
 
-
 def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
     """Strip `https://huggingface.co/owner/name(/...)` -> `owner/name`."""
     if not url or "huggingface.co/" not in url:
@@ -529,12 +505,10 @@ def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
         return None
     return f"{parts[0]}/{parts[1]}"
 
-
 # Lazy import to avoid pulling transformers in at module level.
 def _extract_model_size_b(model_id: str):
     from utils.models import extract_model_size_b
     return extract_model_size_b(model_id)
-
 
 _TOOL_TEMPLATE_MARKERS = (
     "{%- if tools %}",
@@ -547,12 +521,10 @@ _TOOL_TEMPLATE_MARKERS = (
     "message.role == 'tool'",
 )
 
-
 # Canonical reasoning_effort levels, weakest -> strongest. Used to read the
 # discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max') so we
 # only ever offer levels the template actually understands.
 _REASONING_EFFORT_SCALE = ("minimal", "low", "medium", "high", "max")
-
 
 def _extract_reasoning_effort_levels(chat_template: str) -> list:
     """Return the reasoning_effort levels a template references, in canonical
@@ -567,7 +539,6 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
         for level in _REASONING_EFFORT_SCALE
         if f"'{level}'" in chat_template or f'"{level}"' in chat_template
     ]
-
 
 def detect_reasoning_flags(
     chat_template: Optional[str],
@@ -654,23 +625,19 @@ def detect_reasoning_flags(
 
     return flags
 
-
 # Gemma 4 ships MTP as a separate drafter (no "-mtp" in the name). Gemma 3n
 # ships no drafter, so it is excluded -- it takes the normal non-MTP path.
 _GEMMA_MTP_FAMILY_RE = re.compile(r"gemma[-_]?4[-_]", re.IGNORECASE)
 
-
 def _is_gemma_mtp_family(name: Optional[str]) -> bool:
     """Match Gemma 4 by name."""
     return bool(name) and bool(_GEMMA_MTP_FAMILY_RE.search(name))
-
 
 def _is_gemma_mtp_name(model_identifier: Optional[str], gguf_path: Optional[str] = None) -> bool:
     """Match Gemma 4 by id or GGUF filename."""
     return _is_gemma_mtp_family(model_identifier) or _is_gemma_mtp_family(
         Path(gguf_path).name if gguf_path else None
     )
-
 
 def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str] = None) -> bool:
     """Name-based MTP detector. Fallback for the metadata signal."""
@@ -682,7 +649,6 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
         if cand and _is_gemma_mtp_family(cand):
             return True
     return False
-
 
 def _is_companion_gguf_path(path: str) -> bool:
     """True for a non-main GGUF: vision mmproj or a separate MTP drafter
@@ -700,7 +666,6 @@ def _is_companion_gguf_path(path: str) -> bool:
     name = p.rsplit("/", 1)[-1]
     return name.startswith("mtp-") or "/mtp/" in f"/{p}"
 
-
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
@@ -713,7 +678,6 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"|BF16|F16|F32)",
     re.IGNORECASE,
 )
-
 
 def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
     normalized = path.replace("\\", "/")
@@ -738,14 +702,12 @@ def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
             return not variant_in_parent_only
     return False
 
-
 def _gguf_snapshot_files(snapshot: Path) -> list[str]:
     return [
         p.relative_to(snapshot).as_posix()
         for p in snapshot.rglob("*")
         if p.is_file() and p.name.lower().endswith(".gguf")
     ]
-
 
 def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     m = _SHARD_FULL_RE.match(first_shard)
@@ -758,7 +720,6 @@ def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
         re.IGNORECASE,
     )
     return sorted(f for f in files if f != first_shard and sibling_pat.match(f))
-
 
 def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     """Return main GGUF files matching a requested variant.
@@ -793,7 +754,6 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     boundary = re.compile(r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])")
     return sorted(f for f in main_files if boundary.search(f.lower()))
 
-
 # Below this many B params, draft-mtp regresses vs spec-off (bench in
 # _build_speculative_flags); auto mode drops MTP under it.
 _MTP_MIN_SIZE_B = 3.0
@@ -811,7 +771,6 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 # reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
-
 def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     """Bytes per KV-cache element for a llama.cpp cache type (f16 default)."""
     return {
@@ -825,7 +784,6 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
         "q4_0": 0.5625,
         "iq4_nl": 0.5625,
     }.get((cache_type or "f16").strip().lower(), 2.0)
-
 
 def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """Heavier of the inherited LLAMA_ARG_CACHE_TYPE_K/_V env types when it
@@ -845,7 +803,6 @@ def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> 
             heaviest, heaviest_bpe = raw, bpe
     return heaviest
 
-
 def _extra_args_main_cache_type_for_budget(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Heavier (max bytes/elem) of the explicit --cache-type-k/-v extras, or None.
 
@@ -857,7 +814,6 @@ def _extra_args_main_cache_type_for_budget(extra_args: Optional[Iterable[str]]) 
     if not candidates:
         return None
     return max(candidates, key = _kv_bytes_per_elem)
-
 
 def _auto_mode_drops_mtp(
     req_mode: Optional[str],
@@ -872,7 +828,6 @@ def _auto_mode_drops_mtp(
     if has_separate_drafter:
         return False
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
-
 
 def _mla_mtp_auto_enabled() -> bool:
     """Whether Auto may pick embedded MTP for an MLA model (GLM-5.2/DeepSeek/Kimi).
@@ -890,16 +845,13 @@ def _mla_mtp_auto_enabled() -> bool:
         "on",
     )
 
-
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
     return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
 
-
 _GPU_OFFLOAD_OVERRIDE_FLAGS = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"})
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
-
 
 def _extra_arg_flag_name(token: str) -> Optional[str]:
     if not token.startswith("-") or token in {"-", "--"}:
@@ -907,7 +859,6 @@ def _extra_arg_flag_name(token: str) -> Optional[str]:
     if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
         return None
     return token.split("=", 1)[0]
-
 
 def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collection[str]) -> bool:
     if not extra_args:
@@ -917,7 +868,6 @@ def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collect
         if flag in flags:
             return True
     return False
-
 
 def _effective_spec_type(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
@@ -943,7 +893,6 @@ def _effective_spec_type(
         return cli_value
     return (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
 
-
 def _extra_args_requests_mtp(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -953,7 +902,6 @@ def _extra_args_requests_mtp(
     if not value:
         return False
     return any(p.strip().lower() in ("mtp", "draft-mtp") for p in value.split(","))
-
 
 def _extra_args_requests_separate_draft(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
@@ -965,7 +913,6 @@ def _extra_args_requests_separate_draft(
     if not value:
         return False
     return any(p.strip().lower() in ("draft-simple", "draft-eagle3") for p in value.split(","))
-
 
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
     """Draft depth from extras (``--spec-draft-n-max`` or legacy ``--draft-max``), else None."""
@@ -983,7 +930,6 @@ def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optiona
         except (TypeError, ValueError):
             continue
     return found
-
 
 def _extra_args_mtp_draft_path(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
@@ -1015,7 +961,6 @@ def _extra_args_mtp_draft_path(
     e = os.environ if env is None else env
     return e.get("LLAMA_ARG_SPEC_DRAFT_MODEL") or e.get("LLAMA_ARG_SPEC_DRAFT_HF_REPO") or None
 
-
 def _extra_args_draft_cache_types(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> tuple[Optional[str], Optional[str]]:
@@ -1044,7 +989,6 @@ def _extra_args_draft_cache_types(
     if v_type is None:
         v_type = e.get("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V") or None
     return k_type, v_type
-
 
 def _extra_args_draft_offloaded_to_cpu(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
@@ -1080,7 +1024,6 @@ def _extra_args_draft_offloaded_to_cpu(
             return True
     return False
 
-
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
@@ -1107,7 +1050,6 @@ def _extra_args_n_ubatch(
         except (TypeError, ValueError):
             pass
     return None
-
 
 def _build_ngram_mod_flags(
     caps: Optional[dict],
@@ -1147,7 +1089,6 @@ def _build_ngram_mod_flags(
         ]
     return []
 
-
 # Canonical Speculative Decoding modes exposed by the Studio chat UI.
 # Dropdown renders five (auto, mtp, ngram, mtp+ngram, off); the load API
 # also accepts legacy values the original Switch and external callers emit
@@ -1158,7 +1099,6 @@ _LEGACY_SPEC_MODE_MAP = {
     "draft-mtp": "mtp",
     "ngram-mod": "ngram",
 }
-
 
 def _canonicalize_spec_mode(value):
     """Map any accepted ``speculative_type`` input onto a canonical mode.
@@ -1192,7 +1132,6 @@ def _canonicalize_spec_mode(value):
         return "ngram"
     return "auto"
 
-
 def _backfill_usage_from_timings(usage, timings):
     """Synthesize ``usage`` from llama-server's ``timings`` when the
     OpenAI-style usage block is missing or reports zero tokens.
@@ -1221,7 +1160,6 @@ def _backfill_usage_from_timings(usage, timings):
         out.get("completion_tokens") or 0
     )
     return out
-
 
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
@@ -2672,7 +2610,18 @@ class LlamaCppBackend:
         """
         Resolves checkpoint count with priority:
         CLI Flag -> Extra Args (Last-Wins) -> Env Var -> Default (if supported).
+        
+        Returns 0 if prompt caching is explicitly disabled or metadata is insufficient.
         """
+        # Check for explicit disable of prompt caching first
+        if extra_args:
+            no_cache_prompt = any(
+                arg == "--no-cache-prompt" or arg.startswith("--no-cache-prompt=")
+                for arg in extra_args
+            )
+            if no_cache_prompt:
+                return 0
+        
         # 1. CLI Flag has highest priority
         if cli_val is not None:
             return cli_val
@@ -4266,7 +4215,6 @@ class LlamaCppBackend:
             # toggle before this); be defensive and never emit a split here.
             return (
                 target_ctx if target_ctx > 0 else 4096,
-                target_ctx if target_ctx > 0 else 4096,
                 gpu_indices,
                 None,
             )
@@ -5265,10 +5213,12 @@ class LlamaCppBackend:
                     # (llama.cpp does not support --fit with tensor parallelism)
                     if gpu_indices is not None:
                         use_fit = False
-                    elif gpus and self._can_estimate_kv() and effective_ctx > 0:
-                        # Compute the largest hardware-aware cap from the model's
-                        # native context across all usable GPU subsets (for UI
-                        # bounds), independent of the currently requested context.
+                        # Resolve checkpoint count once for consistent budgeting
+                        resolved_ctx_checkpoints = self._resolve_ctx_checkpoints(
+                            None, extra_args, 
+                            supported=getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True)
+                        )
+
                         native_ctx_for_cap = self._context_length or effective_ctx
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(
@@ -5297,9 +5247,11 @@ class LlamaCppBackend:
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     budget_frac = 1.0,
                                     total_mib = None,
+                                    ctx_checkpoints = resolved_ctx_checkpoints,
                                     extra_args=extra_args,                                )
                                 kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv, n_parallel = n_parallel
+                                    capped, cache_type_kv, n_parallel = n_parallel,
+                                    ctx_checkpoints = resolved_ctx_checkpoints
                                 )
                                 footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (1024 * 1024)
                                 if footprint_mib <= pool_budget:
@@ -5319,7 +5271,8 @@ class LlamaCppBackend:
                             requested_total = (
                                 model_size_fit
                                 + self._estimate_kv_cache_bytes(
-                                    effective_ctx, cache_type_kv, n_parallel = n_parallel
+                                    effective_ctx, cache_type_kv, n_parallel = n_parallel,
+                                    ctx_checkpoints = resolved_ctx_checkpoints
                                 )
                                 + _mtp_bytes(effective_ctx)
                             )
@@ -5353,9 +5306,11 @@ class LlamaCppBackend:
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     budget_frac = 1.0,
                                     total_mib = None,
+                                    ctx_checkpoints = resolved_ctx_checkpoints,
                                     extra_args=extra_args,                                )
                                 kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv, n_parallel = n_parallel
+                                    capped, cache_type_kv, n_parallel = n_parallel,
+                                    ctx_checkpoints = resolved_ctx_checkpoints
                                 )
                                 footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (1024 * 1024)
                                 if footprint_mib <= pool_budget:
@@ -5375,6 +5330,7 @@ class LlamaCppBackend:
                                             effective_ctx,
                                             cache_type_kv,
                                             n_parallel = n_parallel,
+                                            ctx_checkpoints = resolved_ctx_checkpoints
                                         )
                                         footprint_mib = (
                                             _subset_model_size(n_gpus)
@@ -5411,11 +5367,12 @@ class LlamaCppBackend:
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
 
-                    elif _apple_budget_mib > 0 and effective_ctx > 0:
-                        # No GPU on Metal: the branches above are skipped and the context
-                        # stays at native, over-committing unified memory (#5118, #6529).
-                        # Cap with the same fit math (--fit on stays as a backstop); only
-                        # auto context shrinks, explicit is honored.
+                        # Resolve checkpoint count once for consistent budgeting
+                        resolved_ctx_checkpoints_apple = self._resolve_ctx_checkpoints(
+                            None, extra_args,
+                            supported=getattr(self, "_server_flags", {}).get("supports_ctx_checkpoints", True)
+                        )
+
                         native_ctx_for_cap = self._context_length or effective_ctx
                         # Reserve the flat MTP fraction up front like the discrete
                         # _pin_fraction, so an unsized MTP draft (e.g. Qwen3.6-MTP, #6529)
@@ -5435,11 +5392,13 @@ class LlamaCppBackend:
                                 mtp_overhead_fn = mtp_overhead_fn,
                                 budget_frac = 1.0,
                                 total_mib = None,
+                                ctx_checkpoints = resolved_ctx_checkpoints_apple,
                                 extra_args=extra_args,                            )
                             _cap_footprint_mib = (
                                 model_size_fit
                                 + self._estimate_kv_cache_bytes(
-                                    cap, cache_type_kv, n_parallel = n_parallel
+                                    cap, cache_type_kv, n_parallel = n_parallel,
+                                    ctx_checkpoints = resolved_ctx_checkpoints_apple
                                 )
                                 + _mtp_bytes(cap)
                             ) / (1024 * 1024)
@@ -5471,7 +5430,8 @@ class LlamaCppBackend:
 
                     if effective_ctx < original_ctx:
                         kv_est = self._estimate_kv_cache_bytes(
-                            effective_ctx, cache_type_kv, n_parallel = n_parallel
+                            effective_ctx, cache_type_kv, n_parallel = n_parallel,
+                            ctx_checkpoints = resolved_ctx_checkpoints_apple
                         )
                         logger.info(
                             f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
@@ -5482,7 +5442,8 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = self._estimate_kv_cache_bytes(
-                        effective_ctx, cache_type_kv, n_parallel = n_parallel
+                        effective_ctx, cache_type_kv, n_parallel = n_parallel,
+                        ctx_checkpoints = resolved_ctx_checkpoints_apple
                     )
                     mmproj_note = (
                         f"mmproj: {mmproj_size / (1024**3):.1f} GB, " if mmproj_size else ""
@@ -5551,6 +5512,8 @@ class LlamaCppBackend:
                     fully_gpu_offloaded = True
 
                 server_caps = self.probe_server_capabilities(binary)
+                # Store probed capabilities for planning calls (#5830)
+                self._server_flags = server_caps or {}
                 # Expose Prometheus /metrics for the engine-stats logger, only
                 # when the binary advertises it (older/custom binaries may not).
                 if server_caps.get("supports_metrics"):
@@ -5585,6 +5548,7 @@ class LlamaCppBackend:
                     cmd.extend(["--threads", "2"])
                 elif n_threads is not None and n_threads > 0:
                     cmd.extend(["--threads", str(n_threads)])
+
 
                 # Enable Jinja chat template rendering
                 cmd.extend(["--jinja"])
