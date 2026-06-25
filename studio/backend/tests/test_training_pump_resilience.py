@@ -485,9 +485,9 @@ def test_db_run_created_before_pump_consumes_events(monkeypatch):
     monkeypatch.setattr(b, "_ensure_db_run_created", slow_create)
     monkeypatch.setattr(b, "_pump_loop", fake_pump)
 
-    assert b.start_training("job_db_order", model_name="m") is True
+    assert b.start_training("job_db_order", model_name = "m") is True
     if b._pump_thread is not None:
-        b._pump_thread.join(timeout=2.0)
+        b._pump_thread.join(timeout = 2.0)
 
     # The pump observed an already-created run; it would be False if the pump
     # were started before the eager create.
