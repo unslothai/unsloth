@@ -26,9 +26,8 @@ _jobs_lock = threading.Lock()
 
 _EMBED_BATCH = 64  # bounds peak memory
 
-# SSE streaming guards: poll the per-job queue with a timeout so the generator
-# wakes periodically (lets the server detect a gone client and lets us notice a
-# terminal job whose worker died without emitting the None sentinel).
+# Poll with a timeout so the generator wakes periodically to detect a gone
+# client or a terminal job whose worker died without the None sentinel.
 _SSE_POLL_SECONDS = 1.0
 _TERMINAL_JOB_STATUSES = {"completed", "failed"}
 
@@ -184,8 +183,7 @@ def start_ingestion(
     if ext not in config.UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")
 
-    # Opportunistically reclaim queues for already-finished jobs so the registry
-    # stays bounded even when clients poll instead of streaming /events.
+    # Reclaim queues for finished jobs so the registry stays bounded.
     _reap_finished_jobs()
 
     sha = _sha256_file(stored_path)
@@ -261,11 +259,9 @@ def _new_job(
 def _reap_finished_jobs() -> None:
     """Drop per-job queues whose DB row already reached a terminal status.
 
-    The queue is otherwise removed only by ``job_events`` after it drains the
-    ``None`` sentinel. A caller that polls ``/jobs/{id}`` instead of streaming
-    ``/events`` (or a deduped upload) never drains it, so without this sweep the
-    ``_jobs`` registry would grow for the process lifetime. Safe to drop while a
-    client streams: ``job_events`` captured its queue reference up front.
+    Otherwise removed only by ``job_events`` after the ``None`` sentinel, so a
+    caller that polls ``/jobs/{id}`` instead of streaming would grow ``_jobs``
+    forever. Safe while streaming: ``job_events`` holds its queue reference.
     """
     with _jobs_lock:
         job_ids = list(_jobs.keys())
@@ -279,19 +275,15 @@ def _reap_finished_jobs() -> None:
 def job_events(job_id: str):
     """Yield job events for SSE; ends when the worker signals completion.
 
-    Uses a timed ``get`` so the generator can't block forever: it wakes to
-    heartbeat, to let the server notice a disconnected client, and to stop if the
-    job already reached a terminal DB status (covering a hard worker death that
-    skipped the ``None`` sentinel in ``_run``'s ``finally``). Removes the per-job
-    queue only on a terminal exit, never on an early client disconnect.
+    Timed ``get`` so the generator can't block forever: it wakes to heartbeat,
+    to notice a disconnected client, and to stop on a terminal DB status (a hard
+    worker death that skipped the ``None`` sentinel). Drops the queue only on a
+    terminal exit, never on an early client disconnect.
 
-    It deliberately does *not* end the stream on idle alone: a long, silent stage
-    (e.g. embedding a large document, which emits no per-batch progress) is not a
-    failure, and ending the stream there would send ``[DONE]`` with the DB row
-    still ``pending``/``running`` -- the client treats a no-terminal-frame end as
-    completion and would mark the document indexed mid-ingestion. While the worker
-    is alive and non-terminal we keep heartbeating; the stream ends only on a
-    terminal status, the ``None`` sentinel, or client disconnect.
+    It deliberately does *not* end on idle alone: a long silent stage (e.g.
+    embedding a large doc) is not a failure, and ending there would send
+    ``[DONE]`` with the row still pending, which the client treats as completion.
+    The stream ends only on a terminal status, the ``None`` sentinel, or disconnect.
     """
     with _jobs_lock:
         q = _jobs.get(job_id)
@@ -305,8 +297,7 @@ def job_events(job_id: str):
             except queue.Empty:
                 row = get_job_status(job_id)
                 if row is None or row.get("status") in _TERMINAL_JOB_STATUSES:
-                    # Worker finished (or the row is gone); the frontend reconciles
-                    # the final state via its getJob poll. Stop rather than park.
+                    # Worker finished (or row gone); stop and let the client reconcile via getJob.
                     terminal = True
                     break
                 yield {"type": "heartbeat"}
@@ -316,12 +307,9 @@ def job_events(job_id: str):
                 break
             yield event
     finally:
-        # Only drop the queue once the job is actually finished. On an early
-        # disconnect (a tab/scope switch aborting the fetch) the worker is still
-        # running and _emit() needs this queue: removing it would strand the
-        # worker's events, and a reconnect (or another subscriber) would then find
-        # no queue and receive only [DONE], which the client treats as completion.
-        # Finished jobs that nobody drains are swept by _reap_finished_jobs().
+        # Only drop the queue once the job is finished. On an early disconnect the
+        # worker is still emitting into it; dropping would strand its events and a
+        # reconnect would see only [DONE]. Idle finished queues are reaped elsewhere.
         if terminal:
             with _jobs_lock:
                 _jobs.pop(job_id, None)

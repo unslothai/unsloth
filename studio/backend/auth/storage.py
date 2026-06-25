@@ -110,10 +110,8 @@ def get_connection() -> sqlite3.Connection:
         except OSError:
             pass
     conn.row_factory = sqlite3.Row
-    # WAL: every authenticated request validates a token here (read), while login
-    # writes refresh tokens; WAL lets those run concurrently instead of serialising
-    # on the rollback journal. busy_timeout bounds any remaining lock wait. Matches
-    # the other Studio SQLite stores (studio_db / rag_db / providers_db).
+    # WAL lets token reads run concurrently with refresh-token writes;
+    # busy_timeout bounds lock waits. Matches the other Studio SQLite stores.
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")

@@ -3,12 +3,9 @@
 
 """Data-recipe job pump resilience.
 
-The job pump is the only consumer of worker events and the only writer of the
-job snapshot that the status endpoint and every SSE subscriber read. A malformed
-worker log line that makes event handling raise must not kill the pump: if it
-did, the worker would keep running while the job stayed wedged "active", the UI
-froze, and the workflow API key was never retired. Mirrors the training-pump
-resilience contract. Driven with fakes; no subprocess, no GPU.
+The pump is the sole consumer of worker events and sole writer of the job
+snapshot the status/SSE endpoints read; a handler error must not kill it, or the
+job stays wedged "active" and the workflow key is never retired. Fakes only.
 """
 
 from __future__ import annotations
@@ -130,10 +127,8 @@ def test_pump_finalizes_when_drain_raises(monkeypatch):
 
 
 def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
-    # A queue read that keeps raising an error outside the read's narrow catch set
-    # (e.g. a broken queue pipe after the child died) must not spin the pump
-    # forever: once the worker is gone it has to fall through to finalize, or the
-    # job stays wedged "active" with its workflow key unretired.
+    # A read that keeps raising after the child died must not spin the pump
+    # forever: once the worker is gone it falls through to finalize.
     m = _manager_with_active_job()
     monkeypatch.setattr(m, "_emit", lambda e: None)
     retired: list = []

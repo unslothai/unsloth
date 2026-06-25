@@ -1,0 +1,3 @@
+- User added directive: `Also confirm before and after this PR studio did not break training - actually drive and use Playwright and record everything.`
+- Decision implied: review must include end-to-end Studio training validation before and after PR, using Playwright rather than static inspection only.
+- PENDING: run/record Playwright-driven before-vs-after training check and include evidence in review.

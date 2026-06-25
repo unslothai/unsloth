@@ -159,12 +159,9 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
 
 
 def _delete_document_chunks(conn, document_id: str) -> None:
-    """Delete a document's chunk rows (``chunks`` + ``chunks_fts`` + ``chunks_vec``),
-    keeping the ``documents`` row itself. Used when reconciling a half-ingested
-    document to ``failed``: ``store.add_chunks`` may have already committed, and
-    retrieval filters by scope (not document status), so those chunks would stay
-    searchable and citable under a failed document until the file is re-ingested.
-    """
+    """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the
+    documents row. Used when reconciling a half-ingested doc to failed: retrieval
+    filters by scope not status, so leftover chunks would stay citable."""
     chunk_ids = [
         r["id"]
         for r in conn.execute(
@@ -182,14 +179,9 @@ def _delete_document_chunks(conn, document_id: str) -> None:
 
 
 def reconcile_orphaned_ingestion_jobs() -> int:
-    """Fail ingestion jobs (and their documents) left mid-flight by a crash.
-
-    Ingestion runs on a daemon thread; if the server is killed mid-ingest the
-    ``ingestion_jobs`` row stays ``running``/``pending`` and the ``documents`` row
-    stays ``pending`` with no worker behind them, so the UI shows a document stuck
-    "processing" forever with no way to recover. Flip both to ``failed`` at startup
-    so they become re-ingestible. Mirrors ``studio_db.cleanup_orphaned_runs``.
-    No-op when RAG (sqlite-vec) is unavailable. Returns the number of jobs reset.
+    """Fail ingestion jobs/documents left mid-flight by a crash so they stop
+    showing as stuck "processing" and become re-ingestible. Run at startup.
+    No-op without RAG. Returns the number of jobs reset.
     """
     if not RAG_AVAILABLE:
         return 0
@@ -210,9 +202,8 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                 "WHERE id=? AND status NOT IN ('completed', 'failed')",
                 (row["document_id"],),
             )
-            # A crash can land after add_chunks() committed but before the document
-            # was marked completed; drop any chunks so the failed document can't be
-            # retrieved/cited (retrieval filters by scope, not status).
+            # A crash can commit chunks before the doc is marked completed; drop them
+            # so a failed doc can't be retrieved (retrieval filters by scope, not status).
             _delete_document_chunks(conn, row["document_id"])
         conn.commit()
         return len(rows)

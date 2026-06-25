@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""job_events must keep the per-job queue registered until the job is terminal.
+"""job_events keeps the per-job queue registered until the job is terminal.
 
-The queue in ``_jobs[job_id]`` is the only one ``_emit()`` writes to for a still
-running ingestion worker. If an SSE consumer disconnects early (tab/scope switch
-aborting the fetch) and the generator removed that queue, the worker's later
-progress/complete events would be dropped and a reconnect would find no queue,
-receive only ``[DONE]``, and the client would mark a still-running job complete.
-The queue may only be removed on a terminal exit (None sentinel / terminal DB
-status); leftover terminal queues are swept by ``_reap_finished_jobs``.
+``_emit()`` writes to ``_jobs[job_id]`` while the worker runs; if an early SSE
+disconnect removed that queue, later events would be dropped and a reconnect
+would see only ``[DONE]`` and mark a running job complete. Remove only on a
+terminal exit; ``_reap_finished_jobs`` sweeps leftovers.
 """
 
 import queue

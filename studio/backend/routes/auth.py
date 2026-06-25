@@ -74,11 +74,9 @@ _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
-# Bucket-dict cap. On overflow, reclaim expired buckets; if still full the
-# oldest-inserted per-IP bucket is FIFO-evicted so the new IP still gets tracked.
+# Bucket-dict cap. On overflow, reclaim expired buckets, else FIFO-evict the oldest IP.
 _LOGIN_MAX_BUCKETS = 4096
-# Monotonic time of the last full per-IP stale sweep; rate-limits that O(n) sweep
-# so a burst of distinct IPs can't turn every failure into a full-dict scan.
+# Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
 _LAST_IP_PRUNE = 0.0
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
@@ -175,9 +173,8 @@ def _prune_stale_buckets(now: float) -> None:
 def _prune_stale_ip_buckets(now: float) -> None:
     """Drop empty / expired per-IP buckets to bound memory under spray.
 
-    The per-IP dict is otherwise reclaimed only on a *successful* login, so a
-    failure-only spray from many distinct (or spoofed X-Forwarded-For) source IPs
-    would grow it without bound. Mirrors ``_prune_stale_buckets`` for accounts.
+    The dict is otherwise reclaimed only on a successful login, so a failure-only
+    spray from many (or spoofed) IPs would grow it without bound.
     """
     stale: list[str] = []
     for bucket_ip, bucket in _LOGIN_IP_BUCKETS.items():
@@ -193,13 +190,9 @@ def _record_login_failure(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        # Keep the per-IP dict bounded without disabling throttling once it is full.
-        # If the IP is new and the dict is at the cap, first reclaim expired buckets
-        # (rate-limited so a burst of distinct IPs can't make every failure an O(n)
-        # sweep); if it is still full because every bucket is fresh, FIFO-evict the
-        # oldest-inserted IP. Either way this IP still gets a bucket, so a saturating
-        # (e.g. spoofed-X-Forwarded-For) spray stays throttled instead of every new
-        # IP being treated as first-seen.
+        # Keep the dict bounded without disabling throttling: for a new IP at the
+        # cap, reclaim expired buckets (rate-limited) then FIFO-evict the oldest so
+        # a spoofed-IP spray still gets tracked instead of being treated first-seen.
         ip_bucket = _LOGIN_IP_BUCKETS.get(ip)
         if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             if now - _LAST_IP_PRUNE >= 1.0:

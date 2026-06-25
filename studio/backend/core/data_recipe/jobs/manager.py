@@ -449,23 +449,14 @@ class JobManager:
             except queue.Empty:
                 return events
             except Exception:
-                # Drain feeds finalization on worker exit; return what we have so
-                # the run is still finalized rather than left wedged "active".
+                # Return what we have so the run still finalizes rather than wedging "active".
                 logger.exception(
                     "Data-recipe job pump: queue drain failed; finalizing with drained events"
                 )
                 return events
 
     def _safe_handle_event(self, job: Job, event: dict) -> None:
-        """Apply one event, swallowing any handler error.
-
-        This pump is the only consumer of worker events and the only writer of
-        the job snapshot that the status endpoint and every SSE subscriber read.
-        A malformed log line that makes ``parse_log_message`` raise must not
-        propagate into ``_pump_loop`` -- if the thread died the worker would keep
-        running while the job stayed wedged "active", the UI froze, and the
-        workflow API key was never retired.
-        """
+        """Apply one event, swallowing any handler error so the pump can't die."""
         try:
             self._handle_event(job, event)
         except Exception:
@@ -473,11 +464,10 @@ class JobManager:
             logger.exception("Data-recipe job pump: failed to handle %s event; skipping", etype)
 
     def _pump_loop(self) -> None:
-        """Background thread: consumes worker events + updates job snapshot.
+        """Background thread: consume worker events and update the job snapshot.
 
-        Guarded so no single event or transient error can end the loop: it is
-        the sole writer of the snapshot the UI polls, so its death would freeze
-        status/SSE while the worker subprocess kept running.
+        Guarded so no single event can end the loop; it is the sole writer of the
+        snapshot the UI polls, so its death would freeze status/SSE.
         """
         while True:
             snap = self._snapshot()
@@ -488,11 +478,8 @@ class JobManager:
             try:
                 event = self._read_queue_with_timeout(mp_q, timeout_sec = 0.25)
             except Exception:
-                # A read that keeps raising (e.g. a broken queue pipe after the
-                # child died) must not spin here forever: if the worker is gone,
-                # fall through to the finalize path so the job can't stay wedged
-                # "active" with its workflow key unretired. Only back off and
-                # retry while the worker is still alive.
+                # If a read keeps raising after the worker died, finalize instead
+                # of spinning forever; only retry while the worker is still alive.
                 logger.exception("Data-recipe job pump: queue read failed; continuing")
                 if proc.is_alive():
                     time.sleep(0.1)
@@ -506,8 +493,7 @@ class JobManager:
             if proc.is_alive():
                 continue
 
-            # Worker exited: drain + finalize, guarded so a finalize error can't
-            # strand the run as "active" (and leak its workflow key).
+            # Worker exited: drain + finalize, guarded so an error can't strand the run "active".
             try:
                 for e in self._drain_queue(mp_q):
                     self._safe_handle_event(job, e)

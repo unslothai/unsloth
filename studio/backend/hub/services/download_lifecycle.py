@@ -328,17 +328,12 @@ def register_worker(
                 transport = transport,
             )
         except Exception:
-            # finalize_worker_exit is the ONLY thing that moves the job out of
-            # running/cancelling. If it raises, the registry job would pin in
-            # running and claim() would keep rejecting new attempts for this repo
-            # until restart -- force a terminal state instead.
+            # finalize_worker_exit is the only thing that clears running/cancelling;
+            # if it raises, force a terminal state so claim() isn't blocked until restart.
             logger.exception("download watcher crashed for %s", key)
-            # finalize may have raised before it reaped (proc.wait) and dropped the
-            # worker -- e.g. an I/O error draining stderr. Terminate + drop the
-            # still-registered Popen before publishing a terminal state: the
-            # terminal set_job clears the active-repo guard, so a live worker left
-            # here would keep writing the cache while claim() admits a retry on the
-            # same repo -- the overlap the registry exists to prevent.
+            # finalize may have raised before reaping the worker; terminate the
+            # still-registered Popen first, else the terminal set_job clears the
+            # repo guard and a live worker would race a retry on the same repo.
             try:
                 kill_and_reap_process(proc, label = label, logger = logger)
             except Exception:

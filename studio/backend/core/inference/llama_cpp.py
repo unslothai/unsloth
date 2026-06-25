@@ -3148,10 +3148,8 @@ class LlamaCppBackend:
                             # Log file closed under us; tee silently.
                             pass
         except Exception:
-            # Pipe closed (process terminating) is the common case; any other
-            # unexpected error must not kill the drain thread, or llama-server
-            # can deadlock on a full stdout pipe buffer (Windows) and never go
-            # healthy. This thread exists precisely to keep that pipe drained.
+            # Never let the drain thread die: a full stdout pipe can deadlock
+            # llama-server (Windows). Pipe-closed on exit is the common case.
             logger.debug("llama-server stdout drain stopped", exc_info = True)
 
     # GGUF KV type sizes for fast skipping

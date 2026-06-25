@@ -487,8 +487,7 @@ async def lifespan(app: FastAPI):
         import structlog
         structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
-    # Same idea for RAG: fail ingestion jobs/documents stranded mid-ingest by a
-    # crash so they don't show as permanently "processing".
+    # Same for RAG: fail ingestion jobs stranded mid-ingest by a crash.
     try:
         from storage.rag_db import reconcile_orphaned_ingestion_jobs
         reconcile_orphaned_ingestion_jobs()

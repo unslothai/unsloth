@@ -3,12 +3,9 @@
 
 """Inference dispatcher resilience.
 
-The dispatcher thread is the only consumer of the subprocess response queue and
-routes each response to the waiting request's mailbox. If a single malformed
-response (or a mailbox error) killed it, every in-flight generation would hang
-on its mailbox forever, because callers key liveness on the subprocess, not on
-this thread. A bad response must be logged and skipped, not fatal. Driven with
-fakes; no subprocess, no model.
+The dispatcher thread is the sole consumer of the response queue; if a malformed
+response killed it, every in-flight generation would hang forever. A bad response
+must be logged and skipped, not fatal. Fakes only.
 """
 
 from __future__ import annotations

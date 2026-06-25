@@ -534,16 +534,13 @@ class InferenceOrchestrator:
             except (EOFError, OSError, ValueError):
                 break
 
-            # Guard routing so a malformed response (or a mailbox put error)
-            # can't kill the dispatcher. This thread is the only consumer of the
-            # response queue; if it died, every in-flight stream would hang on
-            # its mailbox forever because callers key liveness on the subprocess,
-            # not on this thread.
+            # Sole consumer of the response queue; if it died every in-flight
+            # stream would hang, so never let routing kill the dispatcher.
             try:
                 rid = resp.get("request_id")
                 rtype = resp.get("type", "")
 
-                # Status messages — log and skip
+                # Status messages: log and skip
                 if rtype == "status":
                     logger.info("Subprocess status: %s", resp.get("message", ""))
                     continue
@@ -556,8 +553,7 @@ class InferenceOrchestrator:
                         mbox.put(resp)
                         continue
 
-                # No matching mailbox (a _gen_lock reader or orphaned). Can't
-                # un-get from mp.Queue, so just log. (status was handled above.)
+                # No matching mailbox; can't un-get from mp.Queue, so just log.
                 logger.debug(
                     "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
                     rid,

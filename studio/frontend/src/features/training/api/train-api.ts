@@ -178,12 +178,11 @@ export async function streamTrainingProgress(options: {
       }
     }
   } finally {
-    // Release the reader on abort / early return / thrown error so the stream
-    // lock isn't held until GC (matches the chat / RAG SSE readers).
+    // Release the stream lock now instead of leaking the reader until GC.
     try {
       await reader.cancel();
     } catch {
-      // reader already closed/errored; nothing to release.
+      // already closed
     }
   }
 }

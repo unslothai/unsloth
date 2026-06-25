@@ -226,12 +226,11 @@ export async function* streamJobEvents(
       }
     }
   } finally {
-    // Release the reader on early return ([DONE]) / throw / consumer abort so the
-    // stream lock isn't held until GC. AbortController still tears down the socket.
+    // Release the stream lock now instead of leaking the reader until GC.
     try {
       await reader.cancel();
     } catch {
-      // reader already closed/errored; nothing to release.
+      // already closed
     }
   }
 }
