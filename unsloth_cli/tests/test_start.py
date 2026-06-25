@@ -394,9 +394,16 @@ def test_connect_model_flag_forwards_load_options(fake_studio):
     result = CliRunner().invoke(
         start.start_app,
         [
-            "claude", "--no-launch", "--model", "unsloth/Qwen3-4B-GGUF",
-            "--gguf-variant", "UD-Q4_K_XL", "--context-length", "8192",
-            "--no-load-in-4bit", "--tensor-parallel",
+            "claude",
+            "--no-launch",
+            "--model",
+            "unsloth/Qwen3-4B-GGUF",
+            "--gguf-variant",
+            "UD-Q4_K_XL",
+            "--context-length",
+            "8192",
+            "--no-load-in-4bit",
+            "--tensor-parallel",
         ],
     )
     assert result.exit_code == 0, result.output

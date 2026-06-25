@@ -305,7 +305,10 @@ def _loaded_models(base: str, key: str) -> list:
 
 
 def _resolve_model(
-    base: str, key: str, requested: Optional[str], load: LoadOptions = LoadOptions()
+    base: str,
+    key: str,
+    requested: Optional[str],
+    load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
     match = next((m for m in models if m["id"] == requested), None)
@@ -564,7 +567,9 @@ def _launch(
 
 
 def _connect(
-    api_key: Optional[str], model: Optional[str], load: LoadOptions = LoadOptions()
+    api_key: Optional[str],
+    model: Optional[str],
+    load: LoadOptions = LoadOptions(),
 ) -> tuple:
     base = _require_studio()
     key = _agent_api_key(base, api_key)
