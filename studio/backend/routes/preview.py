@@ -96,7 +96,9 @@ def _sanitize_preview_payload(
             "provider_base_url": None,
             "use_adapter": True if is_lora else None,
             # Cap generation cost on this public, GPU-backed surface.
-            "max_tokens": min(payload.max_tokens or _PREVIEW_MAX_OUTPUT_TOKENS, _PREVIEW_MAX_OUTPUT_TOKENS),
+            "max_tokens": min(
+                payload.max_tokens or _PREVIEW_MAX_OUTPUT_TOKENS, _PREVIEW_MAX_OUTPUT_TOKENS
+            ),
             "max_completion_tokens": min(
                 payload.max_completion_tokens or _PREVIEW_MAX_OUTPUT_TOKENS,
                 _PREVIEW_MAX_OUTPUT_TOKENS,

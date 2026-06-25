@@ -45,9 +45,7 @@ _TEST_SECRET = b"unit-test-preview-secret-0123456789"
 
 
 def _use_test_secret(monkeypatch) -> None:
-    monkeypatch.setattr(
-        preview_token, "get_or_create_preview_link_secret", lambda: _TEST_SECRET
-    )
+    monkeypatch.setattr(preview_token, "get_or_create_preview_link_secret", lambda: _TEST_SECRET)
 
 
 def _sig(ref: str) -> str:
