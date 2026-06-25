@@ -1704,7 +1704,8 @@ class DiffusionLoadRequest(BaseModel):
     memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
         None,
         description = "Memory policy: auto (measured), fast (resident), balanced "
-                      "(model CPU offload), low_vram (sequential CPU offload). "
+                      "(stream the transformer, near-resident speed, moderate VRAM "
+                      "cut), low_vram (offload every component, lowest VRAM, slower). "
                       "Overrides cpu_offload when set.",
     )
 

@@ -458,9 +458,12 @@ class DiffusionBackend:
                 plan = self._plan_memory(
                     target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
                 )
-                # apply_memory_plan returns the policy ACTUALLY engaged (it may fall
-                # back from sequential to whole-module offload), so status stays honest.
-                effective_policy = apply_memory_plan(pipe, plan, device = device, logger = logger)
+                # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
+                # may fall back to whole-module offload, and tiling is a no-op on a
+                # pipeline with no tiling control), so status stays honest.
+                effective_policy, effective_tiling = apply_memory_plan(
+                    pipe, plan, device = device, logger = logger
+                )
 
                 self._state = _LoadState(
                     pipe = pipe,
@@ -471,13 +474,13 @@ class DiffusionBackend:
                     dtype = str(dtype).replace("torch.", ""),
                     cpu_offload = effective_policy != OFFLOAD_NONE,
                     offload_policy = effective_policy,
-                    vae_tiling = plan.vae_tiling,
+                    vae_tiling = effective_tiling,
                     memory_mode = plan.requested_mode,
                 )
 
         logger.info(
             "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s",
-            repo_id, base, device, effective_policy, plan.vae_tiling, "; ".join(plan.reasons),
+            repo_id, base, device, effective_policy, effective_tiling, "; ".join(plan.reasons),
         )
         return self.status()
 
@@ -511,6 +514,7 @@ class DiffusionBackend:
             target = target,
             device_memory = device_memory,
             model_dense_mib = model_dense_mib,
+            companion_dense_mib = companion_mib,
             runtime_headroom_mib = runtime_headroom,
             requested_mode = memory_mode,
             explicit_offload = cpu_offload,

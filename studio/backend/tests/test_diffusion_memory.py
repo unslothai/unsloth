@@ -20,10 +20,12 @@ from core.inference.diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_FAST,
     MEMORY_MODE_LOW_VRAM,
+    OFFLOAD_GROUP,
     OFFLOAD_MODEL,
     OFFLOAD_NONE,
     OFFLOAD_SEQUENTIAL,
     DeviceMemory,
+    MemoryPlan,
     apply_memory_plan,
     estimate_gguf_dense_mib,
     estimate_image_runtime_mib,
@@ -166,14 +168,41 @@ def test_auto_model_offload_on_tight_fit():
     assert plan.vae_tiling is True  # offloading -> device is tight -> tile
 
 
-def test_auto_sequential_when_model_exceeds_budget():
+def test_auto_group_offload_when_transformer_overflows_but_companions_fit():
+    # Big transformer pushes the resident total over budget, but the companions
+    # (text encoder + VAE) still fit -> stream the transformer (fast, moderate cut).
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(8000, 8000),
+        model_dense_mib = 40000,
+        companion_dense_mib = 1500,
+        runtime_headroom_mib = 1000,
+        base_overhead_mib = 1000,
+    )
+    assert plan.offload_policy == OFFLOAD_GROUP
+
+
+def test_auto_model_offload_when_companions_exceed_budget():
+    # The text encoder itself is too big to stay resident -> offload everything.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(8000, 8000),
+        model_dense_mib = 40000,
+        companion_dense_mib = 30000,
+        runtime_headroom_mib = 4000,
+    )
+    assert plan.offload_policy == OFFLOAD_MODEL
+
+
+def test_auto_model_offload_when_companion_size_unknown():
+    # Without a companion estimate the planner can't prove group fits -> safest cut.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(8000, 8000),
         model_dense_mib = 40000,
         runtime_headroom_mib = 4000,
     )
-    assert plan.offload_policy == OFFLOAD_SEQUENTIAL
+    assert plan.offload_policy == OFFLOAD_MODEL
 
 
 def test_auto_stays_resident_when_budget_unknown():
@@ -199,11 +228,11 @@ def test_explicit_modes_force_policy_regardless_of_budget():
     assert plan_diffusion_memory(
         target = _target(), device_memory = roomy, model_dense_mib = 1000,
         runtime_headroom_mib = 1000, requested_mode = MEMORY_MODE_BALANCED,
-    ).offload_policy == OFFLOAD_MODEL
+    ).offload_policy == OFFLOAD_GROUP
     assert plan_diffusion_memory(
         target = _target(), device_memory = roomy, model_dense_mib = 1000,
         runtime_headroom_mib = 1000, requested_mode = MEMORY_MODE_LOW_VRAM,
-    ).offload_policy == OFFLOAD_SEQUENTIAL
+    ).offload_policy == OFFLOAD_MODEL
 
 
 def test_fast_falls_back_to_model_offload_when_it_does_not_fit():
@@ -313,31 +342,74 @@ def _plan(policy, *, tiling):
         runtime_headroom_mib = 1000,
         requested_mode = {
             OFFLOAD_NONE: MEMORY_MODE_FAST,
-            OFFLOAD_MODEL: MEMORY_MODE_BALANCED,
-            OFFLOAD_SEQUENTIAL: MEMORY_MODE_LOW_VRAM,
+            OFFLOAD_GROUP: MEMORY_MODE_BALANCED,
+            OFFLOAD_MODEL: MEMORY_MODE_LOW_VRAM,
         }[policy],
+    )
+
+
+def _manual_plan(policy, *, tiling):
+    """Build a plan for a policy the auto/explicit modes no longer emit (sequential)."""
+    return MemoryPlan(
+        requested_mode = "manual",
+        offload_policy = policy,
+        vae_tiling = tiling,
+        vae_slicing = tiling,
+        device_memory = _discrete(4000, 8000),
+        estimates = {},
     )
 
 
 def test_apply_none_places_resident():
     pipe = _RecordingPipe()
-    effective = apply_memory_plan(pipe, _plan(OFFLOAD_NONE, tiling = False), device = "cuda")
+    effective, tiled = apply_memory_plan(pipe, _plan(OFFLOAD_NONE, tiling = False), device = "cuda")
     assert pipe.calls == ["to:cuda"]  # no tiling on a roomy resident run
-    assert effective == OFFLOAD_NONE
+    assert effective == OFFLOAD_NONE and tiled is False
 
 
 def test_apply_model_offload_engages_offload_and_tiling():
     pipe = _RecordingPipe()
-    effective = apply_memory_plan(pipe, _plan(OFFLOAD_MODEL, tiling = True), device = "cuda")
+    effective, tiled = apply_memory_plan(pipe, _plan(OFFLOAD_MODEL, tiling = True), device = "cuda")
     assert "model_offload" in pipe.calls
     assert "to:cuda" not in pipe.calls  # offload owns placement; never both
     assert "vae_tiling" in pipe.calls and "vae_slicing" in pipe.calls
-    assert effective == OFFLOAD_MODEL
+    assert effective == OFFLOAD_MODEL and tiled is True
+
+
+def test_apply_vae_tiling_falls_back_to_vae_submodule():
+    # Z-Image-style pipeline: no pipeline-level enable_vae_tiling, only pipe.vae.
+    class _VaeOnly:
+        def __init__(self):
+            self.vae = types.SimpleNamespace(
+                tiled = False, sliced = False,
+                enable_tiling = self._tile, enable_slicing = self._slice,
+            )
+
+        def _tile(self):
+            self.vae.tiled = True
+
+        def _slice(self):
+            self.vae.sliced = True
+
+        def enable_model_cpu_offload(self):
+            self.offloaded = True
+
+    pipe = _VaeOnly()
+    effective, tiled = apply_memory_plan(pipe, _plan(OFFLOAD_MODEL, tiling = True), device = "cuda")
+    assert tiled is True and pipe.vae.tiled and pipe.vae.sliced
+
+
+def test_apply_group_falls_back_to_model_without_transformer():
+    # The recording pipe has no .transformer, so group offload can't engage and the
+    # applier falls back to whole-module offload, reporting the real policy.
+    pipe = _RecordingPipe()
+    effective, _ = apply_memory_plan(pipe, _plan(OFFLOAD_GROUP, tiling = True), device = "cuda")
+    assert effective == OFFLOAD_MODEL and "model_offload" in pipe.calls
 
 
 def test_apply_sequential_offload():
     pipe = _RecordingPipe()
-    effective = apply_memory_plan(pipe, _plan(OFFLOAD_SEQUENTIAL, tiling = True), device = "cuda")
+    effective, _ = apply_memory_plan(pipe, _manual_plan(OFFLOAD_SEQUENTIAL, tiling = True), device = "cuda")
     assert "sequential_offload" in pipe.calls and "to:cuda" not in pipe.calls
     assert effective == OFFLOAD_SEQUENTIAL
 
@@ -350,7 +422,7 @@ def test_apply_sequential_falls_back_to_model_offload_when_unsupported():
             raise RuntimeError("sequential offload not supported for this transformer")
 
     pipe = _NoSeqPipe()
-    effective = apply_memory_plan(pipe, _plan(OFFLOAD_SEQUENTIAL, tiling = True), device = "cuda")
+    effective, _ = apply_memory_plan(pipe, _manual_plan(OFFLOAD_SEQUENTIAL, tiling = True), device = "cuda")
     assert effective == OFFLOAD_MODEL
     assert "model_offload" in pipe.calls
 
@@ -365,5 +437,5 @@ def test_apply_tolerates_pipe_without_vae_savers():
             self.moved = device
 
     bare = _Bare()
-    apply_memory_plan(bare, _plan(OFFLOAD_NONE, tiling = False), device = "cpu")
-    assert bare.moved == "cpu"
+    _, tiled = apply_memory_plan(bare, _plan(OFFLOAD_NONE, tiling = False), device = "cpu")
+    assert bare.moved == "cpu" and tiled is False

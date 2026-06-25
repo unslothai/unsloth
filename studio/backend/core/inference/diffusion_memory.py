@@ -36,14 +36,22 @@ MEMORY_MODES = (
 )
 
 # ── offload policies (what the loader actually does) ──────────────────────────
-# none       -> all weights resident on the device (fastest; fits only if there
-#               is room). model -> diffusers enable_model_cpu_offload(): one
-#               top-level module on the GPU at a time (modest VRAM cut, small
-#               speed cost). sequential -> enable_sequential_cpu_offload():
-#               submodule-level streaming (lowest VRAM, large speed cost).
+# none   -> all weights resident on the device (fastest; fits only if there is
+#           room). model -> diffusers enable_model_cpu_offload(): one top-level
+#           module on the GPU at a time (modest VRAM cut, small speed cost).
+# group  -> apply_group_offloading() on the transformer: stream it a few blocks at
+#           a time with a prefetch stream (lowest practical VRAM for the dominant
+#           module, less penalty than submodule sequential). sequential ->
+#           enable_sequential_cpu_offload(): submodule-level (broken for GGUF on
+#           diffusers 0.38, kept only as an explicit escape hatch).
 OFFLOAD_NONE = "none"
 OFFLOAD_MODEL = "model"
+OFFLOAD_GROUP = "group"
 OFFLOAD_SEQUENTIAL = "sequential"
+
+# Blocks of the transformer kept resident per group under group offloading: fewer
+# = lower peak VRAM, more host<->device traffic. One is the lowest-VRAM setting.
+DEFAULT_GROUP_BLOCKS = 1
 
 DEFAULT_IMAGE_WIDTH = 1024
 DEFAULT_IMAGE_HEIGHT = 1024
@@ -312,28 +320,46 @@ def plan_diffusion_memory(
     device_memory: DeviceMemory,
     model_dense_mib: Optional[int],
     runtime_headroom_mib: int,
+    companion_dense_mib: Optional[int] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     requested_mode: Optional[str] = None,
     explicit_offload: bool = False,
 ) -> MemoryPlan:
     """Pick an offload policy + VAE memory savers for the current load.
 
-    ``model_dense_mib`` is the estimated resident device size of the weights
-    (transformer + companion text-encoder / VAE). ``explicit_offload`` is the
-    back-compat ``cpu_offload=True`` request: it forces at least whole-module
-    offload wherever offload is meaningful."""
+    ``model_dense_mib`` is the estimated resident device size of all weights
+    (transformer + companion text-encoder / VAE); ``companion_dense_mib`` is just
+    the companions, which stay resident under streamed (group) offload while the
+    transformer is streamed block by block. ``explicit_offload`` is the back-compat
+    ``cpu_offload=True`` request: it forces whole-module offload.
+
+    Policy meanings, ordered by measured speed/VRAM tradeoff:
+      none   - everything resident: fastest, highest VRAM.
+      group  - stream the transformer, companions resident: near-resident speed,
+               moderate VRAM cut (the balanced tradeoff).
+      model  - offload every component incl. the text encoder: lowest VRAM, slow.
+    """
     mode = normalize_memory_mode(requested_mode) or MEMORY_MODE_AUTO
     can_offload = bool(getattr(target, "supports_model_cpu_offload", False))
     budget = _safe_device_budget_mib(device_memory)
     required = _sum_required(model_dense_mib, runtime_headroom_mib, base_overhead_mib)
+    # The resident floor under group offload: companions stay, the transformer streams.
+    group_floor = _sum_required(companion_dense_mib, runtime_headroom_mib, base_overhead_mib)
     reasons: list[str] = []
     estimates: dict[str, Optional[int]] = {
         "safe_device_budget_mib": budget,
         "model_dense_mib": model_dense_mib,
+        "companion_dense_mib": companion_dense_mib,
         "runtime_headroom_mib": runtime_headroom_mib,
         "base_overhead_mib": base_overhead_mib,
         "resident_required_mib": required,
+        "group_floor_mib": group_floor,
     }
+
+    def _group_fits() -> bool:
+        # Group offload only helps if the resident remainder (companions) fits; when
+        # the text encoder itself is too big, only whole-module offload will do.
+        return group_floor is not None and budget is not None and group_floor <= budget
 
     if not can_offload or device_memory.is_unified:
         # MPS / CPU can't stream to a separate device, and on unified / system
@@ -346,28 +372,29 @@ def plan_diffusion_memory(
     elif mode == MEMORY_MODE_FAST:
         policy = OFFLOAD_NONE
         if budget is not None and required is not None and required > budget:
-            policy = OFFLOAD_MODEL
-            reasons.append("fast requested but weights do not fit resident; whole-module offload")
+            # Doesn't fit resident: the fastest offload is the streamed transformer.
+            policy = OFFLOAD_GROUP if _group_fits() else OFFLOAD_MODEL
+            reasons.append("fast requested but weights do not fit resident; offloading")
         else:
             reasons.append("fast requested; weights resident on device")
     elif mode == MEMORY_MODE_BALANCED:
-        policy = OFFLOAD_MODEL
-        reasons.append("balanced requested; whole-module CPU offload")
+        policy = OFFLOAD_GROUP
+        reasons.append("balanced requested; streamed block-level transformer offload")
     elif mode == MEMORY_MODE_LOW_VRAM:
-        policy = OFFLOAD_SEQUENTIAL
-        reasons.append("low_vram requested; submodule sequential CPU offload")
+        policy = OFFLOAD_MODEL
+        reasons.append("low_vram requested; whole-module offload of every component")
     elif budget is None or required is None:
         policy = OFFLOAD_NONE
         reasons.append("device budget or model size unknown; staying resident")
     elif required <= int(budget * 0.85):
         policy = OFFLOAD_NONE
         reasons.append("weights fit resident with headroom")
-    elif required <= budget:
-        policy = OFFLOAD_MODEL
-        reasons.append("tight fit; whole-module CPU offload")
+    elif _group_fits():
+        policy = OFFLOAD_GROUP
+        reasons.append("tight fit; stream the transformer, companions resident")
     else:
-        policy = OFFLOAD_SEQUENTIAL
-        reasons.append("weights exceed device budget; submodule sequential CPU offload")
+        policy = OFFLOAD_MODEL
+        reasons.append("companions exceed budget; whole-module offload of every component")
 
     if explicit_offload and policy == OFFLOAD_NONE and can_offload and not device_memory.is_unified:
         policy = OFFLOAD_MODEL
@@ -393,24 +420,31 @@ def plan_diffusion_memory(
 # ── apply to a built pipeline ─────────────────────────────────────────────────
 
 
-def apply_memory_plan(pipe: Any, plan: MemoryPlan, *, device: str, logger: Any = None) -> str:
+def apply_memory_plan(
+    pipe: Any, plan: MemoryPlan, *, device: str, logger: Any = None,
+) -> tuple[str, bool]:
     """Apply ``plan`` to a freshly built diffusers pipeline: enable the VAE memory
-    savers (best-effort; not every pipeline exposes them) then place / offload the
-    weights. Exactly one placement call runs, so the pipeline ends up either fully
-    resident or wired for CPU offload, never both.
+    savers then place / offload the weights. Exactly one placement call runs, so the
+    pipeline ends up either fully resident or wired for offload, never both.
 
-    Returns the offload policy actually engaged, which can differ from the plan:
-    submodule sequential offload is unreliable for GGUF-dequantised transformers on
-    some diffusers versions, so it falls back to the robust whole-module offload
-    (the proper low-VRAM GGUF path is the CPU-resident cache, a later phase)."""
+    Returns ``(offload_policy, vae_tiling)`` ACTUALLY engaged, which can differ from
+    the plan: VAE tiling is a no-op on a pipeline that exposes no tiling control, and
+    block-level / sequential offload fall back to the robust whole-module offload if
+    the transformer doesn't support them (e.g. submodule sequential is broken for
+    GGUF on diffusers 0.38). Status then reflects what really happened."""
+    tiling_engaged = False
     if plan.vae_tiling:
-        _try_call(pipe, "enable_vae_tiling", logger)
+        tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
     if plan.vae_slicing:
-        _try_call(pipe, "enable_vae_slicing", logger)
+        _enable_vae_saver(pipe, "enable_vae_slicing", "enable_slicing", logger)
 
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload()
+    elif policy == OFFLOAD_GROUP:
+        if not _apply_group_offload(pipe, device, logger):
+            pipe.enable_model_cpu_offload()
+            policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
             pipe.enable_sequential_cpu_offload()
@@ -424,15 +458,59 @@ def apply_memory_plan(pipe: Any, plan: MemoryPlan, *, device: str, logger: Any =
             policy = OFFLOAD_MODEL
     else:
         pipe.to(device)
-    return policy
+    return policy, tiling_engaged
 
 
-def _try_call(pipe: Any, method: str, logger: Any) -> None:
-    fn = getattr(pipe, method, None)
-    if not callable(fn):
-        return
+def _enable_vae_saver(pipe: Any, pipe_method: str, vae_method: str, logger: Any) -> bool:
+    """Turn on a VAE memory saver, trying the pipeline-level shortcut first and the
+    VAE submodule directly otherwise (some pipelines, e.g. Z-Image, only expose it
+    on ``pipe.vae``). Returns whether it actually engaged."""
+    for owner, method in ((pipe, pipe_method), (getattr(pipe, "vae", None), vae_method)):
+        fn = getattr(owner, method, None)
+        if not callable(fn):
+            continue
+        try:
+            fn()
+            return True
+        except Exception as exc:  # noqa: BLE001 — a VAE saver is an optimisation, never fatal
+            if logger is not None:
+                logger.warning("diffusion.memory: %s() failed: %s", method, exc)
+    return False
+
+
+def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
+    """Stream the transformer through the device a few blocks at a time via
+    diffusers group offloading, keeping the smaller components resident. Returns
+    False (so the caller falls back to whole-module offload) on any failure."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None:
+        return False
     try:
-        fn()
-    except Exception as exc:  # noqa: BLE001 — a VAE saver is an optimisation, never fatal
+        import torch
+        from diffusers.hooks import apply_group_offloading
+
+        onload = torch.device(device)
+        use_stream = onload.type == "cuda"  # overlap H2D copies with compute on CUDA
+        apply_group_offloading(
+            transformer,
+            onload_device = onload,
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = DEFAULT_GROUP_BLOCKS,
+            use_stream = use_stream,
+        )
+        # Place the remaining (smaller) components resident; the streamed
+        # transformer manages its own placement via the offloading hooks.
+        for name, comp in getattr(pipe, "components", {}).items():
+            if name == "transformer":
+                continue
+            if isinstance(comp, torch.nn.Module):
+                comp.to(onload)
+        return True
+    except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
         if logger is not None:
-            logger.warning("diffusion.memory: %s() failed: %s", method, exc)
+            logger.warning(
+                "diffusion.memory: group offload failed (%s); falling back to "
+                "whole-module offload", exc,
+            )
+        return False

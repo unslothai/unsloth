@@ -798,28 +798,34 @@ def _force_cuda_target(backend, monkeypatch):
     monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cuda", torch.bfloat16))
 
 
-def test_load_memory_mode_balanced_engages_model_offload(fake_runtime, tmp_path, monkeypatch):
+def test_load_memory_mode_balanced_streams_or_falls_back(fake_runtime, tmp_path, monkeypatch):
+    # balanced requests streamed block-level (group) offload. Under the stub there is
+    # no real diffusers.hooks, so group can't engage and the applier falls back to
+    # whole-module offload, reporting the policy actually engaged (the real "group"
+    # path is GPU-verified in the bench).
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     status = backend.load_pipeline(
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", memory_mode = "balanced"
     )
-    assert status["offload_policy"] == "model" and status["cpu_offload"] is True
+    assert status["offload_policy"] in ("group", "model") and status["cpu_offload"] is True
     assert status["memory_mode"] == "balanced"
-    pipe = backend._state.pipe
-    assert pipe.offloaded is True and pipe.moved_to is None  # offload owns placement
+    assert backend._state.pipe.offloaded is True  # model-offload fallback engaged
 
 
-def test_load_memory_mode_low_vram_uses_sequential_offload(fake_runtime, tmp_path, monkeypatch):
+def test_load_memory_mode_low_vram_engages_model_offload(fake_runtime, tmp_path, monkeypatch):
+    # low_vram offloads every component (lowest VRAM); whole-module offload is the
+    # robust path and engages directly (no streaming, so no diffusers.hooks needed).
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     status = backend.load_pipeline(
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", memory_mode = "low_vram"
     )
-    assert status["offload_policy"] == "sequential" and status["cpu_offload"] is True
-    assert backend._state.pipe.sequential_offloaded is True
+    assert status["offload_policy"] == "model" and status["cpu_offload"] is True
+    pipe = backend._state.pipe
+    assert pipe.offloaded is True and pipe.moved_to is None  # offload owns placement
 
 
 def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(fake_runtime, tmp_path, monkeypatch):
