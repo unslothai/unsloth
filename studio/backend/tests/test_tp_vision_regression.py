@@ -419,7 +419,9 @@ def test_is_tensor_split_assert_marker():
     )
     # the split-axis token alone (file path elided / reworded) still matches
     assert f("GGML_ASSERT(x.axis != GGML_BACKEND_SPLIT_AXIS_1) failed") is True
-    # an UNRELATED ggml assert with --mmproj present must NOT match
+    # UNRELATED asserts must NOT match -- including a different invariant from the
+    # same multi-assert source file (matched on the token, not the file name).
+    assert f("ggml-backend-meta.cpp:99: GGML_ASSERT(buf != NULL) failed") is False
     assert f("/x/ggml.c:1234: GGML_ASSERT(ne == 1) failed") is False
     assert f("ggml_abort: something else entirely") is False
     assert f("Segmentation fault (core dumped)") is False

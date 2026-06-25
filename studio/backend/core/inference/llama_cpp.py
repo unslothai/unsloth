@@ -4379,15 +4379,15 @@ class LlamaCppBackend:
     @staticmethod
     def _is_tensor_split_assert(output: str) -> bool:
         """True for the specific #6415 split-mode warmup assert
-        ``GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_0)`` in
-        ggml-backend-meta, not any ggml assert/abort -- so an unrelated invariant a
-        corrupt GGUF/projector trips with --mmproj isn't cached. stderr is merged
-        into the output, so the message is present."""
+        ``GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_0)``, not any ggml
+        assert/abort -- so an unrelated invariant a corrupt GGUF/projector trips with
+        --mmproj isn't cached. stderr is merged into the output, so it's present."""
         text = (output or "").lower()
         if "ggml_assert" not in text and "ggml_abort" not in text:
             return False
-        # split_axis (the enum) / ggml-backend-meta (its file): split-mode specific.
-        return "split_axis" in text or "ggml-backend-meta" in text
+        # split_axis: the GGML_BACKEND_SPLIT_AXIS_* enum, unique to this warmup
+        # assert -- match the token itself, not the (multi-assert) source file.
+        return "split_axis" in text
 
     @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
