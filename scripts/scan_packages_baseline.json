@@ -228,27 +228,11 @@
     },
     {
       "package": "multiprocess",
-      "file": "multiprocess/forkserver.py",
-      "check": "Reverse shell / bind shell pattern",
-      "severity": "CRITICAL",
-      "evidence": "L6: import socket sha256:6c707119169286c9a798e2c8d13a48614e481d8a503950916fd4ffb4c94d3182",
-      "evidence_hash": "50fec0f0522a8e4e636bf348b752002d7935d8455af31fb78c6f11e2eba19f6d"
-    },
-    {
-      "package": "multiprocess",
       "file": "multiprocess/tests/__init__.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L3355:                     os.dup2(conn.fileno(), i) | L3387:                          \"test needs os.dup2()\") | L3405:             os.dup2(fd, newfd) | L19: import socket sha256:26a745abdc7e89da28ab943394234d8ccb415e805477c3cc1f7d4766341a4c4c",
-      "evidence_hash": "18ceb7c4ce13c4b8daa00f7f8c5582b46d4f72954355bc87a42dd6e8dc7ad66a"
-    },
-    {
-      "package": "multiprocess",
-      "file": "multiprocess/tests/__init__.py",
-      "check": "Reverse shell / bind shell pattern",
-      "severity": "CRITICAL",
-      "evidence": "L3569:                     os.dup2(conn.fileno(), i) | L3601:                          \"test needs os.dup2()\") | L3619:             os.dup2(fd, newfd) | L20: import socket sha256:c824dc0f409f242420c3fbb324790c53cb3078d2c8b07ee8f2a05694b01c2946",
-      "evidence_hash": "7e5e054235c8474af2c5f709550ff8e6da935b0d3550163e2913cb37bf8c6d50"
+      "evidence": "L3355:                     os.dup2(conn.fileno(), i) | L3387:                          \"test needs os.dup2()\") | L3405:             os.dup2(fd, newfd)",
+      "evidence_hash": "44e8f5919373a4b4a6ff99e0d1438d6f9bd9f848249319125ace198394df7e93"
     },
     {
       "package": "numba",
@@ -903,8 +887,8 @@
       "file": "scripts/scan_packages.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", | L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", sha256:78268349021e21bedcd2eaaa5b4a71b0de1d52e023ada914dfdc09515ee1aad8",
-      "evidence_hash": "590fe1c96c442fbea5eb8642650257bc0b0199e919b9bacdb11dfa767b6fe839"
+      "evidence": "L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\",",
+      "evidence_hash": "dc06185fb21ee4d9a14a5bd4378b09da1e6b6fea584264591c1a51825997c22d"
     },
     {
       "package": "unsloth-zoo",

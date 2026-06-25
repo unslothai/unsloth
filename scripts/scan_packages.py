@@ -1209,11 +1209,18 @@ def _extract_evidence(
             if max_matches and len(out) >= max_matches:
                 return " | ".join(out)
 
+    had_perline = bool(out)
     for m in pattern.finditer(content):
         start = content.count("\n", 0, m.start()) + 1
         end = content.count("\n", 0, m.end()) + 1
         if end <= start or (start, end) in seen:
             continue  # single-line matches are already covered by the pass above
+        if had_perline and end - start + 1 > _MAX_MULTILINE_LINES:
+            # Per-line already bound the signal lines; a giant greedy DOTALL span
+            # bridging them only adds a whole-file digest that drifts on any
+            # unrelated edit (e.g. a dep bump moving the matched lines), so skip
+            # it. A genuinely appended multi-line construct stays under the cap.
+            continue
         seen.add((start, end))
         out.append(_render(start, end))
         if max_matches and len(out) >= max_matches:

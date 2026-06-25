@@ -561,6 +561,18 @@ def test_extract_evidence_records_multiline_after_oneline():
     assert sp._evidence_hash(eo) != sp._evidence_hash(ea)
 
 
+def test_extract_evidence_skips_giant_span_when_perline_bound():
+    # When per-line already binds the signal lines, a giant greedy DOTALL span
+    # bridging them is skipped, so the evidence carries no whole-file digest that
+    # would drift on an unrelated edit (e.g. a dependency bump moving the lines).
+    a = "import socket\n" + "x = 1\n" * 40 + "os.dup2(conn.fileno(), 0)\n"
+    b = "import socket\n" + "y = 2\n" * 40 + "os.dup2(conn.fileno(), 0)\n"
+    ea = sp._extract_evidence(a, sp.RE_REVERSE_SHELL)
+    eb = sp._extract_evidence(b, sp.RE_REVERSE_SHELL)
+    assert "os.dup2" in ea and "sha256:" not in ea
+    assert sp._evidence_hash(ea) == sp._evidence_hash(eb)
+
+
 def test_base64_exec_blob_finding_binds_every_blob():
     # The base64+exec+blob finding digests every blob, so appending a second
     # encoded payload reopens even when the first blob and decode line are unchanged.
