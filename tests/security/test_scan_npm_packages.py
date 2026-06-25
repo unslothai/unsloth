@@ -556,15 +556,23 @@ def test_outbound_host_config_long_object_binds_tail():
     # A config object longer than the backward window still binds its tail, so a
     # changed payload line well below the hostname reopens (not truncated away).
     filler = "\n".join(f"  opt{i}: {i}," for i in range(30))
-    obj = "const opts = {\n  hostname: '169.254.169.254',\n" + filler + "\n  path: '%s',\n};\nrun(opts);\n"
-    assert snp._finding_key(_host_finding(obj % "/old")) != snp._finding_key(_host_finding(obj % "/evil"))
+    obj = (
+        "const opts = {\n  hostname: '169.254.169.254',\n"
+        + filler
+        + "\n  path: '%s',\n};\nrun(opts);\n"
+    )
+    assert snp._finding_key(_host_finding(obj % "/old")) != snp._finding_key(
+        _host_finding(obj % "/evil")
+    )
 
 
 def test_outbound_host_config_reindent_is_stable():
     # A formatter-only reindent of the bound continuation lines must NOT change
     # the key (whitespace is normalized before the logical-line digest).
     tight = "const opts = {\n  hostname: '169.254.169.254',\n  path: '/x',\n};\nrun(opts);\n"
-    loose = "const opts = {\n      hostname: '169.254.169.254',\n      path:    '/x',\n};\nrun(opts);\n"
+    loose = (
+        "const opts = {\n      hostname: '169.254.169.254',\n      path:    '/x',\n};\nrun(opts);\n"
+    )
     assert snp._finding_key(_host_finding(tight)) == snp._finding_key(_host_finding(loose))
 
 
