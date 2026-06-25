@@ -240,7 +240,12 @@ def get_model_name(
     ):
         new_model_name = BAD_MAPPINGS[new_model_name.lower()]
 
-    if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
+    if (
+        new_model_name is None
+        and model_name.count("/") == 1
+        and model_name[0].isalnum()
+        and not _env_says_offline()  # offline: skip the remote (raw GitHub) mapper refresh
+    ):
         # Try checking if a new Unsloth version allows it!
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
             _get_new_mapper()
@@ -695,7 +700,9 @@ def _offline_aware_load(fn):
         try:
             return fn(*args, **kwargs)
         except Exception as e:
-            if not _is_offline_related_error(e):
+            # Skip if not network-related, or already retried by a nested decorator
+            # (else outer layers reload the whole model again).
+            if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
                 raise
         # Retry OUTSIDE the except so the failed attempt's traceback (a partial model)
         # is freed before reallocating, else a large VLM can OOM on the second load.
@@ -708,8 +715,16 @@ def _offline_aware_load(fn):
         except Exception:
             pass
         kwargs["local_files_only"] = True
-        with _force_hf_offline():
-            return fn(*args, **kwargs)
+        try:
+            with _force_hf_offline():
+                return fn(*args, **kwargs)
+        except Exception as e:
+            # Tag so an enclosing _offline_aware_load skips its own redundant retry.
+            try:
+                e._unsloth_offline_retried = True
+            except Exception:
+                pass
+            raise
 
     return _wrapper
 
