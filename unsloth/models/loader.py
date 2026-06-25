@@ -873,6 +873,7 @@ class FastLanguageModel(FastLlamaModel):
                 local_files_only = local_files_only,
                 fast_inference = fast_inference,
                 subfolder = kwargs.get("subfolder"),
+                force_download = kwargs.get("force_download", False),
             )
             model = PeftModel.from_pretrained(
                 model,
@@ -1799,6 +1800,7 @@ class FastModel(FastBaseModel):
                 local_files_only = local_files_only,
                 fast_inference = fast_inference,
                 subfolder = kwargs.get("subfolder"),
+                force_download = kwargs.get("force_download", False),
             )
             try:
                 model = PeftModel.from_pretrained(

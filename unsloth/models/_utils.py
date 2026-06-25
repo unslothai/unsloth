@@ -856,6 +856,7 @@ def maybe_prefetch_hf_snapshot(
     local_files_only = False,
     fast_inference = False,
     subfolder = None,
+    force_download = False,
 ):
     """Warm the Hugging Face cache for a remote repo before the in-process load.
 
@@ -924,6 +925,7 @@ def maybe_prefetch_hf_snapshot(
             revision = revision,
             cache_dir = cache_dir,
             ignore_patterns = ignore_patterns,
+            force_download = force_download,
         )
     except DownloadStallError:
         # Both Xet and HTTP stalled: surface a clear network error instead of

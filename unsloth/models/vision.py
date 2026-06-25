@@ -769,6 +769,7 @@ class FastBaseModel:
             local_files_only = kwargs.get("local_files_only", False),
             fast_inference = fast_inference,
             subfolder = kwargs.get("subfolder"),
+            force_download = kwargs.get("force_download", False),
         )
 
         if dtype is None:
