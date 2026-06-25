@@ -32,15 +32,88 @@ try:
         snapshot_download_with_xet_fallback as _shared_snapshot_download_with_xet_fallback,
     )
 except ModuleNotFoundError as exc:
-    # The shared helper lives in a newer unsloth_zoo; fail with an actionable
-    # message instead of a bare ModuleNotFoundError at Studio startup.
-    if exc.name == "unsloth_zoo.hf_xet_fallback":
-        raise RuntimeError(
-            "Unsloth Studio requires an unsloth_zoo that provides "
-            "unsloth_zoo.hf_xet_fallback. Upgrade unsloth_zoo alongside unsloth "
-            "(pip install -U unsloth_zoo)."
-        ) from exc
-    raise
+    if exc.name != "unsloth_zoo.hf_xet_fallback":
+        raise
+
+    # The shared helper lives in a newer unsloth_zoo. Rather than crash Studio at
+    # startup on an older (but dependency-satisfying) unsloth_zoo, degrade
+    # gracefully: plain HF downloads with the no-progress stall watchdog disabled
+    # -- the same best-effort posture core Unsloth uses in from_pretrained. The
+    # automatic Xet -> HTTP recovery returns as soon as unsloth_zoo is upgraded.
+    # These are thin stubs, not a second copy of the orchestration.
+    import logging as _logging
+
+    _logging.getLogger(__name__).warning(
+        "unsloth_zoo.hf_xet_fallback not found; the Xet stall watchdog is "
+        "disabled. Upgrade unsloth_zoo to re-enable automatic Xet -> HTTP "
+        "download recovery."
+    )
+
+    DEFAULT_HEARTBEAT_INTERVAL = 30.0
+    DEFAULT_STALL_TIMEOUT = 180.0
+    DEFAULT_GRACE_PERIOD = 10.0
+
+    class DownloadStallError(RuntimeError):
+        """Stub mirror of the shared type so callers and ``except`` clauses still
+        resolve when the shared helper is unavailable (it is simply never raised
+        in degraded mode, since there is no watchdog to detect a stall)."""
+
+    def child_should_disable_xet(config: dict) -> bool:
+        return bool(config.get("disable_xet"))
+
+    def get_hf_download_state(*args: Any, **kwargs: Any) -> None:
+        return None  # unmeasurable -> the (absent) watchdog never fires
+
+    def start_watchdog(**kwargs: Any) -> "threading.Event":
+        return threading.Event()  # never set; no stall detection in degraded mode
+
+    def _shared_hf_hub_download_with_xet_fallback(
+        repo_id: str,
+        filename: str,
+        token: Optional[str],
+        *,
+        repo_type: str = "model",
+        revision: Optional[str] = None,
+        cache_dir: Optional[str] = None,
+        force_download: bool = False,
+        **_ignored: Any,
+    ) -> str:
+        from huggingface_hub import hf_hub_download
+
+        return hf_hub_download(
+            repo_id = repo_id,
+            filename = filename,
+            token = token,
+            repo_type = repo_type,
+            revision = revision,
+            cache_dir = cache_dir,
+            force_download = force_download,
+        )
+
+    def _shared_snapshot_download_with_xet_fallback(
+        repo_id: str,
+        *,
+        revision: Optional[str] = None,
+        token: Optional[str] = None,
+        repo_type: str = "model",
+        cache_dir: Optional[str] = None,
+        allow_patterns: Optional[Any] = None,
+        ignore_patterns: Optional[Any] = None,
+        force_download: bool = False,
+        **_ignored: Any,
+    ) -> str:
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(
+            repo_id = repo_id,
+            repo_type = repo_type,
+            revision = revision,
+            token = token,
+            cache_dir = cache_dir,
+            allow_patterns = allow_patterns,
+            ignore_patterns = ignore_patterns,
+            force_download = force_download,
+        )
 
 __all__ = [
     "DEFAULT_GRACE_PERIOD",

@@ -116,3 +116,48 @@ def test_shim_snapshot_injects_studio_prepare(monkeypatch):
     assert out == "/tmp/snap-dir"
     assert captured["repo_id"] == "org/model"
     assert captured["prepare_for_http_fn"] is xf._studio_prepare_for_http
+
+
+def test_degrades_gracefully_without_shared_helper(monkeypatch):
+    """On an older unsloth_zoo that lacks the shared helper, the shim must still
+    import (Studio boots) and provide stub API that does plain HF downloads with
+    the watchdog disabled, instead of crashing at startup."""
+    import importlib
+
+    class _BlockShared:
+        def find_spec(self, name, path = None, target = None):
+            if name == "unsloth_zoo.hf_xet_fallback":
+                raise ModuleNotFoundError(f"No module named '{name}'", name = name)
+            return None
+
+    finder = _BlockShared()
+    saved_shared = sys.modules.pop("unsloth_zoo.hf_xet_fallback", None)
+    saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
+    sys.meta_path.insert(0, finder)
+    try:
+        degraded = importlib.import_module("utils.hf_xet_fallback")
+
+        # Boots without raising and mirrors the shared API surface.
+        assert issubclass(degraded.DownloadStallError, RuntimeError)
+        assert degraded.child_should_disable_xet({"disable_xet": True}) is True
+        assert degraded.get_hf_download_state(["x"]) is None  # unmeasurable
+        event = degraded.start_watchdog(repo_ids = ["x"], on_stall = lambda m: None)
+        assert hasattr(event, "set") and not event.is_set()  # never fires
+
+        # Downloads fall back to plain huggingface_hub (no watchdog, no crash).
+        called = {}
+
+        def _fake_snapshot(repo_id, **kwargs):
+            called["repo_id"] = repo_id
+            return "/snap-dir"
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", _fake_snapshot)
+        assert degraded.snapshot_download_with_xet_fallback("org/model") == "/snap-dir"
+        assert called["repo_id"] == "org/model"
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("utils.hf_xet_fallback", None)
+        if saved_shared is not None:
+            sys.modules["unsloth_zoo.hf_xet_fallback"] = saved_shared
+        if saved_shim is not None:
+            sys.modules["utils.hf_xet_fallback"] = saved_shim
