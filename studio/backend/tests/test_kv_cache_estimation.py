@@ -1518,8 +1518,8 @@ class TestServerFlags:
         ctx = 8192
 
         # Calculate KV sizes with explicit ctx_checkpoints=32 (the new default)
-        kv_default = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints=32)
-        kv_full = b._estimate_kv_cache_bytes(ctx, "f16", swa_full=True, ctx_checkpoints=32)
+        kv_default = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 32)
+        kv_full = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True, ctx_checkpoints = 32)
 
         # Verify: checkpoints add overhead (default > swa_full because swa_full disables checkpoints)
         assert kv_default > kv_full, f"Checkpoints should add overhead: {kv_default} vs {kv_full}"
@@ -1529,28 +1529,25 @@ class TestServerFlags:
         estimated_model_mib = 500
         budget_mib = (estimated_model_mib + kv_max_mib * 1.2) / _CTX_FIT_VRAM_FRACTION + 50
 
-        
-
         fitted_default = b._fit_context_to_vram(
-            requested_ctx=ctx,
-            available_mib=int(budget_mib),
-            model_size_bytes=1024 * 1024,
-            cache_type_kv="f16",
+            requested_ctx = ctx,
+            available_mib = int(budget_mib),
+            model_size_bytes = 1024 * 1024,
+            cache_type_kv = "f16",
             # ctx_checkpoints uses default (32 if supported)
         )
         fitted_full = b._fit_context_to_vram(
-            requested_ctx=ctx,
-            available_mib=int(budget_mib),
-            model_size_bytes=1024 * 1024,
-            cache_type_kv="f16",
-            swa_full=True,
+            requested_ctx = ctx,
+            available_mib = int(budget_mib),
+            model_size_bytes = 1024 * 1024,
+            cache_type_kv = "f16",
+            swa_full = True,
             # ctx_checkpoints uses default (32 if supported)
         )
 
         # Both should fit since budget is based on the larger KV (default with checkpoints)
         assert fitted_default == ctx, f"Default config should fit: {fitted_default} vs {ctx}"
         assert fitted_full == ctx, f"swa_full config should also fit: {fitted_full} vs {ctx}"
-
 
 
 class TestParallelSWAScaling:
