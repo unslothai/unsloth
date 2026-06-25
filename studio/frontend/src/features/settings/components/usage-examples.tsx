@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
-import { buildAgentCommand } from "./agent-command";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -28,6 +27,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
+import { buildAgentCommand } from "./agent-command";
 
 // API call type; OS axis applies to curl only (Python is OS-identical).
 type ExampleType =
