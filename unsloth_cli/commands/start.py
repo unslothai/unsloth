@@ -13,7 +13,7 @@ import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import NamedTuple, NoReturn, Optional
 
 import typer
 
@@ -60,6 +60,35 @@ _LAUNCH_OPTION = typer.Option(
     "--launch/--no-launch",
     help = "--no-launch prints the env and command instead (remote shells, WSL).",
 )
+# Model-load knobs mirrored from `unsloth run`; only used when --model triggers a
+# load on the server. Server-startup flags (--host/--port/--cloudflare/...) do not
+# apply here because `unsloth start` attaches to an already-running server.
+_GGUF_VARIANT_OPTION = typer.Option(
+    None, "--gguf-variant", help = "GGUF quant variant to load (e.g. UD-Q4_K_XL)."
+)
+_CONTEXT_OPTION = typer.Option(
+    0,
+    "--max-seq-length",
+    "--context-length",
+    help = "Context length in tokens for the load (0 = model default).",
+)
+_LOAD_4BIT_OPTION = typer.Option(
+    True, "--load-in-4bit/--no-load-in-4bit", help = "Load hub models in 4-bit (ignored for GGUF)."
+)
+_TENSOR_PARALLEL_OPTION = typer.Option(
+    False,
+    "--tensor-parallel/--no-tensor-parallel",
+    help = "Split a GGUF across GPUs by tensor instead of by layer (multi-GPU only).",
+)
+
+
+class LoadOptions(NamedTuple):
+    """Model-load knobs forwarded to /api/inference/load when --model triggers a load."""
+
+    gguf_variant: Optional[str] = None
+    max_seq_length: int = 0
+    load_in_4bit: bool = True
+    tensor_parallel: bool = False
 
 
 def _fail(message: str) -> NoReturn:
@@ -275,16 +304,29 @@ def _loaded_models(base: str, key: str) -> list:
     return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
 
 
-def _resolve_model(base: str, key: str, requested: Optional[str]) -> dict:
+def _resolve_model(
+    base: str, key: str, requested: Optional[str], load: LoadOptions = LoadOptions()
+) -> dict:
     models = _loaded_models(base, key)
     match = next((m for m in models if m["id"] == requested), None)
     if requested and match is None:
         typer.echo(f"Loading {requested} on the Studio server (this can take a while)…")
+        # Mirror `unsloth run`'s load knobs; keep the default payload as just
+        # model_path so a bare `--model` load is unchanged.
+        payload = {"model_path": requested}
+        if load.gguf_variant:
+            payload["gguf_variant"] = load.gguf_variant
+        if load.max_seq_length:
+            payload["max_seq_length"] = load.max_seq_length
+        if not load.load_in_4bit:
+            payload["load_in_4bit"] = False
+        if load.tensor_parallel:
+            payload["tensor_parallel"] = True
         loaded = _http_json(
             "POST",
             f"{base}/api/inference/load",
             key,
-            {"model_path": requested},
+            payload,
             timeout = 3600,
             error = "Model load failed",
         )
@@ -521,10 +563,12 @@ def _launch(
     raise typer.Exit(code = code if code >= 0 else 128 - code)
 
 
-def _connect(api_key: Optional[str], model: Optional[str]) -> tuple:
+def _connect(
+    api_key: Optional[str], model: Optional[str], load: LoadOptions = LoadOptions()
+) -> tuple:
     base = _require_studio()
     key = _agent_api_key(base, api_key)
-    return base, key, _resolve_model(base, key, model)
+    return base, key, _resolve_model(base, key, model, load)
 
 
 def _run(
@@ -672,9 +716,15 @@ def claude(
     model: Optional[str] = _MODEL_OPTION,
     api_key: Optional[str] = _KEY_OPTION,
     launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
 ):
     """Point Claude Code at the running Studio server and start it."""
-    base, key, entry = _connect(api_key, model)
+    base, key, entry = _connect(
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+    )
     model_id = entry["id"]
     ensure_claude_attribution_header()
 
@@ -711,9 +761,15 @@ def codex(
     model: Optional[str] = _MODEL_OPTION,
     api_key: Optional[str] = _KEY_OPTION,
     launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
 ):
     """Point OpenAI Codex at the running Studio server and start it."""
-    base, key, entry = _connect(api_key, model)
+    base, key, entry = _connect(
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+    )
     _require_gguf_for_codex(base, key, entry["id"])
     write_codex_config(base, entry)
 
@@ -728,9 +784,15 @@ def openclaw(
     model: Optional[str] = _MODEL_OPTION,
     api_key: Optional[str] = _KEY_OPTION,
     launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
 ):
     """Point OpenClaw at the running Studio server and start it."""
-    base, key, entry = _connect(api_key, model)
+    base, key, entry = _connect(
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+    )
     write_openclaw_config(base, key, entry)  # key lives in the config, not the env
 
     command = ["openclaw", *ctx.args]
@@ -748,9 +810,15 @@ def opencode(
     model: Optional[str] = _MODEL_OPTION,
     api_key: Optional[str] = _KEY_OPTION,
     launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
 ):
     """Point OpenCode at the running Studio server and start it."""
-    base, key, entry = _connect(api_key, model)
+    base, key, entry = _connect(
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+    )
     write_opencode_config(base, key, entry)  # key lives in the config, not the env
 
     command = ["opencode", *ctx.args]
@@ -763,9 +831,15 @@ def hermes(
     model: Optional[str] = _MODEL_OPTION,
     api_key: Optional[str] = _KEY_OPTION,
     launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Studio server and start it."""
-    base, key, entry = _connect(api_key, model)
+    base, key, entry = _connect(
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+    )
     write_hermes_config(base, entry)
 
     env = {_HERMES_ENV_KEY: key}

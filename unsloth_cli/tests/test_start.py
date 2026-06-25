@@ -389,6 +389,33 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
 
 
+def test_connect_model_flag_forwards_load_options(fake_studio):
+    # The model-load knobs mirrored from `unsloth run` reach /api/inference/load.
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "claude", "--no-launch", "--model", "unsloth/Qwen3-4B-GGUF",
+            "--gguf-variant", "UD-Q4_K_XL", "--context-length", "8192",
+            "--no-load-in-4bit", "--tensor-parallel",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads == [
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {
+                "model_path": "unsloth/Qwen3-4B-GGUF",
+                "gguf_variant": "UD-Q4_K_XL",
+                "max_seq_length": 8192,
+                "load_in_4bit": False,
+                "tensor_parallel": True,
+            },
+        )
+    ]
+
+
 def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
     # Studio registers a loaded model under a canonical id (resolved identifier
     # / casing) that can differ from the path we passed. The agent must connect
