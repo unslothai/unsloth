@@ -564,9 +564,7 @@ class InferenceOrchestrator:
                     rtype,
                 )
             except Exception:
-                logger.exception(
-                    "Inference dispatcher: failed to route a response; continuing"
-                )
+                logger.exception("Inference dispatcher: failed to route a response; continuing")
                 continue
 
     def _generate_dispatched(

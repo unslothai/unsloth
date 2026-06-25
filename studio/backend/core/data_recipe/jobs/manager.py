@@ -470,9 +470,7 @@ class JobManager:
             self._handle_event(job, event)
         except Exception:
             etype = event.get("type") if isinstance(event, dict) else type(event).__name__
-            logger.exception(
-                "Data-recipe job pump: failed to handle %s event; skipping", etype
-            )
+            logger.exception("Data-recipe job pump: failed to handle %s event; skipping", etype)
 
     def _pump_loop(self) -> None:
         """Background thread: consumes worker events + updates job snapshot.
@@ -536,9 +534,7 @@ class JobManager:
                 if retired_job is not None:
                     self._retire_workflow_key(retired_job)
             except Exception:
-                logger.exception(
-                    "Data-recipe job pump: finalization after worker exit failed"
-                )
+                logger.exception("Data-recipe job pump: finalization after worker exit failed")
             return
 
     def _handle_event(self, job: Job, event: dict) -> None:

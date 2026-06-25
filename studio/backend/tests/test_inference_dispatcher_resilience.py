@@ -30,7 +30,7 @@ class _ScriptedQueue:
     def __init__(self, items):
         self._items = list(items)
 
-    def get(self, timeout=None):
+    def get(self, timeout = None):
         if self._items:
             return self._items.pop(0)
         raise queue.Empty
@@ -51,19 +51,17 @@ def test_dispatcher_survives_malformed_response_and_routes_next():
     o._mailboxes = {rid: mbox}
     # A non-dict response (resp.get -> AttributeError) must not kill the loop;
     # the following valid response must still reach its mailbox.
-    o._resp_queue = _ScriptedQueue(
-        [12345, {"request_id": rid, "type": "token", "text": "hi"}]
-    )
+    o._resp_queue = _ScriptedQueue([12345, {"request_id": rid, "type": "token", "text": "hi"}])
 
-    t = threading.Thread(target=o._dispatcher_loop, daemon=True)
+    t = threading.Thread(target = o._dispatcher_loop, daemon = True)
     t.start()
     try:
-        got = mbox.get(timeout=5)
+        got = mbox.get(timeout = 5)
         assert got["text"] == "hi", "valid response must route despite the prior bad one"
         assert t.is_alive(), "dispatcher must survive a malformed response"
     finally:
         o._dispatcher_stop.set()
-        t.join(timeout=5)
+        t.join(timeout = 5)
     assert not t.is_alive()
 
 
@@ -84,13 +82,13 @@ def test_dispatcher_survives_mailbox_put_error():
         ]
     )
 
-    t = threading.Thread(target=o._dispatcher_loop, daemon=True)
+    t = threading.Thread(target = o._dispatcher_loop, daemon = True)
     t.start()
     try:
-        got = good.get(timeout=5)
+        got = good.get(timeout = 5)
         assert got["text"] == "ok"
         assert t.is_alive()
     finally:
         o._dispatcher_stop.set()
-        t.join(timeout=5)
+        t.join(timeout = 5)
     assert not t.is_alive()
