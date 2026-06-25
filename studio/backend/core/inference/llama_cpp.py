@@ -1422,7 +1422,7 @@ class LlamaCppBackend:
         """Extra llama-server flags from the last load (a copy). None =
         never set, [] = explicitly cleared. Used by the route for
         inheritance."""
-        return list(self._extra_args) if self._extra_args is not None else None
+        return list(getattr(self, '_extra_args', None)) if getattr(self, '_extra_args', None) is not None else None
 
     @property
     def requested_n_ctx(self) -> int:
@@ -3010,9 +3010,7 @@ class LlamaCppBackend:
         ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(
-            ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, self.extra_args)
-        )
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, self.extra_args)
 
         if not self._can_estimate_kv():
             logger.debug(
@@ -4206,9 +4204,7 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
-        ctx_checkpoints = self._resolve_ctx_checkpoints(
-            ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, self.extra_args)
-        )
+        ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, self.extra_args)
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
