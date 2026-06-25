@@ -114,7 +114,7 @@ def compute_snapshot_progress(
     for entry in preferred_repo_cache_dirs(
         repo_type,
         repo_id,
-        force_active=force_active,
+        force_active = force_active,
     ):
         completed_bytes = 0
         in_progress_bytes = 0
@@ -153,21 +153,21 @@ def compute_snapshot_progress(
                 in_progress_bytes,
                 cache_path,
                 _snapshot_complete_on_disk(
-                    repo_type=repo_type,
-                    repo_id=repo_id,
-                    variant=variant,
-                    entry=entry,
-                    expected_total=expected_total,
-                    completed_bytes=completed_bytes,
-                    in_progress_bytes=in_progress_bytes,
+                    repo_type = repo_type,
+                    repo_id = repo_id,
+                    variant = variant,
+                    entry = entry,
+                    expected_total = expected_total,
+                    completed_bytes = completed_bytes,
+                    in_progress_bytes = in_progress_bytes,
                 ),
             )
         )
 
     selected = max(
         readings,
-        key=lambda item: (item[0] + item[1], item[0]),
-        default=None,
+        key = lambda item: (item[0] + item[1], item[0]),
+        default = None,
     )
     if selected is None:
         return empty
@@ -240,14 +240,14 @@ async def snapshot_progress_response(
     try:
         return await asyncio.to_thread(
             compute_snapshot_progress,
-            repo_type=repo_type,
-            repo_id=repo_id,
-            job_key=job_key,
-            expected_bytes=expected_bytes,
-            hf_token=hf_token,
-            registry=registry,
-            metadata_resolver=metadata_resolver,
-            variant=variant,
+            repo_type = repo_type,
+            repo_id = repo_id,
+            job_key = job_key,
+            expected_bytes = expected_bytes,
+            hf_token = hf_token,
+            registry = registry,
+            metadata_resolver = metadata_resolver,
+            variant = variant,
         )
     except Exception as e:
         logger.warning(
@@ -255,6 +255,6 @@ async def snapshot_progress_response(
             repo_type,
             repo_id,
             type(e).__name__,
-            download_registry.scrub_secrets(str(e), hf_token=hf_token),
+            download_registry.scrub_secrets(str(e), hf_token = hf_token),
         )
         return _empty_progress(expected_bytes)

@@ -39,7 +39,7 @@ def get_colab_url(port: int = 8888) -> str:
 
     for attempt in range(3):
         try:
-            url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec=10)
+            url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec = 10)
             # Valid proxy URL is https:// and embeds the port.
             if url and isinstance(url, str) and url.startswith("https://") and str(port) in url:
                 return url.rstrip("/")
@@ -106,9 +106,8 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
 def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
     """Return True if a Studio backend is already answering health checks on *port*."""
     import urllib.request
-
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout=timeout):
+        with urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout = timeout):
             return True
     except Exception:
         return False
@@ -160,8 +159,7 @@ def _show_and_embed(port: int):
         # Fallback: Colab's built-in helper.
         try:
             from google.colab import output as colab_output
-
-            colab_output.serve_kernel_port_as_iframe(port, height=900, width="100%")
+            colab_output.serve_kernel_port_as_iframe(port, height = 900, width = "100%")
         except ImportError:
             pass
 
@@ -186,7 +184,7 @@ def start(port: int = 8888):
         try:
             for _ in range(10000):
                 time.sleep(300)
-                print("=", end="", flush=True)
+                print("=", end = "", flush = True)
         except KeyboardInterrupt:
             logger.info("\nUnsloth Studio keepalive stopped.")
         return
@@ -204,7 +202,7 @@ def start(port: int = 8888):
 
     logger.info("   Starting server...")
     try:
-        app = run_server(host="0.0.0.0", port=port, frontend_path=frontend_path, silent=True)
+        app = run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
     except SystemExit as exc:
         logger.error(f"❌ Unsloth Studio failed to start: {exc}")
         return
@@ -225,7 +223,7 @@ def start(port: int = 8888):
     server_ready = False
     for _ in range(40):
         try:
-            with urllib.request.urlopen(f"http://localhost:{actual_port}/api/health", timeout=1):
+            with urllib.request.urlopen(f"http://localhost:{actual_port}/api/health", timeout = 1):
                 server_ready = True
                 break
         except Exception:
@@ -245,7 +243,7 @@ def start(port: int = 8888):
     try:
         for _ in range(10000):
             time.sleep(300)
-            print("=", end="", flush=True)
+            print("=", end = "", flush = True)
     except KeyboardInterrupt:
         logger.info("\nUnsloth Studio keepalive stopped.")
 

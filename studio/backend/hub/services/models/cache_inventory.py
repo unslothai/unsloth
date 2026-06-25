@@ -67,10 +67,10 @@ def get_repo_snapshot_metadata_cached(
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi(token=hf_token).model_info(
+        info = HfApi(token = hf_token).model_info(
             repo_id,
-            files_metadata=True,
-            timeout=_MODEL_METADATA_TIMEOUT_SECONDS,
+            files_metadata = True,
+            timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
         )
         total = snapshot_download_size(info.siblings)
         blob_hashes = snapshot_download_blob_hashes(info.siblings)
@@ -78,20 +78,20 @@ def get_repo_snapshot_metadata_cached(
         logger.warning(
             "Failed to get repo size for %s: %s",
             repo_id,
-            download_registry.scrub_secrets(str(e), hf_token=hf_token),
+            download_registry.scrub_secrets(str(e), hf_token = hf_token),
         )
         with _repo_size_cache_lock:
             _repo_size_neg_cache[cache_key] = time.monotonic()
             _repo_size_neg_cache.move_to_end(cache_key)
             while len(_repo_size_neg_cache) > _REPO_SIZE_CACHE_MAX:
-                _repo_size_neg_cache.popitem(last=False)
+                _repo_size_neg_cache.popitem(last = False)
         return 0, frozenset()
     with _repo_size_cache_lock:
         _repo_size_cache[cache_key] = (total, blob_hashes, time.monotonic())
         _repo_size_cache.move_to_end(cache_key)
         _repo_size_neg_cache.pop(cache_key, None)
         while len(_repo_size_cache) > _REPO_SIZE_CACHE_MAX:
-            _repo_size_cache.popitem(last=False)
+            _repo_size_cache.popitem(last = False)
     return total, blob_hashes
 
 
@@ -146,8 +146,8 @@ def _cache_inventory_fields(
         "capabilities": _capabilities_for_format(
             model_format,
             "hf_cache",
-            partial=partial,
-            requires_variant=requires_variant,
+            partial = partial,
+            requires_variant = requires_variant,
         ).model_dump(),
     }
 
@@ -192,8 +192,8 @@ def _scan_cached_gguf() -> list[dict]:
                     _cache_inventory_fields(
                         repo_id,
                         "gguf",
-                        partial=bool(row["partial"]),
-                        requires_variant=True,
+                        partial = bool(row["partial"]),
+                        requires_variant = True,
                     )
                 )
                 if _prefer_cache_row(row, existing):
@@ -202,7 +202,7 @@ def _scan_cached_gguf() -> list[dict]:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
                 continue
-    return sorted(seen_lower.values(), key=lambda c: c["repo_id"])
+    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
@@ -213,11 +213,11 @@ async def list_cached_gguf_response(hf_token: Optional[str] = None):
     except Exception as e:
         logger.error(
             "Error listing cached GGUF repos: %s",
-            download_registry.scrub_secrets(str(e), hf_token=hf_token),
+            download_registry.scrub_secrets(str(e), hf_token = hf_token),
         )
         raise HTTPException(
-            status_code=500,
-            detail="Failed to read the local model cache.",
+            status_code = 500,
+            detail = "Failed to read the local model cache.",
         ) from e
 
 
@@ -277,13 +277,13 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
 
     model_format = (
         _classify_non_gguf_model_format(
-            has_config=has_config,
-            has_adapter_config=has_adapter_config,
-            has_adapter_weights=has_adapter_weights,
-            has_safetensors=has_safetensors,
-            has_transformers_safetensors=has_transformers_safetensors,
-            has_checkpoint_weights=has_checkpoint,
-            trusted_hf_cache_repo=True,
+            has_config = has_config,
+            has_adapter_config = has_adapter_config,
+            has_adapter_weights = has_adapter_weights,
+            has_safetensors = has_safetensors,
+            has_transformers_safetensors = has_transformers_safetensors,
+            has_checkpoint_weights = has_checkpoint,
+            trusted_hf_cache_repo = True,
         )
         or "unknown"
     )
@@ -297,9 +297,9 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         size_bytes = sum(all_weight_blobs.values())
 
     return _CachedNonGgufPayload(
-        size_bytes=size_bytes,
-        has_runnable_weights=model_format != "unknown",
-        model_format=model_format,
+        size_bytes = size_bytes,
+        has_runnable_weights = model_format != "unknown",
+        model_format = model_format,
     )
 
 
@@ -313,7 +313,7 @@ def _cached_model_snapshot_path(repo_path: Path) -> Optional[Path]:
 
 def _read_json_object(path: Path) -> dict:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding = "utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -322,7 +322,7 @@ def _read_json_object(path: Path) -> dict:
 
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding = "utf-8")
     except Exception:
         return {}
     lines = text.splitlines()
@@ -337,7 +337,6 @@ def _read_model_card_frontmatter(path: Path) -> dict:
         return {}
     try:
         import yaml
-
         data = yaml.safe_load("\n".join(body)) or {}
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -415,7 +414,7 @@ def _scan_cached_models() -> list[dict]:
                         hf_cache_scan.partial_transport_for(
                             "model",
                             repo_id,
-                            repo_cache_dir=repo_path,
+                            repo_cache_dir = repo_path,
                         )
                         if snapshot_partial
                         else None
@@ -426,7 +425,7 @@ def _scan_cached_models() -> list[dict]:
                     _cache_inventory_fields(
                         repo_id,
                         payload.model_format,
-                        partial=bool(row["partial"]),
+                        partial = bool(row["partial"]),
                     )
                 )
                 if _prefer_cache_row(row, existing):
@@ -435,7 +434,7 @@ def _scan_cached_models() -> list[dict]:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                 continue
-    cached = sorted(seen_lower.values(), key=lambda c: c["repo_id"])
+    cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(
         "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d returned=%d",
         inspected,
@@ -454,9 +453,9 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
     except Exception as e:
         logger.error(
             "Error listing cached models: %s",
-            download_registry.scrub_secrets(str(e), hf_token=hf_token),
+            download_registry.scrub_secrets(str(e), hf_token = hf_token),
         )
         raise HTTPException(
-            status_code=500,
-            detail="Failed to read the local model cache.",
+            status_code = 500,
+            detail = "Failed to read the local model cache.",
         ) from e

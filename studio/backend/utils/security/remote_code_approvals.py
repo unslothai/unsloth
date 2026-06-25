@@ -93,7 +93,7 @@ def _save(data: dict) -> None:
     tmp = path.parent / f".{path.name}.tmp-{os.getpid()}"
     try:
         with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent = 2)
         try:
             os.chmod(tmp, 0o600)
         except OSError:
@@ -102,7 +102,7 @@ def _save(data: dict) -> None:
     except Exception as exc:
         logger.warning("Could not write remote-code approvals (%s)", exc)
         try:
-            tmp.unlink(missing_ok=True)
+            tmp.unlink(missing_ok = True)
         except OSError:
             pass
 
@@ -125,11 +125,9 @@ def _file_lock():
         try:
             if os.name == "nt":
                 import msvcrt
-
                 msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
             else:
                 import fcntl
-
                 fcntl.flock(fd, fcntl.LOCK_EX)
         except Exception:
             pass  # locking unavailable; the thread lock still applies
@@ -138,12 +136,10 @@ def _file_lock():
         try:
             if os.name == "nt":
                 import msvcrt
-
                 with contextlib.suppress(Exception):
                     msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
-
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
@@ -162,11 +158,11 @@ def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
     if entry.get("max_severity") == CRITICAL:
         return None
     return StoredApproval(
-        commit_sha=entry.get("commit_sha"),
-        fingerprint=entry["fingerprint"],
-        max_severity=entry.get("max_severity"),
-        approved_at=entry.get("approved_at", ""),
-        scanner_version=entry.get("scanner_version", 0),
+        commit_sha = entry.get("commit_sha"),
+        fingerprint = entry["fingerprint"],
+        max_severity = entry.get("max_severity"),
+        approved_at = entry.get("approved_at", ""),
+        scanner_version = entry.get("scanner_version", 0),
     )
 
 
@@ -213,7 +209,7 @@ def clear() -> None:
     """Test helper: drop the on-disk store."""
     with _lock:
         try:
-            _store_path().unlink(missing_ok=True)
+            _store_path().unlink(missing_ok = True)
         except OSError:
             pass
 
@@ -224,13 +220,11 @@ def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[
     and reuse stale consent. None falls back to the authoritative fingerprint (never fail-open).
     """
     from utils.paths import is_local_path
-
     try:
         if is_local_path(target) or _env_offline():
             return None
         from huggingface_hub import HfApi
-
-        return HfApi().model_info(target, token=hf_token).sha
+        return HfApi().model_info(target, token = hf_token).sha
     except Exception as exc:
         logger.debug("Could not resolve commit sha for '%s': %s", target, exc)
         return None

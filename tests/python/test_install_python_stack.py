@@ -28,7 +28,7 @@ class TestBuildUvCmdTorchBackend:
         """Without UV_TORCH_BACKEND env var, no --torch-backend flag."""
         env = os.environ.copy()
         env.pop("UV_TORCH_BACKEND", None)
-        with mock.patch.dict(os.environ, env, clear=True):
+        with mock.patch.dict(os.environ, env, clear = True):
             cmd = self._call(("somepackage",))
         assert not any(
             a.startswith("--torch-backend") for a in cmd
@@ -63,10 +63,10 @@ class TestUvSafePath:
         p = "/tmp/plain/constraints.txt"
         assert ips._uv_safe_path(p) == p
 
-    @pytest.mark.skipif(ips.IS_WINDOWS, reason="POSIX temp-copy fallback")
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_posix_space_path_returns_spacefree_copy(self, tmp_path):
         src = tmp_path / "Open Source" / "constraints.txt"
-        src.parent.mkdir(parents=True)
+        src.parent.mkdir(parents = True)
         src.write_text("torch>=2.6\n")
 
         out = ips._uv_safe_path(str(src))
@@ -75,7 +75,7 @@ class TestUvSafePath:
         assert out != str(src)
         assert Path(out).read_text() == "torch>=2.6\n"
 
-    @pytest.mark.skipif(ips.IS_WINDOWS, reason="POSIX temp-copy fallback")
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_posix_missing_file_falls_back_to_original(self):
         """No file to copy -> return the original path rather than raise."""
         p = "/nonexistent dir/constraints.txt"
@@ -85,7 +85,7 @@ class TestUvSafePath:
 class TestUvSafePathHardening:
     """Edge cases for uv_safe_path + the UV_OVERRIDE channel (issue #6503)."""
 
-    @pytest.mark.skipif(ips.IS_WINDOWS, reason="POSIX temp-copy fallback")
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_tmpdir_with_space_falls_back(self, tmp_path, monkeypatch):
         """A space in the temp root itself -> fall back to the original path."""
         from backend.utils import uv_path_safety as uvps
@@ -94,17 +94,17 @@ class TestUvSafePathHardening:
         spaced.mkdir()
         monkeypatch.setattr(uvps.tempfile, "mkdtemp", lambda *a, **k: str(spaced))
         src = tmp_path / "Open Source" / "constraints.txt"
-        src.parent.mkdir(parents=True)
+        src.parent.mkdir(parents = True)
         src.write_text("idna\n")
         assert uvps.uv_safe_path(str(src)) == str(src)
 
-    @pytest.mark.skipif(ips.IS_WINDOWS, reason="POSIX temp-copy fallback")
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_no_temp_dir_leak_on_copy_failure(self, tmp_path, monkeypatch):
         """A copyfile failure after mkdtemp must not orphan the temp dir."""
         from backend.utils import uv_path_safety as uvps
 
         src = tmp_path / "Open Source" / "constraints.txt"
-        src.parent.mkdir(parents=True)
+        src.parent.mkdir(parents = True)
         src.write_text("idna\n")
         pattern = os.path.join(tempfile.gettempdir(), "unsloth_uv_*")
         before = set(glob.glob(pattern))
@@ -118,13 +118,13 @@ class TestUvSafePathHardening:
         assert out == str(src)
         assert set(glob.glob(pattern)) == before
 
-    @pytest.mark.skipif(ips.IS_WINDOWS, reason="POSIX temp-copy fallback")
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_cleanup_removes_and_clears_registry(self, tmp_path):
         """The atexit-registered cleanup removes the copies and empties the list."""
         from backend.utils import uv_path_safety as uvps
 
         src = tmp_path / "Open Source" / "constraints.txt"
-        src.parent.mkdir(parents=True)
+        src.parent.mkdir(parents = True)
         src.write_text("idna\n")
         out = uvps.uv_safe_path(str(src))
         tmp_dir = Path(out).parent
@@ -135,13 +135,13 @@ class TestUvSafePathHardening:
         assert not tmp_dir.exists()
         assert uvps._UV_SAFE_PATH_TMPDIRS == []
 
-    @pytest.mark.skipif(ips.IS_WINDOWS, reason="POSIX temp-copy fallback")
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_uv_override_value_is_space_safe(self, tmp_path):
         """The value stored for UV_OVERRIDE must be space-free."""
         from backend.utils import uv_path_safety as uvps
 
         overrides = tmp_path / "Open Source" / "overrides-darwin-arm64.txt"
-        overrides.parent.mkdir(parents=True)
+        overrides.parent.mkdir(parents = True)
         overrides.write_text("transformers>=4.57.6\n")
 
         value = uvps.uv_safe_path(overrides)

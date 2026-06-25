@@ -23,8 +23,8 @@ if "structlog" not in sys.modules:
             return lambda *a, **k: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        get_logger=lambda *a, **k: _DummyLogger(),
-        BoundLogger=_DummyLogger,
+        get_logger = lambda *a, **k: _DummyLogger(),
+        BoundLogger = _DummyLogger,
     )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

@@ -81,10 +81,10 @@ def get_dataset_snapshot_metadata_cached(
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi(token=hf_token).dataset_info(
+        info = HfApi(token = hf_token).dataset_info(
             repo_id,
-            files_metadata=True,
-            timeout=_DATASET_SIZE_TIMEOUT_SECONDS,
+            files_metadata = True,
+            timeout = _DATASET_SIZE_TIMEOUT_SECONDS,
         )
         total = total_size_for_siblings(info.siblings)
         hashes = blob_hashes_for_siblings(info.siblings)
@@ -94,7 +94,7 @@ def get_dataset_snapshot_metadata_cached(
             _dataset_size_neg_cache[cache_key] = time.monotonic()
             _dataset_size_neg_cache.move_to_end(cache_key)
             while len(_dataset_size_neg_cache) > _DATASET_SIZE_CACHE_MAX:
-                _dataset_size_neg_cache.popitem(last=False)
+                _dataset_size_neg_cache.popitem(last = False)
         return 0, frozenset()
     with _dataset_size_cache_lock:
         _dataset_size_cache[repo_id] = (
@@ -107,7 +107,7 @@ def get_dataset_snapshot_metadata_cached(
         _dataset_size_cache.move_to_end(repo_id)
         _dataset_size_neg_cache.pop(cache_key, None)
         while len(_dataset_size_cache) > _DATASET_SIZE_CACHE_MAX:
-            _dataset_size_cache.popitem(last=False)
+            _dataset_size_cache.popitem(last = False)
     return total, hashes
 
 
@@ -122,13 +122,13 @@ async def get_dataset_download_progress_response(
     with the model path via ``snapshot_progress``. Returns ``cache_path`` for the
     UI."""
     return await snapshot_progress.snapshot_progress_response(
-        repo_type="dataset",
-        repo_id=repo_id,
-        job_key=_download_job_key(repo_id),
-        expected_bytes=expected_bytes,
-        hf_token=hf_token,
-        registry=_registry,
-        metadata_resolver=get_dataset_snapshot_metadata_cached,
+        repo_type = "dataset",
+        repo_id = repo_id,
+        job_key = _download_job_key(repo_id),
+        expected_bytes = expected_bytes,
+        hf_token = hf_token,
+        registry = _registry,
+        metadata_resolver = get_dataset_snapshot_metadata_cached,
     )
 
 
@@ -136,11 +136,11 @@ def _dataset_status(key: str, *, repo_id: Optional[str] = None) -> DatasetDownlo
     state, error, generation = download_lifecycle.idle_status(
         _registry,
         key,
-        repo_type="dataset",
-        repo_id=repo_id,
-        variant=None,
+        repo_type = "dataset",
+        repo_id = repo_id,
+        variant = None,
     )
-    return DatasetDownloadJobStatus(state=state, error=error, generation=generation)
+    return DatasetDownloadJobStatus(state = state, error = error, generation = generation)
 
 
 async def download_dataset_response(
@@ -150,11 +150,11 @@ async def download_dataset_response(
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid repo_id: {repo_id!r}",
+            status_code = 400,
+            detail = f"Invalid repo_id: {repo_id!r}",
         )
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="dataset")
+    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
     use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
@@ -163,8 +163,8 @@ async def download_dataset_response(
     claimed, claim_state = _registry.claim(
         key,
         transport,
-        repo_type="dataset",
-        repo_id=repo_id,
+        repo_type = "dataset",
+        repo_id = repo_id,
     )
     generation = _registry.current_generation(key)
     if not claimed:
@@ -181,19 +181,19 @@ async def download_dataset_response(
     state = download_lifecycle.launch_worker(
         _registry,
         key,
-        spawn=lambda: download_lifecycle.spawn_worker(
+        spawn = lambda: download_lifecycle.spawn_worker(
             ["--repo-id", repo_id, "--dataset"],
             hf_token,
-            use_xet=use_xet,
+            use_xet = use_xet,
         ),
-        hf_token=hf_token,
-        label=repo_id,
-        log_prefix="Dataset download",
-        logger=logger,
-        repo_type="dataset",
-        repo_id=repo_id,
-        transport=transport,
-        watch_name=f"hf-dataset-download-watch-{repo_id}",
+        hf_token = hf_token,
+        label = repo_id,
+        log_prefix = "Dataset download",
+        logger = logger,
+        repo_type = "dataset",
+        repo_id = repo_id,
+        transport = transport,
+        watch_name = f"hf-dataset-download-watch-{repo_id}",
     )
 
     return {
@@ -209,18 +209,18 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid repo_id: {repo_id!r}",
+            status_code = 400,
+            detail = f"Invalid repo_id: {repo_id!r}",
         )
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="dataset")
+    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
     state = download_lifecycle.cancel_worker(
         _registry,
         key,
-        generation=body.generation,
-        label=f"dataset {repo_id}",
-        logger=logger,
+        generation = body.generation,
+        label = f"dataset {repo_id}",
+        logger = logger,
     )
     return {"repo_id": repo_id, "state": state}
 
@@ -229,25 +229,25 @@ async def get_dataset_download_status_response(repo_id: str) -> DatasetDownloadJ
     """Return the latest state of a background dataset download job."""
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
-        return DatasetDownloadJobStatus(state="idle")
-    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="dataset")
-    return _dataset_status(_download_job_key(repo_id), repo_id=repo_id)
+        return DatasetDownloadJobStatus(state = "idle")
+    repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
+    return _dataset_status(_download_job_key(repo_id), repo_id = repo_id)
 
 
 async def get_active_dataset_downloads_response(repo_id: str = "") -> ActiveDownloadsResponse:
     repo_id = repo_id.strip()
     if repo_id and not _is_valid_repo_id(repo_id):
-        return ActiveDownloadsResponse(downloads=[])
+        return ActiveDownloadsResponse(downloads = [])
     canonical_repo_id = (
-        await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="dataset")
+        await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
         if repo_id
         else None
     )
     return ActiveDownloadsResponse(
-        downloads=download_lifecycle.active_download_refs(
+        downloads = download_lifecycle.active_download_refs(
             _registry,
             canonical_repo_id,
-            with_variant=False,
+            with_variant = False,
         )
     )
 

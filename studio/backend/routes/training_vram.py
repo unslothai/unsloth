@@ -45,7 +45,6 @@ def summarize_resident_chat() -> Dict[str, Any]:
 
     try:
         from core.inference import get_inference_backend
-
         inf = get_inference_backend()
         # active_model_name is set only on success; a mid-load model sits in
         # loading_models while already holding VRAM -> both count as resident.
@@ -60,7 +59,6 @@ def summarize_resident_chat() -> Dict[str, Any]:
 
     try:
         from routes.inference import get_llama_cpp_backend
-
         llama = get_llama_cpp_backend()
         # is_active (not is_loaded): a mid-start server already allocates VRAM.
         # A confirmed CPU-only server (_gpu_offload_active is False) holds no VRAM.
@@ -116,15 +114,15 @@ def can_keep_chat_during_training(
         hf_token_arg = hf_token or None
 
         est_kwargs = dict(
-            hf_token=hf_token_arg,
-            training_type=training_type,
-            load_in_4bit=effective_4bit,
-            batch_size=batch_size,
-            max_seq_length=max_seq_length,
-            lora_rank=lora_rank,
-            target_modules=target_modules,
-            gradient_checkpointing=gradient_checkpointing,
-            optimizer=optimizer,
+            hf_token = hf_token_arg,
+            training_type = training_type,
+            load_in_4bit = effective_4bit,
+            batch_size = batch_size,
+            max_seq_length = max_seq_length,
+            lora_rank = lora_rank,
+            target_modules = target_modules,
+            gradient_checkpointing = gradient_checkpointing,
+            optimizer = optimizer,
         )
 
         if gpu_ids:
@@ -143,7 +141,7 @@ def can_keep_chat_during_training(
 
             # A requested GPU missing from the device list contributes 0.
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
-            ranked = sorted(free_vals, reverse=True)
+            ranked = sorted(free_vals, reverse = True)
             usable_gb = (
                 ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:]) if ranked else 0.0
             )
@@ -222,10 +220,10 @@ def can_load_chat_during_training(
             return True, {"mode": "non_cuda", "reason": "non_cuda"}
 
         est_kwargs = dict(
-            hf_token=hf_token or None,
-            training_type=None,  # inference sizing of the chat model itself
-            load_in_4bit=load_in_4bit,
-            max_seq_length=max_seq_length or 2048,
+            hf_token = hf_token or None,
+            training_type = None,  # inference sizing of the chat model itself
+            load_in_4bit = load_in_4bit,
+            max_seq_length = max_seq_length or 2048,
         )
 
         # HF auto: reuse the loader's selector; fits iff its pick clears the margin.
@@ -277,7 +275,7 @@ def can_load_chat_during_training(
         if not free_vals:
             return False, {"mode": mode, "reason": "no_visible_gpus"}
 
-        ranked = sorted(free_vals, reverse=True)
+        ranked = sorted(free_vals, reverse = True)
         usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
         needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
         aggregate_fits = usable_gb >= needed_gb
@@ -309,7 +307,6 @@ def free_chat_models_for_training(reason: str) -> List[str]:
 
     try:
         from core.inference import get_inference_backend
-
         inf = get_inference_backend()
         if inf.active_model_name or inf.loading_models:
             name = inf.active_model_name or next(iter(inf.loading_models), None)
@@ -328,7 +325,6 @@ def free_chat_models_for_training(reason: str) -> List[str]:
 
     try:
         from routes.inference import get_llama_cpp_backend
-
         llama = get_llama_cpp_backend()
         # CPU-only GGUF holds no VRAM, so killing it can't help (see summarize).
         if llama.is_active and getattr(llama, "_gpu_offload_active", None) is not False:

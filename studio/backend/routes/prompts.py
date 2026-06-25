@@ -24,17 +24,17 @@ router = APIRouter()
 
 
 class PromptEntry(BaseModel):
-    id: str = Field(max_length=128)
-    name: str = Field(max_length=500)
-    text: str = Field(max_length=100_000)
+    id: str = Field(max_length = 128)
+    name: str = Field(max_length = 500)
+    text: str = Field(max_length = 100_000)
     createdAt: int
     updatedAt: int
 
 
 class PromptList(BaseModel):
-    id: str = Field(max_length=128)
-    name: str = Field(max_length=500)
-    items: list[str] = Field(max_length=10_000)
+    id: str = Field(max_length = 128)
+    name: str = Field(max_length = 500)
+    items: list[str] = Field(max_length = 10_000)
     createdAt: int
     updatedAt: int
 
@@ -59,11 +59,11 @@ def put_entry(
     current_subject: str = Depends(get_current_subject),
 ):
     if entry.id != entry_id:
-        raise HTTPException(status_code=400, detail="ID mismatch")
+        raise HTTPException(status_code = 400, detail = "ID mismatch")
     return upsert_prompt_entry(entry.model_dump())
 
 
-@router.delete("/entries/{entry_id}", status_code=204)
+@router.delete("/entries/{entry_id}", status_code = 204)
 def remove_entry(entry_id: str, current_subject: str = Depends(get_current_subject)):
     delete_prompt_entry(entry_id)
 
@@ -86,11 +86,11 @@ def put_list(
     current_subject: str = Depends(get_current_subject),
 ):
     if lst.id != list_id:
-        raise HTTPException(status_code=400, detail="ID mismatch")
+        raise HTTPException(status_code = 400, detail = "ID mismatch")
     return upsert_prompt_list(lst.model_dump())
 
 
-@router.delete("/lists/{list_id}", status_code=204)
+@router.delete("/lists/{list_id}", status_code = 204)
 def remove_list(list_id: str, current_subject: str = Depends(get_current_subject)):
     delete_prompt_list_db(list_id)
 

@@ -57,7 +57,7 @@ if sys.platform == "linux":
 
         _libc_name = ctypes.util.find_library("c")
         if _libc_name:
-            _libc = ctypes.CDLL(_libc_name, use_errno=True)
+            _libc = ctypes.CDLL(_libc_name, use_errno = True)
     except (OSError, AttributeError):
         pass
 
@@ -170,9 +170,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     # quote-split names (`r''m` collapses to `rm` after `;`).
     try:
         if sys.platform == "win32":
-            tokens = shlex.split(command, posix=False)
+            tokens = shlex.split(command, posix = False)
         else:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()`")
+            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
             lexer.whitespace_split = True
             tokens = list(lexer)
     except ValueError:
@@ -651,10 +651,9 @@ def _get_project_workdir(session_id: str) -> str | None:
         return None
     try:
         from storage.studio_db import ensure_chat_project_workspace
-
         project = ensure_chat_project_workspace(project_id)
     except Exception:
-        logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info=True)
+        logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info = True)
         return None
     if not project:
         return None
@@ -691,7 +690,7 @@ def _get_workdir(session_id: str | None = None) -> str:
             workdir = os.path.join(sandbox_root, "_invalid")
         else:
             workdir = os.path.join(sandbox_root, "_default")
-        os.makedirs(workdir, exist_ok=True)
+        os.makedirs(workdir, exist_ok = True)
         try:
             os.chmod(sandbox_root, 0o700)
         except OSError:
@@ -899,14 +898,14 @@ async def get_enabled_mcp_tools() -> list[dict]:
         results = await asyncio.gather(
             *(
                 list_tools_async(
-                    url=s["url"],
-                    headers=parse_server_headers(s),
-                    timeout=probe_timeout(s["url"], bool(s.get("use_oauth"))),
-                    use_oauth=bool(s.get("use_oauth")),
+                    url = s["url"],
+                    headers = parse_server_headers(s),
+                    timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
+                    use_oauth = bool(s.get("use_oauth")),
                 )
                 for s in uncached
             ),
-            return_exceptions=True,
+            return_exceptions = True,
         )
         # An edit/delete can land while we await a probe (up to 305 s for
         # OAuth); its cache eviction is a no-op against an entry we haven't
@@ -969,7 +968,7 @@ def _render_html_result(arguments: dict) -> str:
 def execute_tool(
     name: str,
     arguments: dict,
-    cancel_event=None,
+    cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
     rag_scope: dict | None = None,
@@ -1004,19 +1003,19 @@ def execute_tool(
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{server_id}' is disabled on this host"
         return call_tool_sync(
-            url=server["url"],
-            headers=parse_server_headers(server),
-            name=tool_name,
-            args=arguments,
-            timeout=effective_timeout,
-            use_oauth=bool(server.get("use_oauth")),
-            cancel_event=cancel_event,
+            url = server["url"],
+            headers = parse_server_headers(server),
+            name = tool_name,
+            args = arguments,
+            timeout = effective_timeout,
+            use_oauth = bool(server.get("use_oauth")),
+            cancel_event = cancel_event,
         )
     if name == "web_search":
         return _web_search(
             arguments.get("query", ""),
-            url=arguments.get("url"),
-            timeout=effective_timeout,
+            url = arguments.get("url"),
+            timeout = effective_timeout,
         )
     if name == "python":
         return _python_exec(
@@ -1024,7 +1023,7 @@ def execute_tool(
             cancel_event,
             effective_timeout,
             session_id,
-            disable_sandbox=disable_sandbox,
+            disable_sandbox = disable_sandbox,
         )
     if name == "terminal":
         return _bash_exec(
@@ -1032,7 +1031,7 @@ def execute_tool(
             cancel_event,
             effective_timeout,
             session_id,
-            disable_sandbox=disable_sandbox,
+            disable_sandbox = disable_sandbox,
         )
     return f"Unknown tool: {name}"
 
@@ -1060,7 +1059,6 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         return "Error: query is empty."
     try:
         from storage import rag_db
-
         if not rag_db.RAG_AVAILABLE:
             return "Knowledge base search is unavailable on this server."
         from core.rag.tool import search_knowledge_base_with_sources
@@ -1070,18 +1068,17 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
 
     top_k = _opt_int((arguments or {}).get("top_k") or scope.get("default_top_k"))
     text, sources = search_knowledge_base_with_sources(
-        query=str(query),
-        scope_kb_id=scope.get("kb_id"),
-        scope_thread_id=scope.get("thread_id"),
-        scope_project_id=scope.get("project_id"),
-        top_k=top_k,
+        query = str(query),
+        scope_kb_id = scope.get("kb_id"),
+        scope_thread_id = scope.get("thread_id"),
+        scope_project_id = scope.get("project_id"),
+        top_k = top_k,
         **_scope_retrieval_kwargs(scope),
     )
     # Append the UI source-map after the sentinel; loops strip it before the model.
     if sources:
         import json as _json
-
-        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii=False)
+        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
     return text
 
 
@@ -1164,7 +1161,6 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         return None
     try:
         from storage import rag_db
-
         if not rag_db.RAG_AVAILABLE:
             return None
         from core.rag.tool import search_for_autoinject
@@ -1180,12 +1176,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
     try:
         found = search_for_autoinject(
-            query=query,
-            scope_kb_id=rag_scope.get("kb_id"),
-            scope_thread_id=rag_scope.get("thread_id"),
-            scope_project_id=rag_scope.get("project_id"),
-            top_k=top_k,
-            min_dense_score=floor,
+            query = query,
+            scope_kb_id = rag_scope.get("kb_id"),
+            scope_thread_id = rag_scope.get("thread_id"),
+            scope_project_id = rag_scope.get("project_id"),
+            top_k = top_k,
+            min_dense_score = floor,
             **_scope_retrieval_kwargs(rag_scope),
         )
     except Exception as exc:  # noqa: BLE001
@@ -1201,7 +1197,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
     call_id = "rag_auto_" + _uuid.uuid4().hex[:12]
     args = {"query": query}
-    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii=False)
+    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
     events = [
         {"type": "status", "text": f"Searching documents: {query[:60]}"},
         {
@@ -1228,7 +1224,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     "type": "function",
                     "function": {
                         "name": "search_knowledge_base",
-                        "arguments": _json.dumps(args, ensure_ascii=False),
+                        "arguments": _json.dumps(args, ensure_ascii = False),
                     },
                 }
             ],
@@ -1286,7 +1282,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         # TLS handshake with the real hostname for SNI + cert verification.
         self.sock = self._context.wrap_socket(
             self.sock,
-            server_hostname=self._sni_hostname,
+            server_hostname = self._sni_hostname,
         )
 
 
@@ -1299,7 +1295,7 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
     """
 
     def __init__(self, hostname: str):
-        super().__init__(context=_tls_ctx)
+        super().__init__(context = _tls_ctx)
         self._sni_hostname = hostname
 
     def https_open(self, req):
@@ -1307,7 +1303,7 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
 
     def _sni_connection(self, host, **kwargs):
         kwargs["context"] = _tls_ctx
-        return _PinnedHTTPSConnection(host, sni_hostname=self._sni_hostname, **kwargs)
+        return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
 
 
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
@@ -1321,7 +1317,7 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     import socket
 
     try:
-        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except OSError as e:
         return False, f"Failed to resolve host: {e}", ""
 
@@ -1389,7 +1385,7 @@ def _fetch_page_text(
             # Bracket IPv6 addresses so the netloc is valid in a URL.
             ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
             ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
-            pinned_url = urlunparse(cp._replace(netloc=ip_netloc))
+            pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
 
             opener = urllib.request.build_opener(
                 _NoRedirect,
@@ -1398,13 +1394,13 @@ def _fetch_page_text(
 
             req = urllib.request.Request(
                 pinned_url,
-                headers={
+                headers = {
                     "User-Agent": ua,
                     "Host": current_host,
                 },
             )
             try:
-                resp = opener.open(req, timeout=timeout)
+                resp = opener.open(req, timeout = timeout)
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
                     return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
@@ -1431,7 +1427,7 @@ def _fetch_page_text(
             return "Failed to fetch URL: too many redirects."
 
         charset = resp.headers.get_content_charset() or "utf-8"
-        raw_html = raw_bytes.decode(charset, errors="replace")
+        raw_html = raw_bytes.decode(charset, errors = "replace")
     except _HTTPError as e:
         return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
     except Exception as e:
@@ -1462,14 +1458,14 @@ def _web_search(
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
-        return _fetch_page_text(url.strip(), timeout=fetch_timeout)
+        return _fetch_page_text(url.strip(), timeout = fetch_timeout)
 
     if not query or not query.strip():
         return "No query provided."
     try:
         from ddgs import DDGS
 
-        results = DDGS(timeout=timeout).text(query, max_results=max_results)
+        results = DDGS(timeout = timeout).text(query, max_results = max_results)
         if not results:
             return "No results found."
         parts = []
@@ -2490,7 +2486,7 @@ def _kill_process_tree(proc) -> None:
 def _cancel_watcher(
     proc,
     cancel_event,
-    poll_interval=0.2,
+    poll_interval = 0.2,
 ):
     """Daemon thread that kills a process when cancel_event is set."""
     while proc.poll() is None:
@@ -2508,7 +2504,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
 
 def _python_exec(
     code: str,
-    cancel_event=None,
+    cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
@@ -2548,10 +2544,10 @@ def _python_exec(
                     except OSError:
                         pass
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix=".py", prefix="studio_exec_", dir=workdir)
+        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
@@ -2560,15 +2556,15 @@ def _python_exec(
             safe_env = dict(safe_env)
             safe_env["PYTHONIOENCODING"] = "utf-8"
         popen_kwargs = dict(
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING);
             # replace so non-ASCII output never crashes the read on Windows.
-            encoding="utf-8",
-            errors="replace",
-            cwd=workdir,
-            env=safe_env,
+            encoding = "utf-8",
+            errors = "replace",
+            cwd = workdir,
+            env = safe_env,
         )
         if sys.platform != "win32":
             popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
@@ -2580,16 +2576,16 @@ def _python_exec(
         # Spawn cancel watcher if we have a cancel event
         if cancel_event is not None:
             watcher = threading.Thread(
-                target=_cancel_watcher, args=(proc, cancel_event), daemon=True
+                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
             )
             watcher.start()
 
         try:
-            output, _ = proc.communicate(timeout=timeout)
+            output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
             _kill_process_tree(proc)
             try:
-                proc.communicate(timeout=5)
+                proc.communicate(timeout = 5)
             except subprocess.TimeoutExpired:
                 pass
             return _truncate(f"Execution timed out after {timeout} seconds.")
@@ -2619,7 +2615,6 @@ def _python_exec(
                     new_images.append(_name)
             if new_images:
                 import json as _json
-
                 result += f"\n__IMAGES__:{_json.dumps(sorted(new_images))}"
 
         return result
@@ -2636,7 +2631,7 @@ def _python_exec(
 
 def _bash_exec(
     command: str,
-    cancel_event=None,
+    cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
@@ -2666,11 +2661,11 @@ def _bash_exec(
         workdir = _get_workdir(session_id)
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=workdir,
-            env=safe_env,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            cwd = workdir,
+            env = safe_env,
         )
         if sys.platform != "win32":
             popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
@@ -2681,16 +2676,16 @@ def _bash_exec(
 
         if cancel_event is not None:
             watcher = threading.Thread(
-                target=_cancel_watcher, args=(proc, cancel_event), daemon=True
+                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
             )
             watcher.start()
 
         try:
-            output, _ = proc.communicate(timeout=timeout)
+            output, _ = proc.communicate(timeout = timeout)
         except subprocess.TimeoutExpired:
             _kill_process_tree(proc)
             try:
-                proc.communicate(timeout=5)
+                proc.communicate(timeout = 5)
             except subprocess.TimeoutExpired:
                 pass
             return _truncate(f"Execution timed out after {timeout} seconds.")

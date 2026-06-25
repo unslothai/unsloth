@@ -65,15 +65,15 @@ _TRITON_HAS_TMA = False  # _triton_supports_tma()
 
 
 def get_forward_configs(
-    BLOCK_M=DEFAULT_M_BLOCK_SIZES,
-    BLOCK_N=DEFAULT_N_BLOCK_SIZES,
-    BLOCK_K=DEFAULT_K_BLOCK_SIZES,
-    TMA_LOAD_X=None,  # Auto-detect if not specified
-    TMA_LOAD_W=None,  # Auto-detect if not specified
-    TMA_STORE=False,  # NOTE: TMA_STORE is disabled for now
-    num_warps=DEFAULT_NUM_WARPS,
-    num_stages=DEFAULT_NUM_STAGES,
-    num_ctas=DEFAULT_NUM_CTAS,
+    BLOCK_M = DEFAULT_M_BLOCK_SIZES,
+    BLOCK_N = DEFAULT_N_BLOCK_SIZES,
+    BLOCK_K = DEFAULT_K_BLOCK_SIZES,
+    TMA_LOAD_X = None,  # Auto-detect if not specified
+    TMA_LOAD_W = None,  # Auto-detect if not specified
+    TMA_STORE = False,  # NOTE: TMA_STORE is disabled for now
+    num_warps = DEFAULT_NUM_WARPS,
+    num_stages = DEFAULT_NUM_STAGES,
+    num_ctas = DEFAULT_NUM_CTAS,
 ):
     # Auto-detect TMA support
     if TMA_LOAD_X is None:
@@ -129,16 +129,16 @@ def get_forward_configs(
         kernel_configs.append(
             triton.Config(
                 dict(
-                    BLOCK_SIZE_M=block_m,
-                    BLOCK_SIZE_N=block_n,
-                    BLOCK_SIZE_K=block_k,
-                    USE_TMA_LOAD_X=tma_load_x,
-                    USE_TMA_LOAD_W=tma_load_w,
-                    USE_TMA_STORE=tma_store,
+                    BLOCK_SIZE_M = block_m,
+                    BLOCK_SIZE_N = block_n,
+                    BLOCK_SIZE_K = block_k,
+                    USE_TMA_LOAD_X = tma_load_x,
+                    USE_TMA_LOAD_W = tma_load_w,
+                    USE_TMA_STORE = tma_store,
                 ),
-                num_warps=w,
-                num_stages=s,
-                num_ctas=num_ctas,
+                num_warps = w,
+                num_stages = s,
+                num_ctas = num_ctas,
             )
         )
 
@@ -146,15 +146,15 @@ def get_forward_configs(
 
 
 def get_dX_kernel_configs(
-    BLOCK_M=DEFAULT_M_BLOCK_SIZES,
-    BLOCK_N=DEFAULT_N_BLOCK_SIZES,
-    BLOCK_K=DEFAULT_K_BLOCK_SIZES,
-    TMA_LOAD_dY=None,  # Auto-detect if not specified
-    TMA_LOAD_W=None,  # Auto-detect if not specified
-    TMA_STORE=False,  # NOTE: TMA_STORE is disabled for now
-    num_warps=DEFAULT_NUM_WARPS,
-    num_stages=DEFAULT_NUM_STAGES,
-    num_ctas=DEFAULT_NUM_CTAS,
+    BLOCK_M = DEFAULT_M_BLOCK_SIZES,
+    BLOCK_N = DEFAULT_N_BLOCK_SIZES,
+    BLOCK_K = DEFAULT_K_BLOCK_SIZES,
+    TMA_LOAD_dY = None,  # Auto-detect if not specified
+    TMA_LOAD_W = None,  # Auto-detect if not specified
+    TMA_STORE = False,  # NOTE: TMA_STORE is disabled for now
+    num_warps = DEFAULT_NUM_WARPS,
+    num_stages = DEFAULT_NUM_STAGES,
+    num_ctas = DEFAULT_NUM_CTAS,
 ):
     # Auto-detect TMA support
     if TMA_LOAD_dY is None:
@@ -209,16 +209,16 @@ def get_dX_kernel_configs(
         kernel_configs.append(
             triton.Config(
                 dict(
-                    BLOCK_SIZE_M=block_m,
-                    BLOCK_SIZE_N=block_n,
-                    BLOCK_SIZE_K=block_k,
-                    USE_TMA_LOAD_dY=tma_load_dy,
-                    USE_TMA_LOAD_W=tma_load_w,
-                    USE_TMA_STORE=tma_store,
+                    BLOCK_SIZE_M = block_m,
+                    BLOCK_SIZE_N = block_n,
+                    BLOCK_SIZE_K = block_k,
+                    USE_TMA_LOAD_dY = tma_load_dy,
+                    USE_TMA_LOAD_W = tma_load_w,
+                    USE_TMA_STORE = tma_store,
                 ),
-                num_warps=w,
-                num_stages=s,
-                num_ctas=num_ctas,
+                num_warps = w,
+                num_stages = s,
+                num_ctas = num_ctas,
             )
         )
 
@@ -226,15 +226,15 @@ def get_dX_kernel_configs(
 
 
 def get_dW_kernel_configs(
-    BLOCK_M=DEFAULT_M_BLOCK_SIZES,
-    BLOCK_N=DEFAULT_N_BLOCK_SIZES,
-    BLOCK_K=DEFAULT_K_BLOCK_SIZES,
-    num_warps=DEFAULT_NUM_WARPS,
-    num_stages=DEFAULT_NUM_STAGES,
-    num_ctas=DEFAULT_NUM_CTAS,
-    TMA_LOAD_dY=None,  # Auto-detect if not specified
-    TMA_LOAD_X=None,  # Auto-detect if not specified
-    TMA_STORE=False,
+    BLOCK_M = DEFAULT_M_BLOCK_SIZES,
+    BLOCK_N = DEFAULT_N_BLOCK_SIZES,
+    BLOCK_K = DEFAULT_K_BLOCK_SIZES,
+    num_warps = DEFAULT_NUM_WARPS,
+    num_stages = DEFAULT_NUM_STAGES,
+    num_ctas = DEFAULT_NUM_CTAS,
+    TMA_LOAD_dY = None,  # Auto-detect if not specified
+    TMA_LOAD_X = None,  # Auto-detect if not specified
+    TMA_STORE = False,
 ):
     # Auto-detect TMA support
     if TMA_LOAD_dY is None:
@@ -289,16 +289,16 @@ def get_dW_kernel_configs(
         kernel_configs.append(
             triton.Config(
                 dict(
-                    BLOCK_SIZE_M=block_m,
-                    BLOCK_SIZE_N=block_n,
-                    BLOCK_SIZE_K=block_k,
-                    USE_TMA_LOAD_dY=tma_load_dy,
-                    USE_TMA_LOAD_X=tma_load_x,
-                    USE_TMA_STORE=tma_store,
+                    BLOCK_SIZE_M = block_m,
+                    BLOCK_SIZE_N = block_n,
+                    BLOCK_SIZE_K = block_k,
+                    USE_TMA_LOAD_dY = tma_load_dy,
+                    USE_TMA_LOAD_X = tma_load_x,
+                    USE_TMA_STORE = tma_store,
                 ),
-                num_warps=w,
-                num_stages=s,
-                num_ctas=num_ctas,
+                num_warps = w,
+                num_stages = s,
+                num_ctas = num_ctas,
             )
         )
 
@@ -361,7 +361,6 @@ def common_prune_criteria(config: triton.Config, kwargs: dict, dtype):
 
 def maybe_disable_tma(config: triton.Config):
     from ..interface import supports_tma
-
     tma_keys = [k for k in config.kwargs.keys() if k.startswith("USE_TMA_")]
     if not supports_tma():
         logger.info("Disabling TMA")

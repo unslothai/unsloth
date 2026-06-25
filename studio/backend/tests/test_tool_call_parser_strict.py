@@ -24,7 +24,7 @@ from core.inference.tool_call_parser import parse_tool_calls_from_text
 
 
 def _only(text: str) -> dict:
-    calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+    calls = parse_tool_calls_from_text(text, allow_incomplete = False)
     assert len(calls) == 1, f"expected exactly one call, got {len(calls)}: {calls!r}"
     fn = calls[0]["function"]
     return {"name": fn["name"], "arguments": json.loads(fn["arguments"])}
@@ -73,12 +73,12 @@ class TestFunctionStyleTrailingText:
 
     def test_incomplete_function_without_close_is_still_rejected(self):
         text = "<function=web_search><parameter=query>weather london"
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_param_without_close_tag_is_rejected_in_strict_mode(self):
         # Closing </function> present, but the single parameter never closes.
         text = "<function=web_search><parameter=query>weather london</function>"
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
 
 class TestParityWithJsonStyle:
@@ -87,7 +87,7 @@ class TestParityWithJsonStyle:
             '<tool_call>{"name":"web_search","arguments":{"query":"weather london"}}</tool_call>'
             " Let me check that for you."
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
 
@@ -95,11 +95,11 @@ class TestParityWithJsonStyle:
         q = "weather london"
         func = parse_tool_calls_from_text(
             f"<function=web_search><parameter=query>{q}</parameter></function> trailing",
-            allow_incomplete=False,
+            allow_incomplete = False,
         )
         js = parse_tool_calls_from_text(
             f'<tool_call>{{"name":"web_search","arguments":{{"query":"{q}"}}}}</tool_call> trailing',
-            allow_incomplete=False,
+            allow_incomplete = False,
         )
         assert len(func) == len(js) == 1
         assert json.loads(func[0]["function"]["arguments"]) == {"query": q}
@@ -111,7 +111,7 @@ class TestGemmaNativeStyle:
         text = (
             '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>' " running it now"
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "terminal"
         assert json.loads(calls[0]["function"]["arguments"]) == {
@@ -121,21 +121,21 @@ class TestGemmaNativeStyle:
 
     def test_unclosed_native_call_requires_healing(self):
         text = '<|tool_call>call:terminal{command:"ls"}'
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "terminal"
 
     def test_hyphenated_native_argument_name_is_accepted(self):
         text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "mcp__srv__create-issue"
         assert json.loads(calls[0]["function"]["arguments"]) == {"issue-title": "Bug report"}
 
     def test_native_template_quotes_preserve_windows_path(self):
         text = r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert json.loads(calls[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
 
@@ -144,7 +144,7 @@ class TestGemmaNativeStyle:
         text = (
             "<|tool_call>call:get_weather{location:Tokyo,unit:celsius,days:3,live:true}<tool_call|>"
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert json.loads(calls[0]["function"]["arguments"]) == {
             "location": "Tokyo",
@@ -157,6 +157,6 @@ class TestGemmaNativeStyle:
 class TestHealingPathUnaffected:
     def test_auto_heal_still_repairs_unclosed_function(self):
         text = "<function=web_search><parameter=query>cats"
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"

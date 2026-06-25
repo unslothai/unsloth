@@ -24,7 +24,7 @@ from .constants import (
 from .types import Job, ModelUsage, Progress, SourceProgress
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ParsedUpdate:
     stage: str | None = None
     current_column: str | None = None
@@ -109,16 +109,16 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
         page = int(m.group("page"))
         page_items = int(m.group("items"))
         return ParsedUpdate(
-            stage=STAGE_SOURCE,
-            source_progress=SourceProgress(
-                source="github",
-                status="fetching",
-                repo=repo,
-                resource=resource,
-                page=page,
-                page_items=page_items,
-                rate_remaining=int(m.group("remaining")),
-                message=(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "fetching",
+                repo = repo,
+                resource = resource,
+                page = page,
+                page_items = page_items,
+                rate_remaining = int(m.group("remaining")),
+                message = (
                     f"Scraping GitHub source: {repo} " f"{resource} page {page} (+{page_items})"
                 ),
             ),
@@ -128,12 +128,12 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
     if m:
         seconds = int(m.group("seconds"))
         return ParsedUpdate(
-            stage=STAGE_SOURCE,
-            source_progress=SourceProgress(
-                source="github",
-                status="rate_limited",
-                retry_after_sec=seconds,
-                message=("Waiting for GitHub rate limit. Studio will resume automatically."),
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "rate_limited",
+                retry_after_sec = seconds,
+                message = ("Waiting for GitHub rate limit. Studio will resume automatically."),
             ),
         )
 
@@ -141,12 +141,12 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
     if m:
         seconds = int(m.group("seconds"))
         return ParsedUpdate(
-            stage=STAGE_SOURCE,
-            source_progress=SourceProgress(
-                source="github",
-                status="rate_limited",
-                retry_after_sec=seconds,
-                message=(
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "rate_limited",
+                retry_after_sec = seconds,
+                message = (
                     "Waiting for GitHub secondary rate limit. Studio will resume automatically."
                 ),
             ),
@@ -156,12 +156,12 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
     if m:
         seconds = int(m.group("seconds"))
         return ParsedUpdate(
-            stage=STAGE_SOURCE,
-            source_progress=SourceProgress(
-                source="github",
-                status="rate_limited",
-                retry_after_sec=seconds,
-                message=("Waiting for GitHub rate limit. Studio will resume automatically."),
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "rate_limited",
+                retry_after_sec = seconds,
+                message = ("Waiting for GitHub rate limit. Studio will resume automatically."),
             ),
         )
 
@@ -171,12 +171,12 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
         resource = "pulls" if resource_raw.lower() == "prs" else resource_raw.lower()
         items = int(m.group("items"))
         return ParsedUpdate(
-            stage=STAGE_SOURCE,
-            source_progress=SourceProgress(
-                source="github",
-                status="fetching",
-                resource=resource,
-                message=f"GitHub {resource} trial limit reached ({items}).",
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "fetching",
+                resource = resource,
+                message = f"GitHub {resource} trial limit reached ({items}).",
             ),
         )
 
@@ -185,11 +185,11 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
         api = m.group("api")
         code = m.group("code")
         return ParsedUpdate(
-            stage=STAGE_SOURCE,
-            source_progress=SourceProgress(
-                source="github",
-                status="retrying",
-                message=f"GitHub {api} returned {code}; retrying automatically.",
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "retrying",
+                message = f"GitHub {api} returned {code}; retrying automatically.",
             ),
         )
 
@@ -197,97 +197,97 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
     if m:
         api = m.group("api")
         return ParsedUpdate(
-            stage=STAGE_SOURCE,
-            source_progress=SourceProgress(
-                source="github",
-                status="retrying",
-                message=f"GitHub {api} request failed; retrying automatically.",
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "retrying",
+                message = f"GitHub {api} request failed; retrying automatically.",
             ),
         )
 
     if _RE_GITHUB_COMPLETE.search(msg):
         return ParsedUpdate(
-            stage=STAGE_SOURCE,
-            source_progress=SourceProgress(
-                source="github",
-                status="completed",
-                message="GitHub source scrape complete.",
+            stage = STAGE_SOURCE,
+            source_progress = SourceProgress(
+                source = "github",
+                status = "completed",
+                message = "GitHub source scrape complete.",
             ),
         )
 
     m = _RE_SAMPLERS.search(msg)
     if m:
         return ParsedUpdate(
-            stage=STAGE_SAMPLING,
-            rows=int(m.group("rows")),
-            cols=int(m.group("cols")),
+            stage = STAGE_SAMPLING,
+            rows = int(m.group("rows")),
+            cols = int(m.group("cols")),
         )
 
     if "Sorting column configs into a Directed Acyclic Graph" in msg:
-        return ParsedUpdate(stage=STAGE_DAG)
+        return ParsedUpdate(stage = STAGE_DAG)
     if "Running health checks for models" in msg:
-        return ParsedUpdate(stage=STAGE_HEALTHCHECK)
+        return ParsedUpdate(stage = STAGE_HEALTHCHECK)
     if "Preview generation in progress" in msg:
-        return ParsedUpdate(stage=STAGE_PREVIEW)
+        return ParsedUpdate(stage = STAGE_PREVIEW)
     if "Creating Data Designer dataset" in msg:
-        return ParsedUpdate(stage=STAGE_CREATE)
+        return ParsedUpdate(stage = STAGE_CREATE)
     if "Measuring dataset column statistics" in msg:
-        return ParsedUpdate(stage=STAGE_PROFILING)
+        return ParsedUpdate(stage = STAGE_PROFILING)
 
     m = _RE_COLCFG.search(msg)
     if m:
         col = m.group("col")
-        return ParsedUpdate(stage=STAGE_COLUMN_CONFIG, current_column=col)
+        return ParsedUpdate(stage = STAGE_COLUMN_CONFIG, current_column = col)
 
     m = _RE_PROCESSING_COL.search(msg)
     if m:
         col = m.group("col")
-        return ParsedUpdate(stage=STAGE_GENERATING, current_column=col)
+        return ParsedUpdate(stage = STAGE_GENERATING, current_column = col)
 
     m = _RE_PROGRESS.search(msg)
     if m:
         p = Progress(
-            done=int(m.group("done")),
-            total=int(m.group("total")),
-            percent=float(m.group("pct")),
-            ok=int(m.group("ok")),
-            failed=int(m.group("failed")),
-            rate=float(m.group("rate")),
-            eta_sec=float(m.group("eta")),
+            done = int(m.group("done")),
+            total = int(m.group("total")),
+            percent = float(m.group("pct")),
+            ok = int(m.group("ok")),
+            failed = int(m.group("failed")),
+            rate = float(m.group("rate")),
+            eta_sec = float(m.group("eta")),
         )
-        return ParsedUpdate(stage=STAGE_GENERATING, progress=p)
+        return ParsedUpdate(stage = STAGE_GENERATING, progress = p)
 
     m = _RE_BATCH.search(msg)
     if m:
         return ParsedUpdate(
-            stage=STAGE_BATCH,
-            batch_idx=int(m.group("idx")),
-            batch_total=int(m.group("total")),
+            stage = STAGE_BATCH,
+            batch_idx = int(m.group("idx")),
+            batch_total = int(m.group("total")),
         )
 
     if "Model usage summary" in msg:
-        return ParsedUpdate(usage_section_start=True)
+        return ParsedUpdate(usage_section_start = True)
 
     m = _RE_USAGE_MODEL.search(msg)
     if m and "|-- model:" in msg:
-        return ParsedUpdate(usage_model=str(m.group("model")).strip())
+        return ParsedUpdate(usage_model = str(m.group("model")).strip())
 
     m = _RE_USAGE_TOKENS.search(msg)
     if m:
         return ParsedUpdate(
-            usage_input_tokens=int(m.group("input")),
-            usage_output_tokens=int(m.group("output")),
-            usage_total_tokens=int(m.group("total")),
-            usage_tps=float(m.group("tps")),
+            usage_input_tokens = int(m.group("input")),
+            usage_output_tokens = int(m.group("output")),
+            usage_total_tokens = int(m.group("total")),
+            usage_tps = float(m.group("tps")),
         )
 
     m = _RE_USAGE_REQUESTS.search(msg)
     if m:
         return ParsedUpdate(
-            usage_requests_success=int(m.group("success")),
-            usage_requests_failed=int(m.group("failed")),
-            usage_requests_total=int(m.group("total")),
-            usage_rpm=float(m.group("rpm")),
+            usage_requests_success = int(m.group("success")),
+            usage_requests_failed = int(m.group("failed")),
+            usage_requests_total = int(m.group("total")),
+            usage_rpm = float(m.group("rpm")),
         )
 
     return None
@@ -342,7 +342,7 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         name = update.usage_model.strip().strip("'").strip('"')
         job._current_usage_model = name
         if name not in job.model_usage:
-            job.model_usage[name] = ModelUsage(model=name)
+            job.model_usage[name] = ModelUsage(model = name)
 
     if job._current_usage_model is None:
         return
@@ -400,27 +400,27 @@ def _apply_source_progress(job: Job, progress: SourceProgress) -> None:
         percent = previous.percent
 
     job.source_progress = SourceProgress(
-        source="github",
-        status=progress.status or (previous.status if previous else None),
-        repo=progress.repo or (previous.repo if previous else None),
-        resource=progress.resource or (previous.resource if previous else None),
-        page=(
+        source = "github",
+        status = progress.status or (previous.status if previous else None),
+        repo = progress.repo or (previous.repo if previous else None),
+        resource = progress.resource or (previous.resource if previous else None),
+        page = (
             progress.page if progress.page is not None else (previous.page if previous else None)
         ),
-        page_items=(
+        page_items = (
             page_items if page_items is not None else (previous.page_items if previous else None)
         ),
-        fetched_items=fetched_items,
-        estimated_total=estimated_total,
-        percent=percent,
-        rate_remaining=(
+        fetched_items = fetched_items,
+        estimated_total = estimated_total,
+        percent = percent,
+        rate_remaining = (
             progress.rate_remaining
             if progress.rate_remaining is not None
             else (previous.rate_remaining if previous else None)
         ),
-        retry_after_sec=progress.retry_after_sec,
-        message=progress.message or (previous.message if previous else None),
-        updated_at=now,
+        retry_after_sec = progress.retry_after_sec,
+        message = progress.message or (previous.message if previous else None),
+        updated_at = now,
     )
 
 
@@ -453,13 +453,13 @@ def _compute_overall_progress(job: Job, column_progress: Progress) -> Progress:
         percent = prev_percent
 
     return Progress(
-        done=done,
-        total=total_rows,
-        percent=percent,
-        eta_sec=column_progress.eta_sec,
-        rate=column_progress.rate,
-        ok=column_progress.ok,
-        failed=column_progress.failed,
+        done = done,
+        total = total_rows,
+        percent = percent,
+        eta_sec = column_progress.eta_sec,
+        rate = column_progress.rate,
+        ok = column_progress.ok,
+        failed = column_progress.failed,
     )
 
 

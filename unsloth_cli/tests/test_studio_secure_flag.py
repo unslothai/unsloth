@@ -21,7 +21,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _studio():
     from unsloth_cli.commands import studio as _studio_mod
-
     return _studio_mod
 
 
@@ -52,7 +51,6 @@ def test_studio_default_exposes_secure_option_default_off():
 def test_secure_exposes_hidden_not_secure_alias():
     # --not-secure is a hidden, deprecated alias for --no-secure on both commands.
     import inspect
-
     for fn in (_studio().run, _studio().studio_default):
         opt = inspect.signature(fn).parameters["not_secure"].default
         decls = set(getattr(opt, "param_decls", []) or [])
@@ -106,9 +104,9 @@ def _invoke_run(monkeypatch, args):
     captured = _install_run_reexec_capture(monkeypatch)
     app = _typer.Typer()
     app.command(
-        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(_studio().run)
-    CliRunner().invoke(app, args, catch_exceptions=True)
+    CliRunner().invoke(app, args, catch_exceptions = True)
     return captured
 
 
@@ -132,7 +130,7 @@ def _invoke_studio_default(monkeypatch, args):
     monkeypatch.setattr(studio_mod.os, "execvp", fake_execvp)
     app = _typer.Typer()
     app.command()(studio_mod.studio_default)
-    CliRunner().invoke(app, args, catch_exceptions=True)
+    CliRunner().invoke(app, args, catch_exceptions = True)
     return captured
 
 
@@ -241,9 +239,9 @@ def test_run_in_venv_passes_secure_and_forces_host(monkeypatch):
 
     app = _typer.Typer()
     app.command(
-        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions=True)
+    CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions = True)
 
     assert captured.get("secure") is True, captured
     assert captured.get("host") == "127.0.0.1", captured
@@ -258,7 +256,7 @@ def test_run_secure_rejects_no_cloudflare(monkeypatch):
 
     app = _typer.Typer()
     app.command(
-        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
     result = CliRunner().invoke(app, _BASE + ["--secure", "--no-cloudflare"])
     assert result.exit_code == 2, result.output
@@ -269,7 +267,7 @@ def test_studio_default_rejects_secure_with_subcommand():
 
     studio_mod = _studio()
     app = _typer.Typer()
-    app.add_typer(studio_mod.studio_app, name="studio")
+    app.add_typer(studio_mod.studio_app, name = "studio")
     result = CliRunner().invoke(app, ["studio", "--secure", "run", "--model", "X"])
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
@@ -317,9 +315,9 @@ def test_run_secure_resolves_tools_against_loopback(monkeypatch):
 
     app = _typer.Typer()
     app.command(
-        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions=True)
+    CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions = True)
 
     # Resolved against the forced-loopback bind, not the public 0.0.0.0 exposure.
     assert calls and calls[0] == "127.0.0.1", calls
@@ -373,7 +371,7 @@ def test_studio_default_rejects_enable_tools_with_subcommand():
 
     studio_mod = _studio()
     app = _typer.Typer()
-    app.add_typer(studio_mod.studio_app, name="studio")
+    app.add_typer(studio_mod.studio_app, name = "studio")
     result = CliRunner().invoke(app, ["studio", "--enable-tools", "run", "--model", "X"])
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")

@@ -34,8 +34,8 @@ class UnstructuredSeedReader(SeedReader[UnstructuredSeedSource]):
             file_entries.append((path_obj, orig_name))
 
         path, _ = materialize_multi_file_unstructured_seed(
-            file_entries=file_entries,
-            chunk_size=self.source.chunk_size,
-            chunk_overlap=self.source.chunk_overlap,
+            file_entries = file_entries,
+            chunk_size = self.source.chunk_size,
+            chunk_overlap = self.source.chunk_overlap,
         )
         return str(path)

@@ -115,12 +115,12 @@ def start_watchdog(
 
     def _beat() -> None:
         nonlocal fired
-        state = get_hf_download_state(repo_ids, repo_type=repo_type)
+        state = get_hf_download_state(repo_ids, repo_type = repo_type)
         last_size = state[0] if state is not None else 0
         last_change = time.monotonic()
 
         while not stop.wait(interval):
-            state = get_hf_download_state(repo_ids, repo_type=repo_type)
+            state = get_hf_download_state(repo_ids, repo_type = repo_type)
             now = time.monotonic()
 
             if state is None:
@@ -149,7 +149,7 @@ def start_watchdog(
             if on_heartbeat is not None:
                 on_heartbeat(f"Downloading ({transport} transport)...")
 
-    threading.Thread(target=_beat, daemon=True, name="hf-xet-watchdog").start()
+    threading.Thread(target = _beat, daemon = True, name = "hf-xet-watchdog").start()
     return stop
 
 
@@ -171,7 +171,6 @@ def _download_child_entry(
     # Die with Studio on Linux (this mp child gets no parent-set preexec_fn).
     try:
         from utils.process_lifetime import bind_current_process_to_parent_lifetime
-
         bind_current_process_to_parent_lifetime()
     except Exception:
         pass
@@ -193,12 +192,11 @@ def _download_child_entry(
     # so the watchdog + HTTP fallback can be exercised against a real repo.
     if not disable_xet and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         import time as _t
-
         try:
             from huggingface_hub.constants import HF_HUB_CACHE
 
             blobs = os.path.join(HF_HUB_CACHE, "models--" + repo_id.replace("/", "--"), "blobs")
-            os.makedirs(blobs, exist_ok=True)
+            os.makedirs(blobs, exist_ok = True)
             with open(os.path.join(blobs, "xet-force-stall.incomplete"), "wb") as fh:
                 fh.write(b"\0" * 4096)
         except OSError:
@@ -208,20 +206,18 @@ def _download_child_entry(
 
     try:
         from huggingface_hub import hf_hub_download
-
         path = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            repo_type=repo_type,
-            token=token,
+            repo_id = repo_id,
+            filename = filename,
+            repo_type = repo_type,
+            token = token,
         )
         result_queue.put({"ok": True, "path": path})
     except BaseException as e:  # noqa: BLE001 - report every failure to the parent
         error = f"{type(e).__name__}: {e}"
         try:
             from hub.utils.download_registry import scrub_secrets
-
-            error = scrub_secrets(error, hf_token=token)
+            error = scrub_secrets(error, hf_token = token)
         except Exception:
             pass
         result_queue.put({"ok": False, "error": error})
@@ -250,10 +246,10 @@ def _terminate_process_group(proc: "mp.process.BaseProcess", grace_period: float
             pass
 
     _signal_group(getattr(signal, "SIGTERM", signal.SIGINT))
-    proc.join(timeout=grace_period)
+    proc.join(timeout = grace_period)
     if proc.is_alive():
         _signal_group(getattr(signal, "SIGKILL", signal.SIGTERM))
-        proc.join(timeout=5.0)
+        proc.join(timeout = 5.0)
 
 
 def _run_download_attempt(
@@ -276,16 +272,16 @@ def _run_download_attempt(
     """
     result_queue: Any = _CTX.Queue()
     proc = _CTX.Process(
-        target=_download_child_entry,
-        kwargs=dict(
-            repo_id=repo_id,
-            filename=filename,
-            token=token,
-            repo_type=repo_type,
-            disable_xet=disable_xet,
-            result_queue=result_queue,
+        target = _download_child_entry,
+        kwargs = dict(
+            repo_id = repo_id,
+            filename = filename,
+            token = token,
+            repo_type = repo_type,
+            disable_xet = disable_xet,
+            result_queue = result_queue,
         ),
-        daemon=True,
+        daemon = True,
     )
     proc.start()
     from utils.process_lifetime import adopt_pid
@@ -294,13 +290,13 @@ def _run_download_attempt(
 
     stalled = threading.Event()
     stop_watchdog = start_watchdog(
-        repo_ids=[repo_id],
-        on_stall=lambda msg: stalled.set(),
-        repo_type=repo_type,
-        interval=interval,
-        stall_timeout=stall_timeout,
-        xet_disabled=disable_xet,
-        on_heartbeat=on_status,
+        repo_ids = [repo_id],
+        on_stall = lambda msg: stalled.set(),
+        repo_type = repo_type,
+        interval = interval,
+        stall_timeout = stall_timeout,
+        xet_disabled = disable_xet,
+        on_heartbeat = on_status,
     )
 
     result: Optional[dict] = None
@@ -313,7 +309,7 @@ def _run_download_attempt(
                 _terminate_process_group(proc, grace_period)
                 return ("stall", None)
             try:
-                result = result_queue.get(timeout=_POLL_INTERVAL)
+                result = result_queue.get(timeout = _POLL_INTERVAL)
                 break
             except queue.Empty:
                 continue
@@ -325,7 +321,7 @@ def _run_download_attempt(
                 result = None
     finally:
         stop_watchdog.set()
-        proc.join(timeout=grace_period)
+        proc.join(timeout = grace_period)
 
     if result is None:
         return (
@@ -359,8 +355,7 @@ def hf_hub_download_with_xet_fallback(
     # Finalized blob already cached: return it with no child and no network.
     try:
         from huggingface_hub import try_to_load_from_cache
-
-        cached = try_to_load_from_cache(repo_id, filename, repo_type=repo_type)
+        cached = try_to_load_from_cache(repo_id, filename, repo_type = repo_type)
         if isinstance(cached, str) and os.path.exists(cached):
             return cached
     except Exception as e:
@@ -376,7 +371,6 @@ def hf_hub_download_with_xet_fallback(
             # over a sparse Xet/hf_transfer partial silently corrupts the blob.
             try:
                 from hub.utils.download_registry import prepare_cache_for_transport
-
                 prepare_cache_for_transport(repo_type, repo_id, "http")
             except Exception as e:
                 logger.debug("prepare_cache_for_transport failed for %s: %s", repo_id, e)
@@ -385,13 +379,13 @@ def hf_hub_download_with_xet_fallback(
             repo_id,
             filename,
             token,
-            repo_type=repo_type,
-            disable_xet=disable_xet,
-            cancel_event=cancel_event,
-            stall_timeout=stall_timeout,
-            interval=interval,
-            grace_period=grace_period,
-            on_status=on_status,
+            repo_type = repo_type,
+            disable_xet = disable_xet,
+            cancel_event = cancel_event,
+            stall_timeout = stall_timeout,
+            interval = interval,
+            grace_period = grace_period,
+            on_status = on_status,
         )
 
         if kind == "ok":

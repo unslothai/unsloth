@@ -138,7 +138,6 @@ def __getattr__(name):
     # Datasets
     if name == "format_and_template_dataset":
         from utils.datasets import format_and_template_dataset
-
         globals()["format_and_template_dataset"] = format_and_template_dataset
         return format_and_template_dataset
 

@@ -35,7 +35,7 @@ DATASET_UPLOAD_DIR = dataset_uploads_root()
 
 def _safe_read_metadata(path: Path) -> dict | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding = "utf-8"))
     except (OSError, ValueError, TypeError):
         return None
     if not isinstance(payload, dict):
@@ -146,13 +146,13 @@ def _build_recipe_dataset_items() -> list[LocalDatasetItem]:
 
         items.append(
             LocalDatasetItem(
-                id=entry.name,
-                label=entry.name,
-                path=str(parquet_dir.resolve()),
-                source="recipe",
-                rows=rows,
-                updated_at=_safe_mtime(entry),
-                metadata=metadata_summary,
+                id = entry.name,
+                label = entry.name,
+                path = str(parquet_dir.resolve()),
+                source = "recipe",
+                rows = rows,
+                updated_at = _safe_mtime(entry),
+                metadata = metadata_summary,
             )
         )
 
@@ -175,11 +175,11 @@ def _build_uploaded_dataset_items() -> list[LocalDatasetItem]:
         label = _display_uploaded_dataset_name(path)
         items.append(
             LocalDatasetItem(
-                id=path.name,
-                label=label,
-                path=str(path.resolve()),
-                source="upload",
-                updated_at=_safe_mtime(path),
+                id = path.name,
+                label = label,
+                path = str(path.resolve()),
+                source = "upload",
+                updated_at = _safe_mtime(path),
             )
         )
     return items
@@ -187,7 +187,7 @@ def _build_uploaded_dataset_items() -> list[LocalDatasetItem]:
 
 def _build_local_dataset_items() -> list[LocalDatasetItem]:
     items = _build_recipe_dataset_items() + _build_uploaded_dataset_items()
-    items.sort(key=lambda item: item.updated_at or 0, reverse=True)
+    items.sort(key = lambda item: item.updated_at or 0, reverse = True)
     return items
 
 
@@ -213,9 +213,9 @@ def _stream_file_preview_slice(path: Path, preview_size: int):
 
     streamed = load_dataset(
         loader,
-        data_files=str(path),
-        split="train",
-        streaming=True,
+        data_files = str(path),
+        split = "train",
+        streaming = True,
     )
     rows = list(islice(streamed, preview_size))
     if not rows:
@@ -237,8 +237,8 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         if parquet_files:
             dataset = load_dataset(
                 "parquet",
-                data_files=[str(path) for path in parquet_files],
-                split=train_split,
+                data_files = [str(path) for path in parquet_files],
+                split = train_split,
             )
             total_rows = len(dataset)
             preview_slice = dataset.select(range(min(preview_size, total_rows)))
@@ -249,8 +249,8 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
             candidate_files.extend(sorted(dataset_path.glob(f"*{ext}")))
         if not candidate_files:
             raise HTTPException(
-                status_code=400,
-                detail="Unsupported local dataset directory (expected parquet/json/jsonl/csv files)",
+                status_code = 400,
+                detail = "Unsupported local dataset directory (expected parquet/json/jsonl/csv files)",
             )
         dataset_path = candidate_files[0]
 
@@ -258,7 +258,7 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     # Parquet/Arrow give a cheap exact total_rows via len()+select; JSON/CSV
     # carry no such metadata, so stream them and report total_rows=None.
     if suffix == ".parquet":
-        dataset = load_dataset("parquet", data_files=str(dataset_path), split=train_split)
+        dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
         total_rows = len(dataset)
         preview_slice = dataset.select(range(min(preview_size, total_rows)))
         return preview_slice, total_rows
@@ -267,12 +267,12 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         preview = _stream_file_preview_slice(dataset_path, preview_size)
         if preview is None:
             raise HTTPException(
-                status_code=400,
-                detail="Dataset appears to be empty or could not be read",
+                status_code = 400,
+                detail = "Dataset appears to be empty or could not be read",
             )
         return preview
 
-    raise HTTPException(status_code=400, detail=f"Unsupported file format: {dataset_path.suffix}")
+    raise HTTPException(status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}")
 
 
 def _sanitize_filename(filename: str) -> str:
@@ -284,8 +284,8 @@ def _sanitize_filename(filename: str) -> str:
 
 def _upload_too_large(size_bytes: int) -> HTTPException:
     return HTTPException(
-        status_code=413,
-        detail=(f"Upload is too large " f"({size_bytes:,} bytes; max {LOCAL_UPLOAD_MAX_BYTES:,})."),
+        status_code = 413,
+        detail = (f"Upload is too large " f"({size_bytes:,} bytes; max {LOCAL_UPLOAD_MAX_BYTES:,})."),
     )
 
 
@@ -295,8 +295,8 @@ async def upload_dataset_response(file: UploadFile) -> UploadDatasetResponse:
     if ext not in LOCAL_UPLOAD_EXTS:
         allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
         raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type: {ext}. Allowed: {allowed}",
+            status_code = 400,
+            detail = f"Unsupported file type: {ext}. Allowed: {allowed}",
         )
 
     declared_size = getattr(file, "size", None)
@@ -317,15 +317,15 @@ async def upload_dataset_response(file: UploadFile) -> UploadDatasetResponse:
                     raise _upload_too_large(written)
                 await asyncio.to_thread(f.write, chunk)
     except Exception:
-        stored_path.unlink(missing_ok=True)
+        stored_path.unlink(missing_ok = True)
         raise
 
     if written == 0:
-        stored_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Empty upload payload")
+        stored_path.unlink(missing_ok = True)
+        raise HTTPException(status_code = 400, detail = "Empty upload payload")
 
-    return UploadDatasetResponse(filename=filename, stored_path=str(stored_path))
+    return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
 
 
 def list_local_datasets_response() -> LocalDatasetsResponse:
-    return LocalDatasetsResponse(datasets=_build_local_dataset_items())
+    return LocalDatasetsResponse(datasets = _build_local_dataset_items())

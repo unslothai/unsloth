@@ -52,7 +52,7 @@ def test_claude_settings_created_when_missing(claude_settings):
 
 
 def test_claude_settings_merge_preserves_existing(claude_settings):
-    claude_settings.parent.mkdir(parents=True)
+    claude_settings.parent.mkdir(parents = True)
     claude_settings.write_text(
         json.dumps({"effortLevel": "high", "env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "0"}})
     )
@@ -64,7 +64,7 @@ def test_claude_settings_merge_preserves_existing(claude_settings):
 
 
 def test_claude_settings_already_set_untouched(claude_settings):
-    claude_settings.parent.mkdir(parents=True)
+    claude_settings.parent.mkdir(parents = True)
     original = json.dumps({"env": {"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}})
     claude_settings.write_text(original)
     connect.ensure_claude_attribution_header()
@@ -72,7 +72,7 @@ def test_claude_settings_already_set_untouched(claude_settings):
 
 
 def test_claude_settings_bad_json_left_alone(claude_settings, capsys):
-    claude_settings.parent.mkdir(parents=True)
+    claude_settings.parent.mkdir(parents = True)
     claude_settings.write_text("{not json")
     connect.ensure_claude_attribution_header()
     assert claude_settings.read_text() == "{not json"
@@ -84,7 +84,7 @@ def _fake_claude(monkeypatch, version_output: str) -> None:
     monkeypatch.setattr(
         connect.subprocess,
         "run",
-        lambda *args, **kwargs: SimpleNamespace(stdout=version_output),
+        lambda *args, **kwargs: SimpleNamespace(stdout = version_output),
     )
 
 
@@ -168,9 +168,9 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         calls.append((method, url, payload))
         if url.endswith("/v1/models"):
@@ -194,7 +194,7 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
     # No `claude` on PATH, so _claude_cache_flags never probes the real binary.
     monkeypatch.setattr(connect.shutil, "which", lambda _: None)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
-    monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
     return calls
 
 
@@ -223,7 +223,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     def run(command, env):
         captured["command"] = command
         captured["env"] = env
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode = 0)
 
     monkeypatch.setattr(connect.subprocess, "run", run)
     result = CliRunner().invoke(connect.connect_app, ["claude"])
@@ -239,7 +239,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason="WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
+    reason = "WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
     "os.name is 'posix' under WSL, so this path can't run on a native Windows runner.",
 )
 def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypatch):
@@ -255,7 +255,7 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     def run(command, env):
         captured["command"] = command
         captured["env"] = env
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode = 0)
 
     monkeypatch.setattr(connect.subprocess, "run", run)
     result = CliRunner().invoke(connect.connect_app, ["claude"])
@@ -283,7 +283,7 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason="WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
+    reason = "WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
     "os.name is 'posix' under WSL, so this path can't run on a native Windows runner.",
 )
 def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studio, monkeypatch):
@@ -348,9 +348,9 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         if url.endswith("/v1/models") and token == "sk-unsloth-stale":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
@@ -401,9 +401,9 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         if url.endswith("/api/inference/load"):
             return {"model": canonical, "display_name": canonical}
@@ -424,7 +424,7 @@ def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
     monkeypatch.setattr(
         connect,
         "_http_json",
-        lambda method, url, token, payload=None, timeout=30, error=None: (
+        lambda method, url, token, payload = None, timeout = 30, error = None: (
             {"key": "sk-unsloth-feedfacefeedface"}
             if url.endswith("/api/auth/api-keys")
             else {"object": "list", "data": []}
@@ -444,9 +444,9 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         if url.endswith("/api/inference/load"):
             return {}
@@ -469,9 +469,9 @@ def test_connect_codex_rejects_non_gguf_model(fake_studio, monkeypatch):
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "unsloth/Qwen3-0.6B"}
@@ -532,7 +532,7 @@ def test_connect_studio_server_errors_on_explicit_remote(monkeypatch):
         inference, "find_studio_server", lambda *a, **k: "http://studio.example:8888"
     )
     with pytest.raises(typer.Exit):
-        inference.connect_studio_server("m", hf_token=None, max_seq_length=4096, load_in_4bit=False)
+        inference.connect_studio_server("m", hf_token = None, max_seq_length = 4096, load_in_4bit = False)
 
 
 def test_connect_studio_server_falls_back_locally_on_default_discovery(monkeypatch):
@@ -540,11 +540,11 @@ def test_connect_studio_server_falls_back_locally_on_default_discovery(monkeypat
     # server can't be verified, fall back to a local load rather than erroring.
     import unsloth_cli._inference as inference
 
-    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
     monkeypatch.setattr(inference, "find_studio_server", lambda *a, **k: "http://127.0.0.1:8888")
     monkeypatch.setattr(inference, "verify_studio_identity", lambda *a, **k: False)
     assert (
-        inference.connect_studio_server("m", hf_token=None, max_seq_length=4096, load_in_4bit=False)
+        inference.connect_studio_server("m", hf_token = None, max_seq_length = 4096, load_in_4bit = False)
         is None
     )
 
@@ -624,7 +624,7 @@ def _serve_identity(proof_for):
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target = server.serve_forever, daemon = True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     return base, server.shutdown
 
@@ -672,7 +672,7 @@ def _serve_redirect(target):
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target = server.serve_forever, daemon = True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     return base, server.shutdown
 

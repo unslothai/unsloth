@@ -27,15 +27,15 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger=_DummyLogger,
-        get_logger=lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger = _DummyLogger,
+        get_logger = lambda *args, **kwargs: _DummyLogger(),
     )
 
 import routes.models as models_route
 
 
 def _touch(path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\0")
     return path
 

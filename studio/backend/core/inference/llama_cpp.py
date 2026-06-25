@@ -2659,7 +2659,6 @@ class LlamaCppBackend:
         is non-None here."""
         return self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
 
-
     def _resolve_ctx_checkpoints(self, cli_val: Optional[int]) -> int:
         """Resolve effective checkpoint count using CLI > Env > Default precedence."""
         if cli_val is not None:
@@ -4194,7 +4193,6 @@ class LlamaCppBackend:
         the compute buffer.
         """
         ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints)
-
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and

@@ -338,10 +338,10 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
         # Missing lockfile is a config error, not a clean audit.
         findings.append(
             Finding(
-                path=str(path),
-                package="<root>",
-                kind="missing-lockfile",
-                detail=(
+                path = str(path),
+                package = "<root>",
+                kind = "missing-lockfile",
+                detail = (
                     "expected lockfile not found; refusing to silently "
                     "report a clean audit for a path that was not scanned"
                 ),
@@ -350,15 +350,15 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
         return findings
 
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding = "utf-8")
     except OSError as exc:
         # Surface as a finding instead of crashing CI with a traceback.
         findings.append(
             Finding(
-                path=str(path),
-                package="<root>",
-                kind="unreadable-lockfile",
-                detail=f"could not read file: {exc}",
+                path = str(path),
+                package = "<root>",
+                kind = "unreadable-lockfile",
+                detail = f"could not read file: {exc}",
             )
         )
         return findings
@@ -367,10 +367,10 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
     except json.JSONDecodeError as exc:
         findings.append(
             Finding(
-                path=str(path),
-                package="<root>",
-                kind="malformed-lockfile",
-                detail=f"could not parse as JSON: {exc}",
+                path = str(path),
+                package = "<root>",
+                kind = "malformed-lockfile",
+                detail = f"could not parse as JSON: {exc}",
             )
         )
         return findings
@@ -379,10 +379,10 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
     if lockfile_version not in (2, 3):
         findings.append(
             Finding(
-                path=str(path),
-                package="<root>",
-                kind="unsupported-lockfile-version",
-                detail=(f"only lockfileVersion 2 or 3 audited; got {lockfile_version}"),
+                path = str(path),
+                package = "<root>",
+                kind = "unsupported-lockfile-version",
+                detail = (f"only lockfileVersion 2 or 3 audited; got {lockfile_version}"),
             )
         )
 
@@ -409,10 +409,10 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                 # Top-level entry without a resolved URL is suspicious.
                 findings.append(
                     Finding(
-                        path=str(path),
-                        package=key,
-                        kind="missing-resolved-url",
-                        detail=(
+                        path = str(path),
+                        package = key,
+                        kind = "missing-resolved-url",
+                        detail = (
                             f"version={entry['version']!r} but no `resolved` "
                             "field; lockfile is incomplete"
                         ),
@@ -422,10 +422,10 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
             if not any(resolved.startswith(p) for p in NPM_REGISTRY_PREFIXES_ALLOWED):
                 findings.append(
                     Finding(
-                        path=str(path),
-                        package=key,
-                        kind="non-registry-resolved-url",
-                        detail=(
+                        path = str(path),
+                        package = key,
+                        kind = "non-registry-resolved-url",
+                        detail = (
                             f"resolved={resolved!r}; only "
                             f"{NPM_REGISTRY_PREFIX} is permitted. Direct "
                             "GitHub / git / file references are the "
@@ -438,10 +438,10 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
         if resolved is not None and not entry.get("integrity"):
             findings.append(
                 Finding(
-                    path=str(path),
-                    package=key,
-                    kind="missing-integrity-hash",
-                    detail=(
+                    path = str(path),
+                    package = key,
+                    kind = "missing-integrity-hash",
+                    detail = (
                         "no `integrity` field; npm cannot verify the "
                         "tarball SHA against the registry-published hash"
                     ),
@@ -456,10 +456,10 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
         if version and version in blocked:
             findings.append(
                 Finding(
-                    path=str(path),
-                    package=key,
-                    kind="blocked-known-malicious",
-                    detail=(f"{pkg_name}@{version} is on the BLOCKED_NPM_VERSIONS list"),
+                    path = str(path),
+                    package = key,
+                    kind = "blocked-known-malicious",
+                    detail = (f"{pkg_name}@{version} is on the BLOCKED_NPM_VERSIONS list"),
                 )
             )
 
@@ -470,10 +470,10 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
             line_no = _first_line_containing(raw, ioc)
             findings.append(
                 Finding(
-                    path=f"{path}:{line_no}" if line_no else str(path),
-                    package="<ioc-match>",
-                    kind="known-ioc-string",
-                    detail=(
+                    path = f"{path}:{line_no}" if line_no else str(path),
+                    package = "<ioc-match>",
+                    kind = "known-ioc-string",
+                    detail = (
                         f"matched known IOC substring {ioc!r}; this is "
                         "a public indicator of a recent supply-chain "
                         "compromise. Refuse to install."
@@ -485,7 +485,7 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
 
 
 def _first_line_containing(text: str, needle: str) -> int | None:
-    for i, line in enumerate(text.splitlines(), start=1):
+    for i, line in enumerate(text.splitlines(), start = 1):
         if needle in line:
             return i
     return None
@@ -501,10 +501,10 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
         # See audit_npm_lockfile: missing lockfile is a finding.
         findings.append(
             Finding(
-                path=str(path),
-                package="<root>",
-                kind="missing-lockfile",
-                detail=(
+                path = str(path),
+                package = "<root>",
+                kind = "missing-lockfile",
+                detail = (
                     "expected lockfile not found; refusing to silently "
                     "report a clean audit for a path that was not scanned"
                 ),
@@ -513,14 +513,14 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
         return findings
 
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding = "utf-8")
     except OSError as exc:
         findings.append(
             Finding(
-                path=str(path),
-                package="<root>",
-                kind="unreadable-lockfile",
-                detail=f"could not read file: {exc}",
+                path = str(path),
+                package = "<root>",
+                kind = "unreadable-lockfile",
+                detail = f"could not read file: {exc}",
             )
         )
         return findings
@@ -533,10 +533,10 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
         except ImportError:
             findings.append(
                 Finding(
-                    path=str(path),
-                    package="<root>",
-                    kind="missing-toml-parser",
-                    detail=(
+                    path = str(path),
+                    package = "<root>",
+                    kind = "missing-toml-parser",
+                    detail = (
                         "Python 3.11+ tomllib or tomli is required to "
                         "parse Cargo.lock; install tomli or upgrade "
                         "Python before re-running this audit"
@@ -550,10 +550,10 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
     except Exception as exc:
         findings.append(
             Finding(
-                path=str(path),
-                package="<root>",
-                kind="malformed-lockfile",
-                detail=f"could not parse as TOML: {exc}",
+                path = str(path),
+                package = "<root>",
+                kind = "malformed-lockfile",
+                detail = f"could not parse as TOML: {exc}",
             )
         )
         return findings
@@ -572,10 +572,10 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
             else:
                 findings.append(
                     Finding(
-                        path=str(path),
-                        package=f"{name}@{version}",
-                        kind="non-registry-cargo-source",
-                        detail=(
+                        path = str(path),
+                        package = f"{name}@{version}",
+                        kind = "non-registry-cargo-source",
+                        detail = (
                             f"source={source!r}; only "
                             f"{CARGO_REGISTRY_SOURCE!r} is permitted "
                             "by default, and no allowlist entry covers "
@@ -589,10 +589,10 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
         if not entry.get("checksum") and source == CARGO_REGISTRY_SOURCE:
             findings.append(
                 Finding(
-                    path=str(path),
-                    package=f"{name}@{version}",
-                    kind="missing-cargo-checksum",
-                    detail=(
+                    path = str(path),
+                    package = f"{name}@{version}",
+                    kind = "missing-cargo-checksum",
+                    detail = (
                         "registry crate without checksum; cargo cannot "
                         "verify the downloaded source against the "
                         "registry-published SHA"
@@ -605,10 +605,10 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
             line_no = _first_line_containing(raw, ioc)
             findings.append(
                 Finding(
-                    path=f"{path}:{line_no}" if line_no else str(path),
-                    package="<ioc-match>",
-                    kind="known-ioc-string",
-                    detail=f"matched known IOC substring {ioc!r}",
+                    path = f"{path}:{line_no}" if line_no else str(path),
+                    package = "<ioc-match>",
+                    kind = "known-ioc-string",
+                    detail = f"matched known IOC substring {ioc!r}",
                 )
             )
 
@@ -641,18 +641,18 @@ DEFAULT_CARGO_LOCKFILES = ("studio/src-tauri/Cargo.lock",)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Pre-install lockfile supply-chain audit.",
+        description = "Pre-install lockfile supply-chain audit.",
     )
     parser.add_argument(
         "--root",
-        default=str(REPO_ROOT),
-        help="Repo root (default: parent of this script).",
+        default = str(REPO_ROOT),
+        help = "Repo root (default: parent of this script).",
     )
     parser.add_argument(
         "--npm-lockfile",
-        action="append",
-        default=None,
-        help=(
+        action = "append",
+        default = None,
+        help = (
             "Path to a package-lock.json (repeatable). "
             "Default: studio/frontend/package-lock.json, "
             "studio/backend/core/data_recipe/oxc-validator/package-lock.json, "
@@ -661,14 +661,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--cargo-lockfile",
-        action="append",
-        default=None,
-        help=("Path to a Cargo.lock (repeatable). Default: studio/src-tauri/Cargo.lock."),
+        action = "append",
+        default = None,
+        help = ("Path to a Cargo.lock (repeatable). Default: studio/src-tauri/Cargo.lock."),
     )
     parser.add_argument(
         "--strict",
-        action="store_true",
-        help=(
+        action = "store_true",
+        help = (
             "Treat every finding as blocking (exit 1). "
             "Default mode only blocks on known-malicious versions, "
             "indicator-of-compromise strings, or structurally broken "
@@ -691,14 +691,14 @@ def main(argv: list[str] | None = None) -> int:
                 "::warning::Lockfile audit skip REQUIRES a justification "
                 f"value (>=5 chars, not '{_skip_raw}'). Proceeding with "
                 "audit. Use e.g. UNSLOTH_LOCKFILE_AUDIT_SKIP=ticket-1234.",
-                file=sys.stderr,
-                flush=True,
+                file = sys.stderr,
+                flush = True,
             )
         else:
             print(
                 f"::warning::Lockfile audit skipped: reason='{_skip}'",
-                file=sys.stderr,
-                flush=True,
+                file = sys.stderr,
+                flush = True,
             )
             return 0
 
@@ -714,17 +714,17 @@ def main(argv: list[str] | None = None) -> int:
 
     all_findings: list[Finding] = []
     for p in npm_paths:
-        print(f"[lockfile-audit] npm: {p}", flush=True)
+        print(f"[lockfile-audit] npm: {p}", flush = True)
         all_findings.extend(audit_npm_lockfile(p))
     for p in cargo_paths:
-        print(f"[lockfile-audit] cargo: {p}", flush=True)
+        print(f"[lockfile-audit] cargo: {p}", flush = True)
         all_findings.extend(audit_cargo_lockfile(p))
 
     if not all_findings:
         print(
             f"[lockfile-audit] OK: 0 findings across "
             f"{len(npm_paths)} npm + {len(cargo_paths)} cargo lockfile(s)",
-            flush=True,
+            flush = True,
         )
         return 0
 
@@ -742,36 +742,36 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"\n[lockfile-audit] {len(advisory)} advisory finding(s) "
             "(non-blocking; pass --strict to fail the build on these):\n",
-            file=sys.stderr,
+            file = sys.stderr,
         )
         for f in advisory:
             # GH Actions warning annotation; _gha_escape collapses the
             # multi-line Finding onto one line so it renders fully in the UI.
-            print(f"::warning::{_gha_escape(str(f))}", file=sys.stderr)
-            print(file=sys.stderr)
+            print(f"::warning::{_gha_escape(str(f))}", file = sys.stderr)
+            print(file = sys.stderr)
 
     if not blocking:
         print(
             f"[lockfile-audit] OK: {len(advisory)} advisory finding(s), "
             "0 blocking. Run with --strict to escalate advisory findings.",
-            flush=True,
+            flush = True,
         )
         return 0
 
     print(
         f"\n[lockfile-audit] FAIL: {len(blocking)} blocking finding(s):\n",
-        file=sys.stderr,
+        file = sys.stderr,
     )
     for f in blocking:
         # Same %-encoding rationale as the advisory branch above.
-        print(f"::error::{_gha_escape(str(f))}", file=sys.stderr)
-        print(file=sys.stderr)
+        print(f"::error::{_gha_escape(str(f))}", file = sys.stderr)
+        print(file = sys.stderr)
     print(
         "[lockfile-audit] Refusing to proceed. Each blocking finding "
         "above is either a public indicator-of-compromise, a known-"
         "malicious pinned version, or a structurally broken lockfile. "
         "Investigate before running `npm ci` or `cargo fetch`.",
-        file=sys.stderr,
+        file = sys.stderr,
     )
     return 1
 

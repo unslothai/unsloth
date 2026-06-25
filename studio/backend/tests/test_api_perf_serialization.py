@@ -38,7 +38,7 @@ class _Resp(BaseModel):
 
 def _old_body(model) -> bytes:
     # What the previous code emitted: dict -> Starlette json.dumps.
-    return JSONResponse(content=model.model_dump()).body
+    return JSONResponse(content = model.model_dump()).body
 
 
 def test_body_matches_old_jsonresponse():
@@ -50,10 +50,10 @@ def test_body_matches_old_jsonresponse():
 
 
 def test_media_type_and_status():
-    resp = inference_route._model_json_response(_Resp(), status_code=200)
+    resp = inference_route._model_json_response(_Resp(), status_code = 200)
     assert resp.media_type == "application/json"
     assert resp.status_code == 200
-    err = inference_route._model_json_response(_Resp(), status_code=503)
+    err = inference_route._model_json_response(_Resp(), status_code = 503)
     assert err.status_code == 503
 
 

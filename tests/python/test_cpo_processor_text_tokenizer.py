@@ -60,7 +60,7 @@ def _load_pad_rewriter():
     import re as _re
 
     ns = {"re": _re}
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), RL_PATH, "exec"), ns)
+    exec(compile(ast.Module(body = nodes, type_ignores = []), RL_PATH, "exec"), ns)
     return ns["orpo_trainer_processor_pad_token"]
 
 

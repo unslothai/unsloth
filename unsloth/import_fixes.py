@@ -35,10 +35,10 @@ UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
 )
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
-    logging.basicConfig(level=logging.INFO, format="[%(name)s|%(levelname)s]%(message)s")
+    logging.basicConfig(level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s")
     logger.setLevel(logging.INFO)
 else:
-    logging.basicConfig(level=logging.WARNING, format="[%(name)s|%(levelname)s]%(message)s")
+    logging.basicConfig(level = logging.WARNING, format = "[%(name)s|%(levelname)s]%(message)s")
     logger.setLevel(logging.WARNING)
 
 _AMDGPU_IDS_MISSING_TEXT = "amdgpu.ids: No such file or directory"
@@ -56,7 +56,6 @@ def Version(version):
         return TrueVersion(new_version)
     except:
         from inspect import getframeinfo, stack
-
         caller = getframeinfo(stack()[1][0])
         raise RuntimeError(
             f"Unsloth: Could not get version for `{version}`\n"
@@ -125,7 +124,6 @@ def suppress_cuda_printf():
     finally:
         try:
             import torch
-
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
         except Exception:
@@ -161,67 +159,67 @@ if not UNSLOTH_ENABLE_LOGGING:
         HideLoggingMessage("Skipping import of cpp extensions due to incompatible torch version")
     )
     # SyntaxWarning: invalid escape sequence '\.'
-    warnings.filterwarnings("ignore", message="invalid escape sequence", category=SyntaxWarning)
+    warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
-    warnings.filterwarnings("ignore", message="PYTORCH_CUDA_ALLOC_CONF is deprecated")
+    warnings.filterwarnings("ignore", message = "PYTORCH_CUDA_ALLOC_CONF is deprecated")
     # TF32 precision deprecation warning from torch
-    warnings.filterwarnings("ignore", message="Please use the new API settings to control TF32")
+    warnings.filterwarnings("ignore", message = "Please use the new API settings to control TF32")
     # Deprecation warnings from torchao
-    warnings.filterwarnings("ignore", message="`int4_weight_only` is deprecated")
-    warnings.filterwarnings("ignore", message="`int8_weight_only` is deprecated")
+    warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
+    warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
 
     # TorchAO deprecated import paths (https://github.com/pytorch/ao/issues/2752)
     warnings.filterwarnings(
         "ignore",
-        message=r"Importing.*from torchao\.dtypes.*is deprecated",
-        category=DeprecationWarning,
+        message = r"Importing.*from torchao\.dtypes.*is deprecated",
+        category = DeprecationWarning,
     )
     warnings.filterwarnings(
         "ignore",
-        message=r"Importing BlockSparseLayout from torchao\.dtypes is deprecated",
-        category=DeprecationWarning,
+        message = r"Importing BlockSparseLayout from torchao\.dtypes is deprecated",
+        category = DeprecationWarning,
     )
 
     # SWIG builtin type warnings (from bitsandbytes/triton SWIG bindings)
     warnings.filterwarnings(
         "ignore",
-        message=r"builtin type Swig.*has no __module__ attribute",
-        category=DeprecationWarning,
+        message = r"builtin type Swig.*has no __module__ attribute",
+        category = DeprecationWarning,
     )
 
     # Triton autotuner deprecation (https://github.com/triton-lang/triton/pull/4496)
     warnings.filterwarnings(
         "ignore",
-        message=r"warmup, rep, and use_cuda_graph parameters are deprecated",
-        category=DeprecationWarning,
+        message = r"warmup, rep, and use_cuda_graph parameters are deprecated",
+        category = DeprecationWarning,
     )
 
     # Python 3.12+ multiprocessing fork warning in multi-threaded processes
     warnings.filterwarnings(
         "ignore",
-        message=r".*multi-threaded.*use of fork\(\) may lead to deadlocks",
-        category=DeprecationWarning,
+        message = r".*multi-threaded.*use of fork\(\) may lead to deadlocks",
+        category = DeprecationWarning,
     )
 
     # Resource warnings from internal socket/file operations
-    warnings.filterwarnings("ignore", message=r"unclosed.*socket", category=ResourceWarning)
-    warnings.filterwarnings("ignore", message=r"unclosed file.*dev/null", category=ResourceWarning)
+    warnings.filterwarnings("ignore", message = r"unclosed.*socket", category = ResourceWarning)
+    warnings.filterwarnings("ignore", message = r"unclosed file.*dev/null", category = ResourceWarning)
 
     # torch 2.9+ pin_memory/is_pinned device arg deprecation
     warnings.filterwarnings(
         "ignore",
-        message=r"The `device` argument is deprecated",
-        category=DeprecationWarning,
+        message = r"The `device` argument is deprecated",
+        category = DeprecationWarning,
     )
     warnings.filterwarnings(
         "ignore",
-        message=r".*pin_memory.*device.*deprecated",
-        category=DeprecationWarning,
+        message = r".*pin_memory.*device.*deprecated",
+        category = DeprecationWarning,
     )
     warnings.filterwarnings(
         "ignore",
-        message=r".*is_pinned.*device.*deprecated",
-        category=DeprecationWarning,
+        message = r".*is_pinned.*device.*deprecated",
+        category = DeprecationWarning,
     )
 
     # vllm "Level is deprecated" stderr noise
@@ -230,11 +228,11 @@ if not UNSLOTH_ENABLE_LOGGING:
     # PydanticSerializationUnexpectedValue warning
     warnings.filterwarnings(
         "ignore",
-        message=r".*PydanticSerializationUnexpectedValue",
+        message = r".*PydanticSerializationUnexpectedValue",
     )
     warnings.filterwarnings(
         "ignore",
-        message=r"Expected.*but got.*with value.*is not.*subclass",
+        message = r"Expected.*but got.*with value.*is not.*subclass",
     )
 
     # Triton "df: No such file or directory" stderr noise
@@ -244,9 +242,9 @@ if not UNSLOTH_ENABLE_LOGGING:
     # Apex ROCm fused RoPE backend selection warning when Aiter is enabled.
     warnings.filterwarnings(
         "ignore",
-        message=r"^Aiter backend is selected for fused RoPE\.?",
-        category=UserWarning,
-        module=r"^apex\.transformer\.functional\.fused_rope$",
+        message = r"^Aiter backend is selected for fused RoPE\.?",
+        category = UserWarning,
+        module = r"^apex\.transformer\.functional\.fused_rope$",
     )
 
 
@@ -308,7 +306,7 @@ def fix_xformers_performance_issue():
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
         try:
             if cutlass.exists():
-                with open(cutlass, "r+", encoding="utf-8") as f:
+                with open(cutlass, "r+", encoding = "utf-8") as f:
                     text = f.read()
                     # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
                     if "num_splits_key=-1," in text:
@@ -342,7 +340,6 @@ def patch_vllm_for_notebooks():
     if ipython is None:
         try:
             import builtins
-
             _get_ipython = getattr(builtins, "get_ipython", None)
             if callable(_get_ipython):
                 ipython = _get_ipython()
@@ -396,7 +393,7 @@ def fix_vllm_aimv2_issue():
         ovis_config = Path(vllm_location) / "transformers_utils" / "configs" / "ovis.py"
         try:
             if ovis_config.exists():
-                with open(ovis_config, "r+", encoding="utf-8") as f:
+                with open(ovis_config, "r+", encoding = "utf-8") as f:
                     text = f.read()
                     # See https://github.com/vllm-project/vllm-ascend/issues/2046
                     if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
@@ -467,15 +464,15 @@ class _VllmLoraTokenizerStubFinder(importlib.abc.MetaPathFinder):
     def find_spec(
         self,
         fullname,
-        path=None,
-        target=None,
+        path = None,
+        target = None,
     ):
         if fullname != _VLLM_LORA_TOKENIZER_MODULE:
             return None
         return importlib.machinery.ModuleSpec(
-            name=fullname,
-            loader=_VllmLoraTokenizerStubLoader(fullname),
-            is_package=False,
+            name = fullname,
+            loader = _VllmLoraTokenizerStubLoader(fullname),
+            is_package = False,
         )
 
 
@@ -565,7 +562,6 @@ def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
     try:
         from huggingface_hub._login import logger as huggingface_hub_logger
-
         huggingface_hub_logger.addFilter(HideLoggingMessage("`HF_TOKEN`"))
         del huggingface_hub_logger
     except:
@@ -600,7 +596,6 @@ def patch_ipykernel_hf_xet():
             "https://github.com/huggingface/xet-core/issues/526"
         )
         from huggingface_hub.utils import disable_progress_bars
-
         disable_progress_bars()
 
 
@@ -914,7 +909,7 @@ def fix_openenv_no_vllm():
         return
 
     try:
-        with open(openenv, "r+", encoding="utf-8") as f:
+        with open(openenv, "r+", encoding = "utf-8") as f:
             text = f.read()
             bad = (
                 "if is_vllm_available():\n"
@@ -991,7 +986,7 @@ def fix_executorch():
         """
         what = textwrap.dedent(what)
 
-        with open(executorch, "r+", encoding="utf-8") as f:
+        with open(executorch, "r+", encoding = "utf-8") as f:
             text = f.read()
             bad = "from enum import Enum\n"
             if bad in text and what not in text:
@@ -1012,7 +1007,6 @@ def fix_diffusers_warnings():
 def fix_huggingface_hub():
     # huggingface_hub.is_offline_mode got removed, so add it back
     import huggingface_hub
-
     if not hasattr(huggingface_hub, "is_offline_mode"):
         huggingface_hub.is_offline_mode = lambda: huggingface_hub.constants.HF_HUB_OFFLINE
 
@@ -1094,14 +1088,14 @@ def patch_trunc_normal_precision_issue():
 
     def _call_original(target, mean, std, a, b, generator):
         if generator is None:
-            return original_trunc_normal(target, mean=mean, std=std, a=a, b=b)
+            return original_trunc_normal(target, mean = mean, std = std, a = a, b = b)
         try:
-            return original_trunc_normal(target, mean=mean, std=std, a=a, b=b, generator=generator)
+            return original_trunc_normal(target, mean = mean, std = std, a = a, b = b, generator = generator)
         except TypeError as exc:
             # Older torch versions may not accept a generator keyword argument.
             msg = str(exc).lower()
             if "unexpected keyword argument" in msg and "generator" in msg:
-                return original_trunc_normal(target, mean=mean, std=std, a=a, b=b)
+                return original_trunc_normal(target, mean = mean, std = std, a = a, b = b)
             raise
 
     try:
@@ -1116,7 +1110,7 @@ def patch_trunc_normal_precision_issue():
         std: float = 1.0,
         a: float = -2.0,
         b: float = 2.0,
-        generator=None,
+        generator = None,
     ):
         if DTensor is not None and isinstance(tensor, DTensor):
             local_tensor = getattr(tensor, "_local_tensor", None)
@@ -1125,14 +1119,14 @@ def patch_trunc_normal_precision_issue():
             if local_tensor.dtype in low_precision_dtypes:
                 local_fp32 = local_tensor.float()
                 _call_original(local_fp32, mean, std, a, b, generator)
-                local_tensor.copy_(local_fp32.to(dtype=local_tensor.dtype))
+                local_tensor.copy_(local_fp32.to(dtype = local_tensor.dtype))
                 return tensor
             return _call_original(tensor, mean, std, a, b, generator)
 
         if tensor.dtype in low_precision_dtypes:
             tensor_fp32 = tensor.float()
             _call_original(tensor_fp32, mean, std, a, b, generator)
-            tensor.copy_(tensor_fp32.to(dtype=tensor.dtype))
+            tensor.copy_(tensor_fp32.to(dtype = tensor.dtype))
             return tensor
 
         return _call_original(tensor, mean, std, a, b, generator)
@@ -1351,7 +1345,6 @@ def patch_openspiel_env_async():
 
         try:
             import nest_asyncio
-
             nest_asyncio.apply()
             logger.info("Unsloth: Applied nest_asyncio for OpenEnv EnvClient async compatibility")
         except ImportError:
@@ -1366,7 +1359,6 @@ def patch_torchcodec_audio_decoder():
     """Call unsloth_zoo's AudioDecoder patch."""
     try:
         from unsloth_zoo.dataset_utils import patch_torchcodec_audio_decoder as _patch
-
         _patch()
     except (ImportError, AttributeError, RuntimeError):
         pass
@@ -1382,7 +1374,6 @@ def disable_torchcodec_if_broken():
     """
     try:
         import importlib.util
-
         if importlib.util.find_spec("torchcodec") is None:
             return  # absent or already disabled
 
@@ -1411,7 +1402,6 @@ def disable_torchcodec_if_broken():
         # datasets >= 4.0: own flag gating audio/video/features/formatters.
         try:
             import datasets.config as datasets_config
-
             if hasattr(datasets_config, "TORCHCODEC_AVAILABLE"):
                 datasets_config.TORCHCODEC_AVAILABLE = False
         except ImportError:
@@ -1461,7 +1451,6 @@ def disable_broken_wandb():
         # Patch transformers' is_wandb_available (used by most trl trainers)
         try:
             import transformers.integrations.integration_utils as tf_integration
-
             tf_integration.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
@@ -1470,13 +1459,11 @@ def disable_broken_wandb():
         # is_wandb_available` reads accelerate.utils, not accelerate.utils.imports.
         try:
             import accelerate.utils.imports as acc_imports
-
             acc_imports.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
         try:
             import accelerate.utils as acc_utils
-
             acc_utils.is_wandb_available = _wandb_false
         except (ImportError, AttributeError):
             pass
@@ -1585,7 +1572,7 @@ def _install_transformers_core_model_loading_stub():
     class Concatenate(ConversionOps):
         def __init__(
             self,
-            dim=0,
+            dim = 0,
             *args,
             **kwargs,
         ):
@@ -1598,8 +1585,8 @@ def _install_transformers_core_model_loading_stub():
     class Transpose(ConversionOps):
         def __init__(
             self,
-            dim0=0,
-            dim1=1,
+            dim0 = 0,
+            dim1 = 1,
             *args,
             **kwargs,
         ):
@@ -1615,8 +1602,8 @@ def _install_transformers_core_model_loading_stub():
     class WeightRenaming:
         def __init__(
             self,
-            source_patterns=None,
-            target_patterns=None,
+            source_patterns = None,
+            target_patterns = None,
             *args,
             **kwargs,
         ):
@@ -1765,9 +1752,9 @@ def patch_peft_weight_converter_compatibility():
             def _compat_init(
                 self,
                 *args,
-                __original_init=original_init,
-                __supports_distributed=supports_distributed,
-                __supports_quantization=supports_quantization,
+                __original_init = original_init,
+                __supports_distributed = supports_distributed,
+                __supports_quantization = supports_quantization,
                 **kwargs,
             ):
                 unsupported = {}
@@ -1788,7 +1775,7 @@ def patch_peft_weight_converter_compatibility():
     def _build_peft_weight_mapping_compat(
         weight_conversions,
         adapter_name,
-        peft_config=None,
+        peft_config = None,
     ):
         if not weight_conversions:
             return original_build(weight_conversions, adapter_name, peft_config)
@@ -2039,7 +2026,7 @@ def _iter_hipinfo_paths():
     rocm_root = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm")
     try:
         if os.path.isdir(rocm_root):
-            for version_dir in sorted(os.listdir(rocm_root), reverse=True):
+            for version_dir in sorted(os.listdir(rocm_root), reverse = True):
                 candidates.append(os.path.join(rocm_root, version_dir, "bin", "hipInfo.exe"))
     except Exception:
         pass
@@ -2060,14 +2047,13 @@ def _iter_hipinfo_paths():
 def _run_hipinfo(hipinfo_path):
     """Run hipInfo.exe and return its stdout, or "" on any failure."""
     import subprocess
-
     try:
         result = subprocess.run(
             [hipinfo_path],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            capture_output = True,
+            text = True,
+            timeout = 15,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return result.stdout or ""
     except Exception as e:
@@ -2080,7 +2066,6 @@ def _unsloth_get_rocm_gpu_arch():
     subprocess), then hipInfo.exe by absolute path, then a quiet "unknown"."""
     try:
         import torch
-
         if not getattr(getattr(torch, "version", None), "hip", None):
             return "unknown"
     except Exception:
@@ -2109,7 +2094,6 @@ def _unsloth_get_rocm_warpsize():
     rocminfo is missing, wrong on RDNA (wave 32)."""
     try:
         import torch
-
         if not getattr(getattr(torch, "version", None), "hip", None):
             return 32  # upstream behavior: NVIDIA warp size is always 32
     except Exception:
@@ -2215,8 +2199,8 @@ class _BnbCudaSpecsPatchFinder(importlib.abc.MetaPathFinder):
     def find_spec(
         self,
         fullname,
-        path=None,
-        target=None,
+        path = None,
+        target = None,
     ):
         if fullname != _BNB_CUDA_SPECS_MODULE:
             return None
@@ -2399,7 +2383,6 @@ def _get_vllm_cuda_mismatch_message(error):
     system_cuda_tag = None  # For wheel URL, e.g. "130"
     try:
         import torch
-
         cuda_version = torch.version.cuda  # e.g. "13.0" or "12.8"
         if cuda_version:
             system_cuda_display = cuda_version
@@ -2418,7 +2401,6 @@ def _get_vllm_cuda_mismatch_message(error):
     cpu_arch = "x86_64"
     try:
         import platform
-
         cpu_arch = platform.machine()
     except Exception:
         pass
@@ -2455,15 +2437,15 @@ class _CausalConv1dImportBlockerFinder(importlib.abc.MetaPathFinder):
     def find_spec(
         self,
         fullname,
-        path=None,
-        target=None,
+        path = None,
+        target = None,
     ):
         if not CAUSAL_CONV1D_BROKEN or not _is_causal_conv1d_name(fullname):
             return None
         return importlib.machinery.ModuleSpec(
-            name=fullname,
-            loader=_CausalConv1dImportBlockerLoader(fullname),
-            is_package=fullname == _CAUSAL_CONV1D_PREFIX,
+            name = fullname,
+            loader = _CausalConv1dImportBlockerLoader(fullname),
+            is_package = fullname == _CAUSAL_CONV1D_PREFIX,
         )
 
 
@@ -2489,15 +2471,15 @@ class _VllmImportBlockerFinder(importlib.abc.MetaPathFinder):
     def find_spec(
         self,
         fullname,
-        path=None,
-        target=None,
+        path = None,
+        target = None,
     ):
         if not VLLM_BROKEN or not _is_vllm_name(fullname):
             return None
         return importlib.machinery.ModuleSpec(
-            name=fullname,
-            loader=_VllmImportBlockerLoader(fullname),
-            is_package=fullname == _VLLM_PREFIX,
+            name = fullname,
+            loader = _VllmImportBlockerLoader(fullname),
+            is_package = fullname == _VLLM_PREFIX,
         )
 
 
@@ -2506,7 +2488,7 @@ def _patch_find_spec_for_causal_conv1d():
     if getattr(current_find_spec, "_unsloth_causal_conv1d_find_spec_patch", False):
         return
 
-    def _blocked_find_spec(name, package=None):
+    def _blocked_find_spec(name, package = None):
         resolved_name = _resolve_module_name(name, package)
         if CAUSAL_CONV1D_BROKEN and isinstance(resolved_name, str):
             if _is_causal_conv1d_name(resolved_name):
@@ -2523,7 +2505,7 @@ def _patch_find_spec_for_vllm():
     if getattr(current_find_spec, "_unsloth_vllm_find_spec_patch", False):
         return
 
-    def _blocked_find_spec(name, package=None):
+    def _blocked_find_spec(name, package = None):
         resolved_name = _resolve_module_name(name, package)
         if VLLM_BROKEN and isinstance(resolved_name, str):
             if _is_vllm_name(resolved_name):
@@ -2563,7 +2545,7 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
-def disable_broken_vllm(error=None):
+def disable_broken_vllm(error = None):
     """Disable vLLM dynamically when its shared library is ABI-broken."""
     global VLLM_BROKEN
     if VLLM_BROKEN:
@@ -2580,7 +2562,6 @@ def disable_broken_vllm(error=None):
 
         try:
             import vllm  # noqa: F401
-
             return False
         except Exception as import_error:
             failure = import_error
@@ -2642,7 +2623,6 @@ def disable_broken_causal_conv1d():
 
     try:
         import causal_conv1d  # noqa: F401
-
         return
     except Exception as error:
         if not _is_broken_causal_conv1d_error(error):
@@ -2673,7 +2653,6 @@ def _is_hip_torch_build():
         pass
     try:
         import torch
-
         return bool(getattr(torch.version, "hip", None))
     except Exception:
         return False
@@ -2701,7 +2680,7 @@ def _detect_installed_bnb_rocm_version():
                 suffixes.append(match.group(1))
     if not suffixes:
         return None
-    return max(suffixes, key=lambda value: int(value))
+    return max(suffixes, key = lambda value: int(value))
 
 
 def maybe_set_windows_rocm_bnb_version():
@@ -2821,7 +2800,6 @@ def patch_accelerate_recursively_apply():
                 # Debug mode calls find_device(...).type on gather/broadcast inputs
                 try:
                     from accelerate.state import PartialState
-
                     return PartialState().device
                 except Exception:
                     pass
