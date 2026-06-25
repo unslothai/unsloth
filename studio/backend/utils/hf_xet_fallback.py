@@ -87,7 +87,9 @@ except ModuleNotFoundError as exc:
                     pass
 
         threading.Thread(
-            target = _beat, daemon = True, name = "hf-xet-degraded-heartbeat",
+            target = _beat,
+            daemon = True,
+            name = "hf-xet-degraded-heartbeat",
         ).start()
         return stop
 

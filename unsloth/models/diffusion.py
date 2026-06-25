@@ -79,7 +79,14 @@ def _resolve_diffusion_model_class(config):
     )
 
 
-def _load_diffusion_config(model_name, token, trust_remote_code, revision, local_files_only, cache_dir = None):
+def _load_diffusion_config(
+    model_name,
+    token,
+    trust_remote_code,
+    revision,
+    local_files_only,
+    cache_dir = None,
+):
     """Load the config, aliasing the legacy ``diffusion_gemma`` model_type to the ``diffusion_gemma4``
     classes current transformers ships. AutoConfig raises on the legacy type; catch that, rewrite the
     type/arch names in-memory, and rebuild."""

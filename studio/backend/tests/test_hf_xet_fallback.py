@@ -169,8 +169,10 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
 
         beats = []
         hb_stop = degraded.start_watchdog(
-            repo_ids = ["x"], on_stall = lambda m: None,
-            on_heartbeat = beats.append, interval = 0.02,
+            repo_ids = ["x"],
+            on_stall = lambda m: None,
+            on_heartbeat = beats.append,
+            interval = 0.02,
         )
         try:
             deadline = _time.monotonic() + 2.0
