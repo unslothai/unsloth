@@ -215,7 +215,7 @@ function ModelSelectorTrigger({
                     }}
                     // Hit area larger than the icon, with a hover circle.
                     // Negative margin keeps the icon in the dot's original spot.
-                    className="group/eject -m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+                    className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10"
                   >
                     <HugeiconsIcon
                       icon={CheckmarkCircle02Icon}
