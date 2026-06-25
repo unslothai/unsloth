@@ -847,6 +847,50 @@ _PREFETCH_IGNORE_PATTERNS = (
 )
 
 
+def _prefetch_ignore_patterns(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    subfolder = None,
+    use_safetensors = None,
+):
+    """ignore_patterns for the prewarm snapshot: the static skip list, minus the
+    checkpoint guard when loading from a checkpoint-* subfolder, plus *.bin when
+    the repo also ships safetensors (Transformers prefers safetensors, so pulling
+    the .bin copies just to discard them doubles the very download we optimize)."""
+    # A checkpoint-* subfolder is exactly what "checkpoint-*/*" would drop, so
+    # do not ignore it when the caller is explicitly loading from that subfolder.
+    ignore_patterns = [
+        pattern
+        for pattern in _PREFETCH_IGNORE_PATTERNS
+        if not (
+            pattern == "checkpoint-*/*"
+            and isinstance(subfolder, str)
+            and subfolder.startswith("checkpoint-")
+        )
+    ]
+    # Skip .bin only when the caller has not explicitly asked for it and the repo
+    # actually ships safetensors to load instead. Best-effort: any failure leaves
+    # both formats eligible (correct, just less efficient).
+    if use_safetensors is not False:
+        try:
+            from huggingface_hub import HfApi
+
+            siblings = HfApi().model_info(
+                model_name, revision = revision, token = token,
+            ).siblings or []
+            has_safetensors = any(
+                sibling.rfilename.endswith((".safetensors", ".safetensors.index.json"))
+                for sibling in siblings
+            )
+            if has_safetensors:
+                ignore_patterns.extend(("*.bin", "*.bin.index.json"))
+        except Exception:
+            pass
+    return ignore_patterns
+
+
 def maybe_prefetch_hf_snapshot(
     model_name,
     token = None,
@@ -857,6 +901,7 @@ def maybe_prefetch_hf_snapshot(
     fast_inference = False,
     subfolder = None,
     force_download = False,
+    use_safetensors = None,
 ):
     """Warm the Hugging Face cache for a remote repo before the in-process load.
 
@@ -865,6 +910,12 @@ def maybe_prefetch_hf_snapshot(
     snapshot first in a killable subprocess that automatically falls back from
     Xet to plain HTTP on a no-progress stall (unsloth_zoo.hf_xet_fallback); the
     from_pretrained that follows is then a cache hit and cannot stall on Xet.
+
+    Returns True iff the snapshot was warmed in the killable subprocess, so the
+    caller can clear force_download for the in-process load (else a forced reload
+    would re-download over the very Xet path this avoids). Returns False when
+    warming was skipped (local path / offline / local_files_only / fast_inference,
+    or an older unsloth_zoo) or failed.
 
     Best-effort: a deterministic failure (missing repo, auth, disk) is left for
     from_pretrained to surface canonically; only a both-transports-stalled
@@ -877,15 +928,15 @@ def maybe_prefetch_hf_snapshot(
         )
     except Exception:
         # Older unsloth_zoo without the helper: skip warming, load normally.
-        return
+        return False
 
     if not isinstance(model_name, str) or not model_name:
-        return
+        return False
     # A local directory / file path has nothing to download. Expand ~ first, since
     # os.path.exists does not, so a home-relative path is detected as local.
     model_path = os.path.expanduser(model_name)
     if os.path.isdir(model_path) or os.path.exists(model_path):
-        return
+        return False
     # A path that looks local but is not on disk yet (e.g. a not-created output
     # dir) is still not a Hub repo id ("org/name"); leave it for from_pretrained
     # to surface canonically rather than trying to download it.
@@ -894,30 +945,26 @@ def maybe_prefetch_hf_snapshot(
         or model_name.startswith(("~", "./", "../", ".\\", "..\\"))
         or "\\" in model_name
     ):
-        return
+        return False
     # Offline / cache-only: never reach out.
     if local_files_only:
-        return
+        return False
     if any(
         os.environ.get(flag, "0").lower() in ("1", "true", "yes", "on")
         for flag in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
     ):
-        return
+        return False
     # vLLM has its own download path; leave it untouched.
     if fast_inference:
-        return
+        return False
 
-    # A checkpoint-* subfolder is exactly what "checkpoint-*/*" would drop, so
-    # do not ignore it when the caller is explicitly loading from that subfolder.
-    ignore_patterns = [
-        pattern
-        for pattern in _PREFETCH_IGNORE_PATTERNS
-        if not (
-            pattern == "checkpoint-*/*"
-            and isinstance(subfolder, str)
-            and subfolder.startswith("checkpoint-")
-        )
-    ]
+    ignore_patterns = _prefetch_ignore_patterns(
+        model_name,
+        token = token,
+        revision = revision,
+        subfolder = subfolder,
+        use_safetensors = use_safetensors,
+    )
     try:
         snapshot_download_with_xet_fallback(
             model_name,
@@ -927,6 +974,7 @@ def maybe_prefetch_hf_snapshot(
             ignore_patterns = ignore_patterns,
             force_download = force_download,
         )
+        return True
     except DownloadStallError:
         # Both Xet and HTTP stalled: surface a clear network error instead of
         # letting the in-process load hang on the same stall.
@@ -936,7 +984,7 @@ def maybe_prefetch_hf_snapshot(
             f"Unsloth: Could not pre-download {model_name} "
             f"({type(exception).__name__}: {exception}); continuing with the normal load."
         )
-    return
+        return False
 
 
 # Ignore logging messages

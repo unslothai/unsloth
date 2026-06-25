@@ -2376,7 +2376,7 @@ class FastLlamaModel:
         # Pre-download the repo in a killable subprocess that falls back from Xet
         # to HTTP on a no-progress stall, so the in-process load below is a cache
         # hit and cannot hang on a stalled Xet transfer.
-        maybe_prefetch_hf_snapshot(
+        _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
             revision = revision,
@@ -2385,7 +2385,12 @@ class FastLlamaModel:
             fast_inference = fast_inference,
             subfolder = kwargs.get("subfolder"),
             force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
         )
+        # The killable child already did the forced download; clear the flag so the
+        # in-process load reuses that warm cache instead of re-forcing over Xet.
+        if _prefetched and kwargs.get("force_download", False):
+            kwargs["force_download"] = False
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16

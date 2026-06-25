@@ -67,6 +67,9 @@ except ModuleNotFoundError as exc:
     def start_watchdog(**kwargs: Any) -> "threading.Event":
         return threading.Event()  # never set; no stall detection in degraded mode
 
+    def _degraded_cancelled(cancel_event: "Optional[threading.Event]") -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     def _shared_hf_hub_download_with_xet_fallback(
         repo_id: str,
         filename: str,
@@ -76,11 +79,17 @@ except ModuleNotFoundError as exc:
         revision: Optional[str] = None,
         cache_dir: Optional[str] = None,
         force_download: bool = False,
+        cancel_event: "Optional[threading.Event]" = None,
         **_ignored: Any,
     ) -> str:
+        # No subprocess to interrupt mid-call here, but keep the cancellation
+        # contract: do not start, and do not return, a download once cancelled.
+        if _degraded_cancelled(cancel_event):
+            raise RuntimeError("Cancelled")
+
         from huggingface_hub import hf_hub_download
 
-        return hf_hub_download(
+        path = hf_hub_download(
             repo_id = repo_id,
             filename = filename,
             token = token,
@@ -89,6 +98,9 @@ except ModuleNotFoundError as exc:
             cache_dir = cache_dir,
             force_download = force_download,
         )
+        if _degraded_cancelled(cancel_event):
+            raise RuntimeError("Cancelled")
+        return path
 
     def _shared_snapshot_download_with_xet_fallback(
         repo_id: str,
@@ -100,11 +112,15 @@ except ModuleNotFoundError as exc:
         allow_patterns: Optional[Any] = None,
         ignore_patterns: Optional[Any] = None,
         force_download: bool = False,
+        cancel_event: "Optional[threading.Event]" = None,
         **_ignored: Any,
     ) -> str:
+        if _degraded_cancelled(cancel_event):
+            raise RuntimeError("Cancelled")
+
         from huggingface_hub import snapshot_download
 
-        return snapshot_download(
+        path = snapshot_download(
             repo_id = repo_id,
             repo_type = repo_type,
             revision = revision,
@@ -114,6 +130,9 @@ except ModuleNotFoundError as exc:
             ignore_patterns = ignore_patterns,
             force_download = force_download,
         )
+        if _degraded_cancelled(cancel_event):
+            raise RuntimeError("Cancelled")
+        return path
 
 __all__ = [
     "DEFAULT_GRACE_PERIOD",

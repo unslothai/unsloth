@@ -36,14 +36,27 @@ except ImportError:
 
 import huggingface_hub
 
-import unsloth_zoo.hf_xet_fallback as shared
+try:
+    import unsloth_zoo.hf_xet_fallback as shared
+except ModuleNotFoundError as exc:
+    # The degraded-path test must still run on an unsloth_zoo without the helper.
+    if exc.name != "unsloth_zoo.hf_xet_fallback":
+        raise
+    shared = None
+
 import utils.hf_xet_fallback as xf
 
 
 DL_REPO, FILE = "ztest/xet-dl", "model-Q4_K_XL.gguf"
 
 
+def _requires_shared():
+    if shared is None:
+        pytest.skip("unsloth_zoo.hf_xet_fallback is not installed in this environment")
+
+
 def test_shim_reexports_shared_api():
+    _requires_shared()
     assert xf.DownloadStallError is shared.DownloadStallError
     for name in (
         "start_watchdog",
@@ -65,6 +78,7 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
     """A stall on Xet retries over HTTP, and the shim runs Studio's marker-aware
     ``prepare_cache_for_transport(..., 'http')`` before the retry (not the generic
     delete-incompletes default)."""
+    _requires_shared()
     for var in ("UNSLOTH_DISABLE_XET", "UNSLOTH_STABLE_DOWNLOADS", "HF_HUB_DISABLE_XET"):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
@@ -154,6 +168,17 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         monkeypatch.setattr(huggingface_hub, "snapshot_download", _fake_snapshot)
         assert degraded.snapshot_download_with_xet_fallback("org/model") == "/snap-dir"
         assert called["repo_id"] == "org/model"
+
+        # Cancellation contract is preserved even in degraded mode: an already-set
+        # cancel_event must abort before starting the plain HF download.
+        import threading as _threading
+
+        cancelled = _threading.Event()
+        cancelled.set()
+        called.clear()
+        with pytest.raises(RuntimeError, match = "Cancelled"):
+            degraded.snapshot_download_with_xet_fallback("org/model", cancel_event = cancelled)
+        assert "repo_id" not in called, "degraded download ran despite cancellation"
     finally:
         sys.meta_path.remove(finder)
         sys.modules.pop("utils.hf_xet_fallback", None)

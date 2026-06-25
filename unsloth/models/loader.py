@@ -865,7 +865,7 @@ class FastLanguageModel(FastLlamaModel):
             # Now add PEFT adapters
             # Warm the adapter repo first: PeftModel.from_pretrained downloads it
             # in-process and can hang on a stalled Xet transfer like the base model.
-            maybe_prefetch_hf_snapshot(
+            _prefetched = maybe_prefetch_hf_snapshot(
                 old_model_name,
                 token = token,
                 revision = revision,
@@ -874,7 +874,12 @@ class FastLanguageModel(FastLlamaModel):
                 fast_inference = fast_inference,
                 subfolder = kwargs.get("subfolder"),
                 force_download = kwargs.get("force_download", False),
+                use_safetensors = kwargs.get("use_safetensors"),
             )
+            # The killable child already did the forced download; clear the flag so
+            # the in-process load reuses that warm cache instead of re-forcing.
+            if _prefetched and kwargs.get("force_download", False):
+                kwargs["force_download"] = False
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -1792,7 +1797,7 @@ class FastModel(FastBaseModel):
 
             # Warm the adapter repo first: PeftModel.from_pretrained downloads it
             # in-process and can hang on a stalled Xet transfer like the base model.
-            maybe_prefetch_hf_snapshot(
+            _prefetched = maybe_prefetch_hf_snapshot(
                 old_model_name,
                 token = token,
                 revision = revision,
@@ -1801,7 +1806,12 @@ class FastModel(FastBaseModel):
                 fast_inference = fast_inference,
                 subfolder = kwargs.get("subfolder"),
                 force_download = kwargs.get("force_download", False),
+                use_safetensors = kwargs.get("use_safetensors"),
             )
+            # The killable child already did the forced download; clear the flag so
+            # the in-process load reuses that warm cache instead of re-forcing.
+            if _prefetched and kwargs.get("force_download", False):
+                kwargs["force_download"] = False
             try:
                 model = PeftModel.from_pretrained(
                     model,

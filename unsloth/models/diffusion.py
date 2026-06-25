@@ -24,7 +24,7 @@ import os
 import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 
-from ._utils import is_bfloat16_supported
+from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
 from .llama import logger
 
 __all__ = ["FastDiffusionModel", "DIFFUSION_MODEL_TYPES", "is_diffusion_model_type"]
@@ -152,6 +152,22 @@ class FastDiffusionModel:
                 os.environ.get("HF_HUB_OFFLINE", "0") == "1"
                 or os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1"
             )
+
+        # Pre-download the repo in a killable subprocess that falls back from Xet
+        # to HTTP on a no-progress stall, so the config + weight loads below are
+        # cache hits and cannot hang on a stalled Xet transfer.
+        maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = local_files_only,
+            fast_inference = False,
+            subfolder = kwargs.get("subfolder"),
+            force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
+        )
+
         config = _load_diffusion_config(
             model_name,
             token,
