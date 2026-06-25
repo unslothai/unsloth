@@ -163,6 +163,23 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         event = degraded.start_watchdog(repo_ids = ["x"], on_stall = lambda m: None)
         assert hasattr(event, "set") and not event.is_set()  # never fires
 
+        # Degraded mode still emits heartbeats so the orchestrator's inactivity
+        # deadline is not tripped during a long load.
+        import time as _time
+
+        beats = []
+        hb_stop = degraded.start_watchdog(
+            repo_ids = ["x"], on_stall = lambda m: None,
+            on_heartbeat = beats.append, interval = 0.02,
+        )
+        try:
+            deadline = _time.monotonic() + 2.0
+            while not beats and _time.monotonic() < deadline:
+                _time.sleep(0.02)
+            assert beats, "degraded watchdog emitted no heartbeat"
+        finally:
+            hb_stop.set()
+
         # Downloads fall back to plain huggingface_hub (no watchdog, no crash).
         called = {}
 

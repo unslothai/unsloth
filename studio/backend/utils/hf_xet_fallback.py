@@ -64,8 +64,32 @@ except ModuleNotFoundError as exc:
     def get_hf_download_state(*args: Any, **kwargs: Any) -> None:
         return None  # unmeasurable -> the (absent) watchdog never fires
 
-    def start_watchdog(**kwargs: Any) -> "threading.Event":
-        return threading.Event()  # never set; no stall detection in degraded mode
+    def start_watchdog(
+        *,
+        on_heartbeat: "Optional[Callable[[str], None]]" = None,
+        interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+        xet_disabled: bool = False,
+        **kwargs: Any,
+    ) -> "threading.Event":
+        # No stall detection without the shared helper, but keep emitting heartbeat
+        # statuses so the orchestrator's inactivity deadline is not tripped during a
+        # legitimately long load/download in this degraded mode.
+        stop = threading.Event()
+        if on_heartbeat is None:
+            return stop
+        transport = "https" if xet_disabled else "xet"
+
+        def _beat() -> None:
+            while not stop.wait(interval):
+                try:
+                    on_heartbeat(f"Downloading ({transport} transport)...")
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target = _beat, daemon = True, name = "hf-xet-degraded-heartbeat",
+        ).start()
+        return stop
 
     def _degraded_cancelled(cancel_event: "Optional[threading.Event]") -> bool:
         return cancel_event is not None and cancel_event.is_set()

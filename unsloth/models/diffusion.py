@@ -79,7 +79,7 @@ def _resolve_diffusion_model_class(config):
     )
 
 
-def _load_diffusion_config(model_name, token, trust_remote_code, revision, local_files_only):
+def _load_diffusion_config(model_name, token, trust_remote_code, revision, local_files_only, cache_dir = None):
     """Load the config, aliasing the legacy ``diffusion_gemma`` model_type to the ``diffusion_gemma4``
     classes current transformers ships. AutoConfig raises on the legacy type; catch that, rewrite the
     type/arch names in-memory, and rebuild."""
@@ -90,6 +90,7 @@ def _load_diffusion_config(model_name, token, trust_remote_code, revision, local
             trust_remote_code = trust_remote_code,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
     except ValueError as e:
         if "diffusion_gemma" not in str(e):
@@ -103,6 +104,7 @@ def _load_diffusion_config(model_name, token, trust_remote_code, revision, local
             token = token,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
         with open(cfg_path, encoding = "utf-8") as f:
             cd = json.load(f)
@@ -153,20 +155,7 @@ class FastDiffusionModel:
                 or os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1"
             )
 
-        # Pre-download the repo in a killable subprocess that falls back from Xet
-        # to HTTP on a no-progress stall, so the config + weight loads below are
-        # cache hits and cannot hang on a stalled Xet transfer.
-        maybe_prefetch_hf_snapshot(
-            model_name,
-            token = token,
-            revision = revision,
-            cache_dir = kwargs.get("cache_dir"),
-            local_files_only = local_files_only,
-            fast_inference = False,
-            subfolder = kwargs.get("subfolder"),
-            force_download = kwargs.get("force_download", False),
-            use_safetensors = kwargs.get("use_safetensors"),
-        )
+        cache_dir = kwargs.get("cache_dir")
 
         config = _load_diffusion_config(
             model_name,
@@ -174,6 +163,7 @@ class FastDiffusionModel:
             trust_remote_code,
             revision,
             local_files_only,
+            cache_dir = cache_dir,
         )
         model_type = getattr(config, "model_type", None)
         if not is_diffusion_model_type(model_type):
@@ -184,6 +174,23 @@ class FastDiffusionModel:
 
         model_cls = _resolve_diffusion_model_class(config)
 
+        # The repo is confirmed a diffusion model: now pre-download it in a
+        # killable subprocess that falls back from Xet to HTTP on a no-progress
+        # stall, so the weight load below is a cache hit and cannot hang. Done
+        # after validation so a non-diffusion repo fails on config metadata alone,
+        # without first pulling multi-GB weights.
+        maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            fast_inference = False,
+            subfolder = kwargs.get("subfolder"),
+            force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
+        )
+
         load_kwargs = dict(
             dtype = dtype,
             device_map = device_map,
@@ -192,6 +199,7 @@ class FastDiffusionModel:
             attn_implementation = attn_implementation,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
 
         # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
@@ -238,6 +246,7 @@ class FastDiffusionModel:
                 trust_remote_code = trust_remote_code,
                 revision = revision,
                 local_files_only = local_files_only,
+                cache_dir = cache_dir,
             )
         except Exception:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -246,6 +255,7 @@ class FastDiffusionModel:
                 trust_remote_code = trust_remote_code,
                 revision = revision,
                 local_files_only = local_files_only,
+                cache_dir = cache_dir,
             )
 
         return model, tokenizer
