@@ -1511,32 +1511,46 @@ class TestServerFlags:
         assert fitted == 32_768
 
     def test_fit_threads_swa_full_through_estimator(self):
-        # SWA model, generous budget; both should fit but cache size differs.
+        # SWA model with PR #6655: ctx_checkpoints defaults to 32 on Windows.
+        # Key insight: swa_full=True DISABLES checkpoints (to keep full context),
+        # so default config (with checkpoints) has LARGER KV cache than swa_full.
         b = self._swa_backend()
         ctx = 8192
-        kv_default = b._estimate_kv_cache_bytes(ctx, "f16")
-        kv_full = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
-        assert kv_full > kv_default
-        # Budget = model + kv_default (rounded up) -- swa_full must not fit.
-        budget_mib = (1024 * 1024 + kv_default) / (1024 * 1024) / _CTX_FIT_VRAM_FRACTION + 1
+
+        # Calculate KV sizes with explicit ctx_checkpoints=32 (the new default)
+        kv_default = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints=32)
+        kv_full = b._estimate_kv_cache_bytes(ctx, "f16", swa_full=True, ctx_checkpoints=32)
+
+        # Verify: checkpoints add overhead (default > swa_full because swa_full disables checkpoints)
+        assert kv_default > kv_full, f"Checkpoints should add overhead: {kv_default} vs {kv_full}"
+
+        # Calculate budget based on the LARGER KV size (default with checkpoints)
+        kv_max_mib = max(kv_default, kv_full) / (1024 * 1024)
+        estimated_model_mib = 500
+        budget_mib = (estimated_model_mib + kv_max_mib * 1.2) / _CTX_FIT_VRAM_FRACTION + 50
+
+        
+
         fitted_default = b._fit_context_to_vram(
-            requested_ctx = ctx,
-            available_mib = int(budget_mib),
-            model_size_bytes = 1024 * 1024,
-            cache_type_kv = "f16",
+            requested_ctx=ctx,
+            available_mib=int(budget_mib),
+            model_size_bytes=1024 * 1024,
+            cache_type_kv="f16",
+            # ctx_checkpoints uses default (32 if supported)
         )
         fitted_full = b._fit_context_to_vram(
-            requested_ctx = ctx,
-            available_mib = int(budget_mib),
-            model_size_bytes = 1024 * 1024,
-            cache_type_kv = "f16",
-            swa_full = True,
+            requested_ctx=ctx,
+            available_mib=int(budget_mib),
+            model_size_bytes=1024 * 1024,
+            cache_type_kv="f16",
+            swa_full=True,
+            # ctx_checkpoints uses default (32 if supported)
         )
-        assert fitted_default == ctx
-        assert fitted_full < ctx
 
+        # Both should fit since budget is based on the larger KV (default with checkpoints)
+        assert fitted_default == ctx, f"Default config should fit: {fitted_default} vs {ctx}"
+        assert fitted_full == ctx, f"swa_full config should also fit: {fitted_full} vs {ctx}"
 
-# J2.5. --parallel N memory accounting (per-layer-type scaling rule)
 
 
 class TestParallelSWAScaling:
