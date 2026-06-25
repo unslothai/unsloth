@@ -191,9 +191,17 @@ def _record_login_failure(key: tuple[str, str]) -> int:
     with _LOGIN_BUCKETS_LOCK:
         if ip not in _LOGIN_IP_BUCKETS and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             _prune_stale_ip_buckets(now)
-        ip_bucket = _LOGIN_IP_BUCKETS.setdefault(ip, deque())
-        _prune_bucket(ip_bucket, now)
-        ip_bucket.append(now)
+        # Gate the add on the cap (mirrors the account path below): if pruning
+        # didn't free a slot, don't grow the dict for a brand-new IP -- otherwise
+        # a spoofed-X-Forwarded-For spray keeps it unbounded and every new IP pays
+        # a full-dict prune scan. A first-seen IP that we skip has no prior
+        # failures anyway, so the per-IP limit is unaffected.
+        ip_fails = 0
+        if ip in _LOGIN_IP_BUCKETS or len(_LOGIN_IP_BUCKETS) < _LOGIN_MAX_BUCKETS:
+            ip_bucket = _LOGIN_IP_BUCKETS.setdefault(ip, deque())
+            _prune_bucket(ip_bucket, now)
+            ip_bucket.append(now)
+            ip_fails = len(ip_bucket)
 
         if key not in _LOGIN_BUCKETS and len(_LOGIN_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             _prune_stale_buckets(now)
@@ -202,8 +210,8 @@ def _record_login_failure(key: tuple[str, str]) -> int:
             _prune_bucket(account_bucket, now)
             account_bucket.append(now)
             return len(account_bucket)
-        # Bucket dict at cap; per-IP cap still applies via ip_bucket.
-        return len(ip_bucket)
+        # Both dicts at cap (sustained spray): fall back to the per-IP count.
+        return ip_fails
 
 
 def _blocked_for(bucket: deque | None, now: float, max_fails: int) -> int:

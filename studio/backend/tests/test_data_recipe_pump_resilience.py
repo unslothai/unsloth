@@ -127,3 +127,31 @@ def test_pump_finalizes_when_drain_raises(monkeypatch):
 
     assert m._job.status == "error"
     assert retired and retired[0] is m._job
+
+
+def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
+    # A queue read that keeps raising an error outside the read's narrow catch set
+    # (e.g. a broken queue pipe after the child died) must not spin the pump
+    # forever: once the worker is gone it has to fall through to finalize, or the
+    # job stays wedged "active" with its workflow key unretired.
+    m = _manager_with_active_job()
+    monkeypatch.setattr(m, "_emit", lambda e: None)
+    retired: list = []
+    monkeypatch.setattr(m, "_retire_workflow_key", lambda j: retired.append(j))
+
+    class _BrokenReadQueue:
+        def get(self, timeout = None):
+            raise RuntimeError("broken queue pipe")
+
+        def get_nowait(self):
+            raise queue.Empty
+
+    m._proc = _FakeProc(alive = False)
+    m._mp_q = _BrokenReadQueue()
+
+    pump = threading.Thread(target = m._pump_loop, daemon = True)
+    pump.start()
+    pump.join(timeout = 5)
+    assert not pump.is_alive(), "pump must finalize a dead worker even when reads keep raising"
+    assert m._job.status == "error"
+    assert retired and retired[0] is m._job

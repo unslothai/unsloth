@@ -28,10 +28,8 @@ _EMBED_BATCH = 64  # bounds peak memory
 
 # SSE streaming guards: poll the per-job queue with a timeout so the generator
 # wakes periodically (lets the server detect a gone client and lets us notice a
-# terminal job whose worker died without emitting the None sentinel), and cap the
-# total idle time so a stream can't park forever.
+# terminal job whose worker died without emitting the None sentinel).
 _SSE_POLL_SECONDS = 1.0
-_SSE_MAX_IDLE_SECONDS = 300.0
 _TERMINAL_JOB_STATUSES = {"completed", "failed"}
 
 
@@ -286,13 +284,20 @@ def job_events(job_id: str):
     job already reached a terminal DB status (covering a hard worker death that
     skipped the ``None`` sentinel in ``_run``'s ``finally``). Always removes the
     per-job queue on exit.
+
+    It deliberately does *not* end the stream on idle alone: a long, silent stage
+    (e.g. embedding a large document, which emits no per-batch progress) is not a
+    failure, and ending the stream there would send ``[DONE]`` with the DB row
+    still ``pending``/``running`` -- the client treats a no-terminal-frame end as
+    completion and would mark the document indexed mid-ingestion. While the worker
+    is alive and non-terminal we keep heartbeating; the stream ends only on a
+    terminal status, the ``None`` sentinel, or client disconnect.
     """
     with _jobs_lock:
         q = _jobs.get(job_id)
     if q is None:
         return
     try:
-        idle = 0.0
         while True:
             try:
                 event = q.get(timeout = _SSE_POLL_SECONDS)
@@ -302,12 +307,8 @@ def job_events(job_id: str):
                     # Worker finished (or the row is gone); the frontend reconciles
                     # the final state via its getJob poll. Stop rather than park.
                     break
-                idle += _SSE_POLL_SECONDS
-                if idle >= _SSE_MAX_IDLE_SECONDS:
-                    break
                 yield {"type": "heartbeat"}
                 continue
-            idle = 0.0
             if event is None:
                 break
             yield event

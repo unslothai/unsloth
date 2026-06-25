@@ -333,6 +333,20 @@ def register_worker(
             # running and claim() would keep rejecting new attempts for this repo
             # until restart -- force a terminal state instead.
             logger.exception("download watcher crashed for %s", key)
+            # finalize may have raised before it reaped (proc.wait) and dropped the
+            # worker -- e.g. an I/O error draining stderr. Terminate + drop the
+            # still-registered Popen before publishing a terminal state: the
+            # terminal set_job clears the active-repo guard, so a live worker left
+            # here would keep writing the cache while claim() admits a retry on the
+            # same repo -- the overlap the registry exists to prevent.
+            try:
+                kill_and_reap_process(proc, label = label, logger = logger)
+            except Exception:
+                logger.exception("failed to reap worker after watcher crash for %s", key)
+            try:
+                registry.drop_process(key, proc)
+            except Exception:
+                logger.exception("failed to drop worker after watcher crash for %s", key)
             try:
                 registry.set_job(key, "error", "download watcher crashed")
             except Exception:

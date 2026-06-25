@@ -488,9 +488,16 @@ class JobManager:
             try:
                 event = self._read_queue_with_timeout(mp_q, timeout_sec = 0.25)
             except Exception:
+                # A read that keeps raising (e.g. a broken queue pipe after the
+                # child died) must not spin here forever: if the worker is gone,
+                # fall through to the finalize path so the job can't stay wedged
+                # "active" with its workflow key unretired. Only back off and
+                # retry while the worker is still alive.
                 logger.exception("Data-recipe job pump: queue read failed; continuing")
-                time.sleep(0.1)
-                continue
+                if proc.is_alive():
+                    time.sleep(0.1)
+                    continue
+                event = None
 
             if event is not None:
                 self._safe_handle_event(job, event)
