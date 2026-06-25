@@ -428,14 +428,43 @@ def test_layer_fallback_retry_preserves_multi_gpu_intent():
 
 def test_auto_context_layer_loops_capped_to_usable_gpus():
     """The auto-context layer loops bypass _select_gpus, so they apply their own
-    usable-GPU cap: a raised _layer_min_gpus must not force a nearly-full card into
-    the subset there (Codex review on #6659)."""
+    usable-GPU cap: a raised _layer_min_gpus must not force a card that can't pay
+    its per-device layer overhead into the subset (Codex review on #6659). The cap
+    mirrors _select_gpus: usable VRAM must exceed the per-device overhead, not just
+    be positive."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert (
         "range(max(1, _layer_min_gpus), len(ranked) + 1)" not in src
     ), "auto-context loops must cap _layer_min_gpus to usable GPUs, not use it raw"
     assert "_auto_min_gpus" in src
     assert "range(_auto_min_gpus, len(ranked) + 1)" in src
+    # the eligibility threshold is the per-device layer overhead, not bare > 0
+    auto = src.find("_auto_min_gpus = max(")
+    assert auto != -1
+    block = src[auto : auto + 400]
+    assert "_pipeline_overhead_mib" in block, (
+        "a card must clear the per-device layer overhead to count, mirroring "
+        "_select_gpus, so a nearly-full GPU is not exposed and OOMs"
+    )
+
+
+def test_fallback_hint_uses_effective_tensor_request_not_just_toggle():
+    """The preserve_multi_gpu_on_layer hint keys off the EFFECTIVE tensor request
+    (toggle, --split-mode tensor in extras, or inherited env) via
+    _effective_tensor_parallel, not just request.tensor_parallel -- otherwise an
+    extra/env-driven tensor user's downgraded load single-GPUs (Codex review on
+    #6659)."""
+    route = Path(_BACKEND_DIR) / "routes" / "inference.py"
+    src = route.read_text()
+    idx = src.find("preserve_multi_gpu_on_layer = bool(")
+    assert idx != -1, "the GGUF load closure must pass the hint"
+    block = src[idx : idx + 300]
+    assert "_effective_tensor_parallel(extra_llama_args, request.tensor_parallel)" in block
+    assert "_effective_tensor_parallel(attempt_extra_args, tensor_parallel)" in block
+    # not the toggle-only form this replaced
+    assert (
+        "bool(\n                        request.tensor_parallel and not tensor_parallel" not in src
+    )
 
 
 def test_is_tensor_split_assert_marker():

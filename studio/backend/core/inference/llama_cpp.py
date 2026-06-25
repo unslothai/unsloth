@@ -5386,14 +5386,22 @@ class LlamaCppBackend:
                             )
                             # This path doesn't go through _select_gpus, so apply the
                             # same usable-GPU cap here: a raised _layer_min_gpus
-                            # (downgraded tensor request) must not force a nearly-full
-                            # card into the subset (or trip --fit). Cap to the GPUs
-                            # with usable VRAM at this pin fraction.
+                            # (downgraded tensor request) must not force a card that
+                            # can't pay its per-device layer-split overhead into the
+                            # subset (or trip --fit). Mirror _select_gpus: a card
+                            # counts only if its usable VRAM clears that overhead, so
+                            # a nearly-full GPU with a few MiB free isn't exposed.
+                            _pipeline_overhead_mib = _pipeline_overhead_bytes / (1024 * 1024)
                             _auto_min_gpus = max(
                                 1,
                                 min(
                                     _layer_min_gpus,
-                                    sum(1 for g in ranked if _gpu_usable(g, pin_fraction) > 0) or 1,
+                                    sum(
+                                        1
+                                        for g in ranked
+                                        if _gpu_usable(g, pin_fraction) > _pipeline_overhead_mib
+                                    )
+                                    or 1,
                                 ),
                             )
                             for n_gpus in range(_auto_min_gpus, len(ranked) + 1):

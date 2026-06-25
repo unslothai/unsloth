@@ -683,6 +683,7 @@ try:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -718,6 +719,7 @@ except ImportError:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -2824,11 +2826,16 @@ async def load_model(
                     **_source_load_kwargs,
                     **attempt_kwargs,
                     tensor_parallel = tensor_parallel,
-                    # This run is the tensor->layer fallback retry (the toggle asked
-                    # for tensor, this attempt is layer): keep the multi-GPU intent
-                    # so a downgraded vision/MTP load still spreads across GPUs.
+                    # This run is the tensor->layer fallback retry: tensor was
+                    # effectively requested overall (toggle, --split-mode tensor in
+                    # extras, or inherited LLAMA_ARG_SPLIT_MODE env) but this attempt
+                    # is not engaging it (the helper forces --split-mode layer). Keep
+                    # the multi-GPU intent so a downgraded load still spreads across
+                    # GPUs -- using the same effective-tensor check the fallback keys
+                    # its retry on, so extra/env-driven tensor users get it too.
                     preserve_multi_gpu_on_layer = bool(
-                        request.tensor_parallel and not tensor_parallel
+                        _effective_tensor_parallel(extra_llama_args, request.tensor_parallel)
+                        and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
                     ),
                 )
 
