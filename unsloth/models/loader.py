@@ -555,6 +555,25 @@ class FastLanguageModel(FastLlamaModel):
                 "We must only allow one config file.\n"
                 "Please separate the LoRA and base models to 2 repos."
             )
+        if not is_model and not is_peft:
+            error = autoconfig_error if autoconfig_error is not None else peft_error
+            # Old transformers version
+            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"
+                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
+                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
+                    f"to obtain the latest transformers build, then restart this session."
+                )
+            # Create a combined error message showing both failures
+            combined_error = (
+                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
+                f"AutoConfig error: {autoconfig_error}\n\n"
+                f"PeftConfig error: {peft_error}\n\n"
+            )
+            # Chain the cause so @_offline_aware_load can retry on a network error (permanent ones propagate).
+            raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
+
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
             trust_remote_code = trust_remote_code,
@@ -579,25 +598,6 @@ class FastLanguageModel(FastLlamaModel):
                 # remote repo, so both config.json and adapter_config.json
                 # definitely exist -- no need for an extra HfFileSystem network call.
                 both_exist = True
-
-        if not is_model and not is_peft:
-            error = autoconfig_error if autoconfig_error is not None else peft_error
-            # Old transformers version
-            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"
-                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
-                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
-                    f"to obtain the latest transformers build, then restart this session."
-                )
-            # Create a combined error message showing both failures
-            combined_error = (
-                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
-                f"AutoConfig error: {autoconfig_error}\n\n"
-                f"PeftConfig error: {peft_error}\n\n"
-            )
-            # Chain the cause so @_offline_aware_load can retry on a network error (permanent ones propagate).
-            raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
 
         # Get base model for PEFT:
         if is_peft:
@@ -1218,6 +1218,25 @@ class FastModel(FastBaseModel):
                 "We must only allow one config file.\n"
                 "Please separate the LoRA and base models to 2 repos."
             )
+        if not is_model and not is_peft:
+            error = autoconfig_error if autoconfig_error is not None else peft_error
+            # Old transformers version
+            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"
+                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
+                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
+                    f"to obtain the latest transformers build, then restart this session."
+                )
+            # Create a combined error message showing both failures
+            combined_error = (
+                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
+                f"AutoConfig error: {autoconfig_error}\n\n"
+                f"PeftConfig error: {peft_error}\n\n"
+            )
+            # Chain the cause so @_offline_aware_load can retry on a network error (permanent ones propagate).
+            raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
+
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
             trust_remote_code = trust_remote_code,
@@ -1421,25 +1440,6 @@ class FastModel(FastBaseModel):
                 # remote repo, so both config.json and adapter_config.json
                 # definitely exist -- no need for an extra HfFileSystem network call.
                 both_exist = True
-
-        if not is_model and not is_peft:
-            error = autoconfig_error if autoconfig_error is not None else peft_error
-            # Old transformers version
-            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"
-                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
-                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
-                    f"to obtain the latest transformers build, then restart this session."
-                )
-            # Create a combined error message showing both failures
-            combined_error = (
-                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
-                f"AutoConfig error: {autoconfig_error}\n\n"
-                f"PeftConfig error: {peft_error}\n\n"
-            )
-            # Chain the cause so @_offline_aware_load can retry on a network error (permanent ones propagate).
-            raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
 
         # Get base model for PEFT:
         if is_peft:
