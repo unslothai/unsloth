@@ -30,6 +30,10 @@ class DiffusionFamily:
     cfg_kwarg: str = "guidance_scale"
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
+    # True for families whose activations overflow float16's finite range
+    # (~6.5e4) and produce inf -> NaN latents -> a black image. The backend
+    # promotes a resolved float16 to float32 for these at load time.
+    fp16_incompatible: bool = False
 
 
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
@@ -70,6 +74,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "ZImageTransformer2DModel",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
         aliases = ("zimage", "z_image"),
+        # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
+        fp16_incompatible = True,
     ),
 )
 

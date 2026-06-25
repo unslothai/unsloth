@@ -10063,7 +10063,15 @@ async def load_diffusion_model(
 
     backend = get_diffusion_backend()
     try:
-        # Take the GPU from the chat backend, then kick the (slow) load onto a
+        # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family,
+        # missing local GGUF) must not evict a working chat model and then 400.
+        await asyncio.to_thread(
+            backend.validate_load_request,
+            request.model_path,
+            gguf_filename = request.gguf_filename,
+            family_override = request.family_override,
+        )
+        # Now take the GPU from the chat backend, then kick the (slow) load onto a
         # background thread and return at once — the client polls images/load-progress.
         await asyncio.to_thread(acquire_for, DIFFUSION)
         status_dict = await asyncio.to_thread(
@@ -10076,7 +10084,7 @@ async def load_diffusion_model(
             cpu_offload = request.cpu_offload,
         )
         return DiffusionStatusResponse(**status_dict)
-    except ValueError as exc:
+    except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except RuntimeError as exc:
         # A load is already in progress.

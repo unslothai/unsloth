@@ -29,6 +29,11 @@ from .diffusion_families import (
     resolve_base_repo,
     resolve_local_gguf_child,
 )
+from .diffusion_device import (
+    DiffusionDeviceTarget,
+    diffusion_device_target_from_torch_device,
+    resolve_diffusion_device_target,
+)
 
 logger = get_logger(__name__)
 
@@ -79,15 +84,28 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+def _resolve_diffusion_compute_dtype(fam: Optional[DiffusionFamily], dtype: Any) -> Any:
+    """Promote float16 -> float32 for fp16-incompatible families (e.g. Z-Image),
+    whose activations overflow float16's finite range and render a black image.
+    Every other dtype/family passes through unchanged."""
+    if fam is None or not getattr(fam, "fp16_incompatible", False):
+        return dtype
+    import torch
+
+    return torch.float32 if dtype == torch.float16 else dtype
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
     def __init__(self) -> None:
-        # One lock serialises load / generate / unload — a generate must not run
-        # while the pipeline is being swapped out from under it. status() and
-        # load_progress() read the single state references without the lock, so
-        # polling never blocks a slow load.
+        # _lock serialises the small state mutations (the load swap, _loading,
+        # _load_token, _gen). status() / load_progress() / generate_progress()
+        # read those references WITHOUT it, so polling never blocks a slow load.
         self._lock = threading.Lock()
+        # _generate_lock serialises generations and is the ONLY lock the denoise
+        # holds, so a long generation never blocks status()/unload()/a new load.
+        self._generate_lock = threading.Lock()
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
         # Bumped on every begin_load and unload so a worker whose load was
@@ -98,8 +116,14 @@ class DiffusionBackend:
         # lock, like the chat backend), so an eviction/unload can preempt a slow
         # load instead of blocking on the lock for the whole download.
         self._cancel_event = threading.Event()
-        # The callback mutates this and generate_progress() reads it, both without
-        # the lock (generate holds it for the whole call), so polling stays live.
+        # The cancel Event of the generation currently in flight (or None). Set
+        # under _lock by unload() / a superseding load to abort that specific
+        # denoise (its step callback flips pipe._interrupt). Per-generation rather
+        # than one shared flag the next generate would clear, so a cancel can't be
+        # lost to a racing generate nor leak onto the wrong one.
+        self._active_generate_cancel: Optional[threading.Event] = None
+        # The callback mutates _gen and generate_progress() reads it, both lock-free,
+        # so per-step progress polling stays live during a generation.
         self._gen: Optional[_GenState] = None
 
     @property
@@ -107,19 +131,27 @@ class DiffusionBackend:
         return self._state is not None
 
     def _pick_device_and_dtype(self) -> tuple[str, Any]:
-        import torch
+        """(device, dtype) for the current host. Thin wrapper over the device
+        policy module, kept as a method so tests can still monkeypatch it."""
+        target = resolve_diffusion_device_target()
+        return target.device, target.dtype
 
-        if torch.cuda.is_available():
-            # BF16 needs Ampere+ (compute capability >= 8); pre-Ampere cards
-            # (Turing/Volta/Pascal) only emulate it, so use FP16 there. (Checked by
-            # capability, not torch.cuda.is_bf16_supported(), which returns True via
-            # emulation on those cards and would still pick BF16.)
-            dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
-            return "cuda", dtype
-        mps = getattr(torch.backends, "mps", None)
-        if mps is not None and mps.is_available():
-            return "mps", torch.float16
-        return "cpu", torch.float32
+    def _resolve_device_target(self, fam: Optional[DiffusionFamily]) -> DiffusionDeviceTarget:
+        """The device target with the family fp16 guard applied.
+
+        Routes through _pick_device_and_dtype() (so a monkeypatched override still
+        drives the result), then promotes float16 -> float32 for fp16-incompatible
+        families (Z-Image), rebuilding the target so dtype + capability flags stay
+        consistent with the effective dtype.
+        """
+        device, dtype = self._pick_device_and_dtype()
+        effective = _resolve_diffusion_compute_dtype(fam, dtype)
+        if effective is not dtype:
+            logger.warning(
+                "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
+                getattr(fam, "name", None),
+            )
+        return diffusion_device_target_from_torch_device(device, effective)
 
     def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
         local_root = Path(repo_id).expanduser()
@@ -156,6 +188,39 @@ class DiffusionBackend:
                 base, rfilename, hf_token, cancel_event = self._cancel_event
             )
 
+    def validate_load_request(
+        self,
+        repo_id: str,
+        *,
+        gguf_filename: Optional[str] = None,
+        family_override: Optional[str] = None,
+    ) -> DiffusionFamily:
+        """Cheap, network-free validation shared by the route (before it evicts the
+        chat model) and both load paths, so an unloadable pick fails BEFORE the GPU
+        handoff. Raises ValueError for a missing gguf_filename or undetectable
+        family, and ValueError/FileNotFoundError for a bad local GGUF path. Touches
+        no GPU, network, or state."""
+        if not gguf_filename:
+            raise ValueError(
+                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
+            )
+        fam = detect_family(repo_id, family_override)
+        if fam is None:
+            raise ValueError(
+                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
+            )
+        # Reject a bad LOCAL pick now (the same checks the load would hit later), so
+        # the route never evicts a working chat model for a request that can't load.
+        # A path-shaped repo_id (absolute / ~ / ./ / ..) is meant to be on disk, so a
+        # missing one is an error here; a bare "org/name" id is a remote HF repo and
+        # is left for the background load to resolve.
+        local_root = Path(repo_id).expanduser()
+        if local_root.exists():
+            resolve_local_gguf_child(local_root, gguf_filename)
+        elif repo_id.startswith(("/", "~", "./", "../")) or local_root.is_absolute():
+            raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
+        return fam
+
     # ── Background load + progress ─────────────────────────────────────────
 
     def begin_load(
@@ -169,15 +234,9 @@ class DiffusionBackend:
         cpu_offload: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
-        if not gguf_filename:
-            raise ValueError(
-                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
-            )
-        fam = detect_family(repo_id, family_override)
-        if fam is None:
-            raise ValueError(
-                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
-            )
+        fam = self.validate_load_request(
+            repo_id, gguf_filename = gguf_filename, family_override = family_override
+        )
 
         with self._lock:
             # Allow starting over a previously-failed load, but not over a live one.
@@ -321,67 +380,72 @@ class DiffusionBackend:
         cpu_offload: bool = False,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
+        # Validate first (cheap, no torch/diffusers) so a direct call with a bad
+        # family fails with ValueError even in a no-diffusers runtime.
+        fam = self.validate_load_request(
+            repo_id, gguf_filename = gguf_filename, family_override = family_override
+        )
+        base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        target = self._resolve_device_target(fam)
+        device, dtype = target.device, target.dtype
+
         import diffusers
 
-        if not gguf_filename:
-            raise ValueError(
-                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
-            )
-        fam = detect_family(repo_id, family_override)
-        if fam is None:
-            raise ValueError(
-                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
-            )
-        base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
-        device, dtype = self._pick_device_and_dtype()
-
+        # Signal an in-flight denoise to abort, then take _generate_lock to WAIT for
+        # it to actually exit before allocating the replacement: a load is about to
+        # claim VRAM, so unlike unload() it must not overlap a still-live pipeline.
+        # The cancel makes that wait ~one step (or the rest of the denoise for a
+        # pipeline that ignores the step callback).
         with self._lock:
-            # Bail before the (slow, VRAM-heavy) build if an unload/eviction or a
-            # newer load superseded this one while we were resolving/downloading —
-            # otherwise an evicted load would resurrect a pipeline into VRAM.
-            if _load_token is not None and _load_token != self._load_token:
-                raise RuntimeError("Diffusion load was cancelled.")
+            if self._active_generate_cancel is not None:
+                self._active_generate_cancel.set()
+        with self._generate_lock:
+            with self._lock:
+                # Bail before the (slow, VRAM-heavy) build if an unload/eviction or a
+                # newer load superseded this one while we were resolving/downloading.
+                if _load_token is not None and _load_token != self._load_token:
+                    raise RuntimeError("Diffusion load was cancelled.")
 
-            # Free the old pipeline before allocating the new one so two
-            # checkpoints never sit in VRAM at once.
-            self._unload_locked()
+                # Free the old pipeline before allocating the new one so two
+                # checkpoints never sit in VRAM at once.
+                self._unload_locked()
 
-            # Dequantise the GGUF transformer on-device; the VAE / text-encoder /
-            # scheduler come from the base diffusers repo (the GGUF is transformer-only).
-            gguf_path = self._resolve_gguf_path(repo_id, gguf_filename, hf_token)
-            transformer_cls = getattr(diffusers, fam.transformer_class)
-            transformer = transformer_cls.from_single_file(
-                gguf_path,
-                quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype),
-                torch_dtype = dtype,
-                config = base,
-                subfolder = "transformer",
-                # Forward the token: the config is fetched from the (possibly gated)
-                # base repo before from_pretrained gets a chance to authenticate.
-                token = hf_token,
-            )
+                # Dequantise the GGUF transformer on-device; the VAE / text-encoder /
+                # scheduler come from the base diffusers repo (GGUF is transformer-only).
+                gguf_path = self._resolve_gguf_path(repo_id, gguf_filename, hf_token)
+                transformer_cls = getattr(diffusers, fam.transformer_class)
+                transformer = transformer_cls.from_single_file(
+                    gguf_path,
+                    quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype),
+                    torch_dtype = dtype,
+                    config = base,
+                    subfolder = "transformer",
+                    # Forward the token: the config is fetched from the (possibly gated)
+                    # base repo before from_pretrained gets a chance to authenticate.
+                    token = hf_token,
+                )
 
-            pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
-            if hf_token:
-                pipe_kwargs["token"] = hf_token
-            pipeline_cls = getattr(diffusers, fam.pipeline_class)
-            pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
+                pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
+                if hf_token:
+                    pipe_kwargs["token"] = hf_token
+                pipeline_cls = getattr(diffusers, fam.pipeline_class)
+                pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
 
-            use_offload = bool(cpu_offload and device == "cuda")
-            if use_offload:
-                pipe.enable_model_cpu_offload()
-            else:
-                pipe.to(device)
+                use_offload = bool(cpu_offload and target.supports_model_cpu_offload)
+                if use_offload:
+                    pipe.enable_model_cpu_offload()
+                else:
+                    pipe.to(device)
 
-            self._state = _LoadState(
-                pipe = pipe,
-                family = fam,
-                repo_id = repo_id,
-                base_repo = base,
-                device = device,
-                dtype = str(dtype).replace("torch.", ""),
-                cpu_offload = use_offload,
-            )
+                self._state = _LoadState(
+                    pipe = pipe,
+                    family = fam,
+                    repo_id = repo_id,
+                    base_repo = base,
+                    device = device,
+                    dtype = str(dtype).replace("torch.", ""),
+                    cpu_offload = use_offload,
+                )
 
         logger.info("diffusion.loaded: repo=%s base=%s device=%s", repo_id, base, device)
         return self.status()
@@ -402,63 +466,89 @@ class DiffusionBackend:
         batch_size: int = 1,
     ) -> dict[str, Any]:
         import torch
-        with self._lock:
-            state = self._state
-            if state is None:
-                raise RuntimeError("No diffusion model is loaded.")
-
-            generator = torch.Generator(device = state.device)
-            if seed is None:
-                # Draw a fresh random seed but keep it within JS's safe-integer
-                # range (< 2**53), so the reported seed round-trips through JSON
-                # and actually reproduces the image (a raw 64-bit seed would lose
-                # precision in the browser and the recipe couldn't be replayed).
-                seed = generator.seed() & ((1 << 53) - 1)
-            else:
-                seed = int(seed)
-            generator.manual_seed(seed)
-
-            kwargs: dict[str, Any] = {
-                "prompt": prompt,
-                "width": width,
-                "height": height,
-                "num_inference_steps": steps,
-                # Most pipelines take guidance via "guidance_scale"; Qwen-Image
-                # uses "true_cfg_scale" (its distilled guidance is off).
-                state.family.cfg_kwarg: guidance,
-                "generator": generator,
-                # Generate the whole batch in one forward pass (VRAM-heavy). All
-                # share this call's seed, drawn sequentially from one generator.
-                "num_images_per_prompt": batch_size,
-            }
-            # Pipelines vary in which kwargs they accept (a distilled pipeline may
-            # take neither a negative prompt nor a step callback), so only pass
-            # those where the signature has them.
-            call_params = inspect.signature(state.pipe.__call__).parameters
-            if negative_prompt and "negative_prompt" in call_params:
-                kwargs["negative_prompt"] = negative_prompt
-
-            gen = _GenState(total_steps = steps)
-
-            def _on_step(pipe, step_index, timestep, callback_kwargs):
-                now = time.time()
-                gen.step = step_index + 1
-                if gen.first_step_at == 0.0:
-                    gen.first_step_at = now
-                gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
-                return callback_kwargs
-
-            if "callback_on_step_end" in call_params:
-                kwargs["callback_on_step_end"] = _on_step
-
-            self._gen = gen
+        # A per-generation cancel Event: unload()/a superseding load set THIS event
+        # (registered under _lock below) to abort just this denoise. _generate_lock
+        # serialises generations and is the only lock the denoise holds, so a slow
+        # generation never blocks status()/unload()/a new load.
+        cancel = threading.Event()
+        with self._generate_lock:
+            with self._lock:
+                state = self._state
+                if state is None:
+                    raise RuntimeError("No diffusion model is loaded.")
+                # Register under _lock so unload()/a load can signal THIS generation.
+                # A cancel that arrived before now either nulled _state (we raised
+                # above) or targets an older generation, so nothing is lost.
+                self._active_generate_cancel = cancel
             try:
-                images = state.pipe(**kwargs).images
+                # Snapshot taken: the local `state` ref keeps the pipe alive even if
+                # unload() nulls _state mid-denoise, so the call below needs no _lock.
+                generator = torch.Generator(device = state.device)
+                if seed is None:
+                    # Draw a fresh random seed but keep it within JS's safe-integer
+                    # range (< 2**53), so the reported seed round-trips through JSON
+                    # and actually reproduces the image (a raw 64-bit seed would lose
+                    # precision in the browser and the recipe couldn't be replayed).
+                    seed = generator.seed() & ((1 << 53) - 1)
+                else:
+                    seed = int(seed)
+                generator.manual_seed(seed)
+
+                kwargs: dict[str, Any] = {
+                    "prompt": prompt,
+                    "width": width,
+                    "height": height,
+                    "num_inference_steps": steps,
+                    # Most pipelines take guidance via "guidance_scale"; Qwen-Image
+                    # uses "true_cfg_scale" (its distilled guidance is off).
+                    state.family.cfg_kwarg: guidance,
+                    "generator": generator,
+                    # Generate the whole batch in one forward pass (VRAM-heavy). All
+                    # share this call's seed, drawn sequentially from one generator.
+                    "num_images_per_prompt": batch_size,
+                }
+                # Pipelines vary in which kwargs they accept (a distilled pipeline may
+                # take neither a negative prompt nor a step callback), so only pass
+                # those where the signature has them.
+                call_params = inspect.signature(state.pipe.__call__).parameters
+                if negative_prompt and "negative_prompt" in call_params:
+                    kwargs["negative_prompt"] = negative_prompt
+
+                gen = _GenState(total_steps = steps)
+
+                def _on_step(pipe, step_index, timestep, callback_kwargs):
+                    now = time.time()
+                    gen.step = step_index + 1
+                    if gen.first_step_at == 0.0:
+                        gen.first_step_at = now
+                    gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
+                    # Preempt a long denoise on unload/eviction or a superseding load:
+                    # diffusers checks pipe._interrupt and stops after the current step.
+                    if cancel.is_set():
+                        pipe._interrupt = True
+                    return callback_kwargs
+
+                if "callback_on_step_end" in call_params:
+                    kwargs["callback_on_step_end"] = _on_step
+
+                self._gen = gen
+                try:
+                    images = state.pipe(**kwargs).images
+                finally:
+                    self._gen = None
+                # A cancelled denoise returns early with a partial/garbage image;
+                # don't hand it back to be persisted.
+                if cancel.is_set():
+                    raise RuntimeError("Diffusion generation was cancelled.")
+                # Return the PIL images (not yet encoded): the route embeds each
+                # image's recipe and persists it via the gallery.
+                return {"images": list(images), "seed": int(seed), "repo_id": state.repo_id}
             finally:
-                self._gen = None
-            # Return the PIL images (not yet encoded): the route embeds each
-            # image's recipe and persists it via the gallery.
-            return {"images": list(images), "seed": int(seed), "repo_id": state.repo_id}
+                # Deregister so a later unload/load can't poke a finished generation
+                # (only if still ours — a newer generation may have replaced it).
+                with self._lock:
+                    if self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
 
     def generate_progress(self) -> dict[str, Any]:
         """Live per-step progress for an in-flight generation (lock-free read)."""
@@ -480,10 +570,17 @@ class DiffusionBackend:
         }
 
     def unload(self) -> dict[str, Any]:
-        # Abort an in-flight download (it runs without the lock and checks this),
-        # so unload/an eviction returns promptly instead of waiting it out.
+        # Abort an in-flight download so unload/an eviction returns promptly instead
+        # of waiting it out (the download runs without _lock and checks this event).
         self._cancel_event.set()
         with self._lock:
+            # Abort an in-flight denoise too by setting ITS cancel event, so the step
+            # callback stops it. unload does NOT take _generate_lock — it must return
+            # promptly; the running generate keeps its own pipe reference, so freeing
+            # _state here can't crash it, and its VRAM is reclaimed when it returns
+            # (within ~one step thanks to the cancel).
+            if self._active_generate_cancel is not None:
+                self._active_generate_cancel.set()
             self._unload_locked()
             # Cancel any in-flight load (its worker checks this token before
             # committing) and drop the marker so the next load starts clean.
