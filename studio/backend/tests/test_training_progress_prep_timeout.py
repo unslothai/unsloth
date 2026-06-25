@@ -31,7 +31,11 @@ import routes.training as rt
 
 
 class _Progress:
-    def __init__(self, step = 0, total_steps = 1000):
+    def __init__(
+        self,
+        step = 0,
+        total_steps = 1000,
+    ):
         self.step = step
         self.total_steps = total_steps
         self.loss = None
@@ -45,7 +49,13 @@ class _Progress:
 
 
 class _Backend:
-    def __init__(self, *, active_polls, step_history = None, live_step = 0):
+    def __init__(
+        self,
+        *,
+        active_polls,
+        step_history = None,
+        live_step = 0,
+    ):
         self.current_job_id = "job-prep"
         self.step_history = list(step_history or [])
         self.loss_history = [1.0 for _ in self.step_history]
@@ -93,9 +103,9 @@ def test_prep_phase_does_not_time_out_before_first_step(monkeypatch, _fast_short
 
     raw = _raw(asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester")))
 
-    assert backend._active_calls > rt._PROGRESS_STALL_TIMEOUT_POLLS + 1, (
-        "the loop must have run past the stall threshold for this test to be meaningful"
-    )
+    assert (
+        backend._active_calls > rt._PROGRESS_STALL_TIMEOUT_POLLS + 1
+    ), "the loop must have run past the stall threshold for this test to be meaningful"
     assert "event: heartbeat" in raw, "prep heartbeats should still flow"
     assert "event: error" not in raw, "a still-preparing run must not be timed out as a stall"
 
