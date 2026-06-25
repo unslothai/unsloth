@@ -877,9 +877,16 @@ def _prefetch_ignore_patterns(
         try:
             from huggingface_hub import HfApi
 
-            siblings = HfApi().model_info(
-                model_name, revision = revision, token = token,
-            ).siblings or []
+            siblings = (
+                HfApi()
+                .model_info(
+                    model_name,
+                    revision = revision,
+                    token = token,
+                )
+                .siblings
+                or []
+            )
             has_safetensors = any(
                 sibling.rfilename.endswith((".safetensors", ".safetensors.index.json"))
                 for sibling in siblings
