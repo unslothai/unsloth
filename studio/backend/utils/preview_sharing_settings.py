@@ -36,7 +36,6 @@ def get_preview_sharing_enabled() -> bool:
     """
     try:
         from storage.studio_db import get_app_setting
-
         stored = get_app_setting(PREVIEW_SHARING_SETTING_KEY, None)
     except Exception:
         return False

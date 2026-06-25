@@ -111,7 +111,6 @@ def test_sharing_defaults_enabled_and_coerces():
 
 def test_sharing_missing_key_defaults_enabled(monkeypatch):
     import storage.studio_db as sdb
-
     monkeypatch.setattr(sdb, "get_app_setting", lambda key, fallback = None: None)
     assert get_preview_sharing_enabled() is True
 
