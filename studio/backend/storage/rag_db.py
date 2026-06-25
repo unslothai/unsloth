@@ -25,6 +25,7 @@ from utils.paths import rag_db_path, ensure_dir
 # Optional dep: import must never crash this module (imported unconditionally).
 try:
     import sqlite_vec
+
     RAG_AVAILABLE = True
 except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
     sqlite_vec = None

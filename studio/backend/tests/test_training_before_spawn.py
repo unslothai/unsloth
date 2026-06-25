@@ -30,16 +30,16 @@ class _DummyThread:
 def _start(backend, hook):
     dummy_queue = object()
     with (
-        patch("core.training.training.prepare_gpu_selection", return_value = ([0], {})),
-        patch("core.training.training._CTX.Queue", side_effect = [dummy_queue, dummy_queue]),
-        patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
-        patch("core.training.training.threading.Thread", return_value = _DummyThread()),
+        patch("core.training.training.prepare_gpu_selection", return_value=([0], {})),
+        patch("core.training.training._CTX.Queue", side_effect=[dummy_queue, dummy_queue]),
+        patch("core.training.training._CTX.Process", return_value=_DummyProcess()),
+        patch("core.training.training.threading.Thread", return_value=_DummyThread()),
     ):
         return backend.start_training(
-            job_id = "before-spawn-test",
-            before_spawn = hook,
-            model_name = "unsloth/test",
-            training_type = "LoRA/QLoRA",
+            job_id="before-spawn-test",
+            before_spawn=hook,
+            model_name="unsloth/test",
+            training_type="LoRA/QLoRA",
         )
 
 
@@ -73,7 +73,7 @@ class TestBeforeSpawnHook(unittest.TestCase):
 
     def test_hook_failure_does_not_block_start(self):
         backend = TrainingBackend()
-        hook = MagicMock(side_effect = RuntimeError("boom"))
+        hook = MagicMock(side_effect=RuntimeError("boom"))
         ok = _start(backend, hook)
         self.assertTrue(ok)  # training still starts despite a hook error
         hook.assert_called_once()
@@ -87,17 +87,17 @@ class TestBeforeSpawnHook(unittest.TestCase):
             patch("utils.hardware.hardware.DEVICE", DeviceType.CUDA),
             patch(
                 "core.training.training.prepare_gpu_selection",
-                side_effect = ValueError("Invalid gpu_ids [99]"),
+                side_effect=ValueError("Invalid gpu_ids [99]"),
             ),
             patch("core.training.training._CTX.Process") as process_mock,
         ):
             with self.assertRaisesRegex(ValueError, "Invalid gpu_ids"):
                 backend.start_training(
-                    job_id = "before-spawn-test",
-                    before_spawn = hook,
-                    model_name = "unsloth/test",
-                    training_type = "LoRA/QLoRA",
-                    gpu_ids = [99],
+                    job_id="before-spawn-test",
+                    before_spawn=hook,
+                    model_name="unsloth/test",
+                    training_type="LoRA/QLoRA",
+                    gpu_ids=[99],
                 )
         hook.assert_not_called()
         process_mock.assert_not_called()
@@ -108,7 +108,7 @@ class TestBeforeSpawnHook(unittest.TestCase):
         # (or onto a GPU holding a chat model the probe decided to keep).
         order = []
         backend = TrainingBackend()
-        hook = MagicMock(side_effect = lambda: order.append("hook"))
+        hook = MagicMock(side_effect=lambda: order.append("hook"))
 
         def _placement(gpu_ids, **kwargs):
             order.append("placement")
@@ -116,16 +116,16 @@ class TestBeforeSpawnHook(unittest.TestCase):
 
         with (
             patch("utils.hardware.hardware.DEVICE", DeviceType.CUDA),
-            patch("core.training.training.prepare_gpu_selection", side_effect = _placement),
-            patch("core.training.training._CTX.Queue", side_effect = [object(), object()]),
-            patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
-            patch("core.training.training.threading.Thread", return_value = _DummyThread()),
+            patch("core.training.training.prepare_gpu_selection", side_effect=_placement),
+            patch("core.training.training._CTX.Queue", side_effect=[object(), object()]),
+            patch("core.training.training._CTX.Process", return_value=_DummyProcess()),
+            patch("core.training.training.threading.Thread", return_value=_DummyThread()),
         ):
             ok = backend.start_training(
-                job_id = "before-spawn-test",
-                before_spawn = hook,
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
+                job_id="before-spawn-test",
+                before_spawn=hook,
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
             )  # gpu_ids omitted -> auto mode
         self.assertTrue(ok)
         self.assertEqual(order, ["hook", "placement"])
@@ -135,7 +135,7 @@ class TestBeforeSpawnHook(unittest.TestCase):
         # without teardown); explicit placement is VRAM-independent.
         order = []
         backend = TrainingBackend()
-        hook = MagicMock(side_effect = lambda: order.append("hook"))
+        hook = MagicMock(side_effect=lambda: order.append("hook"))
 
         def _placement(gpu_ids, **kwargs):
             order.append("placement")
@@ -143,17 +143,17 @@ class TestBeforeSpawnHook(unittest.TestCase):
 
         with (
             patch("utils.hardware.hardware.DEVICE", DeviceType.CUDA),
-            patch("core.training.training.prepare_gpu_selection", side_effect = _placement),
-            patch("core.training.training._CTX.Queue", side_effect = [object(), object()]),
-            patch("core.training.training._CTX.Process", return_value = _DummyProcess()),
-            patch("core.training.training.threading.Thread", return_value = _DummyThread()),
+            patch("core.training.training.prepare_gpu_selection", side_effect=_placement),
+            patch("core.training.training._CTX.Queue", side_effect=[object(), object()]),
+            patch("core.training.training._CTX.Process", return_value=_DummyProcess()),
+            patch("core.training.training.threading.Thread", return_value=_DummyThread()),
         ):
             ok = backend.start_training(
-                job_id = "before-spawn-test",
-                before_spawn = hook,
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                gpu_ids = [5],
+                job_id="before-spawn-test",
+                before_spawn=hook,
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
+                gpu_ids=[5],
             )
         self.assertTrue(ok)
         self.assertEqual(order, ["placement", "hook"])

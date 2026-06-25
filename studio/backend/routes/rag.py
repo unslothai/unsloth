@@ -36,8 +36,8 @@ router = APIRouter()
 def _require_rag() -> None:
     if not rag_db.RAG_AVAILABLE:
         raise HTTPException(
-            status_code = 503,
-            detail = "RAG is unavailable: the sqlite-vec extension could not be loaded.",
+            status_code=503,
+            detail="RAG is unavailable: the sqlite-vec extension could not be loaded.",
         )
 
 
@@ -56,8 +56,8 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise HTTPException(
-            status_code = 400,
-            detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
         )
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
@@ -71,7 +71,7 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
             out.write(block)
     if size == 0:
         os.remove(stored_path)
-        raise HTTPException(status_code = 400, detail = "Uploaded file is empty.")
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     return stored_path, filename
 
 
@@ -85,7 +85,7 @@ def _remove_stored_upload(stored_path: str | None) -> None:
         if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
             os.remove(target)
     except Exception:  # noqa: BLE001 - DB/index deletion has already succeeded.
-        logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
+        logger.warning("failed to remove RAG upload %s", stored_path, exc_info=True)
 
 
 def _doc_view(row: dict) -> dict:
@@ -103,12 +103,12 @@ def _doc_view(row: dict) -> dict:
 
 
 class CreateKbRequest(BaseModel):
-    name: str = Field(min_length = 1, max_length = 200)
+    name: str = Field(min_length=1, max_length=200)
     description: str | None = None
 
 
 class UpdateKbRequest(BaseModel):
-    name: str | None = Field(default = None, max_length = 200)
+    name: str | None = Field(default=None, max_length=200)
     description: str | None = None
 
 
@@ -117,7 +117,7 @@ class SearchRequest(BaseModel):
     kb_id: str | None = None
     thread_id: str | None = None
     project_id: str | None = None
-    top_k: int = Field(default = config.TOP_K_HYBRID, ge = 1, le = 50)
+    top_k: int = Field(default=config.TOP_K_HYBRID, ge=1, le=50)
     min_score: float = 0.0
     mode: str = "hybrid"  # hybrid | lexical | dense
 
@@ -154,9 +154,9 @@ def create_knowledge_base(
     try:
         kb_id = store.create_kb(
             conn,
-            name = payload.name.strip(),
-            description = (payload.description or None),
-            embedding_model = config.EMBEDDING_MODEL,
+            name=payload.name.strip(),
+            description=(payload.description or None),
+            embedding_model=config.EMBEDDING_MODEL,
         )
         return {"id": kb_id, "name": payload.name.strip()}
     finally:
@@ -173,7 +173,7 @@ def update_knowledge_base(
     conn = rag_db.get_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
         sets, params = [], []
         if payload.name is not None:
             sets.append("name=?")
@@ -196,7 +196,7 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
     conn = rag_db.get_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
         store.delete_kb(conn, kb_id)
         return {"ok": True}
     finally:
@@ -213,7 +213,7 @@ async def upload_kb_document(
     conn = rag_db.get_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
     finally:
         conn.close()
     stored_path, filename = _save_upload(file)
@@ -269,7 +269,7 @@ async def upload_project_document(
     from storage.studio_db import get_chat_project
 
     if get_chat_project(project_id) is None:
-        raise HTTPException(status_code = 404, detail = "Project not found")
+        raise HTTPException(status_code=404, detail="Project not found")
     stored_path, filename = _save_upload(file)
     document_id, job_id = ingestion.start_ingestion(
         store.project_scope(project_id),
@@ -277,7 +277,7 @@ async def upload_project_document(
         None,
         filename,
         stored_path,
-        project_id = project_id,
+        project_id=project_id,
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -300,7 +300,7 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
     try:
         doc = store.get_document(conn, document_id)
         if doc is None:
-            raise HTTPException(status_code = 404, detail = "Document not found")
+            raise HTTPException(status_code=404, detail="Document not found")
         store.delete_document(conn, document_id)
         _remove_stored_upload(doc.get("stored_path"))
         return {"ok": True}
@@ -313,7 +313,7 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
     _require_rag()
     row = ingestion.get_job_status(job_id)
     if row is None:
-        raise HTTPException(status_code = 404, detail = "Job not found")
+        raise HTTPException(status_code=404, detail="Job not found")
     return {
         "id": row["id"],
         "documentId": row["document_id"],
@@ -338,8 +338,8 @@ def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> Stre
 
     return StreamingResponse(
         gen(),
-        media_type = "text/event-stream",
-        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -355,7 +355,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         if payload.thread_id:
             scopes.append(store.thread_scope(payload.thread_id))
         if not scopes:
-            raise HTTPException(status_code = 400, detail = "Provide kb_id, project_id, or thread_id")
+            raise HTTPException(status_code=400, detail="Provide kb_id, project_id, or thread_id")
         scope = scopes[0] if len(scopes) == 1 else scopes
 
     conn = rag_db.get_connection()
@@ -365,7 +365,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         elif payload.mode == "dense":
             hits = retrieval.retrieve_dense(conn, scope, payload.query, payload.top_k)
         else:
-            hits = retrieval.retrieve_hybrid(conn, scope, payload.query, k = payload.top_k)
+            hits = retrieval.retrieve_hybrid(conn, scope, payload.query, k=payload.top_k)
         hits = retrieval.filter_min_score(hits, payload.min_score)
         rows = store.chunks_by_id(conn, [h.chunk_id for h in hits])
         results = []
@@ -432,7 +432,7 @@ def _verify_document_token(token: str) -> str | None:
 @router.get("/documents/{document_id}/preview-target")
 def preview_target(
     document_id: str,
-    chunk_id: str | None = Query(default = None),
+    chunk_id: str | None = Query(default=None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     """Resolve a citation to filename, page, and highlight regions."""
@@ -441,7 +441,7 @@ def preview_target(
     try:
         doc = store.get_document(conn, document_id)
         if doc is None:
-            raise HTTPException(status_code = 404, detail = "Document not found")
+            raise HTTPException(status_code=404, detail="Document not found")
         ext = os.path.splitext(doc["filename"])[1].lower()
         out = {
             "documentId": document_id,
@@ -477,21 +477,21 @@ def document_file_url(document_id: str, subject: str = Depends(get_current_subje
     try:
         doc = store.get_document(conn, document_id)
         if doc is None or not doc.get("stored_path"):
-            raise HTTPException(status_code = 404, detail = "Document file not available")
+            raise HTTPException(status_code=404, detail="Document file not available")
     finally:
         conn.close()
     token = _sign_document(document_id)
     return {"url": f"/api/rag/documents/{document_id}/file-signed?token={token}"}
 
 
-@router.get("/documents/{document_id}/file-signed", response_model = None)
+@router.get("/documents/{document_id}/file-signed", response_model=None)
 def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
     """Serve the source file gated by the HMAC token (no bearer) so pdf.js range
     requests work."""
     _require_rag()
     signed_id = _verify_document_token(token)
     if signed_id != document_id:
-        raise HTTPException(status_code = 401, detail = "Invalid or expired token")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     conn = rag_db.get_connection()
     try:
         doc = store.get_document(conn, document_id)
@@ -499,14 +499,14 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
         conn.close()
     stored_path = (doc or {}).get("stored_path")
     if not doc or not stored_path or not os.path.isfile(stored_path):
-        raise HTTPException(status_code = 404, detail = "Document file not found")
+        raise HTTPException(status_code=404, detail="Document file not found")
     # Confine to the uploads root (defense in depth).
     uploads = os.path.realpath(str(rag_uploads_root()))
     if not os.path.realpath(stored_path).startswith(uploads):
-        raise HTTPException(status_code = 403, detail = "Forbidden")
+        raise HTTPException(status_code=403, detail="Forbidden")
     ext = os.path.splitext(doc["filename"])[1].lower()
     return FileResponse(
         stored_path,
-        media_type = _CONTENT_TYPES.get(ext, "application/octet-stream"),
-        filename = doc["filename"],
+        media_type=_CONTENT_TYPES.get(ext, "application/octet-stream"),
+        filename=doc["filename"],
     )

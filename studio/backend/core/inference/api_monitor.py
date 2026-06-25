@@ -110,17 +110,17 @@ class ApiMonitor:
     ) -> str:
         now = time.time()
         entry = ApiMonitorEntry(
-            id = f"apireq_{uuid.uuid4().hex[:12]}",
-            endpoint = endpoint,
-            method = method,
-            model = model or "default",
-            prompt = _trim(prompt, _MAX_PROMPT_CHARS),
-            status = "running",
-            started_at = now,
-            updated_at = now,
-            subject = subject,
-            started_monotonic = time.monotonic(),
-            context_length = context_length,
+            id=f"apireq_{uuid.uuid4().hex[:12]}",
+            endpoint=endpoint,
+            method=method,
+            model=model or "default",
+            prompt=_trim(prompt, _MAX_PROMPT_CHARS),
+            status="running",
+            started_at=now,
+            updated_at=now,
+            subject=subject,
+            started_monotonic=time.monotonic(),
+            context_length=context_length,
         )
         with self._lock:
             self._entries.appendleft(entry)
@@ -242,7 +242,7 @@ class ApiMonitor:
     ) -> list[dict[str, Any]]:
         with self._lock:
             return [
-                entry.snapshot(include_details = include_details)
+                entry.snapshot(include_details=include_details)
                 for entry in self._entries
                 if subject is None or entry.subject == subject
             ]
@@ -259,7 +259,7 @@ class ApiMonitor:
                 return None
             if subject is not None and entry.subject != subject:
                 return None
-            return entry.snapshot(include_details = True)
+            return entry.snapshot(include_details=True)
 
     def active_count(self, *, subject: Optional[str] = None) -> int:
         with self._lock:

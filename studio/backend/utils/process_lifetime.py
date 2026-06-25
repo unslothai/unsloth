@@ -89,7 +89,7 @@ def _install_windows_job() -> None:
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         _win_signatures(kernel32)
 
         class _BASIC(ctypes.Structure):
@@ -157,7 +157,8 @@ def _pdeathsig_preexec() -> None:
     # check closes the race where the parent died before this ran.
     try:
         import ctypes
-        ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
         if os.getppid() == 1:
             os._exit(1)
     except Exception:
@@ -204,7 +205,7 @@ def _pid_identity(pid: int) -> Optional[str]:
     if not _is_linux():
         return None
     try:
-        with open(f"/proc/{pid}/stat", encoding = "utf-8") as fh:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
             stat = fh.read()
         return stat[stat.rfind(")") + 2 :].split()[19]  # after comm: starttime
     except Exception:
@@ -230,7 +231,7 @@ def adopt_pid(pid: Optional[int]) -> None:
             import ctypes
             from ctypes import wintypes
 
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             _win_signatures(kernel32)
             kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
             kernel32.OpenProcess.restype = wintypes.HANDLE

@@ -113,7 +113,7 @@ def test_cold_start_returns_immediately_without_probing():
     ctx, state = _patch_probe([[(0, 10000)], [(0, 10000)]])
     with ctx:
         start = time.monotonic()
-        LlamaCppBackend._wait_for_vram_settle(max_wait = 2.0, interval = 0.25)
+        LlamaCppBackend._wait_for_vram_settle(max_wait=2.0, interval=0.25)
         elapsed = time.monotonic() - start
     assert state["calls"] == 0, "cold start must skip the probe entirely"
     assert elapsed < 0.05
@@ -125,7 +125,7 @@ def test_stale_kill_skips_wait():
     long_ago = time.monotonic() - 60.0
     with ctx:
         LlamaCppBackend._wait_for_vram_settle(
-            **_kw(since_kill = long_ago, max_wait = 2.0, interval = 0.25)
+            **_kw(since_kill=long_ago, max_wait=2.0, interval=0.25)
         )
     assert state["calls"] == 0, "kill older than _VRAM_SETTLE_WINDOW_S must skip the wait"
 
@@ -135,7 +135,7 @@ def test_empty_first_sample_returns_immediately():
     ctx, state = _patch_probe([[]])
     with ctx:
         start = time.monotonic()
-        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.25))
+        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait=2.0, interval=0.25))
         elapsed = time.monotonic() - start
     assert state["calls"] == 1
     assert elapsed < 0.5, "CPU-only short-circuit must not sleep through the interval"
@@ -145,7 +145,7 @@ def test_first_probe_raises_returns_without_polling():
     """nvidia-smi gone away at the start: helper returns silently."""
     ctx, state = _patch_probe([OSError("nvidia-smi missing")])
     with ctx:
-        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.25))
+        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait=2.0, interval=0.25))
     assert state["calls"] == 1
 
 
@@ -161,7 +161,7 @@ def test_two_consecutive_samples_within_tolerance_settles():
     )
     with ctx:
         start = time.monotonic()
-        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.05))
+        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait=2.0, interval=0.05))
         elapsed = time.monotonic() - start
     assert state["calls"] == 3
     # interval * 2 sleeps = 0.10; allow slack for scheduler jitter.
@@ -177,7 +177,7 @@ def test_probe_raises_mid_loop_returns():
         ]
     )
     with ctx:
-        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.05))
+        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait=2.0, interval=0.05))
     assert state["calls"] == 2
 
 
@@ -193,7 +193,7 @@ def test_max_wait_respected_when_never_settles():
     ctx, _state = _patch_probe([_drifty])
     with ctx:
         start = time.monotonic()
-        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 0.5, interval = 0.1))
+        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait=0.5, interval=0.1))
         elapsed = time.monotonic() - start
     # Must stop near max_wait, not run forever. Generous upper bound for CI.
     assert 0.3 <= elapsed < 2.0, f"helper ignored max_wait: elapsed={elapsed:.3f}s"
@@ -210,7 +210,7 @@ def test_max_wait_respected_when_probe_is_slow():
     with ctx:
         start = time.monotonic()
         LlamaCppBackend._wait_for_vram_settle(
-            **_kw(max_wait = 0.4, interval = 0.25),
+            **_kw(max_wait=0.4, interval=0.25),
         )
         elapsed = time.monotonic() - start
     # First probe (0.30 s) + at most one clipped sleep + bail.
@@ -228,7 +228,7 @@ def test_gpu_index_set_change_returns():
         ]
     )
     with ctx:
-        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.05))
+        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait=2.0, interval=0.05))
     assert state["calls"] == 2
 
 
@@ -242,7 +242,7 @@ def test_per_gpu_stability_one_still_draining():
         ]
     )
     with ctx:
-        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.05))
+        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait=2.0, interval=0.05))
     assert state["calls"] == 3
 
 
@@ -255,7 +255,7 @@ def test_tolerance_two_percent_for_large_cards():
         ]
     )
     with ctx:
-        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.05))
+        LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait=2.0, interval=0.05))
     assert state["calls"] == 2
 
 
@@ -293,7 +293,7 @@ def test_kill_process_records_timestamp_on_actual_kill():
         def terminate(self):
             pass
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return 0
 
         def kill(self):
@@ -318,7 +318,7 @@ def test_kill_process_tolerates_partially_constructed_backend():
         def terminate(self):
             pass
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return 0
 
         def kill(self):
@@ -334,7 +334,7 @@ def test_helper_is_static_method_callable_off_class():
     ctx, _state = _patch_probe([[]])
     with ctx:
         LlamaCppBackend._wait_for_vram_settle(
-            **_kw(max_wait = 0.1, interval = 0.05),
+            **_kw(max_wait=0.1, interval=0.05),
         )
 
 
@@ -368,7 +368,7 @@ def test_kill_orphaned_servers_returns_count():
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
     fake_psutil.ZombieProcess = type("ZombieProcess", (Exception,), {})
-    fake_psutil.process_iter = lambda attrs = None: [owned, foreign, unrelated]
+    fake_psutil.process_iter = lambda attrs=None: [owned, foreign, unrelated]
 
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
@@ -379,7 +379,7 @@ def test_kill_orphaned_servers_returns_count():
     assert killed == [mypid + 1]
 
     # No owned orphans -> zero, so __init__ leaves the cold-start sentinel.
-    fake_psutil.process_iter = lambda attrs = None: [foreign, unrelated]
+    fake_psutil.process_iter = lambda attrs=None: [foreign, unrelated]
     killed.clear()
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
@@ -422,7 +422,7 @@ class _FakeKillProc:
     def terminate(self):
         pass
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         return 0
 
     def kill(self):
@@ -469,12 +469,12 @@ def test_reap_recorded_pid_kills_recorded_server(tmp_path):
             n = LlamaCppBackend._reap_recorded_pid()
         assert n == 1
         assert not pidfile.exists()
-        proc.wait(timeout = 5)
+        proc.wait(timeout=5)
         assert proc.poll() is not None
     finally:
         if proc.poll() is None:
             proc.kill()
-            proc.wait(timeout = 5)
+            proc.wait(timeout=5)
 
 
 def test_record_then_reap_round_trip_identity_matches(tmp_path):
@@ -495,13 +495,13 @@ def test_record_then_reap_round_trip_identity_matches(tmp_path):
         ):
             n = LlamaCppBackend._reap_recorded_pid()
         assert n == 1, "a matching identity on a true orphan must be reaped"
-        proc.wait(timeout = 5)
+        proc.wait(timeout=5)
         assert proc.poll() is not None
         assert not pidfile.exists()
     finally:
         if proc.poll() is None:
             proc.kill()
-            proc.wait(timeout = 5)
+            proc.wait(timeout=5)
 
 
 def test_reap_recorded_pid_spares_live_server(tmp_path):
@@ -526,7 +526,7 @@ def test_reap_recorded_pid_spares_live_server(tmp_path):
         assert pidfile.exists(), "the record is kept so a later orphan reap still works"
     finally:
         proc.kill()
-        proc.wait(timeout = 5)
+        proc.wait(timeout=5)
 
 
 def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
@@ -549,7 +549,7 @@ def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
         assert not pidfile.exists(), "stale pidfile is cleaned up"
     finally:
         proc.kill()
-        proc.wait(timeout = 5)
+        proc.wait(timeout=5)
 
 
 def test_reap_recorded_pid_skips_identity_mismatch(tmp_path):
@@ -572,7 +572,7 @@ def test_reap_recorded_pid_skips_identity_mismatch(tmp_path):
         assert not pidfile.exists(), "stale pidfile is cleaned up"
     finally:
         proc.kill()
-        proc.wait(timeout = 5)
+        proc.wait(timeout=5)
 
 
 def test_reap_recorded_pid_windows_sigkill_fallback(tmp_path, monkeypatch):
@@ -581,7 +581,7 @@ def test_reap_recorded_pid_windows_sigkill_fallback(tmp_path, monkeypatch):
     import os as _os
     import signal as _signal
 
-    monkeypatch.delattr(_signal, "SIGKILL", raising = False)
+    monkeypatch.delattr(_signal, "SIGKILL", raising=False)
     captured = {}
 
     def _fake_kill(pid, sig):

@@ -118,7 +118,7 @@ def test_symlinked_output_dir_skipped(outputs_setup):
 
     link = outputs_setup / "link-run"
     try:
-        link.symlink_to(real, target_is_directory = True)
+        link.symlink_to(real, target_is_directory=True)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks not supported on this filesystem / platform")
 
@@ -129,6 +129,7 @@ def test_symlinked_output_dir_skipped(outputs_setup):
 
 def test_missing_output_dir_is_noop(outputs_setup):
     from core.training.training import _cleanup_cancelled_checkpoints
+
     _cleanup_cancelled_checkpoints(outputs_setup / "does-not-exist")
     # Should not raise; nothing to assert beyond non-failure.
 
@@ -146,7 +147,7 @@ def test_symlinked_child_skipped(outputs_setup):
 
     link = out / "tmp-checkpoint-99"
     try:
-        link.symlink_to(target, target_is_directory = True)
+        link.symlink_to(target, target_is_directory=True)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks not supported on this filesystem / platform")
 

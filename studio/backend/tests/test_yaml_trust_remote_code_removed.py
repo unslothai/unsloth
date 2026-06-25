@@ -53,6 +53,7 @@ def test_no_model_default_yaml_has_empty_or_none_section():
 def test_formerly_flagged_models_load_inference_config_without_crash():
     # Models whose inference section was emptied by the TRC removal must still load.
     from utils.inference import load_inference_config
+
     for model in (
         "tiiuae/Falcon-H1-0.5B-Instruct",
         "unsloth/Llama-3.2-1B-Instruct",
@@ -104,6 +105,7 @@ def test_base_templates_have_no_trust_remote_code():
 def test_loader_defaults_trust_remote_code_off_for_formerly_flagged_models():
     # The 4 models that used to ship trust_remote_code: true must now report no default.
     from utils.models.model_config import load_model_defaults
+
     for model in (
         "unsloth/GLM-4.7-Flash",
         "unsloth/Nemotron-3-Nano-30B-A3B",
@@ -138,10 +140,10 @@ def test_formerly_flagged_auto_map_models_still_require_consent_dialog():
         "unsloth/ERNIE-4.5-VL-28B-A3B-PT",
     ):
         with (
-            patch.object(consent, "_load_remote_code_configs", return_value = auto_map_cfg),
-            patch.object(consent, "repo_remote_code_files", return_value = benign_py),
+            patch.object(consent, "_load_remote_code_configs", return_value=auto_map_cfg),
+            patch.object(consent, "repo_remote_code_files", return_value=benign_py),
         ):
-            decision = preflight_remote_code_consent_for_targets([model], hf_token = None)
+            decision = preflight_remote_code_consent_for_targets([model], hf_token=None)
         # routes/models.py opens the dialog from decision.has_remote_code.
         assert decision.has_remote_code is True, (
             f"{model} ships auto_map but the consent scan did not flag it -> dialog would "
@@ -155,9 +157,9 @@ def test_no_auto_map_model_takes_no_dialog():
     from utils.security import consent, preflight_remote_code_consent_for_targets
 
     with patch.object(
-        consent, "_load_remote_code_configs", return_value = [{"model_type": "glm4_moe_lite"}]
+        consent, "_load_remote_code_configs", return_value=[{"model_type": "glm4_moe_lite"}]
     ):
         decision = preflight_remote_code_consent_for_targets(
-            ["unsloth/GLM-4.7-Flash"], hf_token = None
+            ["unsloth/GLM-4.7-Flash"], hf_token=None
         )
     assert decision.has_remote_code is False

@@ -28,9 +28,9 @@ from unsloth_cli._inference import (
 )
 
 connect_app = typer.Typer(
-    help = "Connect a coding agent to a running Studio server.",
-    no_args_is_help = True,
-    context_settings = {"help_option_names": ["-h", "--help"]},
+    help="Connect a coding agent to a running Studio server.",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 _CODEX_PROFILE = "unsloth_api"
@@ -43,13 +43,13 @@ _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 _MODEL_OPTION = typer.Option(
-    None, "--model", "-m", help = "Model for the agent; defaults to the one loaded in Studio."
+    None, "--model", "-m", help="Model for the agent; defaults to the one loaded in Studio."
 )
 _KEY_OPTION = typer.Option(
     None,
     "--api-key",
-    envvar = "UNSLOTH_API_KEY",
-    help = (
+    envvar="UNSLOTH_API_KEY",
+    help=(
         "Studio API key. For a local Studio it is minted automatically and "
         "remembered per server. For a remote server, pass one with --api-key "
         "(or UNSLOTH_API_KEY); it is remembered for next time."
@@ -58,13 +58,13 @@ _KEY_OPTION = typer.Option(
 _LAUNCH_OPTION = typer.Option(
     True,
     "--launch/--no-launch",
-    help = "--no-launch prints the env and command instead (remote shells, WSL).",
+    help="--no-launch prints the env and command instead (remote shells, WSL).",
 )
 
 
 def _fail(message: str) -> NoReturn:
-    typer.echo(message, err = True)
-    raise typer.Exit(code = 1)
+    typer.echo(message, err=True)
+    raise typer.Exit(code=1)
 
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:
@@ -79,24 +79,24 @@ def _http_json(
     method: str,
     url: str,
     token: str,
-    payload = None,
-    timeout = 30,
-    error = None,
+    payload=None,
+    timeout=30,
+    error=None,
 ):
     """On HTTPError: raise if `error` is None, else fail with `error` plus the server's detail."""
     request = urllib.request.Request(
         url,
-        data = None if payload is None else json.dumps(payload).encode(),
-        headers = {
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "User-Agent": _USER_AGENT,
         },
-        method = method,
+        method=method,
     )
     try:
         # No redirects: a 3xx would leak this bearer token to an unvetted base.
-        with urlopen_no_redirect(request, timeout = timeout) as response:
+        with urlopen_no_redirect(request, timeout=timeout) as response:
             return json.loads(response.read().decode() or "{}")
     except urllib.error.HTTPError as exc:
         if error is None:
@@ -122,12 +122,13 @@ def _require_studio() -> str:
 def _key_cache_path() -> Path:
     ensure_studio_backend_path()
     from utils.paths import auth_root
+
     return auth_root() / "agent_api_key.json"
 
 
 def _read_cache(cache: Path) -> dict:
     try:
-        data = json.loads(cache.read_text(encoding = "utf-8"))
+        data = json.loads(cache.read_text(encoding="utf-8"))
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
@@ -159,10 +160,10 @@ def _cached_keys(cache: Path, base: str, source: str) -> list:
 def _write_private_json(path: Path, data: dict) -> None:
     # O_CREAT with 0o600 so a file holding an API key is never world-readable,
     # even briefly (existing files keep whatever perms the user set).
-    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
-        handle.write(json.dumps(data, indent = 2) + "\n")
+        handle.write(json.dumps(data, indent=2) + "\n")
 
 
 def _read_json_object(path: Path) -> Optional[dict]:
@@ -171,7 +172,7 @@ def _read_json_object(path: Path) -> Optional[dict]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding = "utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return None
     return data if isinstance(data, dict) else None
@@ -265,14 +266,14 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         f"{base}/api/auth/api-keys",
         token,
         {"name": "Coding agents (unsloth connect)"},
-        error = "Couldn't create an API key",
+        error="Couldn't create an API key",
     )["key"]
     _remember_key(cache, base, key, "minted")
     return key
 
 
 def _loaded_models(base: str, key: str) -> list:
-    return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
+    return _http_json("GET", f"{base}/v1/models", key, error="Couldn't list models").get("data", [])
 
 
 def _resolve_model(base: str, key: str, requested: Optional[str]) -> dict:
@@ -285,8 +286,8 @@ def _resolve_model(base: str, key: str, requested: Optional[str]) -> dict:
             f"{base}/api/inference/load",
             key,
             {"model_path": requested},
-            timeout = 3600,
-            error = "Model load failed",
+            timeout=3600,
+            error="Model load failed",
         )
         # Studio registers the model under a canonical id (resolved identifier,
         # casing) that /v1/models echoes but which may differ from the path we
@@ -342,14 +343,14 @@ def ensure_claude_attribution_header() -> None:
     settings = {}
     if path.exists():
         try:
-            settings = json.loads(path.read_text(encoding = "utf-8"))
+            settings = json.loads(path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             settings = None
         if not isinstance(settings, dict):
             typer.echo(
                 f"Warning: couldn't parse {path} — set CLAUDE_CODE_ATTRIBUTION_HEADER "
                 'to "0" in its "env" section yourself, or local inference will be much slower.',
-                err = True,
+                err=True,
             )
             return
     env = settings.get("env")
@@ -359,13 +360,13 @@ def ensure_claude_attribution_header() -> None:
         return
     env["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "0"
     try:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(json.dumps(settings, indent = 2) + "\n", encoding = "utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     except OSError:
         typer.echo(
             f"Warning: couldn't write {path} — set CLAUDE_CODE_ATTRIBUTION_HEADER "
             'to "0" in its "env" section yourself, or local inference will be much slower.',
-            err = True,
+            err=True,
         )
         return
     typer.echo(f"Disabled Claude Code's attribution header in {path} (it breaks KV-cache reuse).")
@@ -386,7 +387,7 @@ def _claude_cache_flags() -> list:
         return [_DYNAMIC_SECTIONS_FLAG]
     try:
         result = subprocess.run(
-            [executable, "--version"], capture_output = True, text = True, timeout = 10
+            [executable, "--version"], capture_output=True, text=True, timeout=10
         )
         version = tuple(int(part) for part in result.stdout.split()[0].split("."))
     except Exception:
@@ -423,13 +424,13 @@ def _merge_codex_config(existing: str, base: str) -> str:
 
 def write_codex_config(base: str, model: dict) -> None:
     home = codex_home()
-    home.mkdir(parents = True, exist_ok = True)
+    home.mkdir(parents=True, exist_ok=True)
 
     config = home / "config.toml"
-    existing = config.read_text(encoding = "utf-8") if config.exists() else ""
+    existing = config.read_text(encoding="utf-8") if config.exists() else ""
     merged = _merge_codex_config(existing, base)
     if merged != existing:
-        config.write_text(merged, encoding = "utf-8")
+        config.write_text(merged, encoding="utf-8")
         typer.echo(f"Updated {config}")
 
     # oss_provider here too: codex --oss picks the provider from it, and the
@@ -443,8 +444,8 @@ def write_codex_config(base: str, model: dict) -> None:
     if window:
         profile_text += f"model_context_window = {int(window)}\n"
     profile = home / f"{_CODEX_PROFILE}.config.toml"
-    if not profile.exists() or profile.read_text(encoding = "utf-8") != profile_text:
-        profile.write_text(profile_text, encoding = "utf-8")
+    if not profile.exists() or profile.read_text(encoding="utf-8") != profile_text:
+        profile.write_text(profile_text, encoding="utf-8")
         typer.echo(f"Updated {profile}")
 
 
@@ -514,11 +515,11 @@ def _launch(
     # Ctrl+C cancels a turn inside the agent; don't let it kill this wrapper.
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
-        code = subprocess.run([executable, *command[1:]], env = child_env).returncode
+        code = subprocess.run([executable, *command[1:]], env=child_env).returncode
     finally:
         signal.signal(signal.SIGINT, previous)
     # Negative returncode means killed by signal N; shells expect 128+N.
-    raise typer.Exit(code = code if code >= 0 else 128 - code)
+    raise typer.Exit(code=code if code >= 0 else 128 - code)
 
 
 def _connect(api_key: Optional[str], model: Optional[str]) -> tuple:
@@ -542,9 +543,9 @@ def _run(
         tuple(dict.fromkeys((*env.keys(), *unset_env))) if _wsl_windows_executable(command) else ()
     )
     if not launch:
-        _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
+        _print_env(env, command, unset_env=unset_env, wsl_env_bridge=wsl_env_bridge)
         return
-    _launch(command, env, install_hint = install_hint, unset_env = unset_env)
+    _launch(command, env, install_hint=install_hint, unset_env=unset_env)
 
 
 def openclaw_config_path() -> Path:
@@ -558,10 +559,10 @@ def write_openclaw_config(base: str, key: str, model: dict) -> None:
         typer.echo(
             f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
             "yourself, or move the file aside and re-run.",
-            err = True,
+            err=True,
         )
         return
-    before = json.dumps(config, sort_keys = True)
+    before = json.dumps(config, sort_keys=True)
     # Studio is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
     provider_model = {"id": model["id"], "name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
@@ -583,7 +584,7 @@ def write_openclaw_config(base: str, key: str, model: dict) -> None:
     gateway = _subdict(config, "gateway")
     gateway.setdefault("mode", "local")
     _subdict(gateway, "auth").setdefault("mode", "none")
-    if json.dumps(config, sort_keys = True) != before:
+    if json.dumps(config, sort_keys=True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
 
@@ -600,10 +601,10 @@ def write_opencode_config(base: str, key: str, model: dict) -> None:
         typer.echo(
             f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
             "yourself, or move the file aside and re-run.",
-            err = True,
+            err=True,
         )
         return
-    before = json.dumps(config, sort_keys = True)
+    before = json.dumps(config, sort_keys=True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
     _subdict(config, "provider")["unsloth"] = {
         "npm": "@ai-sdk/openai-compatible",
@@ -613,7 +614,7 @@ def write_opencode_config(base: str, key: str, model: dict) -> None:
     }
     # OpenCode selects a model by "<providerID>/<modelID>".
     config["model"] = f"unsloth/{model['id']}"
-    if json.dumps(config, sort_keys = True) != before:
+    if json.dumps(config, sort_keys=True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
 
@@ -629,12 +630,12 @@ def write_hermes_config(base: str, model: dict) -> None:
     config: dict = {}
     if path.exists():
         try:
-            loaded = yaml.safe_load(path.read_text(encoding = "utf-8"))
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (yaml.YAMLError, OSError):
             typer.echo(
                 f"Warning: couldn't parse {path} — configure the custom endpoint "
                 "there yourself, or move the file aside and re-run.",
-                err = True,
+                err=True,
             )
             return
         if isinstance(loaded, dict):
@@ -644,29 +645,29 @@ def write_hermes_config(base: str, model: dict) -> None:
             typer.echo(
                 f"Warning: couldn't parse {path} — configure the custom endpoint "
                 "there yourself, or move the file aside and re-run.",
-                err = True,
+                err=True,
             )
             return
     # Hermes only reads the key for a *named* custom provider (a bare
     # `provider: custom` ignores it), so register it under providers.*.
     _subdict(config, "model").update(
-        provider = f"custom:{_HERMES_PROVIDER}",
-        default = model["id"],
-        api_mode = "openai",
+        provider=f"custom:{_HERMES_PROVIDER}",
+        default=model["id"],
+        api_mode="openai",
     )
     _subdict(config, "providers")[_HERMES_PROVIDER] = {
         "base_url": f"{base}/v1",
         "api_mode": "openai",
         "key_env": _HERMES_ENV_KEY,
     }
-    text = yaml.safe_dump(config, sort_keys = False)
-    if not path.exists() or path.read_text(encoding = "utf-8") != text:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(text, encoding = "utf-8")
+    text = yaml.safe_dump(config, sort_keys=False)
+    if not path.exists() or path.read_text(encoding="utf-8") != text:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
         typer.echo(f"Updated {path}")
 
 
-@connect_app.command("claude", context_settings = _PASSTHROUGH)
+@connect_app.command("claude", context_settings=_PASSTHROUGH)
 def claude(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -699,13 +700,13 @@ def claude(
         entry,
         env,
         command,
-        launch = launch,
-        install_hint = install_hint,
-        unset_env = _CLAUDE_ENV_UNSET,
+        launch=launch,
+        install_hint=install_hint,
+        unset_env=_CLAUDE_ENV_UNSET,
     )
 
 
-@connect_app.command("codex", context_settings = _PASSTHROUGH)
+@connect_app.command("codex", context_settings=_PASSTHROUGH)
 def codex(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -719,10 +720,10 @@ def codex(
 
     env = {_CODEX_ENV_KEY: key}
     command = ["codex", "--oss", "--profile", _CODEX_PROFILE, *ctx.args]
-    _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
+    _run(base, entry, env, command, launch=launch, install_hint="npm install -g @openai/codex")
 
 
-@connect_app.command("openclaw", context_settings = _PASSTHROUGH)
+@connect_app.command("openclaw", context_settings=_PASSTHROUGH)
 def openclaw(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -739,10 +740,10 @@ def openclaw(
         if os.name == "nt"
         else "curl -fsSL https://openclaw.ai/install.sh | bash"
     )
-    _run(base, entry, {}, command, launch = launch, install_hint = install_hint)
+    _run(base, entry, {}, command, launch=launch, install_hint=install_hint)
 
 
-@connect_app.command("opencode", context_settings = _PASSTHROUGH)
+@connect_app.command("opencode", context_settings=_PASSTHROUGH)
 def opencode(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -754,10 +755,10 @@ def opencode(
     write_opencode_config(base, key, entry)  # key lives in the config, not the env
 
     command = ["opencode", *ctx.args]
-    _run(base, entry, {}, command, launch = launch, install_hint = "npm install -g opencode-ai")
+    _run(base, entry, {}, command, launch=launch, install_hint="npm install -g opencode-ai")
 
 
-@connect_app.command("hermes", context_settings = _PASSTHROUGH)
+@connect_app.command("hermes", context_settings=_PASSTHROUGH)
 def hermes(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -774,4 +775,4 @@ def hermes(
         "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
         "/main/scripts/install.sh | bash"
     )
-    _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+    _run(base, entry, env, command, launch=launch, install_hint=install_hint)

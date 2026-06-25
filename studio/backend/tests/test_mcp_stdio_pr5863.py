@@ -32,10 +32,10 @@ def _enable(monkeypatch):
 
 
 def _disable(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising=False)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _isolate_stdio_env():
     # apply_stdio_mcp_loopback_default() mutates os.environ and a module flag that
     # monkeypatch can't roll back, and stdio_mcp_enabled() reads the process tool
@@ -61,7 +61,7 @@ class _FakeTool:
     def __init__(self, name):
         self._name = name
 
-    def model_dump(self, exclude_none = True):
+    def model_dump(self, exclude_none=True):
         return {"name": self._name, "description": f"{self._name} tool"}
 
 
@@ -105,7 +105,7 @@ def transport(monkeypatch):
     monkeypatch.setattr(
         mcp_client,
         "_client",
-        lambda url, headers, use_oauth = False: _RecordingClient(url, headers, use_oauth, recorder),
+        lambda url, headers, use_oauth=False: _RecordingClient(url, headers, use_oauth, recorder),
     )
     return recorder
 
@@ -234,7 +234,7 @@ def test_network_bind_leaves_stdio_off(monkeypatch, host):
 def test_colab_loopback_does_not_auto_enable(monkeypatch):
     # Colab loopback is a hosted VM reachable via the proxy, so it stays off.
     _disable(monkeypatch)
-    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1", is_colab = True)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1", is_colab=True)
     assert mcp_client.stdio_mcp_enabled() is False
 
 
@@ -242,7 +242,7 @@ def test_explicit_enable_survives_colab(monkeypatch):
     # An explicit operator opt-in still wins over the Colab exclusion (apply_
     # early-returns on an explicit value, before the is_colab check).
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
-    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1", is_colab = True)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1", is_colab=True)
     assert mcp_client.stdio_mcp_enabled() is True
 
 
@@ -288,7 +288,7 @@ def test_cleared_env_after_auto_default_falls_back_to_host_default(monkeypatch):
     # re-enables -- the asymmetry the staleness guard documents.
     _disable(monkeypatch)
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
-    monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising=False)
     host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
     assert mcp_client.stdio_mcp_enabled() is True
 
@@ -424,15 +424,15 @@ def test_create_route_gate(tmp_path, monkeypatch, transport):
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    payload = McpServerCreate(display_name = "FS", url = "npx -y server /tmp")
+    payload = McpServerCreate(display_name="FS", url="npx -y server /tmp")
 
     _disable(monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(routes_mcp.create_mcp_server(payload, current_subject = "u"))
+        asyncio.run(routes_mcp.create_mcp_server(payload, current_subject="u"))
     assert exc.value.status_code == 400
 
     _enable(monkeypatch)
-    resp = asyncio.run(routes_mcp.create_mcp_server(payload, current_subject = "u"))
+    resp = asyncio.run(routes_mcp.create_mcp_server(payload, current_subject="u"))
     assert resp.url == "npx -y server /tmp"
 
 
@@ -444,12 +444,12 @@ def test_update_http_to_stdio_blocked_when_off(tmp_path, monkeypatch):
 
     _reset_db(tmp_path, monkeypatch)
     _disable(monkeypatch)
-    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://a/mcp")
+    mcp_servers_db.create_server(id="s1", display_name="A", url="https://a/mcp")
     # editing url -> stdio command must 400 (http->stdio bypass closed)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             routes_mcp.update_mcp_server(
-                "s1", McpServerUpdate(url = "npx server"), current_subject = "u"
+                "s1", McpServerUpdate(url="npx server"), current_subject="u"
             )
         )
     assert exc.value.status_code == 400
@@ -462,16 +462,16 @@ def test_test_route_gate(tmp_path, monkeypatch, transport):
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    req = McpServerTestRequest(url = "npx -y server /tmp")
+    req = McpServerTestRequest(url="npx -y server /tmp")
 
     _disable(monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(routes_mcp.test_mcp_server(req, current_subject = "u"))
+        asyncio.run(routes_mcp.test_mcp_server(req, current_subject="u"))
     assert exc.value.status_code == 400
     assert transport == []  # transport never opened
 
     _enable(monkeypatch)
-    res = asyncio.run(routes_mcp.test_mcp_server(req, current_subject = "u"))
+    res = asyncio.run(routes_mcp.test_mcp_server(req, current_subject="u"))
     assert res.ok and res.tool_count == 2
     assert len(transport) == 1
 
@@ -483,16 +483,16 @@ def test_refresh_route_gate(tmp_path, monkeypatch, transport):
 
     _reset_db(tmp_path, monkeypatch)
     # a stdio row, as if carried over from a desktop DB
-    mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server")
+    mcp_servers_db.create_server(id="stdio1", display_name="FS", url="npx server")
 
     _disable(monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(routes_mcp.refresh_mcp_server_tools("stdio1", current_subject = "u"))
+        asyncio.run(routes_mcp.refresh_mcp_server_tools("stdio1", current_subject="u"))
     assert exc.value.status_code == 400
     assert transport == []
 
     _enable(monkeypatch)
-    res = asyncio.run(routes_mcp.refresh_mcp_server_tools("stdio1", current_subject = "u"))
+    res = asyncio.run(routes_mcp.refresh_mcp_server_tools("stdio1", current_subject="u"))
     assert res.ok and res.tool_count == 2
     assert len(transport) == 1
 
@@ -503,7 +503,7 @@ def test_discovery_gate(tmp_path, monkeypatch, transport):
     from core.inference.tools import get_enabled_mcp_tools
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True)
+    mcp_servers_db.create_server(id="stdio1", display_name="FS", url="npx server", is_enabled=True)
 
     _disable(monkeypatch)
     assert asyncio.run(get_enabled_mcp_tools()) == []
@@ -519,7 +519,7 @@ def test_execute_gate(tmp_path, monkeypatch, transport):
     from core.inference.tools import execute_tool
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True)
+    mcp_servers_db.create_server(id="stdio1", display_name="FS", url="npx server", is_enabled=True)
 
     _disable(monkeypatch)
     out = execute_tool("mcp__stdio1__list_directory", {"path": "/tmp"})
@@ -541,11 +541,11 @@ def test_stdio_env_passed_through(tmp_path, monkeypatch, transport):
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
     mcp_servers_db.create_server(
-        id = "stdio1",
-        display_name = "FS",
-        url = "npx server",
-        headers_json = '{"API_KEY": "sk-test"}',
-        is_enabled = True,
+        id="stdio1",
+        display_name="FS",
+        url="npx server",
+        headers_json='{"API_KEY": "sk-test"}',
+        is_enabled=True,
     )
     execute_tool("mcp__stdio1__list_directory", {})
     assert transport[-1]["headers"] == {"API_KEY": "sk-test"}

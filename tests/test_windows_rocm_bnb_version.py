@@ -49,7 +49,7 @@ def clean_env(monkeypatch):
         "UNSLOTH_SKIP_BNB_ROCM_VERSION",
         "UNSLOTH_BNB_ROCM_VERSION_SOURCE",
     ):
-        monkeypatch.delenv(var, raising = False)
+        monkeypatch.delenv(var, raising=False)
     yield monkeypatch
     for var in (
         "BNB_ROCM_VERSION",
@@ -80,7 +80,7 @@ def test_detect_picks_highest_rocm_suffix(import_fixes, tmp_path, monkeypatch):
         "__init__.py",
     ):
         (pkg / name).write_text("")
-    fake_spec = types.SimpleNamespace(submodule_search_locations = [str(pkg)])
+    fake_spec = types.SimpleNamespace(submodule_search_locations=[str(pkg)])
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: fake_spec)
     assert import_fixes._detect_installed_bnb_rocm_version() == "713"
 
@@ -90,7 +90,7 @@ def test_detect_none_when_only_non_rocm_dlls(import_fixes, tmp_path, monkeypatch
     pkg.mkdir()
     (pkg / "libbitsandbytes_cpu.dll").write_text("")
     (pkg / "libbitsandbytes_cuda124.dll").write_text("")
-    fake_spec = types.SimpleNamespace(submodule_search_locations = [str(pkg)])
+    fake_spec = types.SimpleNamespace(submodule_search_locations=[str(pkg)])
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: fake_spec)
     assert import_fixes._detect_installed_bnb_rocm_version() is None
 
@@ -106,7 +106,7 @@ def test_detect_none_when_bnb_absent(import_fixes, monkeypatch):
 
 
 def test_sets_bnb_version_on_windows_rocm(import_fixes, clean_env):
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
+    _force(import_fixes, clean_env, win=True, rocm=True, detected="72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() == "72"
     assert os.environ["BNB_ROCM_VERSION"] == "72"
     assert os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] == "detected"
@@ -114,34 +114,34 @@ def test_sets_bnb_version_on_windows_rocm(import_fixes, clean_env):
 
 def test_noop_off_windows(import_fixes, clean_env):
     # Linux ROCm resolves its backend correctly from torch.version.hip.
-    _force(import_fixes, clean_env, win = False, rocm = True, detected = "72")
+    _force(import_fixes, clean_env, win=False, rocm=True, detected="72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert "BNB_ROCM_VERSION" not in os.environ
 
 
 def test_noop_when_not_rocm_torch(import_fixes, clean_env):
-    _force(import_fixes, clean_env, win = True, rocm = False, detected = "72")
+    _force(import_fixes, clean_env, win=True, rocm=False, detected="72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert "BNB_ROCM_VERSION" not in os.environ
 
 
 def test_noop_when_no_rocm_dll_installed(import_fixes, clean_env):
     # No ROCm DLL ships -> don't force a backend name (would break non-ROCm bnb).
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = None)
+    _force(import_fixes, clean_env, win=True, rocm=True, detected=None)
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert "BNB_ROCM_VERSION" not in os.environ
 
 
 def test_respects_user_provided_value(import_fixes, clean_env):
     clean_env.setenv("BNB_ROCM_VERSION", "999")
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
+    _force(import_fixes, clean_env, win=True, rocm=True, detected="72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert os.environ["BNB_ROCM_VERSION"] == "999"
 
 
 def test_explicit_opt_out(import_fixes, clean_env):
     clean_env.setenv("UNSLOTH_SKIP_BNB_ROCM_VERSION", "1")
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
+    _force(import_fixes, clean_env, win=True, rocm=True, detected="72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert "BNB_ROCM_VERSION" not in os.environ
 
@@ -150,7 +150,7 @@ def test_redetects_sitecustomize_seeded_default(import_fixes, clean_env):
     # A sitecustomize-seeded default must be redetected (the wheel may have changed).
     clean_env.setenv("BNB_ROCM_VERSION", "72")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = "713")
+    _force(import_fixes, clean_env, win=True, rocm=True, detected="713")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() == "713"
     assert os.environ["BNB_ROCM_VERSION"] == "713"
     assert os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] == "detected"
@@ -160,7 +160,7 @@ def test_sitecustomize_default_kept_when_no_dll_found(import_fixes, clean_env):
     # A failed redetect must not discard the seeded value.
     clean_env.setenv("BNB_ROCM_VERSION", "72")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = None)
+    _force(import_fixes, clean_env, win=True, rocm=True, detected=None)
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert os.environ["BNB_ROCM_VERSION"] == "72"
     assert os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] == "sitecustomize"
@@ -170,7 +170,7 @@ def test_user_value_with_non_sitecustomize_marker_untouched(import_fixes, clean_
     # Only the sitecustomize marker makes a value redetectable.
     clean_env.setenv("BNB_ROCM_VERSION", "999")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "detected")
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
+    _force(import_fixes, clean_env, win=True, rocm=True, detected="72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert os.environ["BNB_ROCM_VERSION"] == "999"
 
@@ -180,7 +180,7 @@ def test_opt_out_unseats_sitecustomize_seeded_value(import_fixes, clean_env):
     clean_env.setenv("BNB_ROCM_VERSION", "72")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
     clean_env.setenv("UNSLOTH_SKIP_BNB_ROCM_VERSION", "1")
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = "713")
+    _force(import_fixes, clean_env, win=True, rocm=True, detected="713")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert "BNB_ROCM_VERSION" not in os.environ
     assert "UNSLOTH_BNB_ROCM_VERSION_SOURCE" not in os.environ
@@ -190,7 +190,7 @@ def test_opt_out_keeps_explicit_user_value(import_fixes, clean_env):
     # Opt-out must never remove a value the user set themselves (no marker).
     clean_env.setenv("BNB_ROCM_VERSION", "999")
     clean_env.setenv("UNSLOTH_SKIP_BNB_ROCM_VERSION", "1")
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
+    _force(import_fixes, clean_env, win=True, rocm=True, detected="72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert os.environ["BNB_ROCM_VERSION"] == "999"
 
@@ -198,7 +198,7 @@ def test_opt_out_keeps_explicit_user_value(import_fixes, clean_env):
 def test_empty_string_value_without_marker_is_respected(import_fixes, clean_env):
     # "" counts as present: without the sitecustomize marker it is not ours to overwrite.
     clean_env.setenv("BNB_ROCM_VERSION", "")
-    _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
+    _force(import_fixes, clean_env, win=True, rocm=True, detected="72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert os.environ["BNB_ROCM_VERSION"] == ""
 
@@ -210,7 +210,7 @@ def test_empty_string_value_without_marker_is_respected(import_fixes, clean_env)
 
 
 def _fake_torch(hip):
-    return types.SimpleNamespace(version = types.SimpleNamespace(hip = hip))
+    return types.SimpleNamespace(version=types.SimpleNamespace(hip=hip))
 
 
 def test_hip_build_true_from_wheel_tag(import_fixes, monkeypatch):

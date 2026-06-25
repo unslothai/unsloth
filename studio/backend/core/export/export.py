@@ -57,7 +57,7 @@ def _apply_wsl_sudo_patch():
     try:
         import unsloth_zoo.llama_cpp as llama_cpp_module
 
-        def _wsl_do_we_need_sudo(system_type = "debian"):
+        def _wsl_do_we_need_sudo(system_type="debian"):
             logger.info("WSL detected — skipping sudo check (build deps pre-installed by setup.sh)")
             return False
 
@@ -137,7 +137,8 @@ class ExportBackend:
         Returns: [(model_name, [(display_name, checkpoint_path), ...]), ...]
         """
         from utils.models.checkpoints import scan_checkpoints
-        return scan_checkpoints(outputs_dir = outputs_dir)
+
+        return scan_checkpoints(outputs_dir=outputs_dir)
 
     def load_checkpoint(
         self,
@@ -177,8 +178,8 @@ class ExportBackend:
 
             # Token the type-detection probes too, else a gated multimodal base
             # 404s here and falls through to the text loader.
-            self._audio_type = detect_audio_type(model_id, hf_token = token)
-            self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token = token)
+            self._audio_type = detect_audio_type(model_id, hf_token=token)
+            self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token=token)
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -186,13 +187,13 @@ class ExportBackend:
 
                 logger.info("Loading as CSM audio model...")
                 model, tokenizer = FastModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None,
-                    auto_model = CsmForConditionalGeneration,
-                    load_in_4bit = False,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    dtype=None,
+                    auto_model=CsmForConditionalGeneration,
+                    load_in_4bit=False,
+                    trust_remote_code=trust_remote_code,
+                    token=token,
                 )
 
             elif self._audio_type == "whisper":
@@ -201,69 +202,71 @@ class ExportBackend:
 
                 logger.info("Loading as Whisper audio model...")
                 model, tokenizer = FastModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    dtype = None,
-                    load_in_4bit = False,
-                    auto_model = WhisperForConditionalGeneration,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
+                    model_name=checkpoint_path,
+                    dtype=None,
+                    load_in_4bit=False,
+                    auto_model=WhisperForConditionalGeneration,
+                    trust_remote_code=trust_remote_code,
+                    token=token,
                 )
 
             elif self._audio_type == "snac":
                 logger.info("Loading as SNAC (Orpheus) audio model...")
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None,
-                    load_in_4bit = load_in_4bit,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    dtype=None,
+                    load_in_4bit=load_in_4bit,
+                    trust_remote_code=trust_remote_code,
+                    token=token,
                 )
 
             elif self._audio_type == "bicodec":
                 from unsloth import FastModel
+
                 logger.info("Loading as BiCodec (Spark-TTS) audio model...")
                 model, tokenizer = FastModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None if _IS_MLX else torch.float32,
-                    load_in_4bit = False,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    dtype=None if _IS_MLX else torch.float32,
+                    load_in_4bit=False,
+                    trust_remote_code=trust_remote_code,
+                    token=token,
                 )
 
             elif self._audio_type == "dac":
                 from unsloth import FastModel
+
                 logger.info("Loading as DAC (OuteTTS) audio model...")
                 model, tokenizer = FastModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    load_in_4bit = False,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    load_in_4bit=False,
+                    trust_remote_code=trust_remote_code,
+                    token=token,
                 )
 
             elif self.is_vision:
                 logger.info("Loading as vision model...")
                 model, processor = FastVisionModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None,
-                    load_in_4bit = load_in_4bit,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    dtype=None,
+                    load_in_4bit=load_in_4bit,
+                    trust_remote_code=trust_remote_code,
+                    token=token,
                 )
                 tokenizer = processor  # vision: processor acts as tokenizer
 
             else:
                 logger.info("Loading as text model...")
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None,
-                    load_in_4bit = load_in_4bit,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
+                    model_name=checkpoint_path,
+                    max_seq_length=max_seq_length,
+                    dtype=None,
+                    load_in_4bit=load_in_4bit,
+                    trust_remote_code=trust_remote_code,
+                    token=token,
                 )
 
             if _IS_MLX:
@@ -305,7 +308,7 @@ class ExportBackend:
             metadata = {"base_model": base_model}
             metadata_path = os.path.join(save_directory, "export_metadata.json")
             with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent = 2)
+                json.dump(metadata, f, indent=2)
             logger.info(f"Wrote export metadata to {metadata_path}")
         except Exception as e:
             logger.warning(f"Could not write export metadata: {e}")
@@ -364,11 +367,11 @@ class ExportBackend:
                     self.current_model.save_pretrained_merged(
                         save_directory,
                         self.current_tokenizer,
-                        save_method = mlx_save_method,
+                        save_method=mlx_save_method,
                     )
                 else:
                     self.current_model.save_pretrained_merged(
-                        save_directory, self.current_tokenizer, save_method = save_method
+                        save_directory, self.current_tokenizer, save_method=save_method
                     )
 
                 self._write_export_metadata(save_directory)
@@ -390,32 +393,32 @@ class ExportBackend:
                         self.current_model.push_to_hub_merged(
                             repo_id,
                             self.current_tokenizer,
-                            save_directory = save_directory,
-                            token = hf_token,
-                            private = private,
+                            save_directory=save_directory,
+                            token=hf_token,
+                            private=private,
                         )
                     else:
                         with tempfile.TemporaryDirectory() as tmp_dir:
                             self.current_model.save_pretrained_merged(
                                 tmp_dir,
                                 self.current_tokenizer,
-                                save_method = mlx_save_method,
+                                save_method=mlx_save_method,
                             )
                             self.current_model.push_to_hub_merged(
                                 repo_id,
                                 self.current_tokenizer,
-                                save_directory = tmp_dir,
-                                token = hf_token,
-                                private = private,
+                                save_directory=tmp_dir,
+                                token=hf_token,
+                                private=private,
                             )
                 else:
                     hub_save_method = save_method if save_method is not None else "merged_16bit"
                     self.current_model.push_to_hub_merged(
                         repo_id,
                         self.current_tokenizer,
-                        save_method = hub_save_method,
-                        token = hf_token,
-                        private = private,
+                        save_method=hub_save_method,
+                        token=hf_token,
+                        private=private,
                     )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
@@ -466,7 +469,7 @@ class ExportBackend:
                     self.current_model.save_pretrained_merged(
                         save_directory,
                         self.current_tokenizer,
-                        save_method = "merged_16bit",
+                        save_method="merged_16bit",
                     )
                 else:
                     self.current_model.save_pretrained(save_directory)
@@ -492,23 +495,23 @@ class ExportBackend:
                         self.current_model.push_to_hub_merged(
                             repo_id,
                             self.current_tokenizer,
-                            save_directory = save_directory,
-                            token = hf_token,
-                            private = private,
+                            save_directory=save_directory,
+                            token=hf_token,
+                            private=private,
                         )
                     else:
                         with tempfile.TemporaryDirectory() as tmp_dir:
                             self.current_model.save_pretrained_merged(
                                 tmp_dir,
                                 self.current_tokenizer,
-                                save_method = "merged_16bit",
+                                save_method="merged_16bit",
                             )
                             self.current_model.push_to_hub_merged(
                                 repo_id,
                                 self.current_tokenizer,
-                                save_directory = tmp_dir,
-                                token = hf_token,
-                                private = private,
+                                save_directory=tmp_dir,
+                                token=hf_token,
+                                private=private,
                             )
                 else:
                     # Base model name from request or model config
@@ -516,30 +519,30 @@ class ExportBackend:
                         base_model_id or self.current_model.config._name_or_path or "unknown"
                     )
 
-                    hf_api = HfApi(token = hf_token)
+                    hf_api = HfApi(token=hf_token)
                     repo_id = PushToHubMixin._create_repo(
                         PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
+                        repo_id=repo_id,
+                        private=private,
+                        token=hf_token,
                     )
                     username = repo_id.split("/")[0]
 
                     content = MODEL_CARD.format(
-                        username = username,
-                        base_model = base_model,
-                        model_type = self.current_model.config.model_type,
-                        method = "",
-                        extra = "unsloth",
+                        username=username,
+                        base_model=base_model,
+                        model_type=self.current_model.config.model_type,
+                        method="",
+                        extra="unsloth",
                     )
                     card = ModelCard(content)
-                    card.push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                    card.push_to_hub(repo_id, token=hf_token, commit_message="Unsloth Model Card")
 
                     if save_directory:
                         hf_api.upload_folder(
-                            folder_path = save_directory,
-                            repo_id = repo_id,
-                            repo_type = "model",
+                            folder_path=save_directory,
+                            repo_id=repo_id,
+                            repo_type="model",
                         )
                         logger.info(f"Model pushed successfully to {repo_id}")
                     else:
@@ -596,6 +599,7 @@ class ExportBackend:
                     LLAMA_CPP_DEFAULT_DIR,
                     _resolve_local_convert_script,  # noqa: F401
                 )
+
                 os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
             except ImportError:
                 if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
@@ -634,7 +638,7 @@ class ExportBackend:
                 self.current_model.save_pretrained_gguf(
                     _model_tmp,
                     self.current_tokenizer,
-                    quantization_method = quant_method,
+                    quantization_method=quant_method,
                 )
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
@@ -654,7 +658,7 @@ class ExportBackend:
                         dest = os.path.join(abs_save_dir, src.name)
                         shutil.move(str(src), dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
-                    shutil.rmtree(str(sub), ignore_errors = True)
+                    shutil.rmtree(str(sub), ignore_errors=True)
                     logger.info(f"Cleaned up subdirectory: {sub.name}")
 
                 # For non-PEFT models, save_pretrained_gguf leaves a *_gguf dir at
@@ -672,7 +676,7 @@ class ExportBackend:
                         if modelfile.is_file():
                             shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
-                        shutil.rmtree(str(gguf_dir), ignore_errors = True)
+                        shutil.rmtree(str(gguf_dir), ignore_errors=True)
                         logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
 
                 # Write export metadata so the Chat page can identify the base model
@@ -699,8 +703,8 @@ class ExportBackend:
                 self.current_model.push_to_hub_gguf(
                     repo_id,
                     self.current_tokenizer,
-                    quantization_method = quant_method,
-                    token = hf_token,
+                    quantization_method=quant_method,
+                    token=hf_token,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
@@ -712,7 +716,7 @@ class ExportBackend:
 
         except Exception as e:
             if model_tmp_to_cleanup:
-                shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
+                shutil.rmtree(model_tmp_to_cleanup, ignore_errors=True)
             logger.error(f"Error exporting GGUF model: {e}")
             import traceback
 
@@ -770,16 +774,16 @@ class ExportBackend:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         self.current_model.save_lora_adapters(tmp_dir)
                         self.current_tokenizer.save_pretrained(tmp_dir)
-                        hf_api = HfApi(token = hf_token)
-                        hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        hf_api = HfApi(token=hf_token)
+                        hf_api.create_repo(repo_id, private=private, exist_ok=True)
                         hf_api.upload_folder(
-                            folder_path = tmp_dir,
-                            repo_id = repo_id,
-                            repo_type = "model",
+                            folder_path=tmp_dir,
+                            repo_id=repo_id,
+                            repo_type="model",
                         )
                 else:
-                    self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
-                    self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
+                    self.current_model.push_to_hub(repo_id, token=hf_token, private=private)
+                    self.current_tokenizer.push_to_hub(repo_id, token=hf_token, private=private)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
             return True, "LoRA adapter exported successfully", output_path

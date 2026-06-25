@@ -54,6 +54,7 @@ def _lifetime_kwargs() -> dict:
     best-effort so this module still loads standalone (storage_roots-style)."""
     try:
         from utils.process_lifetime import child_popen_kwargs
+
         return child_popen_kwargs()
     except Exception:
         return {}
@@ -112,14 +113,14 @@ def _download(url: str, dest: Path) -> bool:
 
     tmp_path: Optional[Path] = None
     try:
-        dest.parent.mkdir(parents = True, exist_ok = True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-            prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
+            prefix=dest.name + ".tmp-", dir=dest.parent, delete=False
         ) as handle:
             tmp_path = Path(handle.name)
             # GitHub's CDN 403s the default Python-urllib User-Agent.
-            req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-            with urllib.request.urlopen(req, timeout = _DOWNLOAD_TIMEOUT) as response:
+            req = urllib.request.Request(url, headers={"User-Agent": "unsloth-studio"})
+            with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as response:
                 shutil.copyfileobj(response, handle)
         if tmp_path.stat().st_size == 0:
             raise RuntimeError("empty download")
@@ -128,7 +129,7 @@ def _download(url: str, dest: Path) -> bool:
     except Exception:
         if tmp_path is not None:
             try:
-                tmp_path.unlink(missing_ok = True)
+                tmp_path.unlink(missing_ok=True)
             except Exception:
                 pass
         return False
@@ -141,6 +142,7 @@ def _extract_tgz_member(tgz_path: Path, dest: Path) -> bool:
     outside dest. Best-effort -> bool.
     """
     import tarfile
+
     try:
         with tarfile.open(tgz_path, "r:gz") as tar:
             member = None
@@ -175,13 +177,13 @@ def ensure_cloudflared() -> Optional[str]:
     name, is_tgz = asset
     url = f"{_RELEASE_BASE}/{name}"
     try:
-        cached.parent.mkdir(parents = True, exist_ok = True)
+        cached.parent.mkdir(parents=True, exist_ok=True)
         if is_tgz:
             tgz = cached.with_suffix(".tgz")
             if not _download(url, tgz) or not _extract_tgz_member(tgz, cached):
-                tgz.unlink(missing_ok = True)
+                tgz.unlink(missing_ok=True)
                 return None
-            tgz.unlink(missing_ok = True)
+            tgz.unlink(missing_ok=True)
         elif not _download(url, cached):
             return None
         if sys.platform != "win32":
@@ -236,18 +238,18 @@ class CloudflareTunnel:
                 return
             proc = subprocess.Popen(
                 cmd,
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                stdin = subprocess.DEVNULL,
-                text = True,
-                errors = "replace",
-                bufsize = 1,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                errors="replace",
+                bufsize=1,
                 **_windows_hidden_kwargs(),
                 **_lifetime_kwargs(),
             )
             self._proc = proc
         threading.Thread(
-            target = self._reader, args = (proc,), name = "cloudflared-reader", daemon = True
+            target=self._reader, args=(proc,), name="cloudflared-reader", daemon=True
         ).start()
 
     def _reader(self, proc: subprocess.Popen) -> None:
@@ -298,11 +300,11 @@ class CloudflareTunnel:
             if proc.poll() is None:
                 proc.terminate()
                 try:
-                    proc.wait(timeout = 5)
+                    proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     try:
-                        proc.wait(timeout = 5)
+                        proc.wait(timeout=5)
                     except Exception:
                         pass
         except Exception:
@@ -345,7 +347,7 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
             if _shutdown_requested:
                 _active_tunnel = None
                 return None
-            tunnel = CloudflareTunnel(port, binary, protocol = protocol)
+            tunnel = CloudflareTunnel(port, binary, protocol=protocol)
             prior, _active_tunnel = _active_tunnel, tunnel
         if prior is not None:
             prior.stop()

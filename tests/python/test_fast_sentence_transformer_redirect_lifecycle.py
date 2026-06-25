@@ -17,7 +17,7 @@ import pytest
 def _stub_module(name: str) -> types.ModuleType:
     # __spec__ set so find_spec(name) doesn't raise if a later test imports the real package.
     mod = types.ModuleType(name)
-    mod.__spec__ = importlib.util.spec_from_loader(name, loader = None)
+    mod.__spec__ = importlib.util.spec_from_loader(name, loader=None)
     return mod
 
 
@@ -28,7 +28,7 @@ _STUB_KEYS = (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _restore_sys_modules():
     """Snapshot the stubbed module entries and restore them after each test so a
     downstream real `import transformers` doesn't pick up our stub."""
@@ -57,6 +57,7 @@ class _RecordingTransformerOk:
 
     def __init__(self, model_name, **kwargs):
         from transformers import AutoModel, AutoProcessor, AutoTokenizer
+
         type(self).last_calls = {
             "model": AutoModel.from_pretrained(model_name),
             "processor": AutoProcessor.from_pretrained(model_name),
@@ -67,6 +68,7 @@ class _RecordingTransformerOk:
 class _RaisingTransformer:
     def __init__(self, *a, **kw):
         from transformers import AutoModel
+
         AutoModel.from_pretrained(a[0] if a else kw.get("model_name_or_path"))
         raise RuntimeError("simulated init failure")
 
@@ -175,6 +177,7 @@ def test_redirect_passes_through_for_other_model_names():
 
         def __init__(self, model_name, **kw):
             from transformers import AutoModel
+
             type(self).captured = AutoModel.from_pretrained("some-other/aux-model")
 
     driver, *_ = _build_driver(_OtherNameTransformer)
@@ -194,6 +197,7 @@ def test_is_requested_model_name_handles_pathlib_path(tmp_path):
 
         def __init__(self, model_name, **kw):
             from transformers import AutoModel
+
             type(self).last_calls = AutoModel.from_pretrained(pathlib.Path(model_name))
 
     driver, *_ = _build_driver(_PathTransformer)
@@ -211,6 +215,7 @@ def test_is_requested_model_name_trailing_slash_local_path(tmp_path):
 
         def __init__(self, model_name, **kw):
             from transformers import AutoModel
+
             type(self).last_calls = AutoModel.from_pretrained(str(target) + "/")
 
     driver, *_ = _build_driver(_SlashTransformer)
@@ -225,7 +230,8 @@ def test_is_requested_model_name_returns_false_when_no_identifier():
     class _NoNameTransformer:
         def __init__(self, model_name, **kw):
             from transformers import AutoModel
-            captured["args"] = AutoModel.from_pretrained(some_other_kwarg = "x")
+
+            captured["args"] = AutoModel.from_pretrained(some_other_kwarg="x")
 
     driver, *_ = _build_driver(_NoNameTransformer)
     driver("primary/model-id", object(), object())
