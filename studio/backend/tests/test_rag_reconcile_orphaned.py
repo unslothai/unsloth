@@ -26,27 +26,34 @@ def _embed(text):
     return [x / n for x in v]
 
 
-def _chunk(text, index=0):
+def _chunk(text, index = 0):
     return Chunk(
-        text=text,
-        token_count=len(text.split()),
-        page_number=None,
-        source_page_index=0,
-        chunk_index=index,
-        page_char_start=0,
-        page_char_end=len(text),
+        text = text,
+        token_count = len(text.split()),
+        page_number = None,
+        source_page_index = 0,
+        chunk_index = index,
+        page_char_start = 0,
+        page_char_end = len(text),
     )
 
 
 def _add_doc(conn, scope, doc_id, status, texts):
     store.create_document(
-        conn, scope=scope, filename=f"{doc_id}.txt", sha256=doc_id, document_id=doc_id
+        conn, scope = scope, filename = f"{doc_id}.txt", sha256 = doc_id, document_id = doc_id
     )
-    store.add_chunks(conn, scope, doc_id, [_chunk(t, i) for i, t in enumerate(texts)], [_embed(t) for t in texts])
-    store.set_document_status(conn, doc_id, status, num_chunks=len(texts))
+    store.add_chunks(
+        conn, scope, doc_id, [_chunk(t, i) for i, t in enumerate(texts)], [_embed(t) for t in texts]
+    )
+    store.set_document_status(conn, doc_id, status, num_chunks = len(texts))
 
 
-def _orphan_job(conn, doc_id, scope, status="running"):
+def _orphan_job(
+    conn,
+    doc_id,
+    scope,
+    status = "running",
+):
     conn.execute(
         "INSERT INTO ingestion_jobs(id, document_id, scope, status, stage, progress, created_at) "
         "VALUES(?,?,?,?,?,?,datetime('now'))",
@@ -56,9 +63,7 @@ def _orphan_job(conn, doc_id, scope, status="running"):
 
 
 def _chunk_count(conn, doc_id):
-    return conn.execute(
-        "SELECT COUNT(*) FROM chunks WHERE document_id=?", (doc_id,)
-    ).fetchone()[0]
+    return conn.execute("SELECT COUNT(*) FROM chunks WHERE document_id=?", (doc_id,)).fetchone()[0]
 
 
 def test_completed_doc_keeps_chunks_when_its_job_is_orphaned(rag_conn):
