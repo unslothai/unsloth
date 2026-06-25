@@ -19,6 +19,7 @@ import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
+import { fetchDeviceType } from "@/config/env";
 import { useRouterState } from "@tanstack/react-router";
 import { ThemeProvider } from "next-themes";
 import {
@@ -326,6 +327,11 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
     return () => { disposed = true; };
   }, [status, desktopAuthRetry]);
+
+  useEffect(() => {
+    if (!isTauri || status !== "running" || !desktopAuthReady) return;
+    void fetchDeviceType({ force: true }).catch(() => undefined);
+  }, [status, desktopAuthReady]);
 
   if (!isTauri) {
     return (
