@@ -2,7 +2,7 @@
 
 It must delegate to unsloth_zoo's shared fix_pad_token when present (single
 source of truth), and fall back to a no-op against an older unsloth_zoo. Static
-+ CPU-only: the two helpers are exec'd in isolation so the test never imports
++ CPU-only: _fix_pad_token is exec'd in isolation so the test never imports
 torch / transformers / unsloth.
 """
 
@@ -15,7 +15,6 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 TOK_PATH = os.path.join(REPO_ROOT, "unsloth", "tokenizer_utils.py")
 
 WANTED = {
-    "_fix_vision_pad_token",
     "_fix_pad_token",
 }
 

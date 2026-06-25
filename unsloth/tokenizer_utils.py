@@ -626,31 +626,22 @@ def _load_correct_tokenizer(
         return fast_tokenizer
 
 
-def _fix_vision_pad_token(tokenizer):
-    """No-op fallback: a pad-named token (e.g. <|vision_pad|>) is a valid pad, kept as-is.
-
-    Retained only for an older unsloth_zoo that lacks the shared pad_token module;
-    the active path heals missing / eos-collision / out-of-range pads via
-    unsloth_zoo.pad_token.fix_pad_token.
-    """
-    return tokenizer
-
-
 def _fix_pad_token(tokenizer):
     """Heal a bad/missing pad_token before chat-template repair.
 
-    Delegates to unsloth_zoo's shared fix_pad_token (single source of truth) when
-    available, falling back to a no-op against an older unsloth_zoo. allow_add=False
-    keeps this side-effect free: there is no model here to resize embeddings, so a
-    brand new pad token is never added - the later model-aware patch_tokenizer call
-    finishes the job and is idempotent.
+    Delegates to unsloth_zoo's shared fix_pad_token (single source of truth); against
+    an older unsloth_zoo without it, this is a no-op (a pad-named token like
+    <|vision_pad|> is already a valid pad). allow_add=False keeps this side-effect
+    free: there is no model here to resize embeddings, so a brand new pad token is
+    never added - the later model-aware patch_tokenizer call finishes the job and is
+    idempotent.
     """
     if tokenizer is None:
         return tokenizer
     try:
         from unsloth_zoo.pad_token import fix_pad_token
     except Exception:
-        return _fix_vision_pad_token(tokenizer)
+        return tokenizer
     fix_pad_token(tokenizer, allow_add = False)
     return tokenizer
 
