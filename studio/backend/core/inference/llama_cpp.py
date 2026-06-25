@@ -2738,7 +2738,7 @@ class LlamaCppBackend:
 
         Returns 0 if metadata is insufficient.
         """
-        cp_count = ctx_checkpoints if ctx_checkpoints is not None else 0
+        ctx_checkpoints = ctx_checkpoints if ctx_checkpoints is not None else 0
 
         if not self._can_estimate_kv() or n_ctx <= 0:
             return 0
