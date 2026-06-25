@@ -10,12 +10,19 @@
 const DEFAULT_STUDIO_PORT = "8888";
 const DEFAULT_AGENT = "claude";
 
+// The bare `unsloth start` only auto-discovers 127.0.0.1:8888 (localhost/::1 alias it).
+function isDefaultLocalHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+// Match the CLI auto-mint rule (is_loopback_url): localhost, ::1, and all of 127.0.0.0/8.
 function isLoopbackHost(host: string): boolean {
+  if (isDefaultLocalHost(host)) return true;
+  const octets = host.split(".");
   return (
-    host === "127.0.0.1" ||
-    host === "localhost" ||
-    host === "::1" ||
-    host === "[::1]"
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) <= 255)
   );
 }
 
@@ -39,7 +46,7 @@ export function buildAgentCommand(
   const host = url.hostname.toLowerCase();
   const loopback = isLoopbackHost(host);
   // Default local server (127.0.0.1/localhost:8888): bare command auto-discovers it.
-  if (loopback && url.port === DEFAULT_STUDIO_PORT) return bare;
+  if (isDefaultLocalHost(host) && url.port === DEFAULT_STUDIO_PORT) return bare;
 
   // Non-default server: set the URL; non-loopback also needs an explicit key.
   let cmd = bare;
