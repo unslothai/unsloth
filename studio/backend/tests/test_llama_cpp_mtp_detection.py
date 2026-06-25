@@ -345,28 +345,6 @@ def test_extra_args_detect_thread_overrides(extra_args):
 from unittest.mock import patch, MagicMock
 
 
-from unittest.mock import patch, MagicMock
-
-
-from unittest.mock import patch, MagicMock
-
-
-from unittest.mock import patch, MagicMock
-from pathlib import Path
-
-
-from unittest.mock import patch, MagicMock
-from pathlib import Path
-
-
-from unittest.mock import patch, MagicMock
-from pathlib import Path
-
-
-from unittest.mock import patch, MagicMock
-from pathlib import Path
-
-
 def test_load_model_sets_threads_once():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert src.count('cmd.extend(["--threads", str(') == 1
