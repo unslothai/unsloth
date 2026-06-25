@@ -44,6 +44,7 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     snapshot_device_memory,
 )
+from .diffusion_speed import SPEED_OFF, apply_speed_optims
 
 logger = get_logger(__name__)
 
@@ -64,6 +65,9 @@ class _LoadState:
     offload_policy: str = OFFLOAD_NONE
     vae_tiling: bool = False
     memory_mode: str = "auto"
+    # The opt-in speed profile (Phase 3).
+    speed_mode: str = SPEED_OFF
+    speed_optims: tuple = ()
 
 
 @dataclass
@@ -248,6 +252,7 @@ class DiffusionBackend:
         hf_token: Optional[str] = None,
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
+        speed_mode: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         fam = self.validate_load_request(
@@ -277,6 +282,7 @@ class DiffusionBackend:
                 hf_token = hf_token,
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
+                speed_mode = speed_mode,
                 _load_token = token,
             ),
             daemon = True,
@@ -396,6 +402,7 @@ class DiffusionBackend:
         hf_token: Optional[str] = None,
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
+        speed_mode: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -449,6 +456,13 @@ class DiffusionBackend:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
                 pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
 
+                # Opt-in speed optims run BEFORE placement (channels_last / compile
+                # must precede CPU offload). Off by default -> bit-identical output.
+                speed_applied = apply_speed_optims(
+                    pipe, target, is_gguf = bool(gguf_filename), family = fam,
+                    speed_mode = speed_mode or SPEED_OFF, logger = logger,
+                )
+
                 # Decide placement from MEASURED free device memory vs the model's
                 # estimated resident size (transformer GGUF dequantised + the
                 # companion text-encoder / VAE already cached for `base`), then
@@ -476,6 +490,8 @@ class DiffusionBackend:
                     offload_policy = effective_policy,
                     vae_tiling = effective_tiling,
                     memory_mode = plan.requested_mode,
+                    speed_mode = (speed_mode or SPEED_OFF),
+                    speed_optims = tuple(k for k, v in speed_applied.items() if v),
                 )
 
         logger.info(
@@ -683,6 +699,8 @@ class DiffusionBackend:
                 "offload_policy": None,
                 "vae_tiling": False,
                 "memory_mode": None,
+                "speed_mode": None,
+                "speed_optims": [],
             }
         return {
             "loaded": True,
@@ -695,6 +713,8 @@ class DiffusionBackend:
             "offload_policy": state.offload_policy,
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,
+            "speed_mode": state.speed_mode,
+            "speed_optims": list(state.speed_optims),
         }
 
 

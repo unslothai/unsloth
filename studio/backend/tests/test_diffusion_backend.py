@@ -840,6 +840,19 @@ def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(fake_runtime, t
     assert status["offload_policy"] == "model" and status["cpu_offload"] is True
 
 
+def test_load_speed_mode_threads_and_defaults_off(fake_runtime, tmp_path):
+    # No speed_mode -> off, no optimisations engaged (the bit-identical default).
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    assert status["speed_mode"] == "off" and status["speed_optims"] == []
+    # An explicit speed_mode threads through to status (engaged optims are GPU-verified).
+    status2 = backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", speed_mode = "max"
+    )
+    assert status2["speed_mode"] == "max"
+
+
 def test_load_fast_mode_stays_resident_on_cuda(fake_runtime, tmp_path, monkeypatch):
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()

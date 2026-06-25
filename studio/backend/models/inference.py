@@ -1708,6 +1708,12 @@ class DiffusionLoadRequest(BaseModel):
                       "cut), low_vram (offload every component, lowest VRAM, slower). "
                       "Overrides cpu_offload when set.",
     )
+    speed_mode: Optional[Literal["off", "default", "max"]] = Field(
+        None,
+        description = "Opt-in speed optims (default off -> bit-identical output): "
+                      "default (channels_last + regional torch.compile where eligible), "
+                      "max (also TF32 + fused QKV).",
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -1804,7 +1810,11 @@ class DiffusionStatusResponse(BaseModel):
     dtype: Optional[str] = Field(None, description = "Compute dtype")
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
-        None, description = "Resolved offload policy: none | model | sequential"
+        None, description = "Resolved offload policy: none | group | model | sequential"
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
+    speed_mode: Optional[str] = Field(None, description = "Requested speed mode")
+    speed_optims: list[str] = Field(
+        default_factory = list, description = "Speed optimisations actually engaged"
+    )
