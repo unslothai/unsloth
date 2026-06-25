@@ -58,6 +58,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -68,10 +69,13 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
 import {
+  ArrowDown01Icon,
   ArrowTurnBackwardIcon,
   Edit03Icon,
+  InformationCircleIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDown, ExternalLink } from "lucide-react";
@@ -106,10 +110,13 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import {
+  type DocExtractSettings,
   isPendingGguf,
   pendingSelectionMatches,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { getCachedDocumentSupport } from "./api/chat-api";
+import type { DocumentSupport } from "./types";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
@@ -1695,6 +1702,8 @@ export function ChatSettingsPanel({
             <RetrievalSettingsSection />
           </CollapsibleSection>
         ) : null}
+
+        {!isExternalModel ? <DocumentExtractionSection /> : null}
       </div>
       </div>
       </div>
@@ -1874,6 +1883,542 @@ function AutoHealToolCallsToggle() {
         onCheckedChange={setAutoHealToolCalls}
       />
     </div>
+  );
+}
+
+type DocExtractMode = "off" | "text" | "images" | "scanned";
+
+const DOC_EXTRACT_MODES: ReadonlyArray<{
+  value: DocExtractMode;
+  label: string;
+}> = [
+  { value: "off", label: "Off" },
+  { value: "text", label: "Fast text" },
+  { value: "images", label: "Auto" },
+  { value: "scanned", label: "Scanned" },
+];
+
+const DOC_EXTRACT_SLIDER_MAXES = {
+  maxFigures: 1000,
+  maxVisualPayloads: 10,
+  tokenBudget: 32000,
+  extractConcurrency: 8,
+} as const;
+
+function normalizeNonNegativeInteger(value: number): number {
+  return Math.max(0, Math.round(value));
+}
+
+function parseNonNegativeIntegerInputValue(
+  raw: string,
+  fallback: number,
+): number {
+  if (raw.trim() === "") return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isNaN(parsed) ? fallback : normalizeNonNegativeInteger(parsed);
+}
+
+function getDocExtractModeHelp(mode: DocExtractMode, hasVlm: boolean): string {
+  switch (mode) {
+    case "off":
+      return "Extraction disabled. Uploaded documents are skipped.";
+    case "text":
+      return "Extract text only. Best for born-digital PDFs and Office files.";
+    case "images":
+      return hasVlm
+        ? "Extract text plus figures as image inputs for the vision model."
+        : "Text with figure/page citations. Load a vision model to include images.";
+    case "scanned":
+      return hasVlm
+        ? "Render pages as images for OCR. Use for scanned or image-only PDFs."
+        : "Renders pages as images. Load a vision model for OCR.";
+  }
+}
+
+function getDocExtractModePreset(
+  mode: DocExtractMode,
+  hasVlm: boolean,
+): Partial<DocExtractSettings> {
+  switch (mode) {
+    case "off":
+      return { enabled: false };
+    case "text":
+      return {
+        enabled: true,
+        useVlmOcr: false,
+        describeImages: false,
+        maxFigures: 0,
+        maxVisualPayloads: 0,
+      };
+    case "images":
+      return {
+        enabled: true,
+        useVlmOcr: false,
+        describeImages: hasVlm,
+        maxFigures: 20,
+        maxVisualPayloads: hasVlm ? 3 : 0,
+      };
+    case "scanned":
+      return {
+        enabled: true,
+        useVlmOcr: true,
+        describeImages: hasVlm,
+        maxFigures: 20,
+        maxVisualPayloads: hasVlm ? 3 : 0,
+      };
+  }
+}
+
+function deriveDocExtractMode(docExtract: {
+  enabled: boolean;
+  useVlmOcr: boolean;
+  describeImages: boolean;
+  maxFigures: number;
+  maxVisualPayloads: number;
+}): DocExtractMode {
+  if (!docExtract.enabled) return "off";
+  if (docExtract.useVlmOcr) return "scanned";
+  if (
+    docExtract.maxFigures > 0 ||
+    docExtract.describeImages ||
+    docExtract.maxVisualPayloads > 0
+  ) {
+    return "images";
+  }
+  return "text";
+}
+
+function DocSettingInfoTooltip({ content }: { content: string }) {
+  return (
+    <Tooltip>
+      <TooltipPrimitive.Trigger asChild={true}>
+        <button
+          type="button"
+          aria-label="More info"
+          className="inline-flex size-3.5 items-center justify-center rounded-sm text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            className="size-3.5"
+            strokeWidth={2}
+          />
+        </button>
+      </TooltipPrimitive.Trigger>
+      <TooltipContent
+        side="top"
+        sideOffset={6}
+        className="max-w-[240px] text-[11px] leading-relaxed"
+      >
+        {content}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function DocInlineNumberInput({
+  value,
+  onCommit,
+  disabled,
+  ariaLabel,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+  disabled?: boolean;
+  ariaLabel: string;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commitDraft = useCallback(() => {
+    const next = parseNonNegativeIntegerInputValue(draft, value);
+    setDraft(String(next));
+    onCommit(next);
+  }, [draft, onCommit, value]);
+
+  return (
+    <Input
+      type="number"
+      min={0}
+      step={1}
+      inputMode="numeric"
+      value={draft}
+      onFocus={(event) => event.currentTarget.select()}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onBlur={commitDraft}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+      }}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      className="h-5 w-[3.75rem] rounded border border-border/50 bg-transparent px-1.5 py-0 text-right !text-xs leading-none tabular-nums text-muted-foreground shadow-none transition-colors [appearance:textfield] hover:border-border focus-visible:border-primary focus-visible:ring-0 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50 md:!text-xs [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+    />
+  );
+}
+
+function DocumentNumberSliderRow({
+  label,
+  tooltip,
+  value,
+  sliderMax,
+  sliderMin = 0,
+  step = 1,
+  disabled,
+  valueAriaLabel,
+  onValueChange,
+}: {
+  label: string;
+  tooltip: string;
+  value: number;
+  sliderMax: number;
+  sliderMin?: number;
+  step?: number;
+  disabled?: boolean;
+  valueAriaLabel: string;
+  onValueChange: (value: number) => void;
+}) {
+  const effectiveMax = Math.max(1, sliderMax);
+  const effectiveMin = Math.max(0, Math.min(sliderMin, effectiveMax));
+  const sliderValue = Math.min(Math.max(value, effectiveMin), effectiveMax);
+
+  return (
+    <div className="space-y-2 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs font-medium">
+          {label}
+          <DocSettingInfoTooltip content={tooltip} />
+        </span>
+        <DocInlineNumberInput
+          value={value}
+          onCommit={onValueChange}
+          disabled={disabled}
+          ariaLabel={valueAriaLabel}
+        />
+      </div>
+      <Slider
+        min={effectiveMin}
+        max={effectiveMax}
+        step={step}
+        value={[sliderValue]}
+        onValueChange={([next]) => onValueChange(next ?? value)}
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
+function DocumentExtractionSection() {
+  const docExtract = useChatRuntimeStore((s) => s.docExtract);
+  const setDocExtract = useChatRuntimeStore((s) => s.setDocExtract);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const reducedMotion = useReducedMotion();
+
+  const [support, setSupport] = useState<DocumentSupport | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const probeSupport = useCallback(() => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setProbing(true);
+    void getCachedDocumentSupport(ctrl.signal)
+      .then((result) => {
+        if (!ctrl.signal.aborted) setSupport(result);
+      })
+      .catch(() => {
+        if (!ctrl.signal.aborted) setSupport(null);
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setProbing(false);
+      });
+    return ctrl;
+  }, []);
+
+  const runProbe = useCallback(() => {
+    probeSupport();
+  }, [probeSupport]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    const ctrl = probeSupport();
+    return () => ctrl.abort();
+  }, [checkpoint, probeSupport]);
+
+  const extractorReady = support?.extraction_available ?? false;
+  const unavailableFormatCount = Object.keys(
+    support?.unavailable_formats ?? {},
+  ).length;
+  const extractorLimited = extractorReady && unavailableFormatCount > 0;
+  const backendExtractConcurrencyLimit = Math.max(
+    1,
+    Math.min(
+      DOC_EXTRACT_SLIDER_MAXES.extractConcurrency,
+      support?.max_extract_concurrency ??
+        DOC_EXTRACT_SLIDER_MAXES.extractConcurrency,
+    ),
+  );
+  const vlm = support?.vlm;
+  const hasVlm = vlm?.is_vlm ?? false;
+  const canScan = extractorReady && hasVlm;
+  const activeMode = deriveDocExtractMode(docExtract);
+  const canCaption = hasVlm && docExtract.maxFigures > 0;
+
+  const setVisualPayloadLimit = (value: number): void => {
+    setDocExtract({ maxVisualPayloads: normalizeNonNegativeInteger(value) });
+  };
+  const setFigureReferenceLimit = (value: number): void => {
+    setDocExtract({ maxFigures: normalizeNonNegativeInteger(value) });
+  };
+  const setTokenBudget = (value: number): void => {
+    setDocExtract({ tokenBudget: normalizeNonNegativeInteger(value) });
+  };
+  const setExtractConcurrency = (value: number): void => {
+    const next = Math.max(
+      1,
+      Math.min(backendExtractConcurrencyLimit, normalizeNonNegativeInteger(value)),
+    );
+    setDocExtract({ extractConcurrency: next });
+  };
+
+  useEffect(() => {
+    if (docExtract.extractConcurrency > backendExtractConcurrencyLimit) {
+      setDocExtract({ extractConcurrency: backendExtractConcurrencyLimit });
+    }
+  }, [
+    backendExtractConcurrencyLimit,
+    docExtract.extractConcurrency,
+    setDocExtract,
+  ]);
+
+  function applyMode(mode: DocExtractMode) {
+    setDocExtract(getDocExtractModePreset(mode, hasVlm));
+  }
+
+  const statusLabel = probing
+    ? "Checking"
+    : extractorLimited
+      ? "Limited"
+      : extractorReady
+        ? "Ready"
+        : "Unavailable";
+  const vlmLabel = probing
+    ? "Checking vision model"
+    : hasVlm
+      ? vlm?.model_name || "Vision model"
+      : "No vision model";
+  const modeHelp = getDocExtractModeHelp(activeMode, hasVlm);
+
+  return (
+    <CollapsibleSection label="Document extraction">
+      <div className="flex flex-col gap-3 py-1">
+        {!extractorReady && !probing && (
+          <Alert className="border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
+            <AlertTitle className="text-[11px] font-medium">
+              Document extraction unavailable
+            </AlertTitle>
+            <AlertDescription className="text-[11px] text-amber-800 dark:text-amber-200">
+              Re-run Studio setup to install the server-side parser
+              dependencies.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Compact status pill */}
+        <div className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-2.5 py-1.5 text-[11px]">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                extractorReady ? "bg-emerald-500" : "bg-amber-500",
+              )}
+              aria-hidden="true"
+            />
+            <span className="font-medium">{statusLabel}</span>
+            <span className="text-muted-foreground">·</span>
+            <span className="truncate text-muted-foreground">{vlmLabel}</span>
+          </div>
+          {!extractorReady && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-5 shrink-0 px-1.5 text-[11px]"
+              onClick={runProbe}
+              disabled={probing}
+              aria-label="Retry capability probe"
+            >
+              {probing ? <Spinner className="size-3" /> : "Retry"}
+            </Button>
+          )}
+        </div>
+
+        {/* Mode segmented control */}
+        <div>
+          <div className="mb-1.5 text-xs font-medium">Mode</div>
+          <div
+            className="grid grid-cols-4 items-center rounded-md border border-border bg-muted/30 p-0.5"
+            role="radiogroup"
+            aria-label="Document extraction mode"
+          >
+            {DOC_EXTRACT_MODES.map((opt) => {
+              const active = activeMode === opt.value;
+              const disabled =
+                (!extractorReady && opt.value !== "off") ||
+                (opt.value === "scanned" && !canScan);
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  disabled={disabled}
+                  onClick={() => applyMode(opt.value)}
+                  className={cn(
+                    "relative flex h-7 items-center justify-center rounded px-1 text-[11px] font-medium transition-colors",
+                    active
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                    disabled && "cursor-not-allowed opacity-50",
+                  )}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="doc-extract-mode-pill"
+                      className="absolute inset-0 rounded bg-background shadow-border"
+                      transition={
+                        reducedMotion
+                          ? { duration: 0 }
+                          : {
+                              type: "spring",
+                              stiffness: 500,
+                              damping: 35,
+                              mass: 0.5,
+                            }
+                      }
+                    />
+                  )}
+                  <span className="relative z-10">{opt.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            {modeHelp}
+          </p>
+        </div>
+
+        {/* Advanced disclosure */}
+        {docExtract.enabled && (
+          <div className="flex flex-col">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="flex items-center gap-1 self-start rounded px-1 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+              aria-expanded={showAdvanced}
+            >
+              <motion.span
+                animate={{ rotate: showAdvanced ? 180 : 0 }}
+                transition={{ duration: 0.15 }}
+                className="inline-flex"
+              >
+                <HugeiconsIcon icon={ArrowDown01Icon} className="size-3" />
+              </motion.span>
+              Advanced
+            </button>
+            <AnimatePresence initial={false}>
+              {showAdvanced && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2, ease: "easeInOut" }}
+                  className="overflow-hidden"
+                >
+                  <div className="flex flex-col gap-4 pt-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium">
+                          Caption images
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {hasVlm
+                            ? "Describe attached figures with the vision model."
+                            : "Load a vision model to enable captioning."}
+                        </div>
+                      </div>
+                      <Switch
+                        aria-label="Caption images"
+                        checked={docExtract.describeImages && canCaption}
+                        onCheckedChange={(v) =>
+                          setDocExtract({ describeImages: !!v })
+                        }
+                        disabled={!canCaption}
+                      />
+                    </div>
+
+                    <DocumentNumberSliderRow
+                      label="Token budget"
+                      tooltip="Cap on extracted text tokens sent to the model per document. Lower values trim long PDFs; raise for more context at higher cost."
+                      value={docExtract.tokenBudget}
+                      sliderMax={DOC_EXTRACT_SLIDER_MAXES.tokenBudget}
+                      step={500}
+                      onValueChange={setTokenBudget}
+                      disabled={!extractorReady}
+                      valueAriaLabel="Document extraction token budget"
+                    />
+
+                    <DocumentNumberSliderRow
+                      label="Figure/page citations"
+                      tooltip="How many figure and page references to include in the extracted text, e.g. [Figure 3] or [Page 7]. Set to 0 to disable citations and image inputs."
+                      value={docExtract.maxFigures}
+                      sliderMax={DOC_EXTRACT_SLIDER_MAXES.maxFigures}
+                      onValueChange={setFigureReferenceLimit}
+                      disabled={!extractorReady}
+                      valueAriaLabel="Figure and page citation limit"
+                    />
+
+                    <div className="space-y-1">
+                      <DocumentNumberSliderRow
+                        label="Image inputs"
+                        tooltip="How many figure or page images to attach or caption for each document. Set to 0 to keep visual references text-only."
+                        value={docExtract.maxVisualPayloads}
+                        sliderMax={DOC_EXTRACT_SLIDER_MAXES.maxVisualPayloads}
+                        onValueChange={setVisualPayloadLimit}
+                        disabled={!extractorReady}
+                        valueAriaLabel="Image input limit"
+                      />
+                      {!hasVlm && (
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          Load a vision model to attach images.
+                        </p>
+                      )}
+                    </div>
+
+                    <DocumentNumberSliderRow
+                      label="Parallel extractions"
+                      tooltip="Maximum number of documents extracted in parallel. Extra files queue client-side and this value is capped to the backend worker limit."
+                      value={docExtract.extractConcurrency}
+                      sliderMax={backendExtractConcurrencyLimit}
+                      sliderMin={1}
+                      step={1}
+                      onValueChange={setExtractConcurrency}
+                      disabled={!extractorReady}
+                      valueAriaLabel="Parallel document extractions limit"
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+      </div>
+    </CollapsibleSection>
   );
 }
 

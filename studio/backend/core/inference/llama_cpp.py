@@ -1377,6 +1377,10 @@ class LlamaCppBackend:
         return f"http://127.0.0.1:{self._port}"
 
     @property
+    def api_key(self) -> Optional[str]:
+        return self._api_key
+
+    @property
     def _auth_headers(self) -> "Optional[dict[str, str]]":
         """Bearer header matching the --api-key direct-stream mode uses, else
         None (so unauthenticated llama-server calls don't get a spurious 401)."""
@@ -9121,3 +9125,19 @@ class LlamaCppBackend:
         return LlamaCppBackend._codec_mgr.decode(
             audio_type, device, token_ids = token_ids, text = data.get("content", "")
         )
+
+
+_llama_cpp_backend: Optional[LlamaCppBackend] = None
+
+
+def get_llama_cpp_backend() -> LlamaCppBackend:
+    """Return the process-wide GGUF llama-server backend.
+
+    Lives in core.inference so core helpers (core.chat.detect_loaded_vlm)
+    need no route imports; lazy so model-helper imports get no subprocess
+    cleanup side effects.
+    """
+    global _llama_cpp_backend
+    if _llama_cpp_backend is None:
+        _llama_cpp_backend = LlamaCppBackend()
+    return _llama_cpp_backend

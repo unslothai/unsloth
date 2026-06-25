@@ -76,6 +76,7 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
+import { DOCUMENT_TRUST_BOUNDARY } from "../utils/document-extraction";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -527,6 +528,12 @@ function collectImageParts(
   }
 
   return parts;
+}
+
+function messageHasDocumentContext(message: RunMessage): boolean {
+  return collectTextParts(message).some((text) =>
+    /<document(?:\s|>)/i.test(text),
+  );
 }
 
 function normalizeOpenAIReasoningItem(
@@ -1740,6 +1747,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         survivingMessages.push(message);
       }
 
+      const hasDocumentContext = survivingMessages.some(
+        messageHasDocumentContext,
+      );
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
@@ -1786,6 +1796,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
           : "",
         safeSystemPrompt.trim(),
+        hasDocumentContext ? DOCUMENT_TRUST_BOUNDARY : "",
       ]
         .filter(Boolean)
         .join("\n\n");

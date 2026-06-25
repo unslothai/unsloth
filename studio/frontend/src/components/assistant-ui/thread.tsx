@@ -58,6 +58,11 @@ import {
 } from "@/features/chat/api/chat-api";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import {
+  AttachmentChipRoot,
+  AttachmentChipTitle,
+  attachmentChipTokens,
+} from "@/features/chat/components/attachment-chip-primitives";
+import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
@@ -77,6 +82,7 @@ import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled"
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import { isDocumentAttachment } from "@/features/chat/types";
 import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
 import {
   PLUS_MENU_ORDER,
@@ -749,9 +755,20 @@ export const Thread: FC<{
   const { ref: viewportRef, context: autoScrollContext } =
     useIntentAwareAutoScroll();
 
-  const isComposerAttachPending = useAuiState(({ threads }) =>
+  const composerThreadMismatch = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
   );
+  const composerHasBlockingAttachment = useAuiState(({ composer }) =>
+    composer.attachments.some(
+      (attachment) =>
+        attachment.status.type === "running" ||
+        (isDocumentAttachment(attachment) &&
+          attachment.status.type === "incomplete"),
+    ),
+  );
+  const composerSendDisabled =
+    composerThreadMismatch || composerHasBlockingAttachment;
+
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
@@ -1037,7 +1054,7 @@ export const Thread: FC<{
           {!hideComposer && (
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <ThreadComposerDock
-                disabled={isComposerAttachPending}
+                disabled={composerSendDisabled}
                 threadId={threadId}
                 onHeightChange={setComposerHeight}
               />
@@ -1383,18 +1400,18 @@ const PendingAudioChip: FC = () => {
   }
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
+      <AttachmentChipRoot className="min-h-11 items-center py-1.5">
         <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-        <span className="max-w-48 truncate">{audioName}</span>
+        <AttachmentChipTitle>{audioName}</AttachmentChipTitle>
         <button
           type="button"
           onClick={clearPendingAudio}
-          className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
+          className={attachmentChipTokens.remove}
           aria-label="Remove audio"
         >
-          <XIcon className="size-3" />
+          <XIcon className="size-3" aria-hidden="true" />
         </button>
-      </div>
+      </AttachmentChipRoot>
     </div>
   );
 };

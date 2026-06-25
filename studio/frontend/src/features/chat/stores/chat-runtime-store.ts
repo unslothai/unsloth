@@ -5,6 +5,7 @@ import type { RememberedLoadSettings } from "@/components/assistant-ui/model-sel
 import { cancelStagedModelDownload } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import { invalidateDocumentSupportCache } from "../api/chat-api";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
@@ -26,6 +27,10 @@ import { useExternalProvidersStore } from "./external-providers-store";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
+const DOC_EXTRACT_KEY = "unsloth_chat_doc_extract";
+const DEFAULT_DOCUMENT_VISUAL_PAYLOADS = 3;
+const DEFAULT_EXTRACT_CONCURRENCY = 2;
+const MAX_EXTRACT_CONCURRENCY = 8;
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
@@ -347,6 +352,102 @@ function saveString(key: string, value: string): void {
     localStorage.setItem(key, value);
   } catch {
     // ignore
+  }
+}
+
+export interface DocExtractSettings {
+  /** Global on/off for document-drop extraction. */
+  enabled: boolean;
+  /** Caption extracted visual payloads using the currently loaded vision model. */
+  describeImages: boolean;
+  /** Render full-page visual payloads for scanned PDFs without a text layer. */
+  useVlmOcr: boolean;
+  /** Upper bound on figure/page references listed per document. */
+  maxFigures: number;
+  /** Upper bound on extracted image bytes sent with a document. */
+  maxVisualPayloads: number;
+  /** Approx chars/4 token budget injected into the outgoing message. */
+  tokenBudget: number;
+  /** Client cap on parallel /chat/extract-document requests, mirroring the
+   * backend _EXTRACT_SEMAPHORE so multi-drops queue instead of 503ing. */
+  extractConcurrency: number;
+}
+
+export const DEFAULT_DOC_EXTRACT: DocExtractSettings = {
+  enabled: true,
+  describeImages: true,
+  useVlmOcr: false,
+  maxFigures: 40,
+  maxVisualPayloads: DEFAULT_DOCUMENT_VISUAL_PAYLOADS,
+  tokenBudget: 8000,
+  extractConcurrency: DEFAULT_EXTRACT_CONCURRENCY,
+};
+
+function clampExtractConcurrency(value: unknown): number {
+  const n =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.floor(value)
+      : DEFAULT_EXTRACT_CONCURRENCY;
+  return Math.max(1, Math.min(MAX_EXTRACT_CONCURRENCY, n));
+}
+
+function asDocExtractBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function asDocExtractNonNegativeInteger(
+  value: unknown,
+  fallback: number,
+): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.round(value))
+    : fallback;
+}
+
+/** Loads persisted document-extraction settings, ignoring unknown or stale
+ * keys (e.g. legacy OCR fields) so older payloads degrade gracefully. */
+function loadDocExtract(): DocExtractSettings {
+  if (!canUseStorage()) return DEFAULT_DOC_EXTRACT;
+  try {
+    const raw = localStorage.getItem(DOC_EXTRACT_KEY);
+    if (!raw) return DEFAULT_DOC_EXTRACT;
+    const parsed = JSON.parse(raw) as Partial<DocExtractSettings>;
+    return {
+      enabled: asDocExtractBoolean(parsed.enabled, DEFAULT_DOC_EXTRACT.enabled),
+      describeImages: asDocExtractBoolean(
+        parsed.describeImages,
+        DEFAULT_DOC_EXTRACT.describeImages,
+      ),
+      useVlmOcr: asDocExtractBoolean(
+        parsed.useVlmOcr,
+        DEFAULT_DOC_EXTRACT.useVlmOcr,
+      ),
+      maxFigures: asDocExtractNonNegativeInteger(
+        parsed.maxFigures,
+        DEFAULT_DOC_EXTRACT.maxFigures,
+      ),
+      maxVisualPayloads: asDocExtractNonNegativeInteger(
+        parsed.maxVisualPayloads,
+        DEFAULT_DOC_EXTRACT.maxVisualPayloads,
+      ),
+      tokenBudget: asDocExtractNonNegativeInteger(
+        parsed.tokenBudget,
+        DEFAULT_DOC_EXTRACT.tokenBudget,
+      ),
+      extractConcurrency: clampExtractConcurrency(parsed.extractConcurrency),
+    };
+  } catch {
+    return DEFAULT_DOC_EXTRACT;
+  }
+}
+
+function saveDocExtract(value: DocExtractSettings): boolean {
+  if (!canUseStorage()) return false;
+  try {
+    localStorage.setItem(DOC_EXTRACT_KEY, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -698,6 +799,8 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
+  docExtract: DocExtractSettings;
+  setDocExtract: (value: Partial<DocExtractSettings>) => void;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -1112,6 +1215,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
+  docExtract: loadDocExtract(),
+  setDocExtract: (value) =>
+    set((state) => {
+      const merged = { ...state.docExtract, ...value };
+      const next: DocExtractSettings = {
+        ...merged,
+        extractConcurrency: clampExtractConcurrency(merged.extractConcurrency),
+      };
+      if (!saveDocExtract(next)) {
+        toast.warning("Chat settings could not be persisted", {
+          description: "Your changes apply now, but may reset after refresh.",
+        });
+      }
+      return { docExtract: next };
+    }),
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -1226,6 +1344,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant) =>
     set((state) => {
+      invalidateDocumentSupportCache();
       // Persist external selections so they survive a refresh. Local ids are
       // NOT persisted -- they're re-derived from the backend on mount, and a
       // stale persisted local id would race the freshly-loaded model. See
@@ -1285,6 +1404,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   setEditingMessageId: (id) => set({ editingMessageId: id }),
   clearCheckpoint: () => {
+    invalidateDocumentSupportCache();
     // Mirror setCheckpoint's persistence: dropping the checkpoint must also
     // clear any stored external selection so the next refresh doesn't snap
     // back to a model the user intentionally cleared.

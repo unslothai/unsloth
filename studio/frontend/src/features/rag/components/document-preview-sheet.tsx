@@ -22,8 +22,9 @@ import {
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { getDocumentFileUrl, getPreviewTarget } from "../api/rag-api";
-import type { PdfRegion, PreviewTarget } from "../types/rag";
+import type { PdfRegion, PreviewFigure, PreviewTarget } from "../types/rag";
 import { useDocumentPreviewStore } from "./preview-store";
 
 // Serve the pdf.js worker from the app origin.
@@ -327,8 +328,54 @@ function persistPreviewWidth(w: number) {
   }
 }
 
+// Minimal inline renderer for extracted documents: the markdown body plus a
+// simple list of figures (caption + image when a data URL survived). No tabs,
+// TOC, search, virtualization, or lightbox — the shared Sheet shell handles
+// the chrome.
+function MarkdownDocumentPreview({
+  filename,
+  markdown,
+  figures,
+}: {
+  filename: string;
+  markdown: string;
+  figures: PreviewFigure[];
+}) {
+  return (
+    <div className="h-full overflow-auto p-5">
+      <MarkdownPreview markdown={markdown} plain={false} />
+      {figures.length > 0 && (
+        <div className="mt-5 flex flex-col gap-4 border-t pt-4">
+          <div className="text-xs font-medium text-muted-foreground">
+            Figures in {filename}
+          </div>
+          {figures.map((figure) => (
+            <div key={figure.id} className="flex flex-col gap-1.5">
+              {figure.imageDataUrl ? (
+                <img
+                  src={figure.imageDataUrl}
+                  alt={figure.caption ?? "Document figure"}
+                  className="max-h-72 w-auto rounded-md border border-border/60 object-contain"
+                />
+              ) : (
+                <div className="rounded-md border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
+                  Image unavailable (not stored after reload).
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {figure.page != null ? `Page ${figure.page}` : "Page unknown"}
+                {figure.caption ? ` · ${figure.caption}` : ""}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DocumentPreviewSheet() {
-  const { open, documentId, chunkId, filename, page, closePreview } =
+  const { open, documentId, chunkId, filename, page, inlineTarget, closePreview } =
     useDocumentPreviewStore();
   const [target, setTarget] = useState<PreviewTarget | null>(null);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
@@ -374,7 +421,17 @@ export function DocumentPreviewSheet() {
   }, [resizing]);
 
   useEffect(() => {
-    if (!open || !documentId) return;
+    if (!open) return;
+    // Inline markdown targets (extracted documents) render directly with no
+    // backend documentId / file-URL fetch.
+    if (inlineTarget) {
+      setTarget(inlineTarget);
+      setFileUrl(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+    if (!documentId) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -398,7 +455,7 @@ export function DocumentPreviewSheet() {
     return () => {
       cancelled = true;
     };
-  }, [open, documentId, chunkId]);
+  }, [open, documentId, chunkId, inlineTarget]);
 
   const headerName = target?.filename ?? filename ?? "Document";
   const headerPage = target?.targetPage ?? page ?? null;
@@ -455,6 +512,12 @@ export function DocumentPreviewSheet() {
               fileUrl={fileUrl}
               initialPage={target.targetPage ?? 1}
               regions={target.pdfRegions ?? []}
+            />
+          ) : target && target.mediaKind === "markdown" ? (
+            <MarkdownDocumentPreview
+              filename={target.filename}
+              markdown={target.markdown ?? ""}
+              figures={target.figures ?? []}
             />
           ) : target?.text ? (
             <div className="h-full overflow-auto p-5">

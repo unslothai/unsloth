@@ -16,6 +16,23 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  AttachmentChipBody,
+  AttachmentChipButton,
+  AttachmentChipProgress,
+  AttachmentChipRemoveButton,
+  AttachmentChipTitle,
+  attachmentChipTokens,
+} from "@/features/chat/components/attachment-chip-primitives";
+import {
+  documentFileTypeLabel,
+  openExtractedDocumentPreview,
+} from "@/features/chat/components/document-attachment-chip";
+import type { ExtractedDocument } from "@/features/chat/types";
+import {
+  documentFigureImageDataUrl,
+  formatDocumentTokens,
+} from "@/features/chat/utils/document-extraction";
 import { cn } from "@/lib/utils";
 import {
   AttachmentPrimitive,
@@ -26,11 +43,12 @@ import {
 } from "@assistant-ui/react";
 import { File02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { PlusIcon, XIcon } from "lucide-react";
+import { FileText, LoaderIcon, PlusIcon, XIcon } from "lucide-react";
 import {
   type FC,
   type PropsWithChildren,
   useEffect,
+  useId,
   useState,
 } from "react";
 import { useShallow } from "zustand/shallow";
@@ -54,10 +72,7 @@ const useFileSrc = (file: File | undefined): string | undefined => {
 const useAttachmentSrc = (): string | undefined => {
   const { file, src } = useAuiState(
     useShallow(({ attachment }): { file?: File; src?: string } => {
-      if (attachment.type !== "image") {
-        return {};
-      }
-      if (attachment.file) {
+      if (attachment.type === "image" && attachment.file) {
         return { file: attachment.file };
       }
       const src = attachment.content?.filter((c) => c.type === "image")[0]
@@ -71,6 +86,90 @@ const useAttachmentSrc = (): string | undefined => {
 
   return useFileSrc(file) ?? src;
 };
+
+type DocumentAttachmentState = {
+  id?: string;
+  type: string;
+  name: string;
+  file?: File;
+  content?: Array<{ type: string; image?: string }>;
+  sizeBytes?: number;
+  extractedAt?: number;
+  truncated?: boolean;
+  sentImageIndexes?: number[];
+  errorCode?: string;
+  errorMessage?: string;
+  retryCount?: number;
+  status: {
+    type: "running" | "requires-action" | "incomplete" | "complete";
+    progress?: number;
+    reason?: string;
+  };
+  document?: ExtractedDocument;
+};
+
+type DocumentVisualAttachment = {
+  content?: ReadonlyArray<{ type: string; image?: string }>;
+  sentImageIndexes?: readonly number[];
+};
+
+function isDocumentAttachmentState(
+  attachment: unknown,
+): attachment is DocumentAttachmentState {
+  return (
+    typeof attachment === "object" &&
+    attachment !== null &&
+    "type" in attachment &&
+    (attachment as { type?: unknown }).type === "document"
+  );
+}
+
+function sentImageIndexesForAttachment(
+  documentAttachment: DocumentVisualAttachment,
+  document: ExtractedDocument,
+): number[] {
+  if (Array.isArray(documentAttachment.sentImageIndexes)) {
+    return documentAttachment.sentImageIndexes.filter(
+      (index) =>
+        Number.isInteger(index) &&
+        index >= 0 &&
+        index < document.figures.length,
+    );
+  }
+
+  const sentImageUrls = new Set(
+    (documentAttachment.content ?? []).flatMap((part) => {
+      if (part.type !== "image" || !part.image) {
+        return [];
+      }
+      return [part.image];
+    }),
+  );
+  return document.figures
+    .map((figure, index) => ({
+      index,
+      dataUrl: documentFigureImageDataUrl(figure),
+    }))
+    .filter(({ dataUrl }) => dataUrl !== null && sentImageUrls.has(dataUrl))
+    .map(({ index }) => index);
+}
+
+function buildDocSubtitle(
+  doc: ExtractedDocument,
+  visualPayloadCount: number,
+): string {
+  const imageCount = doc.figures.length;
+  return [
+    `${doc.page_count} page${doc.page_count === 1 ? "" : "s"}`,
+    `${formatDocumentTokens(doc.tokens_est)} tokens`,
+    imageCount > 0 ? `${imageCount} ref${imageCount === 1 ? "" : "s"}` : null,
+    visualPayloadCount > 0
+      ? `${visualPayloadCount} image${visualPayloadCount === 1 ? "" : "s"}`
+      : "Text only",
+  ]
+    .filter((item): item is string => Boolean(item))
+    .join(" · ");
+}
 
 type AttachmentPreviewProps = {
   src: string;
@@ -148,6 +247,11 @@ const AttachmentThumb: FC = () => {
 const AttachmentUI: FC = () => {
   const aui = useAui();
   const isComposer = aui.attachment.source === "composer";
+  const rawAttachment = useAuiState(useShallow(({ attachment }) => attachment));
+  const docAttachment: DocumentAttachmentState | null =
+    isDocumentAttachmentState(rawAttachment)
+      ? (rawAttachment as unknown as DocumentAttachmentState)
+      : null;
 
   const isImage = useAuiState(({ attachment }) => attachment.type === "image");
   const name = useAuiState(({ attachment }) => attachment.name);
@@ -164,11 +268,128 @@ const AttachmentUI: FC = () => {
         throw new Error(`Unknown attachment type: ${type as string}`);
     }
   });
+  // Per-instance React id keeps DOM ids unique when attachments lack a
+  // stable `rawAttachment.id` or share a typeLabel.
+  const reactInstanceId = useId().replace(/[^A-Za-z0-9_-]/g, "-");
   // Filename in accessible name lets screen readers distinguish same-typed
   // attachments. Sighted users get it via the tooltip.
   const accessibleName = name
     ? `${typeLabel} attachment: ${name}`
     : `${typeLabel} attachment`;
+
+  if (docAttachment !== null) {
+    const doc = docAttachment.document;
+    const running = docAttachment.status.type === "running";
+    const failed = docAttachment.status.type === "incomplete";
+    const truncated =
+      (docAttachment as { truncated?: boolean }).truncated === true;
+    const failedReason = failed
+      ? (docAttachment.errorMessage ??
+        docAttachment.status.reason ??
+        "Extraction failed")
+      : null;
+    const sentImageIndexes = new Set(
+      doc ? sentImageIndexesForAttachment(docAttachment, doc) : [],
+    );
+    const progressValue =
+      typeof docAttachment.status.progress === "number" &&
+      Number.isFinite(docAttachment.status.progress)
+        ? Math.max(0, Math.min(100, docAttachment.status.progress * 100))
+        : null;
+    const progressLabel =
+      progressValue === null
+        ? "Reading document"
+        : `${Math.round(progressValue)}% processed`;
+    const ext = documentFileTypeLabel(docAttachment.name);
+    const visualPayloadCount = sentImageIndexes.size;
+    const readyDetails = doc ? buildDocSubtitle(doc, visualPayloadCount) : ext;
+    const subtitle = failed
+      ? (failedReason ?? "Extraction failed")
+      : running
+        ? progressValue !== null
+          ? `Reading… ${Math.round(progressValue)}%`
+          : "Reading…"
+        : truncated
+          ? `${readyDetails} · Truncated`
+          : readyDetails;
+    const tileClass = failed
+      ? "bg-destructive/10 text-destructive/90"
+      : running
+        ? "bg-muted/50 text-muted-foreground/80"
+        : "bg-amber-500/10 text-amber-600 dark:text-amber-400/90";
+    const ready = Boolean(doc) && !running && !failed;
+    const chip = (
+      <AttachmentChipButton
+        className="aui-attachment-document-chip max-w-[min(20rem,calc(100vw-3rem))] items-center pr-9"
+        aria-label={`${typeLabel} attachment ${docAttachment.name}`}
+        onClick={
+          ready && doc
+            ? () =>
+                openExtractedDocumentPreview({
+                  filename: doc.filename || docAttachment.name,
+                  document: doc,
+                })
+            : undefined
+        }
+      >
+        <span
+          className={cn(
+            "flex size-10 shrink-0 items-center justify-center rounded-md",
+            tileClass,
+          )}
+        >
+          {running ? (
+            <LoaderIcon
+              className="size-5 animate-spin motion-reduce:animate-none"
+              aria-hidden="true"
+            />
+          ) : (
+            <FileText className="size-5" aria-hidden="true" />
+          )}
+        </span>
+        <AttachmentChipBody className="gap-0.5">
+          <AttachmentChipTitle className="text-sm" title={docAttachment.name}>
+            <AttachmentPrimitive.Name />
+          </AttachmentChipTitle>
+          <span
+            className={cn(
+              "truncate text-xs",
+              failed ? "text-destructive" : "text-muted-foreground",
+            )}
+            title={subtitle}
+          >
+            {subtitle}
+          </span>
+          {running ? (
+            <AttachmentChipProgress
+              value={progressValue}
+              label={progressLabel}
+              className="mt-1"
+            />
+          ) : null}
+        </AttachmentChipBody>
+      </AttachmentChipButton>
+    );
+
+    return (
+      <Tooltip>
+        <AttachmentPrimitive.Root
+          className="aui-attachment-root relative max-w-full"
+          role={failed ? "alert" : undefined}
+        >
+          {chip}
+          {isComposer && <AttachmentRemove />}
+        </AttachmentPrimitive.Root>
+        <TooltipContent side="top">
+          <AttachmentPrimitive.Name />
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  const attachmentDomId = `attachment-tile-${String(
+    (rawAttachment as { id?: string }).id ?? typeLabel,
+  ).replace(/[^A-Za-z0-9_-]/g, "-")}-${reactInstanceId}`;
 
   return (
     <Tooltip>
@@ -176,18 +397,19 @@ const AttachmentUI: FC = () => {
         className={cn(
           "aui-attachment-root relative",
           isImage &&
-            "aui-attachment-root-composer only:[&>#attachment-tile]:size-16",
+            "aui-attachment-root-composer only:[&>.aui-attachment-tile]:size-16",
         )}
       >
         <AttachmentPreviewDialog>
           <TooltipTrigger asChild={true}>
             <button
               className={cn(
-                "aui-attachment-tile size-14 cursor-pointer overflow-hidden rounded-[14px] border bg-muted transition-opacity hover:opacity-75",
+                attachmentChipTokens.tile,
+                "aui-attachment-tile cursor-pointer transition-opacity hover:opacity-75",
                 isComposer &&
                   "aui-attachment-tile-composer border-foreground/20",
               )}
-              id="attachment-tile"
+              id={attachmentDomId}
               aria-label={accessibleName}
               type="button"
             >
@@ -207,13 +429,12 @@ const AttachmentUI: FC = () => {
 const AttachmentRemove: FC = () => {
   return (
     <AttachmentPrimitive.Remove asChild={true}>
-      <TooltipIconButton
+      <AttachmentChipRemoveButton
         tooltip="Remove file"
-        className="aui-attachment-tile-remove absolute top-1.5 right-1.5 size-3.5 rounded-full bg-white text-muted-foreground opacity-100 shadow-sm hover:bg-white! [&_svg]:text-black hover:[&_svg]:text-destructive"
-        side="top"
+        className="aui-attachment-tile-remove"
       >
         <XIcon className="aui-attachment-remove-icon size-3 dark:stroke-[2.5px]" />
-      </TooltipIconButton>
+      </AttachmentChipRemoveButton>
     </AttachmentPrimitive.Remove>
   );
 };
@@ -240,7 +461,7 @@ export const ComposerAddAttachment: FC = () => {
   return (
     <ComposerPrimitive.AddAttachment asChild={true}>
       <TooltipIconButton
-        tooltip="Add Attachment"
+        tooltip="Add files"
         side="bottom"
         variant="ghost"
         size="icon"

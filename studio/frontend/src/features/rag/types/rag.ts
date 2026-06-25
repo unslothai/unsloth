@@ -59,13 +59,25 @@ export interface PdfRegion {
   height: number;
 }
 
+/** One figure rendered inline beneath the markdown preview. */
+export interface PreviewFigure {
+  id: string;
+  page: number | null;
+  caption: string | null;
+  imageDataUrl?: string | null;
+}
+
 export interface PreviewTarget {
   documentId: string;
   filename: string;
-  mediaKind: "pdf" | "text";
+  mediaKind: "pdf" | "text" | "markdown";
   targetPage?: number | null;
   pdfRegions: PdfRegion[];
   text?: string | null;
+  /** Inline markdown body rendered for the "markdown" kind (extracted docs). */
+  markdown?: string | null;
+  /** Inline figures rendered beneath the markdown body. */
+  figures?: PreviewFigure[];
 }
 
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
