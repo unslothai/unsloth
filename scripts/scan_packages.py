@@ -481,10 +481,10 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # Large base64 blob
     if RE_LARGE_BLOB.search(content):
-        blob = RE_LARGE_BLOB.search(content).group()
-        # Pin the full blob via a digest (not just the first 120 chars), so a
-        # later payload that keeps the prefix but changes the tail reopens.
-        digest = hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
+        # Digest every blob (not just the first 120 chars, and not just the
+        # first blob), so a later payload that keeps the prefix or appends a
+        # second encoded blob reopens.
+        blob, digest = _blob_digest(content)
         findings.append(
             Finding(
                 CRITICAL,
@@ -911,10 +911,10 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # Obfuscated payload: base64 + exec/eval + large blob
     if has_base64 and has_exec_eval and has_blob:
-        # Digest the blob too: it may sit on a separate line from the decode call,
-        # so binding only the base64/exec lines would miss a changed payload.
-        blob = RE_LARGE_BLOB.search(content).group()
-        blob_digest = hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
+        # Digest every blob too: a payload may sit on a separate line from the
+        # decode call, and a second encoded blob may be appended later, so
+        # binding only the base64/exec lines or the first blob would miss it.
+        _, blob_digest = _blob_digest(content)
         findings.append(
             Finding(
                 HIGH,
@@ -1147,6 +1147,25 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 _MAX_MULTILINE_LINES = 12
 
 
+def _logical_line_end(lines: list[str], start: int) -> int:
+    """1-based line where the statement opened at ``start`` closes its brackets,
+    so a multi-line call binds its argument lines (a changed URL/body on a
+    continuation line reopens, not just the line with the API name). Bracket
+    counting is whitespace-simple and over-extends on brackets-in-strings
+    (fail-closed: binds more, never less); the span is capped at
+    ``_MAX_MULTILINE_LINES`` so a stray unclosed bracket cannot swallow the file.
+    """
+    depth = 0
+    limit = min(len(lines), start + _MAX_MULTILINE_LINES - 1)
+    for j in range(start, limit + 1):
+        ln = lines[j - 1]
+        depth += ln.count("(") + ln.count("[") + ln.count("{")
+        depth -= ln.count(")") + ln.count("]") + ln.count("}")
+        if depth <= 0:
+            return j
+    return limit
+
+
 def _extract_evidence(
     content: str,
     pattern: re.Pattern,
@@ -1158,39 +1177,45 @@ def _extract_evidence(
     match (or extra code on a long line) appended to an already-flagged file
     changes the evidence and the baseline key instead of riding the first few.
     Leading whitespace is kept so a flagged line moved out of a guarded block
-    reads as changed. For patterns that only match across line boundaries
-    (DOTALL IOC regexes) each distinct match records every full line it spans,
-    so a change on a continuation line (the URL inside a baselined C2 loop)
-    reopens the finding. A pathological greedy span is bounded to its head line
-    plus a digest of the rest.
+    reads as changed. Each single-line match is extended over bracket
+    continuations so a multi-line call binds its argument lines too. Cross-line
+    matches the per-line scan cannot see (DOTALL IOC regexes, or a multi-line
+    construct appended under a check that already had a one-line match) are
+    recorded afterwards, so an added multiline payload reopens the finding. A
+    pathological greedy span is bounded to its head line plus a digest of the
+    rest.
     """
     lines = content.splitlines()
-    matches = []
-    for i, line in enumerate(lines, 1):
-        if pattern.search(line):
-            matches.append(f"L{i}: {line.rstrip()}")
-            if max_matches and len(matches) >= max_matches:
-                break
-    if matches:
-        return " | ".join(matches)
-    seen: set[tuple[int, int]] = set()
     out = []
-    for m in pattern.finditer(content):
-        key = (m.start(), m.end())
-        if key in seen:
-            continue
-        seen.add(key)
-        start = content.count("\n", 0, m.start()) + 1
-        end = content.count("\n", 0, m.end()) + 1
+    seen: set[tuple[int, int]] = set()
+
+    def _render(start: int, end: int) -> str:
         span = lines[start - 1 : end] or ["<multiline match>"]
-        rendered = "\n".join(f"L{start + i}: {ln.rstrip()}" for i, ln in enumerate(span))
         if len(span) > _MAX_MULTILINE_LINES:
             # Digest the code without the L<NN>: markers so a pure line shift of
             # the same span stays stable while a code change still reopens.
             code = "\n".join(ln.rstrip() for ln in span)
             digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
-            rendered = f"L{start}: {span[0].rstrip()} sha256:{digest}"
-        out.append(rendered)
+            return f"L{start}: {span[0].rstrip()} sha256:{digest}"
+        return "\n".join(f"L{start + i}: {ln.rstrip()}" for i, ln in enumerate(span))
+
+    for i, line in enumerate(lines, 1):
+        if pattern.search(line):
+            span = (i, _logical_line_end(lines, i))
+            if span in seen:
+                continue
+            seen.add(span)
+            out.append(_render(*span))
+            if max_matches and len(out) >= max_matches:
+                return " | ".join(out)
+
+    for m in pattern.finditer(content):
+        start = content.count("\n", 0, m.start()) + 1
+        end = content.count("\n", 0, m.end()) + 1
+        if end <= start or (start, end) in seen:
+            continue  # single-line matches are already covered by the pass above
+        seen.add((start, end))
+        out.append(_render(start, end))
         if max_matches and len(out) >= max_matches:
             break
     return " | ".join(out)
@@ -1206,6 +1231,16 @@ def _embedded_key_evidence(content: str) -> str:
         digest = hashlib.sha256("\n".join(blocks).encode("utf-8", "replace")).hexdigest()
         ev = f"{ev} sha256:{digest}" if ev else f"sha256:{digest}"
     return ev
+
+
+def _blob_digest(content: str) -> tuple[str, str]:
+    """First large blob (for display) plus a digest binding EVERY large blob, so
+    an appended or swapped encoded payload reopens the finding rather than riding
+    an unchanged first blob. Assumes at least one blob is present (single-blob
+    files keep the prior single-blob digest, so the baseline does not drift)."""
+    blobs = RE_LARGE_BLOB.findall(content)
+    digest = hashlib.sha256("\n".join(blobs).encode("utf-8", "replace")).hexdigest()
+    return blobs[0], digest
 
 
 # Non-Python checkers

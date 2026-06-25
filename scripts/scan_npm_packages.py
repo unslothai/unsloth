@@ -897,29 +897,56 @@ def safe_extract(
 # ─────────────────────────────────────────────────────────────────────
 
 
+_MAX_CONT_LINES = 12  # cap continuation lines bound into one logical line
+
+
+def _logical_line_text(text: str, line_start: int) -> str:
+    """The physical line at ``line_start`` plus any bracket-continuation lines,
+    so a multi-line call's option/header/body lines are bound into the evidence
+    digest. Over-extends on brackets-in-strings (fail-closed: binds more, never
+    less); capped at ``_MAX_CONT_LINES`` so an unclosed bracket cannot swallow
+    the file."""
+    depth = 0
+    pos = line_start
+    end = line_start
+    n = len(text)
+    for _ in range(_MAX_CONT_LINES):
+        nl = text.find("\n", pos)
+        if nl == -1:
+            nl = n
+        ln = text[pos:nl]
+        depth += ln.count("(") + ln.count("[") + ln.count("{")
+        depth -= ln.count(")") + ln.count("]") + ln.count("}")
+        end = nl
+        if depth <= 0 or nl >= n:
+            break
+        pos = nl + 1
+    return text[line_start:end].replace("\n", " ")
+
+
 def _evidence(
     text: str,
     pat: re.Pattern,
     max_chars: int = 200,
 ) -> str:
-    # Record every match. When the displayed snippet is only a window into a
-    # longer line (short match, or a truncated payload), append a digest of the
-    # full containing line so a changed payload tail outside the window reopens.
+    # Record every match. The shown snippet is a small window; append a digest of
+    # the full LOGICAL line (the matched line plus its bracket-continuation
+    # lines) whenever the snippet does not already show all of it, so a changed
+    # payload tail, a truncated body, or a multi-line option/header reopens.
     snippets = []
     for m in pat.finditer(text):
         line_start = text.rfind("\n", 0, m.start()) + 1
         line_end = text.find("\n", m.end())
         if line_end == -1:
             line_end = len(text)
-        full_line = text[line_start:line_end].replace("\n", " ")
+        full_logical = _logical_line_text(text, line_start)
         start = max(line_start, m.start() - 30)
         end = min(line_end, m.end() + 30)
         snippet = text[start:end].replace("\n", " ")
-        windowed = start > line_start or end < line_end or len(snippet) > max_chars
         if len(snippet) > max_chars:
             snippet = snippet[:max_chars] + "..."
-        if windowed:
-            digest = hashlib.sha256(full_line.encode("utf-8", "replace")).hexdigest()
+        if snippet != full_logical:
+            digest = hashlib.sha256(full_logical.encode("utf-8", "replace")).hexdigest()
             snippet = f"{snippet} sha256:{digest}"
         snippets.append(snippet)
     return " | ".join(snippets)
