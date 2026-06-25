@@ -83,16 +83,38 @@ def _hf_offline(timeout = 3):
     except Exception:
         target_host, target_port = hf_host, hf_port
 
-    try:
-        socket.create_connection((target_host, target_port), timeout = timeout).close()
-        return False
-    except Exception:
+    # Bound the whole probe (DNS getaddrinfo + connect) in a daemon thread: a resolver
+    # blackhole makes getaddrinfo block past the socket timeout, which would re-hang the
+    # offline export. If the probe does not finish in time, treat it as offline.
+    import threading
+
+    result = {"online": False}
+
+    def _probe():
+        try:
+            socket.create_connection((target_host, target_port), timeout = timeout).close()
+            result["online"] = True
+        except Exception:
+            result["online"] = False
+
+    t = threading.Thread(target = _probe, daemon = True)
+    t.start()
+    t.join(timeout + 1)
+    if t.is_alive():
+        logger.warning(
+            "Hugging Face reachability probe timed out (%s:%s); loading checkpoint in offline mode",
+            target_host,
+            target_port,
+        )
+        return True
+    if not result["online"]:
         logger.warning(
             "Hugging Face endpoint (%s:%s) unreachable; loading checkpoint in offline mode",
             target_host,
             target_port,
         )
         return True
+    return False
 
 
 # Reuse Unsloth's lock-guarded forced-offline context; no-op fallback if it moves.

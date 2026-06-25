@@ -40,6 +40,7 @@ from .loader_utils import (
     prepare_device_map,
     _offline_aware_load,
     _resolve_checkpoint_tokenizer_name,
+    _is_offline_related_error,
 )
 import os, contextlib, sys
 
@@ -571,8 +572,13 @@ class FastLanguageModel(FastLlamaModel):
                 f"AutoConfig error: {autoconfig_error}\n\n"
                 f"PeftConfig error: {peft_error}\n\n"
             )
-            # Chain the cause so @_offline_aware_load can retry on a network error (permanent ones propagate).
-            raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
+            # Chain an offline-related cause if either probe had one, so @_offline_aware_load
+            # still retries from cache (e.g. adapter repo: permanent AutoConfig 404 + transient PeftConfig).
+            _cause = next(
+                (e for e in (autoconfig_exc, peft_exc) if e is not None and _is_offline_related_error(e)),
+                autoconfig_exc or peft_exc,
+            )
+            raise RuntimeError(combined_error) from _cause
 
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
@@ -1234,8 +1240,13 @@ class FastModel(FastBaseModel):
                 f"AutoConfig error: {autoconfig_error}\n\n"
                 f"PeftConfig error: {peft_error}\n\n"
             )
-            # Chain the cause so @_offline_aware_load can retry on a network error (permanent ones propagate).
-            raise RuntimeError(combined_error) from (autoconfig_exc or peft_exc)
+            # Chain an offline-related cause if either probe had one, so @_offline_aware_load
+            # still retries from cache (e.g. adapter repo: permanent AutoConfig 404 + transient PeftConfig).
+            _cause = next(
+                (e for e in (autoconfig_exc, peft_exc) if e is not None and _is_offline_related_error(e)),
+                autoconfig_exc or peft_exc,
+            )
+            raise RuntimeError(combined_error) from _cause
 
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
