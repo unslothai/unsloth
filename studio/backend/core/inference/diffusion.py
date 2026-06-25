@@ -130,7 +130,12 @@ class DiffusionBackend:
         return hf_hub_download(repo_id, gguf_filename, token = hf_token)
 
     def _prefetch_files(
-        self, repo_id: str, gguf_filename: Optional[str], base: str, base_files: list[str], hf_token: Optional[str]
+        self,
+        repo_id: str,
+        gguf_filename: Optional[str],
+        base: str,
+        base_files: list[str],
+        hf_token: Optional[str],
     ) -> None:
         """Pre-download the GGUF + the given ``base_files`` into the HF cache,
         WITHOUT the lock and honoring ``_cancel_event``, so load_pipeline's
@@ -140,12 +145,16 @@ class DiffusionBackend:
 
         # GGUF transformer (hub repos only; a local path is already on disk).
         if gguf_filename and not Path(repo_id).expanduser().exists():
-            hf_hub_download_with_xet_fallback(repo_id, gguf_filename, hf_token, cancel_event = self._cancel_event)
+            hf_hub_download_with_xet_fallback(
+                repo_id, gguf_filename, hf_token, cancel_event = self._cancel_event
+            )
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
         for rfilename in base_files:
             if self._cancel_event.is_set():
                 raise RuntimeError("Cancelled")
-            hf_hub_download_with_xet_fallback(base, rfilename, hf_token, cancel_event = self._cancel_event)
+            hf_hub_download_with_xet_fallback(
+                base, rfilename, hf_token, cancel_event = self._cancel_event
+            )
 
     # ── Background load + progress ─────────────────────────────────────────
 
@@ -219,7 +228,11 @@ class DiffusionBackend:
             # Download outside the lock so unload()/an eviction can preempt the
             # multi-GB pull; load_pipeline below then assembles from the cache.
             self._prefetch_files(
-                kwargs["repo_id"], kwargs.get("gguf_filename"), base, base_files, kwargs.get("hf_token")
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                base,
+                base_files,
+                kwargs.get("hf_token"),
             )
             self.load_pipeline(**kwargs)
             with self._lock:

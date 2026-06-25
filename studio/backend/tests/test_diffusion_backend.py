@@ -465,8 +465,11 @@ def test_prefetch_aborts_when_cancelled(tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"x")
     with pytest.raises(RuntimeError, match = "Cancelled"):
         backend._prefetch_files(
-            str(tmp_path), "model.gguf", "Tongyi-MAI/Z-Image-Turbo",
-            ["vae/diffusion_pytorch_model.safetensors"], None,
+            str(tmp_path),
+            "model.gguf",
+            "Tongyi-MAI/Z-Image-Turbo",
+            ["vae/diffusion_pytorch_model.safetensors"],
+            None,
         )
 
 
@@ -479,8 +482,11 @@ def test_prefetch_downloads_gguf_and_base(monkeypatch, tmp_path):
     )
     # Hub repo: the GGUF transformer and each base file are fetched.
     backend._prefetch_files(
-        "unsloth/Z-Image-Turbo-GGUF", "model.gguf", "base/repo",
-        ["vae/x.safetensors", "text_encoder/y.safetensors"], "hf_tok",
+        "unsloth/Z-Image-Turbo-GGUF",
+        "model.gguf",
+        "base/repo",
+        ["vae/x.safetensors", "text_encoder/y.safetensors"],
+        "hf_tok",
     )
     assert ("unsloth/Z-Image-Turbo-GGUF", "model.gguf") in calls
     assert ("base/repo", "vae/x.safetensors") in calls
