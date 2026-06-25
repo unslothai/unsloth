@@ -3,11 +3,9 @@
 
 """The live progress SSE must not time out during the pre-first-step phase.
 
-A large model load / dataset tokenization can keep a run at step 0 for far
-longer than the stall timeout. Treating that as a stall ends the live stream
-(emits an ``error`` event and breaks), which is what made a healthy background
-run look frozen and disconnected from the UI. The stall timeout must apply only
-once the run has actually started stepping.
+A large model load / dataset tokenization can keep a run at step 0 for longer
+than the stall timeout. Treating that as a stall ends the live stream and makes a
+healthy run look frozen, so the timeout must apply only once the run is stepping.
 """
 
 import asyncio
@@ -127,10 +125,10 @@ def test_stall_after_first_step_still_times_out(monkeypatch, _fast_short_timeout
 
 
 def test_reconnect_to_stepped_run_still_times_out(monkeypatch, _fast_short_timeout):
-    # Client reconnects at step 10 (Last-Event-ID) to a run that has already
-    # stepped and then hangs: no new step is emitted, only heartbeats, but the
-    # post-step stall timeout must still fire. Without seeding seen_live_step from
-    # the resume point it would reset to False and never time out for this client.
+    # Client reconnects at step 10 (Last-Event-ID) to a run that already stepped
+    # then hangs (only heartbeats): the post-step stall timeout must still fire.
+    # Without seeding seen_live_step from the resume point it resets to False and
+    # never times out for this client.
     backend = _Backend(active_polls = 100, step_history = [10], live_step = 10)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 

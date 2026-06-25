@@ -68,11 +68,9 @@ class TrainingStopRequest(PydanticBaseModel):
 router = APIRouter()
 logger = get_logger(__name__)
 
-# Consecutive 1s polls without a step update that count as a stalled run. Applied
-# only once training is actually stepping: the pre-first-step phase (model load +
-# tokenizing a large dataset) can legitimately take far longer, and timing the
-# live stream out there is what made a healthy long-prep run look frozen and
-# disconnected from the UI.
+# Consecutive 1s polls without a step update that count as a stall. Applied only
+# once stepping: the pre-first-step phase (model load + tokenization) can take far
+# longer, and timing out there made a healthy long-prep run look frozen.
 _PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
 
 
@@ -840,13 +838,10 @@ async def stream_training_progress(
         # ── Live polling loop ────────────────────────────────────
         last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
-        # The stall timeout only applies once the run has actually started
-        # stepping. Before the first step the run is still preparing and may
-        # legitimately emit no step for a long time (large model load / dataset
-        # tokenization), which must not be mistaken for a stall. On a reconnect to
-        # an already-stepping run, seed this from the resume point / existing
-        # history: otherwise a worker that hangs after step N would never time out
-        # for a client that reconnects past that step and only receives heartbeats.
+        # The stall timeout applies only once the run is stepping (pre-step prep
+        # may legitimately emit no step for a long time). On reconnect to an
+        # already-stepping run, seed from the resume point / history, else a worker
+        # that hangs after step N never times out for a client that reconnects past it.
         seen_live_step = (resume_from_step is not None and resume_from_step > 0) or bool(
             backend.step_history
         )
@@ -930,10 +925,8 @@ async def stream_training_progress(
                             event_id = 0,
                         )
 
-                # Timeout check. Only fires once the run has started stepping: a
-                # long pre-first-step prep phase (e.g. tokenizing a large dataset)
-                # is not a stall, and ending the live stream there is what made a
-                # healthy background run look frozen in the UI.
+                # Fires only once stepping: a long pre-first-step prep phase is not
+                # a stall, and ending the stream there made a healthy run look frozen.
                 if seen_live_step and no_update_count > _PROGRESS_STALL_TIMEOUT_POLLS:
                     logger.warning("Progress stream timeout - no updates received")
                     tp_timeout = getattr(
