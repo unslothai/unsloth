@@ -106,6 +106,33 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
     return base or fam.base_repo
 
 
+# Default (steps, guidance) per model for callers that can't pass them — namely
+# the OpenAI /v1/images/generations endpoint, whose spec has no step/guidance
+# knobs. Distilled "turbo/schnell" models want few steps and no CFG; the full
+# "dev" models want more steps and real CFG. Matched by repo-id substring, most
+# specific first. This mirrors the UI's MODEL_DEFAULTS table
+# (studio/frontend/src/features/images/images-page.tsx) — keep the two in sync.
+_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
+    ("z-image-turbo", 9, 0.0),
+    ("flux.1-schnell", 4, 0.0),
+    ("flux.1", 28, 3.5),
+    ("flux.2-klein", 4, 0.0),
+    ("qwen-image", 20, 4.0),
+    ("z-image", 20, 4.0),
+)
+# Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
+_GENERATION_DEFAULT_FALLBACK = (9, 0.0)
+
+
+def default_generation_params(repo_id: str) -> tuple[int, float]:
+    """Default ``(steps, guidance)`` for a loaded model, by repo-id substring."""
+    needle = (repo_id or "").lower()
+    for match, steps, guidance in _GENERATION_DEFAULTS:
+        if match in needle:
+            return steps, guidance
+    return _GENERATION_DEFAULT_FALLBACK
+
+
 def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     """Resolve ``gguf_filename`` to a file under ``repo_root``, rejecting escapes.
 
