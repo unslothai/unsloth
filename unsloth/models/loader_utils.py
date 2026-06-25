@@ -526,9 +526,14 @@ def _get_effective_local_files_only(kwargs):
 def _is_offline_related_error(exc):
     """True if exc (or its cause/context chain) is a lost-connection error, not a
     missing file. Plain FileNotFoundError propagates; LocalEntryNotFoundError is offline."""
-    _net_types = [ConnectionError, TimeoutError]
+    import socket
+    import urllib.error
+
+    # Match network failures by type (locale independent), not just message wording.
+    _net_types = [ConnectionError, TimeoutError, socket.gaierror, urllib.error.URLError]
     _offline_fnf_types = ()  # FileNotFoundError subclasses that count as offline
-    _http_types = ()  # judged by status code below: only 5xx is offline, 4xx propagates
+    # urllib HTTPError is a URLError subclass: judge by status (5xx offline, 4xx propagates).
+    _http_types = (urllib.error.HTTPError,)
     try:
         import requests
         _net_types += [requests.exceptions.ConnectionError, requests.exceptions.Timeout]
@@ -554,6 +559,8 @@ def _is_offline_related_error(exc):
         code = getattr(resp, "status_code", None)
         if code is None:
             code = getattr(e, "status_code", None)
+        if code is None:
+            code = getattr(e, "code", None)  # urllib.error.HTTPError uses .code
         try:
             return int(code)
         except (TypeError, ValueError):
@@ -588,7 +595,9 @@ def _is_offline_related_error(exc):
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
         is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(cur, _offline_fnf_types)
-        if isinstance(cur, _net_types) and not is_fnf:
+        # urllib HTTPError is a URLError (net type) but must be judged by status code below,
+        # unlike LocalEntryNotFoundError (an HfHubHTTPError that is always offline).
+        if isinstance(cur, _net_types) and not is_fnf and not isinstance(cur, urllib.error.HTTPError):
             return True
         if isinstance(cur, _http_types):
             code = _http_status(cur)

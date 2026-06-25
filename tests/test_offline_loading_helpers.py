@@ -132,6 +132,31 @@ def test_gaierror_dns_failure_is_offline():
     assert L._is_offline_related_error(socket.gaierror(-2, "Name or service not known")) is True
 
 
+def test_gaierror_without_wording_is_offline_by_type():
+    # Matched by type, so a locale-specific / empty message still classifies offline.
+    assert L._is_offline_related_error(socket.gaierror(-2, "")) is True
+
+
+def test_urllib_urlerror_is_offline():
+    import urllib.error
+
+    assert L._is_offline_related_error(urllib.error.URLError("connection failed")) is True
+
+
+def test_urllib_httperror_404_propagates():
+    import urllib.error
+
+    err = urllib.error.HTTPError("http://x", 404, "Not Found", {}, None)
+    assert L._is_offline_related_error(err) is False
+
+
+def test_urllib_httperror_503_is_offline():
+    import urllib.error
+
+    err = urllib.error.HTTPError("http://x", 503, "Service Unavailable", {}, None)
+    assert L._is_offline_related_error(err) is True
+
+
 def test_oserror_network_unreachable_is_offline():
     assert L._is_offline_related_error(OSError("Network is unreachable")) is True
 
