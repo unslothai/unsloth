@@ -133,10 +133,10 @@ class InferenceOrchestrator:
                 ][:40]
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
-                    logger.info("Top GGUF models: %s", gguf_ids)
+                    logger.debug("Top GGUF models: %s", gguf_ids)
                 if hub_ids:
                     self._top_hub_cache = hub_ids
-                    logger.info("Top hub models: %s", hub_ids)
+                    logger.debug("Top hub models: %s", hub_ids)
         except Exception as e:
             logger.warning("Failed to fetch top models: %s", e)
         finally:

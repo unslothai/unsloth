@@ -20,6 +20,14 @@ from utils.native_path_leases import redact_native_paths
 logger = structlog.get_logger(__name__)
 
 
+def _logs_verbose() -> bool:
+    # Lazy import: config.py imports this module, so importing it at module load
+    # would be circular. By request time both modules are fully initialized.
+    from loggers.config import logs_verbose
+
+    return logs_verbose()
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         raw = (os.environ.get(name) or "").strip()
@@ -45,6 +53,9 @@ _QUIET_POLL_PATHS = {
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
     r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+)
+_STANDARD_METHODS = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 )
 _EXCLUDED_PATHS = {
     "/api/train/status",
@@ -100,11 +111,18 @@ class LoggingMiddleware:
             return
 
         path = scope["path"]
-        excluded = (
-            path in _EXCLUDED_PATHS
-            or path.startswith("/assets/")
-            or path.endswith(_EXCLUDED_SUFFIXES)
-        )
+        # Scanner/proxy probes (CONNECT, absolute-form "GET http://...", PRI,
+        # random verbs) are never legitimate app traffic; drop their access
+        # line unless verbose. A normal GET/POST 404 is real signal and stays.
+        scanner = scope["method"] not in _STANDARD_METHODS or "://" in path
+        if scanner and not _logs_verbose():
+            excluded = True
+        else:
+            excluded = (
+                path in _EXCLUDED_PATHS
+                or path.startswith("/assets/")
+                or path.endswith(_EXCLUDED_SUFFIXES)
+            )
         start_time = time.perf_counter()
         status_code = 500
 

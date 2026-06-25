@@ -131,6 +131,26 @@ def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> N
     for name in ("uvicorn", "uvicorn.error"):
         logging.getLogger(name).addFilter(f)
 
+    # Drop h11's per-probe "Invalid HTTP request received" warnings: port
+    # scanners and TLS-on-HTTP handshakes spam these and they carry no signal.
+    # Verbose keeps them.
+    from loggers.config import logs_verbose
+
+    _h11_junk = ("Invalid HTTP request received", "Invalid HTTP method")
+
+    class _DropScannerNoise(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            if logs_verbose():
+                return True
+            try:
+                return not record.getMessage().startswith(_h11_junk)
+            except Exception:
+                return True
+
+    drop = _DropScannerNoise()
+    for name in ("uvicorn", "uvicorn.error"):
+        logging.getLogger(name).addFilter(drop)
+
 
 def _local_port_open(
     host: str,
@@ -1272,6 +1292,13 @@ def _build_arg_parser():
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")
     parser.add_argument(
+        "--verbose",
+        "-v",
+        action = "store_true",
+        help = "Keep all logs (no noise suppression): library INFO, per-request "
+        "scanner lines, llama-server output, and full model-load narration.",
+    )
+    parser.add_argument(
         "--api-only",
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
@@ -1343,6 +1370,11 @@ if __name__ == "__main__":
 
     parser = _build_arg_parser()
     args = parser.parse_args()
+    # Set verbose env before run_server() so setup_logging() and every
+    # suppression site see it; also restore library/DEBUG logging.
+    if args.verbose:
+        os.environ["UNSLOTH_STUDIO_VERBOSE"] = "1"
+        os.environ.setdefault("LOG_LEVEL", "DEBUG")
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
     if args.secure and not args.cloudflare:
