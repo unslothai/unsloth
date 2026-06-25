@@ -74,9 +74,12 @@ _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
-# Bucket-dict cap. On overflow, prune stale entries; if still full the failure
-# folds into the per-IP aggregate only.
+# Bucket-dict cap. On overflow, reclaim expired buckets; if still full the
+# oldest-inserted per-IP bucket is FIFO-evicted so the new IP still gets tracked.
 _LOGIN_MAX_BUCKETS = 4096
+# Monotonic time of the last full per-IP stale sweep; rate-limits that O(n) sweep
+# so a burst of distinct IPs can't turn every failure into a full-dict scan.
+_LAST_IP_PRUNE = 0.0
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
@@ -186,22 +189,29 @@ def _prune_stale_ip_buckets(now: float) -> None:
 
 
 def _record_login_failure(key: tuple[str, str]) -> int:
+    global _LAST_IP_PRUNE
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        if ip not in _LOGIN_IP_BUCKETS and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
-            _prune_stale_ip_buckets(now)
-        # Gate the add on the cap (mirrors the account path below): if pruning
-        # didn't free a slot, don't grow the dict for a brand-new IP -- otherwise
-        # a spoofed-X-Forwarded-For spray keeps it unbounded and every new IP pays
-        # a full-dict prune scan. A first-seen IP that we skip has no prior
-        # failures anyway, so the per-IP limit is unaffected.
-        ip_fails = 0
-        if ip in _LOGIN_IP_BUCKETS or len(_LOGIN_IP_BUCKETS) < _LOGIN_MAX_BUCKETS:
-            ip_bucket = _LOGIN_IP_BUCKETS.setdefault(ip, deque())
-            _prune_bucket(ip_bucket, now)
-            ip_bucket.append(now)
-            ip_fails = len(ip_bucket)
+        # Keep the per-IP dict bounded without disabling throttling once it is full.
+        # If the IP is new and the dict is at the cap, first reclaim expired buckets
+        # (rate-limited so a burst of distinct IPs can't make every failure an O(n)
+        # sweep); if it is still full because every bucket is fresh, FIFO-evict the
+        # oldest-inserted IP. Either way this IP still gets a bucket, so a saturating
+        # (e.g. spoofed-X-Forwarded-For) spray stays throttled instead of every new
+        # IP being treated as first-seen.
+        ip_bucket = _LOGIN_IP_BUCKETS.get(ip)
+        if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+            if now - _LAST_IP_PRUNE >= 1.0:
+                _prune_stale_ip_buckets(now)
+                _LAST_IP_PRUNE = now
+            while len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+                _LOGIN_IP_BUCKETS.pop(next(iter(_LOGIN_IP_BUCKETS)), None)
+        if ip_bucket is None:
+            ip_bucket = _LOGIN_IP_BUCKETS[ip] = deque()
+        _prune_bucket(ip_bucket, now)
+        ip_bucket.append(now)
+        ip_fails = len(ip_bucket)
 
         if key not in _LOGIN_BUCKETS and len(_LOGIN_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             _prune_stale_buckets(now)

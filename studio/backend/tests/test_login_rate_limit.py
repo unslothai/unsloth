@@ -29,9 +29,11 @@ def _reset_buckets():
 
     auth_routes._LOGIN_BUCKETS.clear()
     auth_routes._LOGIN_IP_BUCKETS.clear()
+    auth_routes._LAST_IP_PRUNE = 0.0
     yield
     auth_routes._LOGIN_BUCKETS.clear()
     auth_routes._LOGIN_IP_BUCKETS.clear()
+    auth_routes._LAST_IP_PRUNE = 0.0
 
 
 @pytest.fixture
@@ -214,6 +216,26 @@ class TestBucketKeyAndBlocking:
             auth_routes._record_login_failure((req.client.host, f"user-{idx}"))
         # Hard cap respected; further keys don't allocate.
         assert len(auth_routes._LOGIN_BUCKETS) <= 10
+
+    def test_ip_bucket_cap_bounds_without_disabling_throttling(self, env_no_proxy, monkeypatch):
+        """The per-IP dict is bounded, but saturating it must NOT disable
+        throttling: a new IP that keeps failing after the cap is hit is still
+        blocked (regression for the FIFO-evict fallback)."""
+        from routes import auth as auth_routes
+
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
+        # Saturate the per-IP dict with distinct source IPs.
+        for idx in range(50):
+            auth_routes._record_login_failure((f"198.51.100.{idx}", "admin"))
+        assert len(auth_routes._LOGIN_IP_BUCKETS) <= 10  # bounded
+
+        # A brand-new IP arriving after saturation is still throttled once it
+        # crosses the per-IP threshold (it gets a real bucket, not ip_fails=0).
+        victim = ("203.0.113.99", "admin")
+        for _ in range(5):
+            auth_routes._record_login_failure(victim)
+        assert auth_routes._login_blocked(victim) > 0
 
 
 # ---------- /login 429 body ----------
