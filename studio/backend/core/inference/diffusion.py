@@ -45,6 +45,7 @@ from .diffusion_memory import (
     snapshot_device_memory,
 )
 from .diffusion_speed import SPEED_OFF, apply_speed_optims
+from .diffusion_precision import apply_fp8_text_encoder
 
 logger = get_logger(__name__)
 
@@ -68,6 +69,8 @@ class _LoadState:
     # The opt-in speed profile (Phase 3).
     speed_mode: str = SPEED_OFF
     speed_optims: tuple = ()
+    # Text encoder(s) cast to fp8 storage (Phase 2B).
+    fp8_text_encoder: tuple = ()
 
 
 @dataclass
@@ -253,6 +256,7 @@ class DiffusionBackend:
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
+        text_encoder_fp8: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         fam = self.validate_load_request(
@@ -283,6 +287,7 @@ class DiffusionBackend:
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
+                text_encoder_fp8 = text_encoder_fp8,
                 _load_token = token,
             ),
             daemon = True,
@@ -403,6 +408,7 @@ class DiffusionBackend:
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
+        text_encoder_fp8: bool = False,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -462,6 +468,11 @@ class DiffusionBackend:
                     pipe, target, is_gguf = bool(gguf_filename), family = fam,
                     speed_mode = speed_mode or SPEED_OFF, logger = logger,
                 )
+                # Cast the dense companion text encoder(s) to fp8 storage (opt-in),
+                # also before placement so the offload hooks move the smaller weights.
+                fp8_cast = apply_fp8_text_encoder(
+                    pipe, target, enable = text_encoder_fp8, logger = logger,
+                )
 
                 # Decide placement from MEASURED free device memory vs the model's
                 # estimated resident size (transformer GGUF dequantised + the
@@ -492,6 +503,7 @@ class DiffusionBackend:
                     memory_mode = plan.requested_mode,
                     speed_mode = (speed_mode or SPEED_OFF),
                     speed_optims = tuple(k for k, v in speed_applied.items() if v),
+                    fp8_text_encoder = tuple(fp8_cast),
                 )
 
         logger.info(
@@ -701,6 +713,7 @@ class DiffusionBackend:
                 "memory_mode": None,
                 "speed_mode": None,
                 "speed_optims": [],
+                "fp8_text_encoder": [],
             }
         return {
             "loaded": True,
@@ -715,6 +728,7 @@ class DiffusionBackend:
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
             "speed_optims": list(state.speed_optims),
+            "fp8_text_encoder": list(state.fp8_text_encoder),
         }
 
 

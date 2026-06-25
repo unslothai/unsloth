@@ -1714,6 +1714,12 @@ class DiffusionLoadRequest(BaseModel):
                       "default (channels_last + regional torch.compile where eligible), "
                       "max (also TF32 + fused QKV).",
     )
+    text_encoder_fp8: bool = Field(
+        False,
+        description = "Cast the companion text encoder(s) to fp8 storage (~2x smaller, "
+                      "CUDA + bf16 only). A memory-vs-quality tradeoff (shifts fine "
+                      "detail), not free; pairs well with balanced mode.",
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -1817,4 +1823,7 @@ class DiffusionStatusResponse(BaseModel):
     speed_mode: Optional[str] = Field(None, description = "Requested speed mode")
     speed_optims: list[str] = Field(
         default_factory = list, description = "Speed optimisations actually engaged"
+    )
+    fp8_text_encoder: list[str] = Field(
+        default_factory = list, description = "Text encoders cast to fp8 storage"
     )

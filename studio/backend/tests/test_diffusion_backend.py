@@ -851,6 +851,8 @@ def test_load_speed_mode_threads_and_defaults_off(fake_runtime, tmp_path):
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", speed_mode = "max"
     )
     assert status2["speed_mode"] == "max"
+    # fp8 text-encoder defaults off and reports an empty list.
+    assert status2["fp8_text_encoder"] == []
 
 
 def test_load_fast_mode_stays_resident_on_cuda(fake_runtime, tmp_path, monkeypatch):
