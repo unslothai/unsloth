@@ -1,8 +1,9 @@
 # Full Unsloth image: base training stack + Studio + JupyterLab + sshd.
 #
-# This is the image published as docker.io/unsloth/unsloth:latest. It layers
-# Unsloth Studio on top of the lean base image (Dockerfile, published under
-# the `base` tags) and runs the same service trio as the previous production
+# This is the image published as docker.io/unsloth/unsloth:studio (and the
+# default :latest). It layers Unsloth Studio on top of the lean core image
+# (Dockerfile, published under the `core` tags) and runs the same service trio
+# as the previous production
 # image: Studio on 8000, JupyterLab on 8888, key-only sshd on 22.
 #
 # Build (local):
@@ -28,6 +29,22 @@
 # images always ship the same stack.
 
 ARG BASE_IMAGE=unsloth-blackwell:test
+
+# --- builder stage: prebuild the Unsloth JupyterLab extension -----------------
+# Builds the named "Unsloth Dark" (Monokai) theme + the Colab-style Down/Up
+# cell-navigation keymap. Node lives ONLY in this throwaway stage; the final
+# image copies just the prebuilt static labextension, so the runtime stays
+# Node-free. Uses the base image's bundled jlpm + jupyterlab (version-matched).
+FROM ${BASE_IMAGE} AS labext-builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends nodejs npm git \
+ && rm -rf /var/lib/apt/lists/*
+COPY jupyter/unsloth_labext /opt/labext-src
+RUN cd /opt/labext-src \
+ && /opt/unsloth-venv/bin/jlpm install \
+ && /opt/unsloth-venv/bin/jlpm build:prod
+
 FROM ${BASE_IMAGE}
 
 # Studio source ref to clone. Defaults to `main`, but a CI publish pipeline
@@ -170,6 +187,43 @@ COPY fetch_llama_prebuilt.py /usr/local/lib/unsloth/fetch_llama_prebuilt.py
 # Optional public Cloudflare tunnel for JupyterLab (UNSLOTH_JUPYTER_CLOUDFLARE=1,
 # or `unsloth-jupyter-tunnel --force`); supervisord runs it as jupyter-cloudflare.
 COPY unsloth_jupyter_tunnel.sh /usr/local/bin/unsloth-jupyter-tunnel
+# JupyterLab defaults baked for every container: the named "Unsloth Dark"
+# (Monokai) theme with adaptive light/dark by system preference, a per-cell run
+# button that does NOT auto-advance, a labeled "Restart & Run All", windowing
+# disabled so collapsing a long output does not snap to the cell top,
+# ArrowDown/Up jumping to the TOP of the next/previous cell, and the official
+# Jupyter "get notified about news" prompt suppressed (fetchNews/checkForUpdates
+# off). overrides.json is the system-wide settings override (read from the base
+# venv's share/jupyter/lab/settings); the theme + keymap + Unsloth top-bar logo
+# ship as the prebuilt labextension built in the labext-builder stage above.
+COPY jupyter/overrides.json /opt/unsloth-venv/share/jupyter/lab/settings/overrides.json
+COPY --from=labext-builder /opt/labext-src/unsloth-jupyterlab/labextension /opt/unsloth-venv/share/jupyter/labextensions/unsloth-jupyterlab
+# Unsloth branding (all served by jupyter_server, so applied to its site-packages
+# the same way): replace the browser-tab favicon and the page logo with the
+# Unsloth logo, and brand the login screen (dark Unsloth-themed login.html).
+# Also disable + lock the stock top-left Jupyter logo plugin so the Unsloth logo
+# widget shipped by the labextension is the only one rendered in the top bar
+# (lock keeps users from re-enabling it in the UI).
+COPY jupyter/favicon.ico /tmp/unsloth-branding/favicon.ico
+COPY jupyter/logo.png /tmp/unsloth-branding/logo.png
+COPY jupyter/login.html /tmp/unsloth-branding/login.html
+COPY jupyter/install_sloth_stickers.py /tmp/unsloth-branding/install_sloth_stickers.py
+RUN JS="$(/opt/unsloth-venv/bin/python -c 'import os, jupyter_server; print(os.path.dirname(jupyter_server.__file__))')" \
+ && for n in favicon.ico favicon-notebook.ico favicon-file.ico favicon-terminal.ico; do \
+        cp /tmp/unsloth-branding/favicon.ico "${JS}/static/favicons/${n}"; \
+    done \
+ && cp /tmp/unsloth-branding/logo.png "${JS}/static/logo/logo.png" \
+ && cp /tmp/unsloth-branding/login.html "${JS}/templates/login.html" \
+    # Copy the curated Studio sloth stickers the login page rotates through into
+    # jupyter_server's static dir (sloth/NN.png). Fail-soft: if the Studio
+    # public folder ever moves, login.html's onerror falls back to the logo.
+ && /opt/unsloth-venv/bin/python /tmp/unsloth-branding/install_sloth_stickers.py \
+        --src "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/public/Sloth emojis" \
+        --dest "${JS}/static/sloth" \
+    || echo ">> sloth stickers not installed (login falls back to the Unsloth logo)" \
+ && rm -rf /tmp/unsloth-branding \
+ && /opt/unsloth-venv/bin/jupyter labextension disable @jupyterlab/application-extension:logo \
+ && /opt/unsloth-venv/bin/jupyter labextension lock @jupyterlab/application-extension:logo
 RUN chmod +x /usr/local/bin/unsloth-studio-launch \
              /usr/local/bin/unsloth-studio-update \
              /usr/local/bin/unsloth-llama-update \

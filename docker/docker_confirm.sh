@@ -23,7 +23,7 @@
 #     Studio chat / Jupyter / GGUF tooling still validate.
 #
 # Env overrides: IMAGE (default unsloth/unsloth:latest)
-#                BASE_IMAGE (default unsloth/unsloth:base)
+#                BASE_IMAGE (default unsloth/unsloth:core)
 #                GPUS=all|none|0|0,1   (default: auto-detect)
 #                PORT_STUDIO=18000  PORT_JUPYTER=18888
 #                WORK=~/unsloth_docker_test   (logs)
@@ -33,7 +33,7 @@
 set -uo pipefail
 
 IMAGE="${IMAGE:-unsloth/unsloth:latest}"
-BASE_IMAGE="${BASE_IMAGE:-unsloth/unsloth:base}"
+BASE_IMAGE="${BASE_IMAGE:-unsloth/unsloth:core}"
 GPUS="${GPUS:-auto}"
 PORT_STUDIO="${PORT_STUDIO:-18000}"
 PORT_JUPYTER="${PORT_JUPYTER:-18888}"

@@ -61,6 +61,14 @@ PY
 c.ServerApp.ip = "0.0.0.0"
 c.ServerApp.open_browser = False
 c.ServerApp.root_dir = "/workspace"
+# Open straight into the categorized notebook view (built by unsloth-sync-notebooks).
+# default_url must be set on BOTH ServerApp and LabApp -- the lab extension app
+# otherwise overrides ServerApp's value back to /lab. preferred_dir makes the
+# file browser default to that folder. Use a literal space (JupyterLab
+# URL-encodes it to %20 in the redirect itself).
+c.ServerApp.default_url = "/lab/tree/Unsloth Notebooks"
+c.LabApp.default_url = "/lab/tree/Unsloth Notebooks"
+c.ServerApp.preferred_dir = "/workspace/Unsloth Notebooks"
 c.PasswordIdentityProvider.hashed_password = "${HASH}"
 EOF
 fi

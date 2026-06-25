@@ -21,7 +21,7 @@
 
 $ErrorActionPreference = "Continue"
 $IMAGE        = if ($env:IMAGE)        { $env:IMAGE }        else { "unsloth/unsloth:latest" }
-$BASE_IMAGE   = if ($env:BASE_IMAGE)   { $env:BASE_IMAGE }   else { "unsloth/unsloth:base" }
+$BASE_IMAGE   = if ($env:BASE_IMAGE)   { $env:BASE_IMAGE }   else { "unsloth/unsloth:core" }
 $GPUS         = if ($env:GPUS)         { $env:GPUS }         else { "auto" }
 $PORT_STUDIO  = if ($env:PORT_STUDIO)  { $env:PORT_STUDIO }  else { 18000 }
 $PORT_JUPYTER = if ($env:PORT_JUPYTER) { $env:PORT_JUPYTER } else { 18888 }

@@ -21,6 +21,13 @@
 #   UNSLOTH_NOTEBOOKS_DIR=<path>      target dir (default /workspace/unsloth-notebooks)
 #   UNSLOTH_NOTEBOOKS_REPO=<url>      source repo (default unslothai/notebooks)
 #   UNSLOTH_NOTEBOOK_FETCH_TIMEOUT=N  seconds for each network op (default 60)
+#   UNSLOTH_SKIP_NOTEBOOK_VIEW=1      do not build the categorized folder view
+#   UNSLOTH_NOTEBOOKS_VIEW_DIR=<path> categorized view dir
+#                                     (default "/workspace/Unsloth Notebooks")
+#   UNSLOTH_NB_GPU=amd|cuda           force AMD-* notebook visibility (default:
+#                                     autodetect; AMD-* shown only on AMD/HIP)
+#   UNSLOTH_KEEP_COLAB_INTRO=1        keep the Colab "Run all on Colab" sentence
+#                                     (default: strip it for the Docker image)
 set -u
 
 TEMPLATE="${UNSLOTH_NOTEBOOKS_TEMPLATE:-/opt/unsloth-notebooks}"
@@ -46,6 +53,26 @@ if [ -z "$SIG_HELPER" ]; then
     fi
 fi
 
+# Same resolution (override -> PATH -> sibling file) for the categorized-view
+# builder and the Docker-only Colab-intro stripper.
+_self_dir="${_self_dir:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
+VIEW_HELPER="${UNSLOTH_NB_VIEW_HELPER:-}"
+if [ -z "$VIEW_HELPER" ]; then
+    if command -v unsloth-nb-view >/dev/null 2>&1; then
+        VIEW_HELPER="$(command -v unsloth-nb-view)"
+    elif [ -n "$_self_dir" ] && [ -f "$_self_dir/unsloth_nb_view.py" ]; then
+        VIEW_HELPER="$_self_dir/unsloth_nb_view.py"
+    fi
+fi
+STRIP_HELPER="${UNSLOTH_NB_STRIP_HELPER:-}"
+if [ -z "$STRIP_HELPER" ]; then
+    if command -v unsloth-nb-strip-colab >/dev/null 2>&1; then
+        STRIP_HELPER="$(command -v unsloth-nb-strip-colab)"
+    elif [ -n "$_self_dir" ] && [ -f "$_self_dir/unsloth_nb_strip_colab.py" ]; then
+        STRIP_HELPER="$_self_dir/unsloth_nb_strip_colab.py"
+    fi
+fi
+
 # True only when BOTH are .ipynb, the helper is usable, and it reports the
 # non-boilerplate middle is identical (so only the header/footer changed).
 # Any failure returns false, so the caller falls back to a normal refresh.
@@ -62,6 +89,53 @@ middle_unchanged() {
 mkdir -p "$DEST" 2>/dev/null || exit 0
 
 hash_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
+
+# --- categorized folder view + Docker-only Colab cleanups --------------------
+# AMD/HIP detection: AMD-*.ipynb are shown only on an AMD GPU. UNSLOTH_NB_GPU
+# forces it (amd|cuda); otherwise probe nvidia-smi then the ROCm tools.
+nb_gpu_is_amd() {
+    case "${UNSLOTH_NB_GPU:-}" in
+        amd|AMD|hip|HIP|rocm|ROCm|ROCM) return 0 ;;
+        cuda|CUDA|nvidia|NVIDIA|nv|NV) return 1 ;;
+    esac
+    if command -v nvidia-smi >/dev/null 2>&1 \
+       && nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
+        return 1
+    fi
+    if command -v rocm-smi >/dev/null 2>&1 || command -v rocminfo >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1   # default: treat as non-AMD (hide AMD-* notebooks)
+}
+
+# Rebuild the sibling symlink VIEW (categorized folders mirroring the README
+# headers) from scratch. Symlinks live OUTSIDE $DEST, so the sync state machine
+# (which walks `find -type f`, skipping symlinks) never sees them.
+build_categorized_view() {
+    [ "${UNSLOTH_SKIP_NOTEBOOK_VIEW:-0}" = "1" ] && return 0
+    [ -n "$PYBIN" ] && [ -n "$VIEW_HELPER" ] || return 0
+    [ -d "$DEST/nb" ] || return 0
+    _view="${UNSLOTH_NOTEBOOKS_VIEW_DIR:-/workspace/Unsloth Notebooks}"
+    if nb_gpu_is_amd; then
+        "$PYBIN" "$VIEW_HELPER" "$DEST" "$_view" --amd 2>/dev/null || true
+    else
+        "$PYBIN" "$VIEW_HELPER" "$DEST" "$_view" 2>/dev/null || true
+    fi
+}
+
+# Strip the Colab-only "Run all on Colab" sentence from notebooks WE own and the
+# user has not edited (STATE-aware), updating their recorded hashes in place.
+strip_colab_intros() {
+    [ "${UNSLOTH_KEEP_COLAB_INTRO:-0}" = "1" ] && return 0
+    [ -n "$PYBIN" ] && [ -n "$STRIP_HELPER" ] || return 0
+    [ -f "$STATE" ] || return 0
+    "$PYBIN" "$STRIP_HELPER" --state "$STATE" --dest "$DEST" 2>/dev/null || true
+}
+
+# Apply both on EVERY exit after the basic guards, so the view + cleanups also
+# run on the common "nothing to refresh" / offline paths. Both are idempotent.
+finalize() { strip_colab_intros; build_categorized_view; }
+trap finalize EXIT
 
 # Record "<hash>  <relpath>" for every file currently under DEST (skip metadata).
 record_state() {

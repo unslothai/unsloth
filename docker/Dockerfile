@@ -285,17 +285,29 @@ RUN set -eux \
 #   omegaconf  TTS families + both NeMo-Gym RL notebooks' config objects
 #   einx  TTS codec tensor-rearrange (Llasa / Oute / Spark TTS)
 #   librosa  Whisper audio feature extraction (pairs with soundfile + torchcodec)
-#   decord  ERNIE-VL vision notebook video decode
 #   ftfy  Oute TTS text normalisation
+# decord (ERNIE-VL video decode) is installed separately below: it ships no
+# aarch64 wheel, so a hard install here would break the arm64 build.
 # librosa pulls numba/soxr/audioread; numba is already pinned >=0.65 (numpy 2.4
 # compatible) by the vLLM pass, so the resolve must NOT move torch/numpy/numba --
 # the assertion below fails the build loudly if it did.
+# Pinned (==) to the resolved, tested versions for reproducible rebuilds -- the
+# same convention as the cu128 core (torch/torchvision/torchaudio). Bump these
+# deliberately, not silently on the next build. Transitive deps of these are
+# captured by the full venv lockfile (docker/freeze.sh -> requirements.lock.txt).
 RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
-        jupyterlab notebook ipywidgets matplotlib \
-        soundfile evaluate jiwer tensorboard langid easydict protobuf \
-        omegaconf einx librosa decord ftfy \
+        "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
+        "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
+        "langid==1.1.6" "easydict==1.13" "protobuf==6.33.6" \
+        "omegaconf==2.3.1" "einx==0.4.3" "librosa==0.11.0" "ftfy==6.3.1" \
  && ${VENV}/bin/python -c "import torch, numpy, numba; from packaging.version import Version; assert torch.__version__.startswith('2.10.0'), torch.__version__; assert Version(numpy.__version__) >= Version('2.3'), numpy.__version__; assert Version(numba.__version__) >= Version('0.65'), numba.__version__; print('notebook-deps pins OK:', torch.__version__, numpy.__version__, numba.__version__)"
+
+# decord (ERNIE-VL video decode) publishes wheels only for x86_64 / win_amd64,
+# so install it on its own and fail-soft: amd64 gets it; on arm64 the ERNIE-VL
+# video path is skipped rather than breaking the whole image build.
+RUN ${VENV}/bin/uv pip install --python ${VENV}/bin/python "decord==0.6.0" \
+ || echo ">> decord skipped (no matching wheel for ${TARGETARCH:-amd64}); ERNIE-VL video decode unavailable"
 
 # Audio decode out of the box: the TTS/STT notebooks feed datasets' Audio
 # features, which decode through torchcodec. Three traps, all defended:
@@ -647,19 +659,22 @@ RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}
 #   * unsloth-run: headless `unsloth-run <notebook|url>` that auto-picks the
 #     sidecar and executes every cell -- the robust driven path.
 # ---------------------------------------------------------------------------
-COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py /opt/unsloth-nb/
+COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
 RUN set -eux \
  && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
  && cp /opt/unsloth-nb/unsloth_nb_compat.py "$SP/unsloth_nb_compat.py" \
- && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py \
+ && cp /opt/unsloth-nb/unsloth_colab_compat.py "$SP/unsloth_colab_compat.py" \
+ && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py /opt/unsloth-nb/unsloth_nb_view.py /opt/unsloth-nb/unsloth_nb_strip_colab.py \
  && mkdir -p /opt/unsloth-nb/bin \
  && for t in pip pip3 uv; do ln -sf /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/bin/$t; done \
  && ln -sf /opt/unsloth-nb/unsloth_run.py /usr/local/bin/unsloth-run \
  && ln -sf /opt/unsloth-nb/unsloth_sync_notebooks.sh /usr/local/bin/unsloth-sync-notebooks \
  && ln -sf /opt/unsloth-nb/unsloth_nb_content_sig.py /usr/local/bin/unsloth-nb-content-sig \
+ && ln -sf /opt/unsloth-nb/unsloth_nb_view.py /usr/local/bin/unsloth-nb-view \
+ && ln -sf /opt/unsloth-nb/unsloth_nb_strip_colab.py /usr/local/bin/unsloth-nb-strip-colab \
  && mkdir -p /root/.ipython/profile_default/startup \
  && cp /opt/unsloth-nb/unsloth_ipython_startup.py /root/.ipython/profile_default/startup/00-unsloth-nb.py \
- && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))"
+ && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat, unsloth_colab_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))"
 # Shim dir AHEAD of the venv bin so `!pip`/`!uv` resolve to the shim, not the real tool.
 ENV PATH=/opt/unsloth-nb/bin:${PATH}
 
