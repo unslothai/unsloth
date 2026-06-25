@@ -570,6 +570,52 @@ function ModelRow({
 
 // ── GGUF Variant Expander ────────────────────────────────────
 
+function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
+  if (!variant || typeof variant !== "object") return false;
+  const candidate = variant as Partial<GgufVariantDetail>;
+  return (
+    typeof candidate.filename === "string" &&
+    candidate.filename.length > 0 &&
+    typeof candidate.quant === "string" &&
+    candidate.quant.length > 0 &&
+    typeof candidate.size_bytes === "number" &&
+    Number.isFinite(candidate.size_bytes) &&
+    candidate.size_bytes >= 0 &&
+    (candidate.downloaded === undefined ||
+      typeof candidate.downloaded === "boolean")
+  );
+}
+
+function normalizeGgufVariantsResponse(res: {
+  variants?: unknown;
+  default_variant?: unknown;
+  has_vision?: unknown;
+  context_length?: unknown;
+} | null | undefined): {
+  variants: GgufVariantDetail[];
+  defaultVariant: string | null;
+  hasVision: boolean;
+  contextLength: number | null;
+} {
+  const contextLength = res?.context_length;
+  return {
+    variants: (Array.isArray(res?.variants) ? res.variants : []).filter(
+      isValidGgufVariant,
+    ),
+    defaultVariant:
+      typeof res?.default_variant === "string" && res.default_variant.length > 0
+        ? res.default_variant
+        : null,
+    hasVision: res?.has_vision === true,
+    contextLength:
+      typeof contextLength === "number" &&
+      Number.isFinite(contextLength) &&
+      contextLength >= 0
+        ? contextLength
+        : null,
+  };
+}
+
 function GgufVariantExpander({
   repoId,
   onSelect,
@@ -622,11 +668,12 @@ function GgufVariantExpander({
     listGgufVariants(repoId)
       .then((res) => {
         if (canceled) return;
-        setVariants(res.variants);
-        setDefaultVariant(res.default_variant);
-        setHasVision(res.has_vision);
-        onHasVision?.(res.has_vision);
-        setNativeContext(res.context_length ?? null);
+        const normalized = normalizeGgufVariantsResponse(res);
+        setVariants(normalized.variants);
+        setDefaultVariant(normalized.defaultVariant);
+        setHasVision(normalized.hasVision);
+        onHasVision?.(normalized.hasVision);
+        setNativeContext(normalized.contextLength);
       })
       .catch((err) => {
         if (canceled) return;
@@ -694,19 +741,25 @@ function GgufVariantExpander({
   // If the recommended variant is OOM, pick the largest fitting one;
   // if all are OOM, recommend the smallest.
   const effectiveRecommended = useMemo(() => {
-    if (!variants || totalBudgetGb <= 0) return defaultVariant;
+    if (!variants || variants.length === 0 || totalBudgetGb <= 0) {
+      return defaultVariant;
+    }
     const defaultV = variants.find((v) => v.quant === defaultVariant);
     if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
       return defaultVariant;
     // Largest non-OOM variant (best quality that fits)
-    const fitting = variants.filter((v) => getGgufFit(v.size_bytes) !== "oom");
+    const fitting = variants.filter(
+      (v) => getGgufFit(v.size_bytes) !== "oom",
+    );
     if (fitting.length > 0) {
       fitting.sort((a, b) => b.size_bytes - a.size_bytes);
       return fitting[0].quant;
     }
     // All OOM -- recommend smallest (most likely to partially run)
-    const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
-    return sorted[0].quant;
+    const sorted = [...variants].sort(
+      (a, b) => a.size_bytes - b.size_bytes,
+    );
+    return sorted[0]?.quant ?? defaultVariant;
   }, [variants, defaultVariant, totalBudgetGb, getGgufFit]);
 
   const sortedVariants = useMemo(() => {
@@ -2901,7 +2954,7 @@ export function HubModelPicker({
                               }
                             }}
                             onArrowDownIntoChildren={
-                              isGgufExpanded(m.id)
+                              isGguf && !isDirectGguf && isGgufExpanded(m.id)
                                 ? () => {
                                     const focused =
                                       focusFirstChildOption(optionKey);
@@ -2911,7 +2964,7 @@ export function HubModelPicker({
                             }
                             vramStatus={null}
                           />
-                          {isGgufExpanded(m.id) && (
+                          {isGguf && !isDirectGguf && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
                               onDevice={true}
@@ -2988,7 +3041,7 @@ export function HubModelPicker({
                               }
                             }}
                             onArrowDownIntoChildren={
-                              !isGgufFile && isGgufExpanded(m.id)
+                              isGguf && !isGgufFile && isGgufExpanded(m.id)
                                 ? () => {
                                     const focused =
                                       focusFirstChildOption(optionKey);
@@ -2998,7 +3051,7 @@ export function HubModelPicker({
                             }
                             vramStatus={null}
                           />
-                          {!isGgufFile && isGgufExpanded(m.id) && (
+                          {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
                               onDevice={true}
@@ -3069,13 +3122,13 @@ export function HubModelPicker({
                               }
                             }}
                             onArrowDownIntoChildren={
-                              !isGgufFile && isGgufExpanded(m.id)
+                              isGguf && !isGgufFile && isGgufExpanded(m.id)
                                 ? () => focusFirstChildOption(optionKey)
                                 : undefined
                             }
                             vramStatus={null}
                           />
-                          {!isGgufFile && isGgufExpanded(m.id) && (
+                          {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
                               onDevice={true}

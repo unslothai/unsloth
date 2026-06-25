@@ -411,6 +411,8 @@ def test_same_task_response_closes_body_iterator_on_send_disconnect():
         response = m["_SameTaskStreamingResponse"].__new__(m["_SameTaskStreamingResponse"])
         response.body_iterator = agen
         response.background = None
+        # __new__ bypasses __init__; __call__'s disconnect branch reads _unstarted_cleanup.
+        response._unstarted_cleanup = None
 
         async def stream_response(_send):
             raise OSError("client disconnected")
