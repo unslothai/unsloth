@@ -2680,7 +2680,7 @@ class LlamaCppBackend:
                 return int(env_val)
             except ValueError:
                 pass
-        return 0
+        return 32
 
     def _estimate_kv_cache_bytes(
         self,
@@ -3011,7 +3011,7 @@ class LlamaCppBackend:
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
         ctx_checkpoints = self._resolve_ctx_checkpoints(
-            ctx_checkpoints, extra_args if "extra_args" in locals() else None
+            ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, self.extra_args)
         )
 
         if not self._can_estimate_kv():
@@ -4207,7 +4207,7 @@ class LlamaCppBackend:
         the compute buffer.
         """
         ctx_checkpoints = self._resolve_ctx_checkpoints(
-            ctx_checkpoints, extra_args if "extra_args" in locals() else None
+            ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints, self.extra_args)
         )
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
