@@ -1580,9 +1580,10 @@ export function HubModelPicker({
   // the chat classifier marks image tasks "unsupported".
   const isChatSupported = useCallback(
     (r: HfModelResult) => {
-      // Image tab: keep task-matching results, but drop editing checkpoints the
-      // backend rejects (so they don't appear in Hub search only to 400 on load).
-      if (task && taskMatchesFilter(r.pipelineTag, task)) return !isImageEditModel(r.id);
+      // Image tab (task set): only task-matching, non-editing results. Anything
+      // else (e.g. a chat GGUF surfaced by a typed query) is dropped rather than
+      // falling through to the chat classifier and appearing as loadable.
+      if (task) return taskMatchesFilter(r.pipelineTag, task) && !isImageEditModel(r.id);
       return (
         classifyUnslothSupport({
           modelId: r.id,

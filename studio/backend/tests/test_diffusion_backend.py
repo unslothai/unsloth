@@ -308,7 +308,8 @@ def test_load_without_gguf_raises():
 
 def test_load_unknown_family_raises():
     backend = DiffusionBackend()
-    with pytest.raises(ValueError):
+    # User-facing message: names the supported models, no internal-API jargon.
+    with pytest.raises(ValueError, match = "isn't a supported image-generation model"):
         backend.load_pipeline("some/unrecognised-repo", gguf_filename = "x.gguf")
 
 
@@ -497,3 +498,28 @@ def test_prefetch_downloads_gguf_and_base(monkeypatch, tmp_path):
     backend._prefetch_files(str(tmp_path), "model.gguf", "base/repo", ["vae/x.safetensors"], None)
     assert all(repo != str(tmp_path) for repo, _ in calls)
     assert ("base/repo", "vae/x.safetensors") in calls
+
+
+def test_run_load_does_not_stamp_superseded_progress(fake_runtime, monkeypatch):
+    # A worker whose load is superseded mid-resolve must not stamp its progress
+    # (base_repo / expected_bytes) onto the new load's _LoadingState.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(repo_id = "unsloth/Z-Image-Turbo-GGUF", base_repo = "seed")
+    backend._load_token = 5
+    monkeypatch.setattr("core.inference.diffusion._hf_base_model", lambda *a, **k: None)
+
+    def supersede_then_estimate(*a, **k):
+        backend._load_token = 6  # a newer begin_load bumped the token mid-resolve
+        return (99999, [])
+
+    monkeypatch.setattr(
+        DiffusionBackend, "_estimate_download_bytes", staticmethod(supersede_then_estimate)
+    )
+    monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda self, *a, **k: None)
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **k: None)
+
+    backend._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "m.gguf", base_repo = None, _load_token = 5
+    )
+    assert backend._loading.expected_bytes == 0
+    assert backend._loading.base_repo == "seed"

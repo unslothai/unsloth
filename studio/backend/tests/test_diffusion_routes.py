@@ -225,7 +225,7 @@ def test_generate_without_load_returns_409(client):
 
 def test_load_unknown_family_returns_400(client, monkeypatch):
     def _raise(*a, **k):
-        raise ValueError("Could not infer a diffusion family for 'x/y'.")
+        raise ValueError("'x/y' isn't a supported image-generation model. Supported: Z-Image.")
 
     backend = _FakeBackend()
     backend.begin_load = _raise
@@ -234,7 +234,7 @@ def test_load_unknown_family_returns_400(client, monkeypatch):
         "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
     )
     assert resp.status_code == 400
-    assert "family" in resp.json()["detail"]
+    assert "isn't a supported image-generation model" in resp.json()["detail"]
 
 
 def test_load_progress_route(client):

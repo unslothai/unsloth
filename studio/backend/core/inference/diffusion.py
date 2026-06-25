@@ -176,7 +176,8 @@ class DiffusionBackend:
         fam = detect_family(repo_id, family_override)
         if fam is None:
             raise ValueError(
-                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
+                f"'{repo_id}' isn't a supported image-generation model. "
+                f"Supported: Z-Image, Qwen-Image, FLUX.1, FLUX.2-klein."
             )
 
         with self._lock:
@@ -221,10 +222,12 @@ class DiffusionBackend:
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
             )
-            loading = self._loading
-            if loading is not None:
-                loading.base_repo = base
-                loading.expected_bytes = expected
+            with self._lock:
+                # Stamp progress only if this load is still current; a superseding
+                # load (or unload) has its own token and its own _LoadingState.
+                if self._load_token == token and self._loading is not None:
+                    self._loading.base_repo = base
+                    self._loading.expected_bytes = expected
             # Download outside the lock so unload()/an eviction can preempt the
             # multi-GB pull; load_pipeline below then assembles from the cache.
             self._prefetch_files(
@@ -246,9 +249,13 @@ class DiffusionBackend:
             if self._load_token != token:
                 return
             logger.error("diffusion.load_failed: %s", exc)
+            # Redact native paths: this error is surfaced verbatim via the
+            # load-progress poll, and Studio can run as a shared server.
+            from utils.native_path_leases import redact_native_paths
+
             with self._lock:
                 if self._load_token == token and self._loading is not None:
-                    self._loading.error = str(exc)
+                    self._loading.error = redact_native_paths(str(exc))
 
     def load_progress(self) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
@@ -330,7 +337,8 @@ class DiffusionBackend:
         fam = detect_family(repo_id, family_override)
         if fam is None:
             raise ValueError(
-                f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
+                f"'{repo_id}' isn't a supported image-generation model. "
+                f"Supported: Z-Image, Qwen-Image, FLUX.1, FLUX.2-klein."
             )
         base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
         device, dtype = self._pick_device_and_dtype()

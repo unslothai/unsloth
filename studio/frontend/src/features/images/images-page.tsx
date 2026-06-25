@@ -115,6 +115,9 @@ const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
 // Z-Image accepts 256–2048, in multiples of 16. Snap any value into range.
 const MIN_DIM = 256;
 const MAX_DIM = 2048;
+// Sequential runs are a frontend loop the backend never sees, so cap them here
+// (every other generate field is bounded by the backend's request validators).
+const MAX_RUNS = 128;
 function snapDim(value: number): number {
   if (!Number.isFinite(value)) return 1024;
   return Math.min(MAX_DIM, Math.max(MIN_DIM, Math.round(value / 16) * 16));
@@ -604,6 +607,9 @@ export function ImagesPage() {
         dismissLoadToast();
         toast.error(p.error || "Failed to load model");
         setBusy(null);
+        // A failed load may have freed a previously-loaded model, so resync to
+        // the real backend state (the synchronous failure path does the same).
+        void refreshStatus();
         return;
       }
       // Include bytes_total: the estimate lands as a 0→real jump while phase and
@@ -617,7 +623,7 @@ export function ImagesPage() {
       // Transient poll failure: keep trying.
     }
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast]);
+  }, [dismissLoadToast, refreshStatus]);
 
   const handleLoad = useCallback(
     async (repoId: string, ggufFilename: string) => {
@@ -700,6 +706,12 @@ export function ImagesPage() {
     const w = snapDim(width);
     const h = snapDim(height);
 
+    // Bound the run loop: the number input accepts typed values past the slider
+    // max (e.g. 10000) or non-numeric ones (NaN), and runs are a frontend loop
+    // with no backend limit.
+    const runs = Math.max(1, Math.min(Number.isFinite(count) ? count : 1, MAX_RUNS));
+    if (runs !== count) setCount(runs);
+
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -719,7 +731,7 @@ export function ImagesPage() {
       }
     }, 300);
     try {
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < runs; i++) {
         const res = await generateDiffusionImage({
           prompt: prompt.trim(),
           // Only send a negative prompt when guidance uses it, so the recipe
@@ -856,7 +868,7 @@ export function ImagesPage() {
             hint="How many times to repeat the generation, one after another. Each run uses the next seed, so the images differ and can be reproduced."
             value={count}
             min={1}
-            max={128}
+            max={MAX_RUNS}
             step={1}
             onChange={setCount}
           />
