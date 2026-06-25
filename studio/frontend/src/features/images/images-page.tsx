@@ -80,6 +80,10 @@ const MODELS: ModelOption[] = [
 // Per-model generation defaults (steps + guidance), matched by repo-id substring,
 // most specific first. Distilled "turbo/schnell" models want few steps and little
 // guidance; the full "dev" models want more steps and real CFG.
+// Generation defaults when the model is unrecognised: the distilled few-step /
+// no-CFG shape. Also seeds the sliders' initial state.
+const DEFAULT_GEN = { steps: 9, guidance: 0 };
+
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "z-image-turbo", steps: 9, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
@@ -91,9 +95,9 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {
   const id = repoId.toLowerCase();
-  // Fallback (a curated entry covers every model in MODELS) is the distilled
-  // few-step / no-CFG shape, hit only for an unrecognised on-device image GGUF.
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? { steps: 9, guidance: 0 };
+  // The fallback is only hit for an unrecognised on-device image GGUF; a curated
+  // entry covers every model in MODELS.
+  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
 }
 
 // Common aspect ratios (landscape; Flip gives the portrait mirror). Picking one
@@ -394,8 +398,8 @@ export function ImagesPage() {
   const [portrait, setPortrait] = useState(false);
   // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0
   // (distilled CFG-free; a negative prompt is ignored at this guidance).
-  const [steps, setSteps] = useState(9);
-  const [guidance, setGuidance] = useState(0.0);
+  const [steps, setSteps] = useState(DEFAULT_GEN.steps);
+  const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [seed, setSeed] = useState("");
   // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
   const [batchSize, setBatchSize] = useState(1);
@@ -403,7 +407,9 @@ export function ImagesPage() {
 
   const [busy, setBusy] = useState<Busy>(null);
   // {done, total} while a multi-run generation is in flight (for the button).
-  const [genProgress, setGenProgress] = useState<{ done: number; total: number } | null>(null);
+  // Number of runs finished in the current multi-run generation (null = idle).
+  // The total is just `count`, so it isn't stored separately.
+  const [genDone, setGenDone] = useState<number | null>(null);
   // Live per-step progress (step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -421,6 +427,8 @@ export function ImagesPage() {
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
+  // Last load-progress signature shown, so a tick that moved nothing skips the toast.
+  const lastLoadSig = useRef<string | null>(null);
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -569,12 +577,15 @@ export function ImagesPage() {
 
   useEffect(() => {
     void refreshStatus();
-    // Stop polling if the page unmounts mid-load / mid-generate.
+    // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the
+    // load toast — its poll loop is gone, so it would otherwise hang forever
+    // (duration: Infinity) on whatever page the user navigated to.
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       if (genPollTimer.current) clearInterval(genPollTimer.current);
+      dismissLoadToast();
     };
-  }, [refreshStatus]);
+  }, [refreshStatus, dismissLoadToast]);
 
   // Poll load-progress until the background load reaches "ready" or "error",
   // updating the persistent toast in place each tick.
@@ -594,7 +605,13 @@ export function ImagesPage() {
         setBusy(null);
         return;
       }
-      if (loadToastId.current != null) toast(null, loadToastArgs(p, loadToastId.current));
+      // Include bytes_total: the estimate lands as a 0→real jump while phase and
+      // bytes_downloaded hold, and the toast shows the percentage off that total.
+      const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
+      if (loadToastId.current != null && sig !== lastLoadSig.current) {
+        lastLoadSig.current = sig;
+        toast(null, loadToastArgs(p, loadToastId.current));
+      }
     } catch {
       // Transient poll failure: keep trying.
     }
@@ -608,6 +625,7 @@ export function ImagesPage() {
       setBusy("loading");
       // Show the chat-style toast immediately; the poll updates it by id.
       dismissLoadToast();
+      lastLoadSig.current = null;
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
       try {
         // Returns immediately — the load runs in the background; we poll for it.
@@ -677,7 +695,7 @@ export function ImagesPage() {
     const h = snapDim(height);
 
     setBusy("generating");
-    setGenProgress({ done: 0, total: count });
+    setGenDone(0);
     setGenStep(null);
     // Poll the backend's per-step progress across the whole run (all sequential
     // generations), so the bar tracks the live denoising steps.
@@ -712,7 +730,7 @@ export function ImagesPage() {
         setImages((prev) => [...res.images, ...prev]);
         if (res.images[0]) setSelectedId(res.images[0].id);
         res.images.forEach((image) => void ensureSrc(image));
-        setGenProgress({ done: i + 1, total: count });
+        setGenDone(i + 1);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Image generation failed");
@@ -720,7 +738,7 @@ export function ImagesPage() {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
       setBusy(null);
-      setGenProgress(null);
+      setGenDone(null);
       setGenStep(null);
     }
   }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, ensureSrc]);
@@ -797,8 +815,8 @@ export function ImagesPage() {
               </Button>
             </div>
           </Field>
-          <SliderField label="Width" value={width} min={256} max={2048} step={16} onChange={changeWidth} />
-          <SliderField label="Height" value={height} min={256} max={2048} step={16} onChange={changeHeight} />
+          <SliderField label="Width" value={width} min={MIN_DIM} max={MAX_DIM} step={16} onChange={changeWidth} />
+          <SliderField label="Height" value={height} min={MIN_DIM} max={MAX_DIM} step={16} onChange={changeHeight} />
 
           <SliderField
             label="Steps"
@@ -846,8 +864,8 @@ export function ImagesPage() {
 
           <Button onClick={handleGenerate} disabled={busy !== null || !status?.loaded}>
             {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
-            {busy === "generating" && genProgress && genProgress.total > 1
-              ? `Generating ${genProgress.done}/${genProgress.total}…`
+            {busy === "generating" && genDone != null && count > 1
+              ? `Generating ${genDone}/${count}…`
               : "Generate"}
           </Button>
         </div>
@@ -916,8 +934,8 @@ export function ImagesPage() {
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
                     title={
-                      genProgress && genProgress.total > 1
-                        ? `Run ${genProgress.done + 1}/${genProgress.total}`
+                      genDone != null && count > 1
+                        ? `Run ${genDone + 1}/${count}`
                         : null
                     }
                     message="Starting…"

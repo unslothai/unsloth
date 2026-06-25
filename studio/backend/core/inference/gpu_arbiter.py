@@ -30,6 +30,8 @@ _owner: Optional[str] = None
 
 
 def _evict_chat() -> None:
+    import time
+
     from core.inference import get_inference_backend
     from routes.inference import get_llama_cpp_backend
 
@@ -42,6 +44,10 @@ def _evict_chat() -> None:
     # Kill the subprocess too, not just the model: its base CUDA context holds
     # VRAM the diffusion pipeline needs.
     orchestrator._shutdown_subprocess(timeout = 5.0)
+    # The driver reclaims the killed process's VRAM asynchronously; wait for free
+    # memory to settle before the diffusion pipeline allocates, mirroring the chat
+    # reload path — otherwise a warm chat→diffusion handoff can transiently OOM.
+    llama._wait_for_vram_settle(since_kill = time.monotonic())
 
 
 def _evict_diffusion() -> None:

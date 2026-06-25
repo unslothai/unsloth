@@ -131,8 +131,3 @@ def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     if not child.exists():
         raise FileNotFoundError(f"'{gguf_filename}' not found under {repo_root}.")
     return child
-
-
-def supported_families() -> list[dict]:
-    """Name + base repo for each known family (for status / UI listing)."""
-    return [{"name": fam.name, "base_repo": fam.base_repo} for fam in _FAMILIES]

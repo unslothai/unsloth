@@ -90,6 +90,10 @@ class DiffusionBackend:
         self._lock = threading.Lock()
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
+        # Bumped on every begin_load and unload so a worker whose load was
+        # superseded (a new load) or cancelled (unload, incl. an arbiter eviction)
+        # neither commits its pipeline nor stamps progress onto the current load.
+        self._load_token = 0
         # The callback mutates this and generate_progress() reads it, both without
         # the lock (generate holds it for the whole call), so polling stays live.
         self._gen: Optional[_GenState] = None
@@ -136,48 +140,64 @@ class DiffusionBackend:
             raise ValueError(
                 f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
             )
-        base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
 
         with self._lock:
             # Allow starting over a previously-failed load, but not over a live one.
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
-            self._loading = _LoadingState(repo_id = repo_id, base_repo = base)
+            self._load_token += 1
+            token = self._load_token
+            # Seed with the family fallback; the worker resolves the real base
+            # (a network lookup) and updates this, so begin_load never blocks.
+            self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
 
         threading.Thread(
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
                 gguf_filename = gguf_filename,
-                base_repo = base,
+                base_repo = base_repo,
                 family_override = family_override,
                 hf_token = hf_token,
                 cpu_offload = cpu_offload,
+                _load_token = token,
             ),
             daemon = True,
         ).start()
         return self.status()
 
     def _run_load(self, **kwargs: Any) -> None:
+        token = kwargs.get("_load_token")
         try:
-            # Estimate sizes on this thread (a network call) so begin_load returns
-            # instantly; the bar shows raw bytes until the total lands. This is the
-            # only writer of _loading's fields, so no lock is needed here.
+            # Resolve the base repo and estimate sizes on this thread (both network
+            # calls) so begin_load returns instantly; the bar shows raw bytes until
+            # the total lands. This is the only writer of _loading's fields here.
+            fam = detect_family(kwargs["repo_id"], kwargs.get("family_override"))
+            base = _resolve_base_repo(kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token"))
+            kwargs["base_repo"] = base
             loading = self._loading
             if loading is not None:
+                loading.base_repo = base
                 loading.expected_bytes = self._estimate_download_bytes(
                     kwargs["repo_id"],
                     kwargs.get("gguf_filename"),
-                    kwargs["base_repo"],
+                    base,
                     kwargs.get("hf_token"),
                 )
             self.load_pipeline(**kwargs)
             with self._lock:
-                self._loading = None
+                # Only clear the marker if this load is still the current one; a
+                # newer begin_load (or an unload) has its own token.
+                if self._load_token == token:
+                    self._loading = None
         except Exception as exc:  # noqa: BLE001 — surfaced to the client via load_progress
+            # A cancelled/superseded load raised below; don't log it as a failure
+            # or stamp its error onto whatever load is current now.
+            if self._load_token != token:
+                return
             logger.error("diffusion.load_failed: %s", exc)
             with self._lock:
-                if self._loading is not None:
+                if self._load_token == token and self._loading is not None:
                     self._loading.error = str(exc)
 
     def load_progress(self) -> dict[str, Any]:
@@ -245,6 +265,7 @@ class DiffusionBackend:
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
         cpu_offload: bool = False,
+        _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         import diffusers
 
@@ -259,6 +280,12 @@ class DiffusionBackend:
         device, dtype = self._pick_device_and_dtype()
 
         with self._lock:
+            # Bail before the (slow, VRAM-heavy) build if an unload/eviction or a
+            # newer load superseded this one while we were resolving/downloading —
+            # otherwise an evicted load would resurrect a pipeline into VRAM.
+            if _load_token is not None and _load_token != self._load_token:
+                raise RuntimeError("Diffusion load was cancelled.")
+
             # Free the old pipeline before allocating the new one so two
             # checkpoints never sit in VRAM at once.
             self._unload_locked()
@@ -324,12 +351,14 @@ class DiffusionBackend:
 
             generator = torch.Generator(device = state.device)
             if seed is None:
-                # Generator.seed() seeds the generator with a fresh random value
-                # AND returns it, so the reported seed reproduces the image.
-                seed = generator.seed()
+                # Draw a fresh random seed but keep it within JS's safe-integer
+                # range (< 2**53), so the reported seed round-trips through JSON
+                # and actually reproduces the image (a raw 64-bit seed would lose
+                # precision in the browser and the recipe couldn't be replayed).
+                seed = generator.seed() & ((1 << 53) - 1)
             else:
                 seed = int(seed)
-                generator.manual_seed(seed)
+            generator.manual_seed(seed)
 
             kwargs: dict[str, Any] = {
                 "prompt": prompt,
@@ -389,9 +418,10 @@ class DiffusionBackend:
     def unload(self) -> dict[str, Any]:
         with self._lock:
             self._unload_locked()
-            # Drop a finished/failed load marker so the next load starts clean.
-            if self._loading is not None and self._loading.error is not None:
-                self._loading = None
+            # Cancel any in-flight load (its worker checks this token before
+            # committing) and drop the marker so the next load starts clean.
+            self._load_token += 1
+            self._loading = None
         return self.status()
 
     def _unload_locked(self) -> None:

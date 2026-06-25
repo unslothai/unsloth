@@ -117,3 +117,18 @@ def test_list_skips_foreign_pngs(tmp_path):
     gallery.save(_img(), _meta(prompt = "ours"))
     listed = gallery.list_images()
     assert [r["prompt"] for r in listed] == ["ours"]
+
+
+def test_list_skips_recipe_missing_required_fields(tmp_path):
+    # A PNG carrying our chunk but an incomplete/older-schema recipe (no seed etc.)
+    # must be skipped, not crash the whole listing when the route builds GalleryImage.
+    import json
+
+    from PIL.PngImagePlugin import PngInfo
+
+    info = PngInfo()
+    info.add_text("unsloth", json.dumps({"prompt": "partial"}))  # missing width/seed/...
+    _img().save(gallery.gallery_dir() / "partial.png", format = "PNG", pnginfo = info)
+    gallery.save(_img(), _meta(prompt = "ours"))
+    listed = gallery.list_images()
+    assert [r["prompt"] for r in listed] == ["ours"]

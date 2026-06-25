@@ -5,7 +5,6 @@
 
 import asyncio
 import hashlib
-import functools
 import json
 import os
 import shutil
@@ -3071,55 +3070,13 @@ _DIFFUSION_GGUF_ARCHS = frozenset({
 })
 
 
-# GGUF value type ids -> struct format (scalars). 8=string, 9=array handled separately.
-_GGUF_SCALAR_FMT = {
-    0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
-    6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d",
-}
-
-
-def _read_gguf_value(f, vtype: int):
-    """Read one GGUF metadata value, advancing the file pointer. Arrays are
-    skipped (returned as None) since we only need scalar/string KVs."""
-    import struct
-
-    if vtype == 8:  # string
-        (ln,) = struct.unpack("<Q", f.read(8))
-        return f.read(ln).decode("utf-8", "ignore")
-    if vtype == 9:  # array: [elem_type:u32][count:u64][elements...]
-        (elem_type,) = struct.unpack("<I", f.read(4))
-        (count,) = struct.unpack("<Q", f.read(8))
-        for _ in range(count):
-            _read_gguf_value(f, elem_type)
-        return None
-    fmt = _GGUF_SCALAR_FMT[vtype]
-    return struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0]
-
-
-@functools.lru_cache(maxsize = 1024)
 def _gguf_architecture(path: str) -> Optional[str]:
-    """Read just general.architecture from a GGUF header by parsing the KV section
-    directly — orders of magnitude cheaper than GGUFReader on multi-GB files.
-    Cached by path (the cached file never changes)."""
-    import struct
+    """The GGUF ``general.architecture``, or None. Delegates to the shared,
+    bounds-checked header reader (cached by path/mtime/size)."""
+    from utils.models.gguf_metadata import read_gguf_general_metadata
 
-    try:
-        with open(path, "rb") as f:
-            if f.read(4) != b"GGUF":
-                return None
-            f.read(4)  # version
-            f.read(8)  # tensor count
-            (n_kv,) = struct.unpack("<Q", f.read(8))
-            for _ in range(n_kv):
-                (klen,) = struct.unpack("<Q", f.read(8))
-                key = f.read(klen).decode("utf-8", "ignore")
-                (vtype,) = struct.unpack("<I", f.read(4))
-                value = _read_gguf_value(f, vtype)
-                if key == "general.architecture":
-                    return value.strip() if isinstance(value, str) and value.strip() else None
-    except Exception:
-        return None
-    return None
+    arch = (read_gguf_general_metadata(path) or {}).get("general.architecture")
+    return arch.strip() if isinstance(arch, str) and arch.strip() else None
 
 
 def _arch_to_task(arch: Optional[str]) -> Optional[str]:

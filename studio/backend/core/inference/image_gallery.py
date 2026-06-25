@@ -100,6 +100,12 @@ def image_b64(image_id: str) -> Optional[str]:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+# Recipe keys a gallery record must carry (the required GalleryImage fields, minus
+# id/url which _record adds). A PNG missing any is treated as foreign and skipped,
+# so a hand-dropped or older-schema file can't 500 the whole listing.
+_REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
+
+
 def _read_meta(path: Path) -> Optional[dict[str, Any]]:
     from PIL import Image
 
@@ -114,7 +120,9 @@ def _read_meta(path: Path) -> Optional[dict[str, Any]]:
         meta = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    return meta if isinstance(meta, dict) else None
+    if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
+        return None
+    return meta
 
 
 def _mtime(path: Path) -> float:

@@ -136,8 +136,27 @@ class _FakePipe:
     def enable_model_cpu_offload(self) -> None:
         self.offloaded = True
 
-    def __call__(self, **kwargs):
-        self.last_kwargs = kwargs
+    # Explicit signature (not just **kwargs) so generate()'s signature-gated
+    # guards for negative_prompt / callback_on_step_end actually take effect —
+    # a **kwargs-only fake would make `"negative_prompt" in signature` always False.
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        negative_prompt = None,
+        callback_on_step_end = None,
+        guidance_scale = None,
+        true_cfg_scale = None,
+        **kwargs,
+    ):
+        self.last_kwargs = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "callback_on_step_end": callback_on_step_end,
+            "guidance_scale": guidance_scale,
+            "true_cfg_scale": true_cfg_scale,
+            **kwargs,
+        }
         n = kwargs.get("num_images_per_prompt", 1)
         return types.SimpleNamespace(images = [_FakeImage() for _ in range(n)])
 
@@ -174,6 +193,9 @@ def fake_runtime(monkeypatch):
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
     diffusers.ZImagePipeline = _FakePipeline
     diffusers.ZImageTransformer2DModel = _FakeTransformer
+    # Qwen-Image too, so the true_cfg_scale cfg-kwarg path is exercisable.
+    diffusers.QwenImagePipeline = _FakePipeline
+    diffusers.QwenImageTransformer2DModel = _FakeTransformer
 
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
@@ -207,10 +229,18 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert _FakePipeline.last["base"] == "base/repo"
     assert "transformer" in _FakePipeline.last
 
-    gen = backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 4, guidance = 3.0)
+    gen = backend.generate(
+        prompt = "a sloth", negative_prompt = "blurry", width = 512, height = 512, steps = 4, guidance = 3.0
+    )
     assert gen["seed"] == 4242  # random seed reported back
     assert gen["repo_id"] == str(tmp_path)  # echoed so the route can record the model
     assert len(gen["images"]) == 1  # PIL images handed to the route for persistence
+    # z-image guides via guidance_scale (not true_cfg_scale); the signature-gated
+    # negative_prompt and per-step callback both reach the pipeline call.
+    call = backend._state.pipe.last_kwargs
+    assert call["guidance_scale"] == 3.0 and call["true_cfg_scale"] is None
+    assert call["negative_prompt"] == "blurry"
+    assert callable(call["callback_on_step_end"])
 
     gen2 = backend.generate(prompt = "again", seed = 99)
     assert gen2["seed"] == 99
@@ -340,11 +370,44 @@ def test_estimate_eta():
     assert _estimate_eta(8, 8, first_step_at = 100.0, now = 107.0) == 0.0
 
 
+def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "Qwen/Qwen-Image", family_override = "qwen-image"
+    )
+    backend.generate(prompt = "a sloth", guidance = 4.0)
+    # Qwen-Image's distilled guidance is off; the real CFG must land on true_cfg_scale.
+    call = backend._state.pipe.last_kwargs
+    assert call["true_cfg_scale"] == 4.0 and call["guidance_scale"] is None
+
+
 def test_begin_load_rejects_concurrent(monkeypatch):
     backend = DiffusionBackend()
+    # The worker resolves the base via a network lookup; stub it so the test is offline.
+    monkeypatch.setattr("core.inference.diffusion._hf_base_model", lambda *a, **k: None)
     monkeypatch.setattr(DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: 0))
     # Block the spawned worker so the load stays "in progress".
     monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **k: __import__("time").sleep(0.2))
     backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
     with pytest.raises(RuntimeError):
         backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
+
+
+def test_unload_cancels_in_flight_load(fake_runtime):
+    # An unload (or an arbiter eviction, which calls unload) while a load's worker
+    # is still resolving/downloading must cancel it: load_pipeline sees the bumped
+    # token and aborts, so the evicted load never resurrects a pipeline into VRAM.
+    backend = DiffusionBackend()
+    fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
+    token = 7
+    backend._load_token = token
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        # Simulate the worker reaching load_pipeline after unload bumped the token.
+        backend._load_token = token + 1
+        backend.load_pipeline(
+            "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z-image-turbo-Q4_K_S.gguf",
+            base_repo = fam.base_repo,
+            _load_token = token,
+        )
