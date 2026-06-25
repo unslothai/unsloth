@@ -56,7 +56,6 @@ DEFAULT_PROMPTS = [
 
 def _to_gray(img: Any) -> Any:
     import numpy as np
-
     return np.asarray(img.convert("L"), dtype = np.float64)
 
 
@@ -93,7 +92,11 @@ def _box_mean(x: Any, w: int) -> Any:
     return total / float(w * w)
 
 
-def ssim(a_img: Any, b_img: Any, window: int = 7) -> float:
+def ssim(
+    a_img: Any,
+    b_img: Any,
+    window: int = 7,
+) -> float:
     """Mean structural similarity (luminance) over a uniform window; 1.0 when
     identical. Pure numpy box-window SSIM (Wang et al. constants), no skimage."""
     a, b = _to_gray(a_img), _to_gray(b_img)
@@ -133,9 +136,9 @@ class _Clip:
         return emb / emb.norm(dim = -1, keepdim = True)
 
     def _text_embed(self, text: str) -> Any:
-        inputs = self.proc(
-            text = [text], return_tensors = "pt", padding = True, truncation = True
-        ).to(self.device)
+        inputs = self.proc(text = [text], return_tensors = "pt", padding = True, truncation = True).to(
+            self.device
+        )
         with self.torch.no_grad():
             emb = self.model.get_text_features(**inputs)
         return emb / emb.norm(dim = -1, keepdim = True)
@@ -153,7 +156,6 @@ class _Clip:
 def _cuda(call: str) -> Optional[int]:
     try:
         import torch
-
         if not torch.cuda.is_available():
             return None
         return int(getattr(torch.cuda, call)())
@@ -164,7 +166,6 @@ def _cuda(call: str) -> Optional[int]:
 def _cuda_reset_peak() -> None:
     try:
         import torch
-
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
             torch.cuda.synchronize()
@@ -187,7 +188,6 @@ def _wait_for_load(backend: Any, timeout_s: int = 3600) -> None:
 def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
     try:
         from huggingface_hub import HfApi
-
         info = HfApi().model_info(repo, files_metadata = True, token = os.environ.get("HF_TOKEN"))
         for s in info.siblings:
             if s.rfilename == filename and s.size:
@@ -200,13 +200,18 @@ def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
 # ── one quant: load, render the grid, measure ────────────────────────────────
 
 
-def _render_grid(backend: Any, args: argparse.Namespace, gguf: str, out_dir: Path) -> dict[str, Any]:
+def _render_grid(
+    backend: Any, args: argparse.Namespace, gguf: str, out_dir: Path
+) -> dict[str, Any]:
     """Load ``gguf`` and render one image per (prompt, seed); return images keyed by
     (prompt_index, seed) plus latency / VRAM metrics."""
     _cuda_reset_peak()
     backend.begin_load(
-        args.model, gguf_filename = gguf, base_repo = args.base_repo,
-        family_override = args.family_override, hf_token = os.environ.get("HF_TOKEN"),
+        args.model,
+        gguf_filename = gguf,
+        base_repo = args.base_repo,
+        family_override = args.family_override,
+        hf_token = os.environ.get("HF_TOKEN"),
         memory_mode = args.memory_mode,
     )
     _wait_for_load(backend)
@@ -221,8 +226,13 @@ def _render_grid(backend: Any, args: argparse.Namespace, gguf: str, out_dir: Pat
         for seed in args.seeds:
             t0 = time.time()
             result = backend.generate(
-                prompt = prompt, width = args.width, height = args.height,
-                steps = args.steps, guidance = args.guidance, seed = seed, batch_size = 1,
+                prompt = prompt,
+                width = args.width,
+                height = args.height,
+                steps = args.steps,
+                guidance = args.guidance,
+                seed = seed,
+                batch_size = 1,
             )
             latencies.append(time.time() - t0)
             img = result["images"][0]
@@ -243,7 +253,9 @@ def _render_grid(backend: Any, args: argparse.Namespace, gguf: str, out_dir: Pat
     }
 
 
-def _compare(grid: dict, ref_grid: dict, clip: Optional[_Clip], prompts: list[str]) -> dict[str, Any]:
+def _compare(
+    grid: dict, ref_grid: dict, clip: Optional[_Clip], prompts: list[str]
+) -> dict[str, Any]:
     psnrs, ssims, clip_txt, clip_sim = [], [], [], []
     for key, img in grid["images"].items():
         ref = ref_grid["images"].get(key)
@@ -285,16 +297,20 @@ def _sweep(args: argparse.Namespace) -> int:
     rows: list[dict[str, Any]] = []
     for gguf in quants:
         print(f"=== quant: {gguf} ===", flush = True)
-        grid = gguf == args.reference_quant and ref_grid or _render_grid(backend, args, gguf, out_dir)
+        grid = (
+            gguf == args.reference_quant and ref_grid or _render_grid(backend, args, gguf, out_dir)
+        )
         metrics = _compare(grid, ref_grid, clip, args.prompts)
-        rows.append({
-            "quant": gguf,
-            "file_size_mib": grid["file_size_mib"],
-            "is_reference": gguf == args.reference_quant,
-            "median_latency_s": grid["median_latency_s"],
-            "peak_vram_mib": (grid["peak_vram_bytes"] or 0) // (1024 * 1024) or None,
-            **metrics,
-        })
+        rows.append(
+            {
+                "quant": gguf,
+                "file_size_mib": grid["file_size_mib"],
+                "is_reference": gguf == args.reference_quant,
+                "median_latency_s": grid["median_latency_s"],
+                "peak_vram_mib": (grid["peak_vram_bytes"] or 0) // (1024 * 1024) or None,
+                **metrics,
+            }
+        )
         print(f"  {metrics}", flush = True)
 
     _write_outputs(args, out_dir, rows)
@@ -304,17 +320,36 @@ def _sweep(args: argparse.Namespace) -> int:
 
 
 def _write_outputs(args: argparse.Namespace, out_dir: Path, rows: list[dict]) -> None:
-    (out_dir / "quality.json").write_text(json.dumps({
-        "config": {
-            "model": args.model, "reference_quant": args.reference_quant,
-            "prompts": args.prompts, "seeds": args.seeds, "steps": args.steps,
-            "width": args.width, "height": args.height, "guidance": args.guidance,
-            "memory_mode": args.memory_mode, "clip": args.clip,
-        },
-        "rows": rows,
-    }, indent = 2))
-    fields = ["quant", "file_size_mib", "peak_vram_mib", "median_latency_s",
-              "mean_psnr", "mean_ssim", "mean_clip_text", "mean_clip_sim"]
+    (out_dir / "quality.json").write_text(
+        json.dumps(
+            {
+                "config": {
+                    "model": args.model,
+                    "reference_quant": args.reference_quant,
+                    "prompts": args.prompts,
+                    "seeds": args.seeds,
+                    "steps": args.steps,
+                    "width": args.width,
+                    "height": args.height,
+                    "guidance": args.guidance,
+                    "memory_mode": args.memory_mode,
+                    "clip": args.clip,
+                },
+                "rows": rows,
+            },
+            indent = 2,
+        )
+    )
+    fields = [
+        "quant",
+        "file_size_mib",
+        "peak_vram_mib",
+        "median_latency_s",
+        "mean_psnr",
+        "mean_ssim",
+        "mean_clip_text",
+        "mean_clip_sim",
+    ]
     with (out_dir / "quality.csv").open("w", newline = "") as fh:
         writer = csv.DictWriter(fh, fieldnames = fields, extrasaction = "ignore")
         writer.writeheader()
@@ -324,12 +359,17 @@ def _write_outputs(args: argparse.Namespace, out_dir: Path, rows: list[dict]) ->
 
 
 def _print_table(rows: list[dict]) -> None:
-    print("\n=== QUALITY vs QUANT (lower size/latency/VRAM better; higher PSNR/SSIM/CLIP better) ===", flush = True)
+    print(
+        "\n=== QUALITY vs QUANT (lower size/latency/VRAM better; higher PSNR/SSIM/CLIP better) ===",
+        flush = True,
+    )
     hdr = f"  {'quant':<28}{'size_MB':>9}{'vram_MB':>9}{'lat_s':>8}{'PSNR':>8}{'SSIM':>8}{'CLIPt':>8}{'CLIPs':>8}"
     print(hdr, flush = True)
     for r in rows:
+
         def _f(v, fmt):
             return format(v, fmt) if isinstance(v, (int, float)) else "-"
+
         psnr_str = "inf" if r.get("mean_psnr") == math.inf else _f(r.get("mean_psnr"), ".2f")
         print(
             f"  {r['quant']:<28}{_f(r.get('file_size_mib'), '>9'):>9}"
@@ -343,9 +383,11 @@ def _print_table(rows: list[dict]) -> None:
 def _recommend(args: argparse.Namespace, rows: list[dict]) -> None:
     # The smallest-on-disk non-reference quant that stays within the quality budget.
     passing = [
-        r for r in rows
+        r
+        for r in rows
         if not r["is_reference"]
-        and r.get("mean_ssim") is not None and r["mean_ssim"] >= args.ssim_threshold
+        and r.get("mean_ssim") is not None
+        and r["mean_ssim"] >= args.ssim_threshold
         and (r.get("mean_psnr") is None or r["mean_psnr"] >= args.psnr_threshold)
         and r.get("file_size_mib") is not None
     ]
@@ -355,9 +397,12 @@ def _recommend(args: argparse.Namespace, rows: list[dict]) -> None:
         print("  no candidate quant met the quality budget; keep the reference quant.", flush = True)
         return
     best = min(passing, key = lambda r: r["file_size_mib"])
-    print(f"  smallest quant within budget: {best['quant']} "
-          f"({best['file_size_mib']} MB, SSIM {best['mean_ssim']}, PSNR "
-          f"{'inf' if best['mean_psnr'] == math.inf else best['mean_psnr']})", flush = True)
+    print(
+        f"  smallest quant within budget: {best['quant']} "
+        f"({best['file_size_mib']} MB, SSIM {best['mean_ssim']}, PSNR "
+        f"{'inf' if best['mean_psnr'] == math.inf else best['mean_psnr']})",
+        flush = True,
+    )
 
 
 # ── self-test (CPU, no GPU/model) ─────────────────────────────────────────────
@@ -371,17 +416,23 @@ def _selftest() -> int:
     base = rng.integers(0, 256, (128, 128, 3), dtype = np.uint8)
     a = Image.fromarray(base)
     b = Image.fromarray(base)  # identical
-    noisy = Image.fromarray(np.clip(base.astype(int) + rng.integers(-40, 40, base.shape), 0, 255).astype(np.uint8))
+    noisy = Image.fromarray(
+        np.clip(base.astype(int) + rng.integers(-40, 40, base.shape), 0, 255).astype(np.uint8)
+    )
 
     checks = []
     checks.append(("identical PSNR is inf", psnr(a, b) == math.inf))
     checks.append(("identical SSIM ~ 1.0", abs(ssim(a, b) - 1.0) < 1e-9))
-    checks.append(("noisy PSNR is finite + lower", math.isfinite(psnr(a, noisy)) and psnr(a, noisy) < 60))
+    checks.append(
+        ("noisy PSNR is finite + lower", math.isfinite(psnr(a, noisy)) and psnr(a, noisy) < 60)
+    )
     checks.append(("noisy SSIM < identical", ssim(a, noisy) < ssim(a, b)))
     checks.append(("shape mismatch -> 0", psnr(a, Image.fromarray(base[:64])) == 0.0))
     # box mean of a constant field equals the constant
     const = np.full((32, 32), 7.0)
-    checks.append(("box mean of constant is constant", abs(_box_mean(const, 7).mean() - 7.0) < 1e-9))
+    checks.append(
+        ("box mean of constant is constant", abs(_box_mean(const, 7).mean() - 7.0) < 1e-9)
+    )
 
     ok = True
     for name, passed in checks:
@@ -399,12 +450,24 @@ def _build_parser() -> argparse.ArgumentParser:
         description = "Image quality-vs-quant harness for the Studio diffusion backend.",
         formatter_class = argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--model", default = "unsloth/Z-Image-Turbo-GGUF", help = "GGUF repo id or local path")
-    p.add_argument("--reference-quant", default = "z-image-turbo-BF16.gguf",
-                   help = "high-fidelity reference GGUF filename")
-    p.add_argument("--quants", nargs = "*", default = [
-        "z-image-turbo-Q8_0.gguf", "z-image-turbo-Q4_K_M.gguf", "z-image-turbo-Q2_K.gguf",
-    ], help = "candidate GGUF filenames to score against the reference")
+    p.add_argument(
+        "--model", default = "unsloth/Z-Image-Turbo-GGUF", help = "GGUF repo id or local path"
+    )
+    p.add_argument(
+        "--reference-quant",
+        default = "z-image-turbo-BF16.gguf",
+        help = "high-fidelity reference GGUF filename",
+    )
+    p.add_argument(
+        "--quants",
+        nargs = "*",
+        default = [
+            "z-image-turbo-Q8_0.gguf",
+            "z-image-turbo-Q4_K_M.gguf",
+            "z-image-turbo-Q2_K.gguf",
+        ],
+        help = "candidate GGUF filenames to score against the reference",
+    )
     p.add_argument("--base-repo", default = None)
     p.add_argument("--family-override", default = None)
     p.add_argument("--prompts", nargs = "*", default = DEFAULT_PROMPTS)
@@ -415,10 +478,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--guidance", type = float, default = 0.0)
     p.add_argument("--memory-mode", default = None, choices = ["auto", "fast", "balanced", "low_vram"])
     p.add_argument("--clip", action = "store_true", help = "also compute CLIP text + image scores")
-    p.add_argument("--psnr-threshold", type = float, default = 30.0,
-                   help = "min mean PSNR (dB) vs reference for the recommendation")
-    p.add_argument("--ssim-threshold", type = float, default = 0.92,
-                   help = "min mean SSIM vs reference for the recommendation")
+    p.add_argument(
+        "--psnr-threshold",
+        type = float,
+        default = 30.0,
+        help = "min mean PSNR (dB) vs reference for the recommendation",
+    )
+    p.add_argument(
+        "--ssim-threshold",
+        type = float,
+        default = 0.92,
+        help = "min mean SSIM vs reference for the recommendation",
+    )
     p.add_argument("--out-dir", default = "outputs/diffusion_quality")
     p.add_argument("--selftest", action = "store_true", help = "CPU metric sanity check; no GPU/model")
     return p

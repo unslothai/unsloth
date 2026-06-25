@@ -1704,21 +1704,21 @@ class DiffusionLoadRequest(BaseModel):
     memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
         None,
         description = "Memory policy: auto (measured), fast (resident), balanced "
-                      "(stream the transformer, near-resident speed, moderate VRAM "
-                      "cut), low_vram (offload every component, lowest VRAM, slower). "
-                      "Overrides cpu_offload when set.",
+        "(stream the transformer, near-resident speed, moderate VRAM "
+        "cut), low_vram (offload every component, lowest VRAM, slower). "
+        "Overrides cpu_offload when set.",
     )
     speed_mode: Optional[Literal["off", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
-                      "default (channels_last + regional torch.compile where eligible), "
-                      "max (also TF32 + fused QKV).",
+        "default (channels_last + regional torch.compile where eligible), "
+        "max (also TF32 + fused QKV).",
     )
     text_encoder_fp8: bool = Field(
         False,
         description = "Cast the companion text encoder(s) to fp8 storage (~2x smaller, "
-                      "CUDA + bf16 only). A memory-vs-quality tradeoff (shifts fine "
-                      "detail), not free; pairs well with balanced mode.",
+        "CUDA + bf16 only). A memory-vs-quality tradeoff (shifts fine "
+        "detail), not free; pairs well with balanced mode.",
     )
 
 

@@ -36,7 +36,12 @@ from core.inference.diffusion_memory import (
 )
 
 
-def _target(*, device = "cuda", backend = "cuda", supports_offload = True):
+def _target(
+    *,
+    device = "cuda",
+    backend = "cuda",
+    supports_offload = True,
+):
     """A duck-typed stand-in for DiffusionDeviceTarget (only the fields the
     planner / snapshot read)."""
     return types.SimpleNamespace(
@@ -221,18 +226,36 @@ def test_auto_stays_resident_when_budget_unknown():
 
 def test_explicit_modes_force_policy_regardless_of_budget():
     roomy = _discrete(80000)
-    assert plan_diffusion_memory(
-        target = _target(), device_memory = roomy, model_dense_mib = 1000,
-        runtime_headroom_mib = 1000, requested_mode = MEMORY_MODE_FAST,
-    ).offload_policy == OFFLOAD_NONE
-    assert plan_diffusion_memory(
-        target = _target(), device_memory = roomy, model_dense_mib = 1000,
-        runtime_headroom_mib = 1000, requested_mode = MEMORY_MODE_BALANCED,
-    ).offload_policy == OFFLOAD_GROUP
-    assert plan_diffusion_memory(
-        target = _target(), device_memory = roomy, model_dense_mib = 1000,
-        runtime_headroom_mib = 1000, requested_mode = MEMORY_MODE_LOW_VRAM,
-    ).offload_policy == OFFLOAD_MODEL
+    assert (
+        plan_diffusion_memory(
+            target = _target(),
+            device_memory = roomy,
+            model_dense_mib = 1000,
+            runtime_headroom_mib = 1000,
+            requested_mode = MEMORY_MODE_FAST,
+        ).offload_policy
+        == OFFLOAD_NONE
+    )
+    assert (
+        plan_diffusion_memory(
+            target = _target(),
+            device_memory = roomy,
+            model_dense_mib = 1000,
+            runtime_headroom_mib = 1000,
+            requested_mode = MEMORY_MODE_BALANCED,
+        ).offload_policy
+        == OFFLOAD_GROUP
+    )
+    assert (
+        plan_diffusion_memory(
+            target = _target(),
+            device_memory = roomy,
+            model_dense_mib = 1000,
+            runtime_headroom_mib = 1000,
+            requested_mode = MEMORY_MODE_LOW_VRAM,
+        ).offload_policy
+        == OFFLOAD_MODEL
+    )
 
 
 def test_fast_falls_back_to_model_offload_when_it_does_not_fit():
@@ -381,8 +404,10 @@ def test_apply_vae_tiling_falls_back_to_vae_submodule():
     class _VaeOnly:
         def __init__(self):
             self.vae = types.SimpleNamespace(
-                tiled = False, sliced = False,
-                enable_tiling = self._tile, enable_slicing = self._slice,
+                tiled = False,
+                sliced = False,
+                enable_tiling = self._tile,
+                enable_slicing = self._slice,
             )
 
         def _tile(self):
@@ -409,7 +434,9 @@ def test_apply_group_falls_back_to_model_without_transformer():
 
 def test_apply_sequential_offload():
     pipe = _RecordingPipe()
-    effective, _ = apply_memory_plan(pipe, _manual_plan(OFFLOAD_SEQUENTIAL, tiling = True), device = "cuda")
+    effective, _ = apply_memory_plan(
+        pipe, _manual_plan(OFFLOAD_SEQUENTIAL, tiling = True), device = "cuda"
+    )
     assert "sequential_offload" in pipe.calls and "to:cuda" not in pipe.calls
     assert effective == OFFLOAD_SEQUENTIAL
 
@@ -422,7 +449,9 @@ def test_apply_sequential_falls_back_to_model_offload_when_unsupported():
             raise RuntimeError("sequential offload not supported for this transformer")
 
     pipe = _NoSeqPipe()
-    effective, _ = apply_memory_plan(pipe, _manual_plan(OFFLOAD_SEQUENTIAL, tiling = True), device = "cuda")
+    effective, _ = apply_memory_plan(
+        pipe, _manual_plan(OFFLOAD_SEQUENTIAL, tiling = True), device = "cuda"
+    )
     assert effective == OFFLOAD_MODEL
     assert "model_offload" in pipe.calls
 

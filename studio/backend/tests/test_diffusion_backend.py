@@ -828,7 +828,9 @@ def test_load_memory_mode_low_vram_engages_model_offload(fake_runtime, tmp_path,
     assert pipe.offloaded is True and pipe.moved_to is None  # offload owns placement
 
 
-def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(fake_runtime, tmp_path, monkeypatch):
+def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(
+    fake_runtime, tmp_path, monkeypatch
+):
     # cpu_offload=True with no mode: auto would stay resident (budget unknown under
     # the stub), but the explicit flag forces whole-module offload.
     (tmp_path / "m.gguf").write_bytes(b"x")

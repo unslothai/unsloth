@@ -24,9 +24,16 @@ from core.inference.diffusion_speed import (
 )
 
 
-def _target(*, device = "cuda", dtype = "bfloat16", compile_ok = True):
+def _target(
+    *,
+    device = "cuda",
+    dtype = "bfloat16",
+    compile_ok = True,
+):
     return types.SimpleNamespace(
-        device = device, dtype = dtype, supports_default_torch_compile = compile_ok,
+        device = device,
+        dtype = dtype,
+        supports_default_torch_compile = compile_ok,
     )
 
 
@@ -78,7 +85,12 @@ def test_compile_eligible_requires_non_gguf_bf16_cuda_friendly(monkeypatch):
 
 
 class _Pipe:
-    def __init__(self, *, with_compile = False, with_fuse = False) -> None:
+    def __init__(
+        self,
+        *,
+        with_compile = False,
+        with_fuse = False,
+    ) -> None:
         self.vae = types.SimpleNamespace(mem_format = None, to = self._vae_to)
         self.transformer = types.SimpleNamespace()
         if with_compile:
@@ -144,8 +156,11 @@ def test_speed_max_tf32_only_on_cuda(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _Pipe()
     applied = apply_speed_optims(
-        pipe, _target(device = "mps", compile_ok = False), is_gguf = True,
-        family = _family(), speed_mode = SPEED_MAX,
+        pipe,
+        _target(device = "mps", compile_ok = False),
+        is_gguf = True,
+        family = _family(),
+        speed_mode = SPEED_MAX,
     )
     assert applied["tf32"] is False  # not CUDA -> no TF32
 

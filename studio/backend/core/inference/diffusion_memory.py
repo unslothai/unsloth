@@ -177,7 +177,6 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
 def _xpu_memory() -> tuple[Optional[int], Optional[int]]:
     try:
         import torch
-
         mem_get_info = getattr(getattr(torch, "xpu", None), "mem_get_info", None)
         if callable(mem_get_info):
             free, total = mem_get_info()
@@ -191,7 +190,6 @@ def _system_memory_mib() -> tuple[Optional[int], Optional[int]]:
     """(total, available) host RAM in MiB, via psutil then POSIX sysconf."""
     try:
         import psutil
-
         vm = psutil.virtual_memory()
         return int(vm.total // (1024 * 1024)), int(vm.available // (1024 * 1024))
     except Exception:
@@ -212,7 +210,6 @@ def file_size_mib(path: Any) -> Optional[int]:
     """On-disk size of ``path`` in MiB, or None if it can't be stat'd."""
     try:
         from pathlib import Path
-
         return max(1, int(Path(path).expanduser().stat().st_size // (1024 * 1024)))
     except Exception:
         return None
@@ -421,7 +418,11 @@ def plan_diffusion_memory(
 
 
 def apply_memory_plan(
-    pipe: Any, plan: MemoryPlan, *, device: str, logger: Any = None,
+    pipe: Any,
+    plan: MemoryPlan,
+    *,
+    device: str,
+    logger: Any = None,
 ) -> tuple[str, bool]:
     """Apply ``plan`` to a freshly built diffusers pipeline: enable the VAE memory
     savers then place / offload the weights. Exactly one placement call runs, so the
@@ -452,7 +453,8 @@ def apply_memory_plan(
             if logger is not None:
                 logger.warning(
                     "diffusion.memory: sequential offload failed (%s); "
-                    "falling back to whole-module offload", exc,
+                    "falling back to whole-module offload",
+                    exc,
                 )
             pipe.enable_model_cpu_offload()
             policy = OFFLOAD_MODEL
@@ -511,6 +513,7 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
         if logger is not None:
             logger.warning(
                 "diffusion.memory: group offload failed (%s); falling back to "
-                "whole-module offload", exc,
+                "whole-module offload",
+                exc,
             )
         return False

@@ -37,14 +37,17 @@ def fp8_text_encoder_supported(target: Any) -> bool:
         return False
     try:
         import torch
-
         return getattr(target, "dtype", None) is torch.bfloat16 and hasattr(torch, "float8_e4m3fn")
     except Exception:
         return False
 
 
 def apply_fp8_text_encoder(
-    pipe: Any, target: Any, *, enable: bool, logger: Any = None,
+    pipe: Any,
+    target: Any,
+    *,
+    enable: bool,
+    logger: Any = None,
 ) -> list[str]:
     """Cast each text encoder's linear weights to fp8 storage (compute stays the
     target dtype). Returns the names of the encoders actually cast (empty when

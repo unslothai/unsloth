@@ -62,7 +62,6 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
 def _is_bfloat16(dtype: Any) -> bool:
     try:
         import torch
-
         return dtype is torch.bfloat16
     except Exception:
         return str(dtype).endswith("bfloat16")
@@ -107,7 +106,6 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return False
     try:
         import torch
-
         vae.to(memory_format = torch.channels_last)
         return True
     except Exception as exc:  # noqa: BLE001 — optimisation only

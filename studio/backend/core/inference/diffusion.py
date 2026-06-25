@@ -465,13 +465,20 @@ class DiffusionBackend:
                 # Opt-in speed optims run BEFORE placement (channels_last / compile
                 # must precede CPU offload). Off by default -> bit-identical output.
                 speed_applied = apply_speed_optims(
-                    pipe, target, is_gguf = bool(gguf_filename), family = fam,
-                    speed_mode = speed_mode or SPEED_OFF, logger = logger,
+                    pipe,
+                    target,
+                    is_gguf = bool(gguf_filename),
+                    family = fam,
+                    speed_mode = speed_mode or SPEED_OFF,
+                    logger = logger,
                 )
                 # Cast the dense companion text encoder(s) to fp8 storage (opt-in),
                 # also before placement so the offload hooks move the smaller weights.
                 fp8_cast = apply_fp8_text_encoder(
-                    pipe, target, enable = text_encoder_fp8, logger = logger,
+                    pipe,
+                    target,
+                    enable = text_encoder_fp8,
+                    logger = logger,
                 )
 
                 # Decide placement from MEASURED free device memory vs the model's
@@ -508,7 +515,12 @@ class DiffusionBackend:
 
         logger.info(
             "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s",
-            repo_id, base, device, effective_policy, effective_tiling, "; ".join(plan.reasons),
+            repo_id,
+            base,
+            device,
+            effective_policy,
+            effective_tiling,
+            "; ".join(plan.reasons),
         )
         return self.status()
 
