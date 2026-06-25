@@ -819,9 +819,16 @@ class TrainingBackend:
             try:
                 event = self._read_queue(self._event_queue, timeout_sec = 0.25)
             except Exception:
+                # A read that keeps raising (e.g. a broken queue pipe after the
+                # child died) must not spin here forever: if the worker is gone,
+                # fall through to the finalize path below so the run can't stay
+                # "is_training" behind a dead worker. Only back off and retry
+                # while the worker is still alive.
                 logger.exception("Training event pump: queue read failed; continuing")
-                time.sleep(0.1)
-                continue
+                if self._proc is not None and self._proc.is_alive():
+                    time.sleep(0.1)
+                    continue
+                event = None
 
             if event is not None:
                 self._safe_handle_event(event)

@@ -287,6 +287,36 @@ def test_pump_finalizes_when_drain_queue_raises_unexpected_error(monkeypatch):
     assert b.is_training_active() is False
 
 
+def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
+    # _read_queue only swallows EOFError/OSError/ValueError; an unexpected error
+    # escapes to the pump's outer guard. If it keeps raising after the worker has
+    # exited, the loop must still fall through to finalize -- not spin forever
+    # with a continue, leaving is_training True behind a dead worker.
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    class _BrokenReadQueue:
+        def get(self, *a, **k):
+            raise RuntimeError("broken queue pipe")
+
+        def get_nowait(self, *a, **k):
+            raise queue.Empty
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _BrokenReadQueue()
+    b._progress.is_training = True
+
+    pump = threading.Thread(target = b._pump_loop, daemon = True)
+    pump.start()
+    pump.join(timeout = 5)
+    assert not pump.is_alive(), "pump must finalize a dead worker even when reads keep raising"
+    assert b._progress.is_training is False
+    assert finalized.get("status") == "error"
+    assert b._pump_running is False
+
+
 def test_start_training_clears_stale_pump_running_flag():
     # A prior pump that died abnormally leaves _pump_running True. The next
     # start_training must clear it during reset so the start-time watchdog can't
