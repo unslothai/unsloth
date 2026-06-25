@@ -1460,11 +1460,13 @@ class LlamaCppBackend:
             prev = curr
 
     # Free-VRAM fraction at which Studio pins the GPU directly instead
-    # of deferring to ``--fit on``. 5% headroom covers CUDA context +
-    # compute buffers; 0.90 was too conservative and dropped 91-94%
-    # fits to CPU offload (#5106). The fork's --fit on still catches
-    # the truly-too-large case.
-    _GPU_PIN_VRAM_FRACTION = 0.95
+    # of deferring to ``--fit on``. 10% headroom covers CUDA context +
+    # compute buffers + estimation inaccuracies. The fork's --fit on
+    # still catches the truly-too-large case.
+    # Changed back from 0.95 to 0.90 in #6682: 0.95 was too aggressive
+    # and caused VRAM spill at runtime on tight GPUs (model + KV cache
+    # looked barely in-budget at estimate time but OOM'd at load).
+    _GPU_PIN_VRAM_FRACTION = 0.90
 
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
@@ -1814,11 +1816,11 @@ class LlamaCppBackend:
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
-        Uses 90% of available VRAM as the ctx-fit budget. Tighter than
-        ``_GPU_PIN_VRAM_FRACTION`` on purpose: over-promising context
-        OOMs at runtime, while pinning conservatively just defers to
-        --fit on. If the weights alone don't fit, returns
-        ``requested_ctx`` unchanged.
+        Uses 85% of available VRAM as the ctx-fit budget (80% with MTP
+        engaged). Tighter than ``_GPU_PIN_VRAM_FRACTION`` on purpose:
+        over-promising context OOMs at runtime, while pinning
+        conservatively just defers to --fit on. If the weights alone
+        don't fit, returns ``requested_ctx`` unchanged.
 
         ``kv_on_gpu`` mirrors ``--kv-offload`` (default on). When False
         the KV cache lives in CPU RAM and doesn't compete with weights
@@ -1850,8 +1852,11 @@ class LlamaCppBackend:
             ctx_checkpoints = ctx_checkpoints,
         )
 
-        # MTP needs a tighter budget; drop from 0.90 to 0.85.
-        budget_frac = 0.85 if mtp_engaged else 0.90
+        # MTP needs a tighter budget; drop from 0.85 to 0.80.
+        # #6682: 0.90/0.85 left too little headroom for CUDA context,
+        # compute buffers, and memory fragmentation on tight VRAM tiers,
+        # causing llama-server to offload layers or OOM at load time.
+        budget_frac = 0.80 if mtp_engaged else 0.85
         budget_bytes = available_mib * 1024 * 1024 * budget_frac
         model_footprint = model_size_bytes
 
