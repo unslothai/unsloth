@@ -786,10 +786,14 @@ if command -v bun &>/dev/null; then
     fi
 fi
 if [ "$_bun_install_ok" = false ]; then
-    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"
-    _npm_install_rc=$?
+    # `|| _npm_install_rc=$?` keeps this off `set -e`'s exit path (run_quiet_no_exit
+    # returns non-zero on failure) so the hint branch is reachable; it also captures
+    # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
+    _npm_install_rc=0
+    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
     if [ "$_npm_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
+        rm -f "$_FRONTEND_INSTALL_LOG"
         exit "$_npm_install_rc"
     fi
 fi
@@ -822,8 +826,10 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
     cd "$_OXC_DIR"
     _OXC_INSTALL_LOG=$(mktemp)
     _CAPTURE_LOG="$_OXC_INSTALL_LOG"
-    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"
-    _oxc_install_rc=$?
+    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
+    # below is reachable; it also captures the exact exit code.
+    _oxc_install_rc=0
+    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
     _CAPTURE_LOG=""
     if [ "$_oxc_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_OXC_INSTALL_LOG"
