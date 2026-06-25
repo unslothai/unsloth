@@ -2658,7 +2658,9 @@ class FastLlamaModel:
                     config = model_config,
                     load_in_fp8 = load_in_fp8,
                 )
-                model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config)
+                model = convert_vllm_to_huggingface(
+                    quant_state_dict, model_config, dtype, bnb_config
+                )
                 model.vllm_engine = llm
                 llm.shared_weights = True
                 model.fast_generate = model.vllm_engine.generate
