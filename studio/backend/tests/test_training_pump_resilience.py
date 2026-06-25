@@ -3,15 +3,12 @@
 
 """Parent-side training event-pump resilience.
 
-The pump thread is the only writer of the in-memory progress state that SSE
-/progress, /status, /metrics and the DB history all read. If it ever died while
-the worker subprocess kept running, the run would continue (mp.Queue puts never
-block) while the UI froze on the last step it saw -- the long-standing "training
-is running in the background but no progress shows" symptom. These tests pin the
-two guarantees that prevent that: a single bad event/queue error can't kill the
-pump, and a pump that somehow does die is detected and restarted -- even after
-the worker has exited, so the terminal events still get drained and the run is
-finalized. Driven with fakes; no GPU, no network, no real subprocess.
+The pump is the only writer of the progress state /progress, /status, /metrics
+and DB history read. If it died while the worker ran, the run would continue while
+the UI froze -- the "training runs but no progress shows" symptom. These tests pin
+two guards: a bad event/queue error can't kill the pump, and a dead pump is
+detected and restarted (even after worker exit) so terminal events still finalize.
+Fakes only; no GPU, network, or subprocess.
 """
 
 from __future__ import annotations
@@ -84,10 +81,9 @@ for _name in (
     else:
         sys.modules[_name] = _prev
 
-# core.training.training imported its module-level helpers (prepare_gpu_selection,
-# etc.) while the stubs above were active, so those names stay bound to the stubs
-# in its globals. If we created that cached module, evict it (and its parent
-# package) so a later test re-imports the real module instead of the stubbed one.
+# training imported its helpers while the stubs were active, binding them to stubs.
+# If we created the cached module, evict it (and its parent) so a later test
+# re-imports the real one.
 if not _TRAINING_PRE_IMPORTED:
     sys.modules.pop("core.training.training", None)
     sys.modules.pop("core.training", None)
@@ -213,9 +209,8 @@ def test_read_queue_narrow_contract():
     for exc in (queue.Empty(), EOFError(), OSError(), ValueError()):
         assert TrainingBackend._read_queue(_Q(exc), 0.01) is None
 
-    # Anything *unexpected* propagates on purpose, so _pump_loop's guarded read
-    # block can log and back off (time.sleep) instead of _read_queue swallowing
-    # it into a hot, frozen loop.
+    # Anything unexpected propagates on purpose to _pump_loop's guarded block,
+    # which logs and backs off instead of swallowing it into a hot loop.
     with pytest.raises(RuntimeError):
         TrainingBackend._read_queue(_Q(RuntimeError("boom")), 0.01)
 
@@ -288,10 +283,8 @@ def test_pump_finalizes_when_drain_queue_raises_unexpected_error(monkeypatch):
 
 
 def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
-    # _read_queue only swallows EOFError/OSError/ValueError; an unexpected error
-    # escapes to the pump's outer guard. If it keeps raising after the worker has
-    # exited, the loop must still fall through to finalize -- not spin forever
-    # with a continue, leaving is_training True behind a dead worker.
+    # An unexpected error escapes _read_queue to the pump's outer guard; if it
+    # keeps raising after worker exit, the loop must still finalize, not spin.
     b = TrainingBackend()
     finalized: dict = {}
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
@@ -375,11 +368,9 @@ def test_ensure_pump_alive_noop_when_pump_alive():
 
 
 def test_ensure_pump_alive_revives_crashed_pump_after_worker_exit(monkeypatch):
-    # A True _pump_running flag with a dead pump thread is a crash (the loop
-    # clears the flag on every intended exit). Even when the worker has already
-    # exited, the queue can still hold the terminal complete/error events, so the
-    # pump must be restarted to drain + finalize -- otherwise progress.is_training
-    # stays True and the run is stuck "running" forever behind the dead pump.
+    # True _pump_running + dead thread = a crash (the loop clears the flag on
+    # intended exits). The queue may still hold terminal events, so the pump must
+    # restart to drain and finalize, else the run is stuck "running" forever.
     b = TrainingBackend()
     _silence_db(monkeypatch, b)
     b._proc = _FakeProc(alive = False)
