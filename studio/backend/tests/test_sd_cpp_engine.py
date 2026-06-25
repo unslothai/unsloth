@@ -26,7 +26,7 @@ from core.inference.sd_cpp_engine import (
     runtime_env,
     select_diffusion_engine,
 )
-from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles
+from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles, SdCppUpscaleParams
 
 
 # ── binary discovery ────────────────────────────────────────────────────────
@@ -240,6 +240,39 @@ def test_generate_raises_when_binary_missing():
             SdCppGenParams(prompt = "x"),
             output_path = "/tmp/x.png",
         )
+
+
+def test_img2img_generate_passes_init_image(tmp_path, monkeypatch):
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    src = tmp_path / "src.png"
+    src.write_bytes(b"\x89PNG\r\n")
+    _patch_popen(monkeypatch, lines = ["img2img"], returncode = 0, out_file = out)
+    e.generate(SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+               SdCppGenParams(prompt = "x", init_img = str(src), strength = 0.5),
+               output_path = str(out))
+    assert "--init-img" in _FakePopen.captured_cmd
+    assert str(src) == _FakePopen.captured_cmd[_FakePopen.captured_cmd.index("--init-img") + 1]
+
+
+def test_upscale_runs_and_returns_path(tmp_path, monkeypatch):
+    e = _engine(tmp_path)
+    out = tmp_path / "big.png"
+    _patch_popen(monkeypatch, lines = ["upscaling", "done"], returncode = 0, out_file = out)
+    result = e.upscale(
+        SdCppUpscaleParams(input_image = "/in/small.png", upscale_model = "/m/esrgan.pth", repeats = 2),
+        output_path = str(out),
+    )
+    assert result == out and out.is_file()
+    assert _FakePopen.captured_cmd[_FakePopen.captured_cmd.index("--mode") + 1] == "upscale"
+    assert "--upscale-model" in _FakePopen.captured_cmd
+
+
+def test_upscale_raises_when_binary_missing():
+    e = SdCppEngine(binary = None)
+    with pytest.raises(RuntimeError, match = "not found"):
+        e.upscale(SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth"),
+                  output_path = "/tmp/x.png")
 
 
 # ── engine routing ──────────────────────────────────────────────────────────

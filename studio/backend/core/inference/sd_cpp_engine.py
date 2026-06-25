@@ -34,7 +34,9 @@ from typing import Callable, Optional
 from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
+    SdCppUpscaleParams,
     build_sd_cpp_command,
+    build_sd_cpp_upscale_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -200,28 +202,68 @@ class SdCppEngine:
         nonzero, or no output file is produced. ``on_log`` (if given) receives
         each line of sd-cli's progress output as it arrives.
         """
+        cmd = build_sd_cpp_command(
+            self._require_binary(), files, params,
+            output_path = str(self._prepare_out(output_path)), offload = offload,
+            threads = threads, verbose = verbose, extra_args = extra_args,
+        )
+        return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
+
+    def upscale(
+        self,
+        params: "SdCppUpscaleParams",
+        *,
+        output_path: str,
+        verbose: bool = False,
+        extra_args: Optional[list[str]] = None,
+        timeout: Optional[float] = 1800.0,
+        env: Optional[dict[str, str]] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+    ) -> Path:
+        """Upscale an image with an ESRGAN model; return the written path."""
+        cmd = build_sd_cpp_upscale_command(
+            self._require_binary(), params,
+            output_path = str(self._prepare_out(output_path)),
+            verbose = verbose, extra_args = extra_args,
+        )
+        return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
+
+    # ── internals ─────────────────────────────────────────────────────────────
+
+    def _require_binary(self) -> str:
         if not self.is_available():
             raise RuntimeError(
                 "sd-cli (stable-diffusion.cpp) binary not found. Build it or set "
                 "SD_CLI_PATH / UNSLOTH_SD_CPP_PATH."
             )
+        return self.binary  # type: ignore[return-value]
+
+    @staticmethod
+    def _prepare_out(output_path: str) -> Path:
         out = Path(output_path)
         out.parent.mkdir(parents = True, exist_ok = True)
-        cmd = build_sd_cpp_command(
-            self.binary,
-            files,
-            params,
-            output_path = str(out),
-            offload = offload,
-            threads = threads,
-            verbose = verbose,
-            extra_args = extra_args,
-        )
+        return out
+
+    def _run(
+        self,
+        cmd: list[str],
+        output_path: str,
+        *,
+        timeout: Optional[float],
+        env: Optional[dict[str, str]],
+        on_log: Optional[Callable[[str], None]],
+    ) -> Path:
+        """Run an sd-cli argv, stream output, and return the produced image path.
+
+        Raises ``RuntimeError`` on nonzero exit, timeout, or a missing output.
+        Shared by ``generate`` and ``upscale``.
+        """
+        out = Path(output_path)
         base = dict(os.environ)
         if env:
             base.update(env)
-        run_env = runtime_env(self.binary, base)
-        logger.info("sd-cli generate: %s", " ".join(cmd))
+        run_env = runtime_env(self._require_binary(), base)
+        logger.info("sd-cli run: %s", " ".join(cmd))
 
         t0 = time.time()
         proc = subprocess.Popen(
@@ -257,7 +299,7 @@ class SdCppEngine:
                 f"sd-cli reported success but no image at {out}. Last output:\n"
                 + "\n".join(tail[-12:])
             )
-        logger.info("sd-cli generate ok in %.1fs -> %s", time.time() - t0, out)
+        logger.info("sd-cli run ok in %.1fs -> %s", time.time() - t0, out)
         return out
 
 
