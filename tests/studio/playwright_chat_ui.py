@@ -836,7 +836,7 @@ with sync_playwright() as p:
                         theme_item.scroll_into_view_if_needed(timeout = 2_000)
                         theme_item.click(force = True, timeout = 3_000)
                     else:
-                        robust_evaluate(theme_item, "el => el.click()")
+                        theme_item.evaluate("el => el.click()")
                     click_err = None
                     break
                 except Exception as exc:
