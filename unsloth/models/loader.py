@@ -575,7 +575,11 @@ class FastLanguageModel(FastLlamaModel):
             # Chain an offline-related cause if either probe had one, so @_offline_aware_load
             # still retries from cache (e.g. adapter repo: permanent AutoConfig 404 + transient PeftConfig).
             _cause = next(
-                (e for e in (autoconfig_exc, peft_exc) if e is not None and _is_offline_related_error(e)),
+                (
+                    e
+                    for e in (autoconfig_exc, peft_exc)
+                    if e is not None and _is_offline_related_error(e)
+                ),
                 autoconfig_exc or peft_exc,
             )
             raise RuntimeError(combined_error) from _cause
@@ -1243,7 +1247,11 @@ class FastModel(FastBaseModel):
             # Chain an offline-related cause if either probe had one, so @_offline_aware_load
             # still retries from cache (e.g. adapter repo: permanent AutoConfig 404 + transient PeftConfig).
             _cause = next(
-                (e for e in (autoconfig_exc, peft_exc) if e is not None and _is_offline_related_error(e)),
+                (
+                    e
+                    for e in (autoconfig_exc, peft_exc)
+                    if e is not None and _is_offline_related_error(e)
+                ),
                 autoconfig_exc or peft_exc,
             )
             raise RuntimeError(combined_error) from _cause
