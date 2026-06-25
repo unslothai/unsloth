@@ -5111,6 +5111,12 @@ class LlamaCppBackend:
                             else extra_args
                         )
 
+                    # Minimum GPU count for the layer-split fallback. Stays 1 (the
+                    # selector minimizes device count) unless a requested tensor
+                    # split is downgraded below, where the explicit multi-GPU intent
+                    # is preserved so the model isn't silently pinned to one GPU.
+                    _layer_min_gpus = 1
+
                     if (
                         tensor_parallel
                         and effective_is_vision
@@ -5122,9 +5128,15 @@ class LlamaCppBackend:
                         logger.info(
                             "Tensor parallelism skipped for vision model: this "
                             "llama.cpp build aborted on --split-mode tensor + "
-                            "--mmproj earlier this session; using layer split."
+                            "--mmproj earlier this session; using layer split "
+                            "across %d GPU(s).",
+                            len(gpus),
                         )
                         tensor_parallel = False
+                        # Honor the multi-GPU request: layer-split across the GPUs
+                        # tensor would have used, not one card the model happens to
+                        # fit, so the downgrade doesn't silently single-GPU it.
+                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         _restore_after_tensor_downgrade()
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
@@ -5303,6 +5315,7 @@ class LlamaCppBackend:
                                 usable_fraction = _pin_fraction,
                                 total_by_idx = total_by_idx,
                                 per_device_overhead_bytes = _pipeline_overhead_bytes,
+                                min_gpus = _layer_min_gpus,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
@@ -5313,7 +5326,7 @@ class LlamaCppBackend:
                             ranked = sorted(
                                 gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
                             )
-                            for n_gpus in range(1, len(ranked) + 1):
+                            for n_gpus in range(max(1, _layer_min_gpus), len(ranked) + 1):
                                 subset = ranked[:n_gpus]
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
                                 _ms = _subset_model_size(n_gpus)
@@ -5343,7 +5356,7 @@ class LlamaCppBackend:
                                 # at 131k may pin fine with a 4096 KV (#5106).
                                 effective_ctx = min(4096, effective_ctx)
                                 if effective_ctx > 0:
-                                    for n_gpus in range(1, len(ranked) + 1):
+                                    for n_gpus in range(max(1, _layer_min_gpus), len(ranked) + 1):
                                         subset = ranked[:n_gpus]
                                         kv = self._estimate_kv_cache_bytes(
                                             effective_ctx,
@@ -5379,6 +5392,7 @@ class LlamaCppBackend:
                             usable_fraction = _pin_fraction,
                             total_by_idx = total_by_idx,
                             per_device_overhead_bytes = _pipeline_overhead_bytes,
+                            min_gpus = _layer_min_gpus,
                         )
                         if use_fit and not explicit_ctx:
                             # Weights don't fit on any subset; default UI to 4096
@@ -5898,12 +5912,6 @@ class LlamaCppBackend:
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
-                        # A vision model whose tensor launch aborts at startup
-                        # records the binary so future vision loads skip tensor
-                        # upfront (the #6415 GGML_ASSERT). self._tensor_parallel is
-                        # set in the cmd build iff --split-mode tensor was emitted.
-                        if _startup_crashed and self._tensor_parallel and launched_with_mmproj:
-                            LlamaCppBackend._record_vision_tensor_split_abort(binary)
                         if _spawn_attempt == 0 and _fit_retry_allowed and _startup_crashed:
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
@@ -6093,6 +6101,20 @@ class LlamaCppBackend:
                     out = "\n".join(self._stdout_lines[-50:])
                     # Read the crash code before _kill_process() clears _process.
                     _crash_rc = self._process.poll() if self._process is not None else None
+                    # A tensor + --mmproj launch that still hard-faults here -- after
+                    # the fit-off, flash-attn-off and MTP-drop retries above -- and
+                    # carries no non-tensor cause (OOM / unknown arch) is the #6415
+                    # vision-tensor GGML_ASSERT. Record the binary so later vision
+                    # loads skip tensor upfront instead of re-crashing every load.
+                    # The benign fit-step abort is excluded: the fit-off retry makes
+                    # it healthy, so we never reach this block for it.
+                    if (
+                        self._tensor_parallel
+                        and launched_with_mmproj
+                        and self._is_signal_crash(_crash_rc)
+                        and not self._output_has_nonprojector_diagnostic(out)
+                    ):
+                        LlamaCppBackend._record_vision_tensor_split_abort(binary)
                     self._kill_process()
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     if (

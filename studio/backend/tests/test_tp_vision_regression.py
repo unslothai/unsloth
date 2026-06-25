@@ -191,16 +191,38 @@ def test_vision_skip_documents_layer_split_fallback():
     assert "layer split" in block, "the vision skip should state it falls back to layer split"
 
 
-def test_vision_tensor_abort_is_recorded_on_startup_crash():
-    """A tensor + --mmproj launch that crashes at startup records the binary, so
-    later vision loads skip tensor upfront instead of crashing every time (#6415)."""
+def test_vision_tensor_abort_recorded_only_after_retries_and_signature():
+    """The binary is recorded vision-tensor incompatible only AFTER every startup
+    retry fails (fit-off, flash-attn-off, MTP-drop) and the crash is a hard signal
+    fault with no non-tensor cause (OOM / unknown arch). This excludes the benign
+    `--fit` step abort (the fit-off retry resolves it, so we never reach the record)
+    and unrelated crashes -- the two ways the first naive version mis-cached a
+    capable binary (Codex review on #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     idx = src.find("_record_vision_tensor_split_abort(binary)")
     assert idx != -1, "load_model must record a binary that aborts on vision + tensor"
-    guard = src[max(0, idx - 300) : idx]
-    assert "_startup_crashed" in guard
+    guard = src[max(0, idx - 400) : idx]
     assert "self._tensor_parallel" in guard
     assert "launched_with_mmproj" in guard
+    assert "_is_signal_crash" in guard, "record must be gated on a hard signal crash"
+    assert (
+        "not self._output_has_nonprojector_diagnostic" in guard
+    ), "record must exclude OOM / unknown-arch crashes"
+    # The record sits in the post-all-retries failure block: after the MTP-drop retry.
+    mtp_retry = src.find("retrying without speculative decoding")
+    assert 0 <= mtp_retry < idx, "recording must come after the startup-retry ladder"
+
+
+def test_vision_downgrade_preserves_multi_gpu_intent():
+    """When the cached vision gate downgrades a tensor request, it raises
+    _layer_min_gpus and threads it into the layer GPU selection, so a model that
+    fits on one GPU is still spread instead of collapsing to a single device."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    # gate records the multi-GPU intent
+    assert "_layer_min_gpus = max(_layer_min_gpus, len(gpus))" in src
+    # and the layer selection consumes it (both _select_gpus calls + the subset loop)
+    assert src.count("min_gpus = _layer_min_gpus") >= 2
+    assert "range(max(1, _layer_min_gpus)" in src
 
 
 # ── per-binary capability cache (pure) ───────────────────────────────
