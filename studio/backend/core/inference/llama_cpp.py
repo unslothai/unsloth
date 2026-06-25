@@ -2430,6 +2430,28 @@ class LlamaCppBackend:
     # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
     _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
 
+    # llama.cpp binaries observed THIS process to abort on --split-mode tensor +
+    # --mmproj. The combination GGML_ASSERTs during warmup on some builds/arches
+    # (#6415: older build, sm_120 consumer Blackwell), but works on others
+    # (verified on B200/sm_100). Rather than disabling tensor for ALL vision models
+    # (#6416, which silently single-GPU'd multimodal/MTP GGUFs on capable hardware),
+    # tensor is attempted by default and a binary is recorded here only after it
+    # actually aborts -- so the upfront skip (and #6416's fast path) applies just
+    # where it is needed. Process-scoped: `unsloth studio update` restarts Studio
+    # and re-probes the new build.
+    _vision_tensor_abort_binaries: set[str] = set()
+
+    @classmethod
+    def _vision_tensor_split_aborts(cls, binary: Optional[str]) -> bool:
+        """True if `binary` was seen this session to abort on tensor + --mmproj."""
+        return bool(binary) and binary in cls._vision_tensor_abort_binaries
+
+    @classmethod
+    def _record_vision_tensor_split_abort(cls, binary: Optional[str]) -> None:
+        """Remember a binary that aborts on --split-mode tensor + --mmproj."""
+        if binary:
+            cls._vision_tensor_abort_binaries.add(binary)
+
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
         """Return DLL dirs from pip-installed CUDA wheels under
@@ -2569,8 +2591,15 @@ class LlamaCppBackend:
         usable_fraction: Optional[float] = None,
         total_by_idx: Optional[dict[int, int]] = None,
         per_device_overhead_bytes: int = 0,
+        min_gpus: int = 1,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
+
+        ``min_gpus`` (default 1) is the minimum device count to return when the
+        model fits: callers that requested tensor/multi-GPU but were downgraded to
+        a layer split pass ``min_gpus >= 2`` so a model that happens to fit on one
+        GPU is still spread, honoring the explicit multi-GPU request rather than
+        silently collapsing to a single device. Capped at ``len(gpus)``.
 
         ``model_size_bytes`` should include weights and estimated KV cache.
         ``usable_fraction`` (default ``_GPU_PIN_VRAM_FRACTION``) provides
@@ -2590,6 +2619,7 @@ class LlamaCppBackend:
         if not gpus:
             return None, True
 
+        min_gpus = max(1, min(min_gpus, len(gpus)))
         model_size_mib = model_size_bytes / (1024 * 1024)
         if usable_fraction is None:
             usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
@@ -2606,19 +2636,22 @@ class LlamaCppBackend:
         # card can have less usable room than a less-used small one.
         ranked = sorted(gpus, key = lambda g: _usable(g[0], g[1]), reverse = True)
 
-        # Try 1 GPU at the usable-VRAM threshold.
-        if _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
+        # Try 1 GPU at the usable-VRAM threshold (only when one device is allowed).
+        if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
             return [ranked[0][0]], False
 
         # Try N GPUs (accumulate usable memory from most-free). Each GPU past the
-        # first adds a fixed per-device overhead the pool must hold.
+        # first adds a fixed per-device overhead the pool must hold. Require at
+        # least min_gpus devices before accepting a fit.
         overhead_mib = per_device_overhead_bytes / (1024 * 1024)
         cumulative = 0.0
         selected = []
         for idx, free_mib in ranked:
             selected.append(idx)
             cumulative += _usable(idx, free_mib)
-            if cumulative >= model_size_mib + (len(selected) - 1) * overhead_mib:
+            if len(selected) >= min_gpus and cumulative >= model_size_mib + (
+                len(selected) - 1
+            ) * overhead_mib:
                 return sorted(selected), False
 
         # Too large even for all GPUs; let --fit handle it
@@ -5077,11 +5110,18 @@ class LlamaCppBackend:
                             else extra_args
                         )
 
-                    if tensor_parallel and effective_is_vision:
+                    if (
+                        tensor_parallel
+                        and effective_is_vision
+                        and self._vision_tensor_split_aborts(binary)
+                    ):
+                        # This binary aborted on --split-mode tensor + --mmproj
+                        # earlier this session (#6415). Skip tensor upfront so we
+                        # don't crash this load too; layer split still serves vision.
                         logger.info(
-                            "Tensor parallelism skipped for vision model: "
-                            "--split-mode tensor is incompatible with --mmproj "
-                            "in the current llama.cpp build; using layer split."
+                            "Tensor parallelism skipped for vision model: this "
+                            "llama.cpp build aborted on --split-mode tensor + "
+                            "--mmproj earlier this session; using layer split."
                         )
                         tensor_parallel = False
                         _restore_after_tensor_downgrade()
@@ -5857,6 +5897,12 @@ class LlamaCppBackend:
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
+                        # A vision model whose tensor launch aborts at startup
+                        # records the binary so future vision loads skip tensor
+                        # upfront (the #6415 GGML_ASSERT). self._tensor_parallel is
+                        # set in the cmd build iff --split-mode tensor was emitted.
+                        if _startup_crashed and self._tensor_parallel and launched_with_mmproj:
+                            LlamaCppBackend._record_vision_tensor_split_abort(binary)
                         if _spawn_attempt == 0 and _fit_retry_allowed and _startup_crashed:
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
