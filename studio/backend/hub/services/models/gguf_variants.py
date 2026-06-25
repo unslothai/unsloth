@@ -27,6 +27,7 @@ from hub.utils.gguf import (
     extract_quant_label,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
+    list_empty_gguf_variant_dirs,
     list_gguf_variants,
     list_gguf_variants_from_hf_cache,
     list_local_gguf_variants,
@@ -332,6 +333,32 @@ def delete_variant_incomplete_blobs_result(
                 except OSError as e:
                     logger.warning(f"Failed to unlink {incomplete}: {e}")
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
+
+
+def _mark_empty_dir_cleanables(
+    repo_id: str, response: GgufVariantsResponse
+) -> GgufVariantsResponse:
+    """Surface empty leftover ``<quant>/`` folders (interrupted downloads) as
+    partial so the UI can delete them -- on local/offline paths too, not just a
+    remote listing. A listed quant is flipped to partial; an unlisted one is
+    appended as a zero-byte cleanable entry."""
+    try:
+        empty_labels = list_empty_gguf_variant_dirs(repo_id)
+    except Exception as e:
+        logger.warning(f"Failed to scan empty GGUF variant folders for {repo_id}: {e}")
+        return response
+    if not empty_labels:
+        return response
+    empty_by_key = {label.lower(): label for label in empty_labels}
+    variants = list(response.variants)
+    listed = {v.quant.lower() for v in variants}
+    for i, v in enumerate(variants):
+        if v.quant.lower() in empty_by_key and not v.downloaded and not v.partial:
+            variants[i] = v.model_copy(update = {"partial": True})
+    for key, label in sorted(empty_by_key.items()):
+        if key not in listed:
+            variants.append(GgufVariantDetail(filename = f"{label}.gguf", quant = label, partial = True))
+    return response.model_copy(update = {"variants": variants})
 
 
 async def get_gguf_variants_response(
@@ -653,8 +680,28 @@ async def get_gguf_variants_response(
             default_variant = default_variant,
         )
 
+    def _compute_with_cleanables() -> GgufVariantsResponse:
+        skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
+        try:
+            response = _compute()
+        except Exception:
+            # Offline / metadata fetch failed with only an empty leftover
+            # <quant>/ folder cached: still surface it so the UI can delete it,
+            # otherwise re-raise the original error.
+            if skip:
+                raise
+            enriched = _mark_empty_dir_cleanables(
+                repo_id, GgufVariantsResponse(repo_id = repo_id, variants = [])
+            )
+            if enriched.variants:
+                return enriched
+            raise
+        if skip:
+            return response
+        return _mark_empty_dir_cleanables(repo_id, response)
+
     try:
-        return await asyncio.to_thread(_compute)
+        return await asyncio.to_thread(_compute_with_cleanables)
     except HTTPException:
         raise
     except Exception as e:
