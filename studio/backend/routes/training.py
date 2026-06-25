@@ -836,10 +836,11 @@ async def stream_training_progress(
         max_no_updates = 1800  # Timeout after 30 min (large models need compile time)
 
         while backend.is_training_active():
-            # Stop promptly when the client disconnects instead of waiting for the
-            # next yield to fail on the closed socket.
+            # Client gone: end the generator without falling through to the final
+            # "complete" frame, which a buffered/proxy consumer could otherwise read
+            # as a finished run while training is still active.
             if await request.is_disconnected():
-                break
+                return
             try:
                 tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
                 live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0

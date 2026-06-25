@@ -74,10 +74,16 @@ _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
-# Bucket-dict cap. On overflow, reclaim expired buckets, else FIFO-evict the oldest IP.
+# Bucket-dict cap. On overflow, reclaim expired buckets; a new IP that still can't
+# fit shares _LOGIN_IP_OVERFLOW rather than evicting a hot bucket.
 _LOGIN_MAX_BUCKETS = 4096
 # Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
 _LAST_IP_PRUNE = 0.0
+# Shared counter for per-IP failures that can't get their own bucket while the
+# dict is saturated with still-hot buckets. Evicting a hot bucket would let a
+# spray push out its own bucket and retry as first-seen; overflow failures share
+# one bounded counter that still trips the per-IP threshold under saturation.
+_LOGIN_IP_OVERFLOW: deque = deque()
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
@@ -190,21 +196,27 @@ def _record_login_failure(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        # Keep the dict bounded without disabling throttling: for a new IP at the
-        # cap, reclaim expired buckets (rate-limited) then FIFO-evict the oldest so
-        # a spoofed-IP spray still gets tracked instead of being treated first-seen.
+        # Keep the dict bounded without disabling throttling and without letting a
+        # spray reset a hot bucket: for a new IP at the cap, reclaim expired buckets
+        # (rate-limited) to make room.
         ip_bucket = _LOGIN_IP_BUCKETS.get(ip)
         if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             if now - _LAST_IP_PRUNE >= 1.0:
                 _prune_stale_ip_buckets(now)
                 _LAST_IP_PRUNE = now
-            while len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
-                _LOGIN_IP_BUCKETS.pop(next(iter(_LOGIN_IP_BUCKETS)), None)
-        if ip_bucket is None:
-            ip_bucket = _LOGIN_IP_BUCKETS[ip] = deque()
-        _prune_bucket(ip_bucket, now)
-        ip_bucket.append(now)
-        ip_fails = len(ip_bucket)
+        if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+            # Still full -- every bucket is hot. Count this failure in the shared
+            # overflow bucket instead of evicting a live one, so the spray stays
+            # throttled but can't push out (and reset) any IP's own counter.
+            _prune_bucket(_LOGIN_IP_OVERFLOW, now)
+            _LOGIN_IP_OVERFLOW.append(now)
+            ip_fails = len(_LOGIN_IP_OVERFLOW)
+        else:
+            if ip_bucket is None:
+                ip_bucket = _LOGIN_IP_BUCKETS[ip] = deque()
+            _prune_bucket(ip_bucket, now)
+            ip_bucket.append(now)
+            ip_fails = len(ip_bucket)
 
         if key not in _LOGIN_BUCKETS and len(_LOGIN_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             _prune_stale_buckets(now)
@@ -231,10 +243,15 @@ def _login_blocked(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        return max(
-            _blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS),
-            _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS),
-        )
+        ip_blocked = _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS)
+        if (
+            ip_blocked == 0
+            and ip not in _LOGIN_IP_BUCKETS
+            and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS
+        ):
+            # No own bucket while the dict is saturated: throttle via the overflow.
+            ip_blocked = _blocked_for(_LOGIN_IP_OVERFLOW, now, _LOGIN_IP_MAX_FAILS)
+        return max(_blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS), ip_blocked)
 
 
 def _clear_login_bucket(key: tuple[str, str]) -> None:

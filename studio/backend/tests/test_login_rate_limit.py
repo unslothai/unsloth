@@ -29,10 +29,12 @@ def _reset_buckets():
 
     auth_routes._LOGIN_BUCKETS.clear()
     auth_routes._LOGIN_IP_BUCKETS.clear()
+    auth_routes._LOGIN_IP_OVERFLOW.clear()
     auth_routes._LAST_IP_PRUNE = 0.0
     yield
     auth_routes._LOGIN_BUCKETS.clear()
     auth_routes._LOGIN_IP_BUCKETS.clear()
+    auth_routes._LOGIN_IP_OVERFLOW.clear()
     auth_routes._LAST_IP_PRUNE = 0.0
 
 
@@ -220,7 +222,7 @@ class TestBucketKeyAndBlocking:
     def test_ip_bucket_cap_bounds_without_disabling_throttling(self, env_no_proxy, monkeypatch):
         """The per-IP dict is bounded, but saturating it must NOT disable
         throttling: a new IP that keeps failing after the cap is hit is still
-        blocked (regression for the FIFO-evict fallback)."""
+        blocked (now via the shared overflow counter)."""
         from routes import auth as auth_routes
 
         monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
@@ -230,12 +232,38 @@ class TestBucketKeyAndBlocking:
             auth_routes._record_login_failure((f"198.51.100.{idx}", "admin"))
         assert len(auth_routes._LOGIN_IP_BUCKETS) <= 10  # bounded
 
-        # A brand-new IP arriving after saturation is still throttled once it
-        # crosses the per-IP threshold (it gets a real bucket, not ip_fails=0).
+        # A brand-new IP arriving after saturation is still throttled: it can't get
+        # its own bucket, so its failures land in the shared overflow counter.
         victim = ("203.0.113.99", "admin")
         for _ in range(5):
             auth_routes._record_login_failure(victim)
         assert auth_routes._login_blocked(victim) > 0
+
+    def test_saturating_spray_cannot_reset_a_hot_ip_bucket(self, env_no_proxy, monkeypatch):
+        """An IP flooding the dict must not evict (and reset) its own hot bucket.
+
+        With FIFO eviction the oldest-inserted bucket -- the attacker's own, now
+        blocked -- was popped once enough fresh IPs arrived, letting the attacker
+        retry as first-seen. The overflow counter must keep it throttled.
+        """
+        from routes import auth as auth_routes
+
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
+        # Neutralize account-bucket blocking so this isolates the per-IP path.
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
+
+        attacker = ("203.0.113.7", "admin")
+        for _ in range(5):
+            auth_routes._record_login_failure(attacker)
+        assert auth_routes._login_blocked(attacker) > 0  # attacker is throttled
+
+        # Attacker sprays many distinct IPs to try to push its own bucket out.
+        for idx in range(100):
+            auth_routes._record_login_failure((f"198.51.100.{idx}", "admin"))
+
+        # Still throttled: its hot bucket survived rather than being evicted.
+        assert auth_routes._login_blocked(attacker) > 0
 
 
 # ---------- /login 429 body ----------
