@@ -1,0 +1,129 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Data-recipe job pump resilience.
+
+The job pump is the only consumer of worker events and the only writer of the
+job snapshot that the status endpoint and every SSE subscriber read. A malformed
+worker log line that makes event handling raise must not kill the pump: if it
+did, the worker would keep running while the job stayed wedged "active", the UI
+froze, and the workflow API key was never retired. Mirrors the training-pump
+resilience contract. Driven with fakes; no subprocess, no GPU.
+"""
+
+from __future__ import annotations
+
+import queue
+import sys
+import threading
+import time
+from pathlib import Path
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+from core.data_recipe.jobs.manager import JobManager  # noqa: E402
+from core.data_recipe.jobs.types import Job  # noqa: E402
+
+
+class _FakeProc:
+    def __init__(self, alive: bool = True):
+        self._alive = alive
+
+    def is_alive(self):
+        return self._alive
+
+
+class _ScriptedQueue:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def get(self, timeout=None):
+        if self._events:
+            return self._events.pop(0)
+        raise queue.Empty
+
+    def get_nowait(self):
+        if self._events:
+            return self._events.pop(0)
+        raise queue.Empty
+
+
+def _wait_until(predicate, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def _manager_with_active_job():
+    m = JobManager.__new__(JobManager)
+    m._lock = threading.Lock()
+    job = Job(job_id="job-test")
+    job.status = "active"
+    m._job = job
+    m._proc = _FakeProc(alive=True)
+    m._mp_q = _ScriptedQueue([])
+    return m
+
+
+def test_pump_survives_handler_exception_and_still_finalizes(monkeypatch):
+    m = _manager_with_active_job()
+    handled: list = []
+
+    def fake_handle(job, event):
+        if event.get("type") == "boom":
+            raise RuntimeError("malformed log line")
+        handled.append(event.get("type"))
+
+    emitted: list = []
+    retired: list = []
+    monkeypatch.setattr(m, "_handle_event", fake_handle)
+    monkeypatch.setattr(m, "_emit", lambda e: emitted.append(e))
+    monkeypatch.setattr(m, "_retire_workflow_key", lambda j: retired.append(j))
+
+    m._mp_q = _ScriptedQueue(
+        [{"type": "boom"}, {"type": "log"}, {"type": "boom"}, {"type": "progress"}]
+    )
+
+    pump = threading.Thread(target=m._pump_loop, daemon=True)
+    pump.start()
+    try:
+        assert _wait_until(lambda: handled == ["log", "progress"]), (
+            "pump must keep processing events after a handler raises"
+        )
+        assert pump.is_alive()
+    finally:
+        m._proc._alive = False  # worker exits -> pump should finalize and stop
+        pump.join(timeout=5)
+
+    assert not pump.is_alive()
+    # The exited worker is finalized as error (not left wedged "active") and the
+    # workflow key is retired despite the earlier handler exceptions.
+    assert m._job.status == "error"
+    assert retired and retired[0] is m._job
+
+
+def test_pump_finalizes_when_drain_raises(monkeypatch):
+    m = _manager_with_active_job()
+    monkeypatch.setattr(m, "_emit", lambda e: None)
+    retired: list = []
+    monkeypatch.setattr(m, "_retire_workflow_key", lambda j: retired.append(j))
+
+    class _BadDrainQueue:
+        def get(self, timeout=None):
+            raise queue.Empty
+
+        def get_nowait(self):
+            raise RuntimeError("corrupt drain payload")
+
+    m._proc = _FakeProc(alive=False)
+    m._mp_q = _BadDrainQueue()
+
+    m._pump_loop()  # returns once it sees the dead worker
+
+    assert m._job.status == "error"
+    assert retired and retired[0] is m._job

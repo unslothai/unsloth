@@ -534,29 +534,40 @@ class InferenceOrchestrator:
             except (EOFError, OSError, ValueError):
                 break
 
-            rid = resp.get("request_id")
-            rtype = resp.get("type", "")
+            # Guard routing so a malformed response (or a mailbox put error)
+            # can't kill the dispatcher. This thread is the only consumer of the
+            # response queue; if it died, every in-flight stream would hang on
+            # its mailbox forever because callers key liveness on the subprocess,
+            # not on this thread.
+            try:
+                rid = resp.get("request_id")
+                rtype = resp.get("type", "")
 
-            # Status messages — log and skip
-            if rtype == "status":
-                logger.info("Subprocess status: %s", resp.get("message", ""))
-                continue
-
-            # Route to mailbox if a matching request_id exists
-            if rid:
-                with self._mailbox_lock:
-                    mbox = self._mailboxes.get(rid)
-                if mbox is not None:
-                    mbox.put(resp)
+                # Status messages — log and skip
+                if rtype == "status":
+                    logger.info("Subprocess status: %s", resp.get("message", ""))
                     continue
 
-            # No matching mailbox (a _gen_lock reader or orphaned). Can't
-            # un-get from mp.Queue, so just log. (status was handled above.)
-            logger.debug(
-                "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
-                rid,
-                rtype,
-            )
+                # Route to mailbox if a matching request_id exists
+                if rid:
+                    with self._mailbox_lock:
+                        mbox = self._mailboxes.get(rid)
+                    if mbox is not None:
+                        mbox.put(resp)
+                        continue
+
+                # No matching mailbox (a _gen_lock reader or orphaned). Can't
+                # un-get from mp.Queue, so just log. (status was handled above.)
+                logger.debug(
+                    "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
+                    rid,
+                    rtype,
+                )
+            except Exception:
+                logger.exception(
+                    "Inference dispatcher: failed to route a response; continuing"
+                )
+                continue
 
     def _generate_dispatched(
         self,
