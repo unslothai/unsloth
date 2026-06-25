@@ -2679,6 +2679,13 @@ class LlamaCppBackend:
           5. Legacy   -- fallback using embed // n_heads
 
         Server-flag knobs (mirror llama-server's CLI):
+        if ctx_checkpoints == 0:
+            env_val = os.environ.get("LLAMA_ARG_CTX_CHECKPOINTS")
+            if env_val and env_val.strip():
+                try:
+                    ctx_checkpoints = int(env_val)
+                except ValueError:
+                    pass
           swa_full        -- --swa-full: SWA layers cache full n_ctx (path 3->4).
           n_parallel      -- --parallel slots: non-SWA constant, SWA scale linearly.
           kv_unified      -- --kv-unified: memory no-op (API forward-compat).
@@ -2998,13 +3005,6 @@ class LlamaCppBackend:
         if not kv_on_gpu:
             return requested_ctx
 
-        if ctx_checkpoints == 0:
-            env_val = os.environ.get("LLAMA_ARG_CTX_CHECKPOINTS")
-            if env_val and env_val.strip():
-                try:
-                    ctx_checkpoints = int(env_val)
-                except ValueError:
-                    pass
         kv_kwargs = dict(
             swa_full = swa_full,
             n_parallel = n_parallel,
@@ -4160,6 +4160,7 @@ class LlamaCppBackend:
         max_target_ctx: Optional[int] = None,
         total_by_idx: Optional[dict[int, int]] = None,
         n_ubatch: Optional[int] = None,
+        ctx_checkpoints: int = 0,
     ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
