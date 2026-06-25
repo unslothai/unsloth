@@ -63,7 +63,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--t5xxl", default = None)
     p.add_argument("--llm", default = None)
     p.add_argument("--qwen2vl", default = None)
-    p.add_argument("--prompt", default = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed")
+    p.add_argument(
+        "--prompt",
+        default = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed",
+    )
     p.add_argument("--negative-prompt", default = None)
     p.add_argument("--width", type = int, default = 512)
     p.add_argument("--height", type = int, default = 512)
@@ -81,17 +84,28 @@ def main(argv: list[str] | None = None) -> int:
     print(f"available: {engine.is_available()}", flush = True)
     print(f"version:   {engine.version()}", flush = True)
     if not engine.is_available():
-        print("ERROR: sd-cli not found (set --binary / SD_CLI_PATH / UNSLOTH_SD_CPP_PATH).", flush = True)
+        print(
+            "ERROR: sd-cli not found (set --binary / SD_CLI_PATH / UNSLOTH_SD_CPP_PATH).",
+            flush = True,
+        )
         return 2
 
     files = SdCppModelFiles(
-        diffusion_model = args.diffusion_model, vae = args.vae,
-        clip_l = args.clip_l, t5xxl = args.t5xxl, llm = args.llm, qwen2vl = args.qwen2vl,
+        diffusion_model = args.diffusion_model,
+        vae = args.vae,
+        clip_l = args.clip_l,
+        t5xxl = args.t5xxl,
+        llm = args.llm,
+        qwen2vl = args.qwen2vl,
     )
     params = SdCppGenParams(
-        prompt = args.prompt, negative_prompt = args.negative_prompt,
-        width = args.width, height = args.height, steps = args.steps,
-        cfg_scale = args.cfg_scale, seed = args.seed,
+        prompt = args.prompt,
+        negative_prompt = args.negative_prompt,
+        width = args.width,
+        height = args.height,
+        steps = args.steps,
+        cfg_scale = args.cfg_scale,
+        seed = args.seed,
     )
     policy = _MODE_TO_POLICY[args.memory_mode]
     off = offload_flags(policy)
@@ -100,8 +114,13 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out_image)
     t0 = time.time()
     result = engine.generate(
-        files, params, output_path = str(out), offload = off, verbose = True,
-        timeout = args.timeout, on_log = lambda ln: print(f"  [sd] {ln}", flush = True),
+        files,
+        params,
+        output_path = str(out),
+        offload = off,
+        verbose = True,
+        timeout = args.timeout,
+        on_log = lambda ln: print(f"  [sd] {ln}", flush = True),
     )
     dt = time.time() - t0
     size_kb = result.stat().st_size / 1024 if result.is_file() else 0

@@ -208,9 +208,14 @@ class SdCppEngine:
         out = Path(output_path)
         out.parent.mkdir(parents = True, exist_ok = True)
         cmd = build_sd_cpp_command(
-            self.binary, files, params,
-            output_path = str(out), offload = offload, threads = threads,
-            verbose = verbose, extra_args = extra_args,
+            self.binary,
+            files,
+            params,
+            output_path = str(out),
+            offload = offload,
+            threads = threads,
+            verbose = verbose,
+            extra_args = extra_args,
         )
         base = dict(os.environ)
         if env:
@@ -246,9 +251,7 @@ class SdCppEngine:
                 proc.kill()
 
         if ret != 0:
-            raise RuntimeError(
-                f"sd-cli exited {ret}. Last output:\n" + "\n".join(tail[-12:])
-            )
+            raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + "\n".join(tail[-12:]))
         if not out.is_file():
             raise RuntimeError(
                 f"sd-cli reported success but no image at {out}. Last output:\n"

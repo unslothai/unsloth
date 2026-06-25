@@ -37,7 +37,11 @@ _ASSETS = [
 ]
 
 
-def _resolve(system, machine, accelerator = "auto"):
+def _resolve(
+    system,
+    machine,
+    accelerator = "auto",
+):
     return resolve_release_asset(_ASSETS, system = system, machine = machine, accelerator = accelerator)
 
 
@@ -47,7 +51,9 @@ def _resolve(system, machine, accelerator = "auto"):
 def test_macos_arm64_picks_darwin_arm64():
     assert _resolve("Darwin", "arm64") == "sd-master-8caa3f9-bin-Darwin-macOS-15.7.7-arm64.zip"
     # aarch64 spelling resolves the same
-    assert _resolve("Darwin", "aarch64").startswith("sd-master") and "arm64" in _resolve("Darwin", "aarch64")
+    assert _resolve("Darwin", "aarch64").startswith("sd-master") and "arm64" in _resolve(
+        "Darwin", "aarch64"
+    )
 
 
 def test_macos_intel_has_no_prebuilt():
@@ -64,7 +70,10 @@ def test_linux_x86_64_auto_picks_plain_cpu_build():
 
 
 def test_linux_vulkan_and_rocm_select_accelerator_builds():
-    assert _resolve("Linux", "x86_64", "vulkan") == "sd-master-8caa3f9-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip"
+    assert (
+        _resolve("Linux", "x86_64", "vulkan")
+        == "sd-master-8caa3f9-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip"
+    )
     assert "rocm" in _resolve("Linux", "x86_64", "rocm")
 
 

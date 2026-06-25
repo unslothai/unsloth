@@ -61,7 +61,9 @@ def test_find_custom_install_dir_build_layout(tmp_path, monkeypatch):
 def test_find_falls_back_to_path(tmp_path, monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: "/usr/bin/sd-cli" if stem == "sd-cli" else None)
+    monkeypatch.setattr(
+        eng.shutil, "which", lambda stem: "/usr/bin/sd-cli" if stem == "sd-cli" else None
+    )
     assert find_sd_cpp_binary() == "/usr/bin/sd-cli"
 
 
@@ -124,7 +126,16 @@ class _FakePopen:
     captured_cmd: list[str] = []
     captured_env: dict = {}
 
-    def __init__(self, cmd, *, lines, returncode, out_file, write, env = None):
+    def __init__(
+        self,
+        cmd,
+        *,
+        lines,
+        returncode,
+        out_file,
+        write,
+        env = None,
+    ):
         type(self).captured_cmd = list(cmd)
         type(self).captured_env = dict(env or {})
         self._lines = list(lines)
@@ -148,10 +159,23 @@ class _FakePopen:
         pass
 
 
-def _patch_popen(monkeypatch, *, lines, returncode, out_file, write = True):
+def _patch_popen(
+    monkeypatch,
+    *,
+    lines,
+    returncode,
+    out_file,
+    write = True,
+):
     def _factory(cmd, **kw):
-        return _FakePopen(cmd, lines = lines, returncode = returncode, out_file = out_file,
-                          write = write, env = kw.get("env"))
+        return _FakePopen(
+            cmd,
+            lines = lines,
+            returncode = returncode,
+            out_file = out_file,
+            write = write,
+            env = kw.get("env"),
+        )
 
     monkeypatch.setattr(eng.subprocess, "Popen", _factory)
 
@@ -165,7 +189,9 @@ def _engine(tmp_path):
 def test_generate_success_returns_path_and_collects_logs(tmp_path, monkeypatch):
     e = _engine(tmp_path)
     out = tmp_path / "img.png"
-    _patch_popen(monkeypatch, lines = ["loading model", "step 1/8", "done"], returncode = 0, out_file = out)
+    _patch_popen(
+        monkeypatch, lines = ["loading model", "step 1/8", "done"], returncode = 0, out_file = out
+    )
     seen: list[str] = []
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/ae.sft", llm = "/m/q.gguf")
     params = SdCppGenParams(prompt = "a cat", steps = 8, seed = 1)
@@ -187,8 +213,11 @@ def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):
     out = tmp_path / "img.png"
     _patch_popen(monkeypatch, lines = ["boom: bad gguf"], returncode = 1, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "exited 1"):
-        e.generate(SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-                   SdCppGenParams(prompt = "x"), output_path = str(out))
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = str(out),
+        )
 
 
 def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
@@ -196,15 +225,21 @@ def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
     out = tmp_path / "img.png"
     _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "no image"):
-        e.generate(SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-                   SdCppGenParams(prompt = "x"), output_path = str(out))
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = str(out),
+        )
 
 
 def test_generate_raises_when_binary_missing():
     e = SdCppEngine(binary = None)
     with pytest.raises(RuntimeError, match = "not found"):
-        e.generate(SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-                   SdCppGenParams(prompt = "x"), output_path = "/tmp/x.png")
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = "/tmp/x.png",
+        )
 
 
 # ── engine routing ──────────────────────────────────────────────────────────
@@ -225,6 +260,11 @@ def test_routing_cpu_falls_back_to_diffusers_without_binary():
 
 
 def test_routing_prefer_native_overrides_gpu():
-    assert select_diffusion_engine("cuda", native_available = True, prefer_native = True) == ENGINE_SD_CPP
+    assert (
+        select_diffusion_engine("cuda", native_available = True, prefer_native = True) == ENGINE_SD_CPP
+    )
     # but only if a binary is actually available
-    assert select_diffusion_engine("cuda", native_available = False, prefer_native = True) == ENGINE_DIFFUSERS
+    assert (
+        select_diffusion_engine("cuda", native_available = False, prefer_native = True)
+        == ENGINE_DIFFUSERS
+    )

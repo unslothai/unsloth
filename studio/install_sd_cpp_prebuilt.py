@@ -40,7 +40,13 @@ RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 
 # accelerator -> the token that must appear in a Linux/Windows asset name.
 _LINUX_ACCEL_TOKEN = {"rocm": "rocm", "vulkan": "vulkan"}
-_WINDOWS_ACCEL_TOKEN = {"cuda": "cuda12", "vulkan": "vulkan", "rocm": "rocm", "cpu": "avx2", "auto": "avx2"}
+_WINDOWS_ACCEL_TOKEN = {
+    "cuda": "cuda12",
+    "vulkan": "vulkan",
+    "rocm": "rocm",
+    "cpu": "avx2",
+    "auto": "avx2",
+}
 # Tokens that mark an accelerator-specific Linux build; "auto"/"cpu" want none of them.
 _LINUX_ACCEL_MARKERS = ("rocm", "vulkan", "cuda", "sycl", "musa")
 
@@ -73,11 +79,16 @@ def resolve_release_asset(
     system = system.lower()
     accel = accelerator.lower()
     arch = _arch_tokens(machine)
-    zips = [a for a in asset_names if a.lower().endswith(".zip") and not a.lower().startswith("cudart")]
+    zips = [
+        a for a in asset_names if a.lower().endswith(".zip") and not a.lower().startswith("cudart")
+    ]
 
     if system == "darwin":
-        pool = [a for a in zips if ("darwin" in a.lower() or "macos" in a.lower())
-                and any(t in a.lower() for t in arch)]
+        pool = [
+            a
+            for a in zips
+            if ("darwin" in a.lower() or "macos" in a.lower()) and any(t in a.lower() for t in arch)
+        ]
         return pool[0] if pool else None
 
     if system == "windows":
@@ -144,7 +155,10 @@ def install(
     release = _fetch_latest_release(token = token)
     names = [a["name"] for a in release.get("assets", [])]
     chosen = resolve_release_asset(
-        names, system = platform.system(), machine = platform.machine(), accelerator = accelerator,
+        names,
+        system = platform.system(),
+        machine = platform.machine(),
+        accelerator = accelerator,
     )
     if not chosen:
         raise RuntimeError(
@@ -172,16 +186,23 @@ def install(
 
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description = "Install a prebuilt sd-cli (stable-diffusion.cpp).")
-    p.add_argument("--accelerator", default = "auto", choices = ["auto", "cpu", "vulkan", "rocm", "cuda"])
+    p.add_argument(
+        "--accelerator", default = "auto", choices = ["auto", "cpu", "vulkan", "rocm", "cuda"]
+    )
     p.add_argument("--install-dir", default = None)
-    p.add_argument("--print-asset", action = "store_true", help = "resolve + print the asset, don't download")
+    p.add_argument(
+        "--print-asset", action = "store_true", help = "resolve + print the asset, don't download"
+    )
     args = p.parse_args(argv)
 
     if args.print_asset:
         release = _fetch_latest_release()
         names = [a["name"] for a in release.get("assets", [])]
         chosen = resolve_release_asset(
-            names, system = platform.system(), machine = platform.machine(), accelerator = args.accelerator,
+            names,
+            system = platform.system(),
+            machine = platform.machine(),
+            accelerator = args.accelerator,
         )
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2

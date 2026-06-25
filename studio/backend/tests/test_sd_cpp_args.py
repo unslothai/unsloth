@@ -60,7 +60,13 @@ def test_offload_group_streams_with_flash_attention():
 
 def test_offload_model_pushes_everything_to_cpu_and_tiles():
     flags = offload_flags(OFFLOAD_MODEL)
-    for expected in ("--offload-to-cpu", "--clip-on-cpu", "--vae-on-cpu", "--vae-tiling", "--diffusion-fa"):
+    for expected in (
+        "--offload-to-cpu",
+        "--clip-on-cpu",
+        "--vae-on-cpu",
+        "--vae-tiling",
+        "--diffusion-fa",
+    ):
         assert expected in flags
     # sequential maps the same as model
     assert offload_flags(OFFLOAD_SEQUENTIAL) == flags
@@ -81,7 +87,9 @@ def test_offload_forced_flags_dedup():
 
 def test_build_zimage_command_minimal():
     files = SdCppModelFiles(
-        diffusion_model = "/m/z.gguf", vae = "/m/ae.sft", llm = "/m/qwen3.gguf",
+        diffusion_model = "/m/z.gguf",
+        vae = "/m/ae.sft",
+        llm = "/m/qwen3.gguf",
     )
     params = SdCppGenParams(prompt = "a cat", width = 512, height = 768, steps = 8, cfg_scale = 1.0, seed = 42)
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/out/x.png")
@@ -105,8 +113,10 @@ def test_build_zimage_command_minimal():
 
 def test_build_flux1_dual_text_encoders():
     files = SdCppModelFiles(
-        diffusion_model = "/m/flux.gguf", vae = "/m/ae.sft",
-        clip_l = "/m/clip_l.sft", t5xxl = "/m/t5.gguf",
+        diffusion_model = "/m/flux.gguf",
+        vae = "/m/ae.sft",
+        clip_l = "/m/clip_l.sft",
+        t5xxl = "/m/t5.gguf",
     )
     params = SdCppGenParams(prompt = "x", guidance = 3.5)
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
@@ -121,8 +131,14 @@ def test_build_appends_offload_and_extra_args_last():
     params = SdCppGenParams(prompt = "x")
     off = offload_flags(OFFLOAD_GROUP)
     cmd = build_sd_cpp_command(
-        "/bin/sd-cli", files, params, output_path = "/o.png",
-        offload = off, threads = 8, verbose = True, extra_args = ["--rng", "cuda"],
+        "/bin/sd-cli",
+        files,
+        params,
+        output_path = "/o.png",
+        offload = off,
+        threads = 8,
+        verbose = True,
+        extra_args = ["--rng", "cuda"],
     )
     assert "--offload-to-cpu" in cmd
     assert _pair(cmd, "--threads") == "8"
@@ -143,14 +159,31 @@ def test_build_omits_unset_optional_params():
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     params = SdCppGenParams(prompt = "x")  # no steps/cfg/seed/sampler
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
-    for flag in ("--steps", "--cfg-scale", "--guidance", "--seed", "--sampling-method", "--batch-count", "--threads", "-v"):
+    for flag in (
+        "--steps",
+        "--cfg-scale",
+        "--guidance",
+        "--seed",
+        "--sampling-method",
+        "--batch-count",
+        "--threads",
+        "-v",
+    ):
         assert flag not in cmd
 
 
 def test_build_requires_diffusion_model_and_prompt():
     with pytest.raises(ValueError):
-        build_sd_cpp_command("/bin/sd-cli", SdCppModelFiles(diffusion_model = ""),
-                             SdCppGenParams(prompt = "x"), output_path = "/o.png")
+        build_sd_cpp_command(
+            "/bin/sd-cli",
+            SdCppModelFiles(diffusion_model = ""),
+            SdCppGenParams(prompt = "x"),
+            output_path = "/o.png",
+        )
     with pytest.raises(ValueError):
-        build_sd_cpp_command("/bin/sd-cli", SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-                             SdCppGenParams(prompt = "   "), output_path = "/o.png")
+        build_sd_cpp_command(
+            "/bin/sd-cli",
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "   "),
+            output_path = "/o.png",
+        )
