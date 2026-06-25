@@ -4389,6 +4389,18 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _is_tensor_split_assert(output: str) -> bool:
+        """True when the crash output carries the ggml warmup assertion that
+        --split-mode tensor + --mmproj triggers on affected builds (#6415), as
+        opposed to a bare SIGSEGV a corrupt or too-new projector can raise
+        regardless of split mode. stderr is merged into the captured output, so the
+        abort message is present; gating the abort cache on it keeps a projector-only
+        crash from being recorded as tensor/mmproj-incompatible.
+        """
+        text = (output or "").lower()
+        return "ggml_assert" in text or "ggml_abort" in text
+
+    @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
         """True only on a hard fault (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS or a
         Windows 0xC0000000+ status), not SIGKILL/SIGTERM/SIGINT (OOM killer /
@@ -4544,6 +4556,11 @@ class LlamaCppBackend:
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
         n_parallel: int = 1,
         extra_args: Optional[List[str]] = None,
+        # Set by the route-level tensor->layer fallback on its retry (which runs
+        # tensor-off): the user requested multi-GPU tensor mode, so keep that
+        # intent on the layer split instead of pinning a fits-on-one-card model to
+        # a single device. Capped to usable GPUs by the selection paths.
+        preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
         """Start llama-server with a GGUF model.
 
@@ -5140,6 +5157,15 @@ class LlamaCppBackend:
                     # is preserved so the model isn't silently pinned to one GPU.
                     _layer_min_gpus = 1
 
+                    # The route-level tensor->layer fallback retry runs tensor-off,
+                    # so the in-function vision/budget downgrades below can't see the
+                    # original tensor request. Carry it in explicitly so the first
+                    # successful fallback of a fits-on-one-card model still spreads
+                    # across GPUs (capped to usable cards by the selection paths)
+                    # rather than collapsing to one device.
+                    if preserve_multi_gpu_on_layer:
+                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
+
                     if (
                         tensor_parallel
                         and effective_is_vision
@@ -5358,7 +5384,19 @@ class LlamaCppBackend:
                             ranked = sorted(
                                 gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
                             )
-                            for n_gpus in range(max(1, _layer_min_gpus), len(ranked) + 1):
+                            # This path doesn't go through _select_gpus, so apply the
+                            # same usable-GPU cap here: a raised _layer_min_gpus
+                            # (downgraded tensor request) must not force a nearly-full
+                            # card into the subset (or trip --fit). Cap to the GPUs
+                            # with usable VRAM at this pin fraction.
+                            _auto_min_gpus = max(
+                                1,
+                                min(
+                                    _layer_min_gpus,
+                                    sum(1 for g in ranked if _gpu_usable(g, pin_fraction) > 0) or 1,
+                                ),
+                            )
+                            for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
                                 _ms = _subset_model_size(n_gpus)
@@ -5388,7 +5426,7 @@ class LlamaCppBackend:
                                 # at 131k may pin fine with a 4096 KV (#5106).
                                 effective_ctx = min(4096, effective_ctx)
                                 if effective_ctx > 0:
-                                    for n_gpus in range(max(1, _layer_min_gpus), len(ranked) + 1):
+                                    for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
                                         subset = ranked[:n_gpus]
                                         kv = self._estimate_kv_cache_bytes(
                                             effective_ctx,
@@ -6143,6 +6181,7 @@ class LlamaCppBackend:
                         self._tensor_parallel
                         and launched_with_mmproj
                         and self._is_signal_crash(_crash_rc)
+                        and self._is_tensor_split_assert(out)
                         and not self._output_has_nonprojector_diagnostic(out)
                     )
                     if vision_tensor_split_crash:

@@ -2824,6 +2824,12 @@ async def load_model(
                     **_source_load_kwargs,
                     **attempt_kwargs,
                     tensor_parallel = tensor_parallel,
+                    # This run is the tensor->layer fallback retry (the toggle asked
+                    # for tensor, this attempt is layer): keep the multi-GPU intent
+                    # so a downgraded vision/MTP load still spreads across GPUs.
+                    preserve_multi_gpu_on_layer = bool(
+                        request.tensor_parallel and not tensor_parallel
+                    ),
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads

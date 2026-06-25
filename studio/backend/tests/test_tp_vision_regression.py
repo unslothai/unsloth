@@ -202,10 +202,14 @@ def test_vision_tensor_abort_recorded_only_after_retries_and_signature():
     src = inspect.getsource(LlamaCppBackend.load_model)
     idx = src.find("_record_vision_tensor_split_abort(binary)")
     assert idx != -1, "load_model must record a binary that aborts on vision + tensor"
-    guard = src[max(0, idx - 400) : idx]
+    guard = src[max(0, idx - 500) : idx]
     assert "self._tensor_parallel" in guard
     assert "launched_with_mmproj" in guard
     assert "_is_signal_crash" in guard, "record must be gated on a hard signal crash"
+    assert "_is_tensor_split_assert" in guard, (
+        "record must be confirmed by the ggml tensor-split assert marker, not a bare "
+        "signal crash shared with the projector-incompat branch"
+    )
     assert (
         "not self._output_has_nonprojector_diagnostic" in guard
     ), "record must exclude OOM / unknown-arch crashes"
@@ -221,9 +225,13 @@ def test_vision_downgrade_preserves_multi_gpu_intent():
     src = inspect.getsource(LlamaCppBackend.load_model)
     # gate records the multi-GPU intent
     assert "_layer_min_gpus = max(_layer_min_gpus, len(gpus))" in src
-    # and the layer selection consumes it (both _select_gpus calls + the subset loop)
+    # and the layer selection consumes it: explicit/file-size paths via _select_gpus,
+    # the auto-context loops via the usable-capped _auto_min_gpus derived from it.
     assert src.count("min_gpus = _layer_min_gpus") >= 2
-    assert "range(max(1, _layer_min_gpus)" in src
+    assert "range(_auto_min_gpus, len(ranked) + 1)" in src
+    # the auto-context minimum is derived from _layer_min_gpus (capped to usable)
+    auto = src.find("_auto_min_gpus = max(")
+    assert auto != -1 and "_layer_min_gpus" in src[auto : auto + 200]
 
 
 # ── per-binary capability cache (pure) ───────────────────────────────
@@ -395,3 +403,59 @@ def test_vision_layer_min_gpus_bump_requires_tensor_request():
                     f"tensor request, but fires under `{test_src}`"
                 )
     assert checked >= 1, "expected a vision-cache guard that bumps _layer_min_gpus"
+
+
+# ── round-2 follow-up: route-fallback retry + auto-context cap + assert marker ──
+
+
+def test_layer_fallback_retry_preserves_multi_gpu_intent():
+    """The route-level tensor->layer fallback retry runs tensor-off, so load_model
+    takes a preserve_multi_gpu_on_layer hint and raises _layer_min_gpus when set --
+    otherwise the first successful fallback of a fits-on-one-card model single-GPUs
+    despite the user's tensor request (Codex review on #6659)."""
+    sig = inspect.signature(LlamaCppBackend.load_model)
+    assert "preserve_multi_gpu_on_layer" in sig.parameters
+    assert sig.parameters["preserve_multi_gpu_on_layer"].default is False
+    fn = _load_model_ast()
+    found = any(
+        isinstance(n, ast.If)
+        and "preserve_multi_gpu_on_layer" in ast.unparse(n.test)
+        and "_layer_min_gpus" in "\n".join(ast.unparse(b) for b in n.body)
+        for n in ast.walk(fn)
+    )
+    assert found, "preserve_multi_gpu_on_layer must raise _layer_min_gpus"
+
+
+def test_auto_context_layer_loops_capped_to_usable_gpus():
+    """The auto-context layer loops bypass _select_gpus, so they apply their own
+    usable-GPU cap: a raised _layer_min_gpus must not force a nearly-full card into
+    the subset there (Codex review on #6659)."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert (
+        "range(max(1, _layer_min_gpus), len(ranked) + 1)" not in src
+    ), "auto-context loops must cap _layer_min_gpus to usable GPUs, not use it raw"
+    assert "_auto_min_gpus" in src
+    assert "range(_auto_min_gpus, len(ranked) + 1)" in src
+
+
+def test_is_tensor_split_assert_marker():
+    """The abort marker matches the ggml assert/abort signature, not a bare crash."""
+    f = LlamaCppBackend._is_tensor_split_assert
+    assert f("/x/ggml-backend.cpp:541: GGML_ASSERT(ne == 1) failed") is True
+    assert f("ggml_abort: tensor split warmup") is True
+    assert f("Segmentation fault (core dumped)") is False
+    assert f("") is False
+    assert f(None) is False
+
+
+def test_vision_tensor_abort_requires_assert_marker_for_record_and_raise():
+    """Both the abort cache record and the layer-retry raise are gated on the ggml
+    assert marker, so a projector that SIGSEGVs independent of split mode is not
+    cached as tensor/mmproj-incompatible nor sent through the tensor layer retry
+    (Codex review on #6659)."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    idx = src.find("vision_tensor_split_crash = (")
+    assert idx != -1
+    block = src[idx : idx + 400]
+    assert "_is_tensor_split_assert" in block
+    assert "_is_signal_crash" in block
