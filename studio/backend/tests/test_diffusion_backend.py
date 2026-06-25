@@ -35,8 +35,13 @@ def test_detect_family_from_repo_id():
     assert detect_family("unsloth/Z-Image-GGUF").name == "z-image"
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").name == "qwen-image"
     assert detect_family("unsloth/FLUX.1-schnell-GGUF").name == "flux.1"
-    # FLUX.2's text encoder isn't compatible yet, so it's not a supported family.
-    assert detect_family("unsloth/FLUX.2-klein-4B-GGUF") is None
+    # FLUX.2-klein is its own pipeline (Qwen3 TE), distinct from FLUX.1.
+    klein = detect_family("unsloth/FLUX.2-klein-4B-GGUF")
+    assert klein.name == "flux.2-klein"
+    assert klein.pipeline_class == "Flux2KleinPipeline"
+    assert klein.cfg_kwarg == "guidance_scale"
+    # Only klein is wired up; the Mistral-based FLUX.2-dev base repo is gated.
+    assert detect_family("unsloth/FLUX.2-dev-GGUF") is None
     # Qwen-Image guides via true_cfg_scale, not guidance_scale.
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").cfg_kwarg == "true_cfg_scale"
     assert detect_family("unsloth/Z-Image-GGUF").cfg_kwarg == "guidance_scale"

@@ -73,6 +73,7 @@ const MODELS: ModelOption[] = [
   txt2img("unsloth/Qwen-Image-GGUF", "Qwen-Image"),
   txt2img("unsloth/FLUX.1-schnell-GGUF", "FLUX.1 schnell"),
   txt2img("unsloth/FLUX.1-dev-GGUF", "FLUX.1 dev"),
+  txt2img("unsloth/FLUX.2-klein-4B-GGUF", "FLUX.2 klein 4B"),
 ];
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring,
@@ -82,6 +83,7 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "z-image-turbo", steps: 9, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
   { match: "flux.1", steps: 28, guidance: 3.5 },
+  { match: "flux.2-klein", steps: 4, guidance: 0 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 20, guidance: 4 },
 ];

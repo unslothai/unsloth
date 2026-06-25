@@ -35,9 +35,9 @@ class DiffusionFamily:
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
 # is read from its HF base_model tag at load time, so one entry covers Turbo/full,
 # schnell/dev, etc. base_repo here is only a fallback. Only archs whose diffusers
-# transformer supports from_single_file load here (ERNIE-Image does not, yet);
-# FLUX.2 is also excluded — its Mistral text-encoder chat template is incompatible
-# with the pinned transformers.
+# transformer supports from_single_file load here (ERNIE-Image does not, yet).
+# FLUX.2-dev and FLUX.2-klein-9B are left out only because their base diffusers
+# repos are gated; the open klein-4B base stands in for the klein family below.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
@@ -45,6 +45,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
         aliases = ("flux1", "flux-1"),
+    ),
+    # FLUX.2-klein is a distinct pipeline (Flux2KleinPipeline) with a Qwen3 text
+    # encoder, not the Mistral-based Flux2Pipeline; it must precede a generic
+    # flux match. The base Flux2Pipeline (FLUX.2-dev) is gated, so it's omitted.
+    DiffusionFamily(
+        name = "flux.2-klein",
+        pipeline_class = "Flux2KleinPipeline",
+        transformer_class = "Flux2Transformer2DModel",
+        base_repo = "black-forest-labs/FLUX.2-klein-4B",
+        aliases = ("flux2-klein",),
     ),
     DiffusionFamily(
         name = "qwen-image",
