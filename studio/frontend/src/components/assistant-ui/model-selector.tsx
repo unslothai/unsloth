@@ -662,7 +662,10 @@ export function ModelSelector({
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
-        onBrowseHub={handleBrowseHub}
+        // The image tab (the only caller passing `task`) is a self-contained
+        // curated + on-device picker, so it omits the "Search Hub" button that
+        // navigates to the general Hub page.
+        onBrowseHub={task ? undefined : handleBrowseHub}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}
