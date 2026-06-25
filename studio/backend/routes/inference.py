@@ -2310,6 +2310,28 @@ def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Opt
     )
 
 
+_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
+
+
+def disable_openai_auto_switch_for_request(scope) -> None:
+    """Opt a request out of OpenAI auto-switch. The public preview route uses this:
+    it always serves its pinned checkpoint, so a caller-supplied model must never
+    swap the loaded model."""
+    if isinstance(scope, dict):
+        scope[_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY] = True
+
+
+def _automatic_model_load_may_run() -> bool:
+    """True when a request can trigger an automatic load: either resolver-based
+    auto-switch is on, or a standalone idle TTL can reload an idle-freed model. The
+    validate-before-switch guards key off this so an invalid request never loads."""
+    from utils.openai_auto_switch_settings import (
+        get_openai_auto_switch_enabled,
+        get_auto_unload_idle_seconds,
+    )
+    return get_openai_auto_switch_enabled() or get_auto_unload_idle_seconds() > 0
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str], fastapi_request: Request, current_subject: str
 ) -> None:
@@ -2334,6 +2356,11 @@ async def _maybe_auto_switch_model(
     # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
     # absent so it falls through instead of raising in the membership checks below.
     if not isinstance(requested_model, str) or not requested_model:
+        return
+    # The public preview route opts out so a caller cannot switch away from the
+    # pinned preview checkpoint it just loaded.
+    scope = getattr(fastapi_request, "scope", None)
+    if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
         return
     auto_switch_on = get_openai_auto_switch_enabled()
     # The reload-stash path also runs when idle-unload is active on its own (a
@@ -2473,7 +2500,13 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
         body = await request.json()
     except (json.JSONDecodeError, ValueError):
         return None
-    model = body.get("model") if isinstance(body, dict) else None
+    if isinstance(body, dict):
+        # A raw-body client may omit ``model`` and rely on the loaded backend.
+        # Pass a non-empty sentinel so the idle-stash reload still runs (an
+        # idle-freed model is restored); the resolver treats it as unknown.
+        model = body.get("model") or "default"
+    else:
+        model = None
     await _maybe_auto_switch_model(model, request, current_subject)
     return body
 
@@ -3968,6 +4001,12 @@ async def generate_audio(
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
 
+    # Restore an idle-evicted GGUF before selecting a backend: this path is
+    # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
+    # unload an audio GGUF the next request then failed to restore. Validation
+    # above ran first, so an invalid request never triggers a reload.
+    await _maybe_auto_switch_model(payload.model, request, current_subject)
+
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
@@ -5048,13 +5087,13 @@ async def openai_chat_completions(
                     ),
                 )
 
-    # When auto-switch is on, reject a system-only chat before the hook so an
-    # invalid request never swaps the resident model (as /responses and /messages
-    # already validate before switching). Parse once and reuse below.
-    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
-
+    # Reject a system-only chat before any automatic load so an invalid request
+    # never swaps or reloads the resident model (as /responses and /messages
+    # already validate before switching). Gate on every automatic-load trigger,
+    # not just auto-switch, since a standalone idle TTL can also reload here.
+    # Parse once and reuse below.
     _pre_parsed = None
-    if get_openai_auto_switch_enabled():
+    if _automatic_model_load_may_run():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
             raise HTTPException(
@@ -6812,6 +6851,16 @@ def _flatten_monitor_prompt(value) -> str:
     return str(value)
 
 
+def _completions_prompt_present(body: dict) -> bool:
+    """Whether a completions body carries a usable ``prompt`` (non-empty)."""
+    prompt = body.get("prompt")
+    if isinstance(prompt, str):
+        return prompt != ""
+    if isinstance(prompt, (list, tuple)):
+        return len(prompt) > 0
+    return prompt is not None
+
+
 @router.post("/completions")
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
@@ -6821,6 +6870,17 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     when a GGUF model is loaded.
     """
     llama_backend = get_llama_cpp_backend()
+
+    # Reject a request with no prompt before any automatic load so an invalid
+    # request never swaps or reloads the resident model (as chat/embeddings already
+    # validate before switching). Gate on every automatic-load trigger.
+    if _automatic_model_load_may_run():
+        try:
+            _pre = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            _pre = None
+        if isinstance(_pre, dict) and not _completions_prompt_present(_pre):
+            raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
 
     # Opt-in: load the requested local GGUF before the loaded-state check.
     body = await _auto_switch_from_request_body(request, current_subject)
@@ -7009,12 +7069,11 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     error (expected).
     """
     llama_backend = get_llama_cpp_backend()
-    # When auto-switch is on, reject a request with no input before the hook so an
-    # invalid request never swaps the resident model (as chat/responses/messages
-    # already validate before switching).
-    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
-
-    if get_openai_auto_switch_enabled():
+    # Reject a request with no input before any automatic load so an invalid
+    # request never swaps or reloads the resident model (as chat/responses/messages
+    # already validate before switching). Gate on every automatic-load trigger,
+    # not just auto-switch, since a standalone idle TTL can also reload here.
+    if _automatic_model_load_may_run():
         try:
             _pre = await request.json()
         except (json.JSONDecodeError, ValueError):
@@ -8622,16 +8681,15 @@ async def anthropic_messages(
     """
     llama_backend = get_llama_cpp_backend()
 
-    # Default-off parity: with auto-switch disabled and nothing loaded, 503 before
-    # any request-shape check, exactly as the pre-feature endpoint did. When the
-    # feature is on, fall through so validation runs before a possible load.
-    if not llama_backend.is_loaded:
-        from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
-        if not get_openai_auto_switch_enabled():
-            raise HTTPException(
-                status_code = 503,
-                detail = "No GGUF model loaded. Load a GGUF model first.",
-            )
+    # Default-off parity: with no automatic load possible and nothing loaded, 503
+    # before any request-shape check, exactly as the pre-feature endpoint did. When
+    # an automatic load can run (auto-switch or a standalone idle TTL), fall through
+    # so validation runs before the reload hook gets a chance to restore the model.
+    if not llama_backend.is_loaded and not _automatic_model_load_may_run():
+        raise HTTPException(
+            status_code = 503,
+            detail = "No GGUF model loaded. Load a GGUF model first.",
+        )
 
     # max_tokens is a required field on the Anthropic Messages API; real Anthropic
     # returns a 400 invalid_request_error when it is omitted. Validate before

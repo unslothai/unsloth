@@ -1672,3 +1672,240 @@ def test_retrieve_model_tolerates_non_string_id(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_retrieve_model("123", "tester"))
     assert exc.value.status_code == 404
+
+
+# ── 10-reviewer round: automatic-load validation asymmetry, audio, preview, idle timer ──
+
+
+def _stash(monkeypatch, *, idle = 600):
+    """Common setup for the standalone-idle reload paths: feature off, idle TTL on,
+    an idle-freed model in the stash, nothing loaded, no in-flight requests."""
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: idle)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+
+
+def test_completions_prompt_present_helper():
+    f = inference_route._completions_prompt_present
+    assert f({"prompt": "hi"}) is True
+    assert f({"prompt": ["a", "b"]}) is True
+    assert f({}) is False
+    assert f({"prompt": ""}) is False
+    assert f({"prompt": []}) is False
+
+
+def test_completions_rejects_missing_prompt_before_switch(monkeypatch):
+    # #1: /v1/completions had no prompt pre-check, so a malformed request naming a
+    # different downloaded GGUF loaded it before failing. Now it 400s first.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_completions(
+                _json_body_request({"model": "org/B-GGUF"}), "tester"
+            )
+        )
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # no switch before rejection
+
+
+def test_chat_system_only_rejected_before_idle_reload(monkeypatch):
+    # #4: the chat pre-load guard only checked auto-switch; a standalone idle TTL
+    # could still reload a system-only chat before the 400. Now it 400s first.
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    _stash(monkeypatch)
+    payload = ChatCompletionRequest(model = "x", messages = [{"role": "system", "content": "sys"}])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # no reload before rejection
+
+
+def test_embeddings_missing_input_rejected_before_idle_reload(monkeypatch):
+    # #5: same gap on /v1/embeddings; the missing-input 400 must fire under a
+    # standalone idle TTL too, not only when auto-switch is on.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    _stash(monkeypatch)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(_json_body_request({"model": "x"}), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # no reload before rejection
+
+
+def test_messages_does_not_503_before_reload_hook_when_idle_on(monkeypatch):
+    # #3: /v1/messages 503'd before the reload hook when auto-switch was off, so a
+    # standalone idle TTL could never restore the freed model. The early 503 now
+    # defers to any automatic-load trigger, so the reload hook runs.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    _stash(monkeypatch)
+    # The handler proceeds past the hook to real generation (no llama-server here),
+    # so tolerate the downstream failure; the reload having run is the assertion.
+    try:
+        asyncio.run(
+            inference_route.anthropic_messages(
+                _anthropic_payload(max_tokens = 16), object(), "tester"
+            )
+        )
+    except Exception:
+        pass
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "/cache/snap/A"
+
+
+def test_messages_503_gated_on_automatic_load_predicate():
+    # Lock the #3 fix at the source: the early 503 must check the shared predicate.
+    import inspect
+    src = inspect.getsource(inference_route.anthropic_messages)
+    assert "_automatic_model_load_may_run" in src
+
+
+def test_raw_body_without_model_reloads_freed_model(monkeypatch):
+    # #6: a raw completions/embeddings body that omits `model` passed None, which
+    # skipped the idle-stash reload and 503'd. A non-empty sentinel now lets the
+    # reload run while still resolving as unknown.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    _stash(monkeypatch)
+    body = asyncio.run(
+        inference_route._auto_switch_from_request_body(
+            _json_body_request({"prompt": "hi"}), "tester"
+        )
+    )
+    assert body == {"prompt": "hi"}
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "/cache/snap/A"
+    assert rec.calls[0].gguf_variant == "Q4_K_M"
+
+
+def test_audio_generate_reloads_idle_freed_model(monkeypatch):
+    # #2: /audio/generate is keep-warm-tracked but had no reload hook, so an
+    # idle-freed audio GGUF stayed unloaded. The hook now restores it.
+    from models.inference import ChatCompletionRequest
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    _stash(monkeypatch)
+    payload = ChatCompletionRequest(model = "x", messages = [{"role": "user", "content": "say hi"}])
+    # Falls through to the non-audio backend path (no real model) after the reload;
+    # tolerate that downstream failure, the reload having run is the assertion.
+    try:
+        asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
+    except Exception:
+        pass
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "/cache/snap/A"
+
+
+def test_audio_generate_does_not_reload_on_invalid_request(monkeypatch):
+    # The audio reload hook must run after message validation, so an empty request
+    # never triggers a reload.
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    _stash(monkeypatch)
+    payload = ChatCompletionRequest(model = "x", messages = [])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
+def test_preview_scope_disables_auto_switch(monkeypatch):
+    # #7: the public preview route delegates to the chat handler; a caller-supplied
+    # model must not switch away from the pinned checkpoint. The scope opt-out flag
+    # makes the hook a no-op.
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+
+    class _Req:
+        def __init__(self):
+            self.scope = {}
+
+    req = _Req()
+    inference_route.disable_openai_auto_switch_for_request(req.scope)
+    asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", req, "tester"))
+    assert rec.calls == []  # preview opt-out suppressed the switch
+
+    # Control: a fresh request without the flag would switch.
+    req2 = _Req()
+    asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", req2, "tester"))
+    assert len(rec.calls) == 1
+
+
+def test_preview_chat_is_tracked_as_inference_path():
+    # #8: long preview streams use the same backend; the keep-warm middleware must
+    # count them so the idle loop can't unload mid-response.
+    from core.inference.llama_keepwarm import _is_inference_path
+
+    assert _is_inference_path("/p/my-run/v1/chat/completions") is True
+    assert _is_inference_path("/p/my-run/ckpt-100/v1/chat/completions") is True
+    assert _is_inference_path("/p/my-run/v1/models") is False
+
+
+def test_untrack_does_not_reset_idle_timer():
+    # #9: external-provider traffic was keeping the local GGUF warm forever because
+    # untrack stamped _last_active. It must decrement in-flight without restamping.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    kw._inflight = 1
+    kw._last_active = time.monotonic() - 3600
+    before = kw._last_active
+    scope = {"type": "http"}
+    kw.untrack_current_request(scope)
+    assert kw._inflight == 0
+    assert kw._last_active == before  # idle timer not reset by an untracked request
+    kw._inflight = 0
+
+
+def test_note_start_does_not_reset_idle_timer():
+    # The start stamp was removed so an external request that is later untracked
+    # cannot reset the timer at start either; in-flight count still protects it.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    before = kw._last_active
+    kw._note_start()
+    try:
+        assert kw._inflight == 1
+        assert kw._last_active == before  # start no longer stamps activity
+        assert kw._is_idle(1.0) is False  # but in-flight still blocks unload
+    finally:
+        kw._note_end()  # restores _last_active stamp on completion

@@ -62,7 +62,11 @@ _INFERENCE_SUFFIXES = (
 
 
 def _is_inference_path(path: str) -> bool:
-    return path.startswith(_INFERENCE_PREFIXES) and path.endswith(_INFERENCE_SUFFIXES)
+    if path.startswith(_INFERENCE_PREFIXES) and path.endswith(_INFERENCE_SUFFIXES):
+        return True
+    # Public checkpoint preview (/p/{run}/v1/chat/completions) delegates to the
+    # chat handler and streams from the same backend, so protect it from idle unload.
+    return path.startswith("/p/") and path.endswith("/v1/chat/completions")
 
 
 def _note_pending() -> None:
@@ -78,11 +82,13 @@ def _note_unpending() -> None:
 
 
 def _note_start() -> None:
-    global _inflight, _pending, _last_active
+    # Do not stamp _last_active here: while _inflight > 0 the model is already
+    # protected (see _is_idle), and stamping on start lets an external-provider
+    # request that is later untracked still reset the local idle timer.
+    global _inflight, _pending
     with _lock:
         _pending = max(0, _pending - 1)
         _inflight += 1
-        _last_active = time.monotonic()
 
 
 def _note_end() -> None:
@@ -90,6 +96,14 @@ def _note_end() -> None:
     with _lock:
         _inflight = max(0, _inflight - 1)
         _last_active = time.monotonic()
+
+
+def _note_untracked_end() -> None:
+    # Drop a request that never used the local GGUF without stamping local
+    # activity, so periodic external-provider traffic can't keep the model warm.
+    global _inflight
+    with _lock:
+        _inflight = max(0, _inflight - 1)
 
 
 def _is_idle(ttl_seconds: float) -> bool:
@@ -135,7 +149,7 @@ def untrack_current_request(scope) -> None:
     if not isinstance(scope, dict) or scope.get(_UNTRACKED_SCOPE_KEY):
         return
     scope[_UNTRACKED_SCOPE_KEY] = True
-    _note_end()
+    _note_untracked_end()
 
 
 def inference_lifecycle_gate() -> asyncio.Lock:
