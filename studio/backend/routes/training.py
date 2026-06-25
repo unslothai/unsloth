@@ -836,6 +836,11 @@ async def stream_training_progress(
         max_no_updates = 1800  # Timeout after 30 min (large models need compile time)
 
         while backend.is_training_active():
+            # Stop promptly when the client goes away instead of waiting for the
+            # next step/heartbeat yield to fail on the closed socket (matches the
+            # export / data-recipe SSE routes).
+            if await request.is_disconnected():
+                break
             try:
                 tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
                 live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0

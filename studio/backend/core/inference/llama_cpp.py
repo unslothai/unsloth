@@ -3147,9 +3147,12 @@ class LlamaCppBackend:
                         except (ValueError, OSError):
                             # Log file closed under us; tee silently.
                             pass
-        except (ValueError, OSError):
-            # Pipe closed -- process terminating.
-            pass
+        except Exception:
+            # Pipe closed (process terminating) is the common case; any other
+            # unexpected error must not kill the drain thread, or llama-server
+            # can deadlock on a full stdout pipe buffer (Windows) and never go
+            # healthy. This thread exists precisely to keep that pipe drained.
+            logger.debug("llama-server stdout drain stopped", exc_info = True)
 
     # GGUF KV type sizes for fast skipping
     _GGUF_TYPE_SIZE = {

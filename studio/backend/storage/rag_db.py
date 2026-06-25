@@ -156,3 +156,38 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_vec'"
     ).fetchone()
     return row is not None
+
+
+def reconcile_orphaned_ingestion_jobs() -> int:
+    """Fail ingestion jobs (and their documents) left mid-flight by a crash.
+
+    Ingestion runs on a daemon thread; if the server is killed mid-ingest the
+    ``ingestion_jobs`` row stays ``running``/``pending`` and the ``documents`` row
+    stays ``pending`` with no worker behind them, so the UI shows a document stuck
+    "processing" forever with no way to recover. Flip both to ``failed`` at startup
+    so they become re-ingestible. Mirrors ``studio_db.cleanup_orphaned_runs``.
+    No-op when RAG (sqlite-vec) is unavailable. Returns the number of jobs reset.
+    """
+    if not RAG_AVAILABLE:
+        return 0
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, document_id FROM ingestion_jobs "
+            "WHERE status NOT IN ('completed', 'failed')"
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE ingestion_jobs SET status='failed', stage='error', "
+                "error='Server restarted during ingestion' WHERE id=?",
+                (row["id"],),
+            )
+            conn.execute(
+                "UPDATE documents SET status='failed' "
+                "WHERE id=? AND status NOT IN ('completed', 'failed')",
+                (row["document_id"],),
+            )
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()

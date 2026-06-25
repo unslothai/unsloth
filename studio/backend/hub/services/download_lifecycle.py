@@ -314,25 +314,41 @@ def register_worker(
     worker_token = hf_token
 
     def _watch() -> None:
-        finalize_worker_exit(
-            registry,
-            key,
-            proc,
-            hf_token = worker_token,
-            label = label,
-            log_prefix = log_prefix,
-            logger = logger,
-            repo_type = repo_type,
-            repo_id = repo_id,
-            transport = transport,
-        )
-        if registry.get_job(key).state in ("error", "cancelled"):
-            download_registry.purge_empty_marker_dir(
-                repo_type,
-                repo_id,
-                download_registry.variant_from_key(key),
+        try:
+            finalize_worker_exit(
+                registry,
+                key,
+                proc,
+                hf_token = worker_token,
+                label = label,
+                log_prefix = log_prefix,
+                logger = logger,
+                repo_type = repo_type,
+                repo_id = repo_id,
+                transport = transport,
             )
-        hf_cache_scan.invalidate_hf_cache_scans()
+        except Exception:
+            # finalize_worker_exit is the ONLY thing that moves the job out of
+            # running/cancelling. If it raises, the registry job would pin in
+            # running and claim() would keep rejecting new attempts for this repo
+            # until restart -- force a terminal state instead.
+            logger.exception("download watcher crashed for %s", key)
+            try:
+                registry.set_job(key, "error", "download watcher crashed")
+            except Exception:
+                logger.exception("failed to mark %s errored after watcher crash", key)
+        finally:
+            try:
+                if registry.get_job(key).state in ("error", "cancelled"):
+                    download_registry.purge_empty_marker_dir(
+                        repo_type,
+                        repo_id,
+                        download_registry.variant_from_key(key),
+                    )
+            except Exception:
+                logger.exception("post-finalize marker cleanup failed for %s", key)
+            finally:
+                hf_cache_scan.invalidate_hf_cache_scans()
 
     threading.Thread(target = _watch, name = watch_name, daemon = True).start()
     return True

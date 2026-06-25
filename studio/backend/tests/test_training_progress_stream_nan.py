@@ -62,6 +62,9 @@ class _FakeBackend:
 class _FakeRequest:
     headers = {}
 
+    async def is_disconnected(self):
+        return False
+
 
 def _collect_events(response, timeout = 15):
     async def _drain():

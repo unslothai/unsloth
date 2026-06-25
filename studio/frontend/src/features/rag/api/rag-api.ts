@@ -197,31 +197,41 @@ export async function* streamJobEvents(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let separatorIndex = buffer.search(/\r?\n\r?\n/);
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-      buffer = buffer.slice(separatorIndex + separatorLength);
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
+        buffer = buffer.slice(separatorIndex + separatorLength);
 
-      const dataLines: string[] = [];
-      for (const line of rawEvent.split(/\r?\n/)) {
-        if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
-      }
-      if (dataLines.length > 0) {
-        const dataText = dataLines.join("\n");
-        if (dataText === "[DONE]") return;
-        try {
-          yield JSON.parse(dataText) as JobEvent;
-        } catch {
-          // Ignore unparseable frames; [DONE] still ends the loop.
+        const dataLines: string[] = [];
+        for (const line of rawEvent.split(/\r?\n/)) {
+          if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
         }
+        if (dataLines.length > 0) {
+          const dataText = dataLines.join("\n");
+          if (dataText === "[DONE]") return;
+          try {
+            yield JSON.parse(dataText) as JobEvent;
+          } catch {
+            // Ignore unparseable frames; [DONE] still ends the loop.
+          }
+        }
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
-      separatorIndex = buffer.search(/\r?\n\r?\n/);
+    }
+  } finally {
+    // Release the reader on early return ([DONE]) / throw / consumer abort so the
+    // stream lock isn't held until GC. AbortController still tears down the socket.
+    try {
+      await reader.cancel();
+    } catch {
+      // reader already closed/errored; nothing to release.
     }
   }
 }

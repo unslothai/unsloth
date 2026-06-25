@@ -169,10 +169,28 @@ def _prune_stale_buckets(now: float) -> None:
         _LOGIN_BUCKETS.pop(key, None)
 
 
+def _prune_stale_ip_buckets(now: float) -> None:
+    """Drop empty / expired per-IP buckets to bound memory under spray.
+
+    The per-IP dict is otherwise reclaimed only on a *successful* login, so a
+    failure-only spray from many distinct (or spoofed X-Forwarded-For) source IPs
+    would grow it without bound. Mirrors ``_prune_stale_buckets`` for accounts.
+    """
+    stale: list[str] = []
+    for bucket_ip, bucket in _LOGIN_IP_BUCKETS.items():
+        _prune_bucket(bucket, now)
+        if not bucket:
+            stale.append(bucket_ip)
+    for bucket_ip in stale:
+        _LOGIN_IP_BUCKETS.pop(bucket_ip, None)
+
+
 def _record_login_failure(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
+        if ip not in _LOGIN_IP_BUCKETS and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+            _prune_stale_ip_buckets(now)
         ip_bucket = _LOGIN_IP_BUCKETS.setdefault(ip, deque())
         _prune_bucket(ip_bucket, now)
         ip_bucket.append(now)

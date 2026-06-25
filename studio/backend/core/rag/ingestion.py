@@ -26,6 +26,14 @@ _jobs_lock = threading.Lock()
 
 _EMBED_BATCH = 64  # bounds peak memory
 
+# SSE streaming guards: poll the per-job queue with a timeout so the generator
+# wakes periodically (lets the server detect a gone client and lets us notice a
+# terminal job whose worker died without emitting the None sentinel), and cap the
+# total idle time so a stream can't park forever.
+_SSE_POLL_SECONDS = 1.0
+_SSE_MAX_IDLE_SECONDS = 300.0
+_TERMINAL_JOB_STATUSES = {"completed", "failed"}
+
 
 def _sha256_file(path: str) -> str:
     h = hashlib.sha256()
@@ -178,6 +186,10 @@ def start_ingestion(
     if ext not in config.UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")
 
+    # Opportunistically reclaim queues for already-finished jobs so the registry
+    # stays bounded even when clients poll instead of streaming /events.
+    _reap_finished_jobs()
+
     sha = _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
@@ -248,19 +260,60 @@ def _new_job(
     return job_id
 
 
+def _reap_finished_jobs() -> None:
+    """Drop per-job queues whose DB row already reached a terminal status.
+
+    The queue is otherwise removed only by ``job_events`` after it drains the
+    ``None`` sentinel. A caller that polls ``/jobs/{id}`` instead of streaming
+    ``/events`` (or a deduped upload) never drains it, so without this sweep the
+    ``_jobs`` registry would grow for the process lifetime. Safe to drop while a
+    client streams: ``job_events`` captured its queue reference up front.
+    """
+    with _jobs_lock:
+        job_ids = list(_jobs.keys())
+    for jid in job_ids:
+        row = get_job_status(jid)
+        if row is not None and row.get("status") in _TERMINAL_JOB_STATUSES:
+            with _jobs_lock:
+                _jobs.pop(jid, None)
+
+
 def job_events(job_id: str):
-    """Yield job events for SSE; ends when the worker signals completion."""
+    """Yield job events for SSE; ends when the worker signals completion.
+
+    Uses a timed ``get`` so the generator can't block forever: it wakes to
+    heartbeat, to let the server notice a disconnected client, and to stop if the
+    job already reached a terminal DB status (covering a hard worker death that
+    skipped the ``None`` sentinel in ``_run``'s ``finally``). Always removes the
+    per-job queue on exit.
+    """
     with _jobs_lock:
         q = _jobs.get(job_id)
     if q is None:
         return
-    while True:
-        event = q.get()
-        if event is None:
-            break
-        yield event
-    with _jobs_lock:
-        _jobs.pop(job_id, None)
+    try:
+        idle = 0.0
+        while True:
+            try:
+                event = q.get(timeout = _SSE_POLL_SECONDS)
+            except queue.Empty:
+                row = get_job_status(job_id)
+                if row is None or row.get("status") in _TERMINAL_JOB_STATUSES:
+                    # Worker finished (or the row is gone); the frontend reconciles
+                    # the final state via its getJob poll. Stop rather than park.
+                    break
+                idle += _SSE_POLL_SECONDS
+                if idle >= _SSE_MAX_IDLE_SECONDS:
+                    break
+                yield {"type": "heartbeat"}
+                continue
+            idle = 0.0
+            if event is None:
+                break
+            yield event
+    finally:
+        with _jobs_lock:
+            _jobs.pop(job_id, None)
 
 
 def get_job_status(job_id: str) -> dict | None:
