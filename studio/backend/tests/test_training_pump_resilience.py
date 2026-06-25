@@ -9,8 +9,9 @@ the worker subprocess kept running, the run would continue (mp.Queue puts never
 block) while the UI froze on the last step it saw -- the long-standing "training
 is running in the background but no progress shows" symptom. These tests pin the
 two guarantees that prevent that: a single bad event/queue error can't kill the
-pump, and a pump that somehow does die is detected and restarted while the
-worker is alive. Driven with fakes; no GPU, no network, no real subprocess.
+pump, and a pump that somehow does die is detected and restarted -- even after
+the worker has exited, so the terminal events still get drained and the run is
+finalized. Driven with fakes; no GPU, no network, no real subprocess.
 """
 
 from __future__ import annotations
@@ -61,6 +62,10 @@ _pth = _types.ModuleType("utils.paths")
 _pth.outputs_root = lambda *a, **k: "/tmp/outputs"
 _stub("utils.paths", _pth)
 
+# Whether core.training.training was already imported before this file ran; only
+# evict it below if we were the one to create the (stub-bound) module instance.
+_TRAINING_PRE_IMPORTED = "core.training.training" in sys.modules
+
 from core.training.training import TrainingBackend
 
 # Restore every stubbed module so this file never pollutes the shared session.
@@ -78,6 +83,14 @@ for _name in (
         sys.modules.pop(_name, None)
     else:
         sys.modules[_name] = _prev
+
+# core.training.training imported its module-level helpers (prepare_gpu_selection,
+# etc.) while the stubs above were active, so those names stay bound to the stubs
+# in its globals. If we created that cached module, evict it (and its parent
+# package) so a later test re-imports the real module instead of the stubbed one.
+if not _TRAINING_PRE_IMPORTED:
+    sys.modules.pop("core.training.training", None)
+    sys.modules.pop("core.training", None)
 
 
 class _FakeProc:
@@ -331,14 +344,27 @@ def test_ensure_pump_alive_noop_when_pump_alive():
         alive.join(timeout = 5)
 
 
-def test_ensure_pump_alive_noop_when_worker_dead():
+def test_ensure_pump_alive_revives_crashed_pump_after_worker_exit(monkeypatch):
+    # A True _pump_running flag with a dead pump thread is a crash (the loop
+    # clears the flag on every intended exit). Even when the worker has already
+    # exited, the queue can still hold the terminal complete/error events, so the
+    # pump must be restarted to drain + finalize -- otherwise progress.is_training
+    # stays True and the run is stuck "running" forever behind the dead pump.
     b = TrainingBackend()
+    _silence_db(monkeypatch, b)
     b._proc = _FakeProc(alive = False)
     b._event_queue = _IdleQueue()
+    b._progress.is_training = True
     b._pump_running = True
     b._pump_thread = _dead_thread()
-    # Worker gone: the dead pump exited legitimately, nothing to revive.
-    assert b._ensure_pump_alive() is False
+
+    assert b._ensure_pump_alive() is True
+    assert _wait_until(
+        lambda: b._progress.is_training is False
+    ), "the restarted pump must drain + finalize the stranded run"
+    b._pump_thread.join(timeout = 5)
+    assert b._pump_running is False
+    assert b.is_training_active() is False
 
 
 def test_ensure_pump_alive_noop_during_setup():

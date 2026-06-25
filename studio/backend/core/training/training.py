@@ -645,20 +645,26 @@ class TrainingBackend:
             new_pump.start()
 
     def _ensure_pump_alive(self) -> bool:
-        """Restart the event pump if it crashed while the worker is still running.
+        """Restart the event pump if it crashed, even after the worker exited.
 
         Defence in depth behind _pump_loop's own guards, for an unforeseen
         thread death (e.g. MemoryError). _pump_running is left True only when a
         pump exited abnormally -- the loop clears it on every intended exit -- so
         a True flag plus a dead thread is an unambiguous crash, and the False
         flag during start_training setup keeps this from spawning a duplicate
-        before the first pump runs. A fresh pump drains the still-open queue so
-        the UI catches up. Returns True if a restart was performed.
+        before the first pump runs. The restart happens even when the worker has
+        already exited: the queue can still hold the terminal complete/error
+        events, and a fresh pump must drain them and finalize the run -- otherwise
+        progress.is_training stays True and the run looks stuck "running" forever
+        behind the dead pump. Returns True if a restart was performed.
         """
         with self._lock:
             if not self._pump_running:
                 return False
-            if self._proc is None or not self._proc.is_alive() or self._event_queue is None:
+            # A worker handle and queue are still required: a restarted pump
+            # dereferences both to drain and finalize. Their absence means there
+            # is nothing left to recover.
+            if self._proc is None or self._event_queue is None:
                 return False
             if self._pump_thread is not None and self._pump_thread.is_alive():
                 return False
