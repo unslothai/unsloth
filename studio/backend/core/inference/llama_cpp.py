@@ -2437,20 +2437,35 @@ class LlamaCppBackend:
     # (#6416, which silently single-GPU'd multimodal/MTP GGUFs on capable hardware),
     # tensor is attempted by default and a binary is recorded here only after it
     # actually aborts -- so the upfront skip (and #6416's fast path) applies just
-    # where it is needed. Process-scoped: `unsloth studio update` restarts Studio
-    # and re-probes the new build.
-    _vision_tensor_abort_binaries: set[str] = set()
+    # where it is needed. Keyed on (path, mtime) like _capability_cache, so an
+    # in-app `POST /api/llama/update` that swaps the binary in place (no backend
+    # restart) re-probes the new build instead of inheriting the old one's abort.
+    _vision_tensor_abort_binaries: set[tuple[str, int]] = set()
+
+    @classmethod
+    def _vision_binary_cache_key(cls, binary: Optional[str]) -> Optional[tuple[str, int]]:
+        """(path, mtime) identity for the vision tensor-abort cache, mirroring
+        _capability_cache so an in-place binary swap invalidates the stale entry."""
+        if not binary:
+            return None
+        try:
+            mtime = int(Path(binary).stat().st_mtime)
+        except OSError:
+            mtime = 0
+        return (binary, mtime)
 
     @classmethod
     def _vision_tensor_split_aborts(cls, binary: Optional[str]) -> bool:
         """True if `binary` was seen this session to abort on tensor + --mmproj."""
-        return bool(binary) and binary in cls._vision_tensor_abort_binaries
+        key = cls._vision_binary_cache_key(binary)
+        return key is not None and key in cls._vision_tensor_abort_binaries
 
     @classmethod
     def _record_vision_tensor_split_abort(cls, binary: Optional[str]) -> None:
         """Remember a binary that aborts on --split-mode tensor + --mmproj."""
-        if binary:
-            cls._vision_tensor_abort_binaries.add(binary)
+        key = cls._vision_binary_cache_key(binary)
+        if key is not None:
+            cls._vision_tensor_abort_binaries.add(key)
 
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
@@ -2623,6 +2638,7 @@ class LlamaCppBackend:
         model_size_mib = model_size_bytes / (1024 * 1024)
         if usable_fraction is None:
             usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
+        overhead_mib = per_device_overhead_bytes / (1024 * 1024)
 
         # Per-GPU usable budget: free - (1-frac)*total when total is known, else
         # the legacy free*frac (also covers a total-0 two-column probe).
@@ -2636,6 +2652,14 @@ class LlamaCppBackend:
         # card can have less usable room than a less-used small one.
         ranked = sorted(gpus, key = lambda g: _usable(g[0], g[1]), reverse = True)
 
+        # Don't force more devices than can hold a layer share: a nearly full card
+        # contributes ~0 usable room, so cap a downgraded multi-GPU request
+        # (min_gpus >= 2) to the usable count -- otherwise the selector pulls in a
+        # full card (or trips --fit) just to satisfy the count. No effect on the
+        # default min_gpus == 1 callers.
+        usable_count = sum(1 for idx, free_mib in ranked if _usable(idx, free_mib) > overhead_mib)
+        min_gpus = max(1, min(min_gpus, usable_count or 1))
+
         # Try 1 GPU at the usable-VRAM threshold (only when one device is allowed).
         if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
             return [ranked[0][0]], False
@@ -2643,7 +2667,6 @@ class LlamaCppBackend:
         # Try N GPUs (accumulate usable memory from most-free). Each GPU past the
         # first adds a fixed per-device overhead the pool must hold. Require at
         # least min_gpus devices before accepting a fit.
-        overhead_mib = per_device_overhead_bytes / (1024 * 1024)
         cumulative = 0.0
         selected = []
         for idx, free_mib in ranked:
@@ -5117,6 +5140,16 @@ class LlamaCppBackend:
                     # is preserved so the model isn't silently pinned to one GPU.
                     _layer_min_gpus = 1
 
+                    # A vision GGUF on a binary known to abort on --split-mode
+                    # tensor + --mmproj (#6415) still spreads across the GPUs tensor
+                    # would have used (capped to usable cards by _select_gpus).
+                    # Bump the layer minimum whenever this applies -- including the
+                    # route-level fallback's layer retry, where tensor_parallel is
+                    # already False after the first crash -- so the model isn't
+                    # silently pinned to one card.
+                    if effective_is_vision and self._vision_tensor_split_aborts(binary):
+                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
+
                     if (
                         tensor_parallel
                         and effective_is_vision
@@ -5133,10 +5166,6 @@ class LlamaCppBackend:
                             len(gpus),
                         )
                         tensor_parallel = False
-                        # Honor the multi-GPU request: layer-split across the GPUs
-                        # tensor would have used, not one card the model happens to
-                        # fit, so the downgrade doesn't silently single-GPU it.
-                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         _restore_after_tensor_downgrade()
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
@@ -5212,6 +5241,12 @@ class LlamaCppBackend:
                                 "per-device compute buffers; falling back to layer split."
                             )
                             tensor_parallel = False
+                            # The weights needed more than one card here, so preserve
+                            # the multi-GPU request: layer-split across the usable
+                            # tensor GPUs instead of collapsing to one (mirrors the
+                            # vision downgrade; _select_gpus caps to what's usable).
+                            if len(tp_gpus) >= 2:
+                                _layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))
                             # Restore the dropped quantized KV + original cache extras
                             # (minus --split-mode); layer split supports them.
                             _restore_after_tensor_downgrade()
@@ -6104,18 +6139,29 @@ class LlamaCppBackend:
                     # A tensor + --mmproj launch that still hard-faults here -- after
                     # the fit-off, flash-attn-off and MTP-drop retries above -- and
                     # carries no non-tensor cause (OOM / unknown arch) is the #6415
-                    # vision-tensor GGML_ASSERT. Record the binary so later vision
-                    # loads skip tensor upfront instead of re-crashing every load.
-                    # The benign fit-step abort is excluded: the fit-off retry makes
-                    # it healthy, so we never reach this block for it.
-                    if (
+                    # vision-tensor GGML_ASSERT, not a projector incompatibility. The
+                    # benign fit-step abort is excluded: the fit-off retry makes it
+                    # healthy, so we never reach this block for it.
+                    vision_tensor_split_crash = (
                         self._tensor_parallel
                         and launched_with_mmproj
                         and self._is_signal_crash(_crash_rc)
                         and not self._output_has_nonprojector_diagnostic(out)
-                    ):
+                    )
+                    if vision_tensor_split_crash:
                         LlamaCppBackend._record_vision_tensor_split_abort(binary)
                     self._kill_process()
+                    # Hand a tensor + --mmproj assert back to the route-level
+                    # tensor->layer fallback so it retries --split-mode layer with
+                    # the projector intact, instead of stripping --mmproj and
+                    # silently dropping vision on this first load. The retry runs
+                    # tensor-off, so it won't re-enter here; a genuine projector
+                    # failure on that layer retry still strips mmproj below.
+                    if vision_tensor_split_crash and not self._cancel_event.is_set():
+                        raise RuntimeError(
+                            "llama-server aborted on --split-mode tensor + --mmproj; "
+                            "retrying with layer split (projector preserved)."
+                        )
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     if (
                         launched_with_mmproj

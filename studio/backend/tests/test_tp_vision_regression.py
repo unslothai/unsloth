@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 import sys
 import textwrap
 import types as _types
@@ -242,7 +243,9 @@ def test_recorded_vision_tensor_abort_makes_gate_skip():
         LlamaCppBackend._record_vision_tensor_split_abort(b)
         assert LlamaCppBackend._vision_tensor_split_aborts(b) is True
     finally:
-        LlamaCppBackend._vision_tensor_abort_binaries.discard(b)
+        LlamaCppBackend._vision_tensor_abort_binaries.discard(
+            LlamaCppBackend._vision_binary_cache_key(b)
+        )
 
 
 # ── _select_gpus: single-GPU collapse vs honored multi-GPU intent (pure) ──
@@ -279,3 +282,112 @@ def test_select_gpus_uses_multiple_gpus_when_model_does_not_fit():
     gpus = [(0, 40000), (1, 40000), (2, 40000), (3, 40000)]  # 40 GB free each
     gpu_indices, _use_fit = LlamaCppBackend._select_gpus(int(120 * _GB), gpus)
     assert gpu_indices is not None and len(gpu_indices) >= 2
+
+
+def test_select_gpus_min_gpus_excludes_unusable_gpu():
+    """min_gpus must not force a nearly-full card just to hit the count.
+
+    A downgraded multi-GPU request on a host with 2 free + 1 nearly-full GPU caps
+    to the 2 usable cards rather than pulling in the full one (which would OOM) or
+    tripping --fit (Codex review on #6659: base the layer minimum on usable GPUs).
+    """
+    gpus = [(0, 180000), (1, 180000), (2, 500)]  # GPU 2 is nearly full
+    total = {0: 180000, 1: 180000, 2: 180000}
+    gi, _ = LlamaCppBackend._select_gpus(
+        int(39 * _GB),
+        gpus,
+        min_gpus = 3,
+        total_by_idx = total,
+        per_device_overhead_bytes = int(1 * _GB),
+    )
+    assert gi is not None
+    assert 2 not in gi, "a nearly-full GPU must not be forced in to satisfy min_gpus"
+    assert len(gi) == 2
+
+
+def test_vision_abort_cache_invalidated_on_binary_mtime_change(tmp_path):
+    """The vision tensor-abort cache keys on (path, mtime), so a binary swapped in
+    place by the in-app updater (POST /api/llama/update, no backend restart) is
+    re-probed instead of inheriting the old build's abort (Codex review on #6659).
+    """
+    binp = tmp_path / "llama-server"
+    binp.write_text("v1")
+    p = str(binp)
+    try:
+        LlamaCppBackend._record_vision_tensor_split_abort(p)
+        assert LlamaCppBackend._vision_tensor_split_aborts(p) is True
+        # Simulate an in-place update bumping the binary's mtime.
+        st = binp.stat()
+        os.utime(p, (st.st_atime, st.st_mtime + 10))
+        assert LlamaCppBackend._vision_tensor_split_aborts(p) is False, (
+            "a binary swapped in place (new mtime) must be re-probed, not inherit "
+            "the old build's abort"
+        )
+    finally:
+        for key in list(LlamaCppBackend._vision_tensor_abort_binaries):
+            if key and key[0] == p:
+                LlamaCppBackend._vision_tensor_abort_binaries.discard(key)
+
+
+def test_tensor_mmproj_abort_retries_layer_split_not_text_only():
+    """A tensor + --mmproj GGML_ASSERT hands back to the route-level tensor->layer
+    fallback (raise) so the projector is retried with layer split, instead of
+    stripping --mmproj and silently loading text-only on the first load.
+
+    Unanimous P1 (reviewer.py [5/5] + Codex on #6659): the abort signature also
+    matches the projector-incompatibility branch, so without raising first the
+    first vision load on a bad binary loses vision until the next (cached) load.
+    """
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    raise_idx = src.find("retrying with layer split (projector preserved)")
+    assert raise_idx != -1, "the tensor+mmproj abort must raise to trigger a layer retry"
+    strip_idx = src.find("_strip_mmproj_args(_last_spawn_cmd)")
+    assert strip_idx != -1
+    # The raise precedes the text-only mmproj-strip path: the abort never falls
+    # through to stripping vision.
+    assert raise_idx < strip_idx
+    # The raise is gated on the tensor+mmproj crash signature, not any failure,
+    # and the same signature drives the cache record.
+    guard = src[max(0, raise_idx - 400) : raise_idx]
+    assert "vision_tensor_split_crash" in guard
+    rec_idx = src.find("_record_vision_tensor_split_abort(binary)")
+    assert rec_idx != -1 and rec_idx < raise_idx
+
+
+def test_budget_downgrade_preserves_multi_gpu_intent():
+    """The pooled-VRAM tensor downgrade raises _layer_min_gpus from the usable
+    tensor GPUs, symmetric with the vision downgrade, so a multi-GPU request that
+    can't fit weights+reserve in tensor mode still layer-splits across cards
+    instead of collapsing to one (reviewer.py asymmetric-fix finding on #6659).
+    """
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    budget = src.find("_tp_weight_budget_mib <= _tp_required_mib")
+    assert budget != -1
+    block = src[budget : budget + 1000]
+    assert "tensor_parallel = False" in block
+    assert (
+        "_layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))" in block
+    ), "the budget downgrade must preserve multi-GPU intent like the vision gate"
+
+
+def test_vision_layer_min_gpus_bumped_independent_of_tensor_drop():
+    """The _layer_min_gpus bump for a known-bad vision binary lives in its own
+    guard checking only effective_is_vision + the cached abort -- NOT under the
+    tensor-drop. On the route fallback's layer retry tensor_parallel is already
+    False, so a bump tied to the drop would miss it and single-GPU the retry.
+    """
+    fn = _load_model_ast()
+    found = False
+    for node in ast.walk(fn):
+        if isinstance(node, ast.If):
+            if (
+                ast.unparse(node.test)
+                == "effective_is_vision and self._vision_tensor_split_aborts(binary)"
+            ):
+                body = "\n".join(ast.unparse(n) for n in node.body)
+                if "_layer_min_gpus" in body and "tensor_parallel = False" not in body:
+                    found = True
+    assert found, (
+        "expected an effective_is_vision-only guard that bumps _layer_min_gpus "
+        "without dropping tensor (so the layer retry preserves multi-GPU)"
+    )
