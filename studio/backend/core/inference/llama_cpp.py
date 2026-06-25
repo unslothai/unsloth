@@ -5665,7 +5665,6 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
-
                 # User pass-through args go last so llama.cpp's last-wins parsing
                 # lets the user override Studio's auto-set flags. Already
                 # validated by the route via validate_extra_args().
