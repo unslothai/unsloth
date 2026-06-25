@@ -5260,9 +5260,7 @@ class LlamaCppBackend:
                             max_target_ctx = self._context_length or target_ctx,
                             total_by_idx = total_by_idx,
                             n_ubatch = _effective_ubatch,
-                            extra_args = extra_args,
-                            use_fit = False,
-                        )
+                            extra_args = extra_args,)
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
                         # native context across all usable GPU subsets (for UI
@@ -5295,7 +5293,7 @@ class LlamaCppBackend:
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     budget_frac = 1.0,
                                     total_mib = None,
-                                )
+                                    extra_args=extra_args,                                )
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
@@ -5351,7 +5349,7 @@ class LlamaCppBackend:
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     budget_frac = 1.0,
                                     total_mib = None,
-                                )
+                                    extra_args=extra_args,                                )
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
@@ -5433,7 +5431,7 @@ class LlamaCppBackend:
                                 mtp_overhead_fn = mtp_overhead_fn,
                                 budget_frac = 1.0,
                                 total_mib = None,
-                            )
+                                extra_args=extra_args,                            )
                             _cap_footprint_mib = (
                                 model_size_fit
                                 + self._estimate_kv_cache_bytes(
