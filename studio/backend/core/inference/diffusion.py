@@ -24,6 +24,7 @@ from loggers import get_logger
 from utils.hardware import clear_gpu_cache
 
 from .diffusion_families import (
+    DiffusionFamily,
     detect_family,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -135,7 +136,7 @@ class DiffusionBackend:
             raise ValueError(
                 f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
             )
-        base = resolve_base_repo(fam, base_repo)
+        base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
 
         with self._lock:
             # Allow starting over a previously-failed load, but not over a live one.
@@ -254,7 +255,7 @@ class DiffusionBackend:
             raise ValueError(
                 f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
             )
-        base = resolve_base_repo(fam, base_repo)
+        base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
         device, dtype = self._pick_device_and_dtype()
 
         with self._lock:
@@ -306,8 +307,11 @@ class DiffusionBackend:
         negative_prompt: Optional[str] = None,
         width: int = 1024,
         height: int = 1024,
-        steps: int = 9,  # Z-Image-Turbo: 9 steps = 8 DiT forwards (official default).
-        guidance: float = 0.0,  # Turbo is distilled CFG-free; guidance must be 0.
+        # Fallbacks for a caller that passes nothing; the route always sends the
+        # per-model values the UI seeds (few steps / no CFG for distilled models,
+        # more steps / real CFG for full ones).
+        steps: int = 9,
+        guidance: float = 0.0,
         seed: Optional[int] = None,
         batch_size: int = 1,
     ) -> dict[str, Any]:
@@ -332,13 +336,19 @@ class DiffusionBackend:
                 "width": width,
                 "height": height,
                 "num_inference_steps": steps,
-                "guidance_scale": guidance,
+                # Most pipelines take guidance via "guidance_scale"; Qwen-Image
+                # uses "true_cfg_scale" (its distilled guidance is off).
+                state.family.cfg_kwarg: guidance,
                 "generator": generator,
                 # Generate the whole batch in one forward pass (VRAM-heavy). All
                 # share this call's seed, drawn sequentially from one generator.
                 "num_images_per_prompt": batch_size,
             }
-            if negative_prompt:
+            # Pipelines vary in which kwargs they accept (a distilled pipeline may
+            # take neither a negative prompt nor a step callback), so only pass
+            # those where the signature has them.
+            call_params = inspect.signature(state.pipe.__call__).parameters
+            if negative_prompt and "negative_prompt" in call_params:
                 kwargs["negative_prompt"] = negative_prompt
 
             gen = _GenState(total_steps = steps)
@@ -351,9 +361,7 @@ class DiffusionBackend:
                 gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
                 return callback_kwargs
 
-            # Not every pipeline accepts the callback; only pass it where supported
-            # so the step counter never breaks generation.
-            if "callback_on_step_end" in inspect.signature(state.pipe.__call__).parameters:
+            if "callback_on_step_end" in call_params:
                 kwargs["callback_on_step_end"] = _on_step
 
             self._gen = gen
@@ -415,6 +423,35 @@ class DiffusionBackend:
             "dtype": state.dtype,
             "cpu_offload": state.cpu_offload,
         }
+
+
+def _resolve_base_repo(
+    repo_id: str, base_repo: Optional[str], fam: DiffusionFamily, hf_token: Optional[str]
+) -> str:
+    """The companion diffusers repo: caller's base, else the GGUF repo's own
+    ``base_model`` tag, else the family fallback. Shared by both load paths so a
+    direct ``load_pipeline`` call resolves the variant base the same way."""
+    return resolve_base_repo(fam, (base_repo or "").strip() or _hf_base_model(repo_id, hf_token))
+
+
+def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
+    """The diffusers base repo from a GGUF repo's ``base_model`` tag, or None.
+
+    Lets one family entry cover every variant (Turbo/full, schnell/dev, the
+    2512 Qwen revision). Skipped for local paths; None on any lookup failure.
+    """
+    if Path(repo_id).expanduser().exists():
+        return None
+    try:
+        from huggingface_hub import HfApi
+
+        meta = HfApi().model_info(repo_id, token = hf_token).cardData or {}
+    except Exception:  # noqa: BLE001 — best-effort; fall back to the family default
+        return None
+    base = meta.get("base_model")
+    if isinstance(base, list):
+        base = base[0] if base else None
+    return base if isinstance(base, str) and base.strip() else None
 
 
 def _base_file_downloaded(rfilename: str) -> bool:

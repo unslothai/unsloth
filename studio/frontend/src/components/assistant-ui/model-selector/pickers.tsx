@@ -697,7 +697,7 @@ function GgufVariantExpander({
   );
 
   const handleVariantClick = useCallback(
-    (quant: string, downloaded?: boolean, sizeBytes?: number) => {
+    (quant: string, filename: string, downloaded?: boolean, sizeBytes?: number) => {
       // Only seed the staged context for picks whose weights are already on
       // disk. The staging effect short-circuits on a known contextLength
       // (pendingHasContext) before starting the download, so attaching it to an
@@ -708,6 +708,7 @@ function GgufVariantExpander({
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         ggufVariant: quant,
+        ggufFilename: filename,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
         contextLength: isAvailable ? nativeContext : undefined,
@@ -879,7 +880,7 @@ function GgufVariantExpander({
               type="button"
               {...variantList.getOptionProps(variantOptionKey, false)}
               onClick={() =>
-                handleVariantClick(v.quant, v.downloaded, v.size_bytes)
+                handleVariantClick(v.quant, v.filename, v.downloaded, v.size_bytes)
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",

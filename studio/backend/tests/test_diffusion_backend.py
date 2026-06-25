@@ -30,10 +30,20 @@ from core.inference.diffusion_families import (
 
 
 def test_detect_family_from_repo_id():
+    # Detection is by architecture; Turbo/full and schnell/dev map to one family.
     assert detect_family("unsloth/Z-Image-Turbo-GGUF").name == "z-image"
     assert detect_family("unsloth/Z-Image-GGUF").name == "z-image"
+    assert detect_family("unsloth/Qwen-Image-2512-GGUF").name == "qwen-image"
+    assert detect_family("unsloth/FLUX.1-schnell-GGUF").name == "flux.1"
+    # FLUX.2's text encoder isn't compatible yet, so it's not a supported family.
+    assert detect_family("unsloth/FLUX.2-klein-4B-GGUF") is None
+    # Qwen-Image guides via true_cfg_scale, not guidance_scale.
+    assert detect_family("unsloth/Qwen-Image-2512-GGUF").cfg_kwarg == "true_cfg_scale"
+    assert detect_family("unsloth/Z-Image-GGUF").cfg_kwarg == "guidance_scale"
+    # Image-editing checkpoints are rejected (text-to-image backend only).
+    assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF") is None
+    assert detect_family("unsloth/FLUX.1-Kontext-dev-GGUF") is None
     assert detect_family("meta-llama/Llama-3-8B") is None
-    assert detect_family("unsloth/FLUX.2-klein-4B-GGUF") is None  # not in the MVP family table
 
 
 def test_detect_family_override():
@@ -224,6 +234,21 @@ def test_generate_without_load_raises(fake_runtime):
     backend = DiffusionBackend()
     with pytest.raises(RuntimeError):
         backend.generate(prompt = "x")
+
+
+def test_resolve_base_repo_prefers_caller_then_hf_tag_then_fallback(monkeypatch):
+    from core.inference import diffusion
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("unsloth/Qwen-Image-2512-GGUF")
+    monkeypatch.setattr(diffusion, "_hf_base_model", lambda repo, tok: "Qwen/Qwen-Image-2512")
+    # Caller's explicit base wins and the HF tag is not consulted.
+    assert diffusion._resolve_base_repo("unsloth/Qwen-Image-2512-GGUF", "my/base", fam, None) == "my/base"
+    # No caller base: the repo's base_model tag (the variant base) is used.
+    assert diffusion._resolve_base_repo("unsloth/Qwen-Image-2512-GGUF", None, fam, None) == "Qwen/Qwen-Image-2512"
+    # No caller base and no tag: the family fallback.
+    monkeypatch.setattr(diffusion, "_hf_base_model", lambda repo, tok: None)
+    assert diffusion._resolve_base_repo("unsloth/Qwen-Image-2512-GGUF", "  ", fam, None) == fam.base_repo
 
 
 def test_load_without_gguf_raises():

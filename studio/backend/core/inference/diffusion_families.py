@@ -25,30 +25,55 @@ class DiffusionFamily:
     pipeline_class: str
     transformer_class: str
     base_repo: str
+    # Pipeline kwarg carrying the guidance value. Most use "guidance_scale";
+    # Qwen-Image's distilled guidance is off, so its real CFG is "true_cfg_scale".
+    cfg_kwarg: str = "guidance_scale"
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
 
 
-# MVP: Z-Image-Turbo only. Its single-file GGUF is the transformer (Lumina2 DiT);
-# the VAE / text-encoder / scheduler come from the base diffusers repo. More
-# families (FLUX, Qwen-Image) can be appended here when we ship them.
+# Keyed by architecture, not per model variant: a checkpoint's specific base repo
+# is read from its HF base_model tag at load time, so one entry covers Turbo/full,
+# schnell/dev, etc. base_repo here is only a fallback. Only archs whose diffusers
+# transformer supports from_single_file load here (ERNIE-Image does not, yet);
+# FLUX.2 is also excluded — its Mistral text-encoder chat template is incompatible
+# with the pinned transformers.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
+    DiffusionFamily(
+        name = "flux.1",
+        pipeline_class = "FluxPipeline",
+        transformer_class = "FluxTransformer2DModel",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+        aliases = ("flux1", "flux-1"),
+    ),
+    DiffusionFamily(
+        name = "qwen-image",
+        pipeline_class = "QwenImagePipeline",
+        transformer_class = "QwenImageTransformer2DModel",
+        base_repo = "Qwen/Qwen-Image",
+        cfg_kwarg = "true_cfg_scale",
+        aliases = ("qwen_image", "qwenimage"),
+    ),
     DiffusionFamily(
         name = "z-image",
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
-        aliases = ("z-image-turbo", "zimage", "z_image"),
+        aliases = ("zimage", "z_image"),
     ),
 )
+
+# Editing / inpaint checkpoints share an arch keyword but need a different
+# pipeline and an input image, which this text-to-image backend doesn't drive.
+_EDIT_KEYWORDS = ("edit", "kontext", "inpaint")
 
 
 def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[DiffusionFamily]:
     """Resolve a ``DiffusionFamily`` from a repo id, or an explicit override.
 
     ``override`` matches a family ``name`` or alias exactly; otherwise the repo
-    id is scanned for the first family whose name/alias appears in it. Returns
-    ``None`` when nothing matches so the caller can raise a clean error.
+    id is scanned for the first family whose name/alias appears in it. Image
+    editing checkpoints are rejected (None) since this backend is text-to-image.
     """
     if override:
         key = override.strip().lower()
@@ -57,6 +82,8 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
                 return fam
         return None
     needle = repo_id.lower()
+    if any(kw in needle for kw in _EDIT_KEYWORDS):
+        return None
     for fam in _FAMILIES:
         if fam.name in needle or any(alias in needle for alias in fam.aliases):
             return fam
@@ -64,7 +91,7 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
 
 
 def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
-    """The companion diffusers repo: caller-supplied if given, else the family default."""
+    """The companion diffusers repo: caller-supplied if given, else the family fallback."""
     base = (base_repo or "").strip()
     return base or fam.base_repo
 

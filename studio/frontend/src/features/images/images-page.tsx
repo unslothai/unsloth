@@ -29,7 +29,6 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { SectionCard } from "@/components/section-card";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
 import { IMAGE_GEN_TASKS } from "@/components/assistant-ui/model-selector/pickers";
@@ -58,19 +57,41 @@ import {
   unloadDiffusionModel,
 } from "./api";
 
-// MVP: a single curated diffusion GGUF. The chat ModelSelector lists/picks its
-// quants; the base diffusers repo (VAE/text-encoder) is resolved server-side.
-const MODEL = {
-  repo_id: "unsloth/Z-Image-Turbo-GGUF",
-  label: "Z-Image-Turbo",
-  family: "z-image",
-  // Hub-canonical filename pattern: z-image-turbo-<QUANT>.gguf
-  ggufFor: (quant: string) => `z-image-turbo-${quant}.gguf`,
-};
-
+// Curated diffusion GGUFs the picker recommends. The backend resolves each one's
+// pipeline + base diffusers repo from its repo id, so the rail just lists them;
+// the chat ModelSelector also surfaces any other on-device image GGUF.
+const txt2img = (id: string, name: string): ModelOption => ({
+  id,
+  name,
+  description: "Text-to-image · GGUF",
+  isGguf: true,
+});
 const MODELS: ModelOption[] = [
-  { id: MODEL.repo_id, name: MODEL.label, description: "Text-to-image · GGUF", isGguf: true },
+  txt2img("unsloth/Z-Image-Turbo-GGUF", "Z-Image-Turbo"),
+  txt2img("unsloth/Z-Image-GGUF", "Z-Image"),
+  txt2img("unsloth/Qwen-Image-2512-GGUF", "Qwen-Image 2512"),
+  txt2img("unsloth/Qwen-Image-GGUF", "Qwen-Image"),
+  txt2img("unsloth/FLUX.1-schnell-GGUF", "FLUX.1 schnell"),
+  txt2img("unsloth/FLUX.1-dev-GGUF", "FLUX.1 dev"),
 ];
+
+// Per-model generation defaults (steps + guidance), matched by repo-id substring,
+// most specific first. Distilled "turbo/schnell" models want few steps and little
+// guidance; the full "dev" models want more steps and real CFG.
+const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
+  { match: "z-image-turbo", steps: 9, guidance: 0 },
+  { match: "flux.1-schnell", steps: 4, guidance: 0 },
+  { match: "flux.1", steps: 28, guidance: 3.5 },
+  { match: "qwen-image", steps: 20, guidance: 4 },
+  { match: "z-image", steps: 20, guidance: 4 },
+];
+
+function defaultsFor(repoId: string): { steps: number; guidance: number } {
+  const id = repoId.toLowerCase();
+  // Fallback (a curated entry covers every model in MODELS) is the distilled
+  // few-step / no-CFG shape, hit only for an unrecognised on-device image GGUF.
+  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? { steps: 9, guidance: 0 };
+}
 
 // Common aspect ratios (landscape; Flip gives the portrait mirror). Picking one
 // locks the W:H proportion; the sliders set the size.
@@ -181,7 +202,7 @@ function loadToastDescription(p: DiffusionLoadProgress) {
   return (
     <ModelLoadDescription
       title={title}
-      message={`Loading ${MODEL.label}. This may include downloading its base model.`}
+      message="Loading the model. This may include downloading its base model."
       progressPercent={hasTotal ? p.fraction * 100 : null}
       progressLabel={
         hasTotal
@@ -578,7 +599,7 @@ export function ImagesPage() {
   }, [dismissLoadToast]);
 
   const handleLoad = useCallback(
-    async (ggufFilename: string) => {
+    async (repoId: string, ggufFilename: string) => {
       // Cancel any prior poll loop so two can't run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
       setBusy("loading");
@@ -587,11 +608,8 @@ export function ImagesPage() {
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
       try {
         // Returns immediately — the load runs in the background; we poll for it.
-        await loadDiffusionModel({
-          model_path: MODEL.repo_id,
-          gguf_filename: ggufFilename,
-          family_override: MODEL.family,
-        });
+        // The backend infers the family + base diffusers repo from the repo id.
+        await loadDiffusionModel({ model_path: repoId, gguf_filename: ggufFilename });
       } catch (err) {
         dismissLoadToast();
         toast.error(err instanceof Error ? err.message : "Failed to start load");
@@ -604,16 +622,16 @@ export function ImagesPage() {
     [pollLoadProgress, refreshStatus, dismissLoadToast],
   );
 
-  // The chat picker emits (modelId, picked quant); load its matching GGUF.
+  // The chat picker emits (modelId, picked quant + its exact filename); load it,
+  // and seed the inputs with that model's defaults.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
-      if (!meta.ggufVariant) return; // a non-quant pick; ignore
-      if (id !== MODEL.repo_id) {
-        toast.error("Only Z-Image-Turbo is supported right now.");
-        return;
-      }
+      if (!meta.ggufVariant || !meta.ggufFilename) return; // not a quant pick
       setQuant(meta.ggufVariant);
-      void handleLoad(MODEL.ggufFor(meta.ggufVariant));
+      const d = defaultsFor(id);
+      setSteps(d.steps);
+      setGuidance(d.guidance);
+      void handleLoad(id, meta.ggufFilename);
     },
     [handleLoad],
   );
@@ -725,13 +743,9 @@ export function ImagesPage() {
       {/* ── Controls rail + preview canvas. Padding mirrors the other tabs
           (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. ── */}
       <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 sm:px-9">
-        <SectionCard
-          icon={<HugeiconsIcon icon={ImageAdd02Icon} className="size-5" strokeWidth={1.5} />}
-          title="Generate"
-          description="Prompt and settings"
-          accent="indigo"
-          className="w-[340px] shrink-0 gap-4 overflow-y-auto"
-        >
+        {/* The controls rail. Plain card (the gray surface) with no header —
+            the prompt + Generate button make the panel self-explanatory. */}
+        <div className="bg-card corner-squircle flex w-[340px] shrink-0 flex-col gap-4 overflow-y-auto rounded-3xl p-5 ring-1 ring-foreground/10">
           <Field label="Prompt">
             <Textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
           </Field>
@@ -833,7 +847,7 @@ export function ImagesPage() {
               ? `Generating ${genProgress.done}/${genProgress.total}…`
               : "Generate"}
           </Button>
-        </SectionCard>
+        </div>
 
         <div className="bg-card corner-squircle relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
           <div className="relative flex flex-1 items-center justify-center overflow-auto p-6">
@@ -900,8 +914,8 @@ export function ImagesPage() {
                   <ModelLoadDescription
                     title={
                       genProgress && genProgress.total > 1
-                        ? `Generating · run ${genProgress.done + 1}/${genProgress.total}`
-                        : "Generating…"
+                        ? `Run ${genProgress.done + 1}/${genProgress.total}`
+                        : null
                     }
                     message="Starting…"
                     progressPercent={genStep ? genStep.fraction * 100 : null}
@@ -933,7 +947,6 @@ export function ImagesPage() {
                   key={image.id}
                   type="button"
                   onClick={() => setSelectedId(image.id)}
-                  title={`seed ${image.seed}`}
                   className="relative size-16 shrink-0 overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {srcById[image.id] ? (
