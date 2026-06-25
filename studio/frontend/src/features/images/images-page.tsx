@@ -933,6 +933,10 @@ export function ImagesPage() {
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
+                    // Drop the chat min-height: this floating card has no layout to
+                    // stabilise, and it would otherwise center the thin bar and
+                    // leave empty space above it (most visible with no title).
+                    className="min-h-0"
                     title={
                       genDone != null && count > 1
                         ? `Run ${genDone + 1}/${count}`
