@@ -1211,61 +1211,6 @@ def _is_same_origin_request(request: Request) -> bool:
     return origin_canon == self_canon
 
 
-# Forwarding/proxy markers: any of these means the request crossed a proxy or
-# tunnel (cloudflared quick tunnels always add them), so it is not a direct hit
-# from this machine. Presence-based veto, so a spoofed ``X-Forwarded-For:
-# 127.0.0.1`` cannot unlock injection. Starlette headers are case-insensitive.
-_FORWARDING_MARKER_HEADERS = (
-    "cf-ray",
-    "cf-connecting-ip",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-real-ip",
-    "forwarded",
-)
-
-
-def _is_loopback_peer(request: Request) -> bool:
-    """True only when the TCP peer is a loopback address.
-
-    Covers IPv4 ``127.0.0.0/8``, IPv6 ``::1``, and IPv4-mapped IPv6 such as
-    ``::ffff:127.0.0.1`` (whose ``is_loopback`` is False until unwrapped). The
-    literal ``localhost`` is accepted since ``request.client.host`` comes from
-    the ASGI server, not a browser-controlled header. Missing/garbage peers fail
-    closed.
-    """
-    import ipaddress as _ipaddress
-
-    client = request.client
-    host = (client.host if client else "") or ""
-    if host == "localhost":
-        return True
-    try:
-        addr = _ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    mapped = getattr(addr, "ipv4_mapped", None)
-    if mapped is not None:
-        addr = mapped
-    return addr.is_loopback
-
-
-def _is_local_direct_request(request: Request) -> bool:
-    """True when the request reached the backend directly from this machine.
-
-    The plaintext bootstrap password is a first-run convenience for the local
-    operator; it must never be embedded in HTML that crosses a network boundary
-    (a public Cloudflare tunnel or a raw ``0.0.0.0``/LAN bind). Colab is exempt:
-    its proxy URL is gated behind the notebook owner's auth and it never starts
-    a public tunnel.
-    """
-    if _IS_COLAB:
-        return True
-    if any(h in request.headers for h in _FORWARDING_MARKER_HEADERS):
-        return False
-    return _is_loopback_peer(request)
-
-
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -1278,9 +1223,8 @@ def setup_frontend(app: FastAPI, build_path: Path):
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        # Bootstrap pw ships only to a direct local navigation (loopback peer, no
-        # proxy/tunnel headers); Vary: Origin keeps caches honest.
-        if _is_same_origin_request(request) and _is_local_direct_request(request):
+        # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
+        if _is_same_origin_request(request):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None

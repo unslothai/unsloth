@@ -18,17 +18,11 @@ def _build_request(
     host: str,
     origin: str | None,
     scheme: str = "http",
-    client_host: str | None = "127.0.0.1",
-    extra_headers: dict | None = None,
 ) -> MagicMock:
     request = MagicMock()
     request.url.scheme = scheme
     request.url.netloc = host
-    headers = {"origin": origin} if origin is not None else {}
-    if extra_headers:
-        headers.update(extra_headers)
-    request.headers = headers
-    request.client = SimpleNamespace(host = client_host) if client_host is not None else None
+    request.headers = {"origin": origin} if origin is not None else {}
     return request
 
 
@@ -135,120 +129,3 @@ def test_is_same_origin_request_explicit_non_default_port_still_mismatch():
 
     req = _build_request("example.com", origin = "https://example.com:9999", scheme = "https")
     assert _is_same_origin_request(req) is False
-
-
-# ── Local-direct backstop: bootstrap pw never crosses a network boundary ──
-#
-# The injection gate is ``_is_same_origin_request AND _is_local_direct_request``.
-# These cover the second predicate: a direct loopback hit gets the password, but
-# a public Cloudflare tunnel (proxy headers) or a raw 0.0.0.0/LAN bind
-# (non-loopback peer) does not -- even with a missing/same Origin.
-
-
-def test_local_direct_loopback_peer_no_headers():
-    from main import _is_local_direct_request
-    req = _build_request("127.0.0.1:8888", origin = None, client_host = "127.0.0.1")
-    assert _is_local_direct_request(req) is True
-
-
-def test_local_direct_ipv6_loopback_peer():
-    from main import _is_local_direct_request
-    req = _build_request("[::1]:8888", origin = None, client_host = "::1")
-    assert _is_local_direct_request(req) is True
-
-
-def test_local_direct_ipv4_mapped_loopback_peer():
-    """``::ffff:127.0.0.1`` is loopback once the mapped IPv4 is unwrapped."""
-    from main import _is_local_direct_request
-
-    req = _build_request("127.0.0.1:8888", origin = None, client_host = "::ffff:127.0.0.1")
-    assert _is_local_direct_request(req) is True
-
-
-def test_local_direct_127_8_range_peer():
-    """The whole 127.0.0.0/8 block is loopback, not just 127.0.0.1."""
-    from main import _is_local_direct_request
-
-    req = _build_request("127.0.0.1:8888", origin = None, client_host = "127.0.0.2")
-    assert _is_local_direct_request(req) is True
-
-
-def test_local_direct_localhost_literal_peer():
-    from main import _is_local_direct_request
-    req = _build_request("127.0.0.1:8888", origin = None, client_host = "localhost")
-    assert _is_local_direct_request(req) is True
-
-
-def test_local_direct_lan_peer_denied():
-    from main import _is_local_direct_request
-    req = _build_request("0.0.0.0:8888", origin = None, client_host = "192.168.1.50")
-    assert _is_local_direct_request(req) is False
-
-
-def test_local_direct_public_peer_denied():
-    from main import _is_local_direct_request
-    req = _build_request("0.0.0.0:8888", origin = None, client_host = "203.0.113.7")
-    assert _is_local_direct_request(req) is False
-
-
-def test_local_direct_missing_client_denied():
-    from main import _is_local_direct_request
-    req = _build_request("0.0.0.0:8888", origin = None, client_host = None)
-    assert _is_local_direct_request(req) is False
-
-
-def test_local_direct_garbage_peer_denied():
-    from main import _is_local_direct_request
-    req = _build_request("0.0.0.0:8888", origin = None, client_host = "not-an-ip")
-    assert _is_local_direct_request(req) is False
-
-
-@pytest.mark.parametrize(
-    "header",
-    [
-        "cf-ray",
-        "cf-connecting-ip",
-        "x-forwarded-for",
-        "x-forwarded-host",
-        "x-real-ip",
-        "forwarded",
-    ],
-)
-def test_local_direct_forwarding_headers_denied(header):
-    """A loopback peer + any proxy/tunnel marker (cloudflared adds these) is denied."""
-    from main import _is_local_direct_request
-
-    req = _build_request(
-        "127.0.0.1:8888",
-        origin = None,
-        client_host = "127.0.0.1",
-        extra_headers = {header: "1.2.3.4"},
-    )
-    assert _is_local_direct_request(req) is False
-
-
-def test_local_direct_spoofed_xff_loopback_still_denied():
-    """A spoofed ``X-Forwarded-For: 127.0.0.1`` must not unlock injection."""
-    from main import _is_local_direct_request
-
-    req = _build_request(
-        "127.0.0.1:8888",
-        origin = None,
-        client_host = "127.0.0.1",
-        extra_headers = {"x-forwarded-for": "127.0.0.1"},
-    )
-    assert _is_local_direct_request(req) is False
-
-
-def test_local_direct_colab_exempt(monkeypatch):
-    """Colab is owner-auth-gated and never tunnels, so injection stays allowed."""
-    import main
-
-    monkeypatch.setattr(main, "_IS_COLAB", True)
-    req = _build_request(
-        "studio.colab.dev",
-        origin = None,
-        client_host = "34.86.10.2",
-        extra_headers = {"x-forwarded-for": "203.0.113.9"},
-    )
-    assert main._is_local_direct_request(req) is True
