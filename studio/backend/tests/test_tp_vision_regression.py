@@ -468,13 +468,42 @@ def test_fallback_hint_uses_effective_tensor_request_not_just_toggle():
 
 
 def test_is_tensor_split_assert_marker():
-    """The abort marker matches the ggml assert/abort signature, not a bare crash."""
+    """The marker matches the SPECIFIC #6415 split-axis assertion, not any ggml
+    assert/abort -- so an unrelated invariant a corrupt GGUF/projector trips with
+    --mmproj present is not cached as tensor/mmproj-incompatible (Codex review on
+    #6659)."""
     f = LlamaCppBackend._is_tensor_split_assert
-    assert f("/x/ggml-backend.cpp:541: GGML_ASSERT(ne == 1) failed") is True
-    assert f("ggml_abort: tensor split warmup") is True
+    # the real #6415 warmup assert (split-axis enum, in ggml-backend-meta)
+    assert (
+        f(
+            "ggml-backend-meta.cpp:541: GGML_ASSERT(src_ss[0].axis != "
+            "GGML_BACKEND_SPLIT_AXIS_0) failed"
+        )
+        is True
+    )
+    # the split-axis token alone (file path elided / reworded) still matches
+    assert f("GGML_ASSERT(x.axis != GGML_BACKEND_SPLIT_AXIS_1) failed") is True
+    # an UNRELATED ggml assert with --mmproj present must NOT match
+    assert f("/x/ggml.c:1234: GGML_ASSERT(ne == 1) failed") is False
+    assert f("ggml_abort: something else entirely") is False
     assert f("Segmentation fault (core dumped)") is False
     assert f("") is False
     assert f(None) is False
+
+
+def test_layer_preserve_hint_replayed_on_respawn():
+    """The preserve_multi_gpu_on_layer hint is in the replay snapshot
+    (_pending_load_kwargs), so a respawn after llama-server dies keeps the
+    downgraded model multi-GPU instead of silently coming back single-GPU
+    (Codex review on #6659)."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    pend = src.find("_pending_load_kwargs = {")
+    assert pend != -1
+    block = src[pend : src.find("}", pend) + 1]
+    assert '"preserve_multi_gpu_on_layer": preserve_multi_gpu_on_layer' in block, (
+        "the layer-preserve hint must be in the replay snapshot so _respawn_if_dead "
+        "keeps the multi-GPU placement"
+    )
 
 
 def test_vision_tensor_abort_requires_assert_marker_for_record_and_raise():

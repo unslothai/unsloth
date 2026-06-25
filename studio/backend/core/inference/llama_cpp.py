@@ -4390,15 +4390,28 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_tensor_split_assert(output: str) -> bool:
-        """True when the crash output carries the ggml warmup assertion that
-        --split-mode tensor + --mmproj triggers on affected builds (#6415), as
-        opposed to a bare SIGSEGV a corrupt or too-new projector can raise
-        regardless of split mode. stderr is merged into the captured output, so the
-        abort message is present; gating the abort cache on it keeps a projector-only
-        crash from being recorded as tensor/mmproj-incompatible.
+        """True when the crash output carries the SPECIFIC ggml tensor-split warmup
+        assertion that --split-mode tensor + --mmproj triggers on affected builds
+        (#6415):
+
+            ggml-backend-meta.cpp:541:
+            GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_0) failed
+
+        Matching the split-axis signature (inherent to tensor splitting) rather than
+        any ggml assert/abort keeps an unrelated invariant a corrupt GGUF or
+        projector can trip with --mmproj present from being cached as
+        tensor/mmproj-incompatible. stderr is merged into the captured output, so the
+        abort message is present. A future build that reworded the assert would just
+        re-crash-then-fall-back each load (vision preserved via layer split) instead
+        of self-healing, which is safer than poisoning the cache for other models.
         """
         text = (output or "").lower()
-        return "ggml_assert" in text or "ggml_abort" in text
+        if "ggml_assert" not in text and "ggml_abort" not in text:
+            return False
+        # split_axis: the GGML_BACKEND_SPLIT_AXIS_* enum in the failed assertion;
+        # ggml-backend-meta: the split-scheduling file it lives in. Either proves
+        # the abort is split-mode specific.
+        return "split_axis" in text or "ggml-backend-meta" in text
 
     @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
@@ -4591,6 +4604,11 @@ class LlamaCppBackend:
             "n_gpu_layers": n_gpu_layers,
             "n_parallel": n_parallel,
             "extra_args": list(extra_args) if extra_args is not None else None,
+            # Replayed by _respawn_if_dead: a fallback-downgraded model that fit on
+            # one card must come back multi-GPU after a mid-session respawn, not
+            # silently single-GPU (the snapshot already carries --split-mode layer
+            # and tensor_parallel=False, which alone would leave _layer_min_gpus=1).
+            "preserve_multi_gpu_on_layer": preserve_multi_gpu_on_layer,
         }
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
