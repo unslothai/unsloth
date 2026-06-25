@@ -370,24 +370,28 @@ def test_budget_downgrade_preserves_multi_gpu_intent():
     ), "the budget downgrade must preserve multi-GPU intent like the vision gate"
 
 
-def test_vision_layer_min_gpus_bumped_independent_of_tensor_drop():
-    """The _layer_min_gpus bump for a known-bad vision binary lives in its own
-    guard checking only effective_is_vision + the cached abort -- NOT under the
-    tensor-drop. On the route fallback's layer retry tensor_parallel is already
-    False, so a bump tied to the drop would miss it and single-GPU the retry.
+def test_vision_layer_min_gpus_bump_requires_tensor_request():
+    """The cached-vision _layer_min_gpus bump must be gated on a CURRENT tensor
+    request, not the abort cache alone.
+
+    Otherwise a plain non-tensor vision load on a binary that aborted earlier this
+    session would grab every GPU (min_gpus = len(gpus)) for a model that fits on
+    one card, just because an unrelated TP attempt failed before (Codex review on
+    #6659). So every guard that bumps _layer_min_gpus off the vision abort cache
+    also tests tensor_parallel.
     """
     fn = _load_model_ast()
-    found = False
+    checked = 0
     for node in ast.walk(fn):
         if isinstance(node, ast.If):
-            if (
-                ast.unparse(node.test)
-                == "effective_is_vision and self._vision_tensor_split_aborts(binary)"
-            ):
-                body = "\n".join(ast.unparse(n) for n in node.body)
-                if "_layer_min_gpus" in body and "tensor_parallel = False" not in body:
-                    found = True
-    assert found, (
-        "expected an effective_is_vision-only guard that bumps _layer_min_gpus "
-        "without dropping tensor (so the layer retry preserves multi-GPU)"
-    )
+            test_src = ast.unparse(node.test)
+            if "self._vision_tensor_split_aborts(binary)" not in test_src:
+                continue
+            body = "\n".join(ast.unparse(n) for n in node.body)
+            if "_layer_min_gpus" in body:
+                checked += 1
+                assert "tensor_parallel" in test_src, (
+                    "the cached-vision _layer_min_gpus bump must require a current "
+                    f"tensor request, but fires under `{test_src}`"
+                )
+    assert checked >= 1, "expected a vision-cache guard that bumps _layer_min_gpus"

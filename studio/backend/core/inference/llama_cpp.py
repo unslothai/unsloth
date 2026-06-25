@@ -5140,16 +5140,6 @@ class LlamaCppBackend:
                     # is preserved so the model isn't silently pinned to one GPU.
                     _layer_min_gpus = 1
 
-                    # A vision GGUF on a binary known to abort on --split-mode
-                    # tensor + --mmproj (#6415) still spreads across the GPUs tensor
-                    # would have used (capped to usable cards by _select_gpus).
-                    # Bump the layer minimum whenever this applies -- including the
-                    # route-level fallback's layer retry, where tensor_parallel is
-                    # already False after the first crash -- so the model isn't
-                    # silently pinned to one card.
-                    if effective_is_vision and self._vision_tensor_split_aborts(binary):
-                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
-
                     if (
                         tensor_parallel
                         and effective_is_vision
@@ -5166,6 +5156,13 @@ class LlamaCppBackend:
                             len(gpus),
                         )
                         tensor_parallel = False
+                        # Honor the multi-GPU request: layer-split across the GPUs
+                        # tensor would have used (capped to usable cards by
+                        # _select_gpus), not one card the model happens to fit.
+                        # Gated on the current tensor request, not the cache alone,
+                        # so a plain non-tensor vision load on a known-bad binary
+                        # still minimizes device count instead of grabbing every GPU.
+                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         _restore_after_tensor_downgrade()
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
