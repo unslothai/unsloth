@@ -2659,6 +2659,19 @@ class LlamaCppBackend:
         is non-None here."""
         return self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
 
+
+    def _resolve_ctx_checkpoints(self, cli_val: Optional[int]) -> int:
+        """Resolve effective checkpoint count using CLI > Env > Default precedence."""
+        if cli_val is not None:
+            return cli_val
+        env_val = os.environ.get("LLAMA_ARG_CTX_CHECKPOINTS")
+        if env_val and env_val.strip():
+            try:
+                return int(env_val)
+            except ValueError:
+                pass
+        return 0
+
     def _estimate_kv_cache_bytes(
         self,
         n_ctx: int,
@@ -2667,7 +2680,7 @@ class LlamaCppBackend:
         swa_full: bool = False,
         n_parallel: int = 1,
         kv_unified: bool = True,
-        ctx_checkpoints: int = 0,
+        ctx_checkpoints: Optional[int] = None,
     ) -> int:
         """Estimate KV cache VRAM for a given context length.
 
@@ -2686,13 +2699,6 @@ class LlamaCppBackend:
 
         Returns 0 if metadata is insufficient.
         """
-        if ctx_checkpoints == 0:
-            env_val = os.environ.get("LLAMA_ARG_CTX_CHECKPOINTS")
-            if env_val and env_val.strip():
-                try:
-                    ctx_checkpoints = int(env_val)
-                except ValueError:
-                    pass
         if not self._can_estimate_kv() or n_ctx <= 0:
             return 0
 
@@ -2973,7 +2979,7 @@ class LlamaCppBackend:
         swa_full: bool = False,
         n_parallel: int = 1,
         kv_unified: bool = True,
-        ctx_checkpoints: int = 0,
+        ctx_checkpoints: Optional[int] = None,
         kv_on_gpu: bool = True,
         mtp_engaged: bool = False,
         mtp_overhead_fn: Optional[Callable[[int], int]] = None,
@@ -2993,6 +2999,8 @@ class LlamaCppBackend:
         ``mtp_engaged`` reserves extra VRAM for the MTP draft model's KV cache +
         compute buffers, else tight tiers (e.g. 32 GB) spill to a slower path.
         """
+    ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints)
+
         if not self._can_estimate_kv():
             logger.debug(
                 "Skipping context fit because KV cache metadata is unavailable",
@@ -4160,7 +4168,7 @@ class LlamaCppBackend:
         max_target_ctx: Optional[int] = None,
         total_by_idx: Optional[dict[int, int]] = None,
         n_ubatch: Optional[int] = None,
-        ctx_checkpoints: int = 0,
+        ctx_checkpoints: Optional[int] = None,
     ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
@@ -4185,6 +4193,8 @@ class LlamaCppBackend:
         ``total_by_idx`` enables the total-based occupancy cap; ``n_ubatch`` sizes
         the compute buffer.
         """
+    ctx_checkpoints = self._resolve_ctx_checkpoints(ctx_checkpoints)
+
 
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
