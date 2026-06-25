@@ -494,7 +494,7 @@ with sync_playwright() as p:
             # typeahead actually filters (else an ignored-input regression
             # would silently pass).
             def picker_visible_text():
-                return page.evaluate("""() => {
+                return robust_evaluate(page, """() => {
                     const el = document.querySelector(
                         '[role="dialog"], [role="listbox"], [role="menu"]'
                     );
@@ -535,7 +535,7 @@ with sync_playwright() as p:
 
     def _bubble_count():
         """Total [data-role='assistant'] elements (empty or not)."""
-        return page.evaluate("""() => {
+        return robust_evaluate(page, """() => {
             return document.querySelectorAll('[data-role="assistant"]').length;
         }""")
 
@@ -626,7 +626,7 @@ with sync_playwright() as p:
         send_and_wait(p_, i)
     shoot("04-after-five-turns")
 
-    texts = page.evaluate("""() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
+    texts = robust_evaluate(page, """() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
         .map(e => (e.innerText || '').trim())""")
     if len(texts) < len(prompts):
         fail(f"expected >= {len(prompts)} assistant bubbles, got {len(texts)}")
@@ -827,7 +827,7 @@ with sync_playwright() as p:
                         theme_item.scroll_into_view_if_needed(timeout = 2_000)
                         theme_item.click(force = True, timeout = 3_000)
                     else:
-                        theme_item.evaluate("el => el.click()")
+                        robust_evaluate(theme_item, "el => el.click()")
                     click_err = None
                     break
                 except Exception as exc:
@@ -840,7 +840,7 @@ with sync_playwright() as p:
             # Settle. The ".dark" class on <html> is the ground truth
             # (theme-store toggles only that); don't gate on ".light".
             page.wait_for_timeout(700)
-            bg = page.evaluate("""() => {
+            bg = robust_evaluate(page, """() => {
                 const root = document.documentElement;
                 return {
                     cls:    root.className,
