@@ -390,3 +390,28 @@ def test_generation_clamp_caps_overrides(client, captured):
     assert p.max_tokens == preview._PREVIEW_MAX_OUTPUT_TOKENS
     assert p.max_completion_tokens == preview._PREVIEW_MAX_OUTPUT_TOKENS
     assert p.n == 1
+
+
+def test_generation_clamp_honors_lower_legacy_max_tokens(client, captured):
+    # A caller asking for fewer tokens via the legacy field must not be bumped up
+    # to the ceiling: _effective_max_tokens prefers max_completion_tokens, so both
+    # fields have to carry the lower value.
+    r = client.post(
+        f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
+        json = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 16},
+    )
+    assert r.status_code == 200
+    p = captured["payload"]
+    assert p.max_tokens == 16
+    assert p.max_completion_tokens == 16
+
+
+def test_generation_clamp_honors_lower_completion_tokens(client, captured):
+    r = client.post(
+        f"/p/demorun/v1/chat/completions?k={_sig('demorun')}",
+        json = {"messages": [{"role": "user", "content": "hi"}], "max_completion_tokens": 32},
+    )
+    assert r.status_code == 200
+    p = captured["payload"]
+    assert p.max_tokens == 32
+    assert p.max_completion_tokens == 32

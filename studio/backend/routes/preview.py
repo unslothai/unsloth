@@ -77,6 +77,21 @@ def _sanitize_preview_payload(
     # Normalize use_adapter (never trust the caller): pin True for LoRA, None for
     # merged. _apply_adapter_state mutates the shared model without restoring, so an
     # unpinned `false` would persist to later visitors who omit the field.
+    #
+    # Cap generation cost on this public, GPU-backed surface. Derive one effective
+    # limit (mirroring _effective_max_tokens: max_completion_tokens wins, else the
+    # legacy max_tokens) and pin BOTH fields to it, so a caller's lower limit is
+    # honored and neither field can exceed the ceiling.
+    requested = (
+        payload.max_completion_tokens
+        if payload.max_completion_tokens is not None
+        else payload.max_tokens
+    )
+    capped_max_tokens = (
+        min(requested, _PREVIEW_MAX_OUTPUT_TOKENS)
+        if requested is not None
+        else _PREVIEW_MAX_OUTPUT_TOKENS
+    )
     return payload.model_copy(
         update = {
             "tools": None,
@@ -95,14 +110,8 @@ def _sanitize_preview_payload(
             "encrypted_api_key": None,
             "provider_base_url": None,
             "use_adapter": True if is_lora else None,
-            # Cap generation cost on this public, GPU-backed surface.
-            "max_tokens": min(
-                payload.max_tokens or _PREVIEW_MAX_OUTPUT_TOKENS, _PREVIEW_MAX_OUTPUT_TOKENS
-            ),
-            "max_completion_tokens": min(
-                payload.max_completion_tokens or _PREVIEW_MAX_OUTPUT_TOKENS,
-                _PREVIEW_MAX_OUTPUT_TOKENS,
-            ),
+            "max_tokens": capped_max_tokens,
+            "max_completion_tokens": capped_max_tokens,
             "n": 1,
         }
     )
