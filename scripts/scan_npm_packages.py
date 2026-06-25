@@ -897,7 +897,10 @@ def safe_extract(
 # ─────────────────────────────────────────────────────────────────────
 
 
-_MAX_CONT_LINES = 12  # cap continuation lines bound into one logical line
+_MAX_CONT_LINES = 12  # how far back to look for an enclosing bracket opener
+# Hard cap on how far forward a bracket group is followed to its close (digest
+# input only, never displayed); a realistic config object closes well within it.
+_MAX_GROUP_LINES = 200
 
 # JS string literal (single / double / template), blanked before counting
 # brackets so a bracket inside a string is not mistaken for code.
@@ -914,7 +917,10 @@ def _logical_line_text(text: str, line_start: int) -> str:
     multi-line object/call it sits inside (so a changed ``path``/``headers``/body
     on another line of the same outbound config binds) and any continuation lines
     after it. String literals are blanked before counting so a bracket inside a
-    string does not miscount; bounded by ``_MAX_CONT_LINES`` each way."""
+    string does not miscount. The opener is searched ``_MAX_CONT_LINES`` lines
+    back; the group is then followed to its close up to ``_MAX_GROUP_LINES`` so a
+    config object longer than the backward window still binds its whole tail in
+    the digest (only a pathological unclosed group truncates)."""
     lines = text.split("\n")
     idx = text.count("\n", 0, line_start)  # 0-based line index of the match
 
@@ -932,7 +938,7 @@ def _logical_line_text(text: str, line_start: int) -> str:
     # Forward: extend until the group opened at `start` closes past the match.
     depth = 0
     end = start
-    for j in range(start, min(len(lines), start + 2 * _MAX_CONT_LINES)):
+    for j in range(start, min(len(lines), start + _MAX_GROUP_LINES)):
         depth += _bracket_depth(lines[j])
         end = j
         if j >= idx and depth <= 0:
@@ -962,7 +968,11 @@ def _evidence(
         if len(snippet) > max_chars:
             snippet = snippet[:max_chars] + "..."
         if snippet != full_logical:
-            digest = hashlib.sha256(full_logical.encode("utf-8", "replace")).hexdigest()
+            # Whitespace-normalize before digesting, matching _evidence_hash, so a
+            # formatter-only reindent of the bound continuation lines does not
+            # change the digest and reopen an unchanged finding.
+            canon = " ".join(full_logical.split())
+            digest = hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
             snippet = f"{snippet} sha256:{digest}"
         snippets.append(snippet)
     return " | ".join(snippets)

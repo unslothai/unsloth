@@ -534,6 +534,40 @@ def test_outbound_host_config_multiline_object_reopens():
     assert snp._finding_key(of) != snp._finding_key(nf)
 
 
+def _host_config_pkg():
+    return snp.PackageEntry(
+        name = "evil",
+        version = "1.0.0",
+        resolved = "https://registry.npmjs.org/evil/-/evil-1.0.0.tgz",
+        integrity = "sha512-test",
+        lockfile_key = "node_modules/evil",
+    )
+
+
+def _host_finding(text):
+    return [
+        f
+        for f in snp.scan_text_blob(_host_config_pkg(), "package/index.js", text)
+        if f.pattern == "cred-surface-host (outbound)"
+    ][0]
+
+
+def test_outbound_host_config_long_object_binds_tail():
+    # A config object longer than the backward window still binds its tail, so a
+    # changed payload line well below the hostname reopens (not truncated away).
+    filler = "\n".join(f"  opt{i}: {i}," for i in range(30))
+    obj = "const opts = {\n  hostname: '169.254.169.254',\n" + filler + "\n  path: '%s',\n};\nrun(opts);\n"
+    assert snp._finding_key(_host_finding(obj % "/old")) != snp._finding_key(_host_finding(obj % "/evil"))
+
+
+def test_outbound_host_config_reindent_is_stable():
+    # A formatter-only reindent of the bound continuation lines must NOT change
+    # the key (whitespace is normalized before the logical-line digest).
+    tight = "const opts = {\n  hostname: '169.254.169.254',\n  path: '/x',\n};\nrun(opts);\n"
+    loose = "const opts = {\n      hostname: '169.254.169.254',\n      path:    '/x',\n};\nrun(opts);\n"
+    assert snp._finding_key(_host_finding(tight)) == snp._finding_key(_host_finding(loose))
+
+
 def test_outbound_cred_surface_binds_context():
     # The outbound cred-surface host finding records the host WITH its URL path /
     # fetch call, so changing the outbound path or headers reopens the key rather
