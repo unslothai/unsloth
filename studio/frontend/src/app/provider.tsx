@@ -400,6 +400,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           }
           style={MAC_NATIVE_CHROME_STYLE}
         >
+          {(!showApp || hidesTitlebarSidebar) ? (
+            <div
+              data-tauri-drag-region
+              aria-hidden="true"
+              className="pointer-events-auto fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+            />
+          ) : null}
           {content}
         </div>
       );
