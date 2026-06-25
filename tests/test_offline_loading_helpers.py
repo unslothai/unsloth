@@ -154,6 +154,38 @@ def test_urllib_httperror_503_is_offline():
     assert L._is_offline_related_error(err) is True
 
 
+def test_ssl_error_is_not_offline():
+    # TLS/cert failure must surface, not silently fall back to cached files.
+    import ssl
+
+    assert L._is_offline_related_error(ssl.SSLError("certificate verify failed")) is False
+
+
+def test_requests_ssl_error_is_not_offline():
+    # requests.SSLError subclasses ConnectionError, but is still a TLS failure -> not offline.
+    requests = pytest.importorskip("requests")
+    assert L._is_offline_related_error(requests.exceptions.SSLError("bad cert")) is False
+
+
+def test_urlerror_wrapping_ssl_is_not_offline():
+    import ssl
+    import urllib.error
+
+    err = urllib.error.URLError(ssl.SSLCertVerificationError("self-signed certificate"))
+    assert L._is_offline_related_error(err) is False
+
+
+def test_ssl_node_does_not_hide_deeper_connection_cause():
+    # Skipping a TLS node must not abort the walk: a genuine outage deeper still counts.
+    import ssl
+
+    outer = RuntimeError("load failed")
+    mid = ssl.SSLError("cert")
+    mid.__context__ = ConnectionError("down")
+    outer.__cause__ = mid
+    assert L._is_offline_related_error(outer) is True
+
+
 def test_oserror_network_unreachable_is_offline():
     assert L._is_offline_related_error(OSError("Network is unreachable")) is True
 

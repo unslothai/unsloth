@@ -173,11 +173,11 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
 
 
 @contextlib.contextmanager
-def _offline_window_for_activation():
-    """Force HF offline ONLY while activating the transformers version, when the endpoint
-    is unreachable. Its config probes (urllib) run before load_checkpoint's own probe, so a
-    no-network export would otherwise hang here. The prior env is restored on exit: this
-    worker is persistent and each later load/export re-decides via load_checkpoint's probe."""
+def _offline_window_if_unreachable(step = "loading"):
+    """Force HF offline for a network-touching step (transformers version activation, or the
+    load preflights that hit the Hub) when the endpoint is unreachable, then restore the prior
+    env. Keeps a no-network export from hanging on Hub calls that run before load_checkpoint's
+    own probe, while letting this persistent worker re-decide per operation once back online."""
     saved: dict[str, str | None] = {}
     try:
         from utils.transformers_version import _env_offline, hf_endpoint_unreachable
@@ -188,7 +188,7 @@ def _offline_window_for_activation():
             "off",
         )
         if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
-            logger.warning("Hugging Face endpoint unreachable; activating transformers offline")
+            logger.warning("Hugging Face endpoint unreachable; %s offline", step)
             for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
                 saved[k] = os.environ.get(k)
                 os.environ[k] = "1"
@@ -492,7 +492,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     checkpoint_path = config["checkpoint_path"]
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
-    with _offline_window_for_activation():
+    with _offline_window_if_unreachable(step = "activating transformers"):
         try:
             _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
         except Exception as exc:
@@ -568,7 +568,10 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     try:
         backend = ExportBackend()
 
-        _handle_load(backend, config, resp_queue)
+        # Offline window covers the load preflights (malware/consent scans hit the Hub)
+        # before load_checkpoint runs its own probe; restored after so later loads re-decide.
+        with _offline_window_if_unreachable():
+            _handle_load(backend, config, resp_queue)
 
     except Exception as exc:
         _send_response(
@@ -604,7 +607,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             if cmd_type == "load":
                 # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
-                _handle_load(backend, cmd, resp_queue)
+                # Offline window also covers this load's Hub preflights (re-probed per load).
+                with _offline_window_if_unreachable():
+                    _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
                 _handle_export(backend, cmd, resp_queue)

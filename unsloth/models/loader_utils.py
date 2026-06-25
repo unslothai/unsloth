@@ -527,6 +527,7 @@ def _is_offline_related_error(exc):
     """True if exc (or its cause/context chain) is a lost-connection error, not a
     missing file. Plain FileNotFoundError propagates; LocalEntryNotFoundError is offline."""
     import socket
+    import ssl
     import urllib.error
 
     # Match network failures by type (locale independent), not just message wording.
@@ -534,10 +535,13 @@ def _is_offline_related_error(exc):
     _offline_fnf_types = ()  # FileNotFoundError subclasses that count as offline
     # urllib HTTPError is a URLError subclass: judge by status (5xx offline, 4xx propagates).
     _http_types = (urllib.error.HTTPError,)
+    # TLS/cert failures are security-sensitive (MITM, expired CA): never offline-retry them.
+    _ssl_types = [ssl.SSLError]
     try:
         import requests
         _net_types += [requests.exceptions.ConnectionError, requests.exceptions.Timeout]
         _http_types += (requests.exceptions.HTTPError,)
+        _ssl_types.append(requests.exceptions.SSLError)
     except Exception:
         pass
     try:
@@ -553,6 +557,7 @@ def _is_offline_related_error(exc):
     except Exception:
         pass
     _net_types = tuple(_net_types)
+    _ssl_types = tuple(_ssl_types)
 
     def _http_status(e):
         resp = getattr(e, "response", None)
@@ -594,6 +599,11 @@ def _is_offline_related_error(exc):
     cur = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
+        # TLS/cert failure (corporate MITM, expired CA): security-sensitive, never retry from
+        # cache. Skip this node; a deeper cause in the chain may still be a genuine outage.
+        if isinstance(cur, _ssl_types) or isinstance(getattr(cur, "reason", None), _ssl_types):
+            cur = cur.__cause__ or cur.__context__
+            continue
         is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(cur, _offline_fnf_types)
         # urllib HTTPError is a URLError (net type) but must be judged by status code below,
         # unlike LocalEntryNotFoundError (an HfHubHTTPError that is always offline).
