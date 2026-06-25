@@ -418,3 +418,77 @@ def test_is_training_active_revives_dead_pump(monkeypatch):
     finally:
         b._proc._alive = False
         b._pump_thread.join(timeout = 5)
+
+
+# ----------------------------------------------------------------------------
+# Guarantee 3: the DB run row exists before the pump consumes any event.
+# ----------------------------------------------------------------------------
+
+
+def _stub_spawn(monkeypatch):
+    """Stub start_training's spawn surface (GPU pick, mp context, worker)."""
+    g = TrainingBackend.start_training.__globals__
+
+    class _SpawnProc:
+        pid = 4321
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+    class _Ctx:
+        def Queue(self):
+            return _IdleQueue()
+
+        def Process(self, **k):
+            return _SpawnProc()
+
+    # _CTX / prepare_gpu_selection resolve from the module globals; patch the
+    # function's own globals so the eviction of core.training.training (done at
+    # this test module's import for isolation) can't hand us a different copy.
+    monkeypatch.setitem(g, "_CTX", _Ctx())
+    monkeypatch.setitem(g, "prepare_gpu_selection", lambda *a, **k: (None, None))
+
+    hw = _types.ModuleType("utils.hardware")
+    hw.prepare_gpu_selection = lambda *a, **k: (None, None)
+    hw.hardware = type("HW", (), {"DEVICE": "cuda", "DeviceType": type("D", (), {"MLX": "mlx"})})()
+    monkeypatch.setitem(sys.modules, "utils.hardware", hw)
+
+    pl = _types.ModuleType("utils.process_lifetime")
+    pl.adopt_pid = lambda pid: None
+    monkeypatch.setitem(sys.modules, "utils.process_lifetime", pl)
+
+    worker = _types.ModuleType("core.training.worker")
+    worker.run_training_process = lambda **k: None
+    monkeypatch.setitem(sys.modules, "core.training.worker", worker)
+
+
+def test_db_run_created_before_pump_consumes_events(monkeypatch):
+    # A fast terminal worker must not race the pump into creating the DB row: by
+    # the time the pump runs, start_training has already created it. The create
+    # sleep widens the window so the ordering is observed, not luck.
+    b = TrainingBackend()
+    _stub_spawn(monkeypatch)
+
+    def slow_create():
+        time.sleep(0.05)
+        b._db_run_created = True
+
+    seen = {}
+
+    def fake_pump():
+        seen["db_created"] = b._db_run_created
+        b._pump_running = False
+
+    monkeypatch.setattr(b, "_ensure_db_run_created", slow_create)
+    monkeypatch.setattr(b, "_pump_loop", fake_pump)
+
+    assert b.start_training("job_db_order", model_name="m") is True
+    if b._pump_thread is not None:
+        b._pump_thread.join(timeout=2.0)
+
+    # The pump observed an already-created run; it would be False if the pump
+    # were started before the eager create.
+    assert seen["db_created"] is True

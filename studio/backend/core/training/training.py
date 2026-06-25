@@ -478,6 +478,11 @@ class TrainingBackend:
         self._xet_fallback_used = False
         self._needs_xet_respawn = False
 
+        # Create the DB run row before the pump can consume events, so it appears
+        # in history during model loading and a fast terminal worker can't race the
+        # pump into a duplicate create/finalize. From here the pump only finalizes.
+        self._ensure_db_run_created()
+
         # Assign handles and start the pump together under the lock so a concurrent
         # poll can't see a live _proc with no pump and spawn a duplicate.
         new_pump = threading.Thread(target = self._pump_loop, daemon = True)
@@ -488,10 +493,6 @@ class TrainingBackend:
             self._proc = proc
             self._pump_thread = new_pump
             new_pump.start()
-
-        # Eagerly create DB run row so it appears in history during model loading.
-        # Done after the pump is live; the pump also creates it on the first event.
-        self._ensure_db_run_created()
 
         return True
 
