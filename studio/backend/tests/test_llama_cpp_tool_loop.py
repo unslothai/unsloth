@@ -1736,3 +1736,80 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
     assert provisional == []
     # The real call still executes despite the missing id.
     assert calls == [("python", {"code": big_code})]
+
+
+def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
+    """A terminal SSE chunk carrying llama-server's ``usage`` block, the way the
+    real server reports it on the final chunk of a completion."""
+    return (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                "usage": usage,
+            }
+        )
+        + "\n"
+    )
+
+
+def test_metadata_event_preserves_prompt_tokens_details(monkeypatch):
+    """The tool loop's metadata event must carry llama-server's
+    ``prompt_tokens_details`` (KV-cache hits) through ``_build_metadata_event``,
+    so the route reports real ``cached_tokens`` instead of always 0 (#6570).
+
+    This drives the *real* generator; the route-level test feeds a pre-built
+    metadata event and so never exercises this code.
+    """
+    stream = [
+        _sse({"content": "The answer is 42."}),
+        _usage_done(
+            {
+                "prompt_tokens": 20,
+                "completion_tokens": 4,
+                "prompt_tokens_details": {"cached_tokens": 16},
+            }
+        ),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [],
+            max_tool_iterations = 1,
+        )
+    )
+
+    metadata = [e for e in events if e.get("type") == "metadata"]
+    assert metadata, "expected a metadata event"
+    usage = metadata[-1]["usage"]
+    assert usage["prompt_tokens_details"] == {"cached_tokens": 16}
+    assert usage["prompt_tokens"] == 20
+    assert usage["completion_tokens"] == 4
+
+
+def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
+    """No KV-cache block from the server -> the key isn't fabricated, so the
+    route falls back to its 0-default instead of reading a bogus value."""
+    stream = [
+        _sse({"content": "hi"}),
+        _usage_done({"prompt_tokens": 5, "completion_tokens": 2}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [],
+            max_tool_iterations = 1,
+        )
+    )
+
+    metadata = [e for e in events if e.get("type") == "metadata"]
+    assert metadata, "expected a metadata event"
+    assert "prompt_tokens_details" not in metadata[-1]["usage"]
