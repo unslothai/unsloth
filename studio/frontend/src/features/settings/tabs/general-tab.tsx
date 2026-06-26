@@ -603,7 +603,11 @@ export function GeneralTab() {
               />
               <Switch
                 checked={webhook?.enabled ?? false}
-                disabled={!webhook || isSavingWebhook}
+                disabled={
+                  !webhook ||
+                  isSavingWebhook ||
+                  (!webhook.enabled && webhookUrlDraft.trim().length === 0)
+                }
                 onCheckedChange={(enabled) => void saveWebhook({ enabled })}
               />
             </div>
@@ -622,11 +626,9 @@ export function GeneralTab() {
                 {t("settings.general.notifications.trainingWebhookTest")}
               </Button>
             </div>
-            {webhookError ? (
-              <span className="w-full text-right text-xs text-destructive">
-                {webhookError}
-              </span>
-            ) : null}
+            <span className="min-h-4 w-full text-right text-xs text-destructive">
+              {webhookError}
+            </span>
           </div>
         </SettingsRow>
       </SettingsSection>
