@@ -807,21 +807,17 @@ _CTX_FIT_VRAM_FRACTION = 0.95
 # fraction dominates (5% of 80 GB = 4 GB); on consumer cards it is too thin (5% of
 # 24 GB = 1.2 GB) to cover what the byte estimate omits: CUDA context + compute
 # graph, the gap between nvidia-smi's reported free and the VRAM llama.cpp can
-# actually allocate, llama.cpp's own --fit margin (it keeps headroom and offloads
-# before the card is full), and a desktop compositor + browser sharing the card.
-# Too thin a cushion let auto-fit advertise a context that pinned -ngl -1 at load but
-# then offloaded layers to CPU at runtime (#6682). Measured on two 27Bs on a 24 GB
-# card (Qwen3.6-MTP, gemma-3): 5% advertised a context that spilled even on an idle
-# card -- ~35 of 60 tok/s -- and worse under a desktop. 3 GiB ~restores the headroom
-# #6312 removed (it cut the reserve from ~10% of free to 5% of total): it keeps both
-# fully on the GPU when idle and under a ~1 GB desktop, and sharply cuts the spill
-# under heavier ones. It is a fixed cushion, not a guarantee -- a ~2 GB+ desktop can
-# still drift past it. Capped at _MAX_VRAM_RESERVE_FRAC so a small card
-# isn't over-reserved (3 GiB would be 37% of an 8 GB card), and never below 5% so big
-# datacenter cards are unchanged. The cap is the floor's own fraction at its 24 GB
-# design point (3 GiB / 24 GB), so no card reserves a larger fraction than a 24 GB
-# card: the reserve is 12.5% up to 24 GB, then the flat 3 GiB (a shrinking fraction)
-# up to ~60 GB, then 5%.
+# actually allocate, llama.cpp's own --fit margin (it offloads before the card is
+# full), and a desktop compositor + browser sharing the card. Too thin a cushion let
+# auto-fit advertise a context that pinned -ngl -1 at load but then offloaded layers
+# to CPU at runtime, spilling even on an idle 24 GB card (#6682). 3 GiB ~restores the
+# headroom #6312 removed (it cut the reserve from ~10% of free to 5% of total): the
+# weights stay on the GPU when idle and under a ~1 GB desktop, with the spill sharply
+# cut under heavier ones -- though it is a fixed cushion, not a guarantee (a ~2 GB+
+# desktop can still drift past it). Capped at _MAX_VRAM_RESERVE_FRAC (the floor's own
+# fraction at its 24 GB design point, 3 GiB / 24 GB) so a small card isn't over-
+# reserved (3 GiB would be 37% of an 8 GB card), and never below 5% so datacenter
+# cards are unchanged.
 _MIN_VRAM_RESERVE_MIB = 3072
 _MAX_VRAM_RESERVE_FRAC = 0.125
 
@@ -829,10 +825,9 @@ _MAX_VRAM_RESERVE_FRAC = 0.125
 def _vram_reserve_mib(total_mib: float, frac: float) -> float:
     """VRAM to hold out of a card before sizing weights + KV: the fractional cushion
     ``(1 - frac) * total``, floored at ``_MIN_VRAM_RESERVE_MIB`` and capped at
-    ``_MAX_VRAM_RESERVE_FRAC * total`` (see _MIN_VRAM_RESERVE_MIB for why). Callers
-    subtract this from free and keep their own clamping (``_gpu_usable`` leaves the
-    result signed for ranking, the budget paths clamp at 0). Only used when total
-    VRAM is known; the unknown-total paths keep the legacy ``free * frac``."""
+    ``_MAX_VRAM_RESERVE_FRAC * total`` (see _MIN_VRAM_RESERVE_MIB for why). Only used
+    by _pooled_usable_mib, which subtracts it once from the pooled free of the
+    known-total GPUs; the unknown-total path keeps the legacy ``free * frac``."""
     return min(max((1.0 - frac) * total_mib, _MIN_VRAM_RESERVE_MIB), _MAX_VRAM_RESERVE_FRAC * total_mib)
 
 
@@ -2645,11 +2640,7 @@ class LlamaCppBackend:
             usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
 
         # Per-GPU usable budget: free - (1-frac)*total when total is known, else
-        # the legacy free*frac (also covers a total-0 two-column probe). No absolute
-        # floor here: _select_gpus picks GPUs for a FIXED footprint (explicit ctx /
-        # file-size paths) and can't shrink it, so a bigger reserve would only deny
-        # the pin and fall to --fit (CPU offload) -- worse than pinning with a thin
-        # cushion. The floor lives in the auto-context paths that cap the KV instead.
+        # the legacy free*frac (also covers a total-0 two-column probe).
         def _usable(idx: int, free_mib: int) -> float:
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
             if t > 0:
@@ -3066,7 +3057,7 @@ class LlamaCppBackend:
             budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
         # Absolute reserve off total when known, else fraction-of-free; clamp >=0.
         if total_mib is not None and total_mib > 0:
-            budget_mib = max(0.0, available_mib - _vram_reserve_mib(total_mib, budget_frac))
+            budget_mib = max(0.0, available_mib - (1.0 - budget_frac) * total_mib)
         else:
             budget_mib = available_mib * budget_frac
         budget_bytes = budget_mib * 1024 * 1024
@@ -4232,15 +4223,13 @@ class LlamaCppBackend:
         the compute buffer.
         """
 
-        # Per-GPU usable budget: free - reserve (floored, see _vram_reserve_mib),
-        # else (unknown total, e.g. a two-column probe) the legacy free*frac. Floored
-        # like the layer-split auto path (_gpu_usable): tensor mode also caps the KV
-        # context to this budget, so the cushion belongs here. (_select_gpus is the
-        # exception -- it sizes a fixed footprint and is left unfloored.)
+        # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
+        # two-column probe) the legacy free*frac. Mirrors _select_gpus and
+        # _gpu_usable so the 5% cushion is kept on every path, not dropped here.
         def _usable(idx: int, free_mib: int) -> float:
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
             if t > 0:
-                return max(0.0, free_mib - _vram_reserve_mib(t, _CTX_FIT_VRAM_FRACTION))
+                return max(0.0, free_mib - (1.0 - _CTX_FIT_VRAM_FRACTION) * t)
             return max(0.0, free_mib * _CTX_FIT_VRAM_FRACTION)
 
         # Drop GPUs whose usable budget can't hold the per-device compute-graph
@@ -4849,19 +4838,18 @@ class LlamaCppBackend:
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
 
                     def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
-                        # Per-GPU usable budget for ranking: free - reserve (floored,
-                        # see _vram_reserve_mib). Callers pass the ACTIVE fraction so
-                        # the ranking matches the budget the fit then tests (else mixed
-                        # totals mis-order). Left signed (no clamp) for ranking;
-                        # _pool_budget_mib clamps at 0.
+                        # Per-GPU usable budget for ranking: free - (1-frac)*total.
+                        # Callers pass the ACTIVE fraction so the ranking matches the
+                        # budget the fit then tests (else mixed totals mis-order).
                         idx, free = g
                         t = total_by_idx.get(idx, 0)
                         if t > 0:
-                            return free - _vram_reserve_mib(t, frac)
+                            return free - (1.0 - frac) * t
                         return free * frac
 
                     def _pool_budget_mib(subset, frac):
-                        # Floor applied once per pool, not per device; see _pooled_usable_mib.
+                        # Reserve the VRAM floor once across the pool (not per device);
+                        # this is the only place the auto-context budget applies it.
                         return _pooled_usable_mib(subset, frac, total_by_idx)
 
                     # Resolve effective context: 0 means let llama-server use

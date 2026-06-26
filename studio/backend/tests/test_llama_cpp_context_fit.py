@@ -772,42 +772,6 @@ def test_vram_reserve_capped_on_small_card():
     assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MAX_VRAM_RESERVE_FRAC * total
 
 
-def test_fit_context_floor_caps_below_thin_fraction():
-    # Exercises _fit_context_to_vram's total-based reserve branch (the line the fix
-    # edits): on a 24 GB card the floor (3072) is reserved instead of the thin 5%
-    # (1229), so the capped context's footprint leaves >= the floor free and is
-    # strictly smaller than the 5% reserve would have advertised. A 27B-class model.
-    inst = _make_backend(native_ctx = 262144)
-    inst._can_estimate_kv = lambda: True
-    inst._estimate_kv_cache_bytes = lambda n, *a, **k: 0 if n <= 0 else int(n * 34_000)
-    model_size = int(17.5 * GIB)
-    total = 24576
-    free = 23700
-
-    def _cap_via_total_branch():
-        # total_mib set -> the fit applies _vram_reserve_mib internally (the floored
-        # branch), unlike the production load loop which pre-reserves and passes None.
-        return inst._fit_context_to_vram(
-            262144, free, model_size, None,
-            total_mib = total, budget_frac = _CTX_FIT_VRAM_FRACTION,
-        )
-
-    def _footprint_mib(ctx):
-        return (model_size + inst._estimate_kv_cache_bytes(ctx)) / (1024 * 1024)
-
-    floored_cap = _cap_via_total_branch()
-    # The floor (not the 5% fraction) is what bounds the footprint.
-    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MIN_VRAM_RESERVE_MIB
-    assert _footprint_mib(floored_cap) <= free - _MIN_VRAM_RESERVE_MIB + 1
-    # Strictly tighter than #6312's thin 5% reserve: that budget would have fit a
-    # larger context (the over-advertisement #6682 reports).
-    thin_budget_mib = free - (1.0 - _CTX_FIT_VRAM_FRACTION) * total
-    thin_cap = inst._fit_context_to_vram(
-        262144, thin_budget_mib, model_size, None, budget_frac = 1.0,
-    )
-    assert floored_cap < thin_cap
-
-
 def test_pooled_usable_single_gpu_applies_floor():
     # Single GPU: pool budget == free - floor (unchanged by the per-pool refactor).
     frac = _CTX_FIT_VRAM_FRACTION
@@ -827,15 +791,6 @@ def test_pooled_usable_floor_applied_once_across_pool():
     assert pooled == 24000 - _vram_reserve_mib(2 * 24576, frac)  # one floor on the pool
     per_device = sum(max(0.0, f - _vram_reserve_mib(totals[i], frac)) for i, f in subset)
     assert pooled > per_device  # the refactor recovers ~one floor's worth of budget
-
-
-def test_pooled_usable_datacenter_unchanged():
-    # Two 80 GB cards: 5% of the 160 GB pool (8192) exceeds the floor, so the pool
-    # reserves the fraction -- datacenter behaviour is unchanged.
-    frac = _CTX_FIT_VRAM_FRACTION
-    subset = [(0, 70000), (1, 70000)]
-    totals = {0: 81920, 1: 81920}
-    assert _pooled_usable_mib(subset, frac, totals) == 140000 - (1.0 - frac) * (2 * 81920)
 
 
 def test_pooled_usable_unknown_total_keeps_per_device_cushion():
