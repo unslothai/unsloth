@@ -803,44 +803,27 @@ _MTP_MIN_SIZE_B = 3.0
 # of free (see _fit_context_to_vram), plus a byte-accurate MTP draft reserve.
 _CTX_FIT_VRAM_FRACTION = 0.95
 
-# Floor under the absolute VRAM cushion (1 - frac) * total. On big cards the
-# fraction dominates (5% of 80 GB = 4 GB); on consumer cards it is too thin (5% of
-# 24 GB = 1.2 GB) to cover what the byte estimate omits: CUDA context + compute
-# graph, the gap between nvidia-smi's reported free and the VRAM llama.cpp can
-# actually allocate, llama.cpp's own --fit margin (it offloads before the card is
-# full), and a desktop compositor + browser sharing the card. Too thin a cushion let
-# auto-fit advertise a context that pinned -ngl -1 at load but then offloaded layers
-# to CPU at runtime, spilling even on an idle 24 GB card (#6682). 3 GiB ~restores the
-# headroom #6312 removed (it cut the reserve from ~10% of free to 5% of total): the
-# weights stay on the GPU when idle and under a ~1 GB desktop, with the spill sharply
-# cut under heavier ones -- though it is a fixed cushion, not a guarantee (a ~2 GB+
-# desktop can still drift past it). Capped at _MAX_VRAM_RESERVE_FRAC (the floor's own
-# fraction at its 24 GB design point, 3 GiB / 24 GB) so a small card isn't over-
-# reserved (3 GiB would be 37% of an 8 GB card), and never below 5% so datacenter
-# cards are unchanged.
+# Floor under the absolute VRAM cushion (1 - frac) * total. On a 24 GB card 5% is
+# only ~1.2 GB, too thin for what the byte estimate misses (CUDA context, compute
+# buffers, the nvidia-smi-vs-CUDA free gap, a shared desktop); auto-fit then sized a
+# context that spilled to CPU and ~halved tok/s (#6682). 3 GiB ~restores the headroom
+# #6312 dropped (10%-of-free -> 5%-of-total). The cap (12.5% = 3 GiB / 24 GB) stops
+# small cards over-reserving; where 5% already tops 3 GiB (>= 60 GB) it's unchanged.
 _MIN_VRAM_RESERVE_MIB = 3072
 _MAX_VRAM_RESERVE_FRAC = 0.125
 
 
 def _vram_reserve_mib(total_mib: float, frac: float) -> float:
-    """VRAM to hold out of a card before sizing weights + KV: the fractional cushion
-    ``(1 - frac) * total``, floored at ``_MIN_VRAM_RESERVE_MIB`` and capped at
-    ``_MAX_VRAM_RESERVE_FRAC * total`` (see _MIN_VRAM_RESERVE_MIB for why). Only used
-    by _pooled_usable_mib, which subtracts it once from the pooled free of the
-    known-total GPUs; the unknown-total path keeps the legacy ``free * frac``."""
+    """Per-card VRAM reserve: ``(1 - frac) * total`` floored at _MIN_VRAM_RESERVE_MIB
+    and capped at _MAX_VRAM_RESERVE_FRAC * total (see _MIN_VRAM_RESERVE_MIB for why)."""
     return min(max((1.0 - frac) * total_mib, _MIN_VRAM_RESERVE_MIB), _MAX_VRAM_RESERVE_FRAC * total_mib)
 
 
 def _pooled_usable_mib(subset, frac, total_by_idx):
-    """Pooled usable VRAM (MiB) for a GPU ``subset`` of (idx, free_mib) pairs.
-
-    The absolute floor in _vram_reserve_mib is a per-POOL cushion (the desktop drift
-    and the one-lump layer-split compute buffer it covers are not per-device), so it
-    is applied ONCE across the known-total GPUs via their pooled total -- a k-GPU
-    split must not reserve k x the floor or it under-advertises context (#6682).
-    Unknown-total GPUs (MIG/vGPU/N/A) keep their own ``free * frac`` cushion; pooling
-    their free with no total would add full free with no reserve. Single GPU is
-    unchanged (pool total == its own total)."""
+    """Usable VRAM (MiB) over a GPU ``subset`` of (idx, free) pairs, reserving the
+    floor ONCE on the pooled total (a k-GPU split must not hold out k x the floor,
+    #6682). Unknown-total GPUs (MIG/vGPU) keep their own ``free * frac``; single GPU
+    is unchanged."""
     known_free = sum(f for i, f in subset if total_by_idx.get(i, 0) > 0)
     known_total = sum(total_by_idx.get(i, 0) for i, _ in subset if total_by_idx.get(i, 0) > 0)
     budget = sum(f * frac for i, f in subset if total_by_idx.get(i, 0) <= 0)
