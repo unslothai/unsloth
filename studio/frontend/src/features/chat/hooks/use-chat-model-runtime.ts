@@ -560,6 +560,13 @@ export function useChatModelRuntime() {
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
+          const willResetPerModelLoadSettings =
+            Boolean(currentCheckpoint) &&
+            currentCheckpoint !== modelId &&
+            !keepSpeculative;
+          if (willResetPerModelLoadSettings) {
+            loadVisionProjectorEnabled = true;
+          }
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -629,7 +636,7 @@ export function useChatModelRuntime() {
             // keepSpeculative skips this for a staged Load: the user picked the
             // mode for this model on the sidebar, so honor it (the backend still
             // falls back at runtime if the model has no MTP head).
-            if (currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative) {
+            if (willResetPerModelLoadSettings) {
               const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
                 speculativeType: persistedSpeculativeType,

@@ -12,6 +12,7 @@ export interface RememberedLoadSettings {
   speculativeType: string | null;
   specDraftNMax: number | null;
   tensorParallel: boolean;
+  visionProjectorEnabled: boolean;
 }
 
 // Storage key for a pick's remembered settings. The remembered knobs are

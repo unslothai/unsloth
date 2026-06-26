@@ -954,6 +954,7 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          load_mmproj: currentStore.visionProjectorEnabled,
         });
         if (
           validation.requires_trust_remote_code ||

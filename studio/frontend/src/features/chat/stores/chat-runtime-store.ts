@@ -1555,6 +1555,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       speculativeType: settings.speculativeType ?? "auto",
       specDraftNMax: settings.specDraftNMax ?? null,
       tensorParallel: settings.tensorParallel ?? false,
+      visionProjectorEnabled: settings.visionProjectorEnabled ?? true,
     }),
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);

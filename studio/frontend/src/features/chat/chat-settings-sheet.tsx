@@ -1358,6 +1358,7 @@ export function ChatSettingsPanel({
                               speculativeType,
                               specDraftNMax,
                               tensorParallel,
+                              visionProjectorEnabled,
                             });
                           } else {
                             clearRememberedLoadSettings(pid);

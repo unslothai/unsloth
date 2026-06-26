@@ -4798,6 +4798,9 @@ class LlamaCppBackend:
                         "Vision projector disabled for this GGUF load; "
                         "image input will be disabled for this session"
                     )
+                effective_load_mmproj = (
+                    bool(effective_is_vision) if is_vision else bool(load_mmproj)
+                )
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
@@ -5919,7 +5922,7 @@ class LlamaCppBackend:
                 else:
                     self._hf_variant = None
                 self._is_vision = effective_is_vision
-                self._load_mmproj = bool(load_mmproj)
+                self._load_mmproj = effective_load_mmproj
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately; do
@@ -6097,6 +6100,7 @@ class LlamaCppBackend:
                         )
                         cmd = self._strip_mmproj_args(_last_spawn_cmd)
                         self._is_vision = False
+                        self._load_mmproj = False
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)
                         if not self._wait_for_health(timeout = 600.0):

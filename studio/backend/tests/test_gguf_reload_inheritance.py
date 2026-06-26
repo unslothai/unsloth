@@ -79,6 +79,7 @@ def _loaded_backend(**overrides):
     backend._requested_spec_mode = "auto"
     backend._chat_template_override = None
     backend._is_vision = False
+    backend._load_mmproj = True
     backend._extra_args = None
     backend._extra_args_source = None
     backend._gguf_path = None
@@ -234,3 +235,41 @@ def test_already_in_target_state_explicit_extras_match():
 def test_extra_args_source_default_is_none():
     backend = LlamaCppBackend()
     assert backend.extra_args_source is None
+
+
+def test_text_only_vision_fallback_does_not_dedupe_projector_on_reload():
+    backend = _loaded_backend(_is_vision = False, _load_mmproj = False)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = True,
+            load_mmproj = True,
+        )
+        is False
+    )
+
+
+def test_text_only_vision_fallback_dedupes_projector_off_reload():
+    backend = _loaded_backend(_is_vision = False, _load_mmproj = False)
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = True,
+            load_mmproj = False,
+        )
+        is True
+    )
