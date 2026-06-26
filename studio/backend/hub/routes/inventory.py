@@ -34,6 +34,7 @@ from hub.schemas.inventory import (
     RemoveScanFolderResponse,
     ScanFolderInfo,
     ScanFoldersResponse,
+    UpdateStatusResponse,
 )
 from hub.services.models import (
     cache_inventory,
@@ -212,6 +213,16 @@ async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
 ):
     return await cache_inventory.list_cached_models_response(hf_token)
+
+
+@router.get("/update-status", response_model = UpdateStatusResponse)
+async def get_update_status(
+    repo_id: str = Query(...),
+    gguf_variant: Optional[str] = Query(None),
+    hf_token: Optional[str] = Depends(get_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    return await cache_inventory.repo_update_status_response(repo_id, gguf_variant, hf_token)
 
 
 @router.delete(

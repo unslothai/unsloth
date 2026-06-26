@@ -186,6 +186,10 @@ class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
 
 
+class UpdateStatusResponse(BaseModel):
+    update_available: bool = False
+
+
 class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 

@@ -287,6 +287,23 @@ export async function deleteCachedModel(
   }
 }
 
+export async function getUpdateStatus(
+  repoId: string,
+  ggufVariant?: string | null,
+  hfToken?: string | null,
+): Promise<boolean> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  if (ggufVariant) params.set("gguf_variant", ggufVariant);
+  const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
+    authFetch(`/api/hub/update-status?${params.toString()}`, {
+      headers: hubTokenHeader(hfToken),
+      signal,
+    }),
+  );
+  const data = await parseJsonOrThrow<{ update_available: boolean }>(response);
+  return data.update_available;
+}
+
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   const response = await authFetch("/api/hub/scan-folders");
   const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);

@@ -17,6 +17,7 @@ export {
   listCachedModels,
   deleteCachedDataset,
   deleteCachedModel,
+  getUpdateStatus,
   invalidateGgufVariantsCache,
   listGgufVariants,
   listLocalDatasets,

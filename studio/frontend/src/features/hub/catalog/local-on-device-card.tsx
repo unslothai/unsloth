@@ -22,7 +22,13 @@ import {
   type LocalModelInfo,
   type ModelInventoryFormat,
   deleteCachedModel,
+  getUpdateStatus,
 } from "../inventory";
+import {
+  downloadManager,
+  selectActiveJob,
+  useDownloadManagerStore,
+} from "../download-manager";
 import { formatBytes } from "../lib/format";
 import { ggufVariantsMatch } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
@@ -37,16 +43,22 @@ import {
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ggufVariantDisplayLabel,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
 import { DotTag } from "./dot-tag";
-import { CardDeleteButton, DeleteConfirmDialog } from "./download-card";
+import {
+  CardDeleteButton,
+  CardUpdateButton,
+  DeleteConfirmDialog,
+  UpdateConfirmDialog,
+} from "./download-card";
 import { PathInfoButton } from "./path-info-button";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
+import { useOnlineStatus } from "../hooks/use-online-status";
 
 type LocalLoadOptions = {
   ggufVariant?: string;
@@ -196,8 +208,17 @@ export function LocalOnDeviceCard({
   onChange,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const hfToken = useHfTokenStore((s) => s.token);
+  // Whether HuggingFace is reachable; the on-select update check is skipped
+  // entirely when offline (no wasted request, no stale "update available").
+  const online = useOnlineStatus();
+  // Holds the GGUF quant the update should target (the selected variant);
+  // null for non-GGUF models. Kept in a ref so the update action — created
+  // above where the selected variant is computed — always reads the latest.
+  const updateVariantRef = useRef<string | null>(null);
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -210,6 +231,22 @@ export function LocalOnDeviceCard({
       onChange?.();
     },
   });
+  // Update runs as a MANAGED download (same path as a normal download) so it
+  // shows in the "Downloading N items" panel with manifest-based progress and a
+  // working Cancel — not a blocking modal. The worker re-resolves `main` and
+  // pulls only changed blobs, so the cached copy stays runnable until the new
+  // revision lands. The "Update available" cue clears via the re-check below
+  // once the managed job settles (see `updateJobActive`).
+  const handleConfirmUpdate = () => {
+    if (!repoId) return;
+    setUpdateOpen(false);
+    void downloadManager.requestStart({
+      kind: "model",
+      repoId,
+      variant: updateVariantRef.current,
+      expectedBytes: 0,
+    });
+  };
   const localGgufPath = path.trim();
   const needsVariantSelection =
     isGguf && requiresVariant && !localGgufPath.toLowerCase().endsWith(".gguf");
@@ -232,6 +269,16 @@ export function LocalOnDeviceCard({
 
   const canDelete =
     source === "hf_cache" && !!repoId && !isActive && !isLoading;
+  // The Update action appears ONLY when a newer revision is actually detected
+  // (`updateAvailable`, fetched on-select below) — never on up-to-date models,
+  // and never for the currently-loaded model. It renders as the prominent
+  // labeled amber pill (`emphasized` is always true at this point).
+  const canUpdate =
+    source === "hf_cache" &&
+    !!repoId &&
+    !isActive &&
+    !isLoading &&
+    updateAvailable;
   const variants = currentVariantState.variants;
   const sortedVariants = useMemo(
     () =>
@@ -273,6 +320,53 @@ export function LocalOnDeviceCard({
     sortedVariants?.find((variant) =>
       ggufVariantsMatch(variant.quant, selectedQuant),
     ) ?? null;
+  useEffect(() => {
+    updateVariantRef.current = needsVariantSelection ? selectedQuant : null;
+  }, [needsVariantSelection, selectedQuant]);
+  // True while a managed download/update for this repo+variant is in flight.
+  // When it flips back to false the (re)download settled, so the update-status
+  // effect below re-checks and clears the cue once the new revision is on disk.
+  const updateJobActive = useDownloadManagerStore((s) =>
+    repoId
+      ? Boolean(
+          selectActiveJob(
+            s,
+            "model",
+            repoId,
+            needsVariantSelection ? selectedQuant : null,
+          ),
+        )
+      : false,
+  );
+  useEffect(() => {
+    // Skip the remote check entirely when offline (no wasted request / 6s wait);
+    // canUpdate also requires `online`, so a stale "available" can't linger. The
+    // check re-runs when connectivity returns (`online` is in the deps). Only the
+    // async resolution updates state — canUpdate's source/repoId checks keep the
+    // button hidden for non-cache models without a synchronous reset here.
+    if (!online || source !== "hf_cache" || !repoId) return;
+    let canceled = false;
+    const variant = needsVariantSelection ? selectedQuant ?? undefined : undefined;
+    getUpdateStatus(repoId, variant, hfToken || undefined)
+      .then((available) => {
+        if (!canceled) setUpdateAvailable(available);
+      })
+      .catch(() => {
+        if (!canceled) setUpdateAvailable(false);
+      });
+    return () => {
+      canceled = true;
+    };
+    // `updateJobActive` is a dep so a settled managed update re-checks status.
+  }, [
+    online,
+    source,
+    repoId,
+    needsVariantSelection,
+    selectedQuant,
+    hfToken,
+    updateJobActive,
+  ]);
   const selectedVariantIsActive =
     needsVariantSelection && selectedQuant
       ? isActive && ggufVariantsMatch(activeGgufVariant, selectedQuant)
@@ -426,6 +520,13 @@ export function LocalOnDeviceCard({
               )}
             </span>
             <div className="ml-auto flex items-center gap-0.5">
+              {canUpdate && (
+                <CardUpdateButton
+                  label={`Update ${repoId}`}
+                  emphasized={updateAvailable}
+                  onClick={() => setUpdateOpen(true)}
+                />
+              )}
               {canDelete && (
                 <CardDeleteButton
                   label={`Delete ${repoId}`}
@@ -543,6 +644,16 @@ export function LocalOnDeviceCard({
             its downloaded files from disk. You can re-download it later.
           </>
         }
+      />
+      <UpdateConfirmDialog
+        open={updateOpen}
+        onOpenChange={(o) => {
+          if (!o) setUpdateOpen(false);
+        }}
+        title={`Update ${repoId}?`}
+        updating={false}
+        onConfirm={handleConfirmUpdate}
+        description="Re-download the latest version of this model from Hugging Face. Progress shows in the Downloads panel."
       />
     </div>
   );

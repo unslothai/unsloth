@@ -22,7 +22,6 @@ import {
   listRecommendedFolders,
   listScanFolders,
   removeScanFolder,
-  updateModel,
 } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type {
@@ -47,6 +46,7 @@ import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { classifyUnslothSupport } from "@/features/hub/lib/unsloth-support";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { downloadManager } from "@/features/hub/download-manager";
 import { useDebouncedValue, useGpuInfo } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -623,20 +623,12 @@ function GgufVariantExpander({
   onSelect,
   gpuGb,
   systemRamGb,
+  hfToken,
   parentOptionKey,
   onNavigatePastStart,
   onNavigatePastEnd,
-  onUpdateVariant,
-  onDeleteVariant,
   sourceOverride,
-  updateVariantTitle = "Update cached model?",
-  deleteVariantTitle = "Delete cached model?",
-  renderUpdateVariantDescription,
-  renderDeleteVariantDescription,
-  getUpdateVariantSuccessMessage,
-  getDeleteVariantSuccessMessage,
-  updateDisabled = false,
-  deleteDisabled = false,
+  variantActions,
   onDevice = false,
   onHasVision,
 }: {
@@ -644,26 +636,42 @@ function GgufVariantExpander({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
+  /** HF token threaded into the variant fetch so private/gated repos resolve
+   *  their GGUF variants (and update badges). */
+  hfToken?: string;
   parentOptionKey?: string;
   onNavigatePastStart?: () => void;
   onNavigatePastEnd?: () => void;
-  onUpdateVariant?: (quant: string) => Promise<void> | void;
-  onDeleteVariant?: (quant: string) => Promise<void> | void;
   sourceOverride?: ModelSelectorChangeMeta["source"];
-  updateVariantTitle?: string;
-  deleteVariantTitle?: string;
-  renderUpdateVariantDescription?: (quant: string) => ReactNode;
-  renderDeleteVariantDescription?: (quant: string) => ReactNode;
-  getUpdateVariantSuccessMessage?: (quant: string) => string;
-  getDeleteVariantSuccessMessage?: (quant: string) => string;
-  updateDisabled?: boolean;
-  deleteDisabled?: boolean;
+  /** Update/delete actions for cached variant rows. Omitted by browse-only
+   *  expanders (Recommended, etc.) that don't manage on-disk variants. */
+  variantActions?: {
+    onUpdate?: (quant: string) => Promise<void> | void;
+    updateTitle?: string;
+    renderUpdateDescription?: (quant: string) => ReactNode;
+    getUpdateSuccessMessage?: (quant: string) => string;
+    updateDisabled?: boolean;
+    onDelete?: (quant: string) => Promise<void> | void;
+    deleteTitle?: string;
+    renderDeleteDescription?: (quant: string) => ReactNode;
+    getDeleteSuccessMessage?: (quant: string) => string;
+    deleteDisabled?: boolean;
+  };
   /** On Device rows honor the Show all quantizations setting; Recommended and
    *  other browse lists always show every quant. */
   onDevice?: boolean;
   /** Report GGUF vision support up so the parent row can badge it. */
   onHasVision?: (hasVision: boolean) => void;
 }) {
+  const onUpdateVariant = variantActions?.onUpdate;
+  const updateVariantTitle = variantActions?.updateTitle ?? "Update cached model?";
+  const renderUpdateVariantDescription = variantActions?.renderUpdateDescription;
+  const updateDisabled = variantActions?.updateDisabled ?? false;
+  const onDeleteVariant = variantActions?.onDelete;
+  const deleteVariantTitle = variantActions?.deleteTitle ?? "Delete cached model?";
+  const renderDeleteVariantDescription = variantActions?.renderDeleteDescription;
+  const getDeleteVariantSuccessMessage = variantActions?.getDeleteSuccessMessage;
+  const deleteDisabled = variantActions?.deleteDisabled ?? false;
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState(false);
@@ -678,7 +686,7 @@ function GgufVariantExpander({
     setLoading(true);
     setError(null);
 
-    listGgufVariants(repoId)
+    listGgufVariants(repoId, hfToken)
       .then((res) => {
         if (canceled) return;
         const normalized = normalizeGgufVariantsResponse(res);
@@ -701,7 +709,7 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId, refreshKey]);
+  }, [repoId, refreshKey, hfToken]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\\/]|~[\\\/]|[A-Za-z]:[\\\/]|\\\\)/.test(
@@ -909,7 +917,7 @@ function GgufVariantExpander({
                       downloaded
                     </span>
                     {v.update_available ? (
-                      <span className="ml-1.5 text-[9px] font-sans font-medium text-yellow-400">
+                      <span className="ml-1.5 text-[9px] font-sans font-medium text-amber-700 dark:text-amber-300">
                         update available
                       </span>
                     ): null}
@@ -950,10 +958,8 @@ function GgufVariantExpander({
                     </>
                   )
                 }
-                successMessage={
-                  getUpdateVariantSuccessMessage?.(v.quant) ??
-                  `Updated ${repoId} ${v.quant}`
-                }
+                repoId={repoId}
+                variant={v.quant}
                 buttonClassName="p-1"
                 iconClassName="size-3"
                 disabled={updateDisabled}
@@ -1213,6 +1219,12 @@ export function HubModelPicker({
   onEject?: () => void;
 }) {
   const gpu = useGpuInfo();
+  // The currently-loaded/running model id. We read params.checkpoint from the
+  // runtime store (backend-mirrored from /api/inference/status.active_model, see
+  // chat-runtime-store) rather than the dropdown `isSelected` highlight (which is
+  // just `value === repo_id` and can reflect a staged, not-yet-loaded pick). Used
+  // to disable the cached-row update action for the model that's live in memory.
+  const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
   // Fade the list's top edge once scrolled, and its bottom edge while more
@@ -1524,29 +1536,28 @@ export function HubModelPicker({
     refreshLocalModelsList();
   }, [refreshLocalModelsList]);
 
-  const updateGgufVariant = useCallback(
-    async (repoId: string, quant: string) => {
-      await updateModel({
-        repo_id: repoId,
-        hf_token: hfToken || null,
-        gguf_variant: quant,
-      });
-      refreshCachedLists();
-    },
-    [hfToken, refreshCachedLists],
-  );
+  // Updates run as MANAGED downloads (they show in the global Downloads panel
+  // with manifest-based progress + a working Cancel), instead of a blocking
+  // call. The worker re-resolves `main` and pulls only changed blobs, so the
+  // cached copy stays usable until the new revision lands. The row's
+  // ModelUpdateAction refreshes the list when this repo+variant completes.
+  const updateGgufVariant = useCallback((repoId: string, quant: string) => {
+    void downloadManager.requestStart({
+      kind: "model",
+      repoId,
+      variant: quant,
+      expectedBytes: 0,
+    });
+  }, []);
 
-  const updateCachedVariant = useCallback(
-    async (repoId: string) => {
-      await updateModel({
-        repo_id: repoId,
-        hf_token: hfToken || null,
-        gguf_variant: null
-      });
-      refreshCachedLists();
-    },
-    [hfToken, refreshCachedLists],
-  );
+  const updateCachedVariant = useCallback((repoId: string) => {
+    void downloadManager.requestStart({
+      kind: "model",
+      repoId,
+      variant: null,
+      expectedBytes: 0,
+    });
+  }, []);
 
   useEffect(() => {
     // Always refresh LM Studio + custom folder models (not gated by alreadyCached).
@@ -2376,15 +2387,20 @@ export function HubModelPicker({
             onDevice={true}
             onHasVision={(v) => reportVision(c.repo_id, v)}
             onSelect={onSelect}
+            hfToken={hfToken || undefined}
             parentOptionKey={optionKey}
             onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
             gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
             systemRamGb={gpu.systemRamAvailableGb || undefined}
-            onUpdateVariant={(quant) => updateGgufVariant(c.repo_id, quant)}
-            onDeleteVariant={async (quant) => {
-              await deleteCachedModel(c.repo_id, quant);
-              refreshCachedLists();
+            variantActions={{
+              onUpdate: (quant) => updateGgufVariant(c.repo_id, quant),
+              // Can't update the model that's live in memory under itself.
+              updateDisabled: loadedModelId === c.repo_id,
+              onDelete: async (quant) => {
+                await deleteCachedModel(c.repo_id, quant);
+                refreshCachedLists();
+              },
             }}
           />
         )}
@@ -2436,8 +2452,11 @@ export function HubModelPicker({
                 {"."}
               </>
             }
-            successMessage={`Updated ${c.repo_id}`}
+            repoId={c.repo_id}
+            variant={null}
             buttonClassName="mr-1"
+            // Can't update the model that's live in memory under itself.
+            disabled={loadedModelId === c.repo_id}
             onConfirm={() => updateCachedVariant(c.repo_id)}
             onUpdated={refreshCachedLists}
           />
@@ -3302,6 +3321,7 @@ export function HubModelPicker({
                             <GgufVariantExpander
                               repoId={id}
                               onSelect={onSelect}
+                              hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
                               onNavigatePastStart={() =>
                                 hubModelList.focusOption(optionKey)
@@ -3313,9 +3333,11 @@ export function HubModelPicker({
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
                               systemRamGb={gpu.systemRamAvailableGb || undefined}
-                              onDeleteVariant={async (quant) => {
-                                await deleteCachedModel(id, quant);
-                                refreshCachedLists();
+                              variantActions={{
+                                onDelete: async (quant) => {
+                                  await deleteCachedModel(id, quant);
+                                  refreshCachedLists();
+                                },
                               }}
                             />
                           )}
@@ -3387,6 +3409,7 @@ export function HubModelPicker({
                           <GgufVariantExpander
                             repoId={id}
                             onSelect={onSelect}
+                            hfToken={hfToken || undefined}
                             parentOptionKey={optionKey}
                             onNavigatePastStart={() =>
                               hubModelList.focusOption(optionKey)
@@ -3398,9 +3421,11 @@ export function HubModelPicker({
                               gpu.available ? gpu.memoryTotalGb : undefined
                             }
                             systemRamGb={gpu.systemRamAvailableGb || undefined}
-                            onDeleteVariant={async (quant) => {
-                              await deleteCachedModel(id, quant);
-                              refreshCachedLists();
+                            variantActions={{
+                              onDelete: async (quant) => {
+                                await deleteCachedModel(id, quant);
+                                refreshCachedLists();
+                              },
                             }}
                           />
                         )}
@@ -3474,6 +3499,7 @@ export function HubModelPicker({
                             <GgufVariantExpander
                               repoId={id}
                               onSelect={onSelect}
+                              hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
                               onNavigatePastStart={() =>
                                 hubModelList.focusOption(optionKey)
@@ -3485,9 +3511,11 @@ export function HubModelPicker({
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
                               systemRamGb={gpu.systemRamAvailableGb || undefined}
-                              onDeleteVariant={async (quant) => {
-                                await deleteCachedModel(id, quant);
-                                refreshCachedLists();
+                              variantActions={{
+                                onDelete: async (quant) => {
+                                  await deleteCachedModel(id, quant);
+                                  refreshCachedLists();
+                                },
                               }}
                             />
                           )}
@@ -3674,22 +3702,21 @@ function FineTunedRows({
                 gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                 systemRamGb={gpu.systemRamAvailableGb || undefined}
                 sourceOverride={isExportedGguf ? "exported" : undefined}
-                deleteVariantTitle="Delete exported GGUF variant?"
-                renderDeleteVariantDescription={(quant) => (
-                  <>
-                    This will remove{" "}
-                    <span className="font-medium text-foreground">
-                      {adapter.name} ({quant})
-                    </span>{" "}
-                    from disk. This cannot be undone.
-                  </>
-                )}
-                getDeleteVariantSuccessMessage={(quant) =>
-                  `Deleted ${adapter.name} ${quant}`
-                }
-                deleteDisabled={deleteDisabled}
-                onDeleteVariant={
-                  isExportedGguf
+                variantActions={{
+                  deleteTitle: "Delete exported GGUF variant?",
+                  renderDeleteDescription: (quant) => (
+                    <>
+                      This will remove{" "}
+                      <span className="font-medium text-foreground">
+                        {adapter.name} ({quant})
+                      </span>{" "}
+                      from disk. This cannot be undone.
+                    </>
+                  ),
+                  getDeleteSuccessMessage: (quant) =>
+                    `Deleted ${adapter.name} ${quant}`,
+                  deleteDisabled: deleteDisabled,
+                  onDelete: isExportedGguf
                     ? async (quant) => {
                         await deleteFineTunedModel({
                           modelPath: adapter.id,
@@ -3702,8 +3729,8 @@ function FineTunedRows({
                           ggufVariant: quant,
                         });
                       }
-                    : undefined
-                }
+                    : undefined,
+                }}
               />
             )}
           </div>
