@@ -444,6 +444,12 @@ async function generateTitleWithModel(payload: {
     title = title.replace(/^\s*title\s*:\s*/i, "");
     title = title.replace(/[^\x20-\x7E]+/g, " ");
     title = title.replace(/["'`]+/g, "");
+
+    // Model echo fail-safe. Check before punctuation stripping erases ":".
+    if (/^\s*(user|assistant)\s*:/i.test(title)) {
+      return null;
+    }
+
     title = title.replace(/[.!?:;,]+/g, " ");
     title = title.replace(/\s+/g, " ").trim();
 
