@@ -56,7 +56,10 @@ def test_default_generation_params_falls_back_to_base_repo():
     # A local-path load: repo_id is a filesystem path that names no model, so the
     # resolved base repo is what identifies it (and distinguishes dev from schnell).
     assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-dev") == (28, 3.5)
-    assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-schnell") == (4, 0.0)
+    assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-schnell") == (
+        4,
+        0.0,
+    )
     assert default_generation_params("/models/my-ckpt", "Qwen/Qwen-Image") == (20, 4.0)
     # repo_id wins when it already names the model; base repo is only a fallback.
     assert default_generation_params("unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image") == (9, 0.0)
