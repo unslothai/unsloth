@@ -304,9 +304,9 @@ def test_tensor_abort_cache_invalidated_on_binary_mtime_change(tmp_path):
         # Simulate an in-place update bumping the binary's mtime.
         st = binp.stat()
         os.utime(p, (st.st_atime, st.st_mtime + 10))
-        assert LlamaCppBackend._tensor_split_aborts(p, "m") is False, (
-            "a binary swapped in place (new mtime) must be re-probed"
-        )
+        assert (
+            LlamaCppBackend._tensor_split_aborts(p, "m") is False
+        ), "a binary swapped in place (new mtime) must be re-probed"
     finally:
         for key in list(LlamaCppBackend._tensor_split_abort_keys):
             if key and key[0] == p:
@@ -339,9 +339,9 @@ def test_budget_downgrade_preserves_multi_gpu_intent():
     assert budget != -1
     block = src[budget : budget + 1000]
     assert "tensor_parallel = False" in block
-    assert "_layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))" in block, (
-        "the budget downgrade must preserve multi-GPU intent like the vision gate"
-    )
+    assert (
+        "_layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))" in block
+    ), "the budget downgrade must preserve multi-GPU intent like the vision gate"
 
 
 def test_tensor_split_layer_min_gpus_bump_requires_tensor_request():
@@ -388,9 +388,9 @@ def test_auto_context_layer_loops_capped_to_usable_gpus():
     """The auto-context loops bypass _select_gpus, so they apply its cap: a card
     counts only if usable VRAM clears the per-device layer overhead (#6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    assert "range(max(1, _layer_min_gpus), len(ranked) + 1)" not in src, (
-        "auto-context loops must cap _layer_min_gpus to usable GPUs, not use it raw"
-    )
+    assert (
+        "range(max(1, _layer_min_gpus), len(ranked) + 1)" not in src
+    ), "auto-context loops must cap _layer_min_gpus to usable GPUs, not use it raw"
     assert "_auto_min_gpus" in src
     assert "range(_auto_min_gpus, len(ranked) + 1)" in src
     # the eligibility threshold is the per-device layer overhead, not bare > 0
