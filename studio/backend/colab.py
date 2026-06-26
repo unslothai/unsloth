@@ -155,9 +155,8 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
     except Exception as e:
         logger.info(f"Cloudflare tunnel failed to start ({e}); using Colab proxy only.")
         return None
-    if url:
-        logger.info(f"🔗 Shareable Cloudflare link: {url}")
-    else:
+    # The link is logged by _show_and_embed when the card renders; only note misses here.
+    if not url:
         logger.info("Cloudflare tunnel did not produce a URL; using Colab proxy only.")
     return url
 
