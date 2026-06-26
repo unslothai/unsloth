@@ -658,15 +658,23 @@ from utils.hardware import hardware as hw
 training_mod.platform.system = lambda: "Darwin"
 training_mod.platform.machine = lambda: "arm64"
 hw.DEVICE = None
-train_cmd._activate_mlx_transformers = lambda model_name, hf_token: None
+activation_events = []
+def fake_activate(model_name, hf_token):
+    activation_events.append({
+        "model_name": model_name,
+        "hf_token": hf_token,
+        "studio_trainer_loaded": "studio.backend.core.training.trainer" in sys.modules,
+        "core_trainer_loaded": "core.training.trainer" in sys.modules,
+    })
+train_cmd._activate_mlx_transformers = fake_activate
 trainer = train_cmd._create_cli_trainer("mlx-community/Qwen3-0.6B-4bit", None)
 print(json.dumps({
     "has_start_training": callable(getattr(trainer, "start_training", None)),
     "has_progress": callable(getattr(trainer, "get_training_progress", None)),
-    "legacy_trainer_loaded": (
-        "core.training.trainer" in sys.modules
-        or "studio.backend.core.training.trainer" in sys.modules
-    ),
+    "trainer_class_module": type(trainer).__module__,
+    "activation_events": activation_events,
+    "studio_trainer_loaded": "studio.backend.core.training.trainer" in sys.modules,
+    "core_trainer_loaded": "core.training.trainer" in sys.modules,
 }))
 """
     env = os.environ.copy()
@@ -690,7 +698,17 @@ print(json.dumps({
 
     assert payload["has_start_training"] is True
     assert payload["has_progress"] is True
-    assert payload["legacy_trainer_loaded"] is True
+    assert payload["trainer_class_module"] == "studio.backend.core.training.training"
+    assert payload["activation_events"] == [
+        {
+            "model_name": "mlx-community/Qwen3-0.6B-4bit",
+            "hf_token": None,
+            "studio_trainer_loaded": False,
+            "core_trainer_loaded": False,
+        }
+    ]
+    assert payload["studio_trainer_loaded"] is True
+    assert payload["core_trainer_loaded"] is False
 
 
 def test_cli_train_dry_run_output_dir_matches_runtime_default(monkeypatch):
