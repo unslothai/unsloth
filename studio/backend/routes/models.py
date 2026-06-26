@@ -2799,8 +2799,7 @@ async def get_gguf_variants(
             for files in gguf_files_by_revision.values():
                 all_cached |= files
             return any(
-                updates_dict.get(shard, False)
-                for shard in _shard_filenames(v.filename, all_cached)
+                updates_dict.get(shard, False) for shard in _shard_filenames(v.filename, all_cached)
             )
 
         return GgufVariantsResponse(
@@ -3257,9 +3256,7 @@ def _remote_weights_changed(
     """
     from huggingface_hub import get_paths_info
 
-    remote_path_infos = get_paths_info(
-        repo_id = repo_id, paths = weight_filenames, token = hf_token
-    )
+    remote_path_infos = get_paths_info(repo_id = repo_id, paths = weight_filenames, token = hf_token)
     for path_info in remote_path_infos:
         remote_blob = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
         if remote_blob not in local_blob_set:
@@ -3269,8 +3266,7 @@ def _remote_weights_changed(
 
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
-    current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Header(None),
+    current_subject: str = Depends(get_current_subject), hf_token: Optional[str] = Header(None)
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
@@ -3355,8 +3351,7 @@ async def list_cached_models(
             now = time.monotonic()
             # Prune expired entries so the cache stays bounded to recently-seen repos.
             for stale_key in [
-                k for k, v in _update_check_cache.items()
-                if now - v[0] >= _UPDATE_CHECK_TTL
+                k for k, v in _update_check_cache.items() if now - v[0] >= _UPDATE_CHECK_TTL
             ]:
                 _update_check_cache.pop(stale_key, None)
 

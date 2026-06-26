@@ -258,9 +258,7 @@ def _gguf_remote_update(repo_id: str, local_blobs: dict[str, set[str]], hf_token
     from huggingface_hub import get_paths_info
 
     local_by_posix = {key.replace("\\", "/"): value for key, value in local_blobs.items()}
-    remote_path_infos = get_paths_info(
-        repo_id = repo_id, paths = list(local_blobs), token = hf_token
-    )
+    remote_path_infos = get_paths_info(repo_id = repo_id, paths = list(local_blobs), token = hf_token)
     for path_info in remote_path_infos:
         remote_blob = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
         local_set = local_by_posix.get(path_info.path.replace("\\", "/"))
@@ -544,9 +542,7 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
 
 
 async def repo_update_status_response(
-    repo_id: str,
-    gguf_variant: Optional[str],
-    hf_token: Optional[str],
+    repo_id: str, gguf_variant: Optional[str], hf_token: Optional[str]
 ) -> dict:
     """On-demand update check for a single cached repo.
 
@@ -578,13 +574,12 @@ async def repo_update_status_response(
             if not local_blobs:
                 return {"update_available": False}
             now = time.monotonic()
-            fingerprint = frozenset(
-                blob for blobs in local_blobs.values() for blob in blobs
-            )
+            fingerprint = frozenset(blob for blobs in local_blobs.values() for blob in blobs)
             with _gguf_update_check_lock:
                 # Prune expired entries so the cache stays bounded to recently-seen repos.
                 for stale_key in [
-                    k for k, v in _gguf_update_check_cache.items()
+                    k
+                    for k, v in _gguf_update_check_cache.items()
                     if now - v[0] >= _GGUF_UPDATE_CHECK_TTL
                 ]:
                     _gguf_update_check_cache.pop(stale_key, None)

@@ -156,9 +156,7 @@ def test_force_download_bypasses_cache_first_early_return(monkeypatch):
 
     # Pretend the blob IS cached on disk (try_to_load_from_cache is imported
     # inside the function from huggingface_hub, and os.path.exists must agree).
-    monkeypatch.setattr(
-        hf, "try_to_load_from_cache", lambda *a, **k: cached_path, raising = False
-    )
+    monkeypatch.setattr(hf, "try_to_load_from_cache", lambda *a, **k: cached_path, raising = False)
     monkeypatch.setattr(X.os.path, "exists", lambda p: True, raising = False)
 
     attempts = []
@@ -202,15 +200,16 @@ def test_force_download_bypasses_cache_first_early_return(monkeypatch):
 
 def _rev(*files):
     return SimpleNamespace(
-        files = [
-            SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}")
-            for name, blob in files
-        ]
+        files = [SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}") for name, blob in files]
     )
 
 
 def _paths_info(path, sha):
-    def _impl(repo_id, paths, token = None):
+    def _impl(
+        repo_id,
+        paths,
+        token = None,
+    ):
         return [SimpleNamespace(path = path, lfs = SimpleNamespace(sha256 = sha), blob_id = None)]
 
     return _impl
@@ -225,9 +224,7 @@ def test_repo_gguf_blob_map_collects_all_revision_blobs():
             _rev(("lfm2-350m-q4_k_m.gguf", "NEWsha")),
         ]
     )
-    assert CI._repo_gguf_blob_map(repo_info) == {
-        "lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}
-    }
+    assert CI._repo_gguf_blob_map(repo_info) == {"lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}}
 
 
 def test_gguf_remote_update_false_when_main_blob_in_any_local_revision(monkeypatch):
