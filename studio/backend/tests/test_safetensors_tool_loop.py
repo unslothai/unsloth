@@ -240,10 +240,7 @@ class TestParserMultiFormat:
     def test_llama3_python_tag_dot_call_multi_arg(self):
         import json
 
-        text = (
-            "<|python_tag|>get_weather.call("
-            'location="Tokyo", units="celsius", days=5)'
-        )
+        text = "<|python_tag|>get_weather.call(" 'location="Tokyo", units="celsius", days=5)'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         args = json.loads(result[0]["function"]["arguments"])
@@ -252,9 +249,7 @@ class TestParserMultiFormat:
     def test_llama3_python_tag_json_form(self):
         import json
 
-        text = (
-            '<|python_tag|>{"name":"web_search",' '"parameters":{"query":"hi","n":5}}'
-        )
+        text = '<|python_tag|>{"name":"web_search","parameters":{"query":"hi","n":5}}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
@@ -265,10 +260,7 @@ class TestParserMultiFormat:
         # Llama-3 emits ``<|eom_id|>`` after the JSON; must not break parsing.
         import json
 
-        text = (
-            '<|python_tag|>{"name":"python",'
-            '"parameters":{"code":"print(2+2)"}}<|eom_id|>'
-        )
+        text = '<|python_tag|>{"name":"python","parameters":{"code":"print(2+2)"}}<|eom_id|>'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         args = json.loads(result[0]["function"]["arguments"])
@@ -314,7 +306,7 @@ class TestParserMultiFormat:
 
     def test_llama3_2_bare_json_multi_call(self):
         # Llama-3 may chain calls with ``; `` per training template.
-        text = '{"name":"a","parameters":{}}; ' '{"name":"b","parameters":{}}'
+        text = '{"name":"a","parameters":{}}; {"name":"b","parameters":{}}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 2
         assert result[0]["function"]["name"] == "a"
@@ -392,10 +384,7 @@ class TestParserMultiFormat:
     def test_mistral_pre_v11_array(self):
         import json
 
-        text = (
-            '[TOOL_CALLS] [{"name":"web_search",'
-            '"arguments":{"query":"hello"},"id":"abc"}]'
-        )
+        text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"query":"hello"},"id":"abc"}]'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
@@ -510,9 +499,7 @@ class TestParserMultiFormat:
         text = '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"]) == {
-            "q": "explain the [THINK] token"
-        }
+        assert json.loads(result[0]["function"]["arguments"]) == {"q": "explain the [THINK] token"}
 
     # ── Gemma 4 ───────────────────────────────────────────────────
 
@@ -538,12 +525,7 @@ class TestParserMultiFormat:
         )
         result = parse_tool_calls_from_text(text)
         args = json.loads(result[0]["function"]["arguments"])
-        assert args == {
-            "enabled": True,
-            "attempts": 5,
-            "threshold": 1.5,
-            "nickname": None,
-        }
+        assert args == {"enabled": True, "attempts": 5, "threshold": 1.5, "nickname": None}
 
     def test_gemma4_nested_args(self):
         # Gemma 4 nests dicts / lists with bare keys and ``<|"|>`` strings.
@@ -561,9 +543,7 @@ class TestParserMultiFormat:
         assert args["tags"] == ["a", "b"]
 
     def test_gemma4_multi_call(self):
-        text = (
-            "<|tool_call>call:a{x:1}<tool_call|>" "<|tool_call>call:b{y:2}<tool_call|>"
-        )
+        text = "<|tool_call>call:a{x:1}<tool_call|><|tool_call>call:b{y:2}<tool_call|>"
         result = parse_tool_calls_from_text(text)
         assert len(result) == 2
         assert result[0]["function"]["name"] == "a"
@@ -642,7 +622,6 @@ class TestParserMultiFormat:
     def test_all_markers_in_tool_xml_signals(self):
         # Streaming buffer wakes up on every emission marker.
         from core.inference.tool_call_parser import TOOL_XML_SIGNALS
-
         for marker in (
             "<tool_call>",
             "<function=",
@@ -650,9 +629,7 @@ class TestParserMultiFormat:
             "[TOOL_CALLS]",
             "<|tool_call>",
         ):
-            assert (
-                marker in TOOL_XML_SIGNALS
-            ), f"streaming loop would not wake on {marker!r}"
+            assert marker in TOOL_XML_SIGNALS, f"streaming loop would not wake on {marker!r}"
 
     def test_has_tool_signal_for_all_formats(self):
         assert has_tool_signal('<|python_tag|>brave_search.call(q="x")')
@@ -2071,10 +2048,7 @@ class TestLoopRePrompt:
         loop, exec_fn = _make_loop(
             turns = [
                 ["Let me check."],
-                [
-                    '<tool_call>{"name":"web_search","arguments":'
-                    '{"query":"x"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ["found"],
             ],
             exec_results = ["..."],
@@ -2091,10 +2065,7 @@ class TestLoopRePrompt:
                 # 1. Intent stall (re-prompt 1/3).
                 ["Let me search for that."],
                 # 2. Real tool call (uses the budget slot).
-                [
-                    '<tool_call>{"name":"web_search","arguments":'
-                    '{"query":"weather"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"weather"}}</tool_call>'],
                 # 3. Budget exhausted -> nudged final answer.
                 ["Final: it is sunny"],
             ],
@@ -2178,8 +2149,7 @@ class TestGGUFSafetensorsHealingParity:
 
         src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
         assert "_shared_strip_tool_markup" in src, (
-            "GGUF stream cleanup must delegate to the shared "
-            "strip_tool_markup helper"
+            "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
         )
 
     def test_gguf_uses_canonical_heal_keys(self):
@@ -2195,15 +2165,15 @@ class TestGGUFSafetensorsHealingParity:
 
         assert _CANONICAL_HEAL_ARG["python"] == "code"
         assert _CANONICAL_HEAL_ARG["terminal"] == "command"
-        assert coerce_tool_arguments(
-            "print(1)", heal = True, tool_name = "python"
-        ).arguments == {"code": "print(1)"}
-        assert coerce_tool_arguments(
-            "ls -la", heal = True, tool_name = "terminal"
-        ).arguments == {"command": "ls -la"}
-        assert coerce_tool_arguments(
-            "weather", heal = True, tool_name = "web_search"
-        ).arguments == {"query": "weather"}
+        assert coerce_tool_arguments("print(1)", heal = True, tool_name = "python").arguments == {
+            "code": "print(1)"
+        }
+        assert coerce_tool_arguments("ls -la", heal = True, tool_name = "terminal").arguments == {
+            "command": "ls -la"
+        }
+        assert coerce_tool_arguments("weather", heal = True, tool_name = "web_search").arguments == {
+            "query": "weather"
+        }
 
     def test_intent_regex_matches_same_phrases_as_gguf(self):
         # The intent re-prompt regex must match the SAME forward-looking
@@ -2240,7 +2210,6 @@ class TestGGUFSafetensorsHealingParity:
     def test_max_reprompts_equal_on_both_backends(self):
         from core.inference.llama_cpp import _MAX_REPROMPTS as gguf_cap
         from core.inference.safetensors_agentic import _MAX_REPROMPTS as sf_cap
-
         assert gguf_cap == sf_cap == 3
 
 
@@ -2725,7 +2694,6 @@ class TestRoutesPythonTagStrip:
         # Import inside the test so a routes-module import error does
         # not blow up the entire test file at collection time.
         from routes.inference import _strip_tool_xml
-
         return _strip_tool_xml(text)
 
     def test_single_line_python_tag_stripped(self):
@@ -2756,10 +2724,7 @@ class TestRoutesPythonTagStrip:
     def test_python_tag_stops_at_eom_sentinel(self):
         # Strip stops at the next Llama-3 ``<|`` sentinel so any
         # trailing assistant content survives.
-        text = (
-            '<|python_tag|>python.call(code="multi\nline")'
-            "<|eom_id|>final answer text"
-        )
+        text = '<|python_tag|>python.call(code="multi\nline")' "<|eom_id|>final answer text"
         assert self._strip(text) == "<|eom_id|>final answer text"
 
     def test_python_tag_stops_at_eot_sentinel(self):
@@ -2768,10 +2733,7 @@ class TestRoutesPythonTagStrip:
 
     def test_python_tag_json_form_multiline_stripped(self):
         # The JSON form of python_tag with newlines inside string args.
-        text = (
-            '<|python_tag|>{"name":"python",'
-            '"parameters":{"code":"a = 1\nb = 2\nprint(a+b)"}}'
-        )
+        text = '<|python_tag|>{"name":"python","parameters":{"code":"a = 1\nb = 2\nprint(a+b)"}}'
         assert self._strip(text) == ""
 
     def test_python_tag_with_eom_then_trailing_python_tag(self):
@@ -2800,11 +2762,7 @@ class TestParserRobustness:
         # too. Was extracting name only and silently dropping the args.
         import json
 
-        text = (
-            "<tool_call>\n"
-            '{"name": "search", "parameters": {"q": "ramen"}}\n'
-            "</tool_call>"
-        )
+        text = "<tool_call>\n" '{"name": "search", "parameters": {"q": "ramen"}}\n' "</tool_call>"
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "search"
@@ -2815,11 +2773,7 @@ class TestParserRobustness:
         # ``<function name="..."><param name="...">v</param></function>``.
         import json
 
-        text = (
-            '<function name="get_weather">'
-            '<param name="city">Tokyo</param>'
-            "</function>"
-        )
+        text = '<function name="get_weather">' '<param name="city">Tokyo</param>' "</function>"
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "get_weather"
@@ -2844,9 +2798,7 @@ class TestParserRobustness:
         # syntax must keep parsing after the regex broadening.
         import json
 
-        text = (
-            "<function=get_weather>" "<parameter=city>Tokyo</parameter>" "</function>"
-        )
+        text = "<function=get_weather><parameter=city>Tokyo</parameter></function>"
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "get_weather"
@@ -2885,7 +2837,6 @@ class TestParserRobustness:
     def test_llama3_round_trip_all_roles(self):
         # Same logic must work for every role the chat template inserts.
         import json
-
         for role in ("assistant", "user", "system", "tool", "ipython"):
             text = (
                 f"<|start_header_id|>{role}<|end_header_id|>\n\n"

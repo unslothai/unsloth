@@ -46,10 +46,10 @@ from core.tool_healing import (
 # BUFFERING state machine also catches Llama-3 / Mistral / Gemma 4
 # emissions (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
-    TOOL_XML_SIGNALS,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
+    parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
     strip_tool_markup as _shared_strip_tool_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -58,12 +58,6 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
-from core.inference.tool_call_parser import (
-    RAG_MAX_SEARCHES_PER_TURN,
-    RAG_SEARCH_CAP_NUDGE,
-    TOOL_XML_SIGNALS,
-    parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
-)
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     tool_event_provenance,
