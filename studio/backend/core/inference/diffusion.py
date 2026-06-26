@@ -623,9 +623,7 @@ class DiffusionBackend:
             pipe_kwargs["token"] = hf_token
         pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
         pipe.to(device)
-        scheme = quantize_transformer(
-            pipe, target, mode = mode, fast_accum = fast_accum, logger = logger
-        )
+        scheme = quantize_transformer(pipe, target, mode = mode, fast_accum = fast_accum, logger = logger)
         if scheme is None:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
         return pipe, scheme

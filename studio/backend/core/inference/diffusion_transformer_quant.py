@@ -63,13 +63,35 @@ _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 # torch.cuda.get_device_name(), so the workstation "A4000" is not mistaken for the
 # data-center "A40". Anything not here -- GeForce, workstation RTX, or an unknown name --
 # is treated as consumer-class (FP32-accumulate halved). See developer.nvidia.com/cuda/gpus.
-_DATACENTER_GPU_TOKENS = frozenset({
-    "B200", "B100", "GB200", "GB300", "GB10",          # Blackwell data center
-    "H200", "H100", "H800", "H20",                      # Hopper data center
-    "A100", "A800", "A30", "A40", "A16", "A10", "A2",  # Ampere data center
-    "L40", "L40S", "L4", "L20", "L2",                   # Ada data center
-    "V100", "P100", "P40", "T4",                        # legacy data center
-})
+_DATACENTER_GPU_TOKENS = frozenset(
+    {
+        "B200",
+        "B100",
+        "GB200",
+        "GB300",
+        "GB10",  # Blackwell data center
+        "H200",
+        "H100",
+        "H800",
+        "H20",  # Hopper data center
+        "A100",
+        "A800",
+        "A30",
+        "A40",
+        "A16",
+        "A10",
+        "A2",  # Ampere data center
+        "L40",
+        "L40S",
+        "L4",
+        "L20",
+        "L2",  # Ada data center
+        "V100",
+        "P100",
+        "P40",
+        "T4",  # legacy data center
+    }
+)
 
 
 def _is_consumer_gpu(device: Any = None) -> bool:
@@ -85,7 +107,6 @@ def _is_consumer_gpu(device: Any = None) -> bool:
         import re
 
         import torch
-
         name = torch.cuda.get_device_name(device).upper()
     except Exception:  # noqa: BLE001 — no torch / no device -> assume consumer
         return True
@@ -224,7 +245,6 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # quant noise floor (measured 0 non-finite even on Z-Image's ~1e6 activations).
         try:
             from torchao.float8 import Float8MMConfig
-
             return Float8DynamicActivationFloat8WeightConfig(
                 mm_config = Float8MMConfig(use_fast_accum = _resolve_fast_accum(fast_accum))
             )

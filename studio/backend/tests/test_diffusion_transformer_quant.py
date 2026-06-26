@@ -212,31 +212,37 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
 
 def _stub_device_name(monkeypatch, name):
     torch = types.ModuleType("torch")
-    torch.cuda = types.SimpleNamespace(get_device_name=lambda device=None: name)
+    torch.cuda = types.SimpleNamespace(get_device_name = lambda device = None: name)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
 
-@pytest.mark.parametrize("name", [
-    "NVIDIA GeForce RTX 5090",
-    "NVIDIA GeForce RTX 4090",
-    "NVIDIA RTX A4000",            # workstation: A4000 token, NOT the data-center A40
-    "NVIDIA RTX 6000 Ada Generation",
-    "NVIDIA Some Future Card 9000",  # unknown -> default consumer (fast accum is free on DC)
-])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "NVIDIA GeForce RTX 5090",
+        "NVIDIA GeForce RTX 4090",
+        "NVIDIA RTX A4000",  # workstation: A4000 token, NOT the data-center A40
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA Some Future Card 9000",  # unknown -> default consumer (fast accum is free on DC)
+    ],
+)
 def test_is_consumer_gpu_true(monkeypatch, name):
     _stub_device_name(monkeypatch, name)
     assert tq._is_consumer_gpu() is True
 
 
-@pytest.mark.parametrize("name", [
-    "NVIDIA B200",
-    "NVIDIA H100 80GB HBM3",
-    "NVIDIA A100-SXM4-80GB",
-    "NVIDIA A40",                  # data-center Ampere (distinct token from RTX A4000)
-    "NVIDIA L40S",
-    "NVIDIA L4",
-    "Tesla V100-SXM2-16GB",
-])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "NVIDIA B200",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA A40",  # data-center Ampere (distinct token from RTX A4000)
+        "NVIDIA L40S",
+        "NVIDIA L4",
+        "Tesla V100-SXM2-16GB",
+    ],
+)
 def test_is_consumer_gpu_false_for_datacenter(monkeypatch, name):
     _stub_device_name(monkeypatch, name)
     assert tq._is_consumer_gpu() is False
