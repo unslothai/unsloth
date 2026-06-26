@@ -5277,7 +5277,7 @@ class LlamaCppBackend:
                             # on tight VRAM tiers and reintroduce load-time spill.
                             pin_fraction = _pin_fraction
                             ranked = sorted(
-                                gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
+                                gpus, key = lambda g: _gpu_usable(g, _fit_fraction), reverse = True
                             )
                             for n_gpus in range(1, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
