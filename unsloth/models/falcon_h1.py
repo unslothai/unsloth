@@ -680,21 +680,7 @@ def fix_prepare_inputs_for_generation(module):
 
 
 class Unsloth_FalconH1RMSNorm(FalconH1RMSNorm):
-    """
-    Patched FalconH1RMSNorm that delegates to Unsloth's fast RMS layernorm kernel.
-    Fixes float64 type promotion on Intel Arc (DG2) when torch.compile generates
-    the auto-fused kernel triton_per_fused__to_copy_mean_mul_pow_rsqrt_*.
-
-    The stock FalconH1RMSNorm.forward() does:
-        hidden_states.pow(2).mean(-1, keepdim=True)
-        torch.rsqrt(variance + self.variance_epsilon)
-    where self.variance_epsilon is a Python float64. Under torch.compile the
-    fused Triton kernel promotes to double, which Intel Arc DG2 does not support.
-
-    Unsloth's fast_rms_layernorm is @torch.compiler.disable and handles the
-    epsilon as an explicit tl.float32 scalar, bypassing the compiler entirely.
-    """
-
+    """fast_rms_layernorm (compiler-disabled, fp32 eps) avoids the float64 torch.compile RMSNorm kernel that fails on Intel Arc DG2 (issue #6555)."""
     def forward(self, hidden_states):
         return fast_rms_layernorm(self, hidden_states, gemma = False)
 
@@ -735,10 +721,7 @@ class FastFalconH1Model(FastLlamaModel):
         transformers.models.falcon_h1.modeling_falcon_h1.FalconH1RotaryEmbedding = (
             LlamaRotaryEmbedding
         )
-        # Patch FalconH1RMSNorm to use Unsloth's fast RMS layernorm kernel.
-        # Fixes float64 type promotion on Intel Arc DG2 when torch.compile fuses
-        # the stock .pow(2).mean().rsqrt() pattern into a Triton kernel with
-        # double-precision operations (issue #6555).
+        # Avoids the float64 RMSNorm compile kernel that fails on Intel Arc DG2 (issue #6555).
         patch_falcon_h1_rms_layernorm()
         return
 
