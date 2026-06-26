@@ -429,9 +429,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest=false disables metadata-action's implicit latest=auto, which
+          # would otherwise emit :latest on a v* tag push and bypass the
+          # default-branch-only gate below. :latest is published only by the
+          # explicit type=raw rule (default-branch pushes), matching the base job.
+          flavor: latest=false
           tags: |
             # The full Studio image owns the unprefixed namespace, headed by
-            # :latest. Same :latest gating rationale as the base job.
+            # :latest (default branch only). Tag pushes publish the version tag.
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
             type=ref,event=tag
             type=schedule,pattern=nightly
@@ -508,6 +513,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Mirror the studio tag rules (incl. latest=false) so the smoke test
+          # pulls the tag just published, not an implicit latest=auto :latest.
+          flavor: latest=false
           tags: |
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
             type=ref,event=tag
