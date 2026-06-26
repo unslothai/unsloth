@@ -140,8 +140,10 @@ def build_view(
     if _OTHER in by_section and _OTHER not in order:
         order.append(_OTHER)
 
-    # Rebuild VIEW from scratch.
-    _rmtree(view)
+    # Rebuild VIEW: drop the symlinks/empty folders we made last boot, but never
+    # the user's own files (VIEW is also JupyterLab's landing dir, so a user may
+    # have saved real notebooks here).
+    _clear_view(view)
     os.makedirs(view, exist_ok = True)
 
     n_links = 0
@@ -162,29 +164,41 @@ def build_view(
     return len(order), n_links
 
 
-def _rmtree(path):
-    # Remove a previously built VIEW. Only unlinks symlinks + empty dirs we made,
-    # but a full rmtree is fine here because VIEW holds nothing but our symlinks.
+def _clear_view(path):
+    # Tear down a previously built VIEW in place. VIEW is also JupyterLab's
+    # landing directory, so a user may have saved real notebooks here -- those
+    # MUST survive a rebuild. We therefore unlink only symlinks (the notebooks we
+    # link) and rmdir only folders that end up empty; any regular file is left
+    # untouched, and a non-empty folder simply stays.
+    #
+    # islink is tested BEFORE isdir on the root: os.path.isdir() follows a
+    # symlink-to-directory, so without this a VIEW that is itself a symlink (e.g.
+    # pointed at the real nb/ tree) would be walked into and its target wiped.
+    if os.path.islink(path):
+        os.remove(path)
+        return
     if not os.path.isdir(path):
-        if os.path.islink(path):
-            os.remove(path)
         return
     for root, dirs, files in os.walk(path, topdown = False):
         for name in files:
-            try:
-                os.remove(os.path.join(root, name))
-            except OSError:
-                pass
+            p = os.path.join(root, name)
+            if os.path.islink(p):          # our notebook symlinks only
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            # a regular file here is user-created -> keep it
         for name in dirs:
             p = os.path.join(root, name)
             try:
-                (os.remove if os.path.islink(p) else os.rmdir)(p)
+                if os.path.islink(p):
+                    os.remove(p)           # symlinked dir: unlink, never recurse
+                else:
+                    os.rmdir(p)            # succeeds only if we emptied it
             except OSError:
-                pass
-    try:
-        os.rmdir(path)
-    except OSError:
-        pass
+                pass                       # holds user files -> keep
+    # Leave the VIEW root itself in place: it may still hold user files, and
+    # build_view recreates it right after anyway.
 
 
 def main(argv):

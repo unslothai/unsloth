@@ -22,6 +22,7 @@
 !jupyter/favicon.ico
 !jupyter/logo.png
 !jupyter/login.html
+!jupyter/install_sloth_stickers.py
 !jupyter/unsloth_labext
 !jupyter/unsloth_labext/package.json
 !jupyter/unsloth_labext/tsconfig.json

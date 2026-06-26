@@ -37,8 +37,13 @@ ARG BASE_IMAGE=unsloth-blackwell:test
 # Node-free. Uses the base image's bundled jlpm + jupyterlab (version-matched).
 FROM ${BASE_IMAGE} AS labext-builder
 ENV DEBIAN_FRONTEND=noninteractive
+# JupyterLab 4.6's build tooling declares a Node >=20 engine; Ubuntu 24.04's
+# distro nodejs is 18, so pull Node 20 LTS from NodeSource (it bundles npm).
+# This stage is thrown away, so the extra apt sources never reach the runtime.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends nodejs npm git \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg git \
+ && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 COPY jupyter/unsloth_labext /opt/labext-src
 RUN cd /opt/labext-src \
