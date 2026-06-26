@@ -108,7 +108,7 @@ def _overflow_record(ip: str, now: float) -> int:
         return entry[0]
     base = 0
     if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
-        victim = min(shard, key=lambda k: shard[k][0])
+        victim = min(shard, key = lambda k: shard[k][0])
         base = shard.pop(victim)[0]
     shard[ip] = [base + 1, now]
     return base + 1
