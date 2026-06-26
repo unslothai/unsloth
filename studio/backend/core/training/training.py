@@ -350,6 +350,7 @@ class _MLXTrainerAdapter:
         self._pump_thread: threading.Thread | None = None
         self._needs_xet_respawn = False
         self._xet_fallback_used = False
+        self._active_attempt_id = 0
         self._lock = threading.Lock()
 
     def _activate_transformers_for_model(self, model_name: str, hf_token: Optional[str]) -> None:
@@ -536,6 +537,7 @@ class _MLXTrainerAdapter:
         self.should_stop = False
         self._needs_xet_respawn = False
         self._xet_fallback_used = False
+        self._active_attempt_id = 0
         self.is_training = True
         self.training_progress = TrainingProgress(
             is_training = True,
@@ -640,14 +642,23 @@ class _MLXTrainerAdapter:
         self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
     ):
         current_config = dict(config)
+        current_stop_queue = stop_queue
         while True:
-            proc = self._start_mlx_worker_process(current_config, event_queue, stop_queue)
+            self._active_attempt_id += 1
+            attempt_config = {**current_config, "attempt_id": self._active_attempt_id}
+            self._stop_queue = current_stop_queue
+            proc = self._start_mlx_worker_process(
+                attempt_config,
+                event_queue,
+                current_stop_queue,
+            )
             self._worker_process = proc
             proc.join()
             self._worker_process = None
             if self._needs_xet_respawn and not self.should_stop:
                 self._needs_xet_respawn = False
                 current_config = {**current_config, "disable_xet": True}
+                current_stop_queue = _CTX.Queue()
                 continue
             if self.should_stop:
                 self._needs_xet_respawn = False
@@ -679,7 +690,9 @@ class _MLXTrainerAdapter:
                     if self.training_progress.is_training:
                         self.training_progress.is_training = False
                         if self.should_stop:
-                            self.training_progress.status_message = "Training stopped."
+                            self.training_progress.status_message = (
+                                "Training stopped." if self.save_on_stop else "Training cancelled"
+                            )
                         elif (
                             not self.training_progress.error
                             and not self.training_progress.is_completed
@@ -701,6 +714,10 @@ class _MLXTrainerAdapter:
                 return
 
     def _handle_event(self, event: dict[str, Any]):
+        attempt_id = event.get("attempt_id")
+        if attempt_id is not None and attempt_id != self._active_attempt_id:
+            return
+
         etype = event.get("type")
         if etype == "status":
             self._update_progress(
@@ -724,6 +741,8 @@ class _MLXTrainerAdapter:
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
                 peak_memory_gb = event.get("peak_memory_gb", self.training_progress.peak_memory_gb),
             )
+            return
+        if etype in {"complete", "error"} and self._needs_xet_respawn and not self.should_stop:
             return
         if etype == "complete":
             status_message = event.get("status_message") or "Training completed"
@@ -834,12 +853,14 @@ class TrainingBackend:
         # True while a pump thread should be running; cleared on intended exits.
         # Left True after an abnormal death so _ensure_pump_alive spots a crash.
         self._pump_running: bool = False
+        self._start_in_progress: bool = False
         self._lock = threading.Lock()
 
         # Progress state (updated by pump thread from subprocess events)
         self._progress = TrainingProgress()
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
+        self._pending_stop_save: Optional[bool] = None
 
         # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
@@ -872,6 +893,10 @@ class TrainingBackend:
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
+    def _clear_start_in_progress(self) -> None:
+        with self._lock:
+            self._start_in_progress = False
+
     # ------------------------------------------------------------------
     # Public API (called by routes/training.py)
     # ------------------------------------------------------------------
@@ -896,15 +921,20 @@ class TrainingBackend:
         Hook failures never block the start.
         """
         with self._lock:
-            if self._proc is not None and self._proc.is_alive():
+            if self._start_in_progress or (self._proc is not None and self._proc.is_alive()):
                 logger.warning("Training subprocess already running")
                 return False
+            self._start_in_progress = True
+            self._should_stop = False
+            self._cancel_requested = False
+            self._pending_stop_save = None
 
         # Join prior pump thread — refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
                 logger.warning("Previous pump thread did not exit within 5s — refusing to start")
+                self._clear_start_in_progress()
                 return False
         self._pump_thread = None
         # Clear a stale crash flag from a prior died pump so the watchdog can't
@@ -912,7 +942,11 @@ class TrainingBackend:
         self._pump_running = False
 
         # Build config dict for the subprocess.
-        config = _build_training_worker_config(kwargs)
+        try:
+            config = _build_training_worker_config(kwargs)
+        except Exception:
+            self._clear_start_in_progress()
+            raise
 
         # Split GPU validation from placement around the VRAM hook:
         #   * Explicit gpu_ids are validated here (raises -> the route returns 400
@@ -942,7 +976,13 @@ class TrainingBackend:
             config["resolved_gpu_ids"] = None
             config["gpu_selection"] = None
         elif gpu_ids:
-            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(gpu_ids, **gpu_selection_kwargs)
+            try:
+                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                    gpu_ids, **gpu_selection_kwargs
+                )
+            except Exception:
+                self._clear_start_in_progress()
+                raise
             config["resolved_gpu_ids"] = resolved_gpu_ids
             config["gpu_selection"] = gpu_selection
         else:
@@ -957,7 +997,13 @@ class TrainingBackend:
                 logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
         if defer_auto_selection:
-            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
+            try:
+                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                    None, **gpu_selection_kwargs
+                )
+            except Exception:
+                self._clear_start_in_progress()
+                raise
             config["resolved_gpu_ids"] = resolved_gpu_ids
             config["gpu_selection"] = gpu_selection
 
@@ -984,14 +1030,17 @@ class TrainingBackend:
                 adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
+            self._clear_start_in_progress()
             return False
 
         logger.info("Training subprocess started (pid=%s)", proc.pid)
+        with self._lock:
+            self._event_queue = event_queue
+            self._stop_queue = stop_queue
+            self._proc = proc
 
         # Reset state (old pump thread dead, proc.start() succeeded).
         self.current_job_id = job_id
-        self._should_stop = False
-        self._cancel_requested = False
         self._progress = TrainingProgress(
             is_training = True, status_message = "Initializing training..."
         )
@@ -1019,33 +1068,57 @@ class TrainingBackend:
         # Create the DB run row before the pump can consume events, so it appears
         # in history during model loading and a fast terminal worker can't race the
         # pump into a duplicate create/finalize. From here the pump only finalizes.
-        self._ensure_db_run_created()
+        try:
+            self._ensure_db_run_created()
+        except Exception:
+            self._clear_start_in_progress()
+            raise
 
         # Assign handles and start the pump together under the lock so a concurrent
         # poll can't see a live _proc with no pump and spawn a duplicate.
         new_pump = threading.Thread(target = self._pump_loop, daemon = True)
         with self._lock:
+            pending_stop_save = self._pending_stop_save
+            self._pending_stop_save = None
+            stopping = self._should_stop
+            cancelled = self._cancel_requested
             self._pump_running = False
             self._event_queue = event_queue
             self._stop_queue = stop_queue
             self._proc = proc
             self._pump_thread = new_pump
+            self._start_in_progress = False
+            if stopping:
+                self._progress.status_message = (
+                    "Cancelling training..."
+                    if cancelled
+                    else "Stopping training and saving checkpoint..."
+                )
             new_pump.start()
+
+        if pending_stop_save is not None:
+            try:
+                stop_queue.put({"type": "stop", "save": pending_stop_save})
+            except (OSError, ValueError):
+                pass
 
         return True
 
     def stop_training(self, save: bool = True) -> bool:
         """Send stop signal to the training subprocess."""
-        self._should_stop = True
-        if not save:
-            self._cancel_requested = True
         with self._lock:
+            self._should_stop = True
+            if not save:
+                self._cancel_requested = True
             self._needs_xet_respawn = False
+            stop_sent = False
             if self._stop_queue is not None:
                 try:
                     self._stop_queue.put({"type": "stop", "save": save})
+                    stop_sent = True
                 except (OSError, ValueError):
                     pass
+            self._pending_stop_save = None if stop_sent else save
             # Update progress immediately for responsive UI.
             self._progress.status_message = (
                 "Stopping training and saving checkpoint..." if save else "Cancelling training..."
@@ -1055,6 +1128,8 @@ class TrainingBackend:
     def force_terminate(self) -> None:
         """Force-kill the training subprocess so state can be reset immediately."""
         with self._lock:
+            self._start_in_progress = False
+            self._pending_stop_save = None
             self._needs_xet_respawn = False
             if self._proc is not None and self._proc.is_alive():
                 logger.info("Force-terminating training subprocess (pid=%s)", self._proc.pid)
@@ -1245,6 +1320,9 @@ class TrainingBackend:
         # training invisibly behind a frozen UI. Cheap enough for per-second polls.
         self._ensure_pump_alive()
         with self._lock:
+            if self._start_in_progress:
+                return True
+
             if self._proc is not None and self._proc.is_alive():
                 return True
 
@@ -1590,6 +1668,11 @@ class TrainingBackend:
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")
                 self._progress.is_training = True
+
+            elif (
+                etype in {"complete", "error"} and self._needs_xet_respawn and not self._should_stop
+            ):
+                return
 
             elif etype == "complete":
                 msg = event.get("status_message", "Training completed")

@@ -1427,11 +1427,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
     import math
     from pathlib import Path
 
+    attempt_id = config.get("attempt_id")
+
     def _send(event_type, **kwargs):
         if event_type == "status" and "message" not in kwargs:
             sm = kwargs.get("status_message")
             if sm is not None:
                 kwargs["message"] = sm
+        if attempt_id is not None:
+            kwargs.setdefault("attempt_id", attempt_id)
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
     _stop_save, _stop_requested, _trainer_ref, _is_stop_requested, _stop_thread = (
@@ -1560,6 +1564,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             return
 
+    model_load_targets = list(dict.fromkeys(malware_targets))
+
     if _finish_if_stop_requested():
         return
 
@@ -1609,7 +1615,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     _send("model_load_started")
     _load_watchdog_stop = start_watchdog(
-        repo_ids = [model_name],
+        repo_ids = model_load_targets,
         on_stall = lambda msg: _send("stall", message = msg),
         xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
     )
@@ -2195,6 +2201,12 @@ def run_mlx_training_process(
 ) -> None:
     """MLX worker entrypoint shared by Studio subprocesses and the CLI adapter."""
     model_name = config["model_name"]
+    attempt_id = config.get("attempt_id")
+
+    def _put_event(event: dict[str, Any]) -> None:
+        if attempt_id is not None:
+            event.setdefault("attempt_id", attempt_id)
+        event_queue.put(event)
 
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
@@ -2215,7 +2227,7 @@ def run_mlx_training_process(
 
     _hw.detect_hardware()
     if _hw.DEVICE != _hw.DeviceType.MLX:
-        event_queue.put(
+        _put_event(
             {
                 "type": "error",
                 "error": "MLX training requires Apple Silicon with the MLX backend available.",
@@ -2226,7 +2238,7 @@ def run_mlx_training_process(
         return
 
     if config.get("is_dataset_audio"):
-        event_queue.put(
+        _put_event(
             {
                 "type": "error",
                 "error": "Audio dataset training is not yet supported on Apple Silicon.",
@@ -2245,7 +2257,7 @@ def run_mlx_training_process(
             except (EOFError, OSError, ValueError):
                 pass
     except Exception as exc:
-        event_queue.put(
+        _put_event(
             {
                 "type": "error",
                 "error": str(exc),
