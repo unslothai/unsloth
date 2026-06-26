@@ -1,7 +1,5 @@
-"""
-Regression guard: descender-prone text spans in Studio must not pair
-`leading-none` with `truncate` (overflow: hidden), which clips glyph
-descenders (g, p, q, y, j) in real user-visible labels.
+"""Regression guard: Studio text spans must not pair `leading-none` with
+`truncate`, which clips glyph descenders (g, p, q, y, j) in visible labels.
 """
 
 from __future__ import annotations
@@ -36,8 +34,8 @@ def test_model_selector_trigger_label_uses_leading_tight():
 
 def test_sidebar_account_block_uses_leading_tight():
     src = _read(APP_SIDEBAR)
-    # Match the account-block parent div regardless of its gap utility (gap-0.5,
-    # gap-px, ...); this guard is about the leading-* class, not the spacing.
+    # Match the account-block parent div regardless of its gap utility; this
+    # guard is about the leading-* class, not the spacing.
     pattern = re.compile(
         r'<div\s+className="flex\s+flex-col\s+gap-\S+\s+(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
     )

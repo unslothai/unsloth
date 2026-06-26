@@ -8,22 +8,37 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   CloudIcon,
   DashboardSquare01Icon,
+  Download01Icon,
   FolderSearchIcon,
   RemoveCircleIcon,
   Search01Icon,
+  StarIcon,
 } from "@hugeicons/core-free-icons";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type KeyboardEvent, useMemo, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Input } from "../ui/input";
-import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
+import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
+import { PillTabs } from "./model-selector/pill-tabs";
+import {
+  buildSourceTabs,
+  isFineTunedSource,
+} from "./model-selector/source-tabs";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -148,8 +163,9 @@ function ModelSelectorTrigger({
         className={cn(
           "unsloth-model-selector-trigger flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
-          "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
-          variant === "ghost" && "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+            "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+          variant === "ghost" &&
+            "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "muted" && "rounded-full bg-muted hover:bg-muted/80",
           // More left padding than right; the chevron is pulled close to the
           // label (below) so the trigger reads balanced around the text.
@@ -163,7 +179,9 @@ function ModelSelectorTrigger({
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
         {currentModel?.icon ? (
-          <span className="flex shrink-0 items-center">{currentModel.icon}</span>
+          <span className="flex shrink-0 items-center">
+            {currentModel.icon}
+          </span>
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
           <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
@@ -199,7 +217,52 @@ function ModelSelectorTrigger({
   );
 }
 
+type HubSection = "downloaded" | "recommended" | "custom" | "connected";
+
+// The user's most recently clicked Hub section, restored on every open so the
+// selector returns to the tab they last used.
+const HUB_SECTION_KEY = "unsloth_model_selector_section";
+// Last tab the user actually clicked, or null when none is stored yet. Only
+// On Device / Recommended persist (Connected is provider-conditional).
+function loadLastHubSection(): HubSection | null {
+  try {
+    const raw = localStorage.getItem(HUB_SECTION_KEY);
+    return raw === "downloaded" || raw === "recommended" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+function saveLastHubSection(section: HubSection): void {
+  if (section !== "downloaded" && section !== "recommended") return;
+  try {
+    localStorage.setItem(HUB_SECTION_KEY, section);
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+// Default the Hub section: the last tab the user clicked; first time, On Device
+// when they have downloads, else Recommended.
+function defaultHubSection(): HubSection {
+  return (
+    loadLastHubSection() ?? (hasDownloadedModels() ? "downloaded" : "recommended")
+  );
+}
+
+const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
+  {
+    value: "recommended",
+    label: "Recommended",
+    icon: <HugeiconsIcon icon={StarIcon} className="size-3.5" />,
+  },
+  {
+    value: "downloaded",
+    label: "On Device",
+    icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5" />,
+  },
+];
+
 function ModelSelectorContent({
+  open,
   models,
   loraModels,
   externalModels,
@@ -208,11 +271,13 @@ function ModelSelectorContent({
   onEject,
   onFoldersChange,
   onPickLocalModel,
+  onBrowseHub,
   onModelsChange,
   deleteDisabled,
   className,
   dataTour,
 }: {
+  open: boolean;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
@@ -221,6 +286,7 @@ function ModelSelectorContent({
   onEject?: () => void;
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void;
+  onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   className?: string;
@@ -229,19 +295,80 @@ function ModelSelectorContent({
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
+  // The Fine-tuned tab is for fine-tuned models only. Local models (LM Studio,
+  // Ollama, custom folders) carry source "local" and live in the Hub tab's
+  // Downloaded / Custom sections instead.
+  const fineTunedModels = useMemo(
+    () => loraModels.filter((model) => isFineTunedSource(model.source)),
+    [loraModels],
+  );
   const chatOnlyTabsDefault = useMemo(
-    () => (value && externalModels.some((model) => model.id === value) ? "external" : "hub"),
+    () =>
+      value && externalModels.some((model) => model.id === value)
+        ? "external"
+        : "hub",
     [externalModels, value],
   );
-  const studioTabsDefault = useMemo((): "hub" | "lora" | "external" => {
+  const studioTabsDefault = useMemo((): "hub" | "external" => {
     if (value && externalModels.some((model) => model.id === value)) {
       return "external";
     }
-    if (value && loraModels.some((model) => model.id === value)) {
-      return "lora";
-    }
     return "hub";
-  }, [externalModels, loraModels, value]);
+  }, [externalModels, value]);
+
+  const tabs = useMemo(() => buildSourceTabs(), []);
+  // Connected sits in the section toggle, shown only with external providers.
+  const hubSectionTabs = useMemo(
+    () =>
+      hasExternal
+        ? [
+            ...HUB_SECTION_TABS,
+            {
+              value: "connected",
+              label: "Connected",
+              icon: <HugeiconsIcon icon={CloudIcon} className="size-3.5" />,
+            },
+          ]
+        : HUB_SECTION_TABS,
+    [hasExternal],
+  );
+
+  const [activeTab, setActiveTab] = useState<string>(() =>
+    chatOnly ? chatOnlyTabsDefault : studioTabsDefault,
+  );
+  // Fall back to the first tab if the active one disappears.
+  const effectiveTab = tabs.some((tab) => tab.value === activeTab)
+    ? activeTab
+    : tabs[0].value;
+  // Open on Connected when the active model comes from a connected provider.
+  const wantsConnectedDefault =
+    (chatOnly ? chatOnlyTabsDefault : studioTabsDefault) === "external";
+  const [hubSection, setHubSection] = useState<HubSection>(() =>
+    wantsConnectedDefault ? "connected" : defaultHubSection(),
+  );
+  // Connected is only valid while external providers exist; fall back otherwise.
+  const effectiveHubSection: HubSection =
+    hubSection === "connected" && !hasExternal ? "recommended" : hubSection;
+
+  // The picker below remounts on each open, but this tab state does not, so a
+  // persisted selection that lands in lora/external after async load would
+  // reopen on Hub. Re-derive the default tab on the open edge.
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      setActiveTab(chatOnly ? chatOnlyTabsDefault : studioTabsDefault);
+      // Connected when an external model is active, else On Device when the
+      // user has downloads, else their last section.
+      setHubSection(wantsConnectedDefault ? "connected" : defaultHubSection());
+    }
+    wasOpen.current = open;
+  }, [
+    open,
+    chatOnly,
+    chatOnlyTabsDefault,
+    studioTabsDefault,
+    wantsConnectedDefault,
+  ]);
 
   function focusActiveModelOption(root: HTMLElement): boolean {
     const option =
@@ -254,9 +381,7 @@ function ModelSelectorContent({
       root.querySelector<HTMLElement>(
         '[role="tabpanel"]:not([hidden]) [data-model-picker-option]',
       ) ??
-      root.querySelector<HTMLElement>(
-        "[data-model-picker-option]",
-      );
+      root.querySelector<HTMLElement>("[data-model-picker-option]");
     if (!option) {
       return false;
     }
@@ -293,91 +418,101 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 px-3 pt-3 pb-2",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0 pt-4 pb-0 pl-4",
+        // Sized so the left-packed row keeps uniform gaps and the last dropdown's
+        // right gap matches the pill's left gap (pl-4 vs pr-4).
+        hasExternal
+          ? "w-[min(614px,calc(100vw-1rem))] pr-4"
+          : "w-[min(506px,calc(100vw-1rem))] pr-2",
         className,
       )}
     >
-      {chatOnly ? (
-        hasExternal ? (
-          <Tabs defaultValue={chatOnlyTabsDefault} className="w-full">
-            <TabsList className="mb-2 w-full">
-              <TabsTrigger value="hub">Hub models</TabsTrigger>
-              <TabsTrigger value="external">Connected</TabsTrigger>
-            </TabsList>
-            <TabsContent value="hub" className="m-0">
-              <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
-            </TabsContent>
-            <TabsContent value="external" className="m-0">
-              <ExternalModelPicker
-                externalModels={externalModels}
-                value={value}
-                onSelect={onSelect}
+      {/* Local provider so popover tooltips open instantly, including when the
+          cursor moves between icons. disableHoverableContent drops the grace
+          area between a trigger and its tooltip, so moving from one icon to the
+          next switches the tooltip at once instead of keeping the old one up. */}
+      <TooltipProvider
+        delayDuration={0}
+        skipDelayDuration={0}
+        disableHoverableContent={true}
+      >
+        {tabs.length > 1 ? (
+          <PillTabs
+            ariaLabel="Model source"
+            tabs={tabs}
+            value={effectiveTab}
+            onValueChange={setActiveTab}
+            fit={true}
+            className="mb-2"
+          />
+        ) : null}
+
+        {effectiveTab === "hub" ? (
+          <HubModelPicker
+            models={models}
+            loraModels={fineTunedModels}
+            externalModels={externalModels}
+            value={value}
+            onSelect={onSelect}
+            onFoldersChange={onFoldersChange}
+            onBrowseHub={onBrowseHub}
+            onModelsChange={onModelsChange}
+            deleteDisabled={deleteDisabled}
+            section={effectiveHubSection}
+            onEject={hasSelection && onEject ? onEject : undefined}
+            sectionToggle={
+              <PillTabs
+                ariaLabel="Hub section"
+                tabs={hubSectionTabs}
+                value={effectiveHubSection}
+                onValueChange={(next) => {
+                  const section = next as HubSection;
+                  setHubSection(section);
+                  saveLastHubSection(section);
+                }}
+                fit={true}
               />
-            </TabsContent>
-          </Tabs>
-        ) : (
-          <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
-        )
-      ) : (
-        <Tabs defaultValue={studioTabsDefault} className="w-full">
-          <TabsList className="mb-2 w-full">
-            <TabsTrigger value="hub">Hub models</TabsTrigger>
-            <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
-            {hasExternal ? <TabsTrigger value="external">Connected</TabsTrigger> : null}
-          </TabsList>
+            }
+          />
+        ) : null}
 
-          <TabsContent value="hub" className="m-0">
-            <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
-          </TabsContent>
+        {effectiveTab === "external" ? (
+          <ExternalModelPicker
+            externalModels={externalModels}
+            value={value}
+            onSelect={onSelect}
+          />
+        ) : null}
 
-          <TabsContent value="lora" className="m-0">
-            <LoraModelPicker
-              loraModels={loraModels}
-              value={value}
-              onSelect={onSelect}
-              onModelsChange={onModelsChange}
-              deleteDisabled={deleteDisabled}
-            />
-          </TabsContent>
-
-          {hasExternal ? (
-            <TabsContent value="external" className="m-0">
-              <ExternalModelPicker
-                externalModels={externalModels}
-                value={value}
-                onSelect={onSelect}
-              />
-            </TabsContent>
-          ) : null}
-        </Tabs>
-      )}
-
-      {onPickLocalModel ? (
-        <div className="mt-1.5 border-t border-border/70 pt-1.5">
-          <button
-            type="button"
-            onClick={onPickLocalModel}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
-            title="Pick a model file from disk"
-          >
-            <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
-            Pick a model file from disk
-          </button>
-        </div>
-      ) : null}
-      {hasSelection && onEject ? (
-        <div className="mt-1.5 border-t border-border/70 pt-1.5">
-          <button
-            type="button"
-            onClick={onEject}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-            title="Eject model"
-          >
-            <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-            Eject loaded model
-          </button>
-        </div>
-      ) : null}
+        {onPickLocalModel ? (
+          <div className="mt-1.5 border-t border-border/70 pt-1.5">
+            <button
+              type="button"
+              onClick={onPickLocalModel}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
+              title="Pick a model file from disk"
+            >
+              <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
+              Pick a model file from disk
+            </button>
+          </div>
+        ) : null}
+        {/* Hub renders Eject inline as the last list row; other tabs keep the
+          footer button. */}
+        {effectiveTab !== "hub" && hasSelection && onEject ? (
+          <div className="mt-1.5 pt-1.5">
+            <button
+              type="button"
+              onClick={onEject}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+              title="Eject model"
+            >
+              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+              Eject loaded model
+            </button>
+          </div>
+        ) : null}
+      </TooltipProvider>
     </PopoverContent>
   );
 }
@@ -408,6 +543,7 @@ export function ModelSelector({
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
+  const navigate = useNavigate();
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
 
   const selected = value ?? uncontrolled;
@@ -467,7 +603,9 @@ export function ModelSelector({
     const found = optionById.get(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
-      return found ? { ...found, description: desc } : { id: selected, name: selected, description: desc };
+      return found
+        ? { ...found, description: desc }
+        : { id: selected, name: selected, description: desc };
     }
     return found ?? { id: selected, name: selected };
   }, [selected, optionById, activeGgufVariant]);
@@ -491,6 +629,11 @@ export function ModelSelector({
     void onPickLocalModel?.();
   }
 
+  function handleBrowseHub() {
+    setOpen(false);
+    void navigate({ to: "/hub", search: { tab: "discover" } });
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -503,6 +646,7 @@ export function ModelSelector({
         dataTour={triggerDataTour}
       />
       <ModelSelectorContent
+        open={open}
         models={models}
         loraModels={loraModels}
         externalModels={externalModels}
@@ -511,6 +655,7 @@ export function ModelSelector({
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
+        onBrowseHub={handleBrowseHub}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}
@@ -581,7 +726,7 @@ function ExternalModelPicker({
           className="h-9 pl-8"
         />
       </div>
-      <div className="max-h-64 overflow-y-auto">
+      <div className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5">
         <div className="space-y-2 p-1">
           {grouped.length === 0 ? (
             <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">

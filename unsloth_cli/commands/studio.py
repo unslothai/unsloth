@@ -24,6 +24,13 @@ import typer
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 
+def _enable_verbose_access_logs() -> None:
+    """Restore every per-request access log by disabling the burst dedup and the
+    quiet-poll heartbeat. Inherited by the spawned/re-exec'd server via the env."""
+    os.environ["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] = "0"
+    os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
+
+
 # Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then
 # sys.prefix inference (so a direct call to <root>/bin/unsloth resolves after
 # the installer's env var has expired), then legacy ~/.unsloth/studio.
@@ -251,6 +258,28 @@ _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_RUN = 4  # pre-PR hardcoded for `unsloth studio run`
 _PARALLEL_DEFAULT_PLAIN = 1  # pre-PR effective for plain `unsloth studio`
+
+
+def _resolve_secure(secure: bool, not_secure: bool) -> bool:
+    """Reconcile the deprecated --not-secure alias with --secure/--no-secure.
+
+    Typer parses --secure and --not-secure as independent options, so the alias
+    cannot lean on Click's last-wins ordering the way --secure/--no-secure do.
+    Restore that ordering from argv: --not-secure only forces secure off when it
+    is the last of the secure flags on the command line, matching the backend's
+    BooleanOptionalAction.
+    """
+    if not not_secure:
+        return secure
+    last_secure = max(
+        (i for i, a in enumerate(sys.argv) if a in ("--secure", "--no-secure")),
+        default = -1,
+    )
+    last_not_secure = max(
+        (i for i, a in enumerate(sys.argv) if a == "--not-secure"),
+        default = -1,
+    )
+    return secure if last_secure > last_not_secure else False
 
 
 def _iter_editable_studio_source_roots(venv_dir: Path):
@@ -661,8 +690,36 @@ def studio_default(
         "--cloudflare/--no-cloudflare",
         help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 (default on).",
     ),
+    secure: bool = typer.Option(
+        False,
+        "--secure/--no-secure",
+        help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
+        "if the tunnel can't start. Without it, --no-secure also serves the raw "
+        "0.0.0.0 port, which is reachable from anywhere on the network.",
+    ),
+    not_secure: bool = typer.Option(
+        False,
+        "--not-secure",
+        hidden = True,
+        help = "Deprecated alias for --no-secure.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help = "Log every API request, including the high-frequency polling that is "
+        "deduplicated by default.",
+    ),
+    enable_tools: Optional[bool] = typer.Option(
+        None,
+        "--enable-tools/--disable-tools",
+        help = "Force server-side tools (web search, code execution) on or off for "
+        "every request. Default: on for every bind, with the per-chat UI toggle honored.",
+    ),
 ):
     """Launch the Unsloth Studio server."""
+    # Back-compat: --not-secure is a deprecated alias for --no-secure.
+    secure = _resolve_secure(secure, not_secure)
     # Runs before every subcommand (run/setup/update/...).
     _ensure_studio_env_exported()
     if ctx.invoked_subcommand is not None:
@@ -688,7 +745,64 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
+        # Same for --secure: it would not reach the subcommand.
+        if secure:
+            typer.echo(
+                f"Error: --secure on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} --secure ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
+        # Same for --verbose: it would not reach the subcommand.
+        if verbose:
+            typer.echo(
+                f"Error: --verbose on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} --verbose ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
+        # Same for --enable-tools/--disable-tools: it would not reach the subcommand.
+        if enable_tools is not None:
+            _tool_flag = "--enable-tools" if enable_tools else "--disable-tools"
+            typer.echo(
+                f"Error: {_tool_flag} on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} {_tool_flag} ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
+        # Same for --api-only: dropping it here would silently serve the UI.
+        if api_only:
+            typer.echo(
+                f"Error: --api-only on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} --api-only ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
         return
+
+    # --secure requires the tunnel; force a loopback bind.
+    if secure:
+        if not cloudflare:
+            typer.echo(
+                "Error: --secure requires the Cloudflare tunnel; do not combine it "
+                "with --no-cloudflare.",
+                err = True,
+            )
+            raise typer.Exit(2)
+        host = "127.0.0.1"
+
+    # --verbose restores the per-request access logs that are suppressed by
+    # default (plain-server path; the `run` subcommand has its own --verbose).
+    if verbose:
+        _enable_verbose_access_logs()
 
     # Use the studio venv if it exists and we aren't already in it.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
@@ -724,6 +838,12 @@ def studio_default(
                 args.append("--api-only")
             # Forward the explicit polarity (matches run.py's BooleanOptionalAction).
             args.append("--cloudflare" if cloudflare else "--no-cloudflare")
+            args.append("--secure" if secure else "--no-secure")
+            # Forward an explicit tool policy; None -> run.py leaves it unset (tools on).
+            if enable_tools is True:
+                args.append("--enable-tools")
+            elif enable_tools is False:
+                args.append("--disable-tools")
             # On Windows os.execvp keeps the parent alive, so Ctrl+C
             # would orphan the child; use Popen+wait instead.
             if sys.platform == "win32":
@@ -766,6 +886,8 @@ def studio_default(
         api_only = api_only,
         llama_parallel_slots = parallel,
         cloudflare = cloudflare,
+        secure = secure,
+        enable_tools = enable_tools,
     )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
@@ -783,6 +905,8 @@ def studio_default(
     except KeyboardInterrupt:
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
+    finally:
+        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
 
 
 # ── unsloth studio run ───────────────────────────────────────────────
@@ -896,6 +1020,13 @@ def run(
     gguf_variant: Optional[str] = typer.Option(
         None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help = "Log every API request, including the high-frequency polling that is "
+        "deduplicated by default.",
+    ),
     max_seq_length: int = typer.Option(
         0,
         "--max-seq-length",
@@ -910,20 +1041,26 @@ def run(
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
     # `-f` removed (clustered `-fa`/`-fit*`); studio_default keeps it.
     frontend: Optional[Path] = typer.Option(None, "--frontend"),
+    api_only: bool = typer.Option(
+        False,
+        "--api-only",
+        help = "Serve only the API (no web UI), for a headless model server. "
+        "Pairs with --secure to expose the API over the Cloudflare link alone.",
+    ),
     silent: bool = typer.Option(False, "--silent", "-q"),
     enable_tools: Optional[bool] = typer.Option(
         None,
         "--enable-tools/--disable-tools",
         help = (
-            "Force server-side tools on/off for all requests. "
-            "Default: on for 127.0.0.1, off for 0.0.0.0."
+            "Force server-side tools (web search, code execution) on or off for "
+            "every request. Default: on for every bind."
         ),
     ),
     yes: bool = typer.Option(
         False,
         "--yes",
         "-y",
-        help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
+        help = "Accepted for backward compatibility; the tool policy no longer prompts.",
     ),
     parallel: int = typer.Option(
         _PARALLEL_DEFAULT_RUN,
@@ -942,6 +1079,19 @@ def run(
         True,
         "--cloudflare/--no-cloudflare",
         help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 (default on).",
+    ),
+    secure: bool = typer.Option(
+        False,
+        "--secure/--no-secure",
+        help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
+        "if the tunnel can't start. Without it, --no-secure also serves the raw "
+        "0.0.0.0 port, which is reachable from anywhere on the network.",
+    ),
+    not_secure: bool = typer.Option(
+        False,
+        "--not-secure",
+        hidden = True,
+        help = "Deprecated alias for --no-secure.",
     ),
     tensor_parallel: bool = typer.Option(
         False,
@@ -970,7 +1120,17 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
+    # Back-compat: --not-secure is a deprecated alias for --no-secure.
+    secure = _resolve_secure(secure, not_secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
+
+    # Set before any re-exec so the in-venv server inherits it via the env.
+    # `run --verbose` used to pass through to llama-server (its own -v); keep
+    # that by forwarding --log-verbose so we add Studio logs without dropping it.
+    if verbose:
+        _enable_verbose_access_logs()
+        if not any(a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args):
+            extra_llama_args.append("--log-verbose")
 
     # Promote legacy exact `-m`/`-hfr`/`-f` back into typer params;
     # clusters stay in extras.
@@ -1011,8 +1171,20 @@ def run(
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
 
-    # Resolve tool policy here so the re-exec'd child inherits a
-    # concrete decision and never re-prompts.
+    # --secure requires the tunnel; force a loopback bind so the raw port is never public.
+    if secure:
+        if not cloudflare:
+            typer.echo(
+                "Error: --secure requires the Cloudflare tunnel; do not combine it "
+                "with --no-cloudflare.",
+                err = True,
+            )
+            raise typer.Exit(2)
+        host = "127.0.0.1"
+
+    # Tool policy no longer depends on the bind: tools default on everywhere
+    # (--secure is a loopback tunnel; the operator owns a raw bind). Resolve here
+    # so the re-exec'd child inherits a concrete decision.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
@@ -1058,6 +1230,8 @@ def run(
         args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
         if frontend:
             args.extend(["--frontend", str(frontend)])
+        if api_only:
+            args.append("--api-only")
         if silent:
             args.append("--silent")
         # Forward the resolved tool policy so the child doesn't re-resolve.
@@ -1065,16 +1239,18 @@ def run(
             args.append("--enable-tools")
         else:
             args.append("--disable-tools")
-        # Forward --yes if the parent already cleared the network-bind
-        # prompt, else the child re-prompts.
-        if yes or (enable_tools and is_external_host(host)):
+        # Forward --yes only if the user passed it; resolution no longer prompts.
+        if yes:
             args.append("--yes")
         # Typer claims --parallel outside ctx.args; without this the
         # child reverts to its default and silently drops the value.
         args.extend(["--parallel", str(parallel)])
         # Forward the explicit polarity (same rationale as --load-in-4bit above).
         args.append("--cloudflare" if cloudflare else "--no-cloudflare")
+        args.append("--secure" if secure else "--no-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
+        if verbose:
+            args.append("--verbose")
         # llama-server pass-through extras → child ctx.args → load payload.
         if extra_llama_args:
             args.extend(extra_llama_args)
@@ -1104,8 +1280,13 @@ def run(
         host = host,
         port = port,
         silent = True,
+        api_only = api_only,
         llama_parallel_slots = parallel,
         cloudflare = cloudflare,
+        secure = secure,
+        # Headless serving prints its own URL/API-key banner; the Tauri-only
+        # TAURI_PORT line would corrupt that machine-parseable output.
+        emit_tauri_port = False,
     )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
@@ -1147,6 +1328,7 @@ def run(
             raise typer.Exit(1)
     except BaseException:
         _graceful_shutdown(_server)
+        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
         raise
 
     loaded_model = result.get("model", model)
@@ -1157,39 +1339,45 @@ def run(
     display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
-    # run_server started the tunnel during the silent run above (0.0.0.0 only).
+    # run_server started the tunnel during the silent run above (0.0.0.0 or --secure).
     _cf_url = getattr(app.state, "cloudflare_url", None)
+    # --secure: examples must use the public tunnel URL, not the loopback address.
+    if secure and _cf_url:
+        sdk_base_url = f"{_cf_url}/v1"
 
     # Orange so the tool-policy notice stands out; printed under
     # --silent / --yes too so the policy is never invisible.
     _tool_notice_fg = (217, 119, 87)
     _is_external = is_external_host(host)
-    if _is_external and enable_tools:
+    if not enable_tools:
+        _tool_notice = "Server-side tools are DISABLED (--disable-tools)."
+    elif secure:
         _tool_notice = (
-            f"Server-side tools are ENABLED on {host} (network-reachable). "
-            f"Anyone with the API key can run code on this machine. "
-            f"Do not share the API key."
+            "Server-side tools are ENABLED, reachable via the authenticated "
+            "Cloudflare HTTPS tunnel. Anyone with the API key can run code on "
+            "this machine. Do not share the API key. Pass --disable-tools to turn off."
         )
     elif _is_external:
         _tool_notice = (
-            f"Server-side tools are disabled by default on {host} "
-            f"(network-reachable). Pass --enable-tools to turn on "
-            f"(you will be warned about API-key risk)."
-        )
-    elif enable_tools:
-        _tool_notice = (
-            "Server-side tools are enabled by default for loopback. "
-            "Pass --disable-tools to turn off."
+            "Server-side tools are ENABLED and this port is network-reachable. "
+            "Anyone who can reach it with the API key can run code on this "
+            "machine. Do not share the API key. Pass --disable-tools to turn off."
         )
     else:
-        _tool_notice = "Server-side tools are disabled."
+        _tool_notice = (
+            "Server-side tools are ENABLED for loopback. Pass --disable-tools to turn off."
+        )
 
     if not silent:
         typer.echo("")
         typer.echo("=" * 56)
-        typer.echo(f"  Unsloth Studio running at {base_url}")
-        if _cf_url:
-            typer.echo(f"  Secure link access via Cloudflare: {_cf_url}")
+        if secure and _cf_url:
+            typer.echo(f"  Unsloth Studio running (secure) at {_cf_url}")
+            typer.echo(f"  On this machine only: {base_url}")
+        else:
+            typer.echo(f"  Unsloth Studio running at {base_url}")
+            if _cf_url:
+                typer.echo(f"  Secure link access via Cloudflare: {_cf_url}")
         typer.echo(f"  Model loaded: {loaded_model}{display_variant}")
         if context_length_line:
             typer.echo(context_length_line)
@@ -1224,9 +1412,13 @@ def run(
         typer.echo("")
     else:
         # Silent still prints URL + API key + tool-status policy.
-        typer.echo(f"URL:     {base_url}")
-        if _cf_url:
-            typer.echo(f"Secure link access via Cloudflare: {_cf_url}")
+        if secure and _cf_url:
+            typer.echo(f"URL:     {_cf_url}")
+            typer.echo(f"Local:   {base_url}")
+        else:
+            typer.echo(f"URL:     {base_url}")
+            if _cf_url:
+                typer.echo(f"Secure link access via Cloudflare: {_cf_url}")
         if context_length_line:
             typer.echo(context_length_line.strip())
         typer.echo(f"API Key: {api_key}")
@@ -1243,6 +1435,8 @@ def run(
     except KeyboardInterrupt:
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
+    finally:
+        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
 
 
 # ── unsloth studio stop ───────────────────────────────────────────────

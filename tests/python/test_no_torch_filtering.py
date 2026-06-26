@@ -1,12 +1,4 @@
-"""Tests for install_python_stack NO_TORCH / IS_MACOS filtering logic.
-
-Covers:
-- _filter_requirements unit tests (synthetic + REAL requirements files)
-- NO_TORCH / IS_MACOS / IS_WINDOWS env var parsing
-- Subprocess-mock of install_python_stack() to verify overrides/triton/filtering
-  actually happen (or get skipped) under each platform/config combination
-- VCS URL and environment marker edge cases in filtering
-"""
+"""Tests for install_python_stack NO_TORCH / IS_MACOS requirement filtering."""
 
 from __future__ import annotations
 
@@ -21,7 +13,7 @@ from unittest import mock
 
 import pytest
 
-# Add the studio directory so we can import install_python_stack
+# Add the studio directory so install_python_stack is importable.
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 
@@ -59,7 +51,6 @@ class TestFilterRequirements:
         )
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
-        # Only numpy should remain (non-blank lines)
         non_blank = [l.strip() for l in lines if l.strip()]
         assert non_blank == ["numpy"], f"Expected only numpy, got: {non_blank}"
 
@@ -80,7 +71,7 @@ class TestFilterRequirements:
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
-        # Comment starts with "#", not "torch-stoi", so it's preserved
+        # Comment lines start with "#", so they are preserved.
         assert len(non_blank) == 2
         assert non_blank[0].startswith("#")
         assert non_blank[1] == "numpy"
@@ -139,7 +130,7 @@ class TestFilterRequirements:
         )
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         content = Path(result).read_text(encoding = "utf-8")
-        # Blank lines should be preserved (not stripped)
+        # Blank lines must be preserved.
         assert "\n\n" in content or content.count("\n") >= 3
 
     def test_stacked_windows_and_no_torch_filters(self, tmp_path):
@@ -147,14 +138,13 @@ class TestFilterRequirements:
         req = self._write_req(
             tmp_path,
             """\
-            open_spiel
             triton_kernels
             torch-stoi
             timm
             numpy
         """,
         )
-        # First filter Windows packages, then NO_TORCH packages
+        # Filter Windows packages, then NO_TORCH packages.
         intermediate = ips._filter_requirements(req, ips.WINDOWS_SKIP_PACKAGES)
         result = ips._filter_requirements(Path(intermediate), ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
@@ -203,7 +193,7 @@ class TestFilterRequirements:
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
-        # The git+ URL doesn't start with any skip package, so it is preserved
+        # git+ URL starts with no skip package, so it is preserved.
         assert len(non_blank) == 2, f"git+ URL should be preserved, got: {non_blank}"
 
 
@@ -231,13 +221,13 @@ class TestRealRequirementsFiltering:
         filtered = self._non_blank_non_comment(Path(result))
         original = self._non_blank_non_comment(EXTRAS_TXT)
 
-        # These must be gone
-        for pkg in ["torch-stoi", "timm", "openai-whisper", "transformers-cfg"]:
+        # Every NO_TORCH skip package present in extras.txt must be gone.
+        for pkg in ips.NO_TORCH_SKIP_PACKAGES:
             assert not any(
                 l.lower().startswith(pkg) for l in filtered
             ), f"{pkg} should be removed from extras.txt"
 
-        # Everything else must remain
+        # Everything else must remain.
         expected = [
             l
             for l in original
@@ -364,9 +354,7 @@ class TestIsMacosConstant:
 
 
 class TestInstallPythonStackSubprocessMock:
-    """Monkeypatch subprocess.run to capture all pip/uv commands,
-    then verify which requirements files are used/skipped under
-    different NO_TORCH / IS_MACOS / IS_WINDOWS configurations."""
+    """Mock subprocess.run to verify which req files are used/skipped per config."""
 
     @pytest.fixture(autouse = True)
     def _check_req_files(self):
@@ -383,10 +371,7 @@ class TestInstallPythonStackSubprocessMock:
         *,
         skip_base: bool = True,
     ):
-        """Run install_python_stack() with mocked subprocess, capturing all commands.
-
-        Returns a list of string-joined commands (each element is ' '.join(cmd)).
-        """
+        """Run install_python_stack() with mocked subprocess; return joined commands."""
         captured_cmds: list[list[str]] = []
 
         def mock_run(cmd, **kw):
@@ -471,11 +456,11 @@ class TestInstallPythonStackSubprocessMock:
     # -- Normal Linux path (NO_TORCH=False, IS_MACOS=False, IS_WINDOWS=False) --
 
     def test_normal_linux_includes_overrides(self):
-        """Normal Linux: overrides.txt IS called."""
+        """Normal Linux: torchao override step runs (via --reinstall, not overrides.txt)."""
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = False)
-        assert self._cmds_contain_file(
-            cmds, "overrides.txt"
-        ), "overrides.txt should be called on normal Linux"
+        assert any(
+            "--reinstall" in cmd for cmd in cmds
+        ), "torchao override step (--reinstall) should be called on normal Linux"
 
     def test_normal_linux_includes_triton(self):
         """Normal Linux: triton-kernels.txt IS called."""
@@ -508,12 +493,7 @@ class TestInstallPythonStackSubprocessMock:
         ), "triton-kernels.txt should be skipped on Windows even without NO_TORCH"
 
     def test_windows_only_includes_overrides(self):
-        """Windows (without NO_TORCH): overrides IS called (via filtered temp file).
-
-        On Windows, all req files go through _filter_requirements(WINDOWS_SKIP_PACKAGES),
-        so the command uses a temp file, not overrides.txt directly. We check for
-        --reinstall (uv translation of --force-reinstall) which is unique to overrides.
-        """
+        """Windows (no NO_TORCH): overrides runs via filtered temp file (check --reinstall)."""
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = True)
         assert any(
             "--reinstall" in cmd for cmd in cmds

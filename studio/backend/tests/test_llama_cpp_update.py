@@ -84,12 +84,7 @@ def _write_install(
     asset: str | None = None,
     release_tag: str | None = None,
 ) -> str:
-    """Create a fake prebuilt install tree and return the llama-server path.
-
-    ``asset`` is the bundle filename recorded in the marker; omit it to model an
-    older marker that predates asset-based ROCm forwarding (backward compat).
-    ``release_tag`` is the full release tag (e.g. a ``b9596-mix-<sha>`` mix
-    build); defaults to ``tag`` for a plain prebuilt."""
+    """Create a fake prebuilt install and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
     bin_dir.mkdir(parents = True, exist_ok = True)
     binary = bin_dir / "llama-server"
@@ -293,6 +288,33 @@ def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
     assert probes == {"resolve": 0, "version": 0}
 
 
+def test_installed_version_skips_probe_while_job_runs(monkeypatch, tmp_path):
+    # Markerless build: get_installed_llama_version falls back to exec'ing
+    # `llama-server --version`. While the updater swaps the tree that exec can
+    # fail the installer's os.replace on Windows, so the About-panel probe must
+    # be skipped (return None) exactly like get_update_status's source probe.
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")  # markerless: no UNSLOTH_PREBUILT_INFO.json
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    probed = {"n": 0}
+
+    def _count_version(b):
+        probed["n"] += 1
+        return 9585
+
+    monkeypatch.setattr(upd, "_installed_build_number", _count_version)
+
+    with upd._job_lock:
+        upd._job["state"] = upd._JOB_RUNNING
+    assert upd.get_installed_llama_version() is None
+    assert probed["n"] == 0  # never exec'd the binary mid-swap
+
+    upd._reset_job_for_tests()  # back to idle -> probe runs
+    assert upd.get_installed_llama_version() == "b9585"
+    assert probed["n"] == 1
+
+
 def test_status_update_available(monkeypatch, tmp_path):
     binary = _write_install(tmp_path, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
@@ -409,7 +431,6 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert res["job"]["from_tag"] == "b9493"
     assert res["job"]["progress"] == 0.0
 
-    # Wait for the background worker.
     deadline = time.time() + 10
     while time.time() < deadline:
         job = upd.get_update_status()["job"]
@@ -418,15 +439,42 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
         time.sleep(0.05)
     assert job["state"] == "success", job
     assert job["to_tag"] == "b9518"
-    # Installer was invoked with the resolved install dir + latest + repo.
+    assert job["reload_required"] is False
     assert "--install-dir" in captured["cmd"]
     assert str(install_dir) in captured["cmd"]
     assert "--llama-tag" in captured["cmd"] and "latest" in captured["cmd"]
     assert "unslothai/llama.cpp" in captured["cmd"]
-    # Progress lines were parsed and success pins progress at 1.0.
     assert job["progress"] == 1.0
-    # The worker asks the installer for fine-grained progress milestones.
     assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
+
+
+def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
+    )
+
+    def _on_start(cmd):
+        _write_install(install_dir, "b9596", release_tag = "b9596-mix-e6f2453")
+
+    _patch_installer_popen(monkeypatch, on_start = _on_start)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "success", job
+    assert job["to_tag"] == "b9596-mix-e6f2453"
+    assert "Updated llama.cpp to b9596-mix-e6f2453." in job["message"]
 
 
 def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
@@ -596,7 +644,7 @@ def test_start_update_installer_missing_refuses(monkeypatch, tmp_path):
 
 
 class _FakeBackend:
-    """Minimal stand-in for LlamaCppBackend's update-coordination surface."""
+    """Fake backend for update coordination."""
 
     def __init__(self):
         import threading
@@ -632,7 +680,6 @@ def test_update_sets_maintenance_flag_and_unloads(monkeypatch, tmp_path):
     seen = {}
 
     def _on_start(cmd):
-        # The maintenance flag must be set while the installer runs.
         seen["flag_during_install"] = backend._llama_update_in_progress
         _write_install(install_dir, "b9518")
 
@@ -647,8 +694,8 @@ def test_update_sets_maintenance_flag_and_unloads(monkeypatch, tmp_path):
         time.sleep(0.05)
 
     assert backend.unloaded is True
+    assert upd.get_update_status()["job"]["reload_required"] is True
     assert seen.get("flag_during_install") is True
-    # Cleared in the finally so model loads work again after the swap.
     assert backend._llama_update_in_progress is False
 
 
@@ -874,3 +921,49 @@ def test_start_update_marked_refuses_when_not_behind(monkeypatch, tmp_path):
     res = upd.start_update()
     assert res["started"] is False
     assert res["reason"] == "up_to_date"
+
+
+def test_status_update_available_includes_size(monkeypatch, tmp_path):
+    # Marker (prebuilt) update path attaches the download size of the asset the
+    # banner would fetch.
+    binary = _write_install(tmp_path, "b9493", asset = "app-b9493-linux-x64-cuda13-newer.tar.gz")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        freshness,
+        "latest_release_assets",
+        lambda repo, *, force_refresh = False: {
+            "app-b9518-linux-x64-cuda13-newer.tar.gz": 88_000_000
+        },
+    )
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is True
+    assert st["update_size_bytes"] == 88_000_000
+
+
+def test_status_source_build_includes_update_size(monkeypatch, tmp_path):
+    # #6338 P3: a source build offered a prebuilt must carry the asset size too.
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")  # no marker -> source build
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(
+        monkeypatch,
+        repo = "unslothai/llama.cpp",
+        release_tag = "b9585",
+        asset = "app-b9585-linux-x64-cpu.tar.gz",
+    )
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: None)
+    monkeypatch.setattr(
+        upd,
+        "latest_release_assets",
+        lambda repo, *, force_refresh = False: (
+            {"app-b9585-linux-x64-cpu.tar.gz": 77_000_000}
+            if repo == "unslothai/llama.cpp"
+            else None
+        ),
+    )
+    st = upd.get_update_status()
+    assert st["source_build"] is True
+    assert st["update_available"] is True
+    assert st["update_size_bytes"] == 77_000_000

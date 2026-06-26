@@ -4,6 +4,7 @@
 import { usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
 import {
+  type ReactNode,
   type RefObject,
   memo,
   useCallback,
@@ -23,7 +24,13 @@ import {
   DownloadedList,
   InventoryWarningRow,
 } from "./models-catalog-lists";
-import { CATALOG_ROW_HEIGHT_PX } from "./models-catalog-rows";
+import {
+  type AllModelsView,
+  type InventorySort,
+  RESULT_GRID_ROW_HEIGHT_PX,
+  RESULT_ROW_HEIGHT_PX,
+  RESULT_SPLIT_ROW_HEIGHT_PX,
+} from "./models-table";
 
 export interface ModelsCatalogState {
   tab: ModelsTab;
@@ -72,10 +79,22 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   state,
   pagination,
   handlers,
+  header,
+  downloadedHeader,
+  suppressEmptyState = false,
+  resetScrollKey,
+  discoverView,
+  inventorySort,
 }: {
   state: ModelsCatalogState;
   pagination: ModelsCatalogPagination;
   handlers: ModelsCatalogHandlers;
+  header?: ReactNode;
+  downloadedHeader?: ReactNode;
+  suppressEmptyState?: boolean;
+  resetScrollKey?: string;
+  discoverView: AllModelsView;
+  inventorySort: InventorySort;
 }) {
   const {
     tab,
@@ -97,7 +116,6 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     scannedCount,
     loadingIntentCount,
     hasMore,
-    manualFetchAvailable,
     hasActiveFilters,
   } = state;
   const { scrollRef, sentinelRef, isLoadingMore } = pagination;
@@ -111,18 +129,21 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   } = handlers;
   const [scrolled, setScrolled] = useState(false);
   const [streamingActive, setStreamingActive] = useState(false);
+  const [discoverHeaderHeight, setDiscoverHeaderHeight] = useState(0);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const lastHeaderHeightRef = useRef(0);
+  const previousResetScrollKeyRef = useRef(resetScrollKey);
   const previousScannedCountRef = useRef(scannedCount);
   const previousLoadingIntentRef = useRef(loadingIntentCount);
   const discoverScrollRef = useRef<HTMLDivElement>(null);
   const downloadedScrollRef = useRef<HTMLDivElement>(null);
-  const [discoverScrollEl, setDiscoverScrollEl] = useState<HTMLDivElement | null>(
-    null,
-  );
+  const [discoverScrollEl, setDiscoverScrollEl] =
+    useState<HTMLDivElement | null>(null);
   const [downloadedScrollEl, setDownloadedScrollEl] =
     useState<HTMLDivElement | null>(null);
   const activeTabRef = useRef(tab);
-  // Per-tab scroll positions. Some browsers drop the hidden pane's scrollTop, so
-  // mirror it live via the scroll listener and restore on tab entry.
+  // Per-tab scroll positions: some browsers drop the hidden pane's scrollTop,
+  // so mirror it live via the scroll listener and restore on tab entry.
   const savedScrollTopsRef = useRef<Record<ModelsTab, number>>({
     discover: 0,
     downloaded: 0,
@@ -143,9 +164,9 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     setDownloadedScrollEl(node);
   }, []);
 
-  // Restore the incoming pane's scrollTop and rebind scrollRef. Don't read scrollTop
-  // off the outgoing pane: overflow toggling can clamp it to 0 before this runs, so
-  // trust the live listener mirror instead and avoid that race.
+  // Restore the incoming pane's scrollTop and rebind scrollRef. Don't read
+  // scrollTop off the outgoing pane: overflow toggling can clamp it to 0 before
+  // this runs, so trust the live listener mirror instead and avoid that race.
   useLayoutEffect(() => {
     let restoreFrame: number | null = null;
     const previousTab = activeTabRef.current;
@@ -178,7 +199,9 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     activeTabRef.current = tab;
     assignRef(scrollRef, nextEl);
     const nextScrolled = (nextEl?.scrollTop ?? 0) > 0;
-    setScrolled((current) => (current === nextScrolled ? current : nextScrolled));
+    setScrolled((current) =>
+      current === nextScrolled ? current : nextScrolled,
+    );
     return () => {
       if (restoreFrame !== null) {
         window.cancelAnimationFrame(restoreFrame);
@@ -235,6 +258,57 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     [scrollRef],
   );
 
+  useLayoutEffect(() => {
+    if (resetScrollKey === previousResetScrollKeyRef.current) {
+      return;
+    }
+    previousResetScrollKeyRef.current = resetScrollKey;
+    const el = discoverScrollRef.current;
+    if (el) {
+      el.scrollTop = 0;
+    }
+    savedScrollTopsRef.current.discover = 0;
+  }, [resetScrollKey]);
+
+  useLayoutEffect(() => {
+    if (tab !== "discover") {
+      return;
+    }
+    const node = headerRef.current;
+    if (!node) {
+      lastHeaderHeightRef.current = 0;
+      setDiscoverHeaderHeight((current) => (current === 0 ? current : 0));
+      return;
+    }
+    let frame: number | null = null;
+    const measure = () => {
+      frame = null;
+      const next = node.offsetHeight;
+      if (next !== lastHeaderHeightRef.current) {
+        lastHeaderHeightRef.current = next;
+        setDiscoverHeaderHeight(next);
+      }
+    };
+    const schedule = () => {
+      if (frame !== null) {
+        return;
+      }
+      frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(schedule);
+      observer.observe(node);
+    }
+    return () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+      observer?.disconnect();
+    };
+  }, [tab, header]);
+
   useEffect(() => {
     // Only the Discover tab drives the streaming loading bar.
     if (tab !== "discover") {
@@ -257,7 +331,9 @@ export const ModelsCatalog = memo(function ModelsCatalog({
       nextActive = true;
       linger = true;
     }
-    setStreamingActive((current) => (current === nextActive ? current : nextActive));
+    setStreamingActive((current) =>
+      current === nextActive ? current : nextActive,
+    );
     const timer = linger
       ? window.setTimeout(() => setStreamingActive(false), 1400)
       : null;
@@ -269,31 +345,47 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   }, [tab, isLoading, isLoadingMore, scannedCount, loadingIntentCount]);
 
   const showDiscoverLoading = tab === "discover" && streamingActive;
-  // overflow-y stays `auto` on BOTH panes: toggling to `hidden` would clamp the
-  // inactive pane's scrollTop to 0 and corrupt our mirror. Visibility +
+  // overflow-y stays `auto` on BOTH panes: toggling to `hidden` clamps the
+  // inactive pane's scrollTop to 0 and corrupts the mirror; visibility +
   // pointer-events-none hides it while preserving native scroll state.
+  // Non-split reserves an equal `both-edges` gutter so the centered 1100px
+  // column stays symmetric and aligned with the top bar; split mode pins a
+  // narrow master left, so it reserves only the right (divider) gutter.
   const scrollPaneClassName =
-    "absolute inset-0 min-h-0 overflow-y-auto pb-6 pl-4 pr-3 pt-0 [overflow-anchor:none] [scrollbar-gutter:stable] [scrollbar-width:thin]";
+    "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] " +
+    (discoverView === "split"
+      ? "[scrollbar-gutter:stable]"
+      : "[scrollbar-gutter:stable_both-edges]");
+  // Split mode keeps the top bar's left padding to align the list header but
+  // tightens the right padding so compact rows run wider toward the divider.
+  const splitView = discoverView === "split";
+  const discoverColumnClassName = splitView
+    ? "mx-auto w-full max-w-[1100px] pl-5 pr-2 sm:pl-8"
+    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
+  const downloadedColumnClassName = splitView
+    ? "mx-auto w-full max-w-[1100px] pl-5 pr-2 sm:pl-8"
+    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
   const discoverActive = tab === "discover";
   const downloadedActive = tab === "downloaded";
   const discoverInactiveHeight = Math.max(
     savedScrollHeightsRef.current.discover,
-    discoverRows.length * CATALOG_ROW_HEIGHT_PX,
+    (discoverView === "two"
+      ? Math.ceil(discoverRows.length / 2)
+      : discoverRows.length) *
+      (discoverView === "grid"
+        ? RESULT_GRID_ROW_HEIGHT_PX
+        : discoverView === "split"
+          ? RESULT_SPLIT_ROW_HEIGHT_PX
+          : RESULT_ROW_HEIGHT_PX) +
+      lastHeaderHeightRef.current,
   );
   const downloadedInactiveHeight = Math.max(
     savedScrollHeightsRef.current.downloaded,
-    (cachedRows.length + localRows.length) * CATALOG_ROW_HEIGHT_PX,
+    (cachedRows.length + localRows.length) * RESULT_GRID_ROW_HEIGHT_PX,
   );
 
   return (
     <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      <div
-        aria-hidden="true"
-        className={cn(
-          "mx-5 shrink-0 border-t transition-colors",
-          scrolled ? "border-border" : "border-transparent",
-        )}
-      />
       {/* Banner sits outside the scroll container so toggling it never shifts virtualized rows. */}
       {downloadedActive && inventoryWarning && (
         <InventoryWarningRow
@@ -302,6 +394,11 @@ export const ModelsCatalog = memo(function ModelsCatalog({
         />
       )}
       <div className="relative min-h-0 flex-1">
+        <div
+          aria-hidden="true"
+          data-scrolled={scrolled || undefined}
+          className="hub-scroll-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-7"
+        />
         <div
           ref={setDiscoverScrollNode}
           data-hub-scroll="true"
@@ -313,29 +410,33 @@ export const ModelsCatalog = memo(function ModelsCatalog({
           )}
         >
           {discoverActive ? (
-            <DiscoverList
-              discoverRows={discoverRows}
-              selectedId={selectedId}
-              onSelect={onSelect}
-              isLoading={isLoading}
-              query={query}
-              scrollElement={discoverScrollEl}
-              sentinelRef={sentinelRef}
-              activeCheckpoint={activeCheckpoint}
-              searchError={searchError}
-              online={online}
-              isDataset={isDataset}
-              deviceType={deviceType}
-              scannedCount={scannedCount}
-              isLoadingMore={isLoadingMore}
-              hasMore={hasMore}
-              manualFetchAvailable={manualFetchAvailable}
-              hasActiveFilters={hasActiveFilters}
-              onFetchMore={onFetchMore}
-              onClearFilters={onClearFilters}
-              onRetry={onRetry}
-              onSwitchDevice={onSwitchDevice}
-            />
+            <div className={discoverColumnClassName}>
+              {header ? <div ref={headerRef}>{header}</div> : null}
+              <DiscoverList
+                discoverRows={discoverRows}
+                onSelect={onSelect}
+                isLoading={isLoading}
+                query={query}
+                scrollElement={discoverScrollEl}
+                scrollMargin={discoverHeaderHeight}
+                suppressEmptyState={suppressEmptyState}
+                sentinelRef={sentinelRef}
+                searchError={searchError}
+                online={online}
+                isDataset={isDataset}
+                deviceType={deviceType}
+                scannedCount={scannedCount}
+                isLoadingMore={isLoadingMore}
+                hasMore={hasMore}
+                hasActiveFilters={hasActiveFilters}
+                onFetchMore={onFetchMore}
+                onClearFilters={onClearFilters}
+                onRetry={onRetry}
+                onSwitchDevice={onSwitchDevice}
+                view={discoverView}
+                selectedId={selectedId}
+              />
+            </div>
           ) : (
             <div
               aria-hidden="true"
@@ -354,22 +455,32 @@ export const ModelsCatalog = memo(function ModelsCatalog({
           )}
         >
           {downloadedActive ? (
-            <DownloadedList
-              cachedRows={cachedRows}
-              localRows={localRows}
-              selectedId={selectedId}
-              onSelect={onSelect}
-              downloadedReady={downloadedReady}
-              inventoryError={inventoryError}
-              query={query}
-              scrollElement={downloadedScrollEl}
-              activeCheckpoint={activeCheckpoint}
-              activeGgufVariant={activeGgufVariant}
-              isDataset={isDataset}
-              inventoryTokens={inventoryTokens}
-              deviceType={deviceType}
-              onInventoryChange={onInventoryChange}
-            />
+            <div className={downloadedColumnClassName}>
+              {downloadedHeader ? (
+                <div className="flex flex-col gap-3 pt-6">
+                  {downloadedHeader}
+                </div>
+              ) : null}
+              <DownloadedList
+                cachedRows={cachedRows}
+                localRows={localRows}
+                selectedId={selectedId}
+                onSelect={onSelect}
+                downloadedReady={downloadedReady}
+                inventoryError={inventoryError}
+                query={query}
+                scrollElement={downloadedScrollEl}
+                activeCheckpoint={activeCheckpoint}
+                activeGgufVariant={activeGgufVariant}
+                isDataset={isDataset}
+                inventoryTokens={inventoryTokens}
+                deviceType={deviceType}
+                compact={splitView}
+                columns={discoverView === "two" ? 2 : 1}
+                sort={inventorySort}
+                onInventoryChange={onInventoryChange}
+              />
+            </div>
           ) : (
             <div
               aria-hidden="true"

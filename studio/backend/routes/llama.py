@@ -30,6 +30,7 @@ class LlamaUpdateJob(BaseModel):
     message: str = ""
     from_tag: Optional[str] = None
     to_tag: Optional[str] = None
+    reload_required: Optional[bool] = None
     error: Optional[str] = None
     progress: Optional[float] = Field(None, description = "0..1 while running, 1 on success.")
     started_at: Optional[str] = None
@@ -54,6 +55,9 @@ class LlamaUpdateStatusResponse(BaseModel):
     age_days: Optional[int] = None
     source_build: bool = Field(
         False, description = "True when there is no marker (source build) but a prebuilt is offered."
+    )
+    update_size_bytes: Optional[int] = Field(
+        None, description = "Download size of the prebuilt Update would fetch, in bytes."
     )
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 
