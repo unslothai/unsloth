@@ -255,6 +255,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
         lr_scheduler_type = Scheduler()
         max_length = 321
         max_steps = 10
+        num_train_epochs = 3.0
         save_steps = 500
         save_strategy = "no"
         warmup_ratio = 0.1
@@ -267,6 +268,8 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
     assert args.eval_steps == 0
     assert args.lr_scheduler_type == "cosine"
     assert args.max_seq_length == 321
+    assert args.num_train_epochs == 3
+    assert type(args.num_train_epochs) is int
     assert args.save_steps == 0
     assert args.warmup_steps == 1
     assert args._unsloth_mlx_warmup_steps_explicit is False

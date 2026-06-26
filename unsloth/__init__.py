@@ -281,6 +281,14 @@ if _IS_MLX:
     def _normalize_mlx_training_value(key, value):
         if key == "eval_steps" and value is None:
             return 0
+        if key == "num_train_epochs" and value is not None and not isinstance(value, bool):
+            try:
+                epochs = float(value)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if epochs.is_integer():
+                    return int(epochs)
         if key == "lr_scheduler_type" and hasattr(value, "value"):
             return value.value
         if key != "optim":
