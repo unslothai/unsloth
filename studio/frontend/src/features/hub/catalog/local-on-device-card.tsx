@@ -210,7 +210,11 @@ export function LocalOnDeviceCard({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
-  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<{
+    repoId: string;
+    variant: string | null;
+    available: boolean;
+  } | null>(null);
   const hfToken = useHfTokenStore((s) => s.token);
   // Whether HuggingFace is reachable; the on-select update check is skipped
   // entirely when offline (no wasted request, no stale "update available").
@@ -269,16 +273,6 @@ export function LocalOnDeviceCard({
 
   const canDelete =
     source === "hf_cache" && !!repoId && !isActive && !isLoading;
-  // The Update action appears ONLY when a newer revision is actually detected
-  // (`updateAvailable`, fetched on-select below) — never on up-to-date models,
-  // and never for the currently-loaded model. It renders as the prominent
-  // labeled amber pill (`emphasized` is always true at this point).
-  const canUpdate =
-    source === "hf_cache" &&
-    !!repoId &&
-    !isActive &&
-    !isLoading &&
-    updateAvailable;
   const variants = currentVariantState.variants;
   const sortedVariants = useMemo(
     () =>
@@ -338,21 +332,32 @@ export function LocalOnDeviceCard({
         )
       : false,
   );
+  const updateTargetVariant = needsVariantSelection ? selectedQuant : null;
+  const updateAvailable =
+    updateStatus?.repoId === repoId &&
+    updateStatus.variant === updateTargetVariant &&
+    updateStatus.available;
+  const canUpdate =
+    online &&
+    source === "hf_cache" &&
+    !!repoId &&
+    !isActive &&
+    !isLoading &&
+    !updateJobActive &&
+    updateAvailable;
   useEffect(() => {
-    // Skip the remote check entirely when offline (no wasted request / 6s wait);
-    // canUpdate also requires `online`, so a stale "available" can't linger. The
-    // check re-runs when connectivity returns (`online` is in the deps). Only the
-    // async resolution updates state — canUpdate's source/repoId checks keep the
-    // button hidden for non-cache models without a synchronous reset here.
-    if (!online || source !== "hf_cache" || !repoId) return;
+    if (!online || source !== "hf_cache" || !repoId) {
+      setUpdateStatus(null);
+      return;
+    }
     let canceled = false;
-    const variant = needsVariantSelection ? selectedQuant ?? undefined : undefined;
-    getUpdateStatus(repoId, variant, hfToken || undefined)
+    const variant = updateTargetVariant;
+    getUpdateStatus(repoId, variant ?? undefined, hfToken || undefined)
       .then((available) => {
-        if (!canceled) setUpdateAvailable(available);
+        if (!canceled) setUpdateStatus({ repoId, variant, available });
       })
       .catch(() => {
-        if (!canceled) setUpdateAvailable(false);
+        if (!canceled) setUpdateStatus(null);
       });
     return () => {
       canceled = true;
@@ -362,8 +367,7 @@ export function LocalOnDeviceCard({
     online,
     source,
     repoId,
-    needsVariantSelection,
-    selectedQuant,
+    updateTargetVariant,
     hfToken,
     updateJobActive,
   ]);
@@ -523,7 +527,7 @@ export function LocalOnDeviceCard({
               {canUpdate && (
                 <CardUpdateButton
                   label={`Update ${repoId}`}
-                  emphasized={updateAvailable}
+                  emphasized
                   onClick={() => setUpdateOpen(true)}
                 />
               )}

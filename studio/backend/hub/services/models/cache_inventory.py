@@ -36,6 +36,7 @@ from hub.services.models.common import (
     _prefer_complete_larger,
     _runtime_for_format,
 )
+from hub.utils.gguf import extract_quant_label
 
 logger = get_logger(__name__)
 
@@ -47,15 +48,12 @@ _REPO_SIZE_NEG_TTL = 60.0
 _MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _repo_size_cache_lock = threading.Lock()
 
-# Short in-process TTL cache for per-repo GGUF remote update checks, mirroring
-# _update_check_cache in routes/models.py: repo_id -> (monotonic stamp, result,
-# local-blob fingerprint). The fingerprint invalidates a cached result when the
-# repo's local MAIN gguf blobs change (download / delete) inside the TTL window;
-# expired entries are pruned each pass so the dict stays bounded to repos seen
-# within the last _GGUF_UPDATE_CHECK_TTL seconds.
+# Short in-process TTL cache for per-GGUF remote update checks. The key includes
+# repo, variant, and a token fingerprint; the value's local-blob fingerprint
+# invalidates a cached result when local MAIN GGUF blobs change inside the TTL.
 _GGUF_UPDATE_CHECK_TTL = 60.0
 _GGUF_UPDATE_CHECK_MAX = 256
-_gguf_update_check_cache: "dict[str, tuple[float, bool, frozenset]]" = {}
+_gguf_update_check_cache: "dict[tuple[str, str, str], tuple[float, bool, frozenset]]" = {}
 _gguf_update_check_lock = threading.Lock()
 
 
@@ -130,6 +128,20 @@ def _repo_has_gguf_files(repo_info) -> bool:
     return _repo_gguf_size_bytes(repo_info) > 0
 
 
+def _cached_repo_file_name(file_obj) -> str:
+    file_path = getattr(file_obj, "file_path", None)
+    if file_path:
+        try:
+            path = Path(file_path)
+            parts = path.parts
+            snapshots_idx = max(i for i, part in enumerate(parts) if part == "snapshots")
+            if len(parts) > snapshots_idx + 2:
+                return Path(*parts[snapshots_idx + 2 :]).as_posix()
+        except Exception:
+            pass
+    return str(getattr(file_obj, "file_name", "")).replace("\\", "/")
+
+
 def _repo_gguf_blob_map(repo_info) -> dict[str, set[str]]:
     """Map each cached MAIN gguf file's repo-relative name to the SET of its local
     blob hashes across all cached revisions.
@@ -150,9 +162,22 @@ def _repo_gguf_blob_map(repo_info) -> dict[str, set[str]]:
             blob_path = getattr(f, "blob_path", None)
             if not blob_path:
                 continue
-            name = str(f.file_name)
+            name = _cached_repo_file_name(f)
             blob_map.setdefault(name, set()).add(Path(blob_path).name)
     return blob_map
+
+
+def _filter_gguf_blob_map_by_variant(
+    local_blobs: dict[str, set[str]], gguf_variant: Optional[str]
+) -> dict[str, set[str]]:
+    variant = (gguf_variant or "").strip().lower()
+    if not variant:
+        return local_blobs
+    return {
+        name: blobs
+        for name, blobs in local_blobs.items()
+        if extract_quant_label(name).lower() == variant
+    }
 
 
 def _prefer_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
@@ -258,7 +283,9 @@ def _gguf_remote_update(repo_id: str, local_blobs: dict[str, set[str]], hf_token
     from huggingface_hub import get_paths_info
 
     local_by_posix = {key.replace("\\", "/"): value for key, value in local_blobs.items()}
-    remote_path_infos = get_paths_info(repo_id = repo_id, paths = list(local_blobs), token = hf_token)
+    remote_path_infos = get_paths_info(
+        repo_id = repo_id, paths = list(local_by_posix), token = hf_token
+    )
     for path_info in remote_path_infos:
         remote_blob = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
         local_set = local_by_posix.get(path_info.path.replace("\\", "/"))
@@ -570,11 +597,16 @@ async def repo_update_status_response(
 
         is_gguf = bool(gguf_variant) or _repo_has_gguf_files(repo_info)
         if is_gguf:
-            local_blobs = _repo_gguf_blob_map(repo_info)
+            local_blobs = _filter_gguf_blob_map_by_variant(
+                _repo_gguf_blob_map(repo_info), gguf_variant
+            )
             if not local_blobs:
                 return {"update_available": False}
             now = time.monotonic()
             fingerprint = frozenset(blob for blobs in local_blobs.values() for blob in blobs)
+            token_fp = hf_cache_scan.token_fingerprint(hf_token)
+            variant_key = (gguf_variant or "").strip().lower()
+            cache_key = (repo_id.lower(), variant_key, token_fp)
             with _gguf_update_check_lock:
                 # Prune expired entries so the cache stays bounded to recently-seen repos.
                 for stale_key in [
@@ -583,7 +615,7 @@ async def repo_update_status_response(
                     if now - v[0] >= _GGUF_UPDATE_CHECK_TTL
                 ]:
                     _gguf_update_check_cache.pop(stale_key, None)
-                cached_entry = _gguf_update_check_cache.get(repo_id)
+                cached_entry = _gguf_update_check_cache.get(cache_key)
             # Reuse only if fresh AND the local blobs are unchanged since the
             # cached result (a local download/delete must invalidate it).
             if (
@@ -597,7 +629,7 @@ async def repo_update_status_response(
                 timeout = 6.0,
             )
             with _gguf_update_check_lock:
-                _gguf_update_check_cache[repo_id] = (
+                _gguf_update_check_cache[cache_key] = (
                     time.monotonic(),
                     result,
                     fingerprint,

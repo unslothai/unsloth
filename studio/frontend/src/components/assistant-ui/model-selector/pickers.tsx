@@ -1527,14 +1527,14 @@ export function HubModelPicker({
         setCachedGguf(v);
       })
       .catch(() => {});
-    listCachedModels()
+    listCachedModels(hfToken || undefined)
       .then((v) => {
         _cachedModelsCache = v;
         setCachedModels(v);
       })
       .catch(() => {});
     refreshLocalModelsList();
-  }, [refreshLocalModelsList]);
+  }, [hfToken, refreshLocalModelsList]);
 
   // Updates run as MANAGED downloads (they show in the global Downloads panel
   // with manifest-based progress + a working Cancel), instead of a blocking
@@ -1582,14 +1582,14 @@ export function HubModelPicker({
       })
       .catch(() => {})
       .finally(check);
-    listCachedModels()
+    listCachedModels(hfToken || undefined)
       .then((v) => {
         _cachedModelsCache = v;
         setCachedModels(v);
       })
       .catch(() => {})
       .finally(check);
-  }, [refreshLocalModelsList, refreshScanFolders]);
+  }, [hfToken, refreshLocalModelsList, refreshScanFolders]);
 
   // Hide downloaded models from the recommended list. Case-insensitive
   // since the HF cache lowercases repo IDs.

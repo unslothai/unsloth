@@ -34,7 +34,7 @@ _UPDATE_CHECK_TTL = 60.0
 # fingerprint invalidates a cached result when local blobs change (download /
 # delete) inside the TTL window; expired entries are pruned each pass so the
 # dict stays bounded to repos seen within the last _UPDATE_CHECK_TTL seconds.
-_update_check_cache: dict[str, tuple[float, bool, frozenset]] = {}
+_update_check_cache: dict[tuple[str, str], tuple[float, bool, frozenset]] = {}
 
 
 class CachedModelRepo(BaseModel):
@@ -50,6 +50,17 @@ class CachedModelsResponse(BaseModel):
 
 def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(_VALID_REPO_ID.fullmatch(repo_id))
+
+
+def _hf_token_fingerprint(hf_token: Optional[str]) -> str:
+    return hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else "anon"
+
+
+def _normalize_hf_token(hf_token) -> Optional[str]:
+    if not isinstance(hf_token, str):
+        return None
+    token = hf_token.strip()
+    return token or None
 
 
 def _safe_is_dir(path) -> bool:
@@ -100,6 +111,7 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import get_current_subject
+from hub.dependencies import get_hf_token
 
 try:
     from utils.models import (
@@ -2620,6 +2632,7 @@ async def get_gguf_variants(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
+    hf_token_header: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF quantization variants for a HF repo or local directory.
@@ -2628,6 +2641,7 @@ async def get_gguf_variants(
     recommended default.
     """
     try:
+        hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
         from utils.models.model_config import is_local_path, list_local_gguf_variants
 
         # Local directory path — scan filesystem.
@@ -2711,24 +2725,29 @@ async def get_gguf_variants(
         except Exception:
             pass
 
-        def _shard_filenames(filename: str, candidates) -> list[str]:
-            """All shard rel-paths of a split GGUF, derived from *candidates*.
+        def _shard_filenames(filename: str, _candidates) -> list[str]:
+            """All expected shard rel-paths of a split GGUF.
 
             Returns ``[filename]`` for an unsharded variant. For a split variant
-            (``...-NNNNN-of-TOTAL.gguf``) returns every sibling shard found in
-            *candidates* that shares the same prefix and ``of-TOTAL`` count.
+            (``...-NNNNN-of-TOTAL.gguf``) returns every declared sibling shard,
+            even when only one shard is currently cached.
             """
             m = _SHARD_RE.match(filename)
             if not m:
                 return [filename]
             prefix = m.group(1)
             total = m.group(2)
-            sibling = _re.compile(
-                r"^" + _re.escape(prefix) + r"-\d{5}-of-" + _re.escape(total) + r"\.gguf$",
-                _re.IGNORECASE,
-            )
-            shards = sorted(f for f in candidates if sibling.match(f))
-            return shards or [filename]
+            try:
+                total_count = int(total)
+            except ValueError:
+                return [filename]
+            if total_count <= 1:
+                return [filename]
+            width = len(total)
+            return [
+                f"{prefix}-{index:0{width}d}-of-{total}.gguf"
+                for index in range(1, total_count + 1)
+            ]
 
         def _is_fully_downloaded(variant) -> bool:
             from huggingface_hub import try_to_load_from_cache
@@ -3254,22 +3273,45 @@ def _remote_weights_changed(
     the latest commit hash, so a metadata-only commit does NOT flag an update.
     Best-effort: callers swallow exceptions and keep update_available False.
     """
-    from huggingface_hub import get_paths_info
+    from huggingface_hub import HfApi, get_paths_info
 
-    remote_path_infos = get_paths_info(repo_id = repo_id, paths = weight_filenames, token = hf_token)
-    for path_info in remote_path_infos:
-        remote_blob = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
-        if remote_blob not in local_blob_set:
-            return True
-    return False
+    remote_blobs: set[str] = set()
+    try:
+        info = HfApi(token = hf_token).model_info(
+            repo_id,
+            repo_type = "model",
+            files_metadata = True,
+            token = hf_token,
+        )
+        for sibling in getattr(info, "siblings", []) or []:
+            filename = str(getattr(sibling, "rfilename", "") or "")
+            if not filename.endswith((".safetensors", ".bin")):
+                continue
+            lfs = getattr(sibling, "lfs", None)
+            blob = getattr(lfs, "sha256", None) if lfs else getattr(sibling, "blob_id", None)
+            if blob:
+                remote_blobs.add(str(blob))
+    except Exception:
+        # Fallback to the old local-filename query if full metadata is unavailable.
+        remote_path_infos = get_paths_info(
+            repo_id = repo_id, paths = weight_filenames, token = hf_token
+        )
+        for path_info in remote_path_infos:
+            remote_blob = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
+            if remote_blob:
+                remote_blobs.add(str(remote_blob))
+
+    return bool(remote_blobs - local_blob_set)
 
 
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
-    current_subject: str = Depends(get_current_subject), hf_token: Optional[str] = Header(None)
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
+    hf_token = _normalize_hf_token(hf_token)
 
     try:
         cache_scans = _all_hf_cache_scans()
@@ -3358,7 +3400,8 @@ async def list_cached_models(
             async def _check_row(row: dict) -> None:
                 repo_id = row["repo_id"]
                 fingerprint = frozenset(row["_local_blob_set"])
-                cached = _update_check_cache.get(repo_id)
+                cache_key = (repo_id.lower(), _hf_token_fingerprint(hf_token))
+                cached = _update_check_cache.get(cache_key)
                 # Reuse only if fresh AND the local blobs are unchanged since the
                 # cached result (a local download/delete must invalidate it).
                 if (
@@ -3380,7 +3423,7 @@ async def list_cached_models(
                         timeout = 6.0,
                     )
                     row["update_available"] = result
-                    _update_check_cache[repo_id] = (time.monotonic(), result, fingerprint)
+                    _update_check_cache[cache_key] = (time.monotonic(), result, fingerprint)
                 except Exception:
                     # Best-effort: leave update_available False on any failure.
                     pass

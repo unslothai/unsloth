@@ -393,9 +393,11 @@ export function GgufDownloadCard({
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
-  // Whether the cached selected variant has a newer revision upstream; drives the
-  // "Update available" tag. Fetched on-demand (best-effort), skipped when offline.
-  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<{
+    repoId: string;
+    variant: string;
+    available: boolean;
+  } | null>(null);
   const localVariantPath = cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
@@ -549,18 +551,25 @@ export function GgufDownloadCard({
   const selectedDownloadSizeLabel = selected
     ? formatBytes(ggufVariantDownloadSizeBytes(selected))
     : null;
-  // On-demand, best-effort check: when the selected variant is already on disk,
-  // ask whether a newer revision exists upstream so we can flag it. Skipped while
-  // offline; only the async result updates state (no synchronous reset).
+  const updateAvailable =
+    updateStatus?.repoId === repoId &&
+    updateStatus.variant === selectedQuant &&
+    updateStatus.available;
+  // On-demand, best-effort check for the selected cached variant. The result is
+  // scoped to the repo+variant so stale positives cannot move across selections.
   useEffect(() => {
-    if (!online || !selected?.downloaded || !selectedQuant) return;
+    if (!online || !selected?.downloaded || !selectedQuant) {
+      setUpdateStatus(null);
+      return;
+    }
+    const target = { repoId, variant: selectedQuant };
     let canceled = false;
     getUpdateStatus(repoId, selectedQuant, hfToken || undefined)
       .then((available) => {
-        if (!canceled) setUpdateAvailable(available);
+        if (!canceled) setUpdateStatus({ ...target, available });
       })
       .catch(() => {
-        if (!canceled) setUpdateAvailable(false);
+        if (!canceled) setUpdateStatus(null);
       });
     return () => {
       canceled = true;
@@ -860,6 +869,7 @@ export function GgufDownloadCard({
         {!isGgufRunCta && <CardDivider />}
 
         {selected?.downloaded &&
+          online &&
           updateAvailable &&
           !selectedIsActive &&
           !downloadingThisVariant && (

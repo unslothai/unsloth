@@ -3778,21 +3778,22 @@ class LlamaCppBackend:
             # cold whenever free disk is below the full weight footprint,
             # even though nothing needs downloading.
             already_cached_bytes = 0
-            for p in path_infos:
-                if not p.size:
-                    continue
-                try:
-                    cached_path = try_to_load_from_cache(hf_repo, p.path)
-                except Exception:
-                    cached_path = None
-                if isinstance(cached_path, str) and os.path.exists(cached_path):
+            if not force:
+                for p in path_infos:
+                    if not p.size:
+                        continue
                     try:
-                        on_disk = os.path.getsize(cached_path)
-                    except OSError:
-                        on_disk = 0
-                    # Satisfied only when the full blob is present.
-                    if on_disk >= p.size:
-                        already_cached_bytes += p.size
+                        cached_path = try_to_load_from_cache(hf_repo, p.path)
+                    except Exception:
+                        cached_path = None
+                    if isinstance(cached_path, str) and os.path.exists(cached_path):
+                        try:
+                            on_disk = os.path.getsize(cached_path)
+                        except OSError:
+                            on_disk = 0
+                        # Satisfied only when the full blob is present.
+                        if on_disk >= p.size:
+                            already_cached_bytes += p.size
 
             total_download_bytes = max(0, total_bytes - already_cached_bytes)
 
