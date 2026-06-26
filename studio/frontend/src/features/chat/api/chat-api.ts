@@ -844,11 +844,13 @@ export async function* streamChatCompletions(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let completed = false;
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
+        completed = true;
         break;
       }
 
@@ -868,6 +870,7 @@ export async function* streamChatCompletions(
 
         const dataText = dataLines.join("\n");
         if (dataText === "[DONE]") {
+          completed = true;
           return;
         }
 
@@ -921,11 +924,16 @@ export async function* streamChatCompletions(
       }
     }
   } finally {
-    // Release the stream lock now instead of leaking the reader until GC.
-    try {
-      await reader.cancel();
-    } catch {
-      // already closed
+    // Only abort on an early/abnormal exit. After a natural [DONE] (or server
+    // EOF) the request is logically complete and the backend finalizes its
+    // api-monitor entry right after the sentinel; cancelling here can be seen as
+    // a disconnect and mark a successful request as cancelled.
+    if (!completed) {
+      try {
+        await reader.cancel();
+      } catch {
+        // already closed
+      }
     }
   }
 }

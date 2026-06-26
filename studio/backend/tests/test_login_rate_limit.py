@@ -29,12 +29,14 @@ def _reset_buckets():
 
     auth_routes._LOGIN_BUCKETS.clear()
     auth_routes._LOGIN_IP_BUCKETS.clear()
-    auth_routes._LOGIN_IP_OVERFLOW.clear()
+    for _shard in auth_routes._LOGIN_IP_OVERFLOW:
+        _shard.clear()
     auth_routes._LAST_IP_PRUNE = 0.0
     yield
     auth_routes._LOGIN_BUCKETS.clear()
     auth_routes._LOGIN_IP_BUCKETS.clear()
-    auth_routes._LOGIN_IP_OVERFLOW.clear()
+    for _shard in auth_routes._LOGIN_IP_OVERFLOW:
+        _shard.clear()
     auth_routes._LAST_IP_PRUNE = 0.0
 
 
@@ -264,6 +266,39 @@ class TestBucketKeyAndBlocking:
 
         # Still throttled: its hot bucket survived rather than being evicted.
         assert auth_routes._login_blocked(attacker) > 0
+
+    def test_overflow_is_sharded_so_a_hot_ip_does_not_block_unrelated_ips(
+        self, env_no_proxy, monkeypatch
+    ):
+        """A saturating spray must not globally deny login: a hot overflow shard
+        throttles only the IPs that hash to it, not every new unbucketed client.
+        """
+        from routes import auth as auth_routes
+
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
+        # Neutralize account-bucket blocking so this isolates the per-IP path.
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
+
+        # Saturate the bucket dict so further new IPs fall through to overflow.
+        for idx in range(10):
+            auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
+
+        # Drive one IP's real overflow shard hot.
+        attacker_ip = "198.51.100.7"
+        for _ in range(5):
+            auth_routes._record_login_failure((attacker_ip, "admin"))
+        assert auth_routes._login_blocked((attacker_ip, "admin")) > 0
+
+        # A new IP in a *different* shard must not be denied (a single global
+        # counter would block it; a sharded one preserves per-source isolation).
+        attacker_shard = auth_routes._overflow_shard(attacker_ip)
+        victim_ip = next(
+            f"203.0.113.{i}"
+            for i in range(256)
+            if auth_routes._overflow_shard(f"203.0.113.{i}") is not attacker_shard
+        )
+        assert auth_routes._login_blocked((victim_ip, "admin")) == 0
 
 
 # ---------- /login 429 body ----------

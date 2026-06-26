@@ -75,15 +75,22 @@ _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
 # Bucket-dict cap. On overflow, reclaim expired buckets; a new IP that still can't
-# fit shares _LOGIN_IP_OVERFLOW rather than evicting a hot bucket.
+# fit falls back to a sharded overflow rather than evicting a hot bucket.
 _LOGIN_MAX_BUCKETS = 4096
 # Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
 _LAST_IP_PRUNE = 0.0
-# Shared counter for per-IP failures that can't get their own bucket while the
-# dict is saturated with still-hot buckets. Evicting a hot bucket would let a
-# spray push out its own bucket and retry as first-seen; overflow failures share
-# one bounded counter that still trips the per-IP threshold under saturation.
-_LOGIN_IP_OVERFLOW: deque = deque()
+# Sharded overflow for per-IP failures that can't get their own bucket while the
+# dict is saturated with still-hot buckets. Not evicting a hot bucket stops a
+# spray from resetting its own throttle; sharding (vs. one global counter) keeps
+# per-source isolation so a hot shard only throttles the IPs that hash to it, not
+# every new client. Bounded memory: a fixed array of deques. A single source's
+# repeated failures always land in the same shard, so it is still throttled.
+_LOGIN_IP_OVERFLOW_SHARDS = 256
+_LOGIN_IP_OVERFLOW: list[deque] = [deque() for _ in range(_LOGIN_IP_OVERFLOW_SHARDS)]
+
+
+def _overflow_shard(ip: str) -> deque:
+    return _LOGIN_IP_OVERFLOW[hash(ip) % _LOGIN_IP_OVERFLOW_SHARDS]
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
@@ -205,12 +212,13 @@ def _record_login_failure(key: tuple[str, str]) -> int:
                 _prune_stale_ip_buckets(now)
                 _LAST_IP_PRUNE = now
         if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
-            # Still full -- every bucket is hot. Count this failure in the shared
-            # overflow bucket instead of evicting a live one, so the spray stays
+            # Still full -- every bucket is hot. Count this failure in the IP's
+            # overflow shard instead of evicting a live one, so the spray stays
             # throttled but can't push out (and reset) any IP's own counter.
-            _prune_bucket(_LOGIN_IP_OVERFLOW, now)
-            _LOGIN_IP_OVERFLOW.append(now)
-            ip_fails = len(_LOGIN_IP_OVERFLOW)
+            shard = _overflow_shard(ip)
+            _prune_bucket(shard, now)
+            shard.append(now)
+            ip_fails = len(shard)
         else:
             if ip_bucket is None:
                 ip_bucket = _LOGIN_IP_BUCKETS[ip] = deque()
@@ -249,8 +257,8 @@ def _login_blocked(key: tuple[str, str]) -> int:
             and ip not in _LOGIN_IP_BUCKETS
             and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS
         ):
-            # No own bucket while the dict is saturated: throttle via the overflow.
-            ip_blocked = _blocked_for(_LOGIN_IP_OVERFLOW, now, _LOGIN_IP_MAX_FAILS)
+            # No own bucket while the dict is saturated: throttle via the IP's shard.
+            ip_blocked = _blocked_for(_overflow_shard(ip), now, _LOGIN_IP_MAX_FAILS)
         return max(_blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS), ip_blocked)
 
 
