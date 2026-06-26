@@ -192,6 +192,20 @@ def reconcile_orphaned_ingestion_jobs() -> int:
             "WHERE status NOT IN ('completed', 'failed')"
         ).fetchall()
         for row in rows:
+            doc = conn.execute(
+                "SELECT status FROM documents WHERE id=?", (row["document_id"],)
+            ).fetchone()
+            if doc is not None and doc["status"] == "completed":
+                # Worker finished indexing before the crash but didn't retire the
+                # job row. Mark the job completed (not failed) and keep its chunks,
+                # so the UI's getJob fallback after restart doesn't flag a
+                # searchable document as a failed ingestion.
+                conn.execute(
+                    "UPDATE ingestion_jobs SET status='completed', stage='done', "
+                    "progress=1.0, error=NULL WHERE id=?",
+                    (row["id"],),
+                )
+                continue
             conn.execute(
                 "UPDATE ingestion_jobs SET status='failed', stage='error', "
                 "error='Server restarted during ingestion' WHERE id=?",
@@ -202,17 +216,10 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                 "WHERE id=? AND status NOT IN ('completed', 'failed')",
                 (row["document_id"],),
             )
-            # Purge chunks unless the document actually completed (its worker
-            # finished indexing before the crash); a completed-but-emptied doc
-            # would be unsearchable yet block re-ingest via dedup. A failed doc --
-            # whether just flipped above or already 'failed' before the crash --
-            # must not leave citable chunks, since retrieval filters by scope, not
-            # status.
-            doc = conn.execute(
-                "SELECT status FROM documents WHERE id=?", (row["document_id"],)
-            ).fetchone()
-            if doc is None or doc["status"] != "completed":
-                _delete_document_chunks(conn, row["document_id"])
+            # A failed or still-in-flight doc must not leave citable chunks
+            # (retrieval filters by scope, not status); also drops any chunks of a
+            # doc already 'failed' before the crash.
+            _delete_document_chunks(conn, row["document_id"])
         conn.commit()
         return len(rows)
     finally:

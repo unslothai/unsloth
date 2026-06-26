@@ -66,6 +66,12 @@ def _chunk_count(conn, doc_id):
     return conn.execute("SELECT COUNT(*) FROM chunks WHERE document_id=?", (doc_id,)).fetchone()[0]
 
 
+def _job_status(conn, doc_id):
+    return conn.execute(
+        "SELECT status FROM ingestion_jobs WHERE id=?", (f"job-{doc_id}",)
+    ).fetchone()["status"]
+
+
 def test_completed_doc_keeps_chunks_when_its_job_is_orphaned(rag_conn):
     # Worker finished the document but crashed before retiring the job row.
     _add_doc(rag_conn, "kb_a", "done", "completed", ["alpha bravo", "charlie delta"])
@@ -77,6 +83,9 @@ def test_completed_doc_keeps_chunks_when_its_job_is_orphaned(rag_conn):
     assert store.get_document(rag_conn, "done")["status"] == "completed"
     assert _chunk_count(rag_conn, "done") == 2
     assert store.document_by_hash(rag_conn, "kb_a", "done") == "done"
+    # The orphaned job is reconciled to completed (not failed), so the UI's getJob
+    # fallback doesn't flag a searchable document as a failed ingestion.
+    assert _job_status(rag_conn, "done") == "completed"
 
 
 def test_in_flight_doc_is_failed_and_its_chunks_dropped(rag_conn):
