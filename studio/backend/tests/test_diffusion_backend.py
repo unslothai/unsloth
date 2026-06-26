@@ -922,7 +922,8 @@ def test_default_load_skips_dense_quant_path(fake_runtime, tmp_path, monkeypatch
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(
-        dmod, "dense_transformer_supported",
+        dmod,
+        "dense_transformer_supported",
         lambda *a, **k: pytest.fail("dense path must not run without the flag"),
     )
     (tmp_path / "m.gguf").write_bytes(b"x")
@@ -940,7 +941,9 @@ def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatc
     calls = _stub_dense_quant(monkeypatch, scheme = "fp8")
     (tmp_path / "m.gguf").write_bytes(b"x")
     status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image",
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
         transformer_quant = "fp8",
     )
     assert status["transformer_quant"] == "fp8"
@@ -971,12 +974,14 @@ def test_transformer_quant_falls_back_to_gguf_on_failure(fake_runtime, tmp_path,
     monkeypatch.setattr(dmod, "quantize_transformer", lambda pipe, target, **kw: None)
     (tmp_path / "m.gguf").write_bytes(b"x")
     status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image",
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
         transformer_quant = "fp8",
     )
     assert status["loaded"] is True
-    assert status["transformer_quant"] is None      # fell back
-    assert _FakeTransformer.last["path"]             # GGUF from_single_file used
+    assert status["transformer_quant"] is None  # fell back
+    assert _FakeTransformer.last["path"]  # GGUF from_single_file used
 
 
 def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, monkeypatch):
@@ -996,8 +1001,11 @@ def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, mo
     monkeypatch.setattr(_FakeTransformer, "from_pretrained", _fp_fail, raising = False)
     (tmp_path / "m.gguf").write_bytes(b"x")
     status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image",
-        transformer_quant = "fp8", memory_mode = "low_vram",
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+        memory_mode = "low_vram",
     )
     assert status["transformer_quant"] is None
     assert status["offload_policy"] == "model"

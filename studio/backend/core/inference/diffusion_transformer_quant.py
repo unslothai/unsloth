@@ -52,8 +52,8 @@ DEFAULT_MIN_LINEAR_FEATURES = 512
 # its kernels are available.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((10, 0), (TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+
-    ((8, 9), (TQ_FP8, TQ_INT8)),                        # Ada sm_89 / Hopper sm_90
-    ((8, 0), (TQ_INT8,)),                               # Ampere sm_80 / sm_86
+    ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
+    ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
 
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
@@ -84,7 +84,6 @@ def dense_transformer_supported(target: Any) -> bool:
         return False
     try:
         import torch
-
         return getattr(target, "dtype", None) is torch.bfloat16
     except Exception:
         return False
@@ -118,7 +117,6 @@ def select_transformer_quant_scheme(target: Any, requested: Optional[str]) -> Op
 def _capability() -> Optional[tuple[int, int]]:
     try:
         import torch
-
         major, minor = torch.cuda.get_device_capability()
         return (int(major), int(minor))
     except Exception:
@@ -129,7 +127,6 @@ def _scheme_supported(scheme: str, device: str) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
     try:
         import torch
-
         if not torch.cuda.is_available():
             return False
         if scheme == TQ_FP8 and not hasattr(torch, "float8_e4m3fn"):
@@ -179,12 +176,10 @@ def _make_quant_config(scheme: str) -> Any:
         return Float8DynamicActivationFloat8WeightConfig()
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
-
         return NVFP4DynamicActivationNVFP4WeightConfig()
     if scheme == TQ_MXFP8:
         import torch
         from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
-
         try:
             return MXDynamicActivationMXWeightConfig(
                 activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn
@@ -201,7 +196,6 @@ def make_filter_fn(min_features: int):
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:
             import torch
-
             if not isinstance(module, torch.nn.Linear):
                 return False
         except Exception:

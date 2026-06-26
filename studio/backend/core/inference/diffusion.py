@@ -488,8 +488,14 @@ class DiffusionBackend:
                 ):
                     try:
                         pipe, transformer_quant_engaged = self._load_dense_quant_pipeline(
-                            transformer_cls, pipeline_cls, base, device, dtype, hf_token,
-                            target, transformer_quant,
+                            transformer_cls,
+                            pipeline_cls,
+                            base,
+                            device,
+                            dtype,
+                            hf_token,
+                            target,
+                            transformer_quant,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
                         logger.warning(

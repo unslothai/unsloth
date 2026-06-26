@@ -33,7 +33,13 @@ def _target(*, device = "cuda", dtype = "bfloat16"):
     return types.SimpleNamespace(device = device, dtype = dtype)
 
 
-def _stub_torch(monkeypatch, *, cc = (10, 0), with_fp8 = True, cuda_available = True):
+def _stub_torch(
+    monkeypatch,
+    *,
+    cc = (10, 0),
+    with_fp8 = True,
+    cuda_available = True,
+):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
     torch.float16 = "float16"
@@ -155,6 +161,7 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     class _Lin:
         def __init__(self, *a, **k):
             pass
+
         def to(self, **k):
             return self
 
@@ -167,8 +174,14 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", torch)
 
     tqz = types.ModuleType("torchao.quantization")
-    def _quantize_ok(module, config, filter_fn = None):
+
+    def _quantize_ok(
+        module,
+        config,
+        filter_fn = None,
+    ):
         calls["n"] += 1
+
     tqz.quantize_ = _quantize_ok
     tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8cfg"
     tqz.Float8DynamicActivationFloat8WeightConfig = lambda: "fp8cfg"
@@ -182,8 +195,14 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
 
     # A scheme whose quantize_ raises -> probe False (and cached).
     tq._SMOKE_CACHE.clear()
-    def _quantize_boom(module, config, filter_fn = None):
+
+    def _quantize_boom(
+        module,
+        config,
+        filter_fn = None,
+    ):
         raise RuntimeError("kernel unavailable")
+
     tqz.quantize_ = _quantize_boom
     assert tq._smoke_probe(TQ_FP8, "cuda") is False
 
@@ -195,15 +214,16 @@ def test_make_filter_fn(monkeypatch):
     class _Lin:
         def __init__(self, i, o):
             self.in_features, self.out_features = i, o
+
     torch = types.ModuleType("torch")
     torch.nn = types.SimpleNamespace(Linear = _Lin)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
     keep = make_filter_fn(512)
     assert keep(_Lin(1024, 4096), "blocks.0.attn.to_q") is True
-    assert keep(_Lin(256, 4096), "time_proj") is False   # small in_features -> skip
-    assert keep(_Lin(4096, 256), "out_proj") is False    # small out_features -> skip
-    assert keep(object(), "not_linear") is False         # non-Linear -> skip
+    assert keep(_Lin(256, 4096), "time_proj") is False  # small in_features -> skip
+    assert keep(_Lin(4096, 256), "out_proj") is False  # small out_features -> skip
+    assert keep(object(), "not_linear") is False  # non-Linear -> skip
     assert keep(types.SimpleNamespace(), "no_attrs") is False
 
 
@@ -215,14 +235,16 @@ def test_quantize_transformer_applies_and_marks(monkeypatch):
     monkeypatch.setattr(tq, "_make_quant_config", lambda scheme: f"{scheme}cfg")
     recorder: list = []
     tqz = types.ModuleType("torchao.quantization")
-    tqz.quantize_ = lambda module, config, filter_fn = None: recorder.append((module, config, filter_fn))
+    tqz.quantize_ = lambda module, config, filter_fn = None: recorder.append(
+        (module, config, filter_fn)
+    )
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
 
     transformer = types.SimpleNamespace()
     pipe = types.SimpleNamespace(transformer = transformer)
     assert quantize_transformer(pipe, _target(), mode = "fp8") == TQ_FP8
     assert len(recorder) == 1 and recorder[0][0] is transformer and recorder[0][1] == "fp8cfg"
-    assert callable(recorder[0][2])                      # a filter_fn was passed
+    assert callable(recorder[0][2])  # a filter_fn was passed
     assert transformer._unsloth_runtime_quant == TQ_FP8  # diagnostic marker set
 
 
@@ -236,8 +258,14 @@ def test_quantize_transformer_tolerates_failure(monkeypatch):
     monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode: TQ_INT8)
     monkeypatch.setattr(tq, "_make_quant_config", lambda scheme: "cfg")
     tqz = types.ModuleType("torchao.quantization")
-    def _boom(module, config, filter_fn = None):
+
+    def _boom(
+        module,
+        config,
+        filter_fn = None,
+    ):
         raise RuntimeError("partial quant failure")
+
     tqz.quantize_ = _boom
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
