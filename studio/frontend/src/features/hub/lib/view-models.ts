@@ -10,6 +10,7 @@ import type {
 import type {
   CapabilityFilter,
   DiscoverRow,
+  GpuFitFilter,
   ModelFormatFilter,
 } from "../types";
 import {
@@ -49,6 +50,15 @@ export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
   { value: "gguf", label: "GGUF" },
   { value: "checkpoint", label: "Safetensors" },
   { value: "mlx", label: "MLX" },
+];
+
+export const GPU_FIT_FILTER_OPTIONS: ReadonlyArray<{
+  value: GpuFitFilter;
+  label: string;
+}> = [
+  { value: "all", label: "All sizes" },
+  { value: "fits", label: "Fits GPU" },
+  { value: "comfortable", label: "Comfortable" },
 ];
 
 const BILLION = 1_000_000_000;

@@ -150,6 +150,7 @@ class ChatInferenceSettings(BaseModel):
     maxSeqLength: Optional[float] = None
     maxTokens: Optional[float] = None
     systemPrompt: Optional[str] = None
+    systemVariables: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
     fastMode: Optional[bool] = None
 
