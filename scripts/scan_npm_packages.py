@@ -897,7 +897,11 @@ def safe_extract(
 # ─────────────────────────────────────────────────────────────────────
 
 
-_MAX_CONT_LINES = 12  # how far back to look for an enclosing bracket opener
+# How far back to look for an enclosing bracket opener. Symmetric with the
+# forward cap so a host that sits deep inside a large options object (its opening
+# `{` many properties above) still binds the whole object, not just its own line;
+# a too-far start only over-binds (more context, still fail-closed), never less.
+_MAX_CONT_LINES = 200
 # Hard cap on how far forward a bracket group is followed to its close (digest
 # input only, never displayed); a realistic config object closes well within it.
 _MAX_GROUP_LINES = 200

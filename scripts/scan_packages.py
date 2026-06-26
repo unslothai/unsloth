@@ -1155,6 +1155,23 @@ _MAX_MULTILINE_LINES = 12
 # it is not recorded when the per-line pass already bound the signal lines.
 _GIANT_SPAN_LINES = 60
 
+# Cap a single rendered line. A short line is shown verbatim; a long (e.g.
+# minified one-liner) line is shown as a bounded prefix plus a sha256 of the full
+# line, so a packed payload cannot dump unbounded content into the evidence and
+# baseline while a change past the cutoff still changes the digest and reopens the
+# finding. The npm scanner bounds its snippets the same way.
+_MAX_LINE_CHARS = 200
+
+
+def _cap_line(code: str) -> str:
+    """Bound a single line's displayed code: return it verbatim when short, else a
+    ``_MAX_LINE_CHARS`` prefix plus a digest of the whole line so the tail is still
+    pinned (fail-closed) without recording the entire line."""
+    if len(code) <= _MAX_LINE_CHARS:
+        return code
+    digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
+    return f"{code[:_MAX_LINE_CHARS]} sha256:{digest}"
+
 
 def _logical_line_end(lines: list[str], start: int) -> int:
     """1-based line where the statement opened at ``start`` closes its brackets,
@@ -1202,11 +1219,18 @@ def _extract_evidence(
         span = lines[start - 1 : end] or ["<multiline match>"]
         if len(span) > _MAX_MULTILINE_LINES:
             # Digest the code without the L<NN>: markers so a pure line shift of
-            # the same span stays stable while a code change still reopens.
+            # the same span stays stable while a code change still reopens. The
+            # head is truncated for display only; the span digest already binds
+            # its full content, so no per-line digest is needed here.
             code = "\n".join(ln.rstrip() for ln in span)
             digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
-            return f"L{start}: {span[0].rstrip()} sha256:{digest}"
-        return "\n".join(f"L{start + i}: {ln.rstrip()}" for i, ln in enumerate(span))
+            head = span[0].rstrip()
+            if len(head) > _MAX_LINE_CHARS:
+                head = head[:_MAX_LINE_CHARS] + "..."
+            return f"L{start}: {head} sha256:{digest}"
+        return "\n".join(
+            f"L{start + i}: {_cap_line(ln.rstrip())}" for i, ln in enumerate(span)
+        )
 
     for i, line in enumerate(lines, 1):
         if pattern.search(line):

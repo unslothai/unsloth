@@ -422,14 +422,17 @@ def test_canon_evidence_keeps_bitwise_or_in_a_span():
     assert sp._canon_evidence("L5: a = X | Y") == "a = X | Y"
 
 
-def test_extract_evidence_keeps_full_long_line():
-    # No per-line truncation: a payload appended past column 160 must show in the
-    # evidence so it changes the key instead of being clipped off the first match.
-    marker = "EXFIL_PAST_160"
-    pad = "# " + " " * 200
+def test_extract_evidence_caps_long_line_but_binds_tail():
+    # A long (e.g. minified) line is not dumped verbatim: the display is bounded to
+    # a prefix, but a sha256 of the full line is appended so a payload past the cut
+    # still changes the key instead of being silently clipped.
+    marker = "EXFIL_PAST_CAP"
+    pad = "# " + " " * 300
     line = "requests.get('http://a')  " + pad + marker
     ev = sp._extract_evidence(line + "\n", sp.RE_NETWORK)
-    assert marker in ev
+    assert marker not in ev  # tail past the cap is not shown verbatim
+    assert "sha256:" in ev  # but it is pinned by a digest
+    assert len(ev) < len(line)  # bounded, not the whole minified line
     base = sp._extract_evidence("requests.get('http://a')  " + pad + "x\n", sp.RE_NETWORK)
     assert sp._evidence_hash(ev) != sp._evidence_hash(base)
 

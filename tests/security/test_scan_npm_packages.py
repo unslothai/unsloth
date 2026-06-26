@@ -566,6 +566,21 @@ def test_outbound_host_config_long_object_binds_tail():
     )
 
 
+def test_outbound_host_config_far_opener_binds():
+    # The enclosing object's opener can sit well above the hostname line (a large
+    # options object whose `{` is many properties back). The backward scan must
+    # still reach it so a payload changed on an earlier property of the same object
+    # reopens, not just a change on the hostname line itself.
+    above = "\n".join(f"  opt{i}: {i}," for i in range(20))
+    obj = (
+        "const opts = {\n"
+        + above
+        + "\n  hostname: '169.254.169.254',\n  path: '/x',\n};\nrun(opts);\n"
+    )
+    changed = obj.replace("opt0: 0,", "opt0: 999,")
+    assert snp._finding_key(_host_finding(obj)) != snp._finding_key(_host_finding(changed))
+
+
 def test_outbound_host_config_reindent_is_stable():
     # A formatter-only reindent of the bound continuation lines must NOT change
     # the key (whitespace is normalized before the logical-line digest).
