@@ -902,8 +902,10 @@ def safe_extract(
 # `{` many properties above) still binds the whole object, not just its own line;
 # a too-far start only over-binds (more context, still fail-closed), never less.
 _MAX_CONT_LINES = 200
-# Hard cap on how far forward a bracket group is followed to its close (digest
-# input only, never displayed); a realistic config object closes well within it.
+# Hard cap on how far forward a bracket group is followed to its close, measured
+# from the matched line so the tail after the match is always reachable even when
+# the opener was found near the backward limit (digest input only, never
+# displayed); a realistic config object closes well within it.
 _MAX_GROUP_LINES = 200
 
 # JS string literal (single / double / template), blanked before counting
@@ -940,9 +942,12 @@ def _logical_line_text(text: str, line_start: int) -> str:
             start = j  # first still-open opener
 
     # Forward: extend until the group opened at `start` closes past the match.
+    # The cap is measured from the match (`idx`), not from `start`, so an opener
+    # found near the backward limit does not eat the whole forward budget and drop
+    # the path/headers/body that follow the matched line.
     depth = 0
     end = start
-    for j in range(start, min(len(lines), start + _MAX_GROUP_LINES)):
+    for j in range(start, min(len(lines), idx + _MAX_GROUP_LINES)):
         depth += _bracket_depth(lines[j])
         end = j
         if j >= idx and depth <= 0:
@@ -950,36 +955,39 @@ def _logical_line_text(text: str, line_start: int) -> str:
     return " ".join(lines[start : end + 1])
 
 
+def _format_match(text: str, m: re.Match, max_chars: int) -> str:
+    # The shown snippet is a small window around the match; append a digest of the
+    # full LOGICAL line (the matched line plus its bracket-continuation lines)
+    # whenever the snippet does not already show all of it, so a changed payload
+    # tail, a truncated body, or a multi-line option/header reopens.
+    line_start = text.rfind("\n", 0, m.start()) + 1
+    line_end = text.find("\n", m.end())
+    if line_end == -1:
+        line_end = len(text)
+    full_logical = _logical_line_text(text, line_start)
+    start = max(line_start, m.start() - 30)
+    end = min(line_end, m.end() + 30)
+    snippet = text[start:end].replace("\n", " ")
+    if len(snippet) > max_chars:
+        snippet = snippet[:max_chars] + "..."
+    if snippet != full_logical:
+        # Whitespace-normalize before digesting, matching _evidence_hash, so a
+        # formatter-only reindent of the bound continuation lines does not change
+        # the digest and reopen an unchanged finding.
+        canon = " ".join(full_logical.split())
+        digest = hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
+        snippet = f"{snippet} sha256:{digest}"
+    return snippet
+
+
 def _evidence(
     text: str,
     pat: re.Pattern,
     max_chars: int = 200,
 ) -> str:
-    # Record every match. The shown snippet is a small window; append a digest of
-    # the full LOGICAL line (the matched line plus its bracket-continuation
-    # lines) whenever the snippet does not already show all of it, so a changed
-    # payload tail, a truncated body, or a multi-line option/header reopens.
-    snippets = []
-    for m in pat.finditer(text):
-        line_start = text.rfind("\n", 0, m.start()) + 1
-        line_end = text.find("\n", m.end())
-        if line_end == -1:
-            line_end = len(text)
-        full_logical = _logical_line_text(text, line_start)
-        start = max(line_start, m.start() - 30)
-        end = min(line_end, m.end() + 30)
-        snippet = text[start:end].replace("\n", " ")
-        if len(snippet) > max_chars:
-            snippet = snippet[:max_chars] + "..."
-        if snippet != full_logical:
-            # Whitespace-normalize before digesting, matching _evidence_hash, so a
-            # formatter-only reindent of the bound continuation lines does not
-            # change the digest and reopen an unchanged finding.
-            canon = " ".join(full_logical.split())
-            digest = hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
-            snippet = f"{snippet} sha256:{digest}"
-        snippets.append(snippet)
-    return " | ".join(snippets)
+    # Record every match (not a truncated sample) so an extra match appended to an
+    # already-flagged file changes the evidence instead of riding the first few.
+    return " | ".join(_format_match(text, m, max_chars) for m in pat.finditer(text))
 
 
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
@@ -1322,11 +1330,24 @@ def _outbound_host_evidence(text: str, host: str) -> str:
         # changed outbound payload on the same hostname line reopens the key.
         re.compile(rf"[^\n]*(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`][^\n]*", re.IGNORECASE),
     )
+    # Record EVERY outbound context for the host, not just the first form that
+    # matches: a file that already has a baselined URL for the host and later adds
+    # a separate host-config request (or a second URL) must change the evidence so
+    # the new payload cannot inherit the old key. Forms are claimed in order, and a
+    # region already claimed by an earlier form is skipped, so the common
+    # single-context case keeps its existing snippet.
+    claimed: list[tuple[int, int]] = []
+    chosen: list[re.Match] = []
     for pat in patterns:
-        ev = _evidence(text, pat, max_chars = 1000)
-        if ev:
-            return ev
-    return host
+        for m in pat.finditer(text):
+            if any(m.start() < e and s < m.end() for s, e in claimed):
+                continue
+            claimed.append((m.start(), m.end()))
+            chosen.append(m)
+    if not chosen:
+        return host
+    chosen.sort(key = lambda m: m.start())
+    return " | ".join(_format_match(text, m, 1000) for m in chosen)
 
 
 def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:

@@ -437,6 +437,19 @@ def test_extract_evidence_caps_long_line_but_binds_tail():
     assert sp._evidence_hash(ev) != sp._evidence_hash(base)
 
 
+def test_extract_evidence_binds_call_continuation_past_12_lines():
+    # A matched call that stays open well beyond the old 12-line continuation cap
+    # still binds its later arguments: a changed body on a deep continuation line
+    # (here ~22 lines in) must reopen instead of riding the first 12 lines.
+    head = "requests.post('http://h',\n"
+    middle = "".join(f"    opt{i} = ({i}),\n" for i in range(20))
+    old = head + middle + "    data = {'x': 'old'},\n)\n"
+    new = head + middle + "    data = {'x': 'evil'},\n)\n"
+    eo = sp._extract_evidence(old, sp.RE_NETWORK)
+    en = sp._extract_evidence(new, sp.RE_NETWORK)
+    assert sp._evidence_hash(eo) != sp._evidence_hash(en)
+
+
 def test_extract_evidence_records_all_multiline_matches():
     # The DOTALL fallback must record every distinct cross-line match, so a second
     # long-sleep appended below an already-flagged one reopens the finding.

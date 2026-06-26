@@ -1149,6 +1149,12 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 _RE_STR_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 
 _MAX_MULTILINE_LINES = 12
+# How far a single matched call is followed over its bracket continuations. Larger
+# than the display/digest threshold above so a multi-line call (e.g. a
+# ``requests.post(`` with many options before ``data=``) binds its whole argument
+# list in the digest, while staying bounded so a miscounted bracket (a multi-line
+# string the single-line blanker cannot mask) cannot swallow unrelated code.
+_MAX_CALL_LINES = 40
 # A span larger than this is a greedy DOTALL match bridging anchors across
 # unrelated code (e.g. ``import socket`` near the top and ``subprocess`` near the
 # bottom of a multi-thousand-line test file), not a single appended payload, so
@@ -1179,10 +1185,10 @@ def _logical_line_end(lines: list[str], start: int) -> int:
     continuation line reopens, not just the line with the API name). String
     literals are blanked first so a bracket inside a string (``'.../path)'``)
     does not close the line early and drop later arguments; the span is capped at
-    ``_MAX_MULTILINE_LINES`` so a stray unclosed bracket cannot swallow the file.
+    ``_MAX_CALL_LINES`` so a stray unclosed bracket cannot swallow the file.
     """
     depth = 0
-    limit = min(len(lines), start + _MAX_MULTILINE_LINES - 1)
+    limit = min(len(lines), start + _MAX_CALL_LINES - 1)
     for j in range(start, limit + 1):
         ln = _RE_STR_LITERAL.sub("", lines[j - 1])
         depth += ln.count("(") + ln.count("[") + ln.count("{")

@@ -581,6 +581,30 @@ def test_outbound_host_config_far_opener_binds():
     assert snp._finding_key(_host_finding(obj)) != snp._finding_key(_host_finding(changed))
 
 
+def test_outbound_host_config_forward_cap_measured_from_match():
+    # With the opener near the backward-search limit, the forward group cap must be
+    # measured from the matched hostname line, not the opener, so the path that
+    # follows the hostname is still bound and a changed payload there reopens.
+    above = "\n".join(f"  opt{i}: {i}," for i in range(198))
+    obj = (
+        "const opts = {\n"
+        + above
+        + "\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nrun(opts);\n"
+    )
+    assert snp._finding_key(_host_finding(obj % "/old")) != snp._finding_key(
+        _host_finding(obj % "/evil")
+    )
+
+
+def test_outbound_host_multiple_contexts_all_bind():
+    # The same contextual host can appear in more than one outbound form. Adding a
+    # separate host-config request beside an already-present URL for that host must
+    # reopen the key, not ride the unchanged URL evidence.
+    base = "const u = 'http://169.254.169.254/latest/meta-data/';\nfetch(u);\n"
+    extra = "https.request({\n  hostname: '169.254.169.254',\n  path: '/evil',\n});\n"
+    assert snp._finding_key(_host_finding(base)) != snp._finding_key(_host_finding(base + extra))
+
+
 def test_outbound_host_config_reindent_is_stable():
     # A formatter-only reindent of the bound continuation lines must NOT change
     # the key (whitespace is normalized before the logical-line digest).
