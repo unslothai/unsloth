@@ -358,8 +358,11 @@ def start(port: int = 8888, *, cloudflare: bool = False):
         # default True would start a tunnel on this 0.0.0.0 bind whenever Colab
         # detection fails, defeating the documented cloudflare=False opt-out.
         app = run_server(
-            host = "0.0.0.0", port = port, frontend_path = frontend_path,
-            silent = True, cloudflare = False,
+            host = "0.0.0.0",
+            port = port,
+            frontend_path = frontend_path,
+            silent = True,
+            cloudflare = False,
         )
     except SystemExit as exc:
         logger.error(f"❌ Unsloth Studio failed to start: {exc}")
