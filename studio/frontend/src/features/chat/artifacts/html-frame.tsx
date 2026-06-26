@@ -3,7 +3,6 @@
 
 "use client";
 
-import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -36,30 +35,37 @@ export function ArtifactHtmlFrame({
   title = "HTML canvas preview",
   className,
   fill = false,
+  // Tool-rendered canvases only; default off so fences never get network.
+  allowNetworkAccess = false,
 }: {
   code: string;
   title?: string;
   className?: string;
   fill?: boolean;
+  allowNetworkAccess?: boolean;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const allowNetworkAccess = useChatRuntimeStore(
+  const networkAccessEnabled = useChatRuntimeStore(
     (state) => state.allowArtifactNetworkAccess,
   );
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
   const src = useMemo(() => {
     const query = new URLSearchParams({ v: hashArtifactCode(code) });
-    if (allowNetworkAccess) {
-      const token = getAuthToken();
-      if (token) {
-        query.set("allow_network", "1");
-        query.set("token", token);
-      }
+    // Never put the auth token in the URL: in-frame code can read location.href.
+    if (allowNetworkAccess && networkAccessEnabled) {
+      query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
-  }, [allowNetworkAccess, code]);
+  }, [allowNetworkAccess, networkAccessEnabled, code]);
+  // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
+  const pendingPostRef = useRef(false);
+  useEffect(() => {
+    pendingPostRef.current = true;
+  }, [src]);
   const postArtifactHtml = useCallback(() => {
+    if (!pendingPostRef.current) return;
+    pendingPostRef.current = false;
     // Sandboxed frame has an opaque origin ("null"), so a wildcard target is
     // required; the payload only reaches this iframe's contentWindow.
     iframeRef.current?.contentWindow?.postMessage(

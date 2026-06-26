@@ -86,7 +86,7 @@ unsloth studio -p 8888
 ```
 For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally.
 
-For a secure HTTPS link instead of a raw network port, use `unsloth studio --secure`. Studio stays bound to localhost and is served only through a free Cloudflare HTTPS tunnel (it fails closed if the tunnel can't start, so the raw port is never exposed).
+To reach Studio over HTTPS, use `unsloth studio --secure`. Studio stays bound to localhost and is reached only through a free Cloudflare tunnel, which publishes it at a public `https://*.trycloudflare.com` URL (it fails closed if the tunnel can't start, so the raw port is never exposed). This makes Studio reachable from the internet, so anyone with the link and API key can use it and run code: keep your API key private (see Remote access below).
 
 #### Docker
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
@@ -245,6 +245,15 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 ```powershell
 $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
 ```
+
+Point the frontend build at a corporate npm mirror/proxy with `UNSLOTH_NPM_REGISTRY` (for the developer install behind a firewall that blocks `registry.npmjs.org`):
+```bash
+UNSLOTH_NPM_REGISTRY=https://artifactory.example.com/api/npm/npm/ ./install.sh --local
+```
+```powershell
+$env:UNSLOTH_NPM_REGISTRY='https://artifactory.example.com/api/npm/npm/'; .\install.ps1 --local
+```
+It is threaded as `--registry` into the Studio frontend `npm`/`bun` installs; the supply-chain locks (7-day `min-release-age`, exact version pins) stay in force.
 
 Cap Studio's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`.
 

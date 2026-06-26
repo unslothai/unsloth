@@ -494,12 +494,15 @@ with sync_playwright() as p:
             # typeahead actually filters (else an ignored-input regression
             # would silently pass).
             def picker_visible_text():
-                return page.evaluate("""() => {
+                return robust_evaluate(
+                    page,
+                    """() => {
                     const el = document.querySelector(
                         '[role="dialog"], [role="listbox"], [role="menu"]'
                     );
                     return el ? (el.innerText || '').trim() : '';
-                }""")
+                }""",
+                )
 
             search.fill("qwen")
             page.wait_for_timeout(800)
@@ -535,9 +538,12 @@ with sync_playwright() as p:
 
     def _bubble_count():
         """Total [data-role='assistant'] elements (empty or not)."""
-        return page.evaluate("""() => {
+        return robust_evaluate(
+            page,
+            """() => {
             return document.querySelectorAll('[data-role="assistant"]').length;
-        }""")
+        }""",
+        )
 
     def send_and_wait(prompt, idx):
         # 1. Wait until the previous turn fully stopped: Send attached
@@ -569,6 +575,21 @@ with sync_playwright() as p:
         #    this at temp 0), and the old non-empty predicate got stuck
         #    on such bubbles.
         bubbles_before = _bubble_count()
+        # The llama.cpp and web update banners are fixed bottom-right toasts
+        # (z-9998 / z-9999) that can overlap the composer's Send button and
+        # intercept the click. Snooze whichever is showing before sending.
+        for prefix in ("llama", "web"):
+            snooze_btn = page.locator(f'[data-testid="{prefix}-update-snooze-button"]')
+            if snooze_btn.count():
+                try:
+                    snooze_btn.first.click(timeout = 2_000)
+                    page.wait_for_selector(
+                        f'[data-testid="{prefix}-update-banner"]',
+                        state = "detached",
+                        timeout = 5_000,
+                    )
+                except Exception:
+                    pass
         composer.click()
         composer.fill(prompt)
         page.locator('button[aria-label="Send message"]').click()
@@ -611,8 +632,11 @@ with sync_playwright() as p:
         send_and_wait(p_, i)
     shoot("04-after-five-turns")
 
-    texts = page.evaluate("""() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
-        .map(e => (e.innerText || '').trim())""")
+    texts = robust_evaluate(
+        page,
+        """() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
+        .map(e => (e.innerText || '').trim())""",
+    )
     if len(texts) < len(prompts):
         fail(f"expected >= {len(prompts)} assistant bubbles, got {len(texts)}")
     info(f"five turn lengths = {[len(t) for t in texts[:5]]}")
@@ -825,7 +849,9 @@ with sync_playwright() as p:
             # Settle. The ".dark" class on <html> is the ground truth
             # (theme-store toggles only that); don't gate on ".light".
             page.wait_for_timeout(700)
-            bg = page.evaluate("""() => {
+            bg = robust_evaluate(
+                page,
+                """() => {
                 const root = document.documentElement;
                 return {
                     cls:    root.className,
@@ -833,7 +859,8 @@ with sync_playwright() as p:
                     bg:     getComputedStyle(document.body).backgroundColor,
                     rbg:    getComputedStyle(root).backgroundColor,
                 };
-            }""")
+            }""",
+            )
             observed.append(bg)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
@@ -1035,7 +1062,8 @@ with sync_playwright() as p:
             shoot("15d-recent-clicked")
             info(f"OK clicked recent entry: {t[:60]!r}")
             # The landed thread must include at least one of our prompts.
-            turns_text = page.evaluate(
+            turns_text = robust_evaluate(
+                page,
                 """() => {
                 const els = document.querySelectorAll(
                     '[data-role="user"], [data-role="assistant"]'
@@ -1043,7 +1071,6 @@ with sync_playwright() as p:
                 return Array.from(els).map(e => (e.innerText || '')
                     .toLowerCase()).join(' ');
             }""",
-                None,
             )
             clicked_recent = True
             if any(k in turns_text for k in PROMPT_KEYWORDS):

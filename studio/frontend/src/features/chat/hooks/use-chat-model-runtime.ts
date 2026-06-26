@@ -25,6 +25,7 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  isLocalModelPath,
   pendingSelectionMatches,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
@@ -57,6 +58,11 @@ export type SelectedModelInput = {
   id: string;
   isLora?: boolean;
   ggufVariant?: string;
+  /** Where the pick came from (e.g. "hub", "local", "external"). Used to decide
+   *  whether an uncached repo should download via the Hub manager. */
+  source?: string;
+  /** Uncached non-GGUF HF repo staged for a snapshot download (variant null). */
+  isHubRepo?: boolean;
   loadingDescription?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
@@ -246,6 +252,9 @@ export function useChatModelRuntime() {
   const setLoras = useChatRuntimeStore((state) => state.setLoras);
   const setParams = useChatRuntimeStore((state) => state.setParams);
   const setModelsError = useChatRuntimeStore((state) => state.setModelsError);
+  const setLastModelLoadError = useChatRuntimeStore(
+    (state) => state.setLastModelLoadError,
+  );
   const setCheckpoint = useChatRuntimeStore((state) => state.setCheckpoint);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
 
@@ -481,8 +490,7 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora?.exportType === "lora");
-      // Covers Unix absolute (/), relative (./  ../), tilde (~/), Windows drive (C:\), UNC (\\server)
-      const isLocal = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(modelId);
+      const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
       const loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
@@ -493,6 +501,7 @@ export function useChatModelRuntime() {
         .filter(Boolean)
         .join(" ");
       setModelsError(null);
+      setLastModelLoadError(null); // clear prior failed-load marker
       setLoadToastDismissedState(false);
       const loadInfo = {
         id: modelId,
@@ -1184,6 +1193,7 @@ export function useChatModelRuntime() {
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
+        setLastModelLoadError(message); // load-specific failure for the attach gates
         if (throwOnError) {
           throw error instanceof Error ? error : new Error(message);
         }
@@ -1199,6 +1209,7 @@ export function useChatModelRuntime() {
       resetLoadingUi,
       setLoadToastDismissedState,
       setModelsError,
+      setLastModelLoadError,
       setParams,
     ],
   );

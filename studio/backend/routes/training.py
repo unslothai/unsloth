@@ -68,6 +68,11 @@ class TrainingStopRequest(PydanticBaseModel):
 router = APIRouter()
 logger = get_logger(__name__)
 
+# Consecutive 1s polls without a step update that count as a stall. Applied only
+# once stepping: the pre-first-step phase (model load + tokenization) can take far
+# longer, and timing out there made a healthy long-prep run look frozen.
+_PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
+
 
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
     """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
@@ -185,6 +190,68 @@ async def start_training(
                 )
             request.resume_from_checkpoint = resume_checkpoint
 
+        # Validate streaming-mode compatibility before any expensive work.
+        # Streaming is supported only for Hugging Face text datasets.
+        if request.dataset_streaming:
+            if not request.hf_dataset:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming requires hf_dataset; streaming is not supported for local datasets.",
+                )
+            if request.is_dataset_image or request.is_dataset_audio:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not supported for vision or audio datasets.",
+                )
+            if request.is_embedding:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
+                )
+            from utils.hardware import hardware as _hw
+
+            if _hw.DEVICE == _hw.DeviceType.MLX:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not yet supported on Apple Silicon (MLX); the MLX loader materializes the full dataset.",
+                )
+            if request.max_steps is None or request.max_steps <= 0:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "dataset_streaming requires max_steps > 0 because streaming datasets have no known length.",
+                )
+            if request.train_on_completions:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "dataset_streaming is not supported with train_on_completions yet.",
+                )
+            if request.eval_steps > 0:
+                train_split = request.train_split or "train"
+                if not request.eval_split or request.eval_split == train_split:
+                    raise HTTPException(
+                        status_code = 422,
+                        detail = "dataset_streaming with evaluation requires a separate eval_split.",
+                    )
+            # Streaming is HF-only: reject when the request also carries a local
+            # dataset path or an S3 config; those sources cannot be streamed via
+            # HF's streaming loader.
+            if request.local_datasets:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                        "Streaming is not supported with local file paths."
+                    ),
+                )
+            if request.s3_config is not None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                        "Streaming is not supported with S3 datasets."
+                    ),
+                )
+
         # Convert request to backend kwargs.
         training_kwargs = {
             "model_name": request.model_name,
@@ -199,6 +266,7 @@ async def start_training(
             "format_type": request.format_type,
             "subset": request.subset,
             "train_split": request.train_split,
+            "dataset_streaming": request.dataset_streaming,
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
             "dataset_slice_start": request.dataset_slice_start,
@@ -249,6 +317,7 @@ async def start_training(
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
+            "subject": current_subject,
             "gpu_ids": request.gpu_ids,
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
@@ -769,9 +838,20 @@ async def stream_training_progress(
         # ── Live polling loop ────────────────────────────────────
         last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
-        max_no_updates = 1800  # Timeout after 30 min (large models need compile time)
+        # The stall timeout applies only once the run is stepping (pre-step prep
+        # may legitimately emit no step for a long time). On reconnect to an
+        # already-stepping run, seed from the resume point / history, else a worker
+        # that hangs after step N never times out for a client that reconnects past it.
+        seen_live_step = (resume_from_step is not None and resume_from_step > 0) or bool(
+            backend.step_history
+        )
 
         while backend.is_training_active():
+            # Client gone: end the generator without falling through to the final
+            # "complete" frame, which a buffered/proxy consumer could otherwise read
+            # as a finished run while training is still active.
+            if await request.is_disconnected():
+                return
             try:
                 tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
                 live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0
@@ -807,6 +887,7 @@ async def stream_training_progress(
                         )
                         last_step = current_step
                         no_update_count = 0
+                        seen_live_step = True
                     else:
                         no_update_count += 1
                         # Heartbeat every 10 seconds.
@@ -849,8 +930,9 @@ async def stream_training_progress(
                             event_id = 0,
                         )
 
-                # Timeout check
-                if no_update_count > max_no_updates:
+                # Fires only once stepping: a long pre-first-step prep phase is not
+                # a stall, and ending the stream there made a healthy run look frozen.
+                if seen_live_step and no_update_count > _PROGRESS_STALL_TIMEOUT_POLLS:
                     logger.warning("Progress stream timeout - no updates received")
                     tp_timeout = getattr(
                         getattr(backend, "trainer", None), "training_progress", None

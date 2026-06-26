@@ -534,29 +534,34 @@ class InferenceOrchestrator:
             except (EOFError, OSError, ValueError):
                 break
 
-            rid = resp.get("request_id")
-            rtype = resp.get("type", "")
+            # Sole consumer of the response queue; if it died every in-flight
+            # stream would hang, so never let routing kill the dispatcher.
+            try:
+                rid = resp.get("request_id")
+                rtype = resp.get("type", "")
 
-            # Status messages — log and skip
-            if rtype == "status":
-                logger.info("Subprocess status: %s", resp.get("message", ""))
-                continue
-
-            # Route to mailbox if a matching request_id exists
-            if rid:
-                with self._mailbox_lock:
-                    mbox = self._mailboxes.get(rid)
-                if mbox is not None:
-                    mbox.put(resp)
+                # Status messages: log and skip
+                if rtype == "status":
+                    logger.info("Subprocess status: %s", resp.get("message", ""))
                     continue
 
-            # No matching mailbox (a _gen_lock reader or orphaned). Can't
-            # un-get from mp.Queue, so just log. (status was handled above.)
-            logger.debug(
-                "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
-                rid,
-                rtype,
-            )
+                # Route to mailbox if a matching request_id exists
+                if rid:
+                    with self._mailbox_lock:
+                        mbox = self._mailboxes.get(rid)
+                    if mbox is not None:
+                        mbox.put(resp)
+                        continue
+
+                # No matching mailbox; can't un-get from mp.Queue, so just log.
+                logger.debug(
+                    "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
+                    rid,
+                    rtype,
+                )
+            except Exception:
+                logger.exception("Inference dispatcher: failed to route a response; continuing")
+                continue
 
     def _generate_dispatched(
         self,
@@ -716,6 +721,7 @@ class InferenceOrchestrator:
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
         gpu_ids: Optional[list[int]] = None,
+        subject: Optional[str] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -739,6 +745,7 @@ class InferenceOrchestrator:
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,
                 "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
+                "subject": subject,
                 "gpu_ids": gpu_ids,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(

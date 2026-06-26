@@ -601,7 +601,7 @@ def _load_correct_tokenizer(
         cache_dir = cache_dir,
     )
 
-    if not fix_tokenizer or tokenizer_name in IGNORED_TOKENIZER_NAMES:
+    if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
         return fast_tokenizer
     # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
@@ -626,6 +626,26 @@ def _load_correct_tokenizer(
         return fast_tokenizer
 
 
+def _fix_pad_token(tokenizer):
+    """Heal a bad/missing pad_token before chat-template repair.
+
+    Delegates to unsloth_zoo's shared fix_pad_token (single source of truth); against
+    an older unsloth_zoo without it, this is a no-op (a pad-named token like
+    <|vision_pad|> is already a valid pad). allow_add=False keeps this side-effect
+    free: there is no model here to resize embeddings, so a brand new pad token is
+    never added - the later model-aware patch_tokenizer call finishes the job and is
+    idempotent.
+    """
+    if tokenizer is None:
+        return tokenizer
+    try:
+        from unsloth_zoo.pad_token import fix_pad_token
+    except Exception:
+        return tokenizer
+    fix_pad_token(tokenizer, allow_add = False)
+    return tokenizer
+
+
 def load_correct_tokenizer(
     tokenizer_name,
     model_max_length = None,
@@ -644,6 +664,9 @@ def load_correct_tokenizer(
         cache_dir = cache_dir,
         fix_tokenizer = fix_tokenizer,
     )
+
+    if fix_tokenizer:
+        _fix_pad_token(tokenizer)
 
     ### 1. Fixup tokenizer's chat_template
     old_chat_template = getattr(tokenizer, "chat_template", None)
