@@ -644,24 +644,30 @@ class _MLXTrainerAdapter:
         current_config = dict(config)
         current_stop_queue = stop_queue
         while True:
-            self._active_attempt_id += 1
-            attempt_config = {**current_config, "attempt_id": self._active_attempt_id}
-            self._stop_queue = current_stop_queue
-            proc = self._start_mlx_worker_process(
-                attempt_config,
-                event_queue,
-                current_stop_queue,
-            )
-            self._worker_process = proc
+            with self._lock:
+                if self.should_stop:
+                    self._needs_xet_respawn = False
+                    return
+                self._active_attempt_id += 1
+                attempt_config = {**current_config, "attempt_id": self._active_attempt_id}
+                if current_config.get("disable_xet"):
+                    self._needs_xet_respawn = False
+                self._stop_queue = current_stop_queue
+                proc = self._start_mlx_worker_process(
+                    attempt_config,
+                    event_queue,
+                    current_stop_queue,
+                )
+                self._worker_process = proc
             proc.join()
-            self._worker_process = None
-            if self._needs_xet_respawn and not self.should_stop:
-                self._needs_xet_respawn = False
-                current_config = {**current_config, "disable_xet": True}
-                current_stop_queue = _CTX.Queue()
-                continue
-            if self.should_stop:
-                self._needs_xet_respawn = False
+            with self._lock:
+                self._worker_process = None
+                if self._needs_xet_respawn and not self.should_stop:
+                    current_config = {**current_config, "disable_xet": True}
+                    current_stop_queue = _CTX.Queue()
+                    continue
+                if self.should_stop:
+                    self._needs_xet_respawn = False
             return
 
     def _run_mlx_worker(
@@ -720,8 +726,12 @@ class _MLXTrainerAdapter:
 
         etype = event.get("type")
         if etype == "status":
+            output_dir = event.get("output_dir")
+            if output_dir is not None:
+                self.output_dir = output_dir
             self._update_progress(
-                status_message = event.get("status_message") or event.get("message") or ""
+                status_message = event.get("status_message") or event.get("message") or "",
+                **({"output_dir": output_dir} if output_dir is not None else {}),
             )
             return
         if etype == "progress":
@@ -803,12 +813,13 @@ class _MLXTrainerAdapter:
             self.is_training = False
 
     def stop_training(self, save: bool = True):
-        self.should_stop = True
-        self.save_on_stop = bool(save)
-        self._needs_xet_respawn = False
-        if self._stop_queue is not None:
-            self._stop_queue.put({"type": "stop", "save": save})
-        proc = self._worker_process
+        with self._lock:
+            self.should_stop = True
+            self.save_on_stop = bool(save)
+            self._needs_xet_respawn = False
+            if self._stop_queue is not None:
+                self._stop_queue.put({"type": "stop", "save": save})
+            proc = self._worker_process
         if proc is not None and proc.is_alive() and not save:
             proc.terminate()
         status_message = (
@@ -853,14 +864,12 @@ class TrainingBackend:
         # True while a pump thread should be running; cleared on intended exits.
         # Left True after an abnormal death so _ensure_pump_alive spots a crash.
         self._pump_running: bool = False
-        self._start_in_progress: bool = False
         self._lock = threading.Lock()
 
         # Progress state (updated by pump thread from subprocess events)
         self._progress = TrainingProgress()
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
-        self._pending_stop_save: Optional[bool] = None
 
         # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
@@ -893,10 +902,6 @@ class TrainingBackend:
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
-    def _clear_start_in_progress(self) -> None:
-        with self._lock:
-            self._start_in_progress = False
-
     # ------------------------------------------------------------------
     # Public API (called by routes/training.py)
     # ------------------------------------------------------------------
@@ -921,20 +926,15 @@ class TrainingBackend:
         Hook failures never block the start.
         """
         with self._lock:
-            if self._start_in_progress or (self._proc is not None and self._proc.is_alive()):
+            if self._proc is not None and self._proc.is_alive():
                 logger.warning("Training subprocess already running")
                 return False
-            self._start_in_progress = True
-            self._should_stop = False
-            self._cancel_requested = False
-            self._pending_stop_save = None
 
         # Join prior pump thread — refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
                 logger.warning("Previous pump thread did not exit within 5s — refusing to start")
-                self._clear_start_in_progress()
                 return False
         self._pump_thread = None
         # Clear a stale crash flag from a prior died pump so the watchdog can't
@@ -942,11 +942,7 @@ class TrainingBackend:
         self._pump_running = False
 
         # Build config dict for the subprocess.
-        try:
-            config = _build_training_worker_config(kwargs)
-        except Exception:
-            self._clear_start_in_progress()
-            raise
+        config = _build_training_worker_config(kwargs)
 
         # Split GPU validation from placement around the VRAM hook:
         #   * Explicit gpu_ids are validated here (raises -> the route returns 400
@@ -976,13 +972,7 @@ class TrainingBackend:
             config["resolved_gpu_ids"] = None
             config["gpu_selection"] = None
         elif gpu_ids:
-            try:
-                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-                    gpu_ids, **gpu_selection_kwargs
-                )
-            except Exception:
-                self._clear_start_in_progress()
-                raise
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(gpu_ids, **gpu_selection_kwargs)
             config["resolved_gpu_ids"] = resolved_gpu_ids
             config["gpu_selection"] = gpu_selection
         else:
@@ -997,13 +987,7 @@ class TrainingBackend:
                 logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
         if defer_auto_selection:
-            try:
-                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-                    None, **gpu_selection_kwargs
-                )
-            except Exception:
-                self._clear_start_in_progress()
-                raise
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
             config["resolved_gpu_ids"] = resolved_gpu_ids
             config["gpu_selection"] = gpu_selection
 
@@ -1030,17 +1014,14 @@ class TrainingBackend:
                 adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
-            self._clear_start_in_progress()
             return False
 
         logger.info("Training subprocess started (pid=%s)", proc.pid)
-        with self._lock:
-            self._event_queue = event_queue
-            self._stop_queue = stop_queue
-            self._proc = proc
 
         # Reset state (old pump thread dead, proc.start() succeeded).
         self.current_job_id = job_id
+        self._should_stop = False
+        self._cancel_requested = False
         self._progress = TrainingProgress(
             is_training = True, status_message = "Initializing training..."
         )
@@ -1068,57 +1049,32 @@ class TrainingBackend:
         # Create the DB run row before the pump can consume events, so it appears
         # in history during model loading and a fast terminal worker can't race the
         # pump into a duplicate create/finalize. From here the pump only finalizes.
-        try:
-            self._ensure_db_run_created()
-        except Exception:
-            self._clear_start_in_progress()
-            raise
+        self._ensure_db_run_created()
 
         # Assign handles and start the pump together under the lock so a concurrent
         # poll can't see a live _proc with no pump and spawn a duplicate.
         new_pump = threading.Thread(target = self._pump_loop, daemon = True)
         with self._lock:
-            pending_stop_save = self._pending_stop_save
-            self._pending_stop_save = None
-            stopping = self._should_stop
-            cancelled = self._cancel_requested
             self._pump_running = False
             self._event_queue = event_queue
             self._stop_queue = stop_queue
             self._proc = proc
             self._pump_thread = new_pump
-            self._start_in_progress = False
-            if stopping:
-                self._progress.status_message = (
-                    "Cancelling training..."
-                    if cancelled
-                    else "Stopping training and saving checkpoint..."
-                )
             new_pump.start()
-
-        if pending_stop_save is not None:
-            try:
-                stop_queue.put({"type": "stop", "save": pending_stop_save})
-            except (OSError, ValueError):
-                pass
 
         return True
 
     def stop_training(self, save: bool = True) -> bool:
         """Send stop signal to the training subprocess."""
+        self._should_stop = True
+        if not save:
+            self._cancel_requested = True
         with self._lock:
-            self._should_stop = True
-            if not save:
-                self._cancel_requested = True
-            self._needs_xet_respawn = False
-            stop_sent = False
             if self._stop_queue is not None:
                 try:
                     self._stop_queue.put({"type": "stop", "save": save})
-                    stop_sent = True
                 except (OSError, ValueError):
                     pass
-            self._pending_stop_save = None if stop_sent else save
             # Update progress immediately for responsive UI.
             self._progress.status_message = (
                 "Stopping training and saving checkpoint..." if save else "Cancelling training..."
@@ -1128,9 +1084,6 @@ class TrainingBackend:
     def force_terminate(self) -> None:
         """Force-kill the training subprocess so state can be reset immediately."""
         with self._lock:
-            self._start_in_progress = False
-            self._pending_stop_save = None
-            self._needs_xet_respawn = False
             if self._proc is not None and self._proc.is_alive():
                 logger.info("Force-terminating training subprocess (pid=%s)", self._proc.pid)
                 self._proc.terminate()
@@ -1166,8 +1119,7 @@ class TrainingBackend:
         """
         msg = event.get("message", "Download stalled")
         with self._lock:
-            stopping = self._should_stop
-            recover = self._in_model_load and not self._xet_fallback_used and not stopping
+            recover = self._in_model_load and not self._xet_fallback_used
             proc = self._proc
             if recover:
                 self._xet_fallback_used = True
@@ -1175,25 +1127,19 @@ class TrainingBackend:
                 self._progress.status_message = (
                     "Model download stalled on Xet; retrying over HTTP..."
                 )
-            elif stopping:
-                self._needs_xet_respawn = False
             else:
                 self._progress.error = self._progress.error or (
                     "Model download stalled even over HTTP -- check your network connection"
                 )
         if recover:
             logger.warning("Training model-load stalled on Xet; respawning over HTTP: %s", msg)
-        elif stopping:
-            logger.info(
-                "Training model-load stalled after stop request; terminating worker: %s", msg
-            )
         else:
             logger.error("Training download stalled with no further fallback: %s", msg)
         # Terminate either way so the pump loop proceeds (respawn or finalize).
         if proc is not None and proc.is_alive():
             proc.terminate()
 
-    def _respawn_worker_disable_xet(self) -> bool:
+    def _respawn_worker_disable_xet(self) -> None:
         """Respawn the worker once with HF_HUB_DISABLE_XET=1 after a model-load
         stall. Runs on the exiting pump thread, reaps the terminated worker, and
         starts a fresh worker + pump. DB/progress run-state is preserved so the
@@ -1202,23 +1148,15 @@ class TrainingBackend:
         config = self._last_full_config
         if config is None:
             logger.error("Cannot respawn training worker: no stored config")
-            return False
+            return
 
         with self._lock:
             old_proc = self._proc
-            if self._should_stop:
-                self._needs_xet_respawn = False
-                return False
         if old_proc is not None:
             old_proc.join(timeout = 5.0)
             if old_proc.is_alive():
                 old_proc.kill()
                 old_proc.join(timeout = 2.0)
-
-        with self._lock:
-            if self._should_stop:
-                self._needs_xet_respawn = False
-                return False
 
         config = {**config, "disable_xet": True}
         self._last_full_config = config
@@ -1257,33 +1195,19 @@ class TrainingBackend:
                 status = "error",
                 error_message = "Failed to recover stalled model download",
             )
-            return True
+            return
 
         logger.info("Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid)
         new_pump = threading.Thread(target = self._pump_loop, daemon = True)
-        cancel_new_proc = False
         with self._lock:
-            if self._should_stop:
-                self._needs_xet_respawn = False
-                cancel_new_proc = True
-            else:
-                self._in_model_load = False
-                self._event_queue = event_queue
-                self._stop_queue = stop_queue
-                self._proc = new_proc
-                self._pump_thread = new_pump
-                # Start under the lock so _ensure_pump_alive can never observe the
-                # new pump as a not-yet-started (dead) thread and spawn a duplicate.
-                new_pump.start()
-        if cancel_new_proc:
-            if new_proc.is_alive():
-                new_proc.terminate()
-            new_proc.join(timeout = 5.0)
-            if new_proc.is_alive():
-                new_proc.kill()
-                new_proc.join(timeout = 2.0)
-            return False
-        return True
+            self._in_model_load = False
+            self._event_queue = event_queue
+            self._stop_queue = stop_queue
+            self._proc = new_proc
+            self._pump_thread = new_pump
+            # Start under the lock so _ensure_pump_alive can never observe the
+            # new pump as a not-yet-started (dead) thread and spawn a duplicate.
+            new_pump.start()
 
     def _ensure_pump_alive(self) -> bool:
         """Restart the event pump if it crashed, even after the worker exited.
@@ -1320,9 +1244,6 @@ class TrainingBackend:
         # training invisibly behind a frozen UI. Cheap enough for per-second polls.
         self._ensure_pump_alive()
         with self._lock:
-            if self._start_in_progress:
-                return True
-
             if self._proc is not None and self._proc.is_alive():
                 return True
 
@@ -1476,12 +1397,10 @@ class TrainingBackend:
                 # Model-load stall: respawn over HTTP instead of finalizing as failure.
                 # Starts a fresh pump on this thread (no self-join); it takes over
                 # _pump_running, so this exit leaves the flag set.
-                if self._needs_xet_respawn and not self._should_stop:
+                if self._needs_xet_respawn:
                     self._needs_xet_respawn = False
-                    if self._respawn_worker_disable_xet():
-                        return
-                elif self._needs_xet_respawn:
-                    self._needs_xet_respawn = False
+                    self._respawn_worker_disable_xet()
+                    return
 
                 # Mark done if no explicit complete/error was received.
                 with self._lock:
@@ -1669,11 +1588,6 @@ class TrainingBackend:
                 self._progress.status_message = event.get("message", "")
                 self._progress.is_training = True
 
-            elif (
-                etype in {"complete", "error"} and self._needs_xet_respawn and not self._should_stop
-            ):
-                return
-
             elif etype == "complete":
                 msg = event.get("status_message", "Training completed")
                 stopped = self._should_stop or msg.strip().lower() in {
@@ -1695,7 +1609,6 @@ class TrainingBackend:
                 }
 
             elif etype == "error":
-                self._needs_xet_respawn = False
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
                 logger.error("Training error: %s", event.get("error"))

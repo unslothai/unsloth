@@ -1907,6 +1907,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     output_dir = _resolve_mlx_output_dir(config, model_name)
     ensure_dir(Path(output_dir))
+    _send(
+        "status",
+        status_message = "Output directory prepared",
+        output_dir = output_dir,
+    )
 
     if _finish_if_stop_requested():
         return
