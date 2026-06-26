@@ -209,6 +209,8 @@ def test_mlx_training_arguments_reject_unknown_kwargs():
 
     with pytest.raises(NotImplementedError, match = "assistant_only_loss"):
         unsloth.UnslothTrainingArguments(assistant_only_loss = True)
+    with pytest.raises(NotImplementedError, match = "completion_only_loss"):
+        unsloth.UnslothTrainingArguments(completion_only_loss = True)
 
 
 def test_mlx_training_arguments_reject_unsupported_object_flags():
@@ -221,6 +223,13 @@ def test_mlx_training_arguments_reject_unsupported_object_flags():
 
     with pytest.raises(NotImplementedError, match = "assistant_only_loss"):
         unsloth._coerce_mlx_training_args(ArgsObject())
+
+    class CompletionArgsObject:
+        max_steps = 1
+        completion_only_loss = True
+
+    with pytest.raises(NotImplementedError, match = "completion_only_loss"):
+        unsloth._coerce_mlx_training_args(CompletionArgsObject())
 
 
 def test_mlx_training_arguments_accept_output_dir_positional():
@@ -239,6 +248,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
 
     class ArgsObject:
         optim = "adamw_8bit"
+        eval_steps = None
         max_length = 321
         max_steps = 10
         save_steps = 500
@@ -250,6 +260,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
         args = unsloth._coerce_mlx_training_args(ArgsObject())
 
     assert args.optim == "adamw"
+    assert args.eval_steps == 0
     assert args.max_seq_length == 321
     assert args.save_steps == 0
     assert args.warmup_steps == 1
@@ -387,6 +398,12 @@ def test_mlx_trainer_preserves_explicit_dataset_order():
         args = unsloth.UnslothTrainingArguments(max_steps = 1),
         dataset_num_proc = 4,
     )
+    implicit_streaming = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1, streaming = True),
+    )
     explicit_no_clip = unsloth.UnslothTrainer(
         model = _DummyModel(),
         tokenizer = None,
@@ -400,6 +417,7 @@ def test_mlx_trainer_preserves_explicit_dataset_order():
     assert explicit_default.args.dataset_order == "default"
     assert explicit_sequential.args.dataset_order == "sequential"
     assert implicit_with_override.args.dataset_order == "torch_randperm"
+    assert implicit_streaming.args.dataset_order == "default"
     assert implicit_with_override.args.max_grad_norm == 1.0
     assert explicit_no_clip.args.max_grad_norm == 0.0
 
@@ -425,6 +443,8 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
     explicit_max_length_no_model = _DummyModel()
     trainer_override_model = _DummyModel()
     trainer_override_model.max_seq_length = 321
+    config_override_model = _DummyModel()
+    config_override_model.max_seq_length = 432
 
     implicit = unsloth.UnslothTrainer(
         model = model,
@@ -481,6 +501,13 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
         args = unsloth.UnslothTrainingArguments(max_steps = 1),
         max_seq_length = 654,
     )
+    config_with_override = unsloth.UnslothTrainer(
+        model = config_override_model,
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.MLXTrainingConfig(max_steps = 1),
+        dataset_num_proc = 4,
+    )
 
     assert implicit.args.max_seq_length == 321
     assert implicit.args.max_length == 321
@@ -500,6 +527,8 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
     assert explicit_max_length.args.max_length == 123
     assert trainer_override.args.max_seq_length == 654
     assert trainer_override.args.max_length == 654
+    assert config_with_override.args.max_seq_length == 432
+    assert config_with_override.args.max_length == 432
 
 
 def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():

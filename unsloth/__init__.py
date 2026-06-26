@@ -279,6 +279,8 @@ if _IS_MLX:
     )
 
     def _normalize_mlx_training_value(key, value):
+        if key == "eval_steps" and value is None:
+            return 0
         if key != "optim":
             return value
         try:
@@ -511,12 +513,12 @@ if _IS_MLX:
                 if key != target and target in kwargs:
                     continue
                 value = _normalize_mlx_training_value(target, value)
+                if target in _MLX_UNSUPPORTED_TASK_ARGUMENTS:
+                    if _is_meaningful_mlx_extra_value(value):
+                        extra_kwargs[key] = value
+                    continue
                 if target in _MLX_TRAINING_CONFIG_FIELDS:
                     filtered_kwargs[target] = value
-                elif key in _MLX_UNSUPPORTED_TASK_ARGUMENTS and not _is_meaningful_mlx_extra_value(
-                    value
-                ):
-                    continue
                 else:
                     extra_kwargs[key] = value
 
@@ -622,7 +624,9 @@ if _IS_MLX:
         model = None,
         max_seq_length_explicit = False,
     ):
-        if not getattr(args, "preserve_dataset_order", False) and not getattr(
+        if not getattr(args, "streaming", False) and not getattr(
+            args, "preserve_dataset_order", False
+        ) and not getattr(
             args, "_unsloth_mlx_dataset_order_explicit", False
         ):
             default_order = getattr(MLXTrainingConfig, "dataset_order", "default")
@@ -684,6 +688,15 @@ if _IS_MLX:
                 "_unsloth_mlx_max_seq_length_explicit",
                 None,
             )
+            if max_seq_length_explicit is None:
+                args_max_seq_length = _positive_mlx_context_length(
+                    getattr(args, "max_seq_length", None),
+                )
+                default_max_seq_length = getattr(MLXTrainingConfig, "max_seq_length", 2048)
+                max_seq_length_explicit = (
+                    args_max_seq_length is not None
+                    and args_max_seq_length != default_max_seq_length
+                )
             max_length_value = getattr(
                 args,
                 "_unsloth_mlx_max_length_value",

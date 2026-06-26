@@ -2095,6 +2095,13 @@ def get_chat_template(
     # Re-wrap so the trainer gets the same TokenizerWrapper type back.
     if _mlx_tokenizer_wrapper is not None:
         _mlx_tokenizer_wrapper._tokenizer = tokenizer
+        eos_token_id = getattr(tokenizer, "eos_token_id", None)
+        if eos_token_id is not None:
+            _mlx_tokenizer_wrapper._eos_token_ids = {eos_token_id}
+        _mlx_tokenizer_wrapper._chat_template = None
+        _mlx_tokenizer_wrapper.has_chat_template = (
+            getattr(tokenizer, "chat_template", None) is not None
+        )
         tokenizer = _mlx_tokenizer_wrapper
     return tokenizer#, stopping_criteria
 
