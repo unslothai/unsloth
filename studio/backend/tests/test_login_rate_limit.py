@@ -329,6 +329,31 @@ class TestBucketKeyAndBlocking:
         auth_routes._record_login_failure(attacker)
         assert auth_routes._login_blocked(attacker) > 0
 
+    def test_successful_login_clears_overflow_throttle(self, env_no_proxy, monkeypatch):
+        """A successful login resets the IP's throttle, including overflow, so a
+        single later typo is not immediately blocked.
+        """
+        from routes import auth as auth_routes
+
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
+
+        # Saturate the dict, then push one IP into overflow until it is throttled.
+        for idx in range(10):
+            auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
+        ip = ("198.51.100.7", "admin")
+        for _ in range(5):
+            auth_routes._record_login_failure(ip)
+        assert auth_routes._login_blocked(ip) > 0
+
+        # A successful login from that IP clears its overflow entries...
+        auth_routes._clear_login_bucket(ip)
+        assert auth_routes._login_blocked(ip) == 0
+        # ...and a single subsequent failure does not immediately re-block it.
+        auth_routes._record_login_failure(ip)
+        assert auth_routes._login_blocked(ip) == 0
+
 
 # ---------- /login 429 body ----------
 
