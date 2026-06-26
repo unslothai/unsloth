@@ -771,11 +771,9 @@ class ExternalProviderClient:
                 self.base_url = self.base_url[: -len("/openai")]
         self.api_key = api_key
         self._timeout = httpx.Timeout(timeout, connect = 10.0)
-        # Disable read timeout on SSE streams: reasoning-heavy models pause
-        # tens of seconds between bytes while thinking, and httpx's read
-        # timeout is the per-byte gap, not wall clock. connect/write bounds
-        # still surface real network failures.
-        self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = None)
+        # Generous per-byte read timeout: reasoning models pause tens of seconds
+        # between bytes, but a dead upstream must eventually error, not hang forever.
+        self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = 300.0)
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""

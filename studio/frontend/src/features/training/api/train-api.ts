@@ -143,37 +143,46 @@ export async function streamTrainingProgress(options: {
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
 
-    buffer += decoder.decode(value, { stream: true });
+      buffer += decoder.decode(value, { stream: true });
 
-    let separatorIndex = buffer.search(/\r?\n\r?\n/);
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-      buffer = buffer.slice(separatorIndex + separatorLength);
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
+        buffer = buffer.slice(separatorIndex + separatorLength);
 
-      if (rawEvent.startsWith("retry:")) {
+        if (rawEvent.startsWith("retry:")) {
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+
+        try {
+          const event = parseSseEvent(rawEvent);
+          if (event) {
+            options.onEvent(event);
+          }
+        } catch (error) {
+          if (!isAbortError(error)) {
+            throw error;
+          }
+        }
+
         separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
       }
-
-      try {
-        const event = parseSseEvent(rawEvent);
-        if (event) {
-          options.onEvent(event);
-        }
-      } catch (error) {
-        if (!isAbortError(error)) {
-          throw error;
-        }
-      }
-
-      separatorIndex = buffer.search(/\r?\n\r?\n/);
+    }
+  } finally {
+    // Release the stream lock now instead of leaking the reader until GC.
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
     }
   }
 }
