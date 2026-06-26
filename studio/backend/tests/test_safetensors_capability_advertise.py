@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Capability advertisement contract: classifier honesty, worker→
-orchestrator IPC hop, and route-layer end-to-end. Pure helpers + fakes;
-no torch / transformers import.
-"""
+"""Capability advertisement contract: classifier honesty, worker->orchestrator
+IPC hop, route-layer end-to-end. Pure helpers + fakes; no torch/transformers."""
 
 from __future__ import annotations
 
@@ -110,13 +107,14 @@ def test_detect_safetensors_features_none_template_returns_all_false():
         "supports_reasoning": False,
         "reasoning_style": "enable_thinking",
         "reasoning_always_on": False,
+        "reasoning_effort_levels": [],
         "supports_preserve_thinking": False,
         "supports_tools": False,
     }
 
 
 def test_detect_safetensors_features_gptoss_disables_tools():
-    """gpt-oss Harmony: tools intentionally off even if template marks it."""
+    """gpt-oss Harmony: tools off even if template marks it."""
     from routes.inference import _detect_safetensors_features
 
     backend = MagicMock()
@@ -268,9 +266,22 @@ def test_detect_safetensors_features_function_xml_format_keeps_tools_on():
     assert flags["supports_tools"] is True
 
 
-# Qwen3.5 family pins -- the live GGUF + safetensors templates fetched
-# from the unsloth/Qwen3.5-0.8B(-GGUF) repos both wrap tool calls as
-# ``<tool_call>\n<function=name>...``. Capture a faithful slice so the
+def test_detect_safetensors_features_gemma_native_tool_call_keeps_tools_on():
+    """Gemma 4 emits <|tool_call>call:name{...}<tool_call|>, which the shared
+    parser now reads, so the gate must not suppress tools for it."""
+    from routes.inference import _detect_safetensors_features
+
+    tpl_with_gemma_native = (
+        "{%- if tools -%}Tool call format: "
+        "<|tool_call>call:name{key:value}<tool_call|>{%- endif -%}"
+    )
+    backend = SimpleNamespace(active_model_name = "unsloth/gemma-4-12b-it")
+    flags = _detect_safetensors_features(backend, tpl_with_gemma_native)
+    assert flags["supports_tools"] is True
+
+
+# Qwen3.5 family pin: the live GGUF + safetensors templates both wrap tool
+# calls as ``<tool_call>\n<function=name>...``. Faithful slice so the
 # classifier never silently regresses for this family.
 
 QWEN35_TOOL_INSTRUCTION = (
@@ -295,7 +306,7 @@ QWEN35_TOOL_INSTRUCTION = (
 
 
 def test_detect_safetensors_features_qwen35_keeps_tools_on():
-    """unsloth/Qwen3.5-0.8B family must surface tools+reasoning enabled."""
+    """unsloth/Qwen3.5-0.8B family must surface tools+reasoning on."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/Qwen3.5-0.8B")
@@ -309,7 +320,7 @@ def test_detect_safetensors_features_qwen35_keeps_tools_on():
 
 
 def test_orchestrator_mirrors_chat_template_info_into_models_dict():
-    """Worker → orchestrator must copy chat_template_info verbatim."""
+    """Worker → orchestrator copies chat_template_info verbatim."""
     from core.inference.orchestrator import InferenceOrchestrator
 
     orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
@@ -335,7 +346,7 @@ def test_orchestrator_mirrors_chat_template_info_into_models_dict():
         },
     }
 
-    # Replay orchestrator.load_model's mirror block verbatim.
+    # Replay orchestrator.load_model's mirror block.
     orch.active_model_name = model_info["identifier"]
     orch.models[orch.active_model_name] = {
         "is_vision": model_info.get("is_vision", False),
@@ -430,11 +441,7 @@ def test_worker_load_reply_payload_includes_chat_template_info():
         "is_gguf": False,
     }
     _bm = getattr(backend, "models", {}) or {}
-    _entry = (
-        _bm.get(mc.identifier)
-        or _bm.get(getattr(backend, "active_model_name", None))
-        or {}
-    )
+    _entry = _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
     _tpl_info = _entry.get("chat_template_info")
     if isinstance(_tpl_info, dict):
         model_info["chat_template_info"] = {
@@ -451,7 +458,7 @@ def test_worker_load_reply_payload_includes_chat_template_info():
 
 
 def test_worker_load_reply_payload_survives_missing_template():
-    """Tokenizer with no chat_template still produces a valid reply."""
+    """Tokenizer with no chat_template still yields a valid reply."""
 
     class _StubBackend:
         def __init__(self):
@@ -486,7 +493,7 @@ def test_worker_load_reply_payload_survives_missing_template():
 
 
 def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
-    """End-to-end: Qwen3 safetensors flips supports_tools=True."""
+    """E2E: Qwen3 safetensors flips supports_tools=True."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(

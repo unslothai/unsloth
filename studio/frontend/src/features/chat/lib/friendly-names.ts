@@ -2,25 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Friendly default names for auto-created OpenAI shell containers.
- * Used by the chat-adapter when the lazy-create path fires (Code pill
- * on, no thread container yet, user has set a non-default TTL). The
- * goal is a human-memorable label like "otter" or "harbor" instead of
- * "chat-abc12345" — the user can still rename via the Studio-side
- * alias map.
+ * Friendly default names for auto-created OpenAI shell containers, used by the
+ * chat-adapter's lazy-create path (Code pill on, no thread container, non-default
+ * TTL). Goal: a memorable label like "otter" instead of "chat-abc12345"; users
+ * can still rename via the Studio alias map.
  *
- * The list is curated to:
- *   - Be unambiguous, non-offensive nouns from natural categories
- *     (animals, plants, geography, materials, weather).
- *   - Avoid technical / political / brand words that might read as
- *     odd in a chat UI.
- *   - Stay reasonably small so the bundle cost is negligible (~200
- *     entries × ~7 bytes ≈ 1.5 KB).
+ * The list is curated to be unambiguous, non-offensive nouns from natural
+ * categories (animals, plants, geography, materials, weather), avoid
+ * technical/political/brand words, and stay small (~1.5 KB).
  *
- * Collisions are tolerated — the container's real unique key is its
- * ``cntr_*`` id, not its name. A short random hex suffix is appended
- * to make accidental same-name collisions visually distinct in the
- * picker list.
+ * Collisions are tolerated: the real unique key is the ``cntr_*`` id, not the
+ * name. A short random hex suffix keeps same-name picks visually distinct.
  */
 
 const WORDS = [
@@ -223,20 +215,15 @@ function randomHexSuffix(): string {
   ) {
     return crypto.randomUUID().replace(/-/g, "").slice(0, 4);
   }
-  // Older browser fallback. Math.random is fine here — this is a
-  // display suffix, not a security token.
+  // Older-browser fallback. Math.random is fine: display suffix, not a token.
   return Math.floor(Math.random() * 0xffff)
     .toString(16)
     .padStart(4, "0");
 }
 
 /**
- * Returns a single English-word name with a short random hex suffix.
- *
- * Example output: "kestrel-3f9c", "harbor-a012".
- *
- * The suffix keeps containers visually distinguishable in the picker
- * when the same word recurs across creations.
+ * Returns an English-word name with a short random hex suffix (e.g.
+ * "kestrel-3f9c"), so repeated words stay distinguishable in the picker.
  */
 export function pickFriendlyContainerName(): string {
   const word = WORDS[Math.floor(Math.random() * WORDS.length)] ?? "container";

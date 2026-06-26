@@ -11,12 +11,13 @@ export interface InferenceParams {
   maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
+  systemVariables: string;
   checkpoint: string;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trustRemoteCode?: boolean;
   /**
-   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; higher OTPS at
-   * 6x standard Opus pricing. Default false.
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; higher OTPS at 6x Opus
+   * pricing. Default false.
    * https://platform.claude.com/docs/en/build-with-claude/fast-mode
    */
   fastMode?: boolean;
@@ -32,6 +33,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   maxSeqLength: 4096,
   maxTokens: 8192,
   systemPrompt: "",
+  systemVariables: "",
   checkpoint: "",
   trustRemoteCode: false,
   fastMode: false,
@@ -44,6 +46,7 @@ export interface ChatModelSummary {
   isVision: boolean;
   isLora: boolean;
   isGguf?: boolean;
+  isMlx?: boolean;
   isAudio?: boolean;
   audioType?: string | null;
   hasAudioInput?: boolean;

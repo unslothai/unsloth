@@ -8,6 +8,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Spinner } from "@/components/ui/spinner";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -16,11 +17,12 @@ import {
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
-  CheckIcon,
   ChevronDownIcon,
   LoaderIcon,
   XCircleIcon,
 } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -94,9 +96,15 @@ function ToolFallbackRoot({
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
+// The shared app tick is icon data, not a component; wrap it to slot into the
+// status map alongside the lucide icons.
+function CompleteTickIcon(props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">) {
+  return <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} {...props} />;
+}
+
 const statusIconMap: Record<ToolStatus, ElementType> = {
   running: LoaderIcon,
-  complete: CheckIcon,
+  complete: CompleteTickIcon,
   incomplete: XCircleIcon,
   "requires-action": AlertCircleIcon,
 };
@@ -135,16 +143,13 @@ function ToolFallbackTrigger({
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
       className={cn(
-        "aui-tool-fallback-trigger group/trigger flex w-full items-center gap-2 py-1.5 text-sm transition-colors",
+        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 py-1.5 text-sm transition-colors",
         className,
       )}
       {...props}
     >
       {isRunning ? (
-        <StatusIcon
-          data-slot="tool-fallback-trigger-icon"
-          className="aui-tool-fallback-trigger-icon size-4 shrink-0 animate-spin"
-        />
+        <Spinner className="aui-tool-fallback-trigger-icon" />
       ) : ToolIcon ? (
         <ToolIcon
           data-slot="tool-fallback-trigger-icon"
@@ -165,11 +170,16 @@ function ToolFallbackTrigger({
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 grow text-left leading-none text-muted-foreground",
+          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-muted-foreground",
           isCancelled && "text-muted-foreground line-through",
         )}
       >
-        <span className="block truncate">
+        <span
+          className={cn(
+            "block truncate leading-normal",
+            "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
+          )}
+        >
           {label}:{" "}
           <span className="font-medium text-foreground/85">{displayName}</span>
         </span>
@@ -177,7 +187,10 @@ function ToolFallbackTrigger({
           <span
             aria-hidden={true}
             data-slot="tool-fallback-trigger-shimmer"
-            className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block truncate motion-reduce:animate-none"
+            className={cn(
+              "aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block truncate leading-normal motion-reduce:animate-none",
+              "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
+            )}
           >
             {label}:{" "}
             <span className="font-medium text-foreground/85">{displayName}</span>
@@ -187,8 +200,8 @@ function ToolFallbackTrigger({
       <ChevronDownIcon
         data-slot="tool-fallback-trigger-chevron"
         className={cn(
-          "aui-tool-fallback-trigger-chevron size-4 shrink-0",
-          "transition-transform duration-(--animation-duration) ease-out",
+          "aui-tool-fallback-trigger-chevron mr-1 size-3.5 shrink-0 self-center",
+          "transition-[transform,opacity] duration-(--animation-duration) ease-out",
           "group-data-[state=closed]/trigger:-rotate-90",
           "group-data-[state=open]/trigger:rotate-0",
         )}
@@ -319,6 +332,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
+  // Allow/Deny confirmation controls are rendered uniformly for every tool
+  // card (built-in and fallback) by the `withToolConfirmation` wrapper in
+  // thread.tsx, so this renderer stays purely presentational.
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
 

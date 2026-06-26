@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
 # Unsloth Studio uninstaller for Windows PowerShell.
 # Stops running servers and removes install dir, launcher data, CLI shim,
 # desktop and Start Menu shortcuts, the user PATH entry, and the PathBackup
@@ -13,17 +16,70 @@ function Uninstall-UnslothStudio {
     function _Step { param([string]$Msg) Write-Host $Msg }
     function _Substep { param([string]$Msg, [string]$Color = "Gray") Write-Host "  $Msg" -ForegroundColor $Color }
 
-    # Remove a file/dir/symlink only if it exists. Idempotent.
+    # Remove a file/dir/symlink if present. Idempotent; retries since a just-killed
+    # process can briefly hold a handle (Windows refuses the delete until released).
     function _RemovePath {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
-        if (Test-Path -LiteralPath $Path) {
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
             try {
                 Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-                _Substep "removed: $Path" "Green"
             } catch {
+                if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
                 _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
+                return
             }
+            # Remove-Item -Recurse can report success yet leave a transiently-locked
+            # child (e.g. unsloth.ico in Explorer's icon cache); verify + retry so we
+            # never falsely claim "removed" or orphan the dir.
+            if (-not (Test-Path -LiteralPath $Path)) {
+                _Substep "removed: $Path" "Green"
+                return
+            }
+            if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
+            _Substep "still present (files held open): $Path" "Yellow"
+        }
+    }
+
+    # Remove the shared data dir, but keep unsloth.ico if a WSL shortcut still points
+    # at it (else that shortcut blanks); uninstall.sh drops it when WSL is removed.
+    function _RemoveDataDirKeepingWslIcon {
+        param(
+            [string]$DataDir,
+            # WSL-shortcut search dirs; default Start Menu + Desktop, overridable for tests.
+            [string[]]$ShortcutDirs = $null
+        )
+        if ([string]::IsNullOrWhiteSpace($DataDir)) { return }
+        if (-not (Test-Path -LiteralPath $DataDir)) { return }
+        # $null = not passed (use defaults); test $null not truthiness so an explicit
+        # @() is honored (-not @() is $true).
+        if ($null -eq $ShortcutDirs) {
+            # Guard $env:APPDATA: it can be unset in service/CI Windows contexts, where
+            # an unguarded Join-Path emits a noisy parameter-binding error.
+            $ShortcutDirs = @()
+            if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+                $ShortcutDirs += Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+            }
+            try {
+                $desktop = [Environment]::GetFolderPath("Desktop")
+                if (-not [string]::IsNullOrWhiteSpace($desktop)) { $ShortcutDirs += $desktop }
+            } catch {}
+        }
+        $wslShortcuts = @()
+        foreach ($d in $ShortcutDirs) {
+            if ($d -and (Test-Path -LiteralPath $d)) {
+                $wslShortcuts += Get-ChildItem -LiteralPath $d -Filter "Unsloth Studio (WSL*.lnk" -ErrorAction SilentlyContinue
+            }
+        }
+        if (@($wslShortcuts).Count -eq 0) {
+            _RemovePath $DataDir
+            return
+        }
+        # A WSL shortcut survives: drop everything except its shared icon.
+        _Substep "keeping $(Join-Path $DataDir 'unsloth.ico') for the WSL shortcut" "Gray"
+        Get-ChildItem -LiteralPath $DataDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Name -ne "unsloth.ico") { _RemovePath $_.FullName }
         }
     }
 
@@ -233,9 +289,61 @@ function Uninstall-UnslothStudio {
         } catch { }
     }
 
+    # Stop processes that would block deleting the paths we remove. Unlike
+    # _StopStudioProcesses (venv exe only), this also catches llama-server/llama-cli,
+    # the unsloth.exe shim, and orphaned mp workers under SYSTEM python holding a
+    # venv DLL (an open DLL handle blocks the dir delete) -- found by scanning each
+    # candidate's loaded modules, not just its image path.
+    function _StopProcessesLockingRoots {
+        param([string[]]$Roots)
+        $clean = @($Roots | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\','/') })
+        if ($clean.Count -eq 0) { return }
+        $underRoot = {
+            param($p)
+            if (-not $p) { return $false }
+            foreach ($r in $clean) { if ($p -ieq $r -or $p -ilike "$r\*") { return $true } }
+            return $false
+        }
+        # 1. Image path under a target root (venv python, shim, llama-server).
+        try {
+            foreach ($proc in (Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+                if ((& $underRoot $proc.ExecutablePath)) {
+                    try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+                }
+            }
+        } catch { }
+        # 2. A loaded module under a target root (orphaned mp-fork python holding a
+        #    venv DLL). Scoped to names that load our DLLs to keep the scan fast.
+        try {
+            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli -ErrorAction SilentlyContinue
+            foreach ($proc in $cands) {
+                $hit = $false
+                try {
+                    foreach ($m in $proc.Modules) { if ((& $underRoot $m.FileName)) { $hit = $true; break } }
+                } catch { }  # access denied enumerating modules -> skip
+                if ($hit) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { } }
+            }
+        } catch { }
+    }
+
     # Default install root + default data dir.
     $defaultStudioHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth\studio" } else { $null }
     $defaultDataDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth Studio" } else { $null }
+    # Default-mode ~/.unsloth holds a SHARED llama.cpp build + .cache that are
+    # siblings of studio (not under it), so deleting <studio> misses them -- handle
+    # explicitly. No-op in env/custom mode (nested under the custom root, removed
+    # with it). A user-set UNSLOTH_LLAMA_CPP_PATH is left alone.
+    $defaultUnslothHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth" } else { $null }
+    $defaultLlamaCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "llama.cpp" } else { $null }
+    $defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" } else { $null }
+    # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
+    # default mode. No-op in env/custom mode (nested under the custom root) and absent.
+    $defaultNode = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "node" } else { $null }
+    # llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging,
+    # sibling of the install dir). Usually pruned after activate, but an interrupted
+    # build can leave a "<name>.staging-XXXX" tree; removing it lets the empty-dir
+    # cleanup of ~/.unsloth below succeed. No-op in env/custom mode and when absent.
+    $defaultStaging = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".staging" } else { $null }
 
     # Build known-root list FIRST so the port-file kill can verify ownership.
     $customRoots = @(_CustomStudioRoots)
@@ -252,6 +360,9 @@ function Uninstall-UnslothStudio {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
     }
     _StopStudioProcesses -KnownRoots $knownRoots
+    # Also stop anything holding a handle on the exact paths we delete (llama-server,
+    # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
+    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -269,7 +380,23 @@ function Uninstall-UnslothStudio {
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemovePath $defaultStudioHome }
     # Default data dir.
-    if ($defaultDataDir) { _RemovePath $defaultDataDir }
+    if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
+    # Default-mode shared llama.cpp build + cache (siblings of studio under
+    # ~/.unsloth). No-op in env/custom mode and when absent.
+    if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
+    if ($defaultCache) { _RemovePath $defaultCache }
+    # Isolated Node.js runtime (sibling of studio under ~/.unsloth). No-op in env/
+    # custom mode (nested under the custom root, removed with it) and when absent.
+    if ($defaultNode) { _RemovePath $defaultNode }
+    if ($defaultStaging) { _RemovePath $defaultStaging }
+    # llama.cpp install lock (serializes the shared build); a stray lock keeps
+    # ~/.unsloth from being pruned below. No-op in env/custom mode and when absent.
+    if ($defaultUnslothHome) { _RemovePath (Join-Path $defaultUnslothHome ".llama.cpp.install.lock") }
+    # Drop ~/.unsloth itself, but ONLY if now empty -- never nuke unrelated content.
+    if ($defaultUnslothHome -and (Test-Path -LiteralPath $defaultUnslothHome) -and
+        -not (Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue)) {
+        _RemovePath $defaultUnslothHome
+    }
 
     # ── Remove desktop and Start Menu shortcuts ──
     _Step "Removing desktop and Start Menu shortcuts..."
@@ -280,6 +407,23 @@ function Uninstall-UnslothStudio {
     if ($env:APPDATA) {
         _RemovePath (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Unsloth Studio.lnk")
     }
+    # Invalidate the Win11 Start Menu tile cache so the removed shortcut's tile
+    # disappears promptly instead of lingering stale (mirrors install.ps1's
+    # New-StudioShortcuts). Preserves start2.bin (the pin layout).
+    try {
+        $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
+        if (Test-Path -LiteralPath $smehTemp) {
+            Get-ChildItem -LiteralPath $smehTemp -Filter "TileCache_*" -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath (Join-Path $smehTemp "StartUnifiedTileModelCache.dat") -Force -ErrorAction SilentlyContinue
+            Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+
+    # Re-sweep: the first pass may have left unsloth.ico locked by Explorer/SMEH for
+    # the native shortcut; that handle is now freed. (A surviving WSL shortcut still
+    # keeps the icon -- see the helper.)
+    if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
 
     # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."

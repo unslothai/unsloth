@@ -14,7 +14,8 @@ import type { CheckFormatResponse } from "@/features/training/types/datasets";
 import { cn } from "@/lib/utils";
 import { AlertCircleIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Loader2, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 
 const CHATML_ROLES = ["system", "user", "assistant"] as const;
 const ALPACA_ROLES = ["instruction", "input", "output"] as const;
@@ -203,7 +204,7 @@ export function DatasetMappingCard({
               >
                 {isAiLoading ? (
                   <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    <Spinner className="mr-1.5 size-3.5" />
                     Analyzing dataset...
                   </>
                 ) : (
@@ -303,8 +304,8 @@ const FROM_CANONICAL: Record<string, Record<string, string>> = {
 };
 
 /**
- * Remap a column→role mapping between formats.
- * Normalises every role to canonical chatml first, then maps to the target format.
+ * Remap a column→role mapping between formats: normalise to canonical chatml,
+ * then map to the target format.
  */
 export function remapRolesForFormat(
   mapping: Record<string, string>,
