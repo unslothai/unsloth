@@ -815,9 +815,13 @@ _CTX_FIT_VRAM_FRACTION = 0.95
 # 27B on a 24 GB card it keeps the load fully on the GPU under a light (~1.6 GB)
 # desktop where 5% spilled it. It is a fixed cushion, not a guarantee -- a heavier
 # desktop can still drift past it. Capped at _MAX_VRAM_RESERVE_FRAC so a small card
-# isn't over-reserved, and never below 5% so big datacenter cards are unchanged.
+# isn't over-reserved (3 GiB would be 37% of an 8 GB card), and never below 5% so big
+# datacenter cards are unchanged. The cap is the floor's own fraction at its 24 GB
+# design point (3 GiB / 24 GB), so no card reserves a larger fraction than a 24 GB
+# card: the reserve is 12.5% up to 24 GB, then the flat 3 GiB (a shrinking fraction)
+# up to ~60 GB, then 5%.
 _MIN_VRAM_RESERVE_MIB = 3072
-_MAX_VRAM_RESERVE_FRAC = 0.15
+_MAX_VRAM_RESERVE_FRAC = 0.125
 
 
 def _vram_reserve_mib(total_mib: float, frac: float) -> float:

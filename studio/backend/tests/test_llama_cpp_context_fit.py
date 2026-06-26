@@ -763,8 +763,9 @@ def test_vram_reserve_unchanged_on_datacenter_card():
 
 
 def test_vram_reserve_capped_on_small_card():
-    # 8 GB: a flat floor would be 38% of the card; the cap holds it to 15% so a
-    # small card running a model that nearly fills it isn't pushed off the GPU.
+    # 8 GB: a flat floor would be 37% of the card; the cap holds it to the 24 GB
+    # design fraction (12.5%) so a small card running a model that nearly fills it
+    # isn't pushed off the GPU, and never reserves a larger fraction than a 24 GB card.
     total = 8192
     assert _MIN_VRAM_RESERVE_MIB > _MAX_VRAM_RESERVE_FRAC * total
     assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MAX_VRAM_RESERVE_FRAC * total
