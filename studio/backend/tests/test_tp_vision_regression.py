@@ -6,7 +6,7 @@
 PR #6416 blanket-disabled tensor parallelism for vision models to dodge a
 --split-mode tensor + --mmproj GGML_ASSERT (#6415), which silently single-GPU'd
 any mmproj/MTP GGUF that fit on one card. The fix makes the skip self-healing:
-tensor is tried by default and a binary recorded only after it actually aborts.
+tensor is tried by default and recorded per (binary, model) only on a real abort.
 
 load_model is too entangled to drive end-to-end, so these tests inspect the
 source / drive the pure helpers. The headline test pins the set of TP-drop
@@ -27,17 +27,22 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Same external-dep stubs as the other llama_cpp unit tests so importing the
-# backend doesn't drag in structlog / httpx / loggers.
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
-_structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-sys.modules.setdefault("structlog", _structlog_stub)
-# httpx -- only stub when the real library is missing. Unconditional stubbing
-# shadows HTTPError/Response that huggingface_hub.errors imports at load time,
-# leaking via sys.modules and breaking provider/HF tests collected after this one.
+# External-dep stubs so importing the backend doesn't require structlog / httpx /
+# loggers -- but only when the real module is missing, so a lightweight stub never
+# shadows the real package (or `loggers.handlers` submodule) for tests collected
+# later in the same pytest process.
+try:
+    import structlog  # noqa: F401
+except ImportError:
+    _structlog_stub = _types.ModuleType("structlog")
+    _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
+    sys.modules["structlog"] = _structlog_stub
+try:
+    import loggers  # noqa: F401
+except ImportError:
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules["loggers"] = _loggers_stub
 try:
     import httpx as _httpx_real  # noqa: F401
 except ImportError:
@@ -103,10 +108,11 @@ def _tensor_parallel_false_drop_guards() -> list[str]:
 # Every condition that may flip a requested tensor_parallel back to False. Adding
 # one must be conscious: update this allowlist and keep multi-GPU where possible.
 _ALLOWED_TP_DROP_GUARDS = {
-    # Capability/policy: --split-mode tensor + --mmproj aborted on some builds
-    # (#6415). Self-healing -- attempted by default, skipped only on a binary
-    # already seen to abort this session (replaces #6416's blanket skip).
-    "tensor_parallel and effective_is_vision and self._vision_tensor_split_aborts(binary)",
+    # Capability/policy: --split-mode tensor aborted for this model on this binary
+    # (#6415 split-axis geometry). Self-healing -- attempted by default, skipped
+    # only for a (binary, model) already seen to abort (replaces #6416's blanket
+    # vision skip).
+    "tensor_parallel and self._tensor_split_aborts(binary, model_identifier)",
     # Capacity: tensor parallelism needs >= 2 GPUs that clear the compute-buffer reserve.
     "tensor_parallel and len(tp_gpus) < 2",
     # Capacity: pooled usable VRAM can't hold weights + MTP reserve -> layer split.
@@ -164,49 +170,40 @@ def test_every_tp_drop_is_logged_not_silent():
             )
 
 
-def test_vision_gate_is_self_healing_not_blanket():
-    """The vision skip must be conditional on a recorded per-binary abort, never a
-    blanket disable on is_vision / effective_is_vision alone.
-
-    Guards against regressing to #6416's behavior (single-GPU for every mmproj GGUF).
-    """
+def test_tensor_split_gate_is_self_healing_not_blanket():
+    """The tensor skip is conditional on a recorded (binary, model) abort, never a
+    blanket disable on is_vision / effective_is_vision (the #6416 regression that
+    single-GPU'd every mmproj GGUF)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    assert "effective_is_vision" in src
-    assert "self._vision_tensor_split_aborts(binary)" in src
-    # not a blanket disable on bare is_vision or effective_is_vision alone
+    assert "self._tensor_split_aborts(binary, model_identifier)" in src
     assert "if tensor_parallel and is_vision:" not in src
     assert "if tensor_parallel and effective_is_vision:" not in src
 
 
-def test_vision_skip_documents_layer_split_fallback():
-    """When the vision skip does fire (known-bad binary), it states the fallback."""
+def test_tensor_split_skip_documents_layer_split_fallback():
+    """When the skip fires (known-bad binary+model), it states the fallback."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    gate = src.find("self._vision_tensor_split_aborts(binary)")
+    gate = src.find("self._tensor_split_aborts(binary, model_identifier)")
     assert gate != -1
     block = src[gate : gate + 600]
-    assert "layer split" in block, "the vision skip should state it falls back to layer split"
+    assert "layer split" in block, "the skip should state it falls back to layer split"
 
 
-def test_vision_tensor_abort_recorded_only_after_retries_and_signature():
-    """Recorded only after all startup retries fail and the crash is the signature
-    fault -- excludes the benign --fit abort and unrelated crashes (#6659)."""
+def test_tensor_split_abort_recorded_early_on_first_spawn():
+    """The abort is recorded on the FIRST spawn that shows the split-axis signature,
+    BEFORE the flash-attn-off retry -- which can't run tensor (SPLIT_MODE_TENSOR
+    requires flash_attn) so its output drops the :541 marker. Recording after the
+    ladder never sees it and the crash loop repeats every load (oobabooga, #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    idx = src.find("_record_vision_tensor_split_abort(binary)")
-    assert idx != -1, "load_model must record a binary that aborts on vision + tensor"
-    guard = src[max(0, idx - 500) : idx]
+    idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
+    assert idx != -1, "load_model must record a (binary, model) tensor-split abort"
+    guard = src[max(0, idx - 400) : idx]
     assert "self._tensor_parallel" in guard
-    assert "launched_with_mmproj" in guard
     assert "_is_signal_crash" in guard, "record must be gated on a hard signal crash"
-    assert "_is_tensor_split_assert" in guard, (
-        "record must be confirmed by the ggml tensor-split assert marker, not a bare "
-        "signal crash shared with the projector-incompat branch"
-    )
-    assert (
-        "not self._output_has_nonprojector_diagnostic" in guard
-    ), "record must exclude OOM / unknown-arch crashes"
-    # The record sits in the post-all-retries failure block: after the MTP-drop retry.
-    mtp_retry = src.find("retrying without speculative decoding")
-    assert 0 <= mtp_retry < idx, "recording must come after the startup-retry ladder"
+    assert "_is_tensor_split_assert" in guard, "record must be confirmed by the :541 marker"
+    # Recorded before the flash-attn-off retry, not after the full ladder.
+    fa_off = src.find("_with_flash_attn_off")
+    assert 0 <= idx < fa_off, "recording must latch on the first spawn, before flash-off"
 
 
 def test_vision_downgrade_preserves_multi_gpu_intent():
@@ -223,22 +220,26 @@ def test_vision_downgrade_preserves_multi_gpu_intent():
 # ── per-binary capability cache (pure) ───────────────────────────────
 
 
-def test_vision_tensor_attempted_by_default_for_unknown_binary():
-    """A binary not seen to abort -> tensor parallelism is attempted (not skipped)."""
-    assert LlamaCppBackend._vision_tensor_split_aborts("/never/seen/llama-server") is False
-    assert LlamaCppBackend._vision_tensor_split_aborts(None) is False
+def test_tensor_attempted_by_default_for_unknown_binary():
+    """A (binary, model) not seen to abort -> tensor is attempted (not skipped)."""
+    assert LlamaCppBackend._tensor_split_aborts("/never/seen/llama-server", "m") is False
+    assert LlamaCppBackend._tensor_split_aborts(None, "m") is False
+    assert LlamaCppBackend._tensor_split_aborts("/x", None) is False
 
 
-def test_recorded_vision_tensor_abort_makes_gate_skip():
-    """After a vision+tensor abort is recorded, the gate predicate trips for it."""
+def test_recorded_tensor_abort_is_per_model():
+    """A recorded (binary, model) abort trips the gate for that model only -- a
+    different model on the same binary still attempts tensor (oobabooga, #6659)."""
     b = f"/tmp/llama-server-{id(object())}"
     try:
-        assert LlamaCppBackend._vision_tensor_split_aborts(b) is False
-        LlamaCppBackend._record_vision_tensor_split_abort(b)
-        assert LlamaCppBackend._vision_tensor_split_aborts(b) is True
+        assert LlamaCppBackend._tensor_split_aborts(b, "model-a") is False
+        LlamaCppBackend._record_tensor_split_abort(b, "model-a")
+        assert LlamaCppBackend._tensor_split_aborts(b, "model-a") is True
+        # a different model on the same binary is unaffected
+        assert LlamaCppBackend._tensor_split_aborts(b, "model-b") is False
     finally:
-        LlamaCppBackend._vision_tensor_abort_binaries.discard(
-            LlamaCppBackend._vision_binary_cache_key(b)
+        LlamaCppBackend._tensor_split_abort_keys.discard(
+            LlamaCppBackend._tensor_split_cache_key(b, "model-a")
         )
 
 
@@ -291,42 +292,42 @@ def test_select_gpus_min_gpus_excludes_unusable_gpu():
     assert len(gi) == 2
 
 
-def test_vision_abort_cache_invalidated_on_binary_mtime_change(tmp_path):
-    """Cache keys on (path, mtime), so a binary swapped in place (in-app update, no
-    restart) is re-probed instead of inheriting the old abort (#6659)."""
+def test_tensor_abort_cache_invalidated_on_binary_mtime_change(tmp_path):
+    """Cache keys on (path, mtime, model), so a binary swapped in place (in-app
+    update, no restart) is re-probed instead of inheriting the old abort (#6659)."""
     binp = tmp_path / "llama-server"
     binp.write_text("v1")
     p = str(binp)
     try:
-        LlamaCppBackend._record_vision_tensor_split_abort(p)
-        assert LlamaCppBackend._vision_tensor_split_aborts(p) is True
+        LlamaCppBackend._record_tensor_split_abort(p, "m")
+        assert LlamaCppBackend._tensor_split_aborts(p, "m") is True
         # Simulate an in-place update bumping the binary's mtime.
         st = binp.stat()
         os.utime(p, (st.st_atime, st.st_mtime + 10))
-        assert LlamaCppBackend._vision_tensor_split_aborts(p) is False, (
-            "a binary swapped in place (new mtime) must be re-probed, not inherit "
-            "the old build's abort"
-        )
+        assert (
+            LlamaCppBackend._tensor_split_aborts(p, "m") is False
+        ), "a binary swapped in place (new mtime) must be re-probed"
     finally:
-        for key in list(LlamaCppBackend._vision_tensor_abort_binaries):
+        for key in list(LlamaCppBackend._tensor_split_abort_keys):
             if key and key[0] == p:
-                LlamaCppBackend._vision_tensor_abort_binaries.discard(key)
+                LlamaCppBackend._tensor_split_abort_keys.discard(key)
 
 
-def test_tensor_mmproj_abort_retries_layer_split_not_text_only():
-    """The tensor + --mmproj abort raises (route fallback retries layer split with
-    the projector) before the text-only mmproj-strip path, so the first vision load
-    keeps vision. Unanimous P1 (reviewer.py 5/5 + Codex, #6659)."""
+def test_tensor_split_abort_raises_early_to_layer_fallback():
+    """The first-spawn split-axis abort raises (route fallback retries layer split)
+    rather than falling through to the text-only mmproj-strip path, and it does so
+    BEFORE the flash-attn-off retry, so the projector/vision is preserved and the
+    futile retry ladder is skipped (#6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    raise_idx = src.find("retrying with layer split (projector preserved)")
-    assert raise_idx != -1, "the tensor+mmproj abort must raise to trigger a layer retry"
-    strip_idx = src.find("_strip_mmproj_args(_last_spawn_cmd)")
-    assert strip_idx != -1
-    assert raise_idx < strip_idx  # raise before the text-only strip
-    # gated on the crash signature, which also drives the record
+    raise_idx = src.find("(split-axis geometry); retrying with layer split")
+    assert raise_idx != -1, "the split-axis abort must raise to trigger a layer retry"
+    # raises before both the flash-attn-off retry and the text-only mmproj strip
+    assert raise_idx < src.find("_with_flash_attn_off")
+    assert raise_idx < src.find("_strip_mmproj_args(_last_spawn_cmd)")
+    # gated on the :541 signature, which also drives the record just above
     guard = src[max(0, raise_idx - 400) : raise_idx]
-    assert "vision_tensor_split_crash" in guard
-    rec_idx = src.find("_record_vision_tensor_split_abort(binary)")
+    assert "_is_tensor_split_assert" in guard
+    rec_idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
     assert rec_idx != -1 and rec_idx < raise_idx
 
 
@@ -343,25 +344,25 @@ def test_budget_downgrade_preserves_multi_gpu_intent():
     ), "the budget downgrade must preserve multi-GPU intent like the vision gate"
 
 
-def test_vision_layer_min_gpus_bump_requires_tensor_request():
-    """Every guard that bumps _layer_min_gpus off the vision abort cache also tests
-    tensor_parallel, so a non-tensor vision load on a known-bad binary doesn't grab
-    every GPU for a fitting model (#6659)."""
+def test_tensor_split_layer_min_gpus_bump_requires_tensor_request():
+    """Every guard that bumps _layer_min_gpus off the abort cache also tests
+    tensor_parallel, so a non-tensor load on a known-bad binary doesn't grab every
+    GPU for a fitting model (#6659)."""
     fn = _load_model_ast()
     checked = 0
     for node in ast.walk(fn):
         if isinstance(node, ast.If):
             test_src = ast.unparse(node.test)
-            if "self._vision_tensor_split_aborts(binary)" not in test_src:
+            if "self._tensor_split_aborts(binary, model_identifier)" not in test_src:
                 continue
             body = "\n".join(ast.unparse(n) for n in node.body)
             if "_layer_min_gpus" in body:
                 checked += 1
                 assert "tensor_parallel" in test_src, (
-                    "the cached-vision _layer_min_gpus bump must require a current "
-                    f"tensor request, but fires under `{test_src}`"
+                    "the cached _layer_min_gpus bump must require a current tensor "
+                    f"request, but fires under `{test_src}`"
                 )
-    assert checked >= 1, "expected a vision-cache guard that bumps _layer_min_gpus"
+    assert checked >= 1, "expected an abort-cache guard that bumps _layer_min_gpus"
 
 
 # ── round-2 follow-up: route-fallback retry + auto-context cap + assert marker ──
@@ -457,14 +458,13 @@ def test_layer_preserve_hint_replayed_on_respawn():
     )
 
 
-def test_vision_tensor_abort_requires_assert_marker_for_record_and_raise():
-    """Both the abort cache record and the layer-retry raise are gated on the ggml
-    assert marker, so a projector that SIGSEGVs independent of split mode is not
-    cached as tensor/mmproj-incompatible nor sent through the tensor layer retry
-    (Codex review on #6659)."""
+def test_tensor_split_record_requires_signal_crash_and_marker():
+    """The record is gated on both a hard signal crash and the split-axis marker, so
+    a projector that SIGSEGVs independent of split mode, or an unrelated assert, is
+    not cached (Codex review on #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    idx = src.find("vision_tensor_split_crash = (")
+    idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
     assert idx != -1
-    block = src[idx : idx + 400]
-    assert "_is_tensor_split_assert" in block
-    assert "_is_signal_crash" in block
+    guard = src[max(0, idx - 400) : idx]
+    assert "_is_signal_crash" in guard
+    assert "_is_tensor_split_assert" in guard

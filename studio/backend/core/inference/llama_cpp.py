@@ -2430,35 +2430,40 @@ class LlamaCppBackend:
     # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
     _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
 
-    # Binaries seen THIS process to abort on --split-mode tensor + --mmproj
-    # (#6415). Tensor is tried by default and recorded here only on a real abort
-    # (vs #6416's blanket skip). Keyed on (path, mtime) like _capability_cache so
-    # an in-app binary swap re-probes.
-    _vision_tensor_abort_binaries: set[tuple[str, int]] = set()
+    # (binary, mtime, model) seen THIS process to abort on --split-mode tensor
+    # (#6415: a tensor-split geometry limit -- e.g. MQA n_head_kv=1 splits to
+    # GGML_BACKEND_SPLIT_AXIS_0 -- independent of mmproj/vision). Tensor is tried by
+    # default and recorded only on a real :541 abort (vs #6416's blanket skip).
+    # Model-keyed: the crash is model-geometry specific, so one model's abort must
+    # not skip tensor for others on the same binary; (path, mtime) re-probes a swap.
+    _tensor_split_abort_keys: set[tuple[str, int, str]] = set()
 
     @classmethod
-    def _vision_binary_cache_key(cls, binary: Optional[str]) -> Optional[tuple[str, int]]:
-        """(path, mtime) key, so an in-place binary swap invalidates the entry."""
-        if not binary:
+    def _tensor_split_cache_key(
+        cls, binary: Optional[str], model: Optional[str]
+    ) -> Optional[tuple[str, int, str]]:
+        """(path, mtime, model) key: model-geometry specific, and a swapped binary
+        (new mtime) re-probes."""
+        if not binary or not model:
             return None
         try:
             mtime = int(Path(binary).stat().st_mtime)
         except OSError:
             mtime = 0
-        return (binary, mtime)
+        return (binary, mtime, model)
 
     @classmethod
-    def _vision_tensor_split_aborts(cls, binary: Optional[str]) -> bool:
-        """True if `binary` was seen this session to abort on tensor + --mmproj."""
-        key = cls._vision_binary_cache_key(binary)
-        return key is not None and key in cls._vision_tensor_abort_binaries
+    def _tensor_split_aborts(cls, binary: Optional[str], model: Optional[str]) -> bool:
+        """True if (binary, model) aborted on --split-mode tensor this session."""
+        key = cls._tensor_split_cache_key(binary, model)
+        return key is not None and key in cls._tensor_split_abort_keys
 
     @classmethod
-    def _record_vision_tensor_split_abort(cls, binary: Optional[str]) -> None:
-        """Remember a binary that aborts on --split-mode tensor + --mmproj."""
-        key = cls._vision_binary_cache_key(binary)
+    def _record_tensor_split_abort(cls, binary: Optional[str], model: Optional[str]) -> None:
+        """Remember a (binary, model) that aborts on --split-mode tensor."""
+        key = cls._tensor_split_cache_key(binary, model)
         if key is not None:
-            cls._vision_tensor_abort_binaries.add(key)
+            cls._tensor_split_abort_keys.add(key)
 
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
@@ -5147,23 +5152,18 @@ class LlamaCppBackend:
                     if preserve_multi_gpu_on_layer:
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
 
-                    if (
-                        tensor_parallel
-                        and effective_is_vision
-                        and self._vision_tensor_split_aborts(binary)
-                    ):
-                        # This binary aborted on --split-mode tensor + --mmproj this
-                        # session (#6415); skip tensor upfront, layer split serves it.
+                    if tensor_parallel and self._tensor_split_aborts(binary, model_identifier):
+                        # This binary aborted on --split-mode tensor for this model
+                        # this session (#6415); skip tensor upfront, layer split serves it.
                         logger.info(
-                            "Tensor parallelism skipped for vision model: this "
-                            "llama.cpp build aborted on --split-mode tensor + "
-                            "--mmproj earlier this session; using layer split "
-                            "across %d GPU(s).",
+                            "Tensor parallelism skipped: this llama.cpp build aborted "
+                            "on --split-mode tensor for this model earlier this "
+                            "session; using layer split across %d GPU(s).",
                             len(gpus),
                         )
                         tensor_parallel = False
                         # Keep the multi-GPU request (gated on it, not the cache, so a
-                        # non-tensor vision load still minimizes device count).
+                        # non-tensor load still minimizes device count).
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         _restore_after_tensor_downgrade()
 
@@ -6006,6 +6006,24 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
+                # #6415: --split-mode tensor aborts at warmup on a tensor-split
+                # geometry limit (GGML_BACKEND_SPLIT_AXIS_0). Latch it from THIS first
+                # spawn: the flash-attn-off retry below can't run tensor
+                # (SPLIT_MODE_TENSOR requires flash_attn), so its output drops the
+                # :541 signature -- recording only after the full ladder would miss it
+                # and the crash loop would repeat every load. Record per (binary,
+                # model) and hand straight to the route fallback for layer split,
+                # skipping the (futile, ~1min) flash-attn/MTP retries for this crash.
+                if not healthy and self._tensor_parallel and not self._cancel_event.is_set():
+                    _ts_out = "\n".join(self._stdout_lines[-50:])
+                    _ts_rc = self._process.poll() if self._process is not None else None
+                    if self._is_signal_crash(_ts_rc) and self._is_tensor_split_assert(_ts_out):
+                        LlamaCppBackend._record_tensor_split_abort(binary, model_identifier)
+                        self._kill_process()
+                        raise RuntimeError(
+                            "llama-server aborted on --split-mode tensor "
+                            "(split-axis geometry); retrying with layer split."
+                        )
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
                 # builds (frequently inside the vision tower). Disabling FA keeps
                 # both vision and MTP, so retry that way before dropping either.
@@ -6149,28 +6167,9 @@ class LlamaCppBackend:
                     out = "\n".join(self._stdout_lines[-50:])
                     # Read the crash code before _kill_process() clears _process.
                     _crash_rc = self._process.poll() if self._process is not None else None
-                    # A tensor + --mmproj hard fault here -- past the fit-off,
-                    # flash-attn-off and MTP-drop retries, carrying the #6415
-                    # split-axis assert and no non-tensor cause -- is the vision
-                    # tensor abort, not a projector incompatibility.
-                    vision_tensor_split_crash = (
-                        self._tensor_parallel
-                        and launched_with_mmproj
-                        and self._is_signal_crash(_crash_rc)
-                        and self._is_tensor_split_assert(out)
-                        and not self._output_has_nonprojector_diagnostic(out)
-                    )
-                    if vision_tensor_split_crash:
-                        LlamaCppBackend._record_vision_tensor_split_abort(binary)
                     self._kill_process()
-                    # Hand it to the route fallback to retry layer split with the
-                    # projector, not strip --mmproj to text-only. The retry runs
-                    # tensor-off, so a real projector failure there still strips below.
-                    if vision_tensor_split_crash and not self._cancel_event.is_set():
-                        raise RuntimeError(
-                            "llama-server aborted on --split-mode tensor + --mmproj; "
-                            "retrying with layer split (projector preserved)."
-                        )
+                    # The #6415 split-axis tensor abort is handled earlier (latched
+                    # on the first spawn, before flash-attn-off erases the signature).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     if (
                         launched_with_mmproj
