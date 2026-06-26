@@ -482,14 +482,27 @@ async def upload_unstructured_file(
             )
         extracted_path.write_text(extracted_text, encoding = "utf-8")
     except ImportError as e:
-        # Optional extractor missing (pymupdf4llm for PDF, mammoth for DOCX): name it.
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
-        missing = getattr(e, "name", None) or "a required package"
+        missing = getattr(e, "name", None)
+        expected_missing = {".pdf": "pymupdf4llm", ".docx": "mammoth"}.get(ext)
+        if isinstance(e, ModuleNotFoundError) and missing == expected_missing:
+            logger.error(
+                "data_recipe.seed.text_extraction_dependency_missing",
+                error = str(e),
+                missing = missing,
+                exc_info = True,
+            )
+            return UnstructuredFileUploadResponse(
+                file_id = file_id,
+                filename = original_filename,
+                size_bytes = size_bytes,
+                status = "error",
+                error = f"Cannot read {ext} files: the '{missing}' package is not installed.",
+            )
         logger.error(
-            "data_recipe.seed.text_extraction_dependency_missing",
+            "data_recipe.seed.text_extraction_failed",
             error = str(e),
-            missing = missing,
             exc_info = True,
         )
         return UnstructuredFileUploadResponse(
@@ -497,7 +510,7 @@ async def upload_unstructured_file(
             filename = original_filename,
             size_bytes = size_bytes,
             status = "error",
-            error = f"Cannot read {ext} files: the '{missing}' package is not installed.",
+            error = "Text extraction failed.",
         )
     except Exception as e:
         raw_path.unlink(missing_ok = True)
