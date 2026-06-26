@@ -182,7 +182,7 @@ def _clear_view(path):
     for root, dirs, files in os.walk(path, topdown = False):
         for name in files:
             p = os.path.join(root, name)
-            if os.path.islink(p):          # our notebook symlinks only
+            if os.path.islink(p):  # our notebook symlinks only
                 try:
                     os.remove(p)
                 except OSError:
@@ -192,11 +192,11 @@ def _clear_view(path):
             p = os.path.join(root, name)
             try:
                 if os.path.islink(p):
-                    os.remove(p)           # symlinked dir: unlink, never recurse
+                    os.remove(p)  # symlinked dir: unlink, never recurse
                 else:
-                    os.rmdir(p)            # succeeds only if we emptied it
+                    os.rmdir(p)  # succeeds only if we emptied it
             except OSError:
-                pass                       # holds user files -> keep
+                pass  # holds user files -> keep
     # Leave the VIEW root itself in place: it may still hold user files, and
     # build_view recreates it right after anyway.
 
