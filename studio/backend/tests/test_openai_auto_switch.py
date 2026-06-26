@@ -1994,3 +1994,123 @@ def test_anthropic_validates_tools_before_auto_switch():
     assert src.index("missing required field 'input_schema'") < src.index(
         "_maybe_auto_switch_model"
     )
+
+
+# ── codex review (round 2): schema-default model, Responses tool validation ──
+
+
+def _chat_msg(text = "hi"):
+    from models.inference import ChatMessage
+    return ChatMessage(role = "user", content = text)
+
+
+def _responses_payload(*, tools = None, set_model = True):
+    from models.inference import ResponsesRequest
+
+    kwargs = dict(input = "hi")
+    if set_model:
+        kwargs["model"] = "org/B-GGUF"
+    if tools is not None:
+        kwargs["tools"] = tools
+    return ResponsesRequest(**kwargs)
+
+
+def test_switch_model_for_payload_only_switches_when_explicit():
+    # Codex P2: an omitted `model` (pydantic fills "default") must be reload-only;
+    # an explicitly set model -- including a literal "default" -- is honored.
+    from models.inference import ChatCompletionRequest
+
+    omitted = ChatCompletionRequest(messages = [_chat_msg()])
+    assert inference_route._switch_model_for_payload(omitted) == inference_route._RELOAD_ONLY_MODEL
+    explicit_default = ChatCompletionRequest(model = "default", messages = [_chat_msg()])
+    assert inference_route._switch_model_for_payload(explicit_default) == "default"
+    explicit = ChatCompletionRequest(model = "org/B-GGUF", messages = [_chat_msg()])
+    assert inference_route._switch_model_for_payload(explicit) == "org/B-GGUF"
+
+
+def test_omitted_schema_model_skips_resolver(monkeypatch):
+    # End to end: a schema request omitting `model` must not run the resolver, so a
+    # GGUF named "default" is never swapped to; an explicit model still switches.
+    from models.inference import ChatCompletionRequest
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("org/B-GGUF", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    omitted = ChatCompletionRequest(messages = [_chat_msg()])
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._switch_model_for_payload(omitted), object(), "tester"
+        )
+    )
+    assert rec.calls == []  # resolver skipped
+    explicit = ChatCompletionRequest(model = "org/B-GGUF", messages = [_chat_msg()])
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._switch_model_for_payload(explicit), object(), "tester"
+        )
+    )
+    assert len(rec.calls) == 1  # explicit model still switches
+
+
+def test_build_chat_request_propagates_omitted_model():
+    # _build_chat_request must not turn an omitted Responses model into an explicit
+    # "default", or the non-streaming chat re-check would switch on it.
+    omitted = _responses_payload(set_model = False)
+    chat_req = inference_route._build_chat_request(omitted, [_chat_msg()], stream = False)
+    assert "model" not in chat_req.model_fields_set
+    explicit = _responses_payload(set_model = True)
+    chat_req2 = inference_route._build_chat_request(explicit, [_chat_msg()], stream = False)
+    assert "model" in chat_req2.model_fields_set
+
+
+def test_responses_invalid_function_tool_rejected_before_switch(monkeypatch):
+    # Codex P2: a malformed function tool (no name) must 400 before the hook, so an
+    # invalid /v1/responses request never switches or evicts the loaded model.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("org/B-GGUF", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    payload = _responses_payload(tools = [{"type": "function", "parameters": {}}])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # rejected before the model load
+
+
+def test_responses_valid_and_builtin_tools_pass_validation(monkeypatch):
+    # A well-formed function tool and a built-in (non-function) tool must pass the
+    # pre-switch check. Stub the hook so the test stops right after validation.
+    class _Reached(Exception):
+        pass
+
+    async def _boom(*a, **k):
+        raise _Reached()
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
+    payload = _responses_payload(
+        tools = [{"type": "function", "name": "ok", "parameters": {}}, {"type": "web_search"}]
+    )
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
+
+
+def test_responses_validates_tools_before_auto_switch():
+    # Lock the order at the source: tool validation precedes the switch hook.
+    import inspect
+    src = inspect.getsource(inference_route.openai_responses)
+    assert src.index("each function tool must have a 'name'") < src.index(
+        "_maybe_auto_switch_model"
+    )

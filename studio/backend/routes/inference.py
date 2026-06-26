@@ -2315,6 +2315,13 @@ _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
 _RELOAD_ONLY_MODEL = "\x00reload-only"
 
 
+def _switch_model_for_payload(payload) -> str:
+    # A pydantic request fills an omitted ``model`` with "default"; only an
+    # explicitly set model may switch, else reload-only so a GGUF named "default"
+    # is never matched (mirrors the raw-body sentinel path).
+    return payload.model if "model" in payload.model_fields_set else _RELOAD_ONLY_MODEL
+
+
 def disable_openai_auto_switch_for_request(scope) -> None:
     """Opt a request out of OpenAI auto-switch. The public preview route uses this:
     it always serves its pinned checkpoint, so a caller-supplied model must never
@@ -4011,7 +4018,7 @@ async def generate_audio(
     # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
     # unload an audio GGUF the next request then failed to restore. Validation
     # above ran first, so an invalid request never triggers a reload.
-    await _maybe_auto_switch_model(payload.model, request, current_subject)
+    await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
 
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
@@ -5106,7 +5113,7 @@ async def openai_chat_completions(
                 status_code = 400, detail = "At least one non-system message is required."
             )
 
-    await _maybe_auto_switch_model(payload.model, request, current_subject)
+    await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
@@ -7572,10 +7579,13 @@ def _build_chat_request(
     ``/v1/chat/completions`` client-side pass-through picks them up unchanged.
     """
     chat_kwargs: dict = dict(
-        model = payload.model,
         messages = messages,
         stream = stream,
     )
+    # Only forward an explicitly set model so an omitted Responses model stays
+    # reload-only when openai_chat_completions re-checks on the non-streaming path.
+    if "model" in payload.model_fields_set:
+        chat_kwargs["model"] = payload.model
     if payload.temperature is not None:
         chat_kwargs["temperature"] = payload.temperature
     if payload.top_p is not None:
@@ -8465,9 +8475,26 @@ async def openai_responses(
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
+    # Reject a malformed function tool before any model load, mirroring the
+    # /v1/chat/completions check, so an invalid request never switches the model.
+    # Built-in tools (web_search, mcp, ...) carry no name and are dropped later.
+    for _tool in payload.tools or []:
+        if not isinstance(_tool, dict) or _tool.get("type") != "function":
+            continue
+        _name = _tool.get("name")
+        if not isinstance(_name, str) or not _name.strip():
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "Invalid 'tools': each function tool must have a 'name'.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "tools",
+                ),
+            )
     # After input validation so a 400 never triggers a load. Switches the
     # streaming path; non-streaming re-checks via the idempotent chat handler.
-    await _maybe_auto_switch_model(payload.model, request, current_subject)
+    await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
 
     if payload.stream:
         monitor_id = None
@@ -8618,7 +8645,7 @@ async def anthropic_count_tokens(
     max_tokens is NOT required here.
     """
     # Count with the requested model's tokenizer, like the sibling /messages.
-    await _maybe_auto_switch_model(payload.model, request, current_subject)
+    await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
@@ -8730,7 +8757,7 @@ async def anthropic_messages(
                 detail = "Client tool is missing required field 'name'.",
             )
 
-    await _maybe_auto_switch_model(payload.model, request, current_subject)
+    await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
