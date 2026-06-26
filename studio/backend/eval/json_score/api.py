@@ -52,6 +52,21 @@ def _extract_json(text: Any) -> Any | None:
                 return json.loads(s[i : j + 1])
             except (ValueError, TypeError):
                 continue
+    # Python-repr fallback BEFORE json_repair: Jinja's `{{ response }}` and
+    # similar pipelines stringify dict columns via `str(dict)`, producing
+    # output like `{'k': None}` — single quotes plus Python's `None`/`True`/
+    # `False` literals. json_repair mishandles these (converts `None` into
+    # the *string* `'None'`); ast.literal_eval is purpose-built for them.
+    if s.startswith(("{", "[")):
+        try:
+            from ast import literal_eval
+
+            value = literal_eval(s)
+            if isinstance(value, (dict, list)):
+                return value
+        except (ValueError, SyntaxError):
+            pass
+
     # Last resort: repair malformed/truncated JSON — unclosed braces from a
     # token-limit cutoff, trailing commas, single quotes, JSON embedded in
     # prose, etc. Pure prose repairs to "" so it stays unparseable (score 0).

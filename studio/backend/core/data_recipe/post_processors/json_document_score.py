@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from eval.json_score.api import score_from_text
+from eval.json_score.api import _extract_json, score_from_text
 
 
 def _coerce_value(value: Any) -> Any:
@@ -29,6 +29,18 @@ def _coerce_value(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         return value.tolist()
     return value
+
+
+def _coerce_reference(value: Any) -> Any:
+    """Reference columns may also be stringified dicts when produced by a
+    Jinja-templated Formula. `score_from_text` only parses its prediction
+    arg, so parse the reference here too if it's a parseable string."""
+    coerced = _coerce_value(value)
+    if isinstance(coerced, str):
+        parsed = _extract_json(coerced)
+        if parsed is not None:
+            return parsed
+    return coerced
 
 
 def _score_row(
@@ -40,7 +52,7 @@ def _score_row(
     want_breakdown: bool,
 ) -> tuple[float, Any]:
     score, node = score_from_text(
-        _coerce_value(reference),
+        _coerce_reference(reference),
         _coerce_value(prediction),
         schema,
         default_comparator=default_comparator,

@@ -227,6 +227,26 @@ def build_config_builder(recipe: dict[str, Any]):
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(
         recipe_core
     )
+
+    # data_designer's pydantic config validates processors against a closed enum
+    # (drop_columns / schema_transform). Strip studio-owned processors BEFORE
+    # handing the config to from_config — they run out-of-band in worker.py
+    # after the recipe finishes producing rows.
+    from .post_processors import is_studio_processor_type
+
+    raw_processors = recipe_core.get("processors") or []
+    designer_processors: list[dict[str, Any]] = []
+    for processor in raw_processors:
+        if not isinstance(processor, dict):
+            continue
+        processor_type_raw = processor.get("processor_type")
+        if isinstance(processor_type_raw, str) and is_studio_processor_type(
+            processor_type_raw
+        ):
+            continue
+        designer_processors.append(processor)
+    recipe_core = {**recipe_core, "processors": designer_processors}
+
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
         builder = builder,
@@ -235,18 +255,9 @@ def build_config_builder(recipe: dict[str, Any]):
 
     # DataDesignerConfigBuilder.from_config currently skips processors.
     # Re-attach explicitly so drop_columns/schema_transform survive API payload.
-    # Studio-owned processors (json_document_score, etc.) are NOT part of
-    # data_designer's enum — they run out-of-band in worker.py after the
-    # recipe finishes producing rows. Skip them here.
-    from .post_processors import is_studio_processor_type
-
-    for processor in recipe_core.get("processors") or []:
-        if not isinstance(processor, dict):
-            continue
+    for processor in designer_processors:
         processor_type_raw = processor.get("processor_type")
         if not isinstance(processor_type_raw, str):
-            continue
-        if is_studio_processor_type(processor_type_raw):
             continue
         kwargs = {k: v for k, v in processor.items() if k != "processor_type"}
         builder.add_processor(
