@@ -132,6 +132,32 @@ def test_distinct_unloaded_models_sharing_a_basename_both_appear(monkeypatch):
     assert len(data) == 2
 
 
+def test_empty_and_errored_scans_are_cached(monkeypatch):
+    # Cache validity is keyed on the timestamp, not list contents, so an empty
+    # (fresh install / no local models) or errored scan is still cached for the
+    # TTL instead of rescanning the filesystem on every /v1/models poll.
+    import routes.models as models_mod
+
+    for outcome in ("empty", "error"):
+        calls = {"n": 0}
+
+        def _scan(_root, _outcome = outcome):
+            calls["n"] += 1
+            if _outcome == "error":
+                raise RuntimeError("scan blew up")
+            return []
+
+        monkeypatch.setattr(models_mod, "collect_local_models", _scan)
+        monkeypatch.setattr(inf, "_CATALOG_CACHE", {"at": 0.0, "models": []})
+
+        async def _run():
+            return [await inf._cached_local_catalog() for _ in range(3)]
+
+        results = asyncio.run(_run())
+        assert results == [[], [], []], outcome
+        assert calls["n"] == 1, f"{outcome} scan ran {calls['n']}x (TTL not honored)"
+
+
 def test_retrieve_loaded_model_skips_catalog_scan(monkeypatch):
     # Retrieving a loaded id must resolve from the loaded set alone, never paying
     # for the filesystem scan that _cached_local_catalog drives.
