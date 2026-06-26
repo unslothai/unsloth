@@ -183,8 +183,8 @@
       "file": "IPython/core/interactiveshell.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput sha256:d235665701515da9717fc533dcf490bfc9f1e9d5d8b37463a484179c1f476438\nNetwork: L4048:                 from urllib.request import urlopen | L4049:                 response = urlopen(target)",
-      "evidence_hash": "8c8666e7ca38b878fc42649142009c634847dafcab679f1af070c8abdc668510"
+      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput sha256:b644ca2db22c393a1d3302e855a013215446f5aae5eceb7a9fdab4a6d0610b14\nNetwork: L4048:                 from urllib.request import urlopen | L4049:                 response = urlopen(target)",
+      "evidence_hash": "c332f54f5b94641a417958be0a9be7446f25c65dc007dedd3cb5f01d83076cb3"
     },
     {
       "package": "ipython",
@@ -199,7 +199,7 @@
       "file": "IPython/utils/py3compat.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L57:         exec(compiler(f.read(), fname, \"exec\"), glob, loc)",
+      "evidence": "L58:         exec(compiler(f.read(), fname, \"exec\"), glob, loc)",
       "evidence_hash": "f8dfef823b3380dbf7f4bb697998ddecc31b4b26b03e593c0f287c419b329d17"
     },
     {
@@ -1079,7 +1079,7 @@
       "file": "IPython/core/debugger.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L960:         trace_function = sys.gettrace() | L961:         sys.settrace(None) | L973:         sys.settrace(trace_function) | L1373:             sys.settrace(None)\nExec: L899:                 x = eval(arg, {}, {})",
+      "evidence": "Anti: L986:         trace_function = sys.gettrace() | L987:         sys.settrace(None) | L999:         sys.settrace(trace_function) | L1399:             sys.settrace(None)\nExec: L925:                 x = eval(arg, {}, {})",
       "evidence_hash": "21a9ef910ae943d07528d57778bb6bb2ae4929161166288b136bdd261aa302f4"
     },
     {
@@ -1095,7 +1095,7 @@
       "file": "IPython/core/magics/execution.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L1178:         self.shell.compile(ast_setup, \"<magic-timeit-setup>\", \"exec\") | L1179:         self.shell.compile(ast_stmt, \"<magic-timeit-stmt>\", \"exec\") | L1200:         code = self.shell.compile(timeit_ast, \"<magic-timeit>\", \"exec\")\nExec: L1213:         exec(code, glob, ns) | L1398:                 out = eval(code, glob, local_ns) | L1412:                 exec(code, glob, local_ns) | L1417:                     out = eval(code_2, glob, local_ns)",
+      "evidence": "Obfusc: L1193:         self.shell.compile(ast_setup, \"<magic-timeit-setup>\", \"exec\") | L1194:         self.shell.compile(ast_stmt, \"<magic-timeit-stmt>\", \"exec\") | L1215:         code = self.shell.compile(timeit_ast, \"<magic-timeit>\", \"exec\")\nExec: L1228:         exec(code, glob, ns) | L1413:                 out = eval(code, glob, local_ns) | L1427:                 exec(code, glob, local_ns) | L1432:                     out = eval(code_2, glob, local_ns)",
       "evidence_hash": "8f07416de7d4d46d328edf44ea0eaffadba4078649234f0790f309cae9eec075"
     },
     {
@@ -1103,7 +1103,7 @@
       "file": "IPython/core/magics/execution.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L972:                     trace = sys.gettrace() | L983:                     sys.settrace(trace)\nExec: L1213:         exec(code, glob, ns) | L1398:                 out = eval(code, glob, local_ns) | L1412:                 exec(code, glob, local_ns) | L1417:                     out = eval(code_2, glob, local_ns)",
+      "evidence": "Anti: L987:                     trace = sys.gettrace() | L998:                     sys.settrace(trace)\nExec: L1228:         exec(code, glob, ns) | L1413:                 out = eval(code, glob, local_ns) | L1427:                 exec(code, glob, local_ns) | L1432:                     out = eval(code_2, glob, local_ns)",
       "evidence_hash": "c6ac09239c19c830c9aa0ace92b78abf3a1d349cc493e4926ce1d36c8f1072f9"
     },
     {
