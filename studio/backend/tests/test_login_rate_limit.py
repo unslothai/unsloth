@@ -348,9 +348,7 @@ class TestBucketKeyAndBlocking:
 
         assert all(len(shard) <= 8 for shard in auth_routes._LOGIN_IP_OVERFLOW)
 
-    def test_overflow_eviction_does_not_inherit_count_onto_new_ip(
-        self, env_no_proxy, monkeypatch
-    ):
+    def test_overflow_eviction_does_not_inherit_count_onto_new_ip(self, env_no_proxy, monkeypatch):
         """Evicting a hot entry to make room must not hand its failure count to the
         new source; one attempt from an unrelated IP must not 429 it.
         """
