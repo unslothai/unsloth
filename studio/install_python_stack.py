@@ -1053,11 +1053,13 @@ def _ensure_cuda_torch() -> None:
                 sys.executable,
                 "-c",
                 (
-                    "import torch; "
+                    "import torch, re; "
                     "hip = getattr(torch.version, 'hip', '') or ''; "
                     "cuda = getattr(torch.version, 'cuda', '') or ''; "
                     "ver = getattr(torch, '__version__', '').lower(); "
-                    "print('hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'))"
+                    "m = re.search(r'\\+(cu\\d+)', ver); "
+                    "marker = 'hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'); "
+                    "print(marker + '|' + (m.group(1) if m else ''))"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -1075,22 +1077,26 @@ def _ensure_cuda_torch() -> None:
     ]
     if not _marker_lines:
         return
-    _marker = _marker_lines[-1]
+    _marker, _, _installed_cu = _marker_lines[-1].partition("|")
     # Reinstall CUDA torch when the venv carries a ROCm build on an NVIDIA host
-    # (the poisoning signature), OR when an explicit CUDA index is pinned but the
-    # venv still has a CPU wheel. The latter is the headless CPU-venv-to-CUDA
-    # cross-install (`studio update` with UNSLOTH_TORCH_INDEX_FAMILY=cu128): the
-    # update path preserves torch rather than preinstalling it from install.sh, so
-    # without this the explicit CUDA pin stays ineffective. A healthy CUDA torch,
-    # or a CPU wheel with no CUDA pin, is deliberate and left alone.
+    # (the poisoning signature), or when an explicit CUDA index is pinned but the
+    # venv has the wrong family -- a CPU wheel, or a different cuXXX than pinned.
+    # This covers the headless cross-install (`studio update` with
+    # UNSLOTH_TORCH_INDEX_FAMILY=cu128): the update path preserves torch rather
+    # than preinstalling it from install.sh, so without this an explicit CUDA pin
+    # stays ineffective. A healthy CUDA torch matching the pin, or a CPU wheel
+    # with no CUDA pin, is deliberate and left alone.
     _pin = _explicit_torch_index_url()
-    _pinned_cuda = bool(_pin) and _pin.rstrip("/").rsplit("/", 1)[-1].lower().startswith("cu")
+    _pin_leaf = _pin.rstrip("/").rsplit("/", 1)[-1].lower() if _pin else ""
+    _pinned_cuda = _pin_leaf.startswith("cu")
     if _marker == "hip":
         _why = "torch is a ROCm build on an NVIDIA host"
     elif _marker == "cpu" and _pinned_cuda:
         _why = "torch is a CPU build but an explicit CUDA index is pinned"
+    elif _marker == "cuda" and _pinned_cuda and _installed_cu and _installed_cu != _pin_leaf:
+        _why = f"torch is {_installed_cu} but the pinned CUDA index is {_pin_leaf}"
     else:
-        return  # healthy CUDA torch, or a deliberate CPU wheel -- leave as-is
+        return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 
     index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
