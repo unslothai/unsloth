@@ -71,10 +71,16 @@ class _Backend:
 class _FakeRequest:
     headers = {}
 
+    async def is_disconnected(self):
+        return False
+
 
 class _ReconnectRequest:
     # Reconnect carrying the last step the client already received.
     headers = {"last-event-id": "10"}
+
+    async def is_disconnected(self):
+        return False
 
 
 def _raw(response):
