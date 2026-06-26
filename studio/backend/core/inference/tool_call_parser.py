@@ -123,9 +123,7 @@ _TC_FUNC_START_RE = re.compile(r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")
 # trailing prose leaked into the last parameter value.
 _TC_END_TAG_RE = re.compile(r"</(?:tool_call|function)>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-_TC_PARAM_START_RE = re.compile(
-    r'<(?:parameter|param)(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*'
-)
+_TC_PARAM_START_RE = re.compile(r'<(?:parameter|param)(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*')
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</(?:parameter|param)>\s*$")
 
 # Llama-3 ``<|python_tag|>NAME.call(...)``.
@@ -354,7 +352,12 @@ def parse_tool_calls_from_text(
     return _parse_llama3_bare_json(content, id_offset = id_offset)
 
 
-def _parse_tool_call_json(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_tool_call_json(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     out: list[dict] = []
     for m in _TC_JSON_START_RE.finditer(content):
         brace_start = m.end() - 1
@@ -395,16 +398,19 @@ def _parse_tool_call_json(content: str, *, id_offset: int, allow_incomplete: boo
     return out
 
 
-def _parse_function_xml(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_function_xml(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     out: list[dict] = []
     func_starts = list(_TC_FUNC_START_RE.finditer(content))
     for idx, fm in enumerate(func_starts):
         # group(1) is ``<function=name>``, group(2) is ``<function name="...">``.
         func_name = fm.group(1) or fm.group(2)
         body_start = fm.end()
-        next_func = (
-            func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
-        )
+        next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
         end_tag = _TC_END_TAG_RE.search(content[body_start:])
         has_close = end_tag is not None and (body_start + end_tag.start()) < next_func
         if has_close:
@@ -431,9 +437,7 @@ def _parse_function_xml(content: str, *, id_offset: int, allow_incomplete: bool 
             for pidx, pm in enumerate(param_starts):
                 val_start = pm.end()
                 next_param = (
-                    param_starts[pidx + 1].start()
-                    if pidx + 1 < len(param_starts)
-                    else len(body)
+                    param_starts[pidx + 1].start() if pidx + 1 < len(param_starts) else len(body)
                 )
                 raw_val = body[val_start:next_param]
                 if not _TC_PARAM_CLOSE_RE.search(raw_val):
@@ -456,7 +460,12 @@ def _parse_function_xml(content: str, *, id_offset: int, allow_incomplete: bool 
     return out
 
 
-def _parse_llama3_python_tag(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_llama3_python_tag(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """Parse the four Llama-3 emissions: ``<|python_tag|>NAME.call(...)``
     (built-in), ``<|python_tag|>{"name":..., "parameters":...}`` (custom),
     multi-call via ``; `` separators, ``parameters`` or ``arguments`` key.
@@ -542,11 +551,7 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int, allow_incomplete: 
                     cursor = brace + end_offset
                     continue
                 name = obj.get("name") or obj.get("function") or ""
-                args = (
-                    obj.get("parameters")
-                    if "parameters" in obj
-                    else obj.get("arguments", {})
-                )
+                args = obj.get("parameters") if "parameters" in obj else obj.get("arguments", {})
                 if isinstance(args, dict):
                     args_str = json.dumps(args)
                 elif isinstance(args, str):
@@ -566,7 +571,12 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int, allow_incomplete: 
     return out
 
 
-def _parse_llama3_bare_json(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_llama3_bare_json(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """Llama-3.2 ``custom_tools``: bare ``{"name":..., "parameters":{...}}``
     without ``<|python_tag|>``. Strict (must start with ``{`` after sentinel
     strip; ``name`` non-empty; ``parameters`` or ``arguments`` is a dict) so
@@ -658,7 +668,12 @@ def _parse_llama3_bare_json(content: str, *, id_offset: int, allow_incomplete: b
     return out
 
 
-def _parse_mistral_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_mistral_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """Parse all Mistral emissions: pre-v11 ``[TOOL_CALLS][...]`` /
     ``[TOOL_CALLS]{...}`` and v11+ ``[TOOL_CALLS]name{json}`` /
     ``[TOOL_CALLS]name[ARGS]{json}`` (parallel-friendly)."""
@@ -809,7 +824,12 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
         )
 
 
-def _parse_gemma_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_gemma_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """Gemma 4: ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``."""
     out: list[dict] = []
     for m in _GEMMA_TC_RE.finditer(content):
@@ -933,11 +953,7 @@ def _gemma_parse_value(text: str, i: int):
         return items, j + 1
     # Primitive: number / true/false/null / bare identifier.
     end = i
-    while (
-        end < len(text)
-        and text[end] not in ",}]"
-        and not text.startswith(_GEMMA_STR_BEGIN, end)
-    ):
+    while end < len(text) and text[end] not in ",}]" and not text.startswith(_GEMMA_STR_BEGIN, end):
         end += 1
     raw = text[i:end].strip()
     if raw == "true":

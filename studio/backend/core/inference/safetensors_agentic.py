@@ -492,9 +492,7 @@ def run_safetensors_tool_loop(
                         len(_stripped),
                     )
                     conversation.append({"role": "assistant", "content": _stripped})
-                    conversation.append(
-                        {"role": "user", "content": _REPROMPT_INSTRUCTION}
-                    )
+                    conversation.append({"role": "user", "content": _REPROMPT_INSTRUCTION})
                     yield {"type": "status", "text": ""}
                     continue
 
