@@ -8,7 +8,6 @@ Integrates Unsloth training with the FastAPI backend.
 
 import gc
 import os
-import platform
 import sys
 import types
 
@@ -63,7 +62,6 @@ from loggers import get_logger
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
-from dataclasses import dataclass
 import pandas as pd
 from datasets import Dataset
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
@@ -87,6 +85,11 @@ from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+from .training import (
+    TrainingProgress,
+    create_mlx_trainer_adapter,
+    should_use_mlx_training_backend,
+)
 
 logger = get_logger(__name__)
 
@@ -105,56 +108,14 @@ def _build_report_targets(training_args) -> list[str] | str:
     return report_to or "none"
 
 
-@dataclass
-class TrainingProgress:
-    """Training progress tracking"""
-
-    epoch: float = 0
-    step: int = 0
-    total_steps: int = 0
-    loss: Optional[float] = None
-    learning_rate: Optional[float] = None
-    is_training: bool = False
-    is_completed: bool = False
-    error: Optional[str] = None
-    status_message: str = "Ready to train"  # Current stage
-    elapsed_seconds: Optional[float] = None
-    eta_seconds: Optional[float] = None
-    grad_norm: Optional[float] = None
-    num_tokens: Optional[int] = None
-    eval_loss: Optional[float] = None
-
-
-def _forced_trainer_backend() -> str | None:
-    value = os.environ.get("UNSLOTH_STUDIO_TRAINER_BACKEND")
-    if not value:
-        return None
-    value = value.strip().lower()
-    if value in {"mlx", "torch", "cuda", "rocm", "xpu", "cpu"}:
-        return value
-    return None
-
-
-def _should_use_mlx_trainer() -> bool:
-    forced = _forced_trainer_backend()
-    if forced is not None:
-        return forced == "mlx"
-    return platform.system() == "Darwin" and platform.machine() == "arm64"
-
-
-def _create_mlx_trainer(*args, **kwargs):
-    from .training import _create_mlx_trainer_adapter
-    return _create_mlx_trainer_adapter(*args, **kwargs)
-
-
 class UnslothTrainer:
     """
     Unsloth Training Backend
     """
 
     def __new__(cls, *args, **kwargs):
-        if cls is UnslothTrainer and _should_use_mlx_trainer():
-            return _create_mlx_trainer(*args, **kwargs)
+        if cls is UnslothTrainer and should_use_mlx_training_backend():
+            return create_mlx_trainer_adapter(*args, **kwargs)
         return super().__new__(cls)
 
     def __init__(self):

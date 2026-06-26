@@ -18,6 +18,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import torch
+import typer
+import yaml
+from typer.testing import CliRunner
 
 
 def _stub_if_missing(name, attrs):
@@ -191,10 +194,20 @@ class TestChatTemplateRendersEmpty(unittest.TestCase):
 
 def _clear_trainer_modules(package: str):
     pkg = sys.modules.get(package)
-    for suffix in ("trainer", "trainer_facade", "mlx_trainer", "_torch_trainer_impl"):
+    for suffix in ("trainer",):
         sys.modules.pop(f"{package}.{suffix}", None)
         if pkg is not None and hasattr(pkg, suffix):
             delattr(pkg, suffix)
+
+
+def _set_training_platform(monkeypatch, package: str, backend: str):
+    training_mod = importlib.import_module(f"{package}.training")
+    if backend == "mlx":
+        monkeypatch.setattr(training_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(training_mod.platform, "machine", lambda: "arm64")
+    else:
+        monkeypatch.setattr(training_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(training_mod.platform, "machine", lambda: "x86_64")
 
 
 def _load_trainer_module(
@@ -202,7 +215,7 @@ def _load_trainer_module(
     backend: str,
     package: str = "core.training",
 ):
-    monkeypatch.setenv("UNSLOTH_STUDIO_TRAINER_BACKEND", backend)
+    _set_training_platform(monkeypatch, package, backend)
     _clear_trainer_modules(package)
     if package in sys.modules:
         importlib.reload(sys.modules[package])
@@ -215,7 +228,7 @@ def _load_training_package(
     backend: str,
     package: str = "core.training",
 ):
-    monkeypatch.setenv("UNSLOTH_STUDIO_TRAINER_BACKEND", backend)
+    _set_training_platform(monkeypatch, package, backend)
     _clear_trainer_modules(package)
     if package in sys.modules:
         return importlib.reload(sys.modules[package])
@@ -230,8 +243,9 @@ def test_unsloth_trainer_dispatches_to_mlx_backend(monkeypatch):
 
     assert trainer_mod.__name__ == "core.training.trainer"
     assert trainer_mod.UnslothTrainer.__module__ == "core.training.trainer"
-    assert trainer.__class__.__name__ == "_MLXTrainerAdapter"
-    assert trainer.__class__.__module__ == "core.training.training"
+    assert trainer.__class__ is not trainer_mod.UnslothTrainer
+    assert callable(getattr(trainer, "start_training", None))
+    assert trainer.get_training_progress().status_message == "Ready to train"
     assert "core.training.trainer" in sys.modules
     assert sys.modules["core.training.trainer"] is trainer_mod
 
@@ -247,16 +261,16 @@ def test_unsloth_trainer_dispatches_to_mlx_from_cli_namespace(monkeypatch):
 
     assert trainer_mod.__name__ == "studio.backend.core.training.trainer"
     assert trainer_mod.UnslothTrainer.__module__ == "studio.backend.core.training.trainer"
-    assert trainer.__class__.__name__ == "_MLXTrainerAdapter"
-    assert trainer.__class__.__module__ == "studio.backend.core.training.training"
+    assert trainer.__class__ is not trainer_mod.UnslothTrainer
+    assert callable(getattr(trainer, "start_training", None))
+    assert trainer.get_training_progress().status_message == "Ready to train"
     assert sys.modules["studio.backend.core.training.trainer"] is trainer_mod
 
 
-def test_torch_backend_does_not_alias_trainer_on_package_import(monkeypatch):
+def test_torch_backend_package_import_keeps_trainer_module_lazy(monkeypatch):
     _load_training_package(monkeypatch, "torch")
 
     assert "core.training.trainer" not in sys.modules
-    assert "core.training._torch_trainer_impl" not in sys.modules
 
 
 def test_torch_backend_instantiates_existing_unsloth_trainer(monkeypatch):
@@ -269,25 +283,24 @@ def test_torch_backend_instantiates_existing_unsloth_trainer(monkeypatch):
 
 def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monkeypatch):
     trainer_mod = _load_trainer_module(monkeypatch, "mlx")
-    from core.training.training import _MLXTrainerAdapter
 
     captured = {}
 
-    class CapturingMLXTrainerAdapter(_MLXTrainerAdapter):
-        def _run_mlx_worker(self, config, event_queue, stop_queue):
-            captured["config"] = config
-            event_queue.put(
-                {
-                    "type": "progress",
-                    "step": 1,
-                    "total_steps": 1,
-                    "loss": 0.25,
-                    "learning_rate": 2e-4,
-                }
-            )
-            event_queue.put({"type": "complete", "status_message": "done"})
+    def fake_run_mlx_worker(config, event_queue, stop_queue):
+        captured["config"] = config
+        event_queue.put(
+            {
+                "type": "progress",
+                "step": 1,
+                "total_steps": 1,
+                "loss": 0.25,
+                "learning_rate": 2e-4,
+            }
+        )
+        event_queue.put({"type": "complete", "status_message": "done"})
 
-    trainer = CapturingMLXTrainerAdapter()
+    trainer = trainer_mod.UnslothTrainer()
+    monkeypatch.setattr(trainer, "_run_mlx_worker", fake_run_mlx_worker)
 
     assert trainer_mod.TrainingProgress().status_message == "Ready to train"
     assert trainer.load_model(
@@ -337,6 +350,7 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
         gradient_accumulation_steps = 2,
         max_steps = 1,
         save_steps = 10,
+        eval_steps = 10,
         random_seed = 123,
         train_on_completions = True,
     )
@@ -378,6 +392,7 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
     assert config["batch_size"] == 4
     assert config["gradient_accumulation_steps"] == 2
     assert config["max_steps"] == 1
+    assert config["eval_steps"] == 10
     assert config["train_on_completions"] is True
     assert config["random_seed"] == 123
     assert config["output_dir"] == str(output_dir.resolve())
@@ -385,10 +400,9 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
 
 
 def test_mlx_trainer_default_output_dir_uses_worker_run_dir(monkeypatch):
-    _load_trainer_module(monkeypatch, "mlx")
-    from core.training.training import _MLXTrainerAdapter
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
 
-    trainer = _MLXTrainerAdapter()
+    trainer = trainer_mod.UnslothTrainer()
     assert trainer.load_model("mlx-community/Qwen3-0.6B-4bit")
     assert trainer.load_and_format_dataset("org/dataset") is not None
 
@@ -399,10 +413,9 @@ def test_mlx_trainer_default_output_dir_uses_worker_run_dir(monkeypatch):
 
 
 def test_mlx_trainer_cancel_complete_event_is_not_completed(monkeypatch):
-    _load_trainer_module(monkeypatch, "mlx")
-    from core.training.training import _MLXTrainerAdapter
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
 
-    trainer = _MLXTrainerAdapter()
+    trainer = trainer_mod.UnslothTrainer()
     trainer.should_stop = True
 
     trainer._handle_event({"type": "complete", "status_message": "Training cancelled"})
@@ -415,8 +428,7 @@ def test_mlx_trainer_cancel_complete_event_is_not_completed(monkeypatch):
 
 
 def test_mlx_trainer_rejects_new_run_while_old_pump_is_alive(monkeypatch):
-    _load_trainer_module(monkeypatch, "mlx")
-    from core.training.training import _MLXTrainerAdapter
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
 
     class StuckPump:
         def __init__(self):
@@ -428,7 +440,7 @@ def test_mlx_trainer_rejects_new_run_while_old_pump_is_alive(monkeypatch):
         def join(self, timeout = None):
             self.joined_with = timeout
 
-    trainer = _MLXTrainerAdapter()
+    trainer = trainer_mod.UnslothTrainer()
     stuck = StuckPump()
     trainer._pump_thread = stuck
 
@@ -440,9 +452,8 @@ def test_mlx_trainer_rejects_new_run_while_old_pump_is_alive(monkeypatch):
 
 
 def test_mlx_trainer_uses_shared_mlx_worker_entrypoint(monkeypatch):
-    _load_trainer_module(monkeypatch, "mlx")
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
     from core.training import worker
-    from core.training.training import _MLXTrainerAdapter
 
     captured = {}
 
@@ -456,7 +467,35 @@ def test_mlx_trainer_uses_shared_mlx_worker_entrypoint(monkeypatch):
     event_queue = queue.Queue()
     stop_queue = queue.Queue()
     config = {"model_name": "mlx-community/Qwen3-0.6B-4bit"}
-    _MLXTrainerAdapter()._run_mlx_worker(config, event_queue, stop_queue)
+    trainer_mod.UnslothTrainer()._run_mlx_worker(config, event_queue, stop_queue)
+
+    assert captured == {"event_queue": event_queue, "stop_queue": stop_queue, "config": config}
+
+
+def test_cli_mlx_trainer_uses_studio_namespace_worker(monkeypatch):
+    import unsloth_cli.commands.train as train_cmd
+    from studio.backend.core.training import training as training_mod
+
+    monkeypatch.setattr(training_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(training_mod.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(train_cmd, "_activate_mlx_transformers", lambda model_name, hf_token: None)
+    trainer = train_cmd._create_cli_trainer("mlx-community/Qwen3-0.6B-4bit", None)
+
+    from studio.backend.core.training import worker
+
+    captured = {}
+
+    def fake_run_mlx_training_process(*, event_queue, stop_queue, config):
+        captured["event_queue"] = event_queue
+        captured["stop_queue"] = stop_queue
+        captured["config"] = config
+
+    monkeypatch.setattr(worker, "run_mlx_training_process", fake_run_mlx_training_process)
+
+    event_queue = queue.Queue()
+    stop_queue = queue.Queue()
+    config = {"model_name": "mlx-community/Qwen3-0.6B-4bit"}
+    trainer._run_mlx_worker(config, event_queue, stop_queue)
 
     assert captured == {"event_queue": event_queue, "stop_queue": stop_queue, "config": config}
 
@@ -472,6 +511,59 @@ def test_mlx_local_dataset_relative_path_resolves_from_cwd(tmp_path, monkeypatch
     assert _resolve_mlx_local_dataset_files(["train.jsonl"]) == [str(dataset)]
 
 
+def test_mlx_worker_eval_steps_fraction_becomes_positive_integer():
+    from core.training.worker import _coerce_mlx_eval_steps
+
+    assert _coerce_mlx_eval_steps(0.1, 37) == 3
+    assert _coerce_mlx_eval_steps(0.01, 10) == 1
+    assert _coerce_mlx_eval_steps(10, 37) == 10
+
+
+def test_mlx_worker_external_output_dir_resolves_from_cwd(tmp_path, monkeypatch):
+    from core.training.worker import _resolve_mlx_output_dir
+
+    monkeypatch.chdir(tmp_path)
+
+    output_dir = _resolve_mlx_output_dir(
+        {"output_dir": "cli-out", "allow_external_output_dir": True},
+        "mlx-community/Qwen3-0.6B-4bit",
+    )
+
+    assert output_dir == str((tmp_path / "cli-out").resolve())
+
+
+def test_mlx_worker_studio_output_dir_uses_outputs_root(monkeypatch):
+    from core.training.worker import _resolve_mlx_output_dir
+    from utils import paths
+
+    monkeypatch.setattr(
+        paths, "resolve_output_dir", lambda output_dir: Path("/studio") / output_dir
+    )
+
+    output_dir = _resolve_mlx_output_dir(
+        {"output_dir": "studio-run", "allow_external_output_dir": False},
+        "mlx-community/Qwen3-0.6B-4bit",
+    )
+
+    assert output_dir == "/studio/studio-run"
+
+
+def test_mlx_stop_poller_exits_on_worker_complete():
+    from core.training.worker import _MLX_WORKER_COMPLETE, _start_mlx_stop_poller
+
+    stop_queue = queue.Queue()
+    _stop_save, stop_requested, _trainer_ref, _is_stop_requested, stop_thread = (
+        _start_mlx_stop_poller(stop_queue)
+    )
+
+    stop_queue.put({"type": _MLX_WORKER_COMPLETE})
+    stop_thread.join(timeout = 2)
+
+    assert not stop_thread.is_alive()
+    assert stop_requested[0] is False
+    assert _is_stop_requested() is False
+
+
 def test_cli_mlx_selector_avoids_legacy_trainer_import():
     repo_root = Path(__file__).resolve().parents[3]
     script = """
@@ -479,12 +571,15 @@ import json
 import os
 import sys
 
-os.environ["UNSLOTH_STUDIO_TRAINER_BACKEND"] = "mlx"
 import unsloth_cli.commands.train as train_cmd
+from studio.backend.core.training import training as training_mod
+training_mod.platform.system = lambda: "Darwin"
+training_mod.platform.machine = lambda: "arm64"
 train_cmd._activate_mlx_transformers = lambda model_name, hf_token: None
 trainer = train_cmd._create_cli_trainer("mlx-community/Qwen3-0.6B-4bit", None)
 print(json.dumps({
-    "class_name": trainer.__class__.__name__,
+    "has_start_training": callable(getattr(trainer, "start_training", None)),
+    "has_progress": callable(getattr(trainer, "get_training_progress", None)),
     "legacy_trainer_loaded": (
         "core.training.trainer" in sys.modules
         or "studio.backend.core.training.trainer" in sys.modules
@@ -514,7 +609,8 @@ print(json.dumps({
     )
     payload = json.loads(result.stdout)
 
-    assert payload["class_name"] == "_MLXTrainerAdapter"
+    assert payload["has_start_training"] is True
+    assert payload["has_progress"] is True
     assert payload["legacy_trainer_loaded"] is False
     assert payload["heavy_loaded"] == {
         "torch": False,
@@ -524,12 +620,57 @@ print(json.dumps({
     }
 
 
-def test_cli_mlx_auto_selector_is_platform_only(monkeypatch):
+def test_cli_train_dry_run_output_dir_matches_runtime_default(monkeypatch):
     import unsloth_cli.commands.train as train_cmd
 
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRAINER_BACKEND", raising = False)
-    monkeypatch.setattr(train_cmd.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(train_cmd.platform, "machine", lambda: "arm64")
+    app = typer.Typer()
+    app.command()(train_cmd.train)
+    runner = CliRunner()
+
+    args = ["--model", "org/model", "--dataset", "org/dataset"]
+    dry_run = runner.invoke(app, [*args, "--dry-run"])
+
+    assert dry_run.exit_code == 0, dry_run.output
+    output_dir = yaml.safe_load(dry_run.stdout)["training"]["output_dir"]
+
+    captured = {}
+
+    class FakeTrainer:
+        is_vlm = False
+        training_thread = None
+
+        def load_model(self, **kwargs):
+            return True
+
+        def prepare_model_for_training(self, **kwargs):
+            return True
+
+        def load_and_format_dataset(self, **kwargs):
+            return ({"dataset": []}, None)
+
+        def start_training(self, **kwargs):
+            captured.update(kwargs)
+            return True
+
+        def get_training_progress(self):
+            return SimpleNamespace(error = None)
+
+    monkeypatch.setattr(
+        train_cmd, "_create_cli_trainer", lambda model_name, hf_token: FakeTrainer()
+    )
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert captured["output_dir"] == output_dir
+
+
+def test_cli_mlx_auto_selector_is_platform_only(monkeypatch):
+    import unsloth_cli.commands.train as train_cmd
+    from studio.backend.core.training import training as training_mod
+
+    monkeypatch.setattr(training_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(training_mod.platform, "machine", lambda: "arm64")
 
     assert train_cmd._should_use_mlx_backend_for_cli()
     assert "mlx_lm" not in sys.modules
@@ -580,6 +721,30 @@ def test_shared_mlx_worker_activates_transformers_before_hardware_detection(monk
     )
 
     assert order == [("activate", "mlx-community/Gemma-4-12B", "hf_test"), "detect", "run"]
+
+
+def test_shared_mlx_worker_sends_stop_poller_sentinel(monkeypatch):
+    _load_trainer_module(monkeypatch, "mlx")
+    from core.training import worker
+    from core.training.worker import _MLX_WORKER_COMPLETE
+    from utils.hardware import hardware as hw
+
+    def fake_detect_hardware():
+        hw.DEVICE = hw.DeviceType.MLX
+        return hw.DEVICE
+
+    monkeypatch.setattr(worker, "_activate_transformers_version_or_warn", lambda *args: None)
+    monkeypatch.setattr(hw, "detect_hardware", fake_detect_hardware)
+    monkeypatch.setattr(worker, "_run_mlx_training", lambda event_queue, stop_queue, config: None)
+
+    stop_queue = queue.Queue()
+    worker.run_mlx_training_process(
+        event_queue = queue.Queue(),
+        stop_queue = stop_queue,
+        config = {"model_name": "mlx-community/Gemma-4-12B"},
+    )
+
+    assert stop_queue.get_nowait() == {"type": _MLX_WORKER_COMPLETE}
 
 
 def test_studio_training_process_preactivates_mlx_before_hardware_detection(monkeypatch):

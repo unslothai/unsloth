@@ -1358,6 +1358,65 @@ def _mlx_local_dataset_loader_for_files(files: list[str]) -> str:
     raise ValueError(f"Unsupported dataset format: {files[0]}")
 
 
+_MLX_WORKER_COMPLETE = "_mlx_worker_complete"
+
+
+def _start_mlx_stop_poller(stop_queue):
+    import queue as _queue
+    import threading
+
+    stop_save = [True]
+    stop_requested = [False]
+    trainer_ref = [None]
+
+    def is_stop_requested():
+        return stop_requested[0]
+
+    def poll_stop():
+        while True:
+            try:
+                msg = stop_queue.get(timeout = 0.25)
+                if msg and msg.get("type") == _MLX_WORKER_COMPLETE:
+                    return
+                if msg and msg.get("type") == "stop":
+                    stop_save[0] = msg.get("save", True)
+                    stop_requested[0] = True
+                    trainer = trainer_ref[0]
+                    if trainer is not None:
+                        trainer.stop_requested = True
+                    return
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return
+
+    stop_thread = threading.Thread(target = poll_stop, daemon = True)
+    stop_thread.start()
+    return stop_save, stop_requested, trainer_ref, is_stop_requested, stop_thread
+
+
+def _resolve_mlx_output_dir(config, model_name):
+    from utils.paths import resolve_output_dir, default_run_dir_name
+
+    output_dir = config.get("output_dir", "")
+    if not output_dir:
+        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+        return str(resolve_output_dir(output_dir))
+    if config.get("allow_external_output_dir"):
+        output_path = Path(output_dir).expanduser()
+        if not output_path.is_absolute():
+            output_path = Path.cwd() / output_path
+        return str(output_path.resolve())
+    return str(resolve_output_dir(output_dir))
+
+
+def _coerce_mlx_eval_steps(eval_steps, max_steps):
+    eval_steps_val = eval_steps or 0
+    if isinstance(eval_steps_val, float) and 0 < eval_steps_val < 1:
+        return max(1, int(eval_steps_val * max_steps))
+    return int(eval_steps_val)
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -1366,8 +1425,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     """
     import time
     import math
-    import threading
-    import queue as _queue
     from pathlib import Path
 
     def _send(event_type, **kwargs):
@@ -1377,31 +1434,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 kwargs["message"] = sm
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
-    _stop_save = [True]
-    _stop_requested = [False]
-    _trainer_ref = [None]
-
-    def _is_stop_requested():
-        return _stop_requested[0]
-
-    def _poll_stop():
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 1.0)
-                if msg and msg.get("type") == "stop":
-                    _stop_save[0] = msg.get("save", True)
-                    _stop_requested[0] = True
-                    trainer = _trainer_ref[0]
-                    if trainer is not None:
-                        trainer.stop_requested = True
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
-
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
-    stop_thread.start()
+    _stop_save, _stop_requested, _trainer_ref, _is_stop_requested, _stop_thread = (
+        _start_mlx_stop_poller(stop_queue)
+    )
 
     _send("status", status_message = "Loading MLX libraries...")
 
@@ -1807,28 +1842,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 5. Build output dir ──
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
-    from utils.paths import resolve_output_dir, ensure_dir, default_run_dir_name
+    from utils.paths import ensure_dir
 
-    output_dir = config.get("output_dir", "")
-    if not output_dir:
-        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
-        output_dir = str(resolve_output_dir(output_dir))
-    elif config.get("allow_external_output_dir"):
-        output_path = Path(output_dir).expanduser()
-        if not output_path.is_absolute():
-            output_path = Path.cwd() / output_path
-        output_dir = str(output_path.resolve())
-    else:
-        output_dir = str(resolve_output_dir(output_dir))
+    output_dir = _resolve_mlx_output_dir(config, model_name)
     ensure_dir(Path(output_dir))
 
     # ── 6. Create trainer ──
-    eval_steps_val = config.get("eval_steps", 0) or 0
-    if isinstance(eval_steps_val, float) and 0 < eval_steps_val < 1:
-        # Studio sometimes sends fraction-of-total-steps
-        eval_steps_val = max(1, int(eval_steps_val * max_steps))
-    else:
-        eval_steps_val = int(eval_steps_val)
+    # Studio sometimes sends fraction-of-total-steps.
+    eval_steps_val = _coerce_mlx_eval_steps(config.get("eval_steps", 0), max_steps)
 
     # Per-element clipping only; trainer owns the None default. Re-validate
     # for direct worker callers (training.py normalizes the main path).
@@ -2133,7 +2154,13 @@ def run_mlx_training_process(
         return
 
     try:
-        _run_mlx_training(event_queue, stop_queue, config)
+        try:
+            _run_mlx_training(event_queue, stop_queue, config)
+        finally:
+            try:
+                stop_queue.put({"type": _MLX_WORKER_COMPLETE})
+            except (EOFError, OSError, ValueError):
+                pass
     except Exception as exc:
         event_queue.put(
             {
@@ -2219,8 +2246,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
+    from .training import should_use_mlx_training_backend
+
+    mlx_backend_requested = should_use_mlx_training_backend()
+
     mlx_transformers_activated = False
-    if _is_current_process_apple_silicon():
+    if mlx_backend_requested and _is_current_process_apple_silicon():
         # Must happen before detect_hardware(): the MLX stack check can import
         # mlx_lm, which imports transformers.
         _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
@@ -2229,7 +2260,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
+    if should_use_mlx_training_backend(device = _hw.DEVICE):
         run_mlx_training_process(
             event_queue = event_queue,
             stop_queue = stop_queue,
@@ -2758,7 +2789,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
-        from core.training.trainer import UnslothTrainer, TrainingProgress
+        from core.training.training import TrainingProgress
+        from core.training.trainer import UnslothTrainer
         from utils.paths import (
             ensure_dir,
             resolve_output_dir,
