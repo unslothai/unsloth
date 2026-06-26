@@ -317,7 +317,12 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     seen_env = []
 
     class _GpuGatedBlocker:
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "unsloth_zoo.hf_xet_fallback":
                 # Record the env each import attempt sees; raise the no-GPU error
                 # both times so the shim ends up degrading (the recovery-succeeds
@@ -328,7 +333,8 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
 
     finder = _GpuGatedBlocker()
     saved = {
-        k: v for k, v in list(sys.modules.items())
+        k: v
+        for k, v in list(sys.modules.items())
         if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")
     }
     for k in saved:
