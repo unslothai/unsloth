@@ -304,9 +304,9 @@ def test_tensor_abort_cache_invalidated_on_binary_mtime_change(tmp_path):
         # Simulate an in-place update bumping the binary's mtime.
         st = binp.stat()
         os.utime(p, (st.st_atime, st.st_mtime + 10))
-        assert (
-            LlamaCppBackend._tensor_split_aborts(p, "m") is False
-        ), "a binary swapped in place (new mtime) must be re-probed"
+        assert LlamaCppBackend._tensor_split_aborts(p, "m") is False, (
+            "a binary swapped in place (new mtime) must be re-probed"
+        )
     finally:
         for key in list(LlamaCppBackend._tensor_split_abort_keys):
             if key and key[0] == p:
@@ -339,9 +339,9 @@ def test_budget_downgrade_preserves_multi_gpu_intent():
     assert budget != -1
     block = src[budget : budget + 1000]
     assert "tensor_parallel = False" in block
-    assert (
-        "_layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))" in block
-    ), "the budget downgrade must preserve multi-GPU intent like the vision gate"
+    assert "_layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))" in block, (
+        "the budget downgrade must preserve multi-GPU intent like the vision gate"
+    )
 
 
 def test_tensor_split_layer_min_gpus_bump_requires_tensor_request():
@@ -388,9 +388,9 @@ def test_auto_context_layer_loops_capped_to_usable_gpus():
     """The auto-context loops bypass _select_gpus, so they apply its cap: a card
     counts only if usable VRAM clears the per-device layer overhead (#6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    assert (
-        "range(max(1, _layer_min_gpus), len(ranked) + 1)" not in src
-    ), "auto-context loops must cap _layer_min_gpus to usable GPUs, not use it raw"
+    assert "range(max(1, _layer_min_gpus), len(ranked) + 1)" not in src, (
+        "auto-context loops must cap _layer_min_gpus to usable GPUs, not use it raw"
+    )
     assert "_auto_min_gpus" in src
     assert "range(_auto_min_gpus, len(ranked) + 1)" in src
     # the eligibility threshold is the per-device layer overhead, not bare > 0
@@ -468,3 +468,78 @@ def test_tensor_split_record_requires_signal_crash_and_marker():
     guard = src[max(0, idx - 400) : idx]
     assert "_is_signal_crash" in guard
     assert "_is_tensor_split_assert" in guard
+
+
+# ── tensor-off after a multi-GPU fallback forces a reload (route dedup) ─
+
+
+def _fallback_loaded_backend(layer_preserves_tensor_intent: bool) -> LlamaCppBackend:
+    """A loaded backend in the tensor->layer fallback state: tensor reports off and
+    --split-mode layer is stored, differing only in whether the placement was kept
+    multi-GPU to honor a (now-downgraded) tensor request."""
+    b = LlamaCppBackend()
+    b._model_identifier = "owner/repo"
+    b._requested_n_ctx = 0
+    b._cache_type_kv = None
+    b._tensor_parallel = False
+    b._layer_preserves_tensor_intent = layer_preserves_tensor_intent
+    b._extra_args = ["--split-mode", "layer"]
+    b._requested_spec_mode = "auto"
+    b._chat_template_override = None
+    b._gguf_path = None
+    return b
+
+
+def test_explicit_tensor_off_reloads_after_multi_gpu_fallback():
+    """A tensor->layer fallback (preserve_multi_gpu_on_layer) spans all GPUs while
+    reporting tensor=off. An explicit tensor-off Apply must reload so placement
+    re-selects (single GPU for a 1-GPU-fit model), not dedupe to the all-GPU mask;
+    a genuine layer load (no preserved intent) still dedupes (Codex review #6659)."""
+    from models.inference import LoadRequest
+    from routes import inference as inference_routes
+
+    req = LoadRequest(model_path = "owner/repo", tensor_parallel = False)
+    assert "tensor_parallel" in req.model_fields_set, "the toggle must be explicit"
+
+    # Preserved multi-GPU fallback: the toggle going off drops that intent -> reload.
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            req, _fallback_loaded_backend(layer_preserves_tensor_intent = True)
+        )
+        is False
+    )
+    # A deliberate layer load (not a tensor fallback): tensor-off dedupes, no churn.
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            req, _fallback_loaded_backend(layer_preserves_tensor_intent = False)
+        )
+        is True
+    )
+
+
+def test_tensor_off_reload_requires_explicit_toggle():
+    """An Apply that does not set the tensor toggle (e.g. only a context change)
+    must not be churned by the preserved-fallback reload -- the working multi-GPU
+    layer server is kept (Codex review #6659)."""
+    from models.inference import LoadRequest
+    from routes import inference as inference_routes
+
+    req = LoadRequest(model_path = "owner/repo")  # tensor_parallel left unset
+    assert "tensor_parallel" not in req.model_fields_set
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            req, _fallback_loaded_backend(layer_preserves_tensor_intent = True)
+        )
+        is True
+    )
+
+
+def test_layer_preserves_tensor_intent_set_only_on_preserved_downgrade():
+    """load_model latches the flag from _layer_min_gpus (raised only when a tensor
+    request is downgraded but kept multi-GPU), and clears it when tensor stays on."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    on = src.find("self._tensor_parallel = True")
+    off = src.find("self._tensor_parallel = False")
+    assert 0 <= on and 0 <= off
+    assert "self._layer_preserves_tensor_intent = False" in src[on : on + 120]
+    assert "self._layer_preserves_tensor_intent = _layer_min_gpus > 1" in src[off : off + 400]

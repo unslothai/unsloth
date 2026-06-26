@@ -1271,6 +1271,10 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
         self._tensor_parallel: bool = False
+        # This (layer) load spreads across GPUs only to honor a tensor request
+        # that fell back (preserve_multi_gpu_on_layer); a later explicit tensor-off
+        # must reload rather than dedupe to this placement. See #6659.
+        self._layer_preserves_tensor_intent: bool = False
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
         # Canonical UI-facing mode the user requested
@@ -1642,6 +1646,12 @@ class LlamaCppBackend:
     def tensor_parallel(self) -> bool:
         """Whether --split-mode tensor is active on the loaded server."""
         return self._tensor_parallel
+
+    @property
+    def layer_preserves_tensor_intent(self) -> bool:
+        """True when this layer load spans GPUs only because a tensor request fell
+        back (preserve_multi_gpu_on_layer), so the dedup reloads on tensor-off."""
+        return self._layer_preserves_tensor_intent
 
     @property
     def speculative_type(self) -> Optional[str]:
@@ -3917,7 +3927,7 @@ class LlamaCppBackend:
                     logger.debug(f"Could not list repo files for {label}: {e}")
                     break
                 logger.debug(
-                    f"Could not list repo files for {label} " f"(attempt {attempt + 1}/3): {e}"
+                    f"Could not list repo files for {label} (attempt {attempt + 1}/3): {e}"
                 )
                 if attempt < 2:
                     self._cancel_event.wait(2**attempt)
@@ -5671,12 +5681,16 @@ class LlamaCppBackend:
                             ]
                         )
                     self._tensor_parallel = True
+                    self._layer_preserves_tensor_intent = False
                     logger.info(
                         "Tensor parallelism: --split-mode tensor, --tensor-split %s",
                         tp_tensor_split,
                     )
                 else:
                     self._tensor_parallel = False
+                    # _layer_min_gpus > 1 only when a tensor request was downgraded
+                    # to layer but kept multi-GPU (route fallback / geometry / budget).
+                    self._layer_preserves_tensor_intent = _layer_min_gpus > 1
 
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
@@ -6754,6 +6768,7 @@ class LlamaCppBackend:
             self._supports_tools = False
             self._cache_type_kv = None
             self._tensor_parallel = False
+            self._layer_preserves_tensor_intent = False
             self._speculative_type = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None
