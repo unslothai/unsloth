@@ -624,10 +624,10 @@ if _IS_MLX:
         model = None,
         max_seq_length_explicit = False,
     ):
-        if not getattr(args, "streaming", False) and not getattr(
-            args, "preserve_dataset_order", False
-        ) and not getattr(
-            args, "_unsloth_mlx_dataset_order_explicit", False
+        if (
+            not getattr(args, "streaming", False)
+            and not getattr(args, "preserve_dataset_order", False)
+            and not getattr(args, "_unsloth_mlx_dataset_order_explicit", False)
         ):
             default_order = getattr(MLXTrainingConfig, "dataset_order", "default")
             if getattr(args, "dataset_order", default_order) in (None, default_order):
