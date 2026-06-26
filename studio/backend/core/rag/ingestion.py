@@ -295,7 +295,17 @@ def job_events(job_id: str):
             try:
                 event = q.get(timeout = _SSE_POLL_SECONDS)
             except queue.Empty:
-                row = get_job_status(job_id)
+                try:
+                    row = get_job_status(job_id)
+                except Exception:  # noqa: BLE001
+                    # A transient status read (e.g. the DB momentarily locked) must
+                    # not abort the stream: routes/rag.py would turn the raised
+                    # exception into a terminal {type: error} frame and the UI would
+                    # drop a document whose worker is still running. Heartbeat and
+                    # retry on the next poll instead.
+                    logger.warning("job_events status read failed for %s; continuing", job_id, exc_info = True)
+                    yield {"type": "heartbeat"}
+                    continue
                 if row is None or row.get("status") in _TERMINAL_JOB_STATUSES:
                     # Worker finished (or row gone); stop and let the client reconcile via getJob.
                     terminal = True
@@ -314,8 +324,13 @@ def job_events(job_id: str):
         # only while the worker is still running, so an early disconnect can
         # reconnect and resume its events.
         if not terminal:
-            row = get_job_status(job_id)
-            terminal = row is None or row.get("status") in _TERMINAL_JOB_STATUSES
+            try:
+                row = get_job_status(job_id)
+                terminal = row is None or row.get("status") in _TERMINAL_JOB_STATUSES
+            except Exception:  # noqa: BLE001
+                # Can't confirm terminality (transient DB error) -- keep the queue so
+                # a reconnect can resume rather than orphaning a live worker's events.
+                terminal = False
         if terminal:
             with _jobs_lock:
                 _jobs.pop(job_id, None)

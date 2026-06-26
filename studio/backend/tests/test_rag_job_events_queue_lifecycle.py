@@ -11,6 +11,7 @@ the job already finished; ``_reap_finished_jobs`` sweeps any leftovers.
 """
 
 import queue
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -69,6 +70,32 @@ def test_disconnect_after_terminal_event_removes_queue(monkeypatch):
         assert next(gen)["type"] == "complete"  # client receives the terminal event
         gen.close()  # disconnects before draining the sentinel
         assert jid not in ing._jobs, "a finished job's queue must drop on disconnect"
+    finally:
+        ing._jobs.pop(jid, None)
+
+
+def test_transient_status_read_failure_does_not_end_stream(monkeypatch):
+    monkeypatch.setattr(ing, "_SSE_POLL_SECONDS", 0.01)
+    # The heartbeat poll hits a momentarily-locked DB. That must not propagate: the
+    # SSE route would turn the raised error into a terminal {type: error} frame and
+    # the UI would drop a document whose worker is still running. The stream should
+    # heartbeat and keep the queue so the worker can finish / a reconnect can resume.
+    calls = {"n": 0}
+
+    def flaky_status(_jid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return {"status": "running"}
+
+    monkeypatch.setattr(ing, "get_job_status", flaky_status)
+    jid = "job-transient-read-failure"
+    ing._jobs[jid] = queue.Queue()
+    try:
+        gen = ing.job_events(jid)
+        assert next(gen) == {"type": "heartbeat"}  # transient error -> heartbeat, no raise
+        gen.close()
+        assert jid in ing._jobs, "an unconfirmed (transient-error) status must keep the queue"
     finally:
         ing._jobs.pop(jid, None)
 
