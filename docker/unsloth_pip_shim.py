@@ -88,7 +88,10 @@ def _canon(token):
     # protected package pinned through a URL slips past _KEEP and reinstalls into
     # the base venv. A non-protected direct reference still returns its name and
     # is kept by the caller exactly as before (treated as an install target).
-    _dref = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*@(?:\s|git\+|hg\+|bzr\+|svn\+|[a-z]+://)", token)
+    _dref = re.match(
+        r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*@(?:\s|git\+|hg\+|bzr\+|svn\+|[a-z]+://)",
+        token,
+    )
     if _dref:
         return _dref.group(1).lower().replace("_", "-") or None
     if re.match(r"^[a-z]+\+", token) or "://" in token or token.startswith((".", "/")):
