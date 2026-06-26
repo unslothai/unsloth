@@ -6465,12 +6465,15 @@ async def _cached_local_catalog() -> list:
     loop and stall every concurrent request and in-flight inference stream. A
     lock with a double-check collapses a burst of simultaneous /v1/models calls
     into a single scan instead of one per request."""
+    # Validity is keyed on "at" (set only after a scan), not on the list being
+    # non-empty, so an empty/errored scan is still cached for the TTL instead of
+    # forcing a rescan on every poll (fresh install, no local models, scan error).
     now = time.monotonic()
-    if _CATALOG_CACHE["models"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+    if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
         return _CATALOG_CACHE["models"]
     async with _CATALOG_LOCK:
         now = time.monotonic()
-        if _CATALOG_CACHE["models"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+        if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
             return _CATALOG_CACHE["models"]
         try:
             from pathlib import Path as _Path
