@@ -161,6 +161,24 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   );
 }
 
+/** Last path segment of the model id, for display. */
+function modelDisplayName(modelName?: string): string {
+  if (!modelName) return "This model";
+  return modelName.split("/").pop() || modelName;
+}
+
+/** ` from "<provider>"` clause, rendered only when a provider was resolved. */
+function ProviderSuffix({ provider }: { provider: string | null }) {
+  if (!provider) return null;
+  return (
+    <>
+      {" "}
+      from{" "}
+      <span className="font-medium text-foreground">"{provider}"</span>
+    </>
+  );
+}
+
 /** App-wide consent dialog for trust_remote_code loads: shows scan findings with the
  *  flagged code in context; CRITICAL is a hard block. Mounted once in the root layout. */
 export function RemoteCodeConsentDialog() {
@@ -168,7 +186,8 @@ export function RemoteCodeConsentDialog() {
   const scan = useRemoteCodeConsentDialogStore((s) => s.scan);
   const resolve = useRemoteCodeConsentDialogStore((s) => s.resolve);
 
-  const displayName = scan?.modelName?.split("/").pop() || "This model";
+  const displayName = modelDisplayName(scan?.modelName);
+  const provider = scan?.provider ?? null;
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
   const unsafeFiles = scan?.unsafeFiles ?? [];
@@ -218,7 +237,8 @@ export function RemoteCodeConsentDialog() {
                     <>
                       <span className="font-medium text-foreground">
                         {displayName}
-                      </span>{" "}
+                      </span>
+                      <ProviderSuffix provider={provider} />{" "}
                       contains files that Hugging Face's security scan flagged as
                       unsafe (for example, a malicious pickle that would run code
                       when the model loads). It cannot be loaded. The flagged
@@ -228,7 +248,8 @@ export function RemoteCodeConsentDialog() {
                     <>
                       <span className="font-medium text-foreground">
                         {displayName}
-                      </span>{" "}
+                      </span>
+                      <ProviderSuffix provider={provider} />{" "}
                       declares custom Python code in its repository.{" "}
                       {blocked
                         ? "A security scan flagged CRITICAL issues, so it cannot be enabled."

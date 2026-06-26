@@ -21,6 +21,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import type {
   CapabilityFilter,
+  GpuFitFilter,
   ModelFormatFilter,
   ModelsTab,
   ResourceTypeFilter,
@@ -28,6 +29,7 @@ import type {
 import {
   CAPABILITY_FILTER_OPTIONS,
   FORMAT_FILTER_OPTIONS,
+  GPU_FIT_FILTER_OPTIONS,
 } from "../lib/view-models";
 import { HubOptionMenu, type HubOption } from "./hub-option-menu";
 import {
@@ -47,11 +49,11 @@ const SORT_OPTIONS: ReadonlyArray<{
   value: HfSortKey;
   label: string;
 }> = [
+  { value: "createdAt", label: "Newest" },
   { value: "trendingScore", label: "Trending" },
-  { value: "likes", label: "Most likes" },
   { value: "downloads", label: "Most downloads" },
   { value: "lastModified", label: "Recently updated" },
-  { value: "createdAt", label: "Newest" },
+  { value: "likes", label: "Most likes" },
 ];
 
 export const ModelsToolbar = memo(function ModelsToolbar({
@@ -68,6 +70,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange,
   capabilityFilter,
   onCapabilityFilterChange,
+  gpuFitFilter,
+  onGpuFitFilterChange,
   onManageLocalFolders,
   onOpenFineTune,
 }: {
@@ -84,6 +88,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange: (value: ModelFormatFilter) => void;
   capabilityFilter: CapabilityFilter;
   onCapabilityFilterChange: (value: CapabilityFilter) => void;
+  gpuFitFilter: GpuFitFilter;
+  onGpuFitFilterChange: (value: GpuFitFilter) => void;
   onManageLocalFolders: () => void;
   /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
    *  format-dropdown option rather than a standalone feed section. */
@@ -148,6 +154,14 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   const capabilityOptions = useMemo<HubOption<CapabilityFilter>[]>(
     () =>
       CAPABILITY_FILTER_OPTIONS.map((option) => ({
+        value: option.value,
+        label: option.label,
+      })),
+    [],
+  );
+  const gpuFitOptions = useMemo<HubOption<GpuFitFilter>[]>(
+    () =>
+      GPU_FIT_FILTER_OPTIONS.map((option) => ({
         value: option.value,
         label: option.label,
       })),
@@ -252,7 +266,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 ? `Search on-device ${isDataset ? "datasets" : "models"}`
                 : isDataset
                   ? "Search datasets"
-                  : "Search models"
+                  : "Search all models"
             }
             className={cn(
               "field-soft h-9 rounded-full !border-0 pl-10 text-[13px] placeholder:text-muted-foreground/80 focus-visible:!ring-0",
@@ -339,6 +353,16 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={capabilityOptions}
             onValueChange={onCapabilityFilterChange}
             ariaLabel="Capability filter"
+            className={cn(triggerBase, "w-[128px]")}
+          />
+        )}
+
+        {tab === "discover" && !isDataset && (
+          <HubOptionMenu
+            value={gpuFitFilter}
+            options={gpuFitOptions}
+            onValueChange={onGpuFitFilterChange}
+            ariaLabel="GPU fit filter"
             className={cn(triggerBase, "w-[128px]")}
           />
         )}

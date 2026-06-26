@@ -340,34 +340,19 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
                 flush = True,
             )
-            print(f"{dim}    Common causes:{reset}", flush = True)
             print(
-                f"{dim}      * AWS  -- the instance's Security Group doesn't "
-                f"allow inbound TCP {port}.{reset}",
+                f"{dim}    Usually a cloud firewall (AWS security group, "
+                f"GCP firewall / Azure NSG rule) or home router isn't "
+                f"allowing inbound TCP {port}.{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * GCP  -- no firewall rule allowing TCP {port} "
-                f"for the instance's network tag.{reset}",
+                f"{dim}    No firewall change needed -- SSH local-forward "
+                f"from your own computer:{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * Azure / other clouds -- equivalent NSG / "
-                f"firewall rule missing.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}      * Home -- your router isn't port-forwarding "
-                f"{port} to this machine.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}    Workaround that needs no firewall changes -- "
-                f"SSH local-forward from your laptop:{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}        ssh -L {port}:localhost:{port} " f"<user>@{display_host}{reset}",
+                f"{dim}        ssh -L {port}:localhost:{port} <user>@{display_host}{reset}",
                 flush = True,
             )
             print(
@@ -622,7 +607,7 @@ def _graceful_shutdown(server = None):
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
     _remove_pid_file()
-    logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
+    logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 1. Shut down uvicorn (releases the listening socket).
     if server is not None:
@@ -677,9 +662,37 @@ def _graceful_shutdown(server = None):
     logger.info("All subprocesses cleaned up")
 
 
+# Bound the join so a stuck uvicorn shutdown cannot hang the terminal.
+_SERVER_SHUTDOWN_JOIN_TIMEOUT = 5.0
+
+
+def _flush_standard_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+
+
+def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_TIMEOUT) -> None:
+    """Join the uvicorn thread so the prompt returns only after its shutdown logs
+    flush. Skip the self-join when called from the server thread."""
+    import threading
+
+    thread = _server_thread
+    if thread is None or thread is threading.current_thread():
+        _flush_standard_streams()
+        return
+    thread.join(timeout = timeout)
+    if thread.is_alive():
+        logger.warning("Timed out waiting for uvicorn server thread to stop")
+    _flush_standard_streams()
+
+
 # The uvicorn server instance -- set by run_server(), used by callers
 # that tell the server to exit (e.g. signal handlers).
 _server = None
+_server_thread = None
 
 # Shutdown event -- wakes the main loop on signal.
 _shutdown_event = None
@@ -865,9 +878,14 @@ def _setup_server_disk_logging():
 def _cloudflare_tunnel_should_start(
     *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
 ) -> bool:
-    """Whether to start the Cloudflare tunnel. --secure tunnels a loopback bind too;
-    non-secure keeps the 0.0.0.0-only rule. Colab/api-only never tunnel."""
-    return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
+    """Whether to start the Cloudflare tunnel. --secure exposes only the tunnel
+    (loopback bind), so it tunnels even api-only (headless secure API serving);
+    otherwise tunnel only a 0.0.0.0 bind, never api-only (Tauri) or Colab."""
+    if is_colab or not cloudflare:
+        return False
+    if secure:
+        return True
+    return host == "0.0.0.0" and not api_only
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
@@ -891,6 +909,7 @@ def run_server(
     cloudflare: bool = True,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
+    emit_tauri_port: bool = True,
 ):
     """
     Start the FastAPI server.
@@ -904,12 +923,15 @@ def run_server(
         llama_parallel_slots: parallel slots for llama-server
         enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
             the default (tools on, per-request enable_tools honored)
+        emit_tauri_port: print the machine-readable TAURI_PORT line the desktop
+            app parses from stdout; the headless `run --api-only` path turns it
+            off so it does not pollute the documented URL/API-key banner
 
     Note:
         Signal handlers are NOT registered here so embedders (e.g. Colab) keep
         their own interrupt semantics; standalone callers register them after.
     """
-    global _server, _shutdown_event
+    global _server, _server_thread, _shutdown_event
 
     # Reap every child if the parent dies abnormally (terminal close, Task
     # Manager kill, SIGKILL); must run before any child can spawn.
@@ -921,7 +943,7 @@ def run_server(
     # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
     if secure and not cloudflare:
         raise SystemExit(
-            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+            "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
         )
     if secure:
         host = "127.0.0.1"
@@ -946,9 +968,13 @@ def run_server(
     if _session_log is not None and not silent:
         print(f"Session log: {_session_log}")
 
-    # Set env var BEFORE importing main so CORS middleware picks it up.
+    # Set env vars BEFORE importing main so CORS middleware picks them up.
+    # secure api-only is a remote server behind Cloudflare, so it keeps the
+    # any-origin CORS profile; plain api-only stays locked to the Tauri app.
     if api_only:
         os.environ["UNSLOTH_API_ONLY"] = "1"
+    if secure:
+        os.environ["UNSLOTH_SECURE"] = "1"
 
     import nest_asyncio
 
@@ -1069,7 +1095,10 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
     if port and port > 0:
-        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        _direct_host = _resolve_external_ip() if host in ("0.0.0.0", "::") else host
+        # Bracket IPv6 literals so the URL is valid (http://[2405:...]:port).
+        if ":" in _direct_host and not _direct_host.startswith("["):
+            _direct_host = f"[{_direct_host}]"
         app.state.server_url = f"http://{_direct_host}:{port}"
     else:
         app.state.server_url = None
@@ -1102,6 +1131,7 @@ def run_server(
                 startup_failed.set()
 
     thread = Thread(target = _run, daemon = True)
+    _server_thread = thread
     thread.start()
 
     # Wait until uvicorn finishes lifespan startup and binds sockets, or until it
@@ -1129,7 +1159,8 @@ def run_server(
     atexit.register(terminate_all)
 
     # Output port for Tauri (api-only), only after sockets bind and startup done.
-    if api_only:
+    # The headless `run --api-only` path opts out so it does not leak this line.
+    if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
 
     # Free trycloudflare.com tunnel for 0.0.0.0 binds (the raw ip:port is often
@@ -1161,12 +1192,49 @@ def run_server(
     # silently fall back to a raw port.
     if secure and not _cloudflare_url:
         print(
-            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link",
+            "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link",
             file = sys.stderr,
             flush = True,
         )
         _graceful_shutdown(_server)
         sys.exit(1)
+
+    # Time-box a freshly-exposed web UI: if nobody changes the seeded admin
+    # password within the deadline (default 1h), shut down rather than leave an
+    # unsecured public instance running. No-op for loopback, --api-only, Colab,
+    # an already-changed password, or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0.
+    try:
+        from auth import storage as _auth_storage
+        from auth.bootstrap_timeout import (
+            arm_bootstrap_timeout,
+            bootstrap_timeout_seconds,
+            should_arm_bootstrap_timeout,
+        )
+
+        _bootstrap_timeout = bootstrap_timeout_seconds()
+        if should_arm_bootstrap_timeout(
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            frontend_served = bool(frontend_path) and not api_only,
+            is_colab = _IS_COLAB,
+            requires_change = _auth_storage.requires_password_change(
+                _auth_storage.DEFAULT_ADMIN_USERNAME
+            ),
+            timeout_seconds = _bootstrap_timeout,
+        ):
+            arm_bootstrap_timeout(
+                _auth_storage,
+                _trigger_shutdown,
+                timeout_seconds = _bootstrap_timeout,
+                logger = logger,
+            )
+            logger.info(
+                "Studio will shut down in %ds unless the default admin password is changed.",
+                _bootstrap_timeout,
+            )
+    except Exception as e:  # best-effort: never block startup on the timeout
+        logger.warning("Bootstrap timeout not armed: %s", e)
 
     if not silent:
         _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
@@ -1174,18 +1242,20 @@ def run_server(
     return app
 
 
-# For direct execution (also invoked by CLI via os.execvp / subprocess).
-if __name__ == "__main__":
-    import argparse
-    import signal
-    import traceback
+# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
+# backend launches; `unsloth studio run` always passes its own value (4).
+_PARALLEL_MIN = 1
+_PARALLEL_MAX = 64
+_PARALLEL_DEFAULT_PLAIN = 1
 
-    # Ensure stderr handles Unicode on Windows (non-ASCII path tracebacks).
-    if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
-        try:
-            sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
-        except Exception:
-            pass
+
+def _build_arg_parser():
+    """Build the backend CLI argument parser.
+
+    Extracted from the __main__ block so the flag wiring (notably the
+    --secure/--no-secure polarity and its --not-secure alias) stays unit-testable.
+    """
+    import argparse
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
     parser.add_argument(
@@ -1218,8 +1288,16 @@ if __name__ == "__main__":
         action = argparse.BooleanOptionalAction,
         default = False,
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
-        "if the tunnel can't start. Without it, --not-secure also serves the raw "
+        "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network",
+    )
+    # Back-compat: accept --not-secure as a hidden alias for --no-secure.
+    parser.add_argument(
+        "--not-secure",
+        dest = "secure",
+        action = "store_false",
+        default = argparse.SUPPRESS,
+        help = argparse.SUPPRESS,
     )
     # Tri-state tool policy: no flag -> None (tools on, per-request honored);
     # --enable-tools/--disable-tools force on/off.
@@ -1238,11 +1316,6 @@ if __name__ == "__main__":
         default = None,
         help = "Force server-side tools off for every request.",
     )
-    # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
-    # backend launches; `unsloth studio run` always passes its own value (4).
-    _PARALLEL_MIN = 1
-    _PARALLEL_MAX = 64
-    _PARALLEL_DEFAULT_PLAIN = 1
     parser.add_argument(
         "--parallel",
         "--n-parallel",
@@ -1253,7 +1326,22 @@ if __name__ == "__main__":
             f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4."
         ),
     )
+    return parser
 
+
+# For direct execution (also invoked by CLI via os.execvp / subprocess).
+if __name__ == "__main__":
+    import signal
+    import traceback
+
+    # Ensure stderr handles Unicode on Windows (non-ASCII path tracebacks).
+    if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
+
+    parser = _build_arg_parser()
     args = parser.parse_args()
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
@@ -1290,6 +1378,11 @@ if __name__ == "__main__":
 
     # Signal handler -- ensures subprocess cleanup on Ctrl+C.
     def _signal_handler(signum, frame):
+        # Restore defaults so a second signal force-quits if shutdown stalls.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, signal.SIG_DFL)
         _graceful_shutdown(_server)
         _shutdown_event.set()
 
@@ -1305,3 +1398,4 @@ if __name__ == "__main__":
     # lets the interpreter process pending signals.
     while not _shutdown_event.is_set():
         _shutdown_event.wait(timeout = 1)
+    _wait_for_server_shutdown()

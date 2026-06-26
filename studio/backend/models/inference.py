@@ -1101,6 +1101,8 @@ class ChoiceDelta(BaseModel):
 
     role: Optional[str] = None
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
 
 
 OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
@@ -1136,6 +1138,8 @@ class CompletionMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str
     refusal: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
 
 
 class CompletionChoice(BaseModel):
