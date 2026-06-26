@@ -847,6 +847,28 @@ _PREFETCH_IGNORE_PATTERNS = (
 )
 
 
+# Repo-root tokenizer / config / processor files that a from_pretrained reads from the
+# root even when the weights load from a subfolder. Exact filenames (no wildcard) so they
+# match only root-level files, never same-named files inside another subfolder.
+_ROOT_AUX_PREFETCH_PATTERNS = (
+    "config.json",
+    "generation_config.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "tokenizer.model",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "vocab.json",
+    "vocab.txt",
+    "merges.txt",
+    "spiece.model",
+    "chat_template.jinja",
+    "chat_template.json",
+    "preprocessor_config.json",
+    "processor_config.json",
+)
+
+
 def _in_requested_load_scope(filename, subfolder):
     """True if a repo-relative *filename* belongs to the location being loaded.
 
@@ -1036,13 +1058,16 @@ def maybe_prefetch_hf_snapshot(
         from_tf = from_tf,
         from_flax = from_flax,
     )
-    # When loading from a subfolder, warm only that subfolder instead of the whole
-    # repo: a from_pretrained(..., subfolder=X) resolves every file under X/, so the
-    # rest is wasted bandwidth and disk. This also scopes the stall protection to the
-    # weights the load actually reads.
+    # When loading from a subfolder, warm that subfolder instead of the whole repo: a
+    # from_pretrained(..., subfolder=X) resolves every weight file under X/, so the rest
+    # is wasted bandwidth and disk. Also warm the repo-ROOT tokenizer / config files: the
+    # tokenizer / processor load reads those from the root even when the weights live in a
+    # subfolder, so a subfolder-only prefetch would leave them to an unprotected in-process
+    # download. The root patterns are exact filenames (no wildcard), so they match only
+    # root-level files, not same-named files deeper in the repo.
     allow_patterns = None
     if isinstance(subfolder, str) and subfolder.strip("/"):
-        allow_patterns = [f"{subfolder.strip('/')}/*"]
+        allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
     try:
         snapshot_download_with_xet_fallback(
             model_name,

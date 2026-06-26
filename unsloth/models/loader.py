@@ -879,7 +879,11 @@ class FastLanguageModel(FastLlamaModel):
                 # unprotected in-process Xet transfer).
                 fast_inference = False,
                 force_download = kwargs.get("force_download", False),
-                use_safetensors = kwargs.get("use_safetensors"),
+                # Do not inherit the base model's use_safetensors: it selects the BASE
+                # weight format, but the adapter has its own (usually
+                # adapter_model.safetensors). Passing use_safetensors=False here would skip
+                # a safetensors-only adapter's weights, leaving PeftModel.from_pretrained to
+                # fetch them in-process. Leave it as auto so the adapter's format is warmed.
             )
             # The killable child already did the forced download; clear the flag so
             # the in-process load reuses that warm cache instead of re-forcing.
@@ -1832,7 +1836,11 @@ class FastModel(FastBaseModel):
                 # unprotected in-process Xet transfer).
                 fast_inference = False,
                 force_download = kwargs.get("force_download", False),
-                use_safetensors = kwargs.get("use_safetensors"),
+                # Do not inherit the base model's use_safetensors: it selects the BASE
+                # weight format, but the adapter has its own (usually
+                # adapter_model.safetensors). Passing use_safetensors=False here would skip
+                # a safetensors-only adapter's weights, leaving PeftModel.from_pretrained to
+                # fetch them in-process. Leave it as auto so the adapter's format is warmed.
             )
             # The killable child already did the forced download; clear the flag so
             # the in-process load reuses that warm cache instead of re-forcing.
