@@ -180,7 +180,6 @@ def _make_quant_config(scheme: str) -> Any:
         # throughput. (Negligible numeric effect for diffusion's short reductions.)
         try:
             from torchao.float8 import Float8MMConfig
-
             return Float8DynamicActivationFloat8WeightConfig(
                 mm_config = Float8MMConfig(use_fast_accum = True)
             )
