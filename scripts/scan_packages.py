@@ -1344,7 +1344,11 @@ def _extract_evidence(
         if max_matches and len(out) >= max_matches:
             break
     if len(out) > _MAX_EVIDENCE_SPANS:
-        rest = "\n".join(out[_MAX_EVIDENCE_SPANS:])
+        # Canonicalize (strip the L<NN>: markers) before digesting the overflow so a
+        # pure line shift above the overflow region does not change the digest and
+        # reopen an otherwise-unchanged finding, matching the per-span key's
+        # line-shift stability.
+        rest = _canon_evidence(" | ".join(out[_MAX_EVIDENCE_SPANS:]))
         digest = hashlib.sha256(rest.encode("utf-8", "replace")).hexdigest()
         out = out[:_MAX_EVIDENCE_SPANS] + [
             f"(+{len(out) - _MAX_EVIDENCE_SPANS} more) sha256:{digest}"

@@ -491,6 +491,21 @@ def test_extract_evidence_binds_call_embedded_in_string():
     assert sp._evidence_hash(eo) != sp._evidence_hash(en)
 
 
+def test_extract_evidence_overflow_digest_is_line_shift_stable():
+    # The overflow digest canonicalizes (strips L<NN>: markers), so inserting an
+    # unrelated line above the overflow region does not change it (line-shift
+    # stability), while a real payload change inside the overflow still reopens.
+    n = sp._MAX_EVIDENCE_SPANS
+    src = "\n".join(f"requests.get('http://a/p{i}')" for i in range(n + 5))
+    sha = lambda e: re.search(r"more\) sha256:([0-9a-f]+)", e).group(1)
+    e_a = sp._extract_evidence(src, sp.RE_NETWORK)
+    assert "more) sha256:" in e_a
+    e_shift = sp._extract_evidence("# unrelated\n" + src, sp.RE_NETWORK)
+    assert sha(e_a) == sha(e_shift)  # a pure line shift does not change the digest
+    e_chg = sp._extract_evidence(src.replace(f"a/p{n + 3}'", "a/pEVIL'"), sp.RE_NETWORK)
+    assert sha(e_a) != sha(e_chg)  # a real change in the overflow region reopens
+
+
 def test_extract_evidence_fallback_line_numbers_are_correct():
     # The DOTALL fallback maps match offsets to line numbers via precomputed
     # newline offsets (bisect, not a quadratic content.count per match); guard that

@@ -43,7 +43,6 @@ import base64 as _b64  # imported only so the IOC string-scan can detect it
 import bisect
 import hashlib
 import io
-import itertools
 import json
 import os
 import re
@@ -934,14 +933,23 @@ def _find_unescaped(line: str, quote: str, start: int) -> int:
     return -1
 
 
+# A `/` is a regex literal (not division) when the previous significant character
+# is none (start) or one of these expression-position chars. Used only by the
+# multi-line blanked view, and the span is unioned with the single-line view, so
+# an over- or under-detection only ever grows the bound span (never shrinks it).
+_JS_REGEX_PRECEDERS = frozenset("([{,;:?=&|!+-*/%^~<>")
+
+
 def _blank_js_strings(lines: list[str]) -> list[str]:
-    """Replace string contents (single, double, and multi-line backtick template
-    literals, escapes honoured) with spaces across ``lines``, keeping the line
-    count and every bracket OUTSIDE a string intact, so bracket counting never
-    miscounts a ``)`` that lives inside a string -- including a template literal
-    that spans several lines, which a per-line regex cannot blank."""
+    """Replace string contents (single, double, multi-line backtick template
+    literals) AND regex literal bodies with spaces across ``lines``, keeping the
+    line count and every bracket OUTSIDE a string/regex intact, so bracket counting
+    never miscounts a ``)`` that lives inside a string -- including a template
+    literal spanning several lines or a ``/)/`` regex -- which a per-line regex
+    cannot blank. Escapes are honoured."""
     out: list[str] = []
     in_back = False  # inside a multi-line `template` literal
+    prev_sig = ""  # last significant non-space char (for regex-vs-division)
     for line in lines:
         buf: list[str] = []
         i, n = 0, len(line)
@@ -955,8 +963,13 @@ def _blank_js_strings(lines: list[str]) -> list[str]:
                     buf.append(" " * (end - i + 1))
                     i = end + 1
                     in_back = False
+                    prev_sig = "`"
                 continue
             ch = line[i]
+            if ch in " \t":
+                buf.append(ch)
+                i += 1
+                continue
             if ch in "'\"`":
                 end = _find_unescaped(line, ch, i + 1)
                 if end == -1:
@@ -967,9 +980,39 @@ def _blank_js_strings(lines: list[str]) -> list[str]:
                 else:
                     buf.append(" " * (end - i + 1))
                     i = end + 1
+                prev_sig = "v"  # a string is a value: a following `/` is division
+                continue
+            if ch == "/" and (prev_sig == "" or prev_sig in _JS_REGEX_PRECEDERS):
+                # Regex literal: blank to the closing unescaped `/` outside a `[...]`
+                # char class. A regex never spans lines, so no close on the line
+                # means this `/` is really division.
+                j, in_class, closed = i + 1, False, False
+                while j < n:
+                    c = line[j]
+                    if c == "\\":
+                        j += 2
+                        continue
+                    if c == "[":
+                        in_class = True
+                    elif c == "]":
+                        in_class = False
+                    elif c == "/" and not in_class:
+                        j += 1
+                        closed = True
+                        break
+                    j += 1
+                if closed:
+                    buf.append(" " * (j - i))
+                    i = j
+                    prev_sig = "v"  # a regex is a value
+                    continue
+                buf.append(ch)
+                i += 1
+                prev_sig = "/"
                 continue
             buf.append(ch)
             i += 1
+            prev_sig = ch
         out.append("".join(buf))
     return out
 
@@ -1079,6 +1122,26 @@ def _format_match(
     return snippet
 
 
+def _overflow_digest(
+    matches: list[re.Match],
+    lines: list[str],
+    sl_blanked: list[str],
+    ml_blanked: list[str],
+    nl: list[int],
+) -> str:
+    """A single digest binding the LOGICAL line (the bound bracket-group context,
+    not just the regex match text) of every overflow match, so a changed payload on
+    a line past the display cap still reopens. Whitespace-normalized to match
+    _evidence_hash so a reindent does not reopen."""
+    h = hashlib.sha256()
+    for m in matches:
+        idx = bisect.bisect_left(nl, m.start())
+        ll = _logical_line_text(lines, sl_blanked, ml_blanked, idx)
+        h.update(b"\x00")
+        h.update(" ".join(ll.split()).encode("utf-8", "replace"))
+    return h.hexdigest()
+
+
 def _evidence(
     text: str,
     pat: re.Pattern,
@@ -1086,8 +1149,9 @@ def _evidence(
 ) -> str:
     # Record every match (not a truncated sample) so an extra match appended to an
     # already-flagged file changes the evidence instead of riding the first few.
-    # Past _MAX_EVIDENCE_MATCHES the remaining match texts are folded into one
-    # digest so the evidence string stays bounded while still reopening on change.
+    # Past _MAX_EVIDENCE_MATCHES the remaining matches are folded into one digest
+    # (binding their logical-line context) so the evidence string stays bounded
+    # while a changed payload past the cap still reopens.
     matches = list(pat.finditer(text))
     if not matches:
         return ""
@@ -1097,8 +1161,9 @@ def _evidence(
         for m in matches[:_MAX_EVIDENCE_MATCHES]
     ]
     if len(matches) > _MAX_EVIDENCE_MATCHES:
-        rest = " ".join(text[m.start() : m.end()] for m in matches[_MAX_EVIDENCE_MATCHES:])
-        digest = hashlib.sha256(" ".join(rest.split()).encode("utf-8", "replace")).hexdigest()
+        digest = _overflow_digest(
+            matches[_MAX_EVIDENCE_MATCHES:], lines, sl_blanked, ml_blanked, nl
+        )
         shown.append(f"(+{len(matches) - _MAX_EVIDENCE_MATCHES} more) sha256:{digest}")
     return " | ".join(shown)
 
@@ -1462,25 +1527,26 @@ def _outbound_host_evidence(text: str, host: str) -> str:
     # the rest are folded into a digest so an added context still reopens.
     claimed: list[tuple[int, int]] = []
     chosen: list[re.Match] = []
-    overflow: list[str] = []
+    overflow: list[re.Match] = []
     for pat in patterns:
-        for m in itertools.islice(pat.finditer(text), _MAX_EVIDENCE_MATCHES):
-            if any(m.start() < e and s < m.end() for s, e in claimed):
-                continue
+        for m in pat.finditer(text):
             if len(chosen) < _MAX_EVIDENCE_MATCHES:
+                # Overlap check runs only while filling the display list, so
+                # `claimed` is bounded by the cap and this stays O(cap) per match
+                # (not quadratic), while every later match is still counted below.
+                if any(m.start() < e and s < m.end() for s, e in claimed):
+                    continue
                 claimed.append((m.start(), m.end()))
                 chosen.append(m)
             else:
-                overflow.append(text[m.start() : m.end()])
+                overflow.append(m)
     if not chosen:
         return host
     chosen.sort(key = lambda m: m.start())
     lines, sl_blanked, ml_blanked, nl = _index_text(text)
     shown = [_format_match(text, lines, sl_blanked, ml_blanked, nl, m, 1000) for m in chosen]
     if overflow:
-        digest = hashlib.sha256(
-            " ".join(" ".join(o.split()) for o in overflow).encode("utf-8", "replace")
-        ).hexdigest()
+        digest = _overflow_digest(overflow, lines, sl_blanked, ml_blanked, nl)
         shown.append(f"(+{len(overflow)} more) sha256:{digest}")
     return " | ".join(shown)
 

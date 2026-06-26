@@ -651,6 +651,30 @@ def test_cred_env_lifecycle_binds_whole_body():
     assert snp._finding_key(safe) != snp._finding_key(evil)
 
 
+def test_outbound_host_regex_literal_does_not_close_group_early():
+    # A ) inside a JS regex literal must not close the outbound call early; the
+    # options object after the regex binds, so a changed header reopens.
+    old = "request('http://169.254.169.254', /)/, {\n  headers: {a: 'old'},\n});\n"
+    new = old.replace("old", "evil")
+    assert snp._finding_key(_host_finding(old)) != snp._finding_key(_host_finding(new))
+
+
+def test_evidence_overflow_binds_context_and_counts_all_matches():
+    # Every match past the display cap is still counted in the overflow digest AND
+    # bound by its logical-line context, so changing the payload on an over-cap line
+    # reopens (the digest is not just the regex match text, and the iterator is not
+    # truncated before reaching it).
+    n = snp._MAX_EVIDENCE_MATCHES
+    mk = lambda which: "".join(
+        f"a{i} = process.env.NPM_TOKEN; tag{i} = {'evil' if i == n + 2 and which else 'safe'}\n"
+        for i in range(n + 5)
+    )
+    e1 = snp._evidence(mk(False), snp._JS_ENV_TOKEN)
+    e2 = snp._evidence(mk(True), snp._JS_ENV_TOKEN)
+    assert "more) sha256:" in e1
+    assert snp._evidence_hash(e1) != snp._evidence_hash(e2)
+
+
 def test_evidence_caps_match_count_with_digest_remainder():
     # Past _MAX_EVIDENCE_MATCHES the evidence folds the remaining matches into one
     # digest so a huge/minified file cannot build an unbounded evidence string,
