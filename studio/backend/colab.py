@@ -104,14 +104,11 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
 
 
 def _bootstrap_password_pending() -> bool:
-    """True while the default admin still must change its seeded bootstrap password.
+    """True while the default admin still owes a bootstrap-password change.
 
-    While pending, the server injects that bootstrap admin password into the index
-    page for same-origin top-level GETs (``_inject_bootstrap`` in main.py) — and a
-    public Cloudflare tunnel request looks same-origin (no Origin header), so the
-    password would leak to anyone holding the link, handing them admin access. We
-    use this to refuse opening the tunnel until the admin password has been changed.
-    Fails safe: if we can't determine the state, treat it as pending (no tunnel).
+    While pending, main.py injects that password into same-origin GETs, and a public
+    tunnel GET (no Origin) reads as same-origin, so sharing the link would leak admin
+    access. Fails safe to pending if the state cannot be read.
     """
     try:
         from auth.storage import requires_password_change, DEFAULT_ADMIN_USERNAME
@@ -122,20 +119,11 @@ def _bootstrap_password_pending() -> bool:
 
 
 def start_cloudflare_tunnel(port: int) -> "str | None":
-    """Best-effort: open a free Cloudflare quick tunnel to localhost:*port* and
-    return its public ``https://*.trycloudflare.com`` URL, or None.
+    """Open a shareable Cloudflare quick tunnel to localhost:*port*, or None.
 
-    Colab's kernel-proxy iframe only works inside the single browser tab that
-    owns the runtime — it is not a link you can hand to someone else or open on
-    another device. The Cloudflare tunnel gives a shareable HTTPS URL anyone can
-    open. Studio's own ``run_server`` deliberately suppresses the tunnel on Colab
-    (see ``_cloudflare_tunnel_should_start`` in run.py), so we start it directly
-    here instead. Any failure collapses to None and the Colab proxy still works.
-
-    Refuses to open the tunnel while the admin account still holds its temporary
-    bootstrap password, since that password is exposed to any same-origin GET and
-    a public tunnel request counts as same-origin — sharing then would grant admin
-    access to anyone with the link.
+    run_server suppresses the tunnel on Colab by design, so we start it directly.
+    Refused while the bootstrap password is pending; any failure collapses to None
+    and the Colab proxy still works.
     """
     if _bootstrap_password_pending():
         logger.warning(
@@ -155,22 +143,18 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
     except Exception as e:
         logger.info(f"Cloudflare tunnel failed to start ({e}); using Colab proxy only.")
         return None
-    # The link is logged by _show_and_embed when the card renders; only note misses here.
+    # Success is logged by _show_and_embed; note only misses here.
     if not url:
         logger.info("Cloudflare tunnel did not produce a URL; using Colab proxy only.")
     return url
 
 
 def _publish_cloudflare_url(cloudflare_url: "str | None") -> None:
-    """Mirror a directly-started tunnel URL onto the running app so /api/health
-    advertises it.
+    """Publish a directly-started tunnel URL onto app.state so /api/health advertises it.
 
-    ``run_server`` only sets ``app.state.cloudflare_url`` when it opens the tunnel
-    itself, but on Colab it suppresses the tunnel by design — so ``colab.start()``
-    opens it directly and must publish the URL here. Without this the frontend
-    reads ``cloudflare_url = None`` from /api/health and its API-key examples fall
-    back to the raw Colab/internal ``server_url``, which isn't reachable from
-    another device — defeating the point of the shareable link. Best-effort.
+    run_server only sets this when it opens the tunnel itself, which it skips on Colab,
+    so we set it here. Otherwise the frontend's API examples fall back to an
+    unreachable server_url. Best-effort.
     """
     if not cloudflare_url:
         return
@@ -188,7 +172,7 @@ def _stop_cloudflare_tunnel() -> None:
         stop_studio_tunnel()
     except Exception:
         pass
-    # Clear the published URL so /api/health stops advertising a dead tunnel.
+    # Stop /api/health advertising a dead tunnel.
     try:
         from main import app as _studio_app
         _studio_app.state.cloudflare_url = None
@@ -197,10 +181,10 @@ def _stop_cloudflare_tunnel() -> None:
 
 
 def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
-    """Return True only if Unsloth Studio (not some other app on *port*) answers /api/health.
+    """True only if Unsloth Studio (not some other app) answers /api/health on *port*.
 
-    Validates the service marker so the reuse fast-path never reuses or tunnels
-    an unrelated process that merely happens to serve /api/health.
+    The service-marker check stops the reuse path reusing or tunneling a foreign
+    process that merely serves /api/health.
     """
     import json, urllib.request
     try:
@@ -211,14 +195,7 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
 
 
 def _shareable_link_html(cloudflare_url: str) -> str:
-    """A branded card advertising the shareable Cloudflare HTTPS link.
-
-    Reuses the original Colab proxy banner skin (see ``show_link``) — white card,
-    black border, Unsloth gem, big black "Open" button — retrofitted for the
-    Cloudflare ``trycloudflare.com`` URL. Unlike the in-tab Colab proxy iframe
-    rendered below, this link can be opened from any device by anyone you share
-    it with, so it gets the same prominent treatment as the proxy "Ready!" banner.
-    """
+    """Branded card for the shareable Cloudflare link, styled like the show_link banner."""
     return f"""
     <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
@@ -246,12 +223,8 @@ def _shareable_link_html(cloudflare_url: str) -> str:
 
 
 def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
-    """Embed the Studio inline for *port* with a branded header bar.
-
-    Fetches the proxy URL once (registering the port), then renders header bar +
-    iframe. Falls back to serve_kernel_port_as_iframe if IPython HTML is unavailable.
-    If *cloudflare_url* is given, a shareable-link card is rendered above the iframe.
-    """
+    """Render the Studio header + iframe for *port*, with a shareable-link card above
+    when *cloudflare_url* is set. Falls back to serve_kernel_port_as_iframe."""
     url = get_colab_url(port)
     logger.info(f"🌐 Unsloth Studio URL: {url}")
     if cloudflare_url:
@@ -303,20 +276,15 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
 
 
 def start(port: int = 8888, *, cloudflare: bool = False):
-    """
-    Start Unsloth Studio server in Colab and display the URL.
+    """Start Unsloth Studio in Colab and display the URL.
 
     Args:
         port: Port to bind/serve on.
-        cloudflare: Opt in to a free Cloudflare HTTPS tunnel and show a
-            ``trycloudflare.com`` link reachable from any device (default OFF).
-            Off by default, Studio is shown only through the Colab-proxy iframe,
-            which works in the tab that owns the runtime. The tunnel exposes
-            Studio's login page beyond Colab, so enabling it is an explicit
-            opt-in; pass ``cloudflare=False`` (or omit it) to turn it back off.
+        cloudflare: Opt in to a shareable Cloudflare HTTPS link reachable from any
+            device (default OFF). It exposes Studio's login page beyond Colab, so it
+            stays an explicit opt-in; the default shows only the in-tab proxy iframe.
 
     Usage:
-        from colab import start
         start()                    # Colab-proxy iframe only (default)
         start(cloudflare=True)     # also open a shareable Cloudflare link
     """
@@ -328,8 +296,7 @@ def start(port: int = 8888, *, cloudflare: bool = False):
     # the port, so just re-show the link and iframe.
     if _is_studio_healthy(port):
         logger.info(f"   Studio is already running on port {port} — reusing existing server.")
-        # try/finally so an interrupt while the tunnel is starting or the iframe is
-        # rendering still tears the tunnel down instead of orphaning the process.
+        # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
             cf_url = start_cloudflare_tunnel(port) if cloudflare else None
             _publish_cloudflare_url(cf_url)
@@ -356,10 +323,8 @@ def start(port: int = 8888, *, cloudflare: bool = False):
 
     logger.info("   Starting server...")
     try:
-        # cloudflare = False unconditionally: this helper owns the tunnel decision
-        # (started directly below only when the caller opts in). Leaving run_server's
-        # default True would start a tunnel on this 0.0.0.0 bind whenever Colab
-        # detection fails, defeating the documented cloudflare=False opt-out.
+        # cloudflare=False: this helper owns the tunnel. run_server's default True
+        # would tunnel this 0.0.0.0 bind if Colab detection fails, breaking the opt-out.
         app = run_server(
             host = "0.0.0.0",
             port = port,
@@ -400,12 +365,8 @@ def start(port: int = 8888, *, cloudflare: bool = False):
         )
         return
 
-    # Start the shareable Cloudflare tunnel now that the server is healthy. Studio's
-    # run_server suppresses the tunnel on Colab by design, so we open it directly,
-    # then publish the URL onto the app so /api/health (and the frontend) advertise it.
-    #
-    # try/finally so an interrupt while the tunnel is starting or the iframe is
-    # rendering still tears the tunnel down instead of orphaning the process.
+    # Open the tunnel now the server is healthy, publish its URL for /api/health, and
+    # tear it down on interrupt (try/finally) rather than orphan the process.
     try:
         cf_url = start_cloudflare_tunnel(actual_port) if cloudflare else None
         _publish_cloudflare_url(cf_url)
