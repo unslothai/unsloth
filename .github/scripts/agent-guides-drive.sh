@@ -157,10 +157,20 @@ PY
   redact "$REDACTED_DIR/pi-models.json"
 }
 
+# Read a value from an `export VAR=...` line in the connect --no-launch output.
+# `unsloth start` writes each agent's session config off the user's ~ and points
+# at it through a relocation env var (CODEX_HOME / OPENCODE_CONFIG /
+# OPENCLAW_CONFIG_PATH), so the contract checks read the path from here.
+raw_env() {  # $1 = var name -> value (one shlex-quote layer stripped)
+  local raw="$LOGS_DIR/connect-${AGENT}.txt"
+  local v; v="$(sed -n "s/^export $1=//p" "$raw" | tail -1)"
+  v="${v#\'}"; v="${v%\'}"; printf '%s' "$v"
+}
+
 # ── 5-agent start.py path: parse env + command from --no-launch ─────────
 # Populates globals CONNECT_ENV (export/unset lines) and CONNECT_CMD (the
 # launch command on the last printed line), and runs start.py's config
-# writers as a side effect (it writes ~/.codex, ~/.claude, etc.).
+# writers as a side effect (it writes each agent's relocated session config).
 parse_connect() {
   local raw="$LOGS_DIR/connect-${AGENT}.txt"
   if ! unsloth start "$AGENT" --no-launch --api-key "$UNSLOTH_API_KEY" > "$raw" 2>&1; then
@@ -181,14 +191,16 @@ parse_connect() {
 # (env-var rename, wire_api flip, attribution setting drop) also fail/flag.
 crosscheck_contract() {
   local raw="$LOGS_DIR/connect-${AGENT}.txt"
+  local cfg
   case "$AGENT" in
     codex)
       grep -q 'UNSLOTH_STUDIO_AUTH_TOKEN' "$raw" \
         || guide_fail "Codex env key is no longer UNSLOTH_STUDIO_AUTH_TOKEN (start.py _CODEX_ENV_KEY)"
-      if [ -f "$HOME/.codex/config.toml" ]; then
-        grep -q 'wire_api = "responses"' "$HOME/.codex/config.toml" \
-          || guide_fail "Codex wire_api is no longer \"responses\" in ~/.codex/config.toml"
-        cp "$HOME/.codex/config.toml" "$REDACTED_DIR/codex-config.toml"
+      cfg="$(raw_env CODEX_HOME)/config.toml"
+      if [ -f "$cfg" ]; then
+        grep -q 'wire_api = "responses"' "$cfg" \
+          || guide_fail "Codex wire_api is no longer \"responses\" in \$CODEX_HOME/config.toml"
+        cp "$cfg" "$REDACTED_DIR/codex-config.toml"
       fi
       grep -q 'codex --oss --profile unsloth_api' "$raw" \
         || echo "::warning::Codex launch command changed from 'codex --oss --profile unsloth_api'"
@@ -196,26 +208,26 @@ crosscheck_contract() {
     claude)
       grep -q 'ANTHROPIC_AUTH_TOKEN' "$raw" \
         || guide_fail "Claude no longer exports ANTHROPIC_AUTH_TOKEN (start.py claude())"
-      if [ -f "$HOME/.claude/settings.json" ]; then
-        grep -q '"CLAUDE_CODE_ATTRIBUTION_HEADER"' "$HOME/.claude/settings.json" \
-          || echo "::warning::CLAUDE_CODE_ATTRIBUTION_HEADER not written to ~/.claude/settings.json (ensure_claude_attribution_header)"
-        cp "$HOME/.claude/settings.json" "$REDACTED_DIR/claude-settings.json"
-      fi
+      grep -q 'CLAUDE_CODE_ATTRIBUTION_HEADER' "$raw" \
+        || echo "::warning::CLAUDE_CODE_ATTRIBUTION_HEADER no longer set for the session (start.py claude())"
       ;;
     hermes)
       grep -q 'UNSLOTH_API_KEY' "$raw" \
         || guide_fail "Hermes env key is no longer UNSLOTH_API_KEY (start.py _HERMES_ENV_KEY)"
-      [ -f "$HOME/.hermes/config.yaml" ] && cp "$HOME/.hermes/config.yaml" "$REDACTED_DIR/hermes-config.yaml"
+      cfg="$(raw_env HERMES_HOME)/config.yaml"
+      [ -f "$cfg" ] && cp "$cfg" "$REDACTED_DIR/hermes-config.yaml"
       ;;
     openclaw)
-      if [ -f "$HOME/.openclaw/openclaw.json" ]; then
-        grep -q '"openai-completions"' "$HOME/.openclaw/openclaw.json" \
+      cfg="$(raw_env OPENCLAW_CONFIG_PATH)"
+      if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+        grep -q '"openai-completions"' "$cfg" \
           || echo "::warning::OpenClaw provider api is no longer 'openai-completions' (write_openclaw_config)"
-        cp "$HOME/.openclaw/openclaw.json" "$REDACTED_DIR/openclaw.json"
+        cp "$cfg" "$REDACTED_DIR/openclaw.json"
       fi
       ;;
     opencode)
-      [ -f "$HOME/.config/opencode/opencode.json" ] && cp "$HOME/.config/opencode/opencode.json" "$REDACTED_DIR/opencode.json"
+      cfg="$(raw_env OPENCODE_CONFIG)"
+      [ -n "$cfg" ] && [ -f "$cfg" ] && cp "$cfg" "$REDACTED_DIR/opencode.json"
       ;;
   esac
   redact "$REDACTED_DIR"/* 2>/dev/null || true
@@ -229,13 +241,16 @@ crosscheck_contract() {
 
 # Hermes: an explicit empty cli toolset disables all tools (and drops the
 # tool-gated guidance blocks), so -z sends ~300 tokens instead of thousands.
-# hermes ships a DEFAULT config.yaml that already has a populated
-# platform_toolsets, and `unsloth start` merges into it, so we must override
-# cli (not just append). That needs a YAML parser, and the runner's bare
-# python3 has no PyYAML -- but the venv that ships `unsloth` does (start.py
-# imports yaml), so run the patch with that interpreter.
+# Hermes enables its default cli toolset when the session config does not pin one,
+# so we must set platform_toolsets.cli explicitly to [] (not just append) to get
+# zero tools. That needs a YAML parser, and the runner's bare python3 has no
+# PyYAML -- but the venv that ships `unsloth` does (start.py imports yaml), so run
+# the patch with that interpreter. We patch the relocated $HERMES_HOME/config.yaml
+# that `unsloth start` printed, not the user's ~/.hermes.
 # (-z reads platform_toolsets.cli; --ignore-rules is a no-op under -z.)
 patch_hermes_tools() {  # $1 = none|default
+  local cfg; cfg="$(raw_env HERMES_HOME)/config.yaml"
+  [ -n "$cfg" ] || guide_fail "Hermes HERMES_HOME missing from connect output (start.py hermes())"
   # Find a python that can import yaml. The runner's bare python3 cannot, but the
   # interpreter in the `unsloth` console-script shebang provably can (it runs
   # start.py's write_hermes_config, which imports yaml). Try that first, then
@@ -247,13 +262,13 @@ patch_hermes_tools() {  # $1 = none|default
     { [ -x "$cand" ] || command -v "$cand" >/dev/null 2>&1; } || continue
     if "$cand" -c 'import yaml' 2>/dev/null; then py="$cand"; break; fi
   done
-  [ -n "$py" ] || guide_fail "could not find a python with PyYAML to patch ~/.hermes/config.yaml"
-  echo "[hermes] patching config with $py"
-  "$py" - "$1" <<'PY'
+  [ -n "$py" ] || guide_fail "could not find a python with PyYAML to patch the hermes session config"
+  echo "[hermes] patching $cfg with $py"
+  "$py" - "$1" "$cfg" <<'PY'
 import os, sys
 import yaml
 mode = sys.argv[1]
-p = os.path.expanduser("~/.hermes/config.yaml")
+p = sys.argv[2]
 cfg = (yaml.safe_load(open(p)) or {}) if os.path.exists(p) else {}
 ts = cfg.get("platform_toolsets")
 if not isinstance(ts, dict):
@@ -274,10 +289,14 @@ PY
 # drop the auto-injected AGENTS.md/SOUL.md bootstrap (the bulk of the prompt) for
 # both modes. --agent must reference a defined agent, so write it before invoking.
 patch_openclaw_agent() {  # $1 = notools|tools
-  python3 - "$1" <<'PY'
+  # OpenClaw reads its config from the relocated OPENCLAW_CONFIG_PATH that
+  # `unsloth start` printed, so patch THAT file (not the user's ~/.openclaw).
+  local cfg; cfg="$(raw_env OPENCLAW_CONFIG_PATH)"
+  [ -n "$cfg" ] || guide_fail "OpenClaw OPENCLAW_CONFIG_PATH missing from connect output (start.py openclaw())"
+  python3 - "$1" "$cfg" <<'PY'
 import os, sys, json
 mode = sys.argv[1]
-p = os.path.expanduser("~/.openclaw/openclaw.json")
+p = sys.argv[2]
 cfg = json.load(open(p)) if os.path.exists(p) else {}
 agents = cfg.setdefault("agents", {})
 agents.setdefault("defaults", {})["skipBootstrap"] = True
@@ -302,11 +321,15 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   local out="$1"; shift
   local script="$LOGS_DIR/invoke-${AGENT}.sh"
   local real; real="$(mktemp)"
+  # CONNECT_ENV_EXTRA / CONNECT_CMD_OVERRIDE let a caller (attribution-ab) flip a
+  # session knob without editing the user's config; empty -> use what start.py emitted.
+  local cmd="${CONNECT_CMD_OVERRIDE:-$CONNECT_CMD}"
   {
     echo "set -uo pipefail"
     echo "$CONNECT_ENV"
+    [ -n "${CONNECT_ENV_EXTRA:-}" ] && echo "$CONNECT_ENV_EXTRA"
     # Append extra args (the prompt / flags) to the launch command verbatim.
-    printf '%s' "$CONNECT_CMD"
+    printf '%s' "$cmd"
     local a
     for a in "$@"; do printf ' %q' "$a"; done
     printf '\n'
@@ -318,7 +341,7 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   # Writing the redacted copy up front keeps the key out of the artifact even if
   # the run times out (run_timed exits before returning here).
   cp "$real" "$script"; redact "$script"
-  echo "[$AGENT] invoking (timeout ${TIMEOUT}s): $CONNECT_CMD $*"
+  echo "[$AGENT] invoking (timeout ${TIMEOUT}s): $cmd $*"
   run_timed "$out" bash "$real"
   local rc=$?
   rm -f "$real"
@@ -466,33 +489,32 @@ case "$MODE" in
     # right before the measured turn, so an earlier turn's reuse can't leak in.
     LLAMA_LOG_DIR="${UNSLOTH_LLAMA_LOG_DIR:-$HOME/.unsloth/studio/logs/llama-server}"
     export LLAMA_LOG_DIR
-    parse_connect          # writes ~/.claude/settings.json (header=0) + env
+    parse_connect          # prints session env + suppression flags (no ~/.claude write)
     crosscheck_contract
     PROMPT='Reply with exactly the single word: pong'
 
-    # Phase A: header DISABLED (=0, the documented setting) -> expect a HIT on
-    # the continued turn. start.py's ensure_claude_attribution_header() set 0.
+    # Phase A: the suppression start.py ships (CLAUDE_CODE_ATTRIBUTION_HEADER=0 +
+    # --exclude-dynamic-system-prompt-sections + --settings overlay) -> expect a
+    # HIT on the continued turn, since the system-prompt prefix is stable.
     invoke_via_connect "$LOGS_DIR/claude-ab-hit-1.txt" -p "$PROMPT"        # turn 1 primes
     FROM_HIT="$(bash "$CACHE_HELPER" mark)"                                # offset before turn 2
     invoke_via_connect "$LOGS_DIR/claude-ab-hit-2.txt" -p --continue "$PROMPT again"
     CACHE_LOG_FROM="$FROM_HIT" bash "$CACHE_HELPER" log HIT
 
-    # Phase B: header ENABLED -> expect a MISS. The header prepends a
-    # per-request-changing attribution line to the system prompt, so the shared
-    # prefix changes every turn and the KV cache is invalidated (~90% slower);
-    # this is exactly what the guide flag prevents.
-    python3 - <<'PY'
-import json, os
-p = os.path.expanduser("~/.claude/settings.json")
-s = json.load(open(p)) if os.path.exists(p) else {}
-s.setdefault("env", {})["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "1"
-json.dump(s, open(p, "w"), indent=2)
-PY
+    # Phase B: vanilla Claude with the header ENABLED -> expect a MISS. We flip
+    # the env var to 1 and strip the suppression flags from the launch command
+    # (without them the dynamic attribution line is included and changes every
+    # turn, so the shared prefix moves and the KV cache is invalidated, ~90%
+    # slower). This is session-only: nothing is written to ~/.claude.
+    CONNECT_ENV_EXTRA='export CLAUDE_CODE_ATTRIBUTION_HEADER=1'
+    CONNECT_CMD_OVERRIDE="$(printf '%s' "$CONNECT_CMD" \
+      | sed -E "s/ --exclude-dynamic-system-prompt-sections//; s/ --settings '[^']*'//")"
     invoke_via_connect "$LOGS_DIR/claude-ab-miss-1.txt" -p "$PROMPT"
     FROM_MISS="$(bash "$CACHE_HELPER" mark)"
     invoke_via_connect "$LOGS_DIR/claude-ab-miss-2.txt" -p --continue "$PROMPT again"
     CACHE_LOG_FROM="$FROM_MISS" bash "$CACHE_HELPER" log MISS
-    echo "[claude] attribution A/B OK (header=0 HIT, header=1 MISS)"
+    unset CONNECT_ENV_EXTRA CONNECT_CMD_OVERRIDE
+    echo "[claude] attribution A/B OK (suppressed HIT, header=1 MISS)"
     ;;
 
   *)
