@@ -1242,15 +1242,13 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
-async def artifact_preview_frame(
-    request: Request,
-    allow_network: bool = False,
-    token: Optional[str] = None,
-):
-    """Serve the opaque sandbox shell used for client-side HTML canvases."""
+async def artifact_preview_frame(allow_network: bool = False):
+    """Serve the opaque sandbox shell for client-side HTML canvases.
 
-    if allow_network:
-        await _authenticate_header_or_query(request, token)
+    No auth token by design: the URL is readable by the untrusted canvas via
+    location.href, and this static shell exposes no server resource (frame-ancestors
+    plus the sandbox already gate it), so the CSP is chosen from allow_network alone.
+    """
 
     csp = (
         _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
@@ -4504,6 +4502,14 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            # Surface the failure: a bare EOF (e.g. after a read timeout) is treated
+            # by the chat client as success, saving a partial answer with no error.
+            yield (
+                "data: "
+                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
         finally:
             try:
                 await gen.aclose()

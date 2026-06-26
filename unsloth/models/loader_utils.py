@@ -18,6 +18,9 @@ import os
 import torch
 import re
 import tempfile
+import contextlib
+import threading as _threading
+import functools
 from typing import Union
 from .mapper import (
     INT_TO_FLOAT_MAPPER,
@@ -237,7 +240,12 @@ def get_model_name(
     ):
         new_model_name = BAD_MAPPINGS[new_model_name.lower()]
 
-    if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
+    if (
+        new_model_name is None
+        and model_name.count("/") == 1
+        and model_name[0].isalnum()
+        and not _env_says_offline()  # offline: skip the remote (raw GitHub) mapper refresh
+    ):
         # Try checking if a new Unsloth version allows it!
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
             _get_new_mapper()
@@ -489,3 +497,364 @@ def _get_fp8_mode_and_check_settings(
                 f"Using Triton kernels instead."
             )
     return fp8_mode
+
+
+# Rotary inv_freq buffers are deliberately kept on CPU - Unsloth pre-builds a
+# cos/sin cache per GPU instead (see LlamaRotaryEmbedding.multi_gpu_cos_cached)
+# so the GPU-resident lookup never needs to move the tiny inv_freq tensor itself.
+# torch.nn.parallel.DistributedDataParallel ignores device entirely when it
+# broadcasts buffers across ranks, so a CPU buffer crashes NCCL's
+# _broadcast_coalesced with "No backend type associated with device type cpu".
+# Telling DDP to skip these specific buffers avoids that crash without moving
+# inv_freq to GPU (which would break the per-GPU cache design) and without
+# disabling buffer broadcast for every other module (the user's workaround).
+# Re-run this after wrapping with PEFT too - the buffers' fully qualified
+# names change once they sit under a PeftModel (eg "base_model.model...").
+# https://github.com/unslothai/unsloth/issues/6656
+_ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
+
+
+def _exclude_rope_inv_freq_from_ddp(model):
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    for module_name, module in model.named_modules():
+        for buffer_name, _ in module.named_buffers(recurse = False):
+            if buffer_name in _ROTARY_INV_FREQ_BUFFER_NAMES:
+                fqn = f"{module_name}.{buffer_name}" if module_name else buffer_name
+                if fqn not in ignored:
+                    ignored.append(fqn)
+    if ignored:
+        try:
+            from torch.nn.parallel import DistributedDataParallel
+            DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored)
+        except Exception:
+            # Private PyTorch API - fall back to setting the attribute DDP reads
+            # directly if it ever moves or changes signature.
+            model._ddp_params_and_buffers_to_ignore = ignored
+    return model
+
+
+# =============================================================================
+# Offline loading - single source of truth (shared by vision.py, loader.py and
+# the Studio exporter). Decide offline ONCE at the load boundary and force it
+# ONCE around the whole load, so every nested HF call inherits it.
+# =============================================================================
+
+_OFFLINE_ENV_VALUES = {"1", "true", "yes", "on"}
+_OFFLINE_ENV_KEYS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+
+
+def _env_says_offline():
+    """True if an HF offline env var is set to a truthy value."""
+    return any(
+        os.environ.get(_k, "").strip().lower() in _OFFLINE_ENV_VALUES for _k in _OFFLINE_ENV_KEYS
+    )
+
+
+def _get_effective_local_files_only(kwargs):
+    """Offline if local_files_only is truthy or an HF offline env var is set. Read-only."""
+    if kwargs.get("local_files_only", None):
+        return True
+    return _env_says_offline()
+
+
+def _is_offline_related_error(exc):
+    """True if exc (or its cause/context chain) is a lost-connection error, not a
+    missing file. Plain FileNotFoundError propagates; LocalEntryNotFoundError is offline."""
+    import socket
+    import ssl
+    import urllib.error
+
+    # Match network failures by type (locale independent), not just message wording.
+    _net_types = [ConnectionError, TimeoutError, socket.gaierror, urllib.error.URLError]
+    _offline_fnf_types = ()  # FileNotFoundError subclasses that count as offline
+    # urllib HTTPError is a URLError subclass: judge by status (5xx offline, 4xx propagates).
+    _http_types = (urllib.error.HTTPError,)
+    # TLS/cert failures are security-sensitive (MITM, expired CA): never offline-retry them.
+    _ssl_types = [ssl.SSLError]
+    try:
+        import requests
+
+        _net_types += [requests.exceptions.ConnectionError, requests.exceptions.Timeout]
+        _http_types += (requests.exceptions.HTTPError,)
+        _ssl_types.append(requests.exceptions.SSLError)
+    except Exception:
+        pass
+    try:
+        from huggingface_hub.errors import (
+            OfflineModeIsEnabled,
+            HfHubHTTPError,
+            LocalEntryNotFoundError,
+        )
+
+        _net_types += [OfflineModeIsEnabled, LocalEntryNotFoundError]
+        _offline_fnf_types = (LocalEntryNotFoundError,)
+        _http_types += (HfHubHTTPError,)
+    except Exception:
+        pass
+    _net_types = tuple(_net_types)
+    _ssl_types = tuple(_ssl_types)
+
+    def _http_status(e):
+        resp = getattr(e, "response", None)
+        code = getattr(resp, "status_code", None)
+        if code is None:
+            code = getattr(e, "status_code", None)
+        if code is None:
+            code = getattr(e, "code", None)  # urllib.error.HTTPError uses .code
+        try:
+            return int(code)
+        except (TypeError, ValueError):
+            return None
+
+    _wording = (
+        "couldn't connect",
+        "could not connect",
+        "connection error",
+        "connectionerror",
+        "max retries",
+        "offline",
+        "timed out",
+        "timeout",
+        "couldn't reach",
+        "could not reach",
+        "failed to resolve",
+        "getaddrinfo",
+        "name resolution",
+        "no address associated",
+        "network is unreachable",
+        "connection refused",
+        "we couldn't connect to",
+        "proxyerror",
+        # Raw socket.gaierror DNS wording (Linux / macOS)
+        "name or service not known",
+        "temporary failure in name resolution",
+        "nodename nor servname provided",
+    )
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        # TLS/cert failure (corporate MITM, expired CA): security-sensitive, never retry from
+        # cache. Skip this node; a deeper cause in the chain may still be a genuine outage.
+        if isinstance(cur, _ssl_types) or isinstance(getattr(cur, "reason", None), _ssl_types):
+            cur = cur.__cause__ or cur.__context__
+            continue
+        is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(cur, _offline_fnf_types)
+        # urllib HTTPError is a URLError (net type) but must be judged by status code below,
+        # unlike LocalEntryNotFoundError (an HfHubHTTPError that is always offline).
+        if (
+            isinstance(cur, _net_types)
+            and not is_fnf
+            and not isinstance(cur, urllib.error.HTTPError)
+        ):
+            return True
+        if isinstance(cur, _http_types):
+            code = _http_status(cur)
+            if code is not None and 500 <= code < 600:
+                return True
+            # No status -> wording fallback (coded 4xx already decided above).
+            if code is None and not is_fnf and any(w in str(cur).lower() for w in _wording):
+                return True
+        # OSError wording fallback (HTTP status already decided above).
+        elif isinstance(cur, OSError) and not is_fnf:
+            if any(w in str(cur).lower() for w in _wording):
+                return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+# Process-wide HF offline state; the depth counter lets nested windows share one
+# flip (first entrant saves originals, last exit restores). Lock guards flip/restore.
+_force_offline_lock = _threading.RLock()
+_force_offline_depth = 0
+_force_offline_saved = []  # in-process module attributes
+_force_offline_saved_env = {}  # HF offline env-var originals
+
+
+def _reset_hf_sessions():
+    """Clear hub's per-thread cached Sessions so the next rebuilds against the current
+    offline flag. On hub 0.x the offline adapter is baked in at Session creation. Best-effort."""
+    try:
+        from huggingface_hub.utils._http import reset_sessions
+    except Exception:
+        try:
+            from huggingface_hub.utils import reset_sessions
+        except Exception:
+            return
+    try:
+        reset_sessions()
+    except Exception:
+        pass
+
+
+@contextlib.contextmanager
+def _force_hf_offline():
+    """Force HF offline for the window. local_files_only alone is not enough
+    (transformers < 5 still pings /api/models), so set BOTH the env vars (cover
+    subprocesses + raw urllib/requests) AND the in-process hub/transformers constants.
+    Process-global; the refcount keeps restore correct under nesting / overlap."""
+    global _force_offline_depth, _force_offline_saved, _force_offline_saved_env
+    with _force_offline_lock:
+        if _force_offline_depth == 0:
+            saved = []
+            saved_env = {}
+            # Snapshot in-process constants BEFORE forcing the env: a module first imported
+            # here would otherwise initialize its constant from the just-set "1" and we would
+            # save (then restore) True, pinning the process offline after the window.
+            try:
+                import huggingface_hub.constants as _hfc
+                if hasattr(_hfc, "HF_HUB_OFFLINE"):
+                    saved.append((_hfc, "HF_HUB_OFFLINE", _hfc.HF_HUB_OFFLINE))
+            except Exception:
+                pass
+            try:
+                import transformers.utils.hub as _tuh
+                for _attr in ("_is_offline_mode", "OFFLINE"):
+                    if hasattr(_tuh, _attr):
+                        saved.append((_tuh, _attr, getattr(_tuh, _attr)))
+            except Exception:
+                pass
+            # Now force the env vars and flip the snapshotted constants to offline.
+            for _k in _OFFLINE_ENV_KEYS:
+                saved_env[_k] = os.environ.get(_k)
+                os.environ[_k] = "1"
+            for _obj, _attr, _ in saved:
+                try:
+                    setattr(_obj, _attr, True)
+                except Exception:
+                    pass
+            _force_offline_saved = saved
+            _force_offline_saved_env = saved_env
+            # Rebuild cached sessions so they pick up the offline adapter.
+            _reset_hf_sessions()
+        _force_offline_depth += 1
+    try:
+        yield
+    finally:
+        with _force_offline_lock:
+            _force_offline_depth -= 1
+            if _force_offline_depth == 0:
+                for obj, attr, val in _force_offline_saved:
+                    try:
+                        setattr(obj, attr, val)
+                    except Exception:
+                        pass
+                _force_offline_saved = []
+                for _k, _v in _force_offline_saved_env.items():
+                    if _v is None:
+                        os.environ.pop(_k, None)
+                    else:
+                        os.environ[_k] = _v
+                _force_offline_saved_env = {}
+                # Drop offline-mounted sessions so later online calls rebuild for the network.
+                _reset_hf_sessions()
+
+
+def _progress_bars_were_disabled():
+    """Snapshot HF progress-bar state (None if unknown); pairs with _restore_progress_bars."""
+    try:
+        from huggingface_hub.utils import are_progress_bars_disabled
+        return are_progress_bars_disabled()
+    except Exception:
+        return None
+
+
+def _restore_progress_bars(were_disabled):
+    """Re-enable HF progress bars only if a failed attempt left them disabled after they
+    were enabled (a loader disables them around config probes and skips re-enabling on
+    error). No-op if the user had them disabled or the state is unknown."""
+    if were_disabled is False:
+        try:
+            from huggingface_hub.utils import enable_progress_bars
+            enable_progress_bars()
+        except Exception:
+            pass
+
+
+def _offline_aware_load(fn):
+    """Decide offline ONCE (local_files_only kwarg or env) and force it around the
+    whole load. If we started online and hit a network error, retry once forced-offline.
+    Network-up online path is unchanged: no window, no retry."""
+
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        if _get_effective_local_files_only(kwargs):
+            kwargs["local_files_only"] = True
+            with _force_hf_offline():
+                return fn(*args, **kwargs)
+        _pb_were_disabled = _progress_bars_were_disabled()  # restore before any retry
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            # Skip if not network-related, or already retried by a nested decorator
+            # (else outer layers reload the whole model again).
+            if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
+                raise
+        # Retry OUTSIDE the except so the failed attempt's traceback (a partial model)
+        # is freed before reallocating, else a large VLM can OOM on the second load.
+        try:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
+        except Exception:
+            pass
+        # A failed attempt may have left HF progress bars disabled; restore before retry.
+        _restore_progress_bars(_pb_were_disabled)
+        kwargs["local_files_only"] = True
+        try:
+            with _force_hf_offline():
+                return fn(*args, **kwargs)
+        except Exception as e:
+            # Tag so an enclosing _offline_aware_load skips its own redundant retry.
+            try:
+                e._unsloth_offline_retried = True
+            except Exception:
+                pass
+            raise
+
+    return _wrapper
+
+
+def _has_local_tokenizer_files(path):
+    """True if a local dir has a loadable tokenizer (BPE vocab.json needs merges.txt;
+    special_tokens_map.json is not required)."""
+    return (
+        os.path.exists(os.path.join(path, "tokenizer.json"))
+        or os.path.exists(os.path.join(path, "tokenizer.model"))
+        or (
+            os.path.exists(os.path.join(path, "vocab.json"))
+            and os.path.exists(os.path.join(path, "merges.txt"))
+        )
+        or os.path.exists(os.path.join(path, "vocab.txt"))
+        or os.path.exists(os.path.join(path, "spiece.model"))
+    )
+
+
+def _has_local_processor_files(path):
+    """True if a local dir ships a processor/image-processor config (a VLM needs this to
+    build AutoProcessor; tokenizer files alone are not enough)."""
+    return os.path.exists(os.path.join(path, "processor_config.json")) or os.path.exists(
+        os.path.join(path, "preprocessor_config.json")
+    )
+
+
+def _resolve_checkpoint_tokenizer_name(
+    old_model_name,
+    kwargs,
+    require_processor = False,
+):
+    """tokenizer_name for a PEFT/checkpoint load: caller override, else the local checkpoint
+    dir if self-sufficient, else None (base repo). Always popped from kwargs (also passed
+    explicitly downstream). For a VLM (require_processor), the dir must also ship processor
+    files; otherwise fall back to the base repo whose cached processor still loads."""
+    explicit = kwargs.pop("tokenizer_name", None)
+    if explicit is not None:
+        return explicit
+    has_config = os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
+    if not (has_config and _has_local_tokenizer_files(old_model_name)):
+        return None
+    if require_processor and not _has_local_processor_files(old_model_name):
+        return None
+    return old_model_name
