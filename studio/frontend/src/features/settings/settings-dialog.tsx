@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
   CloudIcon,
+  CpuIcon,
   Globe02Icon,
   HelpCircleIcon,
   Message01Icon,
@@ -33,6 +34,7 @@ import { ChatTab } from "./tabs/chat-tab";
 import { ConnectionsTab } from "./tabs/connections-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
+import { ResourcesTab } from "./tabs/resources-tab";
 
 interface TabDef {
   id: SettingsTab;
@@ -48,6 +50,11 @@ const TABS: TabDef[] = [
     id: "appearance",
     labelKey: "settings.tabs.appearance",
     icon: PaintBrush02Icon,
+  },
+  {
+    id: "resources",
+    labelKey: "settings.tabs.resources",
+    icon: CpuIcon,
   },
   {
     id: "chat",
@@ -77,6 +84,8 @@ function renderTab(tab: SettingsTab) {
       return <ProfileTab />;
     case "appearance":
       return <AppearanceTab />;
+    case "resources":
+      return <ResourcesTab />;
     case "chat":
       return <ChatTab />;
     case "connections":
@@ -100,6 +109,7 @@ export function SettingsDialog() {
     general: null,
     profile: null,
     appearance: null,
+    resources: null,
     chat: null,
     connections: null,
     "api-keys": null,

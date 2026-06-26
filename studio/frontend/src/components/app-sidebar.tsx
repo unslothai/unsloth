@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
 import {
   Sidebar,
   SidebarContent,
@@ -76,8 +75,6 @@ import {
   Sun03Icon,
   TestTube01Icon,
   ZapIcon,
-  ChipIcon,
-  RamMemoryIcon
 } from "@hugeicons/core-free-icons";
 import {
   exportConversationRawJsonl,
@@ -133,78 +130,6 @@ import { useEffect, useState, useMemo, useRef, type ReactNode } from "react";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
-import type { SystemInfoResponse } from "@/hooks/use-system";
-import { useHardwareMonitor } from "@/hooks/use-hardware-monitor";
-
-let cachedSystem: SystemInfoResponse | null = null;
-let systemFetchPromise: Promise<SystemInfoResponse> | null = null;
-
-const DEFAULT_SYSTEM: SystemInfoResponse = {
-  platform: "Unknown",
-  python_version: "Unknown",
-  device_backend: "cpu",
-  uptime_seconds: 0,
-  cpu: { logical_count: 0, physical_count: 0, usage_percent: 0, frequency_mhz: null },
-  memory: { total_gb: 0, available_gb: 0, percent_used: 0, process_used_mb: 0 },
-  disk: { total_gb: 0, free_gb: 0, percent_used: 0 },
-  gpu: { available: false, devices: [] },
-  ml_packages: {}
-};
-
-async function fetchSystemOnce(): Promise<SystemInfoResponse> {
-  if (cachedSystem) return cachedSystem;
-  if (systemFetchPromise) return systemFetchPromise;
-
-  systemFetchPromise = (async () => {
-    try {
-      const res = await authFetch("/api/system");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-
-      cachedSystem = data as SystemInfoResponse;
-      return cachedSystem;
-    } catch {
-      systemFetchPromise = null;
-      return DEFAULT_SYSTEM;
-    }
-  })();
-
-  return systemFetchPromise;
-}
-
-/** Polls /api/system every 3s while the monitor is enabled. */
-export function useSystemInfo(enabled: boolean): SystemInfoResponse {
-  const [systemInfo, setSystemInfo] = useState<SystemInfoResponse>(cachedSystem ?? DEFAULT_SYSTEM);
-
-  useEffect(() => {
-    if (!enabled) {
-      // Monitor off: show nothing and never poll /api/system (no SMI probes).
-      setSystemInfo(DEFAULT_SYSTEM);
-      return;
-    }
-    let cancelled = false;
-
-    const updateSystemInfo = () => {
-      // Reset only after the request settles so a slow probe is reused, not stacked.
-      fetchSystemOnce()
-        .then((info) => !cancelled && setSystemInfo(info))
-        .finally(() => {
-          cachedSystem = null;
-          systemFetchPromise = null;
-        });
-    };
-
-    updateSystemInfo();
-    const intervalId = setInterval(updateSystemInfo, 3000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-    };
-  }, [enabled]);
-
-  return systemInfo;
-}
 
 const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
 
@@ -373,19 +298,6 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
-  // When Train/Export are greyed out (chat-only host), explain why on hover
-  // instead of disabling them silently. mlx_unavailable is the common macOS case
-  // after a reinstall/update dropped MLX and is recoverable via `unsloth studio update`.
-  const trainExportDisabledHint: string | undefined = !chatOnly
-    ? undefined
-    : chatOnlyReason === "mlx_unavailable"
-      ? "Training needs MLX. Run `unsloth studio update` to enable Train and Export."
-      : chatOnlyReason === "intel_mac"
-        ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
-        : chatOnlyReason === "no_gpu"
-          ? "Training needs an NVIDIA or AMD GPU."
-          : undefined;
-
   // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX in the
   // background and flip chat_only false without a restart. The platform store
   // cached the initial /api/health, so re-poll while we are chat-only for the
@@ -1050,36 +962,6 @@ export function AppSidebar() {
     );
   }
 
-  const { enabled: monitorEnabled } = useHardwareMonitor();
-  const systemInfo: SystemInfoResponse = useSystemInfo(monitorEnabled);
-
-  const { vramUsedGb, vramTotalGb, vramPercent, ramUsedGb, ramTotalGb, ramPercent, hasGpu } = useMemo(() => {
-    const device = systemInfo?.gpu?.devices ?? [];
-    const totalVram = device.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0)
-    const usedVram = device.reduce((sum, d) => sum + (d.vram_used_gb ?? 0), 0)
-
-    const vramPercent = totalVram > 0 ? (usedVram / totalVram) * 100 : 0;
-    const ramTotalGb = systemInfo?.memory?.total_gb ?? 0;
-    const ramAvailableGb = systemInfo?.memory?.available_gb ?? 0;
-    const ramUsedGb = ramTotalGb - ramAvailableGb;
-    const ramPercent = systemInfo?.memory?.percent_used ?? 0;
-    const hasGpu = (systemInfo?.gpu?.available ?? false) && device.length > 0;
-
-    return { vramUsedGb: usedVram, vramTotalGb: totalVram, vramPercent, ramUsedGb, ramTotalGb, ramPercent, hasGpu };
-  }, [systemInfo]);
-
-  function getVramColor(percent: number): string {
-    if (percent > 90) return "bg-red-500";
-    if (percent > 55) return "bg-amber-500";
-    return "bg-teal-500";
-  };
-
-  function getRamColor(percent: number): string {
-    if (percent > 90) return "bg-red-500";
-    if (percent > 55) return "bg-amber-500";
-    return "bg-teal-500";
-  };
-
   return (
     <>
       <Sidebar
@@ -1487,40 +1369,6 @@ export function AppSidebar() {
               canScrollDown ? "opacity-100" : "opacity-0",
             )}
           />
-          
-          {monitorEnabled && (
-            <SidebarGroup className="mb-2 group-data-[collapsible=icon]:hidden">
-              <SidebarGroupContent className="rounded-2xl bg-background/60 px-3.5 py-3 font-mono text-[11px] uppercase tracking-wider text-muted-foreground/80">
-                {hasGpu && (
-                  <div className="flex items-center gap-2 mb-2">
-                    <HugeiconsIcon icon={ChipIcon} strokeWidth={1.5} className="size-4 shrink-0" />
-                    <div className="flex-1 space-y-0.5">
-                      <div className="flex items-center justify-between gap-2 text-xs leading-none">
-                        <span className="text-foreground/90">VRAM ({vramUsedGb.toFixed(2)}/{Math.round(vramTotalGb)}GB)</span>
-                        <span>{Math.round(vramPercent)}%</span>
-                      </div>
-                      <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted/40">
-                        <div style={{ width: `${vramPercent}%` }} className={`absolute inset-y-0 left-0 rounded-full transition-all duration-300 ${getVramColor(vramPercent)}`} />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2">
-                  <HugeiconsIcon icon={RamMemoryIcon} strokeWidth={1.5} className="size-4 shrink-0" />
-                  <div className="flex-1 space-y-0.5">
-                    <div className="flex items-center justify-between gap-2 text-xs leading-none">
-                      <span className="text-foreground/90">RAM ({ramUsedGb.toFixed(2)}/{Math.round(ramTotalGb)}GB)</span>
-                      <span>{Math.round(ramPercent)}%</span>
-                    </div>
-                    <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted/40">
-                      <div style={{ width: `${ramPercent}%` }} className={`absolute inset-y-0 left-0 rounded-full transition-all duration-300 ${getRamColor(ramPercent)}`} />
-                    </div>
-                  </div>
-                </div>
-              </SidebarGroupContent>
-            </SidebarGroup>
-          )}
 
           <SidebarMenu className="gap-3 group-data-[collapsible=icon]:gap-2.5">
             {/* Update affordance — shows only when a newer version is available. */}

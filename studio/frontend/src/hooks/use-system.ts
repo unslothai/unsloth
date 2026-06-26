@@ -5,6 +5,9 @@ import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
 
 export interface GpuDevice {
+  index?: number;
+  index_kind?: string;
+  visible_ordinal?: number;
   name?: string;
   memory_total_gb?: number;
   vram_used_gb?: number;
@@ -36,6 +39,10 @@ export interface SystemInfoResponse {
   };
   gpu: {
     available: boolean;
+    backend?: string;
+    backend_cuda_visible_devices?: string | null;
+    parent_visible_gpu_ids?: number[];
+    index_kind?: string;
     devices: GpuDevice[];
   };
   ml_packages: {
@@ -59,40 +66,65 @@ const DEFAULT_SYSTEM: SystemInfoResponse = {
   ml_packages: {}
 };
 
-async function fetchSystemOnce(): Promise<SystemInfoResponse> {
-  if (cachedSystem) return cachedSystem;
+async function fetchSystemOnce({
+  force = false,
+}: { force?: boolean } = {}): Promise<SystemInfoResponse> {
   if (systemFetchPromise) return systemFetchPromise;
+  if (!force && cachedSystem) return cachedSystem;
 
   systemFetchPromise = (async () => {
     try {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      
+
       cachedSystem = data as SystemInfoResponse;
       return cachedSystem;
     } catch {
-      systemFetchPromise = null;
+      cachedSystem = null;
       return DEFAULT_SYSTEM;
+    } finally {
+      systemFetchPromise = null;
     }
   })();
 
   return systemFetchPromise;
 }
 
-/** Fetch system info from /api/system; cached at module level so all callers share one request. */
-export function useSystemInfo(): SystemInfoResponse {
+interface UseSystemInfoOptions {
+  pollMs?: number;
+  enabled?: boolean;
+}
+
+export function useSystemInfo({
+  pollMs,
+  enabled = true,
+}: UseSystemInfoOptions = {}): SystemInfoResponse {
   const [systemInfo, setSystemInfo] = useState<SystemInfoResponse>(cachedSystem ?? DEFAULT_SYSTEM);
 
   useEffect(() => {
-    if (cachedSystem) return;
+    if (!enabled) return;
 
     let cancelled = false;
-    fetchSystemOnce().then((info) => {
-      if (!cancelled) setSystemInfo(info);
-    });
-    return () => { cancelled = true; };
-  }, []);
+    let timeoutId: number | null = null;
+
+    const update = (force: boolean) => {
+      void fetchSystemOnce({ force })
+        .then((info) => {
+          if (!cancelled) setSystemInfo(info);
+        })
+        .finally(() => {
+          if (cancelled || !pollMs) return;
+          timeoutId = window.setTimeout(() => update(true), pollMs);
+        });
+    };
+
+    update(Boolean(pollMs));
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, [enabled, pollMs]);
 
   return systemInfo;
 }

@@ -3,7 +3,6 @@
 
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
-import { useHardwareMonitor } from "@/hooks/use-hardware-monitor";
 import { useT } from "@/i18n";
 import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
@@ -13,7 +12,6 @@ import { ThemeSegmented } from "../components/theme-segmented";
 export function AppearanceTab() {
   const t = useT();
   const { pinned, setPinned } = useSidebarPin();
-  const { enabled: monitorEnabled, setEnabled: setMonitorEnabled } = useHardwareMonitor();
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
@@ -49,12 +47,6 @@ export function AppearanceTab() {
           description={t("settings.appearance.layout.compactSidebarDescription")}
         >
           <Switch checked={pinned} onCheckedChange={setPinned} />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.layout.hardwareMonitor")}
-          description={t("settings.appearance.layout.hardwareMonitorDescription")}
-        >
-          <Switch checked={monitorEnabled} onCheckedChange={setMonitorEnabled} />
         </SettingsRow>
       </SettingsSection>
     </div>
