@@ -91,6 +91,8 @@ _LOGIN_IP_OVERFLOW: list[deque] = [deque() for _ in range(_LOGIN_IP_OVERFLOW_SHA
 
 def _overflow_shard(ip: str) -> deque:
     return _LOGIN_IP_OVERFLOW[hash(ip) % _LOGIN_IP_OVERFLOW_SHARDS]
+
+
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
