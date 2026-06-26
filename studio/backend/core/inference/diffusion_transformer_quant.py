@@ -46,12 +46,17 @@ DEFAULT_MIN_LINEAR_FEATURES = 512
 
 # Per-architecture preference order for ``auto`` -- best (fastest, in-bar) first, with
 # the lower-precision schemes listed as fallbacks for that arch tier. On Blackwell, fp8
-# is preferred over mxfp8: measured on a B200, plain fp8 dynamic is both faster AND a
-# touch more accurate than mxfp8 (block scaling adds overhead without a speed win here),
-# so mxfp8 sits below fp8 as a fallback. nvfp4 stays first for its larger speedup when
-# its kernels are available.
+# leads: measured on a B200, plain fp8 dynamic is both faster AND more accurate than the
+# alternatives for the DiT's shapes. mxfp8's block scaling adds overhead without a speed
+# win, so it sits below fp8. nvfp4 is intentionally below fp8 too: the FP4 tensor-core
+# GEMM is real once torch>=2.11 + torchao's CUTLASS FP4 kernel is present (verified: a
+# 16384^3 GEMM hits ~3826 TFLOPS, 1.37x fp8), but it only beats fp8 on very large GEMMs.
+# At the DiT's actual shapes (hidden ~3072, MLP ~12288, M~4096) it is *slower* than fp8
+# (0.81x end-to-end on Z-Image 1024px) AND notably less accurate (LPIPS 0.166 vs fp8's
+# 0.044), because FP4's per-forward quant overhead is not amortised and the format is
+# coarser. So nvfp4 is kept as an explicit opt-in, never the auto pick for diffusion.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
-    ((10, 0), (TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+
+    ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+
     ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )

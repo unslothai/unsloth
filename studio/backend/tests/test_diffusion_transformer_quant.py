@@ -86,14 +86,16 @@ def _allow(monkeypatch, allowed):
     monkeypatch.setattr(tq, "_scheme_supported", lambda scheme, device: scheme in allowed)
 
 
-def test_auto_blackwell_prefers_nvfp4_then_falls_back(monkeypatch):
+def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
+    # Even with every scheme available, auto picks fp8 on Blackwell: measured on a B200
+    # (torch 2.11 + torchao CUTLASS FP4), fp8 is both faster and more accurate than nvfp4
+    # for the DiT's shapes -- nvfp4's FP4 GEMM only wins on very large GEMMs, not here.
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto") == TQ_NVFP4
-    # nvfp4 unavailable: fp8 is preferred over mxfp8 (measured faster + a touch more
-    # accurate on B200), even though mxfp8 is also supported.
-    _allow(monkeypatch, {TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
+    # fp8 unavailable: nvfp4 is the next pick (above mxfp8 / int8).
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_NVFP4
     # Only mxfp8 + int8 left -> mxfp8 (still above int8).
     _allow(monkeypatch, {TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
