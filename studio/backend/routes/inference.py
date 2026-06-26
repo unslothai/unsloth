@@ -2309,6 +2309,10 @@ def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Opt
 
 
 _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
+# Sentinel a raw-body endpoint passes when the request omits ``model``: it must
+# only restore an idle-freed model, never run the resolver (so a downloaded GGUF
+# literally named "default" can't be swapped to). The NUL keeps it off any index.
+_RELOAD_ONLY_MODEL = "\x00reload-only"
 
 
 def disable_openai_auto_switch_for_request(scope) -> None:
@@ -2375,9 +2379,13 @@ async def _maybe_auto_switch_model(
     _note_request_waiter(request_key, 1)
     try:
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
-        # With auto-switch off, skip the resolve so only the reload-stash path runs.
+        # With auto-switch off (or an omitted-model reload-only request), skip the
+        # resolve so only the reload-stash path runs and no name is ever matched.
+        reload_only = requested_model == _RELOAD_ONLY_MODEL
         resolved = (
-            await asyncio.to_thread(resolve_local_gguf, requested_model) if auto_switch_on else None
+            await asyncio.to_thread(resolve_local_gguf, requested_model)
+            if auto_switch_on and not reload_only
+            else None
         )
         if resolved is None:
             # Idle-unload may have freed the model; reload exactly what it freed
@@ -2499,10 +2507,10 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
     except (json.JSONDecodeError, ValueError):
         return None
     if isinstance(body, dict):
-        # A raw-body client may omit ``model`` and rely on the loaded backend.
-        # Pass a non-empty sentinel so the idle-stash reload still runs (an
-        # idle-freed model is restored); the resolver treats it as unknown.
-        model = body.get("model") or "default"
+        # A raw-body client may omit ``model`` and rely on the loaded backend. Pass
+        # a reload-only sentinel so the idle-stash reload still runs (an idle-freed
+        # model is restored) without the resolver ever matching a real name.
+        model = body.get("model") or _RELOAD_ONLY_MODEL
     else:
         model = None
     await _maybe_auto_switch_model(model, request, current_subject)
@@ -8702,6 +8710,26 @@ async def anthropic_messages(
             ),
         )
 
+    # Reject malformed client tools before any model load, so an invalid request
+    # never evicts the loaded model. AnthropicTool relaxed name/input_schema to
+    # Optional for server tools, so the converter silently drops incomplete
+    # entries; surface them as 400 here instead. A `type` field marks a server-tool
+    # declaration (unrecognized server tools are accepted as no-ops); anything else
+    # without input_schema or name is malformed.
+    for tool in payload.tools or []:
+        td = tool if isinstance(tool, dict) else tool.model_dump()
+        name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
+        if schema is None and not isinstance(type_, str):
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Tool {name!r} is missing required field 'input_schema'.",
+            )
+        if schema is not None and (not isinstance(name, str) or not name):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Client tool is missing required field 'name'.",
+            )
+
     await _maybe_auto_switch_model(payload.model, request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
@@ -8758,27 +8786,6 @@ async def anthropic_messages(
     # The server-side agentic loop doesn't support multimodal input -- matches
     # the `not image_b64` gate in /v1/chat/completions.
     requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
-
-    # Reject malformed client tools at the boundary. AnthropicTool was relaxed
-    # to Optional[name]/Optional[input_schema] for server tools, so the
-    # converter silently drops incomplete entries -- surface them as 400. A
-    # `type` field marks a server-tool declaration per spec (unrecognized server
-    # tools are accepted as no-ops); anything else without input_schema or name
-    # is malformed and must not be allowed to silently flip execution mode or
-    # disable tool calling.
-    for tool in payload.tools or []:
-        td = tool if isinstance(tool, dict) else tool.model_dump()
-        name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
-        if schema is None and not isinstance(type_, str):
-            raise HTTPException(
-                status_code = 400,
-                detail = f"Tool {name!r} is missing required field 'input_schema'.",
-            )
-        if schema is not None and (not isinstance(name, str) or not name):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Client tool is missing required field 'name'.",
-            )
 
     # Detect client tools from the raw payload (presence of input_schema) so the
     # mixed-mode check below isn't fooled by a name collision with a server-tool

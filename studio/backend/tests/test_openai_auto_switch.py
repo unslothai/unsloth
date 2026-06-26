@@ -1909,3 +1909,88 @@ def test_note_start_does_not_reset_idle_timer():
         assert kw._is_idle(1.0) is False  # but in-flight still blocks unload
     finally:
         kw._note_end()  # restores _last_active stamp on completion
+
+
+# ── codex review (merge round): reload-only sentinel, Anthropic tool validation ──
+
+
+def test_omitted_model_does_not_resolve_to_a_named_gguf(monkeypatch):
+    # Codex P2: a raw-body request that omits `model` must never run the resolver,
+    # so a downloaded GGUF literally named "default" can't be switched to. The
+    # resolver here would switch to B if it ran; it must not.
+    backend = _FakeBackend("org/A-GGUF")  # a model is already loaded
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    body = asyncio.run(
+        inference_route._auto_switch_from_request_body(
+            _json_body_request({"prompt": "hi"}), "tester"
+        )
+    )
+    assert body == {"prompt": "hi"}
+    assert rec.calls == []  # resolver skipped (would have switched to B otherwise)
+
+
+def test_omitted_model_still_reloads_idle_freed_model(monkeypatch):
+    # The reload-only sentinel must still restore an idle-freed model (the round-9
+    # behavior), it just never runs the resolver.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)  # idle-unload emptied the slot
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    asyncio.run(
+        inference_route._auto_switch_from_request_body(
+            _json_body_request({"prompt": "hi"}), "tester"
+        )
+    )
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "/cache/snap/A"
+
+
+def _anthropic_payload_with_tools(tools, max_tokens = 16):
+    from models.inference import AnthropicMessagesRequest, AnthropicMessage
+    return AnthropicMessagesRequest(
+        model = "org/B-GGUF",
+        max_tokens = max_tokens,
+        messages = [AnthropicMessage(role = "user", content = "hi")],
+        tools = tools,
+    )
+
+
+def test_anthropic_invalid_tool_rejected_before_switch(monkeypatch):
+    # Codex P2: a malformed client tool (no input_schema, no server-tool type) must
+    # 400 before the auto-switch hook, so an invalid request never evicts the model.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    payload = _anthropic_payload_with_tools([{"name": "broken"}])  # missing input_schema
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # rejected before the model load
+
+
+def test_anthropic_validates_tools_before_auto_switch():
+    # Lock the order at the source: tool-shape validation precedes the hook.
+    import inspect
+    src = inspect.getsource(inference_route.anthropic_messages)
+    assert src.index("missing required field 'input_schema'") < src.index(
+        "_maybe_auto_switch_model"
+    )
