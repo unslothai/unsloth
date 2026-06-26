@@ -16,6 +16,7 @@ conditions, so a new silent drop fails CI. No GPU; fully deterministic.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import inspect
 import os
 import sys
@@ -74,6 +75,22 @@ except ImportError:
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 _GB = 1024**3
+
+
+def _load_inference_routes_module():
+    """Load routes/inference.py directly, bypassing routes/__init__.py (which
+    imports every router and so drags in unrelated backend deps like
+    python-multipart). Keeps the route-dedup tests scoped to the module under
+    test (Codex review on #6659)."""
+    route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
+    spec = importlib.util.spec_from_file_location(
+        "tp_vision_regression_inference_routes", route_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _load_model_ast() -> ast.FunctionDef:
@@ -307,6 +324,16 @@ def test_tensor_abort_cache_invalidated_on_binary_mtime_change(tmp_path):
         assert (
             LlamaCppBackend._tensor_split_aborts(p, "m") is False
         ), "a binary swapped in place (new mtime) must be re-probed"
+        # A same-second replacement (sub-second mtime bump) must also re-probe:
+        # second-resolution mtime would inherit the stale abort (reviewer.py P2).
+        sec_ns = (binp.stat().st_mtime_ns // 1_000_000_000) * 1_000_000_000
+        os.utime(p, ns = (sec_ns, sec_ns))
+        LlamaCppBackend._record_tensor_split_abort(p, "m")
+        binp.write_text("v2")
+        os.utime(p, ns = (sec_ns, sec_ns + 1))
+        assert (
+            LlamaCppBackend._tensor_split_aborts(p, "m") is False
+        ), "a same-second in-place swap (ns mtime bump) must be re-probed"
     finally:
         for key in list(LlamaCppBackend._tensor_split_abort_keys):
             if key and key[0] == p:
@@ -342,6 +369,20 @@ def test_budget_downgrade_preserves_multi_gpu_intent():
     assert (
         "_layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))" in block
     ), "the budget downgrade must preserve multi-GPU intent like the vision gate"
+
+
+def test_compute_buffer_downgrade_preserves_multi_gpu_intent():
+    """The len(tp_gpus) < 2 compute-buffer downgrade raises _layer_min_gpus from the
+    full GPU set too, so it is symmetric with the budget/geometry downgrades and
+    doesn't collapse a multi-GPU layer load to one card (reviewer.py P1 on #6659)."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    gate = src.find("tensor_parallel and len(tp_gpus) < 2")
+    assert gate != -1
+    block = src[gate : gate + 1300]
+    assert "tensor_parallel = False" in block
+    assert (
+        "_layer_min_gpus = max(_layer_min_gpus, len(gpus))" in block
+    ), "the compute-buffer downgrade must preserve multi-GPU intent like the others"
 
 
 def test_tensor_split_layer_min_gpus_bump_requires_tensor_request():
@@ -496,7 +537,8 @@ def test_explicit_tensor_off_reloads_after_multi_gpu_fallback():
     re-selects (single GPU for a 1-GPU-fit model), not dedupe to the all-GPU mask;
     a genuine layer load (no preserved intent) still dedupes (Codex review #6659)."""
     from models.inference import LoadRequest
-    from routes import inference as inference_routes
+
+    inference_routes = _load_inference_routes_module()
 
     req = LoadRequest(model_path = "owner/repo", tensor_parallel = False)
     assert "tensor_parallel" in req.model_fields_set, "the toggle must be explicit"
@@ -517,12 +559,32 @@ def test_explicit_tensor_off_reloads_after_multi_gpu_fallback():
     )
 
 
+def test_explicit_split_mode_layer_extras_reloads_after_multi_gpu_fallback():
+    """Tensor intent can be dropped via extras, not only the toggle: an explicit
+    llama_extra_args=[--split-mode, layer] matches the stored fallback extras, so
+    without this guard it would dedupe to the all-GPU placement. It must reload
+    (reviewer.py P1 on #6659)."""
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+
+    req = LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "layer"])
+    assert "llama_extra_args" in req.model_fields_set
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            req, _fallback_loaded_backend(layer_preserves_tensor_intent = True)
+        )
+        is False
+    )
+
+
 def test_tensor_off_reload_requires_explicit_toggle():
     """An Apply that does not set the tensor toggle (e.g. only a context change)
     must not be churned by the preserved-fallback reload -- the working multi-GPU
     layer server is kept (Codex review #6659)."""
     from models.inference import LoadRequest
-    from routes import inference as inference_routes
+
+    inference_routes = _load_inference_routes_module()
 
     req = LoadRequest(model_path = "owner/repo")  # tensor_parallel left unset
     assert "tensor_parallel" not in req.model_fields_set

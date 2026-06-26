@@ -2452,12 +2452,12 @@ class LlamaCppBackend:
     def _tensor_split_cache_key(
         cls, binary: Optional[str], model: Optional[str]
     ) -> Optional[tuple[str, int, str]]:
-        """(path, mtime, model) key: model-geometry specific, and a swapped binary
-        (new mtime) re-probes."""
+        """(path, mtime_ns, model) key: model-geometry specific; nanosecond mtime so
+        a swapped binary re-probes even when replaced within the same second."""
         if not binary or not model:
             return None
         try:
-            mtime = int(Path(binary).stat().st_mtime)
+            mtime = Path(binary).stat().st_mtime_ns
         except OSError:
             mtime = 0
         return (binary, mtime, model)
@@ -5214,6 +5214,12 @@ class LlamaCppBackend:
                             len(gpus),
                         )
                         tensor_parallel = False
+                        # GPUs below tensor's replicated compute-buffer reserve can
+                        # still take layer split's lower overhead, so keep the
+                        # multi-GPU request (mirrors the budget/geometry downgrades);
+                        # _select_gpus caps unusable cards.
+                        if len(gpus) >= 2:
+                            _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         # Layer split supports a quantized KV the tensor attempt
                         # dropped; restore the original cache type + extras (minus
                         # --split-mode) so the layer launch re-emits them.

@@ -2121,15 +2121,19 @@ def _request_matches_loaded_settings(
         return False
     # A tensor->layer fallback spread this load across GPUs only to honor a tensor
     # request (preserve_multi_gpu_on_layer). Both report tensor=off, so the check
-    # above matches, but if the user now explicitly turns the toggle off that intent
-    # is gone -- reload so placement re-selects (single GPU for a 1-GPU-fit model)
-    # instead of deduping to the fallback's all-GPU mask (#6659).
-    if (
-        "tensor_parallel" in getattr(request, "model_fields_set", set())
-        and not request.tensor_parallel
-        and llama_backend.layer_preserves_tensor_intent
-    ):
-        return False
+    # above matches, but if the user now explicitly drops that intent -- via the
+    # toggle or via extras (e.g. --split-mode layer, matching the stored extras) --
+    # reload so placement re-selects (single GPU for a 1-GPU-fit model) instead of
+    # deduping to the fallback's all-GPU mask (#6659).
+    if llama_backend.layer_preserves_tensor_intent:
+        _fields_set = getattr(request, "model_fields_set", set())
+        _explicit_toggle_off = "tensor_parallel" in _fields_set and not request.tensor_parallel
+        _explicit_extras_off = (
+            request.llama_extra_args is not None
+            and not _effective_tensor_parallel(request.llama_extra_args, request.tensor_parallel)
+        )
+        if _explicit_toggle_off or _explicit_extras_off:
+            return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
     # the real requested mode -- coercing vision to ``off`` here used to
