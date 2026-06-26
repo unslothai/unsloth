@@ -1228,9 +1228,7 @@ def _extract_evidence(
             if len(head) > _MAX_LINE_CHARS:
                 head = head[:_MAX_LINE_CHARS] + "..."
             return f"L{start}: {head} sha256:{digest}"
-        return "\n".join(
-            f"L{start + i}: {_cap_line(ln.rstrip())}" for i, ln in enumerate(span)
-        )
+        return "\n".join(f"L{start + i}: {_cap_line(ln.rstrip())}" for i, ln in enumerate(span))
 
     for i, line in enumerate(lines, 1):
         if pattern.search(line):
