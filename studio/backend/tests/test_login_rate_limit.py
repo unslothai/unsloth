@@ -401,6 +401,40 @@ class TestBucketKeyAndBlocking:
         auth_routes._record_login_failure(attacker)
         assert auth_routes._login_blocked(attacker) > 0
 
+    def test_overflow_migration_is_bounded_not_one_entry_per_failure(
+        self, env_no_proxy, monkeypatch
+    ):
+        """A saturated IP can rack up many overflow failures; migrating them into a
+        fresh bucket must allocate at most the per-IP threshold worth of entries,
+        not one deque entry per recorded failure (which would let a single later
+        attempt allocate an arbitrarily large deque under the login lock).
+        """
+        from routes import auth as auth_routes
+
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100000)
+
+        # Saturate the dict, then hammer one IP far past the threshold in overflow.
+        for idx in range(10):
+            auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
+        attacker_ip = "198.51.100.7"
+        attacker = (attacker_ip, "admin")
+        for _ in range(5000):
+            auth_routes._record_login_failure(attacker)
+        # The stored overflow count is clamped at the threshold, not 5000.
+        entry = auth_routes._overflow_shard(attacker_ip).get(attacker_ip)
+        assert entry is not None and entry[0] <= auth_routes._LOGIN_IP_MAX_FAILS
+
+        # Free a slot so the next failure migrates the overflow count into a bucket.
+        auth_routes._clear_login_bucket(("10.0.0.0", "admin"))
+        auth_routes._record_login_failure(attacker)
+        bucket = auth_routes._LOGIN_IP_BUCKETS[attacker_ip]
+        # Bounded by the threshold (+1 for the triggering failure), not ~5000.
+        assert len(bucket) <= auth_routes._LOGIN_IP_MAX_FAILS + 1
+        # Still throttled -- bounding the migration must not weaken the limit.
+        assert auth_routes._login_blocked(attacker) > 0
+
     def test_successful_login_clears_overflow_throttle(self, env_no_proxy, monkeypatch):
         """A successful login resets the IP's throttle, including overflow, so a
         single later typo is not immediately blocked.

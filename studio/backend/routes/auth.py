@@ -105,7 +105,13 @@ def _overflow_record(ip: str, now: float) -> int:
         if now - entry[1] > _LOGIN_WINDOW_SECONDS:
             entry[0], entry[1] = 1, now
         else:
-            entry[0] += 1
+            # Only "at or above the per-IP threshold" matters for blocking, so cap
+            # the count there. This also keeps the migration into a per-IP bucket
+            # bounded -- without the cap a saturated source could accrue an
+            # unbounded count, then materialize one deque entry per failure
+            # (``[start] * carried``) on the next attempt, allocating an arbitrarily
+            # large deque while holding the login lock.
+            entry[0] = min(entry[0] + 1, _LOGIN_IP_MAX_FAILS)
         return entry[0]
     if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
         # Make room by dropping the lowest-count entry, but the new source starts
@@ -137,7 +143,10 @@ def _overflow_take(ip: str, now: float) -> tuple[int, float]:
     entry = _overflow_shard(ip).pop(ip, None)
     if entry is None or now - entry[1] > _LOGIN_WINDOW_SECONDS:
         return 0, now
-    return entry[0], entry[1]
+    # Cap the carried count so the bucket migration never allocates more than the
+    # per-IP threshold worth of deque entries (defensive; _overflow_record already
+    # clamps, but keep the bound at the consumption site too).
+    return min(entry[0], _LOGIN_IP_MAX_FAILS), entry[1]
 
 
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
