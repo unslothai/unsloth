@@ -333,6 +333,7 @@ export function LocalOnDeviceCard({
       : false,
   );
   const updateTargetVariant = needsVariantSelection ? selectedQuant : null;
+  const hasUpdateTargetVariant = !needsVariantSelection || !!selectedQuant;
   const updateAvailable =
     updateStatus?.repoId === repoId &&
     updateStatus.variant === updateTargetVariant &&
@@ -344,9 +345,10 @@ export function LocalOnDeviceCard({
     !isActive &&
     !isLoading &&
     !updateJobActive &&
+    hasUpdateTargetVariant &&
     updateAvailable;
   useEffect(() => {
-    if (!online || source !== "hf_cache" || !repoId) {
+    if (!online || source !== "hf_cache" || !repoId || !hasUpdateTargetVariant) {
       setUpdateStatus(null);
       return;
     }
@@ -368,6 +370,7 @@ export function LocalOnDeviceCard({
     source,
     repoId,
     updateTargetVariant,
+    hasUpdateTargetVariant,
     hfToken,
     updateJobActive,
   ]);

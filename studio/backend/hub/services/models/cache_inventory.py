@@ -550,6 +550,52 @@ def _scan_cached_models() -> list[dict]:
     return cached
 
 
+def _repo_update_status_candidate_row(repo_info, gguf_variant: Optional[str]) -> Optional[dict]:
+    repo_id = repo_info.repo_id
+    repo_path = Path(repo_info.repo_path)
+    if gguf_variant or _repo_has_gguf_files(repo_info):
+        total_size = _repo_gguf_size_bytes(repo_info)
+        has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
+        if total_size == 0 and not has_variant_state:
+            return None
+        partial = hf_cache_scan.is_gguf_repo_partial(repo_id, repo_path)
+        if total_size == 0 and not partial:
+            return None
+        return {
+            "repo_id": repo_id,
+            "size_bytes": max(total_size, variant_state_size),
+            "partial": partial,
+        }
+
+    payload = _repo_non_gguf_model_payload(repo_info)
+    if payload.size_bytes == 0 or not payload.has_runnable_weights:
+        return None
+    return {
+        "repo_id": repo_id,
+        "size_bytes": payload.size_bytes,
+        "partial": hf_cache_scan.is_snapshot_partial("model", repo_id, repo_path),
+    }
+
+
+def _preferred_update_status_repo_info(repo_id: str, gguf_variant: Optional[str]):
+    target_lower = repo_id.lower()
+    selected_info = None
+    selected_row: Optional[dict] = None
+    for hf_cache in all_hf_cache_scans():
+        for candidate in hf_cache.repos:
+            if str(candidate.repo_type) != "model":
+                continue
+            if candidate.repo_id.lower() != target_lower:
+                continue
+            row = _repo_update_status_candidate_row(candidate, gguf_variant)
+            if row is None:
+                continue
+            if _prefer_cache_row(row, selected_row):
+                selected_info = candidate
+                selected_row = row
+    return selected_info
+
+
 async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
@@ -578,17 +624,7 @@ async def repo_update_status_response(
     failure (not cached, network error, timeout) degrades to update_available
     False so the caller never blocks on a flaky remote."""
     try:
-        target_lower = repo_id.lower()
-        repo_info = None
-        for hf_cache in all_hf_cache_scans():
-            for candidate in hf_cache.repos:
-                if str(candidate.repo_type) != "model":
-                    continue
-                if candidate.repo_id.lower() == target_lower:
-                    repo_info = candidate
-                    break
-            if repo_info is not None:
-                break
+        repo_info = _preferred_update_status_repo_info(repo_id, gguf_variant)
         if repo_info is None:
             # Not cached locally => nothing to update.
             return {"update_available": False}
