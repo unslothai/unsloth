@@ -885,6 +885,8 @@ def _prefetch_ignore_patterns(
     revision = None,
     subfolder = None,
     use_safetensors = None,
+    from_tf = False,
+    from_flax = False,
 ):
     """ignore_patterns for the prewarm snapshot: the static skip list, minus the
     checkpoint guard when loading from a checkpoint-* subfolder, minus the weight
@@ -893,16 +895,23 @@ def _prefetch_ignore_patterns(
     not pulled in full just to be rejected by a safetensors-only load. use_safetensors
     is None (auto) skips *.bin only when in-scope safetensors are also shipped, since
     Transformers prefers them (pulling the other format just to discard it doubles the
-    very download we optimize)."""
+    very download we optimize). from_tf / from_flax keep the TF (*.h5) / Flax
+    (*.msgpack) weights, which Transformers reads as the actual weights under those load
+    modes; dropping them unconditionally would leave the only needed weight file unwarmed."""
     # A checkpoint-* subfolder is exactly what "checkpoint-*/*" would drop, so
     # do not ignore it when the caller is explicitly loading from that subfolder.
+    # from_tf / from_flax loads read *.h5 / *.msgpack as the weights, so keep them.
     ignore_patterns = [
         pattern
         for pattern in _PREFETCH_IGNORE_PATTERNS
         if not (
-            pattern == "checkpoint-*/*"
-            and isinstance(subfolder, str)
-            and subfolder.startswith("checkpoint-")
+            (
+                pattern == "checkpoint-*/*"
+                and isinstance(subfolder, str)
+                and subfolder.startswith("checkpoint-")
+            )
+            or (from_tf and pattern == "*.h5")
+            or (from_flax and pattern == "*.msgpack")
         )
     ]
     # Drop the weight format the load will not read. Transformers reads exactly one
@@ -960,6 +969,8 @@ def maybe_prefetch_hf_snapshot(
     subfolder = None,
     force_download = False,
     use_safetensors = None,
+    from_tf = False,
+    from_flax = False,
 ):
     """Warm the Hugging Face cache for a remote repo before the in-process load.
 
@@ -1022,6 +1033,8 @@ def maybe_prefetch_hf_snapshot(
         revision = revision,
         subfolder = subfolder,
         use_safetensors = use_safetensors,
+        from_tf = from_tf,
+        from_flax = from_flax,
     )
     # When loading from a subfolder, warm only that subfolder instead of the whole
     # repo: a from_pretrained(..., subfolder=X) resolves every file under X/, so the

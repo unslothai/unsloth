@@ -873,7 +873,11 @@ class FastLanguageModel(FastLlamaModel):
                 revision = revision,
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = local_files_only,
-                fast_inference = fast_inference,
+                # The adapter is loaded in-process by PeftModel.from_pretrained below,
+                # not by vLLM, so warm it even under fast_inference (vLLM only owns the
+                # base model's download path; the adapter would otherwise still hit an
+                # unprotected in-process Xet transfer).
+                fast_inference = False,
                 force_download = kwargs.get("force_download", False),
                 use_safetensors = kwargs.get("use_safetensors"),
             )
@@ -1822,7 +1826,11 @@ class FastModel(FastBaseModel):
                 revision = revision,
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = local_files_only,
-                fast_inference = fast_inference,
+                # The adapter is loaded in-process by PeftModel.from_pretrained below,
+                # not by vLLM, so warm it even under fast_inference (vLLM only owns the
+                # base model's download path; the adapter would otherwise still hit an
+                # unprotected in-process Xet transfer).
+                fast_inference = False,
                 force_download = kwargs.get("force_download", False),
                 use_safetensors = kwargs.get("use_safetensors"),
             )

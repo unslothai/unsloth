@@ -2390,6 +2390,8 @@ class FastLlamaModel:
             subfolder = kwargs.get("subfolder"),
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
+            from_tf = kwargs.get("from_tf", False),
+            from_flax = kwargs.get("from_flax", False),
         )
         # The killable child already did the forced download; clear the flag so the
         # in-process load reuses that warm cache instead of re-forcing over Xet.
