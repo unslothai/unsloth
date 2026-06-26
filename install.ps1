@@ -1939,6 +1939,17 @@ exit 0
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+        # Explicit pin -- skip ALL GPU probing when the caller names the wheel index
+        # (headless / CI / cross-install). Matches install.sh::get_torch_index_url and
+        # install_python_stack.py: UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim);
+        # UNSLOTH_TORCH_INDEX_FAMILY is the convenience leaf (cpu, cu128, rocm6.4, ...)
+        # appended to the mirror base so UNSLOTH_PYTORCH_MIRROR is still honoured.
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
+            return $env:UNSLOTH_TORCH_INDEX_URL.Trim().TrimEnd('/')
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
+            return "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
+        }
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
@@ -2016,6 +2027,11 @@ exit 0
         } catch { return $null }
     }
 
+    # An explicit UNSLOTH_TORCH_INDEX_URL / _FAMILY pin is authoritative: the AMD
+    # ROCm reroute below must not rewrite it (e.g. a deliberate cpu pin on an AMD
+    # host, or a pinned ROCm family we already resolved in Get-TorchIndexUrl).
+    $TorchIndexPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
+                        (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     $TorchIndexUrl = Get-TorchIndexUrl
 
     # ── GPU arch → newest compatible Windows ROCm wheel release ──
@@ -2027,7 +2043,7 @@ exit 0
     # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
     $ROCmIndexUrl = $null
     $ROCmTorchFloor = $null
-    if (($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
+    if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         $archFamilyMap = @{
             "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4

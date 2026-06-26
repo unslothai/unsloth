@@ -402,6 +402,29 @@ function Get-PytorchCudaTag {
     return "cu126"
 }
 
+# Explicit torch-index pin (UNSLOTH_TORCH_INDEX_URL / _FAMILY), shared by the
+# stale-venv check and the install selection below so a pinned wheel index wins
+# over GPU probing -- matching install.sh, install.ps1 and install_python_stack.py.
+# UNSLOTH_TORCH_INDEX_URL is verbatim (full URL); _FAMILY is the leaf (cpu, cu128,
+# rocm6.4, ...) joined to the mirror base so UNSLOTH_PYTORCH_MIRROR is honoured.
+function Get-PinnedTorchIndexUrl {
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
+        return $env:UNSLOTH_TORCH_INDEX_URL.Trim().TrimEnd('/')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
+        $base = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
+        return "$base/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
+    }
+    return $null
+}
+
+# The last path segment of a wheel index URL (cu128 / cpu / rocm6.4 / gfx1151).
+function Get-TorchIndexLeaf {
+    param([string]$Url)
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+    return ($Url.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+}
+
 # VS generator -> MSBuild BuildCustomizations dir; toolset tracks the VS major
 # (18->v180, 17->v170), defaulting to v170 when unparseable.
 function Get-VcBuildCustomizationsDir {
@@ -2536,7 +2559,8 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     }
 
     if (-not $shouldRebuild) {
-        $expectedTorchTag = if ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
+        $_pinnedIdx = Get-PinnedTorchIndexUrl
+        $expectedTorchTag = if ($_pinnedIdx) { Get-TorchIndexLeaf $_pinnedIdx } elseif ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
         if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
             $shouldRebuild = $true
         }
@@ -2712,7 +2736,13 @@ $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
 [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
 substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 
-if ($HasNvidiaSmi) {
+# Explicit pin (URL or family) wins over GPU probing and suppresses the AMD
+# reroute below; matches install.sh / install.ps1 / install_python_stack.py.
+$PinnedTorchIndexUrl = Get-PinnedTorchIndexUrl
+$TorchIndexPinned = [bool]$PinnedTorchIndexUrl
+if ($PinnedTorchIndexUrl) {
+    $CuTag = Get-TorchIndexLeaf $PinnedTorchIndexUrl
+} elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
 } else {
     $CuTag = "cpu"
@@ -2733,7 +2763,7 @@ $ROCmIndexUrl = $null
 # SDK -- which flips Studio out of chat-only (CHAT_ONLY) and enables Train/Export.
 # Gating on $HasROCm alone left Strix Halo / Radeon 8060S on CPU torch; a failed
 # ROCm install still falls back to CPU below, so this is safe.
-if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
+if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
     $archFamilyMap = @{
         "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
@@ -2785,6 +2815,11 @@ if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
 
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
+# A full UNSLOTH_TORCH_INDEX_URL pin is used verbatim; a family pin already set
+# $CuTag, so $PyTorchWhlBase/$CuTag is the requested family index. The CPU/CUDA
+# install branches below pull from this instead of re-joining mirror + tag.
+$TorchInstallIndexUrl = if ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
+
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
@@ -2821,11 +2856,11 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     $cpuForce = @()
     if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu"
+        Fast-Install torch torchvision torchaudio @cpuForce --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu" | Out-String
+        $output = Fast-Install torch torchvision torchaudio @cpuForce --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -2837,11 +2872,11 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag"
+        Fast-Install torch torchvision torchaudio --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/$CuTag" | Out-String
+        $output = Fast-Install torch torchvision torchaudio --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
