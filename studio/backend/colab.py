@@ -103,6 +103,24 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
     display(HTML(html))
 
 
+def _bootstrap_password_pending() -> bool:
+    """True while the default admin still must change its seeded bootstrap password.
+
+    While pending, the server injects that bootstrap admin password into the index
+    page for same-origin top-level GETs (``_inject_bootstrap`` in main.py) — and a
+    public Cloudflare tunnel request looks same-origin (no Origin header), so the
+    password would leak to anyone holding the link, handing them admin access. We
+    use this to refuse opening the tunnel until the admin password has been changed.
+    Fails safe: if we can't determine the state, treat it as pending (no tunnel).
+    """
+    try:
+        from auth.storage import requires_password_change, DEFAULT_ADMIN_USERNAME
+        return bool(requires_password_change(DEFAULT_ADMIN_USERNAME))
+    except Exception as e:
+        logger.info(f"Could not check admin password state ({e}); refusing tunnel to be safe.")
+        return True
+
+
 def start_cloudflare_tunnel(port: int) -> "str | None":
     """Best-effort: open a free Cloudflare quick tunnel to localhost:*port* and
     return its public ``https://*.trycloudflare.com`` URL, or None.
@@ -113,7 +131,20 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
     open. Studio's own ``run_server`` deliberately suppresses the tunnel on Colab
     (see ``_cloudflare_tunnel_should_start`` in run.py), so we start it directly
     here instead. Any failure collapses to None and the Colab proxy still works.
+
+    Refuses to open the tunnel while the admin account still holds its temporary
+    bootstrap password, since that password is exposed to any same-origin GET and
+    a public tunnel request counts as same-origin — sharing then would grant admin
+    access to anyone with the link.
     """
+    if _bootstrap_password_pending():
+        logger.warning(
+            "Cloudflare link not started: the admin account still has its temporary "
+            "bootstrap password, which is exposed to anyone who can load the page. "
+            "Open Studio in this tab, log in and change the admin password, then re-run "
+            "start(cloudflare=True) to get the shareable link."
+        )
+        return None
     try:
         from cloudflare_tunnel import start_studio_tunnel
     except Exception as e:
@@ -322,7 +353,14 @@ def start(port: int = 8888, *, cloudflare: bool = False):
 
     logger.info("   Starting server...")
     try:
-        app = run_server(host = "0.0.0.0", port = port, frontend_path = frontend_path, silent = True)
+        # cloudflare = False unconditionally: this helper owns the tunnel decision
+        # (started directly below only when the caller opts in). Leaving run_server's
+        # default True would start a tunnel on this 0.0.0.0 bind whenever Colab
+        # detection fails, defeating the documented cloudflare=False opt-out.
+        app = run_server(
+            host = "0.0.0.0", port = port, frontend_path = frontend_path,
+            silent = True, cloudflare = False,
+        )
     except SystemExit as exc:
         logger.error(f"❌ Unsloth Studio failed to start: {exc}")
         return
