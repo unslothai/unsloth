@@ -377,6 +377,30 @@ class TestBucketKeyAndBlocking:
         auth_routes._record_login_failure(new_ip)
         assert auth_routes._login_blocked(new_ip) == 0
 
+    def test_overflow_count_migrates_into_new_bucket(self, env_no_proxy, monkeypatch):
+        """Straddling the overflow -> bucket transition must not double the per-IP
+        limit: the overflow count carries into the freshly created bucket.
+        """
+        from routes import auth as auth_routes
+
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
+
+        # Saturate, then push one IP to 4 overflow failures (one below threshold).
+        for idx in range(10):
+            auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
+        attacker = ("198.51.100.7", "admin")
+        for _ in range(4):
+            auth_routes._record_login_failure(attacker)
+        assert auth_routes._login_blocked(attacker) == 0  # 4 < 5
+
+        # Free a slot so the next failure lands in a fresh per-IP bucket.
+        auth_routes._clear_login_bucket(("10.0.0.0", "admin"))
+        # One more failure must throttle (4 carried + 1 = 5), not reset to 1.
+        auth_routes._record_login_failure(attacker)
+        assert auth_routes._login_blocked(attacker) > 0
+
     def test_successful_login_clears_overflow_throttle(self, env_no_proxy, monkeypatch):
         """A successful login resets the IP's throttle, including overflow, so a
         single later typo is not immediately blocked.

@@ -131,6 +131,15 @@ def _overflow_blocked(ip: str, now: float) -> int:
     return 0
 
 
+def _overflow_take(ip: str, now: float) -> tuple[int, float]:
+    """Pop ip's overflow entry, returning its ``(count, window_start)`` so the
+    count can migrate into a fresh per-IP bucket. ``(0, now)`` if none/expired."""
+    entry = _overflow_shard(ip).pop(ip, None)
+    if entry is None or now - entry[1] > _LOGIN_WINDOW_SECONDS:
+        return 0, now
+    return entry[0], entry[1]
+
+
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
@@ -259,6 +268,11 @@ def _record_login_failure(key: tuple[str, str]) -> int:
         else:
             if ip_bucket is None:
                 ip_bucket = _LOGIN_IP_BUCKETS[ip] = deque()
+                # Carry over any overflow failures this IP accrued while the dict
+                # was saturated, so straddling the overflow -> bucket transition
+                # can't double the effective per-IP limit.
+                carried, start = _overflow_take(ip, now)
+                ip_bucket.extend([start] * carried)
             _prune_bucket(ip_bucket, now)
             ip_bucket.append(now)
             ip_fails = len(ip_bucket)
