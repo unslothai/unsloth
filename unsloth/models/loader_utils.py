@@ -806,7 +806,11 @@ def _has_local_processor_files(path):
     )
 
 
-def _resolve_checkpoint_tokenizer_name(old_model_name, kwargs, require_processor = False):
+def _resolve_checkpoint_tokenizer_name(
+    old_model_name,
+    kwargs,
+    require_processor = False,
+):
     """tokenizer_name for a PEFT/checkpoint load: caller override, else the local checkpoint
     dir if self-sufficient, else None (base repo). Always popped from kwargs (also passed
     explicitly downstream). For a VLM (require_processor), the dir must also ship processor

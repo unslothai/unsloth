@@ -505,7 +505,6 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
         sys.modules.pop("huggingface_hub.constants", None)  # simulate "not imported yet"
         with L._force_hf_offline():
             import huggingface_hub.constants as hfc_in
-
             assert hfc_in.HF_HUB_OFFLINE is True  # forced offline inside the window
         import huggingface_hub.constants as hfc_after
 
@@ -535,6 +534,6 @@ def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
     _touch(tmp_path, "preprocessor_config.json")
-    assert L._resolve_checkpoint_tokenizer_name(
-        str(tmp_path), {}, require_processor = True
-    ) == str(tmp_path)
+    assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) == str(
+        tmp_path
+    )
