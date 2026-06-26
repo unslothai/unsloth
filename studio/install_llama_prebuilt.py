@@ -5499,14 +5499,9 @@ def _wsl_system_rocm_lib_dirs() -> list[str]:
     return out
 
 
-# Secret-bearing environment variables that downloaded llama.cpp binaries have no
-# reason to read. The prebuilt fork release is a supply-chain trust boundary: a
-# compromised or malicious release publisher could ship a tampered llama-server /
-# llama-quantize, and binary_env() would otherwise hand it a full copy of the
-# process environment -- exfiltrating CI tokens or, for end users running
-# install.sh / setup.sh, their own HF / cloud credentials. The installer's own
-# GitHub / Hugging Face API calls read os.environ directly (see auth_headers), so
-# stripping these from the *child* environment leaves auth and rate-limiting intact.
+# Secrets a downloaded llama.cpp binary never needs. binary_env() must not hand a
+# tampered prebuilt the process env (CI tokens, or end users' HF / cloud creds);
+# the installer's own API calls read os.environ directly, so auth is unaffected.
 _SECRET_ENV_EXACT_NAMES = frozenset(
     {
         "HF_TOKEN",
@@ -5524,16 +5519,13 @@ _SECRET_ENV_EXACT_NAMES = frozenset(
         "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
         "ACTIONS_ID_TOKEN_REQUEST_URL",
         "ACTIONS_RUNTIME_TOKEN",
-        # Credential pointers / capabilities a downloaded binary never needs but
-        # could use to reach cluster or remote-host credentials.
+        # Credential pointers (cluster / remote-host access).
         "KUBECONFIG",
         "SSH_AUTH_SOCK",
     }
 )
-# Substring markers (matched case-insensitively) catch provider-specific names we
-# do not enumerate. Deliberately no bare "KEY" marker: it would strip benign
-# runtime variables. Runtime/library vars (PATH, LD_LIBRARY_PATH, DYLD_LIBRARY_PATH,
-# CUDA/ROCm, HOME, TMPDIR) contain none of these markers and are preserved.
+# Case-insensitive substring markers for names we do not enumerate. No bare "KEY":
+# it would strip benign runtime vars (PATH / LD_LIBRARY_PATH / CUDA are preserved).
 _SECRET_ENV_MARKERS = (
     "TOKEN",
     "SECRET",
@@ -5544,10 +5536,8 @@ _SECRET_ENV_MARKERS = (
     "PRIVATE_KEY",
     "API_KEY",
 )
-# Proxy / package-index variables routinely embed credentials in their *values*
-# (e.g. https://user:secret@host). The validation binaries run fully offline on a
-# local probe model, so they never need these; drop them by name regardless of
-# value. Matched case-insensitively, so lower-case `https_proxy` is covered too.
+# Proxy / index URLs embed creds in their value (https://user:secret@host); the
+# offline validation binaries never need them, so drop by name (case-insensitive).
 _SECRET_ENV_URL_NAMES = frozenset(
     {
         "HTTP_PROXY",
@@ -5562,8 +5552,7 @@ _SECRET_ENV_URL_NAMES = frozenset(
         "UV_EXTRA_INDEX_URL",
     }
 )
-# Catch credentials embedded as URL userinfo (scheme://user:secret@host) in the
-# value of any other variable the name-based rules above do not enumerate.
+# Also catch URL userinfo creds (scheme://user:secret@host) in any other value.
 _URL_USERINFO_CREDENTIAL_RE = re.compile(r"://[^/@\s]+:[^/@\s]+@")
 
 

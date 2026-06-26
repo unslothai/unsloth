@@ -783,7 +783,7 @@ def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
 
 def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
     raw = {
-        # secrets (exact names + marker-matched)
+        # secrets
         "HF_TOKEN": "hf_x",
         "HUGGING_FACE_HUB_TOKEN": "hf_y",
         "GH_TOKEN": "gh_x",
@@ -798,7 +798,7 @@ def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
         "KUBECONFIG": "/home/runner/.kube/config",
         "SSH_AUTH_SOCK": "/tmp/ssh-agent.sock",
         "SSH_PASSPHRASE": "ssh_pass",
-        # runtime / library vars that the binary legitimately needs
+        # runtime vars to keep
         "PATH": "/usr/bin",
         "LD_LIBRARY_PATH": "/opt/lib",
         "DYLD_LIBRARY_PATH": "/opt/dyld",
@@ -839,7 +839,7 @@ def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
     ):
         assert cleaned[keep] == raw[keep], f"{keep} must be preserved for the binary"
 
-    # No bare "KEY" marker: a benign var that merely contains KEY survives.
+    # no bare "KEY" marker: benign KEY-containing names survive
     assert is_secret_env_name("API_KEY") is True
     assert is_secret_env_name("SSH_KEYFILE_PATH") is False
     assert is_secret_env_name("PATH") is False
@@ -907,7 +907,6 @@ def test_binary_env_strips_secrets_from_downloaded_binary_environment(
     )
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
 
-    # A compromised prebuilt would otherwise see these via os.environ.copy().
     monkeypatch.setenv("HF_TOKEN", "hf_secret_from_ci")
     monkeypatch.setenv("GITHUB_TOKEN", "gh_secret_from_ci")
     monkeypatch.setenv("GH_TOKEN", "gh_secret_from_ci")
@@ -920,7 +919,7 @@ def test_binary_env_strips_secrets_from_downloaded_binary_environment(
     assert "GITHUB_TOKEN" not in env
     assert "GH_TOKEN" not in env
     assert "WANDB_API_KEY" not in env
-    # Library/runtime resolution is unaffected by the scrub.
+    # library/runtime resolution unaffected
     assert str(bin_dir) in env["LD_LIBRARY_PATH"].split(os.pathsep)
     assert env["CUDA_VISIBLE_DEVICES"] == "1"
 
