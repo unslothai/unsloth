@@ -481,15 +481,16 @@ def test_preserved_fallback_carried_across_non_drop_reload():
     assert "explicit_drop = _explicit_tensor_drop" in block
 
 
-def test_same_model_guard_checks_hf_variant():
-    """The same-model guard also matches the HF quant, so a different variant of the
-    same repo doesn't inherit the prior variant's preserved tensor intent (#6659)."""
+def test_same_model_guard_checks_path_and_variant():
+    """The same-model guard also matches the loaded quant by path (local multi-variant
+    dir) else variant (HF repo), so a different variant of the same model_identifier
+    doesn't inherit the prior variant's preserved tensor intent (#6659)."""
     route = Path(_BACKEND_DIR) / "routes" / "inference.py"
     src = route.read_text()
     idx = src.find("_same_model_loaded = (")
     assert idx != -1
-    block = src[idx : idx + 800]
-    assert "config.gguf_hf_repo" in block
+    block = src[idx : idx + 1300]
+    assert "llama_backend.gguf_path" in block and "config.gguf_file" in block
     assert "llama_backend.hf_variant" in block and "config.gguf_variant" in block
 
 
