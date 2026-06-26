@@ -4706,6 +4706,9 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
+                # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
+                # prior load (this path skips the command builder that clears it).
+                self._layer_preserves_tensor_intent = False
                 with self._lock:
                     if self._cancel_event.is_set():
                         logger.info("Load cancelled before diffusion server start")

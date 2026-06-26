@@ -2823,6 +2823,18 @@ async def load_model(
                     hf_variant = config.gguf_variant,
                 )
 
+            # Tensor intent for this load: the request itself, or a preserved
+            # multi-GPU layer fallback carried across a reload that doesn't drop it
+            # (e.g. a ctx-only change), so a fitting model doesn't silently collapse
+            # to one GPU. An explicit tensor-off/extras-off request is a drop (#6659).
+            _fields_set = getattr(request, "model_fields_set", set())
+            _explicit_tensor_drop = (
+                "tensor_parallel" in _fields_set or request.llama_extra_args is not None
+            ) and not _effective_tensor_parallel(request.llama_extra_args, request.tensor_parallel)
+            _tensor_intent_overall = _effective_tensor_parallel(
+                extra_llama_args, request.tensor_parallel
+            ) or (llama_backend.layer_preserves_tensor_intent and not _explicit_tensor_drop)
+
             # Run a single load attempt with the given tensor flag + extras.
             async def _attempt_gguf_load(
                 tensor_parallel: bool, attempt_extra_args: Optional[list[str]]
@@ -2836,10 +2848,10 @@ async def load_model(
                     **_source_load_kwargs,
                     **attempt_kwargs,
                     tensor_parallel = tensor_parallel,
-                    # True on the layer fallback retry (tensor requested overall but
-                    # not on this attempt): keep multi-GPU. Mirrors the fallback's key.
+                    # True on the layer fallback retry (tensor wanted overall but not on
+                    # this attempt): keep multi-GPU. Mirrors the fallback's key.
                     preserve_multi_gpu_on_layer = bool(
-                        _effective_tensor_parallel(extra_llama_args, request.tensor_parallel)
+                        _tensor_intent_overall
                         and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
                     ),
                 )

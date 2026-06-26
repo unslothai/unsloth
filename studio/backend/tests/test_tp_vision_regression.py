@@ -433,19 +433,45 @@ def test_auto_context_layer_loops_capped_to_usable_gpus():
 
 
 def test_fallback_hint_uses_effective_tensor_request_not_just_toggle():
-    """The hint keys off _effective_tensor_parallel (toggle + extras + env), not
+    """Tensor intent keys off _effective_tensor_parallel (toggle + extras + env), not
     just the toggle, so extra/env-driven tensor users keep multi-GPU (#6659)."""
     route = Path(_BACKEND_DIR) / "routes" / "inference.py"
     src = route.read_text()
-    idx = src.find("preserve_multi_gpu_on_layer = bool(")
-    assert idx != -1, "the GGUF load closure must pass the hint"
+    idx = src.find("_tensor_intent_overall = _effective_tensor_parallel(")
+    assert idx != -1, "the GGUF load closure must compute tensor intent"
     block = src[idx : idx + 300]
-    assert "_effective_tensor_parallel(extra_llama_args, request.tensor_parallel)" in block
-    assert "_effective_tensor_parallel(attempt_extra_args, tensor_parallel)" in block
+    assert "extra_llama_args, request.tensor_parallel" in block
+    pres = src.find("preserve_multi_gpu_on_layer = bool(")
+    assert (
+        "_effective_tensor_parallel(attempt_extra_args, tensor_parallel)" in src[pres : pres + 200]
+    )
     # not the toggle-only form this replaced
     assert (
         "bool(\n                        request.tensor_parallel and not tensor_parallel" not in src
     )
+
+
+def test_preserved_fallback_carried_across_non_drop_reload():
+    """A reload that doesn't drop tensor intent (e.g. ctx-only) carries the preserved
+    fallback into the hint, so a fitting model isn't collapsed to one GPU (#6659)."""
+    route = Path(_BACKEND_DIR) / "routes" / "inference.py"
+    src = route.read_text()
+    idx = src.find("_tensor_intent_overall = _effective_tensor_parallel(")
+    assert idx != -1
+    block = src[idx : idx + 320]
+    assert "llama_backend.layer_preserves_tensor_intent" in block
+    assert "_explicit_tensor_drop" in block
+
+
+def test_diffusion_load_clears_preserved_tensor_flag():
+    """The diffusion early-return path (skips the command builder) clears the
+    preserved-fallback flag, so a prior tensor fallback doesn't churn it (#6659)."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    diff = src.find("if self._is_diffusion:")
+    assert diff != -1
+    start = src.find("return self._start_diffusion_server", diff)
+    assert start != -1
+    assert "self._layer_preserves_tensor_intent = False" in src[diff:start]
 
 
 def test_is_tensor_split_assert_marker():
