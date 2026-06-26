@@ -35,6 +35,7 @@ import {
   type HubOption,
   HubOptionMenu,
 } from "@/features/hub/catalog/hub-option-menu";
+import { TransportConflictDialog } from "@/features/hub/catalog/transport-conflict-dialog";
 import { TrainIcon } from "@/features/hub/components/train-icon";
 import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import {
@@ -46,7 +47,11 @@ import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { classifyUnslothSupport } from "@/features/hub/lib/unsloth-support";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
-import { downloadManager } from "@/features/hub/download-manager";
+import {
+  downloadManager,
+  jobKeyOf,
+  useDownloadManagerStore,
+} from "@/features/hub/download-manager";
 import { useDebouncedValue, useGpuInfo } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -1405,6 +1410,28 @@ export function HubModelPicker({
   const alreadyCached =
     _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
   const [cachedReady, setCachedReady] = useState(alreadyCached);
+  const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
+    null,
+  );
+  const updateTransportConflict = useDownloadManagerStore((state) =>
+    updateConflictKey
+      ? (state.conflicts[updateConflictKey]?.info ?? null)
+      : null,
+  );
+  const cancelUpdateConflict = useCallback(() => {
+    if (updateConflictKey) downloadManager.cancelConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
+  const resumeUpdateConflict = useCallback(() => {
+    if (!updateConflictKey) return;
+    downloadManager.resumeConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
+  const restartUpdateConflict = useCallback(() => {
+    if (!updateConflictKey) return;
+    downloadManager.restartConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
 
   // LM Studio local models -- module-level cache, same pattern as above.
   const [lmStudioModels, setLmStudioModels] =
@@ -1541,23 +1568,32 @@ export function HubModelPicker({
   // call. The worker re-resolves `main` and pulls only changed blobs, so the
   // cached copy stays usable until the new revision lands. The row's
   // ModelUpdateAction refreshes the list when this repo+variant completes.
-  const updateGgufVariant = useCallback((repoId: string, quant: string) => {
-    void downloadManager.requestStart({
-      kind: "model",
-      repoId,
-      variant: quant,
-      expectedBytes: 0,
-    });
+  const startManagedUpdate = useCallback((repoId: string, variant: string | null) => {
+    return downloadManager
+      .requestStart({
+        kind: "model",
+        repoId,
+        variant,
+        expectedBytes: 0,
+      })
+      .then((outcome) => {
+        if (outcome === "conflict") {
+          setUpdateConflictKey(jobKeyOf("model", repoId, variant));
+        } else if (outcome === "error") {
+          throw new Error("Failed to start update");
+        }
+      });
   }, []);
 
-  const updateCachedVariant = useCallback((repoId: string) => {
-    void downloadManager.requestStart({
-      kind: "model",
-      repoId,
-      variant: null,
-      expectedBytes: 0,
-    });
-  }, []);
+  const updateGgufVariant = useCallback(
+    (repoId: string, quant: string) => startManagedUpdate(repoId, quant),
+    [startManagedUpdate],
+  );
+
+  const updateCachedVariant = useCallback(
+    (repoId: string) => startManagedUpdate(repoId, null),
+    [startManagedUpdate],
+  );
 
   useEffect(() => {
     // Always refresh LM Studio + custom folder models (not gated by alreadyCached).
@@ -2481,7 +2517,8 @@ export function HubModelPicker({
   };
 
   return (
-    <div className="relative space-y-2">
+    <>
+      <div className="relative space-y-2">
       {/* A small right inset shortens the search bar so Search Hub lands on the
           last dropdown's right edge (none on the wider Connected box). */}
       <div
@@ -3550,7 +3587,14 @@ export function HubModelPicker({
           </button>
         </div>
       ) : null}
-    </div>
+      </div>
+      <TransportConflictDialog
+        conflict={updateTransportConflict}
+        onCancel={cancelUpdateConflict}
+        onKeepTransport={resumeUpdateConflict}
+        onSwitchTransport={restartUpdateConflict}
+      />
+    </>
   );
 }
 

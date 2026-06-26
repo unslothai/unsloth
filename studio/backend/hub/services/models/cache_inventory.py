@@ -20,7 +20,9 @@ from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils import download_registry
 from hub.utils.snapshot_filters import (
+    blob_hashes_for_siblings,
     snapshot_download_blob_hashes,
+    snapshot_download_siblings,
     snapshot_download_size,
 )
 from hub.services.models.common import (
@@ -40,8 +42,28 @@ from hub.utils.gguf import extract_quant_label
 
 logger = get_logger(__name__)
 
-_repo_size_cache: "OrderedDict[tuple[str, str], tuple[int, frozenset[str], float]]" = OrderedDict()
-_repo_size_neg_cache: "OrderedDict[tuple[str, str], float]" = OrderedDict()
+
+def _is_non_gguf_weight_filename(name: str) -> bool:
+    lower = str(name).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not lower or _is_gguf_filename(lower):
+        return False
+    return (
+        _is_adapter_weight_name(lower)
+        or lower.endswith(".safetensors")
+        or _is_checkpoint_weight_name(lower)
+    )
+
+
+def _non_gguf_weight_siblings(siblings) -> list:
+    return [
+        sibling
+        for sibling in snapshot_download_siblings(siblings)
+        if _is_non_gguf_weight_filename(getattr(sibling, "rfilename", ""))
+    ]
+
+
+_repo_size_cache: "OrderedDict[tuple[str, str, str], tuple[int, frozenset[str], float]]" = OrderedDict()
+_repo_size_neg_cache: "OrderedDict[tuple[str, str, str], float]" = OrderedDict()
 _REPO_SIZE_CACHE_MAX = 256
 _REPO_SIZE_POS_TTL = 60.0
 _REPO_SIZE_NEG_TTL = 60.0
@@ -58,10 +80,10 @@ _gguf_update_check_lock = threading.Lock()
 
 
 def get_repo_snapshot_metadata_cached(
-    repo_id: str, hf_token: Optional[str] = None
+    repo_id: str, hf_token: Optional[str] = None, *, weight_only: bool = False
 ) -> tuple[int, frozenset[str]]:
     token_fp = hf_cache_scan.token_fingerprint(hf_token)
-    cache_key = (repo_id, token_fp)
+    cache_key = (repo_id, token_fp, "weights" if weight_only else "snapshot")
     with _repo_size_cache_lock:
         cached = _repo_size_cache.get(cache_key)
         if cached is not None:
@@ -81,8 +103,13 @@ def get_repo_snapshot_metadata_cached(
             files_metadata = True,
             timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
         )
-        total = snapshot_download_size(info.siblings)
-        blob_hashes = snapshot_download_blob_hashes(info.siblings)
+        if weight_only:
+            siblings = _non_gguf_weight_siblings(info.siblings)
+            total = sum(int(getattr(sibling, "size", 0) or 0) for sibling in siblings)
+            blob_hashes = blob_hashes_for_siblings(siblings)
+        else:
+            total = snapshot_download_size(info.siblings)
+            blob_hashes = snapshot_download_blob_hashes(info.siblings)
     except Exception as e:
         logger.warning(
             "Failed to get repo size for %s: %s",
@@ -390,17 +417,17 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     )
 
 
-def _repo_local_blob_hashes(repo_info) -> frozenset[str]:
-    """Local-side equivalent of the remote snapshot blob hashes.
+def _repo_local_weight_blob_hashes(repo_info) -> frozenset[str]:
+    """Local-side equivalent of remote non-GGUF weight blob hashes.
 
     HF names each local cache blob FILE by the file's etag (lfs.sha256 else
-    blob_id), so a local file's blob hash == ``Path(blob_path).name``. Walks
-    every NON-gguf file across revisions and collects those names; the result is
-    diffed against the remote snapshot blob hashes to detect updates."""
+    blob_id), so a local file's blob hash == ``Path(blob_path).name``. Only
+    runnable weight files participate so metadata-only remote changes do not
+    create phantom model updates."""
     hashes: set[str] = set()
     for revision in repo_info.revisions:
         for f in revision.files:
-            if _is_gguf_filename(str(f.file_name).lower()):
+            if not _is_non_gguf_weight_filename(f.file_name):
                 continue
             blob_path = getattr(f, "blob_path", None)
             if blob_path:
@@ -672,12 +699,17 @@ async def repo_update_status_response(
                     _gguf_update_check_cache.pop(next(iter(_gguf_update_check_cache)))
             return {"update_available": result}
 
-        local_hashes = _repo_local_blob_hashes(repo_info)
+        local_hashes = _repo_local_weight_blob_hashes(repo_info)
         _total, remote_hashes = await asyncio.wait_for(
-            asyncio.to_thread(get_repo_snapshot_metadata_cached, repo_id, hf_token),
+            asyncio.to_thread(
+                get_repo_snapshot_metadata_cached,
+                repo_id,
+                hf_token,
+                weight_only = True,
+            ),
             timeout = 6.0,
         )
-        # Remote has a blob the local snapshot lacks => an update exists.
+        # Remote has a weight blob the local snapshot lacks => an update exists.
         result = bool(remote_hashes - local_hashes)
         return {"update_available": result}
     except Exception:

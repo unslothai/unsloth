@@ -3264,7 +3264,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
 
 
 def _remote_weights_changed(
-    repo_id: str, weight_filenames: list[str], local_blob_set: set[str], hf_token: str
+    repo_id: str, weight_filenames: list[str], local_blob_set: set[str], hf_token: Optional[str]
 ) -> bool:
     """True iff any remote weight file's blob id is absent from the local set.
 
@@ -3382,50 +3382,49 @@ async def list_cached_models(
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                     continue
 
-        # Remote update check (F5/F16/S1): only with a token (no anonymous Hub
-        # calls), run concurrently with a bounded per-call timeout, and short-
-        # circuit through a TTL cache so repeated picker opens make zero calls.
+        # Remote update check (F5/F16/S1): runs best-effort for public repos
+        # without a token too, with bounded per-call timeout and TTL caching so
+        # repeated picker opens avoid repeated Hub calls.
         rows = list(seen_lower.values())
-        if hf_token:
-            now = time.monotonic()
-            # Prune expired entries so the cache stays bounded to recently-seen repos.
-            for stale_key in [
-                k for k, v in _update_check_cache.items() if now - v[0] >= _UPDATE_CHECK_TTL
-            ]:
-                _update_check_cache.pop(stale_key, None)
+        now = time.monotonic()
+        # Prune expired entries so the cache stays bounded to recently-seen repos.
+        for stale_key in [
+            k for k, v in _update_check_cache.items() if now - v[0] >= _UPDATE_CHECK_TTL
+        ]:
+            _update_check_cache.pop(stale_key, None)
 
-            async def _check_row(row: dict) -> None:
-                repo_id = row["repo_id"]
-                fingerprint = frozenset(row["_local_blob_set"])
-                cache_key = (repo_id.lower(), _hf_token_fingerprint(hf_token))
-                cached = _update_check_cache.get(cache_key)
-                # Reuse only if fresh AND the local blobs are unchanged since the
-                # cached result (a local download/delete must invalidate it).
-                if (
-                    cached is not None
-                    and now - cached[0] < _UPDATE_CHECK_TTL
-                    and cached[2] == fingerprint
-                ):
-                    row["update_available"] = cached[1]
-                    return
-                try:
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            _remote_weights_changed,
-                            repo_id,
-                            row["_weight_filenames"],
-                            row["_local_blob_set"],
-                            hf_token,
-                        ),
-                        timeout = 6.0,
-                    )
-                    row["update_available"] = result
-                    _update_check_cache[cache_key] = (time.monotonic(), result, fingerprint)
-                except Exception:
-                    # Best-effort: leave update_available False on any failure.
-                    pass
+        async def _check_row(row: dict) -> None:
+            repo_id = row["repo_id"]
+            fingerprint = frozenset(row["_local_blob_set"])
+            cache_key = (repo_id.lower(), _hf_token_fingerprint(hf_token))
+            cached = _update_check_cache.get(cache_key)
+            # Reuse only if fresh AND the local blobs are unchanged since the
+            # cached result (a local download/delete must invalidate it).
+            if (
+                cached is not None
+                and now - cached[0] < _UPDATE_CHECK_TTL
+                and cached[2] == fingerprint
+            ):
+                row["update_available"] = cached[1]
+                return
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _remote_weights_changed,
+                        repo_id,
+                        row["_weight_filenames"],
+                        row["_local_blob_set"],
+                        hf_token,
+                    ),
+                    timeout = 6.0,
+                )
+                row["update_available"] = result
+                _update_check_cache[cache_key] = (time.monotonic(), result, fingerprint)
+            except Exception:
+                # Best-effort: leave update_available False on any failure.
+                pass
 
-            await asyncio.gather(*(_check_row(row) for row in rows))
+        await asyncio.gather(*(_check_row(row) for row in rows))
 
         # Drop internal fields before returning; newest download first, stable
         # repo_id tie-break for equal/missing mtimes.
