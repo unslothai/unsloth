@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import jwt
 import pytest
@@ -51,12 +51,8 @@ def auth_client():
 
 
 def data_recipe_jobs_module():
-    route_path = (
-        Path(__file__).resolve().parents[1] / "routes" / "data_recipe" / "jobs.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "_desktop_data_recipe_jobs", route_path
-    )
+    route_path = Path(__file__).resolve().parents[1] / "routes" / "data_recipe" / "jobs.py"
+    spec = importlib.util.spec_from_file_location("_desktop_data_recipe_jobs", route_path)
     jobs_route = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(jobs_route)
@@ -243,7 +239,7 @@ def test_consume_refresh_token_second_call_returns_none():
 
 
 def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatch):
-    """64-thread pile-up against one token; DELETE RETURNING permits one winner."""
+    """64-thread pile-up on one token; DELETE RETURNING permits one winner."""
     seed_user()
     from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timedelta, timezone
@@ -258,16 +254,14 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
         try:
             return storage.consume_refresh_token(raw)
         except sqlite3.OperationalError:
-            # "database is locked" under heavy contention; treat as losing the race.
+            # "database is locked" under contention; treat as losing the race.
             return None
 
     with ThreadPoolExecutor(max_workers = workers) as pool:
         results = list(pool.map(attempt, range(workers)))
 
     successes = [r for r in results if r is not None]
-    assert (
-        len(successes) == 1
-    ), f"expected exactly one consumer to win, got {len(successes)}"
+    assert len(successes) == 1, f"expected exactly one consumer to win, got {len(successes)}"
     assert successes[0] == (storage.DEFAULT_ADMIN_USERNAME, False)
 
 
@@ -285,9 +279,7 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
     seed_user(must_change_password = True)
     raw = storage.create_desktop_secret()
     client = auth_client()
-    token = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()[
-        "access_token"
-    ]
+    token = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()["access_token"]
 
     response = client.post(
         "/api/auth/api-keys",
@@ -302,8 +294,7 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
 
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
     # _inject_local_providers mints an internal sk-unsloth-* API key (not a
-    # forwarded JWT). The unified API-key path validates as the real admin
-    # user regardless of whether the incoming session was desktop or web.
+    # forwarded JWT) that validates as admin whether the session was desktop or web.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = True)
@@ -322,14 +313,11 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
         scheme = "Bearer",
         credentials = local_token,
     )
-    assert (
-        asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
-    )
+    assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
 
 
 def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_model):
-    # Mirror of the desktop variant: API-key issuance is identical for web
-    # and desktop incoming tokens; auth via get_current_subject works the same.
+    # Mirror of the desktop variant: API-key issuance is identical for web/desktop tokens.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = False)
@@ -345,9 +333,7 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
         scheme = "Bearer",
         credentials = local_token,
     )
-    assert (
-        asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
-    )
+    assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
 
 
 def test_desktop_login_rejects_invalid_secret():
@@ -429,24 +415,44 @@ def test_desktop_capabilities_json_reports_rollout_safe_flags():
 
 
 def test_health_response_reports_desktop_capability_fields(monkeypatch):
-    router_stub = SimpleNamespace(
-        auth_router = APIRouter(),
-        chat_history_router = APIRouter(),
-        data_recipe_router = APIRouter(),
-        datasets_router = APIRouter(),
-        export_router = APIRouter(),
-        inference_router = APIRouter(),
-        inference_studio_router = APIRouter(),
-        models_router = APIRouter(),
-        providers_router = APIRouter(),
-        training_history_router = APIRouter(),
-        training_router = APIRouter(),
-    )
-    monkeypatch.setitem(sys.modules, "routes", router_stub)
+    routes_module = ModuleType("routes")
+    routes_module.__path__ = []
+    settings_module = ModuleType("routes.settings")
+    settings_module.router = APIRouter()
+    llama_module = ModuleType("routes.llama")
+    llama_module.router = APIRouter()
+    prompts_module = ModuleType("routes.prompts")
+    prompts_module.router = APIRouter()
+
+    for name, router in {
+        "auth_router": APIRouter(),
+        "chat_history_router": APIRouter(),
+        "data_recipe_router": APIRouter(),
+        "datasets_router": APIRouter(),
+        "export_router": APIRouter(),
+        "inference_router": APIRouter(),
+        "inference_studio_router": APIRouter(),
+        "mcp_servers_router": APIRouter(),
+        "models_router": APIRouter(),
+        "providers_router": APIRouter(),
+        "rag_router": APIRouter(),
+        "settings_router": settings_module.router,
+        "training_history_router": APIRouter(),
+        "training_router": APIRouter(),
+    }.items():
+        setattr(routes_module, name, router)
+    routes_module.settings = settings_module
+    routes_module.llama = llama_module
+
+    monkeypatch.setitem(sys.modules, "routes", routes_module)
+    monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
+    monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
+    monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
 
     import studio.backend.main as backend_main
 
-    monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", False)
+    monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
+    monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
 
     seed_user()
     from auth.authentication import create_access_token
@@ -457,6 +463,12 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     app.add_api_route("/api/health", backend_main.health_check, methods = ["GET"])
     client = TestClient(app)
 
+    unauthenticated = client.get("/api/health")
+    assert unauthenticated.status_code == 200
+    unauthenticated_body = unauthenticated.json()
+    assert unauthenticated_body["chat_only"] is True
+    assert "chat_only_reason" not in unauthenticated_body
+
     response = client.get(
         "/api/health",
         headers = {"Authorization": f"Bearer {token}"},
@@ -466,11 +478,11 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     assert body["desktop_protocol_version"] == 1
     assert body["supports_desktop_auth"] is True
+    assert body["chat_only_reason"] == "mlx_unavailable"
 
 
 def test_provision_desktop_auth_writes_secret_and_creates_db_without_backend_deps(
-    tmp_path,
-    monkeypatch,
+    tmp_path, monkeypatch
 ):
     auth_dir = tmp_path / "auth"
     auth_dir.mkdir()
@@ -484,11 +496,14 @@ from typer.testing import CliRunner
 studio_home = Path(sys.argv[1])
 real_import = builtins.__import__
 
-def guarded_import(name, *args, **kwargs):
+def guarded_import(name, globals = None, locals = None, fromlist = (), level = 0):
+    # Only gate absolute imports; relative `from .utils import x` inside
+    # third-party packages (e.g. typer._click.decorators) hits level > 0
+    # with name="utils" and must pass through.
     blocked = ("auth", "fastapi", "structlog", "utils")
-    if name in blocked or name.startswith(("auth.", "utils.")):
+    if level == 0 and (name in blocked or name.startswith(("auth.", "utils."))):
         raise ModuleNotFoundError(name)
-    return real_import(name, *args, **kwargs)
+    return real_import(name, globals, locals, fromlist, level)
 
 builtins.__import__ = guarded_import
 from unsloth_cli.commands import studio as studio_cli
@@ -522,12 +537,9 @@ if result.exit_code != 0:
             """
         ).fetchone()
         app_secrets = {
-            row["key"]: row["value"]
-            for row in conn.execute("SELECT key, value FROM app_secrets")
+            row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM app_secrets")
         }
-        refresh_columns = {
-            row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
-        }
+        refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     finally:
         conn.close()
 
@@ -619,9 +631,7 @@ def test_update_password_clears_desktop_secret():
     raw = storage.create_desktop_secret()
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
-    changed = storage.update_password(
-        storage.DEFAULT_ADMIN_USERNAME, "new-admin-password"
-    )
+    changed = storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
     assert changed is True
     assert storage.validate_desktop_secret(raw) is None
 
@@ -637,11 +647,7 @@ def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
 
 def test_desktop_auth_provision_has_bounded_timeout():
     rs_path = (
-        Path(__file__).resolve().parents[3]
-        / "studio"
-        / "src-tauri"
-        / "src"
-        / "desktop_auth.rs"
+        Path(__file__).resolve().parents[3] / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
     )
     src = rs_path.read_text()
     start = src.index("async fn provision_desktop_auth(")

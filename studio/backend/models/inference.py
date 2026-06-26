@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic schemas for Inference API
-"""
+"""Pydantic schemas for the Inference API."""
 
 from __future__ import annotations
 
@@ -28,9 +26,7 @@ class LoadRequest(BaseModel):
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
-    hf_token: Optional[str] = Field(
-        None, description = "HuggingFace token for gated models"
-    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
     max_seq_length: int = Field(
         0,
         ge = 0,
@@ -46,6 +42,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
     chat_template_override: Optional[str] = Field(
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
@@ -53,9 +53,7 @@ class LoadRequest(BaseModel):
 
     @field_validator("chat_template_override")
     @classmethod
-    def normalize_blank_chat_template_override(
-        cls, value: Optional[str]
-    ) -> Optional[str]:
+    def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
         if value is not None and value.strip() == "":
             return None
         return value
@@ -78,7 +76,7 @@ class LoadRequest(BaseModel):
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. Ignored for non-GGUF and vision models."
+            "still accepted. Ignored for non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -93,14 +91,22 @@ class LoadRequest(BaseModel):
             "'mtp' or 'mtp+ngram'."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = (
+            "Split the model across GPUs by tensor (--split-mode tensor) "
+            "instead of by layer for GGUF models. Only affects multi-GPU "
+            "setups, where it can make generation significantly faster. "
+            "No effect on a single GPU. Ignored for non-GGUF models."
+        ),
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
             "Studio-managed flags (model identity, port, context length, GPU placement, "
-            "auth, --flash-attn, --no-context-shift, --jinja) are rejected. Ignored for "
-            "non-GGUF models."
+            "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
 
@@ -112,45 +118,54 @@ class UnloadRequest(BaseModel):
 
 
 class ValidateModelRequest(BaseModel):
-    """
-    Lightweight validation request to check whether a model identifier
-    *can be resolved* into a ModelConfig.
-
-    This does NOT actually load weights into GPU memory.
-    """
+    """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     model_path: str = Field(..., description = "Model identifier or local path")
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
-    hf_token: Optional[str] = Field(
-        None, description = "HuggingFace token for gated models"
-    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
+    )
+    # Intended load settings so validate's coexistence check matches the follow-up
+    # /load; defaults preserve old behavior for callers that omit them.
+    max_seq_length: int = Field(0, ge = 0, le = 1048576)
+    load_in_4bit: bool = Field(True)
+    gpu_ids: Optional[List[int]] = Field(None)
+    include_context_length: bool = Field(
+        False,
+        description = "Also read the native context length from the local GGUF header. "
+        "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
     )
 
 
 class ValidateModelResponse(BaseModel):
-    """
-    Result of model validation.
+    """Result of model validation.
 
-    valid == True means ModelConfig.from_identifier() succeeded and basic
-    introspection (GGUF / LoRA / vision flags) is available.
+    valid == True means from_identifier() succeeded and GGUF/LoRA/vision flags are available.
     """
 
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
-    display_name: Optional[str] = Field(
-        None, description = "Display name derived from identifier"
-    )
+    display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
+    requires_security_review: bool = Field(
+        False,
+        description = "Whether Hugging Face's security scan flagged unsafe files (e.g. a "
+        "malicious pickle), so the load is hard-blocked pending review.",
+    )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native training context length, read from the GGUF header when the file "
+        "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
     )
 
 
@@ -162,16 +177,10 @@ class GenerateRequest(BaseModel):
     temperature: float = Field(0.6, ge = 0.0, le = 2.0, description = "Sampling temperature")
     top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
     top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
-    max_new_tokens: int = Field(
-        2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
-    )
-    repetition_penalty: float = Field(
-        1.0, ge = 1.0, le = 2.0, description = "Repetition penalty"
-    )
+    max_new_tokens: int = Field(2048, ge = 1, le = 4096, description = "Maximum tokens to generate")
+    repetition_penalty: float = Field(1.0, ge = 1.0, le = 2.0, description = "Repetition penalty")
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
-    image_base64: Optional[str] = Field(
-        None, description = "Base64 encoded image for vision models"
-    )
+    image_base64: Optional[str] = Field(None, description = "Base64 encoded image for vision models")
 
 
 class LoadResponse(BaseModel):
@@ -182,16 +191,13 @@ class LoadResponse(BaseModel):
     display_name: str = Field(..., description = "Display name of the model")
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
-    is_gguf: bool = Field(
-        False, description = "Whether model is a GGUF model (llama.cpp)"
+    is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
-    audio_type: Optional[str] = Field(
-        None, description = "Audio codec type: snac, csm, bicodec, dac"
-    )
-    has_audio_input: bool = Field(
-        False, description = "Whether model accepts audio input (ASR)"
-    )
+    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
     )
@@ -200,7 +206,7 @@ class LoadResponse(BaseModel):
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
-        None, description = "Model's native context length (from GGUF metadata)"
+        None, description = "Runtime context length in tokens for the loaded model"
     )
     max_context_length: Optional[int] = Field(
         None, description = "Maximum context length currently available on this hardware"
@@ -213,9 +219,15 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
     )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
+    )
+    reasoning_effort_levels: List[str] = Field(
+        default_factory = list,
+        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
     )
     reasoning_always_on: bool = Field(
         False,
@@ -253,6 +265,10 @@ class LoadResponse(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -265,10 +281,8 @@ class UnloadResponse(BaseModel):
 class LoadProgressResponse(BaseModel):
     """Progress of the active GGUF load, sampled on demand.
 
-    Used by the UI to show a real progress bar during the
-    post-download warmup window (mmap + CUDA upload), rather than a
-    generic "Starting model..." spinner that freezes for minutes on
-    large MoE models.
+    Drives a real progress bar during the post-download warmup (mmap + CUDA upload)
+    instead of a spinner that freezes for minutes on large MoE models.
     """
 
     phase: Optional[str] = Field(
@@ -282,49 +296,37 @@ class LoadProgressResponse(BaseModel):
     bytes_loaded: int = Field(
         0,
         description = (
-            "Bytes of the model already resident in the llama-server "
-            "process (VmRSS on Linux)."
+            "Bytes of the model already resident in the llama-server process (VmRSS on Linux)."
         ),
     )
     bytes_total: int = Field(
         0,
         description = "Total bytes across all GGUF shards for the active model.",
     )
-    fraction: float = Field(
-        0.0, description = "bytes_loaded / bytes_total, clamped to 0..1."
-    )
+    fraction: float = Field(0.0, description = "bytes_loaded / bytes_total, clamped to 0..1.")
 
 
 class InferenceStatusResponse(BaseModel):
     """Current inference backend status"""
 
     active_model: Optional[str] = Field(
-        None, description = "Currently active model identifier"
+        None, description = "Currently active model display identifier"
     )
-    is_vision: bool = Field(
-        False, description = "Whether the active model is a vision model"
+    model_identifier: Optional[str] = Field(
+        None,
+        description = "Loadable identifier for the active model.",
     )
-    is_gguf: bool = Field(
-        False, description = "Whether the active model is a GGUF model (llama.cpp)"
+    is_vision: bool = Field(False, description = "Whether the active model is a vision model")
+    is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
     )
-    gguf_variant: Optional[str] = Field(
-        None, description = "GGUF quantization variant (e.g. Q4_K_M)"
-    )
-    is_audio: bool = Field(
-        False, description = "Whether the active model is a TTS audio model"
-    )
-    audio_type: Optional[str] = Field(
-        None, description = "Audio codec type: snac, csm, bicodec, dac"
-    )
-    has_audio_input: bool = Field(
-        False, description = "Whether model accepts audio input (ASR)"
-    )
-    loading: List[str] = Field(
-        default_factory = list, description = "Models currently being loaded"
-    )
-    loaded: List[str] = Field(
-        default_factory = list, description = "Models currently loaded"
-    )
+    gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
+    is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
+    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
+    loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )
@@ -335,9 +337,15 @@ class InferenceStatusResponse(BaseModel):
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
     )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
+    )
+    reasoning_effort_levels: List[str] = Field(
+        default_factory = list,
+        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
     )
     reasoning_always_on: bool = Field(
         False, description = "Whether reasoning is always on (not toggleable)"
@@ -349,9 +357,7 @@ class InferenceStatusResponse(BaseModel):
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
     )
-    context_length: Optional[int] = Field(
-        None, description = "Context length of the active model"
-    )
+    context_length: Optional[int] = Field(None, description = "Context length of the active model")
     max_context_length: Optional[int] = Field(
         None,
         description = "Maximum context length currently available for the active model",
@@ -387,11 +393,31 @@ class InferenceStatusResponse(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
     llama_cpp_supports_mtp: bool = Field(
         True,
         description = (
             "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
             "False -> recommend `unsloth studio update`."
+        ),
+    )
+    spec_fallback_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why MTP was disabled on the loaded model despite being requested "
+            "(auto on an MTP model, or forced mtp / mtp+ngram). "
+            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
+            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "current build could not run it; 'drafter_not_found' -> the model's "
+            "separate MTP drafter could not be resolved; 'mla_mtp_disabled' -> "
+            "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
+            "whose llama.cpp MTP path runs slower than no speculation, so Auto "
+            "used ngram-mod or spec-off instead -- updating won't help; choose "
+            "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "None when MTP engaged or was not requested."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
@@ -430,7 +456,7 @@ class ImageUrl(BaseModel):
     """Image URL object — supports data URIs and remote URLs."""
 
     url: str = Field(..., description = "data:image/png;base64,... or https://...")
-    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+    detail: Optional[Literal["auto", "low", "high", "original"]] = "auto"
 
 
 class ImageContentPart(BaseModel):
@@ -443,13 +469,9 @@ class ImageContentPart(BaseModel):
 class InputDocumentContentPart(BaseModel):
     """Document (PDF / file) content part in a multimodal message.
 
-    Studio-normalised shape. The frontend sends either
-    ``{type:"input_document", file_data:"data:application/pdf;base64,..."}``
-    or ``{type:"input_document", file_url:"https://..."}``, plus optional
-    ``filename`` and ``media_type``. ``external_provider`` translates this
-    onto Anthropic's ``document`` block or OpenAI Responses' ``input_file``
-    block for vision-capable providers; non-vision providers drop the
-    part entirely (handled in ``_build_external_messages``).
+    Studio-normalised shape (file_data or file_url, plus optional filename/media_type).
+    Mapped onto Anthropic ``document`` / OpenAI ``input_file`` for vision providers;
+    dropped for non-vision providers.
     """
 
     type: Literal["input_document"]
@@ -471,19 +493,42 @@ class InputDocumentContentPart(BaseModel):
     )
 
 
-class CompactionContentPart(BaseModel):
-    """Anthropic server-side compaction state, attached to an assistant
-    message for round-tripping on the next turn.
+class OpenAIReasoningContentPart(BaseModel):
+    """OpenAI Responses reasoning item paired with a tool output.
 
-    When Anthropic runs compaction during a request, the response
-    carries a ``{"type": "compaction", "content": "<summary>"}`` block
-    on the assistant message. The chat-adapter persists it onto the
-    stored message; the next turn's outbound request must forward it
-    back so Anthropic recognises the existing compaction state and
-    doesn't re-summarise the conversation from scratch. See
-    ``external_provider._stream_anthropic`` for the wire-side handling
-    and https://platform.claude.com/docs/en/build-with-claude/compaction
-    for the upstream contract.
+    Reasoning models may require this replayed before an ``image_generation_call``
+    id. OpenAI-only; routes strip it for other providers before proxying.
+    """
+
+    type: Literal["reasoning"]
+    id: str = Field(..., description = "OpenAI reasoning output item id.")
+    summary: list[dict[str, Any]] = Field(default_factory = list)
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ImageGenerationCallContentPart(BaseModel):
+    """OpenAI Responses image_generation call reference.
+
+    Prior ``image_generation_call`` items let follow-up prompts edit a generated
+    image without resending the payload. The frontend forwards it as a synthetic
+    assistant part; ``external_provider`` maps it back to a top-level input item.
+    """
+
+    type: Literal["image_generation_call"]
+    id: str = Field(..., description = "OpenAI image_generation_call output item id.")
+    response_id: Optional[str] = Field(
+        None,
+        description = "OpenAI Responses response id to use as previous_response_id for follow-up edits.",
+    )
+
+
+class CompactionContentPart(BaseModel):
+    """Anthropic server-side compaction state, round-tripped on the next turn.
+
+    Anthropic returns a ``compaction`` block on the assistant message; the next
+    request must forward it back so Anthropic reuses the compaction state instead
+    of re-summarising. See ``external_provider._stream_anthropic`` and
+    https://platform.claude.com/docs/en/build-with-claude/compaction
     """
 
     type: Literal["compaction"]
@@ -504,6 +549,8 @@ ContentPart = Annotated[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
         Annotated[InputDocumentContentPart, Tag("input_document")],
+        Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
+        Annotated[ImageGenerationCallContentPart, Tag("image_generation_call")],
         Annotated[CompactionContentPart, Tag("compaction")],
     ],
     Discriminator(_content_part_discriminator),
@@ -517,13 +564,12 @@ ContentPart = Annotated[
 class ChatMessage(BaseModel):
     """Single message in a chat conversation.
 
-    ``content`` is a string or a list of multimodal content parts. Assistant
-    messages with only ``tool_calls`` populated may set ``content=None``.
-    Missing ``tool_call_id`` on ``role="tool"`` is resolved at the
-    ``ChatCompletionRequest`` layer by walking back to the preceding assistant.
+    ``content`` is a string or list of multimodal parts. Assistant messages with
+    only ``tool_calls`` may set ``content=None``. Missing ``tool_call_id`` on
+    ``role="tool"`` is resolved at the ``ChatCompletionRequest`` layer.
     """
 
-    role: Literal["system", "user", "assistant", "tool"] = Field(
+    role: Literal["system", "user", "assistant", "tool", "developer"] = Field(
         ..., description = "Message role"
     )
     content: Optional[Union[str, list[ContentPart]]] = Field(
@@ -541,6 +587,14 @@ class ChatMessage(BaseModel):
         None,
         description = "OpenAI tool-result messages: name of the tool whose result this is.",
     )
+    extra_content: Optional[dict] = Field(
+        None,
+        description = (
+            "Provider-specific extra fields the translator may read. "
+            "Gemini reads `extra_content.google.thought_signature` "
+            "from assistant messages to replay text-part signatures."
+        ),
+    )
 
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
@@ -553,8 +607,10 @@ class ChatMessage(BaseModel):
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope.
-            if not self.content:
-                raise ValueError('role="tool" messages require non-empty "content".')
+            # OpenAI accepts empty tool results (commands with no output);
+            # normalize to "" instead of a 400 agentic clients treat as fatal.
+            if self.content is None or self.content == []:
+                self.content = ""
         elif self.role == "assistant":
             # Post-Stop sentinel: collapse content="" / [] to None.
             if (self.content == "" or self.content == []) and not self.tool_calls:
@@ -565,17 +621,24 @@ class ChatMessage(BaseModel):
         return self
 
 
+class ThinkingConfig(BaseModel):
+    """Anthropic-compatible thinking/reasoning configuration.
+    Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
+    Only type is read; extra fields (e.g. budget_tokens) are ignored, since
+    Studio sets provider thinking budgets itself.
+    """
+
+    type: Literal["disabled", "enabled"] = "disabled"
+
+
 class ChatCompletionRequest(BaseModel):
-    """
-    OpenAI-compatible chat completion request.
+    """OpenAI-compatible chat completion request.
 
-    Extensions (non-OpenAI fields) are marked with 'x-unsloth'.
+    Non-OpenAI extension fields are marked with 'x-unsloth'.
     """
 
-    # Accept unknown fields defensively so future OpenAI fields (seed,
-    # response_format, logprobs, frequency_penalty, etc.) don't get
-    # silently dropped by Pydantic before route code runs. Mirrors
-    # AnthropicMessagesRequest and ResponsesRequest.
+    # Accept unknown fields so future OpenAI fields aren't dropped before route
+    # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
 
     model: str = Field(
@@ -615,12 +678,38 @@ class ChatCompletionRequest(BaseModel):
             "{'type': 'function', 'function': {'name': ...}}"
         ),
     )
+    max_completion_tokens: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = "OpenAI upper bound on generated tokens (supersedes the deprecated max_tokens).",
+    )
+    n: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 128,
+        description = "Number of chat completion choices to generate.",
+    )
+    logprobs: Optional[bool] = Field(
+        None, description = "Whether to return log probabilities of the output tokens."
+    )
+    top_logprobs: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 20,
+        description = "Number of most likely tokens (0-20) to return per position; requires logprobs=true.",
+    )
+    parallel_tool_calls: Optional[bool] = Field(
+        None, description = "Whether to enable parallel function calling during tool use."
+    )
+    seed: Optional[int] = Field(None, description = "Best-effort deterministic sampling seed.")
+    stream_options: Optional[dict] = Field(
+        None,
+        description = 'Streaming options, e.g. {"include_usage": true} to emit a final usage chunk.',
+    )
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
-    min_p: float = Field(
-        0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
-    )
+    min_p: float = Field(0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold")
     repetition_penalty: float = Field(
         1.0, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
     )
@@ -628,7 +717,8 @@ class ChatCompletionRequest(BaseModel):
         None, description = "[x-unsloth] Base64-encoded image for vision models"
     )
     audio_base64: Optional[str] = Field(
-        None, description = "[x-unsloth] Base64-encoded WAV for audio-input models (ASR)"
+        None,
+        description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
@@ -654,6 +744,11 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
     )
+    thinking: Optional[ThinkingConfig] = Field(
+        None,
+        description = "[Anthropic-compatible] Thinking configuration. "
+        "Use {type: 'disabled'} to disable thinking, {type: 'enabled'} to enable.",
+    )
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
@@ -661,16 +756,39 @@ class ChatCompletionRequest(BaseModel):
     enabled_tools: Optional[list[str]] = Field(
         None,
         description = (
-            "[x-unsloth] List of enabled tool names. Local GGUF models accept "
-            "['web_search', 'python', 'terminal']. External providers accept "
-            "['web_search', 'web_fetch', 'code_execution'] for Anthropic and "
-            "['web_search', 'code_execution'] for OpenAI Responses. If None, "
-            "all local tools are enabled and no server-side tools are forwarded."
+            "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
+            "accept ['web_search', 'python', 'terminal', 'render_html']. External "
+            "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
+            "Anthropic and ['web_search', 'code_execution', 'image_generation'] for "
+            "OpenAI Responses. If None, all local tools are enabled and no "
+            "server-side tools are forwarded."
         ),
+    )
+    mcp_enabled: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
+    )
+    confirm_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
+    )
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
+    )
+    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
+            "context window. 'error' (default) returns a 400 with "
+            "code=context_length_exceeded. 'truncate_middle' drops middle "
+            "turn-groups (system prompt, first turn, and recent turns kept; "
+            "tool calls stay paired with their results) and retries."
+        ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
@@ -685,6 +803,16 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = (
+            "[x-unsloth] Hidden RAG retrieval scope for the search_knowledge_base "
+            "tool: {kb_id?, thread_id?, default_top_k?, mode?, autoinject?, "
+            "autoinject_min_score?}. Candidate pools and the RRF constant come from "
+            "server config. The model never sees this; the server resolves which "
+            "documents to search."
+        ),
     )
     cancel_id: Optional[str] = Field(
         None,
@@ -712,17 +840,37 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Override base URL for the external provider.",
     )
-    enable_prompt_caching: Optional[bool] = Field(
+    enable_prompt_caching: Optional[Union[bool, str]] = Field(
         None,
         description = (
             "[x-unsloth] Opt in to provider-side prompt caching. On Anthropic, "
-            "attaches cache_control={type:ephemeral} to the system block so the "
-            "static prefix is reused across turns. On OpenAI cloud, caching is "
-            "automatic for prompts >=1024 tokens and this flag is informational. "
-            "Ignored for every other provider (mistral, gemini, kimi, openrouter, "
-            "vllm, local, etc.). Treated as enabled when omitted."
+            "boolean true attaches cache_control={type:ephemeral} to the system "
+            "block so the static prefix is reused across turns. On OpenAI cloud, "
+            "caching is automatic for prompts >=1024 tokens and the boolean is "
+            "informational. On Gemini, pass a string cache resource name such "
+            "as `cachedContents/abc123` to attach `cachedContent` on the native "
+            "request (boolean true is a no-op on Gemini because creating the "
+            "cache requires a separate POST /cachedContents call). Ignored for "
+            "every other provider. Treated as enabled when omitted."
         ),
     )
+
+    @field_validator("enable_prompt_caching", mode = "before")
+    @classmethod
+    def _coerce_enable_prompt_caching(cls, value: Any) -> Any:
+        """Coerce JSON bool strings back to bool. Widening to Union[bool, str] for
+        Gemini cache names would let `"false"` read as truthy, so canonical bool
+        literals are coerced to keep explicit opt-outs working."""
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            # Match Pydantic v1's bool coercion table; anything else stays a
+            # string for Gemini's cachedContent resource path.
+            if lowered in ("true", "t", "1", "yes", "y", "on"):
+                return True
+            if lowered in ("false", "f", "0", "no", "n", "off"):
+                return False
+        return value
+
     prompt_cache_ttl: Optional[str] = Field(
         None,
         description = (
@@ -786,6 +934,16 @@ class ChatCompletionRequest(BaseModel):
             "to auto-create."
         ),
     )
+    fast_mode: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Anthropic fast-mode toggle. On Claude Opus 4.6 / "
+            "4.7 adds the `fast-mode-2026-02-01` beta header and sends "
+            "`speed: 'fast'` for higher OTPS at premium pricing. Silently "
+            "ignored on every other model + provider. See "
+            "https://platform.claude.com/docs/en/build-with-claude/fast-mode"
+        ),
+    )
 
     @model_validator(mode = "after")
     def _resolve_missing_tool_call_ids(self) -> "ChatCompletionRequest":
@@ -793,11 +951,10 @@ class ChatCompletionRequest(BaseModel):
 
         OpenAI / Anthropic passthrough require the result id to match the
         assistant's tool_calls[].id. Prefer function.name match, else first
-        unconsumed tool_call; synth random id only if no candidate exists.
-        Crossing a user turn breaks the lookup.
+        unconsumed tool_call; synth a random id only if none exists. A user
+        turn breaks the lookup.
         """
-        # Pre-mark explicit ids first so a sibling missing-id result does not
-        # steal one already claimed by name.
+        # Pre-mark explicit ids so a missing-id sibling can't steal a claimed one.
         consumed: set[tuple[int, int]] = set()
 
         def _mark_consumed(start_idx: int, tool_call_id: str) -> None:
@@ -837,9 +994,7 @@ class ChatCompletionRequest(BaseModel):
                     if not tc_id:
                         continue
                     function = tc.get("function")
-                    function_name = (
-                        function.get("name") if isinstance(function, dict) else None
-                    )
+                    function_name = function.get("name") if isinstance(function, dict) else None
                     if msg.name and function_name == msg.name:
                         name_match = (tc_id, asst_idx, tc_idx)
                         break
@@ -852,22 +1007,39 @@ class ChatCompletionRequest(BaseModel):
                     break
             if picked is None:
                 import secrets as _secrets
-
                 picked = f"call_{_secrets.token_hex(8)}"
             msg.tool_call_id = picked
         return self
+
+    @model_validator(mode = "after")
+    def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
+        """Map Anthropic-style ``thinking`` parameter to internal ``enable_thinking``.
+
+        ``thinking: {type: 'enabled'}`` sets ``enable_thinking = True`` and
+        ``thinking: {type: 'disabled'}`` sets ``enable_thinking = False``.
+        ``enable_thinking`` takes precedence when both are provided so that
+        callers who already use the internal field are unaffected. Invalid
+        ``thinking`` shapes are rejected at validation time (422).
+        """
+        if self.thinking is not None and self.enable_thinking is None:
+            self.enable_thinking = self.thinking.type == "enabled"
+        return self
+
+
+class ToolConfirmRequest(BaseModel):
+    session_id: Optional[str] = None
+    approval_id: Optional[str] = None
+    decision: Literal["allow", "deny"] = "deny"
 
 
 # ── OpenAI shell-tool container management ─────────────────────
 
 
 class OpenAIContainerRequest(BaseModel):
-    """
-    Shared body for the three OpenAI container endpoints (list / create
-    / delete). Carries the encrypted API key + base URL so the route
-    handler can decrypt it and proxy to the user's OpenAI account.
-    Same pattern as the inference proxy endpoints — keeps the key off
-    persistent storage on the backend.
+    """Shared body for the OpenAI container endpoints (list / create / delete).
+
+    Carries the encrypted API key + base URL so the route can decrypt and proxy
+    to the user's account, keeping the key off backend persistent storage.
     """
 
     encrypted_api_key: str = Field(
@@ -929,6 +1101,11 @@ class ChoiceDelta(BaseModel):
 
     role: Optional[str] = None
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
+
+
+OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
 
 
 class ChunkChoice(BaseModel):
@@ -936,7 +1113,8 @@ class ChunkChoice(BaseModel):
 
     index: int = 0
     delta: ChoiceDelta
-    finish_reason: Optional[Literal["stop", "length"]] = None
+    finish_reason: Optional[OpenAIFinishReason] = None
+    logprobs: Optional[dict] = None
 
 
 class ChatCompletionChunk(BaseModel):
@@ -959,6 +1137,9 @@ class CompletionMessage(BaseModel):
 
     role: Literal["assistant"] = "assistant"
     content: str
+    refusal: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
 
 
 class CompletionChoice(BaseModel):
@@ -966,7 +1147,8 @@ class CompletionChoice(BaseModel):
 
     index: int = 0
     message: CompletionMessage
-    finish_reason: Literal["stop", "length"] = "stop"
+    finish_reason: OpenAIFinishReason = "stop"
+    logprobs: Optional[dict] = None
 
 
 class CompletionUsage(BaseModel):
@@ -975,6 +1157,17 @@ class CompletionUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    prompt_tokens_details: Optional[dict] = Field(
+        default_factory = lambda: {"cached_tokens": 0, "audio_tokens": 0}
+    )
+    completion_tokens_details: Optional[dict] = Field(
+        default_factory = lambda: {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0,
+        }
+    )
 
 
 class ChatCompletion(BaseModel):
@@ -986,6 +1179,7 @@ class ChatCompletion(BaseModel):
     model: str = "default"
     choices: list[CompletionChoice]
     usage: CompletionUsage = Field(default_factory = CompletionUsage)
+    system_fingerprint: Optional[str] = None
 
 
 # =====================================================================
@@ -1008,17 +1202,15 @@ class ResponsesInputImagePart(BaseModel):
 
     type: Literal["input_image"]
     image_url: str = Field(..., description = "data:image/png;base64,... or https://...")
-    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+    detail: Optional[Literal["auto", "low", "high", "original"]] = "auto"
 
 
 class ResponsesOutputTextPart(BaseModel):
     """Assistant ``output_text`` content part replayed on subsequent turns.
 
-    When a client (OpenAI Codex CLI, OpenAI Python SDK agents) loops on a
-    stateless Responses endpoint, prior assistant messages are round-tripped
-    as ``{"role":"assistant","content":[{"type":"output_text","text":...,
-    "annotations":[],"logprobs":[]}]}``. We preserve the text and ignore
-    the annotations/logprobs metadata when flattening into Chat Completions.
+    Clients looping on a stateless Responses endpoint round-trip prior assistant
+    messages as ``output_text`` parts; we keep the text and ignore the
+    annotations/logprobs when flattening into Chat Completions.
     """
 
     type: Literal["output_text"]
@@ -1030,11 +1222,10 @@ class ResponsesOutputTextPart(BaseModel):
 
 
 class ResponsesUnknownContentPart(BaseModel):
-    """Catch-all for content-part types we don't model explicitly.
+    """Catch-all for unmodelled content-part types.
 
-    Keeps validation green when a client sends newer part types (e.g.
-    ``input_audio``, ``input_file``) we haven't mapped; these are silently
-    skipped during normalisation rather than rejected with a 422.
+    Keeps validation green for newer part types (e.g. ``input_audio``); skipped
+    during normalisation rather than rejected with a 422.
     """
 
     type: str
@@ -1057,39 +1248,32 @@ class ResponsesInputMessage(BaseModel):
     role: Literal["system", "user", "assistant", "developer"]
     content: Union[str, list[ResponsesContentPart]]
 
-    # Codex (gpt-5.3-codex+) attaches a `phase` field ("commentary" |
-    # "final_answer") to assistant messages and requires clients to preserve
-    # it on subsequent turns. We accept and round-trip it; llama-server does
-    # not care about it.
+    # Codex attaches a `phase` field to assistant messages and requires clients
+    # to preserve it across turns; we round-trip it, llama-server ignores it.
     model_config = {"extra": "allow"}
 
 
 class ResponsesFunctionCallInputItem(BaseModel):
-    """A prior assistant function_call being replayed in a multi-turn Responses input.
+    """A prior assistant function_call replayed in a multi-turn Responses input.
 
-    The Responses API represents tool calls as top-level input items (not
-    nested inside assistant messages), correlated across turns by ``call_id``.
+    Tool calls are top-level input items (not nested), correlated by ``call_id``.
     """
 
     type: Literal["function_call"]
-    id: Optional[str] = Field(
-        None, description = "Item id assigned by the server (e.g. fc_...)"
-    )
+    id: Optional[str] = Field(None, description = "Item id assigned by the server (e.g. fc_...)")
     call_id: str = Field(
         ...,
         description = "Correlation id matching a function_call_output on the next turn.",
     )
     name: str
-    arguments: str = Field(
-        ..., description = "JSON string of the arguments the model produced."
-    )
+    arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
 
 class ResponsesFunctionCallOutputInputItem(BaseModel):
     """A tool result supplied by the client for a prior function_call.
 
-    Replaces Chat Completions' ``role="tool"`` message. Correlated to the
+    Replaces Chat Completions' ``role="tool"`` message. Correlated to its
     originating call by ``call_id``.
     """
 
@@ -1103,13 +1287,10 @@ class ResponsesFunctionCallOutputInputItem(BaseModel):
 
 
 class ResponsesUnknownInputItem(BaseModel):
-    """Catch-all for Responses input item types we don't model explicitly.
+    """Catch-all for unmodelled Responses input item types.
 
-    Covers ``reasoning`` items (replayed from prior o-series / gpt-5 turns)
-    and any future item types the client may send. These items are dropped
-    during normalisation — llama-server-backed GGUFs cannot consume them —
-    but keeping them in the request-model union stops unrelated turns from
-    failing validation with a 422.
+    Covers ``reasoning`` items and future types. Dropped during normalisation
+    (GGUFs can't consume them), but kept in the union so unrelated turns don't 422.
     """
 
     type: str
@@ -1120,13 +1301,9 @@ class ResponsesUnknownInputItem(BaseModel):
 def _responses_input_item_discriminator(v: Any) -> str:
     """Route a Responses input item to the correct tagged variant.
 
-    Pydantic's default smart-union matching fails when one variant in the
-    union is tagged with a strict ``Literal`` (``function_call`` /
-    ``function_call_output``) and the incoming dict uses a different
-    ``type`` — the other variants' validation errors are hidden and the
-    outer ``Union[str, list[...]]`` reports a misleading "Input should be a
-    valid string" error. An explicit discriminator makes the routing
-    deterministic and lets us fall through to the catch-all.
+    Pydantic's smart-union matching misreports errors when a strict-``Literal``
+    variant doesn't match; an explicit discriminator makes routing deterministic
+    and falls through to the catch-all.
     """
     if isinstance(v, dict):
         t = v.get("type")
@@ -1155,12 +1332,10 @@ ResponsesInputItem = Annotated[
 
 
 class ResponsesFunctionTool(BaseModel):
-    """Flat function-tool definition used by the Responses API request.
+    """Flat function-tool definition for the Responses API request.
 
-    Unlike Chat Completions (which nests ``{"name": ..., "parameters": ...}``
-    inside a ``"function"`` key), the Responses API uses a flat shape with
-    ``type``, ``name``, ``description``, ``parameters``, and ``strict`` at the
-    top level of each tool entry.
+    Unlike Chat Completions (nested under a ``"function"`` key), this uses a flat
+    shape with ``type``/``name``/``description``/``parameters``/``strict`` at top level.
     """
 
     type: Literal["function"]
@@ -1178,19 +1353,15 @@ class ResponsesRequest(BaseModel):
         default = [],
         description = "Input text or list of messages / function_call / function_call_output items",
     )
-    instructions: Optional[str] = Field(
-        None, description = "System / developer instructions"
-    )
+    instructions: Optional[str] = Field(None, description = "System / developer instructions")
     temperature: Optional[float] = Field(None, ge = 0.0, le = 2.0)
     top_p: Optional[float] = Field(None, ge = 0.0, le = 1.0)
     max_output_tokens: Optional[int] = Field(None, ge = 1)
     stream: bool = Field(False, description = "Whether to stream the response via SSE")
 
-    # OpenAI function-calling fields — forwarded to llama-server via the
-    # Chat Completions pass-through (see routes/inference.py). Typed as a
-    # plain list so built-in tool shapes (``web_search``, ``file_search``,
-    # ``mcp``, ...) round-trip without validation errors — the translator
-    # picks out only ``type=="function"`` entries for forwarding.
+    # OpenAI function-calling fields, forwarded via the Chat Completions
+    # pass-through. Plain list so built-in tool shapes round-trip without
+    # validation errors; the translator forwards only ``type=="function"`` entries.
     tools: Optional[list[dict]] = Field(
         None,
         description = (
@@ -1243,26 +1414,42 @@ class ResponsesOutputMessage(BaseModel):
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
 
+class ResponsesOutputReasoningContent(BaseModel):
+    """A reasoning text content block inside a reasoning output item."""
+
+    type: Literal["reasoning_text"] = "reasoning_text"
+    text: str
+
+
+class ResponsesOutputReasoning(BaseModel):
+    """A top-level reasoning output item in the Responses API response."""
+
+    type: Literal["reasoning"] = "reasoning"
+    id: str = Field(default_factory = lambda: f"rs_{uuid.uuid4().hex[:12]}")
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+    summary: list = Field(default_factory = list)
+    content: Optional[list[ResponsesOutputReasoningContent]] = None
+
+
 class ResponsesOutputFunctionCall(BaseModel):
     """A function-call output item in the Responses API response.
 
-    Unlike Chat Completions (which nests tool calls inside the assistant
-    message), the Responses API emits each tool call as its own top-level
-    ``output`` item so clients can correlate results via ``call_id`` on the
-    next turn.
+    Each tool call is its own top-level ``output`` item, correlated via ``call_id``.
     """
 
     type: Literal["function_call"] = "function_call"
     id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
     call_id: str
     name: str
-    arguments: str = Field(
-        ..., description = "JSON string of the arguments the model produced."
-    )
+    arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
-ResponsesOutputItem = Union[ResponsesOutputMessage, ResponsesOutputFunctionCall]
+ResponsesOutputItem = Union[
+    ResponsesOutputMessage,
+    ResponsesOutputReasoning,
+    ResponsesOutputFunctionCall,
+]
 
 
 class ResponsesUsage(BaseModel):
@@ -1343,6 +1530,43 @@ AnthropicContentBlock = Union[
 ]
 
 
+def _anthropic_content_to_system_text(content: Any) -> str:
+    """Convert misplaced system message content into Anthropic system text."""
+    if content is None:  # null content must not become the literal "None"
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                    continue
+            if block is not None:
+                parts.append(str(block))
+        return "\n\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
+    if not additions:
+        return system
+
+    addition_blocks = [{"type": "text", "text": text} for text in additions if text.strip()]
+    if not addition_blocks:
+        return system
+
+    if system is None:
+        return addition_blocks[0]["text"] if len(addition_blocks) == 1 else addition_blocks
+    if isinstance(system, str):
+        return "\n\n".join([system, *[block["text"] for block in addition_blocks]])
+    if isinstance(system, list):
+        return [*system, *addition_blocks]
+    return system
+
+
 class AnthropicMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, list[AnthropicContentBlock]]
@@ -1370,7 +1594,7 @@ class AnthropicMessagesRequest(BaseModel):
     top_k: Optional[int] = None
     stop_sequences: Optional[list[str]] = None
     metadata: Optional[dict] = None
-    # [x-unsloth] extensions — mirror the OpenAI endpoint convenience fields
+    # [x-unsloth] extensions mirroring the OpenAI endpoint convenience fields
     min_p: Optional[float] = Field(
         None, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
     )
@@ -1384,7 +1608,42 @@ class AnthropicMessagesRequest(BaseModel):
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
     cancel_id: Optional[str] = None
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
     model_config = {"extra": "allow"}
+
+    @model_validator(mode = "before")
+    @classmethod
+    def normalize_system_messages(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        messages = data.get("messages")
+        if not isinstance(messages, list):
+            return data
+
+        normalized_messages: list[Any] = []
+        system_additions: list[str] = []
+        changed = False
+
+        for message in messages:
+            if isinstance(message, dict) and message.get("role") == "system":
+                system_additions.append(
+                    _anthropic_content_to_system_text(message.get("content", ""))
+                )
+                changed = True
+                continue
+            normalized_messages.append(message)
+
+        if not changed:
+            return data
+
+        normalized = dict(data)
+        normalized["messages"] = normalized_messages
+        normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
+        return normalized
 
 
 # ── Response models ────────────────────────────────────────────
@@ -1392,6 +1651,8 @@ class AnthropicMessagesRequest(BaseModel):
 
 class AnthropicUsage(BaseModel):
     input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     output_tokens: int = 0
 
 
@@ -1407,9 +1668,7 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
-AnthropicResponseBlock = Union[
-    AnthropicResponseTextBlock, AnthropicResponseToolUseBlock
-]
+AnthropicResponseBlock = Union[AnthropicResponseTextBlock, AnthropicResponseToolUseBlock]
 
 
 class AnthropicMessagesResponse(BaseModel):

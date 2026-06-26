@@ -7,73 +7,32 @@
 
 """scan_npm_packages.py -- npm-side content scanner.
 
-Counterpart to scripts/scan_packages.py for the pip ecosystem. Reads
+npm counterpart to scripts/scan_packages.py. Reads
 studio/frontend/package-lock.json, downloads each resolved tarball
 DIRECTLY from registry.npmjs.org (never via `npm install` -- no
-lifecycle scripts ever run), verifies the lockfile integrity hash,
-unpacks each tarball into a sandboxed temp dir behind size / count /
-path-escape / symlink guards, and pattern-scans the extracted file
-contents for the signatures common to npm supply-chain attacks:
+lifecycle scripts run), verifies the lockfile integrity hash, unpacks
+each into a sandboxed temp dir behind size/count/path-escape/symlink
+guards, and pattern-scans extracted contents for npm supply-chain
+attack signatures: malicious lifecycle scripts, C2 / exfil hosts,
+credential-stealing references, known IOC filenames, and obfuscation
+shapes.
 
-  - Lifecycle (preinstall / install / postinstall / prepare) scripts
-    in any package.json that fetch + execute external code.
-  - C2 / exfiltration hosts (getsession.org, AWS IMDS endpoints,
-    Kubernetes ServiceAccount token paths, GitHub Actions OIDC,
-    HashiCorp Vault endpoints).
-  - Credential-stealing references (~/.npmrc, ~/.aws/credentials,
-    GITHUB_TOKEN / NPM_TOKEN in JS sources).
-  - Known IOC filenames from public advisories
-    (router_init.js, tanstack_runner.js, router_runtime.js).
-  - Obfuscation shapes (large single JS in package root with a low
-    whitespace ratio + Function/eval against a base64-decoded blob).
-
-Safety stance
-=============
-
-This script ingests attacker-controlled archives. Every parse path
-assumes the worst:
-
-  1. Downloads ONLY from `registry.npmjs.org`. Any tarball URL with a
-     different hostname is refused without fetching.
-  2. Tarball download is size-capped (HARD_MAX_TARBALL_BYTES default
-     64 MiB). HEAD-style probe via the Content-Length response header
-     plus a chunked read that aborts on overflow.
+Safety stance (ingests attacker-controlled archives; assumes worst):
+  1. Downloads ONLY from registry.npmjs.org; other hosts refused.
+  2. Tarball download size-capped via Content-Length probe + chunked
+     read that aborts on overflow.
   3. SHA-512 integrity verified against the lockfile entry BEFORE the
-     tarball is even opened. A mismatch aborts that package -- the
-     scanner does not "fall back" to the registry-published hash.
-  4. tar extraction goes through `safe_extract`:
-        - rejects symbolic links (`SYMTYPE`, `LNKTYPE`)
-        - rejects absolute paths, `..` traversal, paths outside the
-          extract root after resolution
-        - rejects character / block / FIFO devices
-        - per-file uncompressed size cap (HARD_MAX_FILE_BYTES, default
-          8 MiB) AND cumulative cap (HARD_MAX_TOTAL_BYTES, default
-          128 MiB) AND member-count cap (HARD_MAX_MEMBERS, default
-          50_000)
-        - tar reads happen via `tarfile.open(mode='r|gz')` streaming
-          so an oversized file is detected before write
-  5. NOTHING from the extracted tree is ever executed. Files are read
-     as raw bytes, decoded with `errors='replace'`, and grepped. We
-     never call `node`, `eval`, `compile`, `subprocess.run`,
-     `os.system`, or anything that would touch the tarball's
-     declared scripts.
-  6. Tempdir is created with `tempfile.mkdtemp(prefix='npm-scan-')`,
-     fully resolved with .resolve(), and registered with atexit to be
-     wiped on every termination path.
-  7. Stdlib only. No third-party deps -- adding one would itself be a
-     supply-chain liability.
+     tarball is opened; mismatch aborts that package (no fallback).
+  4. tar extraction via `safe_extract`: rejects symlinks, absolute /
+     `..` paths, device files; enforces per-file, cumulative, and
+     member-count caps; streams (`r|gz`) so oversize is caught early.
+  5. NOTHING extracted is executed -- files are read as bytes and
+     grepped only.
+  6. Tempdir resolved and atexit-wiped on every termination path.
+  7. Stdlib only (a dep would be a supply-chain liability itself).
 
-Exit codes
-==========
-
-  0  no findings of severity HIGH or higher
-  1  one or more HIGH/CRITICAL findings (or pre-scan structural
-     anomalies -- non-registry resolved URL, missing integrity)
-  2  internal error (lockfile missing, integrity mismatch on
-     download, malformed tarball, etc.)
-
-The script is meant to be run in CI on every PR that touches
-package-lock.json and on a nightly schedule.
+Exit codes: 0 = no HIGH+ findings; 1 = HIGH/CRITICAL or pre-scan
+structural anomaly; 2 = internal error. Run in CI per-PR and nightly.
 """
 
 from __future__ import annotations
@@ -453,7 +412,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@uipath/functions-tool": {"1.0.1"},
     "@uipath/access-policy-sdk": {"0.3.1"},
     "@uipath/platform-tool": {"1.0.1"},
-    # Mini Shai-Hulud May-12 wave: @mistralai/* (npm) — separate from PyPI mistralai
+    # Mini Shai-Hulud May-12 wave: @mistralai/* (npm), separate from PyPI mistralai
     # (https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
     "@mistralai/mistralai": {"2.2.2", "2.2.3", "2.2.4"},
     "@mistralai/mistralai-gcp": {"1.7.1", "1.7.2", "1.7.3"},
@@ -565,12 +524,9 @@ CRED_HOST_NEEDS_CONTEXT: tuple[tuple[str, str], ...] = (
     ),
 )
 
-# Credentials a frontend package should NEVER need to read. Bare
-# substring match is too noisy (object-treeify ships a `docker` dev
-# script that mounts ~/.npmrc -- legitimate dev tooling, never run
-# at install time). We instead surface these only when they appear
-# inside a LIFECYCLE script (preinstall / install / postinstall /
-# prepare), which is the only path that runs automatically on
+# Credentials a frontend package should never read. Bare substring
+# match is too noisy (legit dev tooling mounts ~/.npmrc), so we flag
+# these only inside lifecycle scripts -- the only auto-run path on
 # `npm ci`. See `scan_package_json` below.
 CRED_PATH_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("/.npmrc", "npm credentials file"),
@@ -603,9 +559,8 @@ _JS_FETCH_EVAL = re.compile(
     """,
 )
 
-# `process.env.GITHUB_TOKEN` / `NPM_TOKEN` / `AWS_*` access in
-# top-level / install-time code is suspicious. We also catch
-# `os.environ["GITHUB_TOKEN"]` for the rare Python-in-npm postinstall.
+# Token env access in install-time code; also catches os.environ[...]
+# for the rare Python-in-npm postinstall.
 _JS_ENV_TOKEN = re.compile(
     r"""(process\.env\.|os\.environ\[?['"])(?:
         GITHUB_TOKEN | GH_TOKEN | NPM_TOKEN | NODE_AUTH_TOKEN
@@ -616,11 +571,9 @@ _JS_ENV_TOKEN = re.compile(
     re.VERBOSE,
 )
 
-# Suspicious lifecycle-script payloads. Anything in a package.json
-# `scripts` field that wgets/curls an external resource and executes
-# it. We do NOT block ALL curl/wget in scripts (some legit packages
-# fetch test fixtures into devDependencies), but we DO block the
-# fetch+exec chain.
+# Lifecycle-script fetch+exec chain: curl/wget an external resource
+# and run it. Bare curl/wget is allowed (legit fixture fetches); only
+# the fetch+exec chain is blocked.
 _LIFECYCLE_FETCH_EXEC = re.compile(
     r"""(?xs)
     (?:curl|wget|fetch|http\.get|axios\.get)\s+ # fetch verb
@@ -634,9 +587,8 @@ _LIFECYCLE_FETCH_EXEC = re.compile(
     """,
 )
 
-# Obfuscation: large JS file that is mostly one line of base64-ish
-# blob with a Function() / eval() bookend. Tuned against the
-# router_init.js shape (2.3 MB obfuscated single-blob).
+# Obfuscation: large single-line base64-ish blob behind Function()/
+# eval(). Tuned against the router_init.js shape (2.3 MB blob).
 _OBFUSC_BLOB = re.compile(
     r"""(?xs)
     (?:Function|eval)\s*\(\s*['"`]?
@@ -653,11 +605,9 @@ _OBFUSC_BLOB = re.compile(
 def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     """Return (entries, structural_findings).
 
-    Structural findings here are HIGH-severity refusals that should
-    short-circuit the scan -- a lockfile with non-registry resolved
-    URLs is itself a finding (covered by scripts/lockfile_supply_chain
-    _audit.py in detail; we surface a summary here so this scanner is
-    standalone-runnable).
+    Structural findings are HIGH-severity refusals that short-circuit
+    the scan (e.g. non-registry resolved URLs). A summary is surfaced
+    here so this scanner is standalone-runnable.
     """
     entries: list[PackageEntry] = []
     findings: list[Finding] = []
@@ -701,9 +651,8 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
         resolved = entry.get("resolved")
         if not resolved:
             continue
-        # Strict registry origin check. lockfile_supply_chain_audit
-        # already catches this; double-defend here so this scanner
-        # cannot be tricked into fetching from an attacker-chosen URL.
+        # Strict registry origin check so this scanner can't be tricked
+        # into fetching from an attacker-chosen URL.
         parsed = urllib.parse.urlparse(resolved)
         if parsed.scheme != "https" or parsed.hostname != ALLOWED_DOWNLOAD_HOST:
             findings.append(
@@ -775,16 +724,12 @@ def download_tarball(
     timeout: float = HARD_HTTP_TIMEOUT_S,
     max_bytes: int = HARD_MAX_TARBALL_BYTES,
 ) -> tuple[Path, str | None]:
-    """Stream-download entry.resolved to dest. Verify SRI integrity.
+    """Stream-download entry.resolved to dest and verify SRI integrity.
 
-    Returns (downloaded_path, error_or_none). On any error the
-    returned path may not exist. Network access is restricted to
-    https://{ALLOWED_DOWNLOAD_HOST}/ -- the caller passes a Request
-    we already validated.
+    Returns (downloaded_path, error_or_none); on error the path may not
+    exist. Network access is restricted to ALLOWED_DOWNLOAD_HOST.
     """
-    # Re-assert hostname; the entry was validated at parse time but a
-    # defence-in-depth check here means a future refactor cannot
-    # accidentally bypass it.
+    # Re-assert hostname (defence-in-depth against a future refactor).
     parsed = urllib.parse.urlparse(entry.resolved)
     if parsed.scheme != "https" or parsed.hostname != ALLOWED_DOWNLOAD_HOST:
         return dest, (f"refused download from non-allowlisted URL {entry.resolved!r}")
@@ -823,8 +768,7 @@ def download_tarball(
                     written += len(chunk)
                     if written > max_bytes:
                         return dest, (
-                            f"download exceeded cap {max_bytes} bytes "
-                            f"after {written} bytes"
+                            f"download exceeded cap {max_bytes} bytes " f"after {written} bytes"
                         )
                     h.update(chunk)
                     out.write(chunk)
@@ -874,8 +818,7 @@ def safe_extract(
     total = 0
     count = 0
     try:
-        # Open in streaming mode so we never seek backwards in the
-        # input. `r|gz` rejects malformed gzip frames immediately.
+        # Streaming mode (no backward seeks); `r|gz` rejects bad gzip.
         with tarfile.open(tarball_path, mode = "r|gz") as tf:
             for member in tf:
                 count += 1
@@ -890,9 +833,8 @@ def safe_extract(
                     return f"refused link member {name!r} (sym/lnk)"
                 if member.isdev() or member.isfifo():
                     return f"refused special member {name!r}"
-                # Cumulative cap is checked against DECLARED size up
-                # front to short-circuit obvious bombs without reading
-                # the body.
+                # Check declared size up front to short-circuit bombs
+                # without reading the body.
                 declared = max(member.size, 0)
                 if declared > HARD_MAX_BINARY_FILE_BYTES:
                     return (
@@ -904,9 +846,8 @@ def safe_extract(
                         f"cumulative bytes {total + declared} > cap "
                         f"{max_total_bytes} at {name!r}"
                     )
-                # Strip leading "package/" -- the npm convention. We do
-                # NOT trust npm to be right, so we explicitly resolve
-                # the destination and refuse anything that escapes.
+                # Resolve destination and refuse anything escaping root
+                # (don't trust the npm "package/" convention).
                 dest = extract_root / name
                 if not _is_within(extract_root, dest):
                     return f"refused escape: {name!r} resolved outside root"
@@ -920,17 +861,11 @@ def safe_extract(
                 src = tf.extractfile(member)
                 if src is None:
                     continue
-                # Sniff first 16 bytes to classify text vs binary.
-                # Text-cap members get the tight 16 MiB limit; binary
-                # members (executables, .node, .wasm, native libs)
-                # get the generous binary cap. We bound BOTH cases.
+                # Sniff first 16 bytes to classify text vs binary;
+                # each gets its own cap (both are bounded).
                 header = src.read(16)
                 is_binary = _looks_binary(name, header)
-                file_cap = (
-                    HARD_MAX_BINARY_FILE_BYTES
-                    if is_binary
-                    else HARD_MAX_TEXT_FILE_BYTES
-                )
+                file_cap = HARD_MAX_BINARY_FILE_BYTES if is_binary else HARD_MAX_TEXT_FILE_BYTES
                 if declared > file_cap:
                     return (
                         f"member {name!r} declared size {declared} > "
@@ -946,8 +881,7 @@ def safe_extract(
                         f"({'binary' if is_binary else 'text'})"
                     )
                 total += len(data)
-                # Write with restrictive mode (rw-r--r--) so even if
-                # someone runs the extract dir nothing is executable.
+                # Restrictive mode (rw-r--r--): nothing executable.
                 with open(dest, "wb") as out:
                     out.write(data)
                 os.chmod(dest, 0o644)
@@ -963,7 +897,11 @@ def safe_extract(
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _evidence(text: str, pat: re.Pattern, max_chars: int = 200) -> str:
+def _evidence(
+    text: str,
+    pat: re.Pattern,
+    max_chars: int = 200,
+) -> str:
     m = pat.search(text)
     if not m:
         return ""
@@ -978,11 +916,205 @@ def _evidence(text: str, pat: re.Pattern, max_chars: int = 200) -> str:
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
 
 
-def scan_package_json(
-    pkg: PackageEntry,
-    rel: str,
-    text: str,
-) -> list[Finding]:
+# ─────────────────────────────────────────────────────────────────────
+# Code-only scanning for JS/TS sources. Blank `//` and `/* */` comments
+# before matching (the top FP source: scary strings in JSDoc/changelog
+# comments), tracking string/template/regex context so a `//` inside
+# "http://..." is not mistaken for a comment. Strings are NOT blanked
+# (droppers hide payloads there). Fail open on lexer confusion: the raw
+# text is still scanned. JS sibling of scan_packages.py::_strip_noncode.
+# ─────────────────────────────────────────────────────────────────────
+_JS_FAMILY_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
+
+# Keywords after which a `/` begins a regex literal (not division).
+_REGEX_PRECEDING_KEYWORDS = frozenset(
+    {
+        "return",
+        "typeof",
+        "instanceof",
+        "in",
+        "of",
+        "new",
+        "delete",
+        "void",
+        "throw",
+        "yield",
+        "await",
+        "do",
+        "else",
+        "case",
+    }
+)
+_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+
+
+def _slash_is_regex(prev_tok: str) -> bool:
+    """Disambiguate a lone ``/``: regex literal vs division operator.
+
+    Biased toward regex when ambiguous -- regex state never blanks, so a
+    wrong guess only costs FP reduction (or a fail-open), never a missed
+    detection.
+    """
+    if prev_tok == "":
+        return True  # start of file -> expression position
+    if prev_tok in _REGEX_PRECEDING_KEYWORDS:
+        return True
+    last = prev_tok[-1]
+    if last.isalnum() or last in "_$)]":
+        return False  # previous token ends a value -> division
+    return True  # operators, punctuation, `{`, `}` -> regex (safe bias)
+
+
+def _strip_js_noncode(text: str) -> str:
+    """Blank JS/TS comments, preserving byte geometry. Fail-open on confusion."""
+    if "//" not in text and "/*" not in text:
+        return text  # nothing to strip
+    n = len(text)
+    out = list(text)
+    nl = ("\n", "\r")
+
+    def _blank(a: int, b: int) -> None:
+        for k in range(a, b):
+            if out[k] not in nl:
+                out[k] = " "
+
+    state = "code"
+    prev_tok = ""
+    tmpl_stack: list[str] = []
+    i = 0
+    try:
+        while i < n:
+            c = text[i]
+            nxt = text[i + 1] if i + 1 < n else ""
+            if state == "code":
+                if c == "/" and nxt == "/":
+                    start = i
+                    i += 2
+                    while i < n and text[i] not in nl:
+                        i += 1
+                    _blank(start, i)
+                    continue
+                if c == "/" and nxt == "*":
+                    start = i
+                    i += 2
+                    closed = False
+                    while i < n:
+                        if text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                            i += 2
+                            closed = True
+                            break
+                        i += 1
+                    if not closed:
+                        return text  # unterminated block comment
+                    _blank(start, i)
+                    continue
+                if c == "'":
+                    state = "sq"
+                    i += 1
+                    continue
+                if c == '"':
+                    state = "dq"
+                    i += 1
+                    continue
+                if c == "`":
+                    state = "tmpl"
+                    i += 1
+                    continue
+                if c == "/":
+                    if _slash_is_regex(prev_tok):
+                        state = "regex"
+                        i += 1
+                        continue
+                    prev_tok = "/"
+                    i += 1
+                    continue
+                if c.isspace():
+                    i += 1
+                    continue
+                if c in _IDENT_CHARS:
+                    j = i
+                    while j < n and text[j] in _IDENT_CHARS:
+                        j += 1
+                    prev_tok = text[i:j]
+                    i = j
+                    continue
+                if c == "}" and tmpl_stack:
+                    state = tmpl_stack.pop()
+                    i += 1
+                    continue
+                prev_tok = c
+                i += 1
+                continue
+            elif state in ("sq", "dq"):
+                q = "'" if state == "sq" else '"'
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == q:
+                    state = "code"
+                    prev_tok = "_v"
+                    i += 1
+                    continue
+                if c in nl:
+                    return text  # unterminated string literal
+                i += 1
+                continue
+            elif state == "tmpl":
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == "`":
+                    state = "code"
+                    prev_tok = "_v"
+                    i += 1
+                    continue
+                if c == "$" and nxt == "{":
+                    tmpl_stack.append("tmpl")
+                    state = "code"
+                    prev_tok = "{"
+                    i += 2
+                    continue
+                i += 1
+                continue
+            elif state == "regex":
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == "[":
+                    state = "regex_cc"
+                    i += 1
+                    continue
+                if c == "/":
+                    state = "code"
+                    prev_tok = "_v"
+                    i += 1
+                    continue
+                if c in nl:
+                    return text  # unterminated regex literal
+                i += 1
+                continue
+            elif state == "regex_cc":
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == "]":
+                    state = "regex"
+                    i += 1
+                    continue
+                if c in nl:
+                    return text
+                i += 1
+                continue
+            else:
+                return text
+        if state != "code" or tmpl_stack:
+            return text  # unterminated construct -> fail open
+    except Exception:
+        return text
+    return "".join(out)
+
+
+def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     try:
         meta = json.loads(text)
@@ -1013,10 +1145,8 @@ def scan_package_json(
                     ),
                 )
             )
-        # Credential file paths inside a lifecycle script are
-        # exfiltration prep -- npm runs these scripts automatically
-        # on `npm ci`. Manual `scripts.*` entries (like a `docker`
-        # dev script) are out of scope: npm does not run them.
+        # Cred file paths in a lifecycle script are exfil prep (npm
+        # auto-runs these on `npm ci`); manual scripts are out of scope.
         for path_substr, why in CRED_PATH_SUBSTRINGS:
             if path_substr in body:
                 findings.append(
@@ -1056,9 +1186,7 @@ def scan_package_json(
     if isinstance(opt, dict):
         for k, v in opt.items():
             if isinstance(v, str) and (
-                v.startswith("github:")
-                or v.startswith("git+")
-                or v.startswith("git://")
+                v.startswith("github:") or v.startswith("git+") or v.startswith("git://")
             ):
                 findings.append(
                     Finding(
@@ -1078,20 +1206,12 @@ def scan_package_json(
 
 
 def _host_in_outbound_context(text: str, host: str) -> bool:
-    """True if `host` appears in a way consistent with an outbound call.
+    """True if `host` appears consistent with an outbound call.
 
-    A bare `"169.254.169.254"` array literal (defensive blocklist) is
-    safe; a `fetch("http://169.254.169.254/...")` is not. The signal
-    is co-occurrence with either an HTTP URL scheme or a fetch verb
-    within a short window.
-
-    A defensive blocklist looks like:
-        const CLOUD_METADATA_IPS = ["169.254.169.254", "169.254.170.2"];
-    An exfil call looks like:
-        fetch("http://169.254.169.254/latest/meta-data/...")
-        http.request({ host: "169.254.169.254", path: "/..." })
+    A bare array literal (defensive blocklist) is safe; co-occurrence
+    with an HTTP URL scheme or a fetch verb in a short window is not.
     """
-    # Esc for use in a regex (IPs contain dots).
+    # Escape for regex (IPs contain dots).
     host_re = re.escape(host)
     # 1. URL form: http://host or https://host or //host/ or //host"
     url_form = re.compile(
@@ -1117,12 +1237,16 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
     return False
 
 
-def scan_text_blob(
-    pkg: PackageEntry,
-    rel: str,
-    text: str,
-) -> list[Finding]:
+def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
+
+    # Code-only scanning for JS/TS sources: blank comments before matching so
+    # an IOC host / `eval(atob)` example / campaign marker quoted in a comment
+    # cannot manufacture a false positive. Assigned string literals (where real
+    # droppers hide base64 payloads) are preserved. Non-JS text (json/yaml/sh/
+    # py/html) is scanned as-is -- this lexer only understands JS comments.
+    if rel.lower().endswith(_JS_FAMILY_SUFFIXES):
+        text = _strip_js_noncode(text)
 
     # IOC substrings (literal, case-sensitive).
     for needle, (sev, why) in KNOWN_IOC_STRINGS.items():
@@ -1138,8 +1262,7 @@ def scan_text_blob(
                 )
             )
 
-    # Credential surfaces. Tier 1: hosts with no legitimate use,
-    # bare substring is enough.
+    # Cred surfaces, tier 1: hosts with no legit use; bare substring.
     for needle, why in CRED_HOST_ALWAYS_BAD:
         if needle in text:
             findings.append(
@@ -1156,8 +1279,8 @@ def scan_text_blob(
                 )
             )
 
-    # Credential surfaces. Tier 2: hosts that do appear in defensive
-    # code; require co-occurrence with a fetch verb or URL prefix.
+    # Cred surfaces, tier 2: hosts that appear in defensive code too;
+    # require co-occurrence with a fetch verb or URL prefix.
     for needle, why in CRED_HOST_NEEDS_CONTEXT:
         if needle in text and _host_in_outbound_context(text, needle):
             findings.append(
@@ -1175,11 +1298,8 @@ def scan_text_blob(
                 )
             )
 
-    # Credential PATHS are deliberately not scanned here; they have
-    # too high a false-positive rate at file scope (defensive code,
-    # docker mounts, AWS SDK docs strings). `scan_package_json`
-    # catches the malicious case -- credential paths inside a
-    # lifecycle script run automatically on `npm ci`.
+    # Credential PATHS aren't scanned here (too many FPs at file
+    # scope); scan_package_json catches them inside lifecycle scripts.
 
     # JS-specific regex.
     if _JS_FETCH_EVAL.search(text):
@@ -1190,10 +1310,7 @@ def scan_text_blob(
                 filename = rel,
                 pattern = "js-fetch-eval",
                 evidence = _evidence(text, _JS_FETCH_EVAL),
-                detail = (
-                    "Function/eval against base64-decoded payload "
-                    "(obfuscated dropper shape)"
-                ),
+                detail = ("Function/eval against base64-decoded payload (obfuscated dropper shape)"),
             )
         )
     if _JS_ENV_TOKEN.search(text):
@@ -1225,9 +1342,8 @@ def scan_text_blob(
     return findings
 
 
-# Filename suffix decides which scanners run. We deliberately treat
-# *.cjs/*.mjs/*.ts the same as *.js -- attackers use whichever
-# extension the consumer's bundler / loader resolves.
+# Filename suffix decides which scanners run; .cjs/.mjs/.ts are
+# treated like .js (attackers use whichever the loader resolves).
 _TEXT_SUFFIXES = (
     ".js",
     ".mjs",
@@ -1247,10 +1363,7 @@ _TEXT_SUFFIXES = (
 )
 
 
-def scan_extracted_tree(
-    pkg: PackageEntry,
-    root: Path,
-) -> list[Finding]:
+def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
@@ -1258,12 +1371,9 @@ def scan_extracted_tree(
         rel = path.relative_to(root).as_posix()
         lower = rel.lower()
         if not lower.endswith(_TEXT_SUFFIXES):
-            # Skip native binaries entirely -- regex over compiled
-            # machine code is just noise (false positives in WASM
-            # opcodes, .node BSS segments, image pixel data). Use
-            # content-magic detection so extensionless executables
-            # (eg `package/biome`) and versioned shared libraries
-            # are also skipped.
+            # Skip native binaries (regex over machine code is noise);
+            # content-magic detection also skips extensionless
+            # executables and versioned shared libraries.
             try:
                 if path.stat().st_size > HARD_MAX_TEXT_FILE_BYTES:
                     continue
@@ -1304,16 +1414,13 @@ def scan_extracted_tree(
 # ─────────────────────────────────────────────────────────────────────
 
 
-def scan_one(
-    pkg: PackageEntry,
-    workspace: Path,
-) -> tuple[list[Finding], str | None]:
-    """Download + extract + scan a single package. Cleans up its dir.
+def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | None]:
+    """Download + extract + scan a single package; cleans up its dir.
 
     Returns (findings, error). `error` is non-None only on hard
-    failures (download error, integrity mismatch, malformed tarball);
-    on a clean run with findings the error is None and the caller
-    decides exit code based on severity.
+    failures (download, integrity mismatch, malformed tarball); on a
+    clean run with findings, error is None and the caller decides the
+    exit code from severity.
     """
     pkg_dir = workspace / f"{pkg.name.replace('/', '_')}-{pkg.version}"
     pkg_dir.mkdir(parents = True, exist_ok = True)
@@ -1333,6 +1440,131 @@ def scan_one(
             shutil.rmtree(pkg_dir, ignore_errors = True)
         except Exception:
             pass
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Baseline allowlist: triaged known-good HIGH/CRITICAL findings so the gate
+# can enforce without red-failing on rare legitimate-library behavior.
+# Matched on ``(normalized package, package-relative path, pattern)`` -- not
+# evidence text -- so a version bump does not reopen a finding, but a *new*
+# kind of finding in a listed file is a different pattern and still fails.
+# Mirrors scan_packages.py. Regenerate with ``--write-baseline``.
+# ─────────────────────────────────────────────────────────────────────
+
+_DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
+
+# Bumped when the entry-key semantics change. v2 keys on the package-relative
+# path; v1 stored only a basename, so a v1 entry could suppress a same-named file
+# in a different directory. A pre-v2 baseline with entries is ignored (fail
+# closed) rather than mis-applied.
+_BASELINE_SCHEMA_VERSION = 2
+
+
+def _norm_pkg_name(display: str) -> str:
+    """``@scope/pkg@1.2.3`` / ``pkg@1.2.3`` -> name without the version.
+
+    The version is the LAST ``@``-separated field; a leading ``@`` (scope)
+    is preserved. Lower-cased (npm names are case-insensitive). Sentinels
+    like ``<root>`` / ``<lockfile>`` pass through unchanged.
+    """
+    s = (display or "").strip()
+    at = s.rfind("@")
+    if at > 0:  # >0 so a leading @scope is not treated as the version sep
+        s = s[:at]
+    return s.lower()
+
+
+_NPM_TARBALL_ROOT = "package/"
+
+
+def _relpath_in_package(filename: str) -> str:
+    """Path within the published package, stable across version bumps. npm
+    tarballs root every file at ``package/``; strip it so the key is the real
+    source path (``dist/index.js``) and a new file with the same basename in a
+    different directory is not silently suppressed."""
+    f = (filename or "").replace("\\", "/")
+    return f[len(_NPM_TARBALL_ROOT) :] if f.startswith(_NPM_TARBALL_ROOT) else f
+
+
+def _finding_key(f: Finding) -> tuple[str, str, str]:
+    """Stable allowlist key: normalized package, package-relative path, pattern."""
+    return (_norm_pkg_name(f.package), _relpath_in_package(f.filename), f.pattern)
+
+
+def _load_baseline(path: str) -> set[tuple[str, str, str]]:
+    """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
+    try:
+        with open(path, "r", encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return set()
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
+        return set()
+    entries = data.get("entries", [])
+    if entries and data.get("version") != _BASELINE_SCHEMA_VERSION:
+        print(
+            f"  [WARN] baseline schema v{data.get('version')} predates package-relative "
+            f"keys; ignoring {len(entries)} entr(y/ies). Regenerate with --write-baseline.",
+            file = sys.stderr,
+        )
+        return set()
+    keys: set[tuple[str, str, str]] = set()
+    for e in entries:
+        try:
+            keys.add((_norm_pkg_name(e["package"]), _relpath_in_package(e["file"]), e["pattern"]))
+        except (KeyError, TypeError):
+            continue
+    return keys
+
+
+def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> int:
+    """Persist at-or-above-threshold findings as an allowlist for triage."""
+    entries = []
+    seen: set[tuple[str, str, str]] = set()
+    for f in sorted(findings, key = lambda f: (_SEVERITY_RANK[f.severity], f.package)):
+        if _SEVERITY_RANK[f.severity] > threshold_rank:
+            continue
+        key = _finding_key(f)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(
+            {
+                "package": _norm_pkg_name(f.package),
+                "file": _relpath_in_package(f.filename),
+                "pattern": f.pattern,
+                "severity": f.severity,
+                "evidence": (f.evidence or f.detail)[:240],
+            }
+        )
+    doc = {
+        "_comment": (
+            "scan_npm_packages.py allowlist. Each entry is a HIGH/CRITICAL "
+            "finding manually judged benign. Matched on (package, "
+            "package-relative path, pattern); evidence/severity are for review "
+            "only. Regenerate with --write-baseline AFTER reviewing every line."
+        ),
+        "version": _BASELINE_SCHEMA_VERSION,
+        "entries": entries,
+    }
+    with open(path, "w", encoding = "utf-8") as fh:
+        json.dump(doc, fh, indent = 2, sort_keys = False)
+        fh.write("\n")
+    print(f"  Wrote {len(entries)} baseline entr(y/ies) to {path}")
+    return len(entries)
+
+
+def _partition_baseline(
+    findings: list[Finding], baseline: set[tuple[str, str, str]]
+) -> tuple[list[Finding], list[Finding]]:
+    """Split findings into (active, suppressed) by allowlist membership."""
+    if not baseline:
+        return list(findings), []
+    active, suppressed = [], []
+    for f in findings:
+        (suppressed if _finding_key(f) in baseline else active).append(f)
+    return active, suppressed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1360,6 +1592,30 @@ def main(argv: list[str] | None = None) -> int:
         help = (
             "Lowest severity that fails the run (default: high). "
             "Medium and below print but exit 0."
+        ),
+    )
+    parser.add_argument(
+        "--baseline",
+        metavar = "FILE",
+        default = None,
+        help = (
+            "Allowlist JSON of triaged known-good findings to suppress. "
+            "Defaults to scan_npm_packages_baseline.json next to this script "
+            "if present."
+        ),
+    )
+    parser.add_argument(
+        "--no-baseline",
+        action = "store_true",
+        help = "Ignore the auto-discovered baseline allowlist.",
+    )
+    parser.add_argument(
+        "--write-baseline",
+        metavar = "FILE",
+        default = None,
+        help = (
+            "Write the current at/above-threshold findings to FILE as an "
+            "allowlist, then exit 0. Review every entry before committing it."
         ),
     )
     args = parser.parse_args(argv)
@@ -1440,12 +1696,50 @@ def main(argv: list[str] | None = None) -> int:
         "critical": CRITICAL,
     }[args.fail_on]
     threshold_rank = _SEVERITY_RANK[threshold]
-    blocking = [f for f in all_findings if _SEVERITY_RANK[f.severity] <= threshold_rank]
+
+    # --write-baseline: persist the full current at/above-threshold set as the
+    # new allowlist (ignoring any loaded baseline), then exit 0. A hard error
+    # means the scan was incomplete, so warn -- a baseline baked from a partial
+    # run would silently allow whatever failed to download.
+    if args.write_baseline:
+        if hard_errors:
+            print(
+                f"  [WARN] {len(hard_errors)} hard error(s): baseline may be "
+                "incomplete (some packages did not scan).",
+                file = sys.stderr,
+            )
+        _write_baseline(args.write_baseline, all_findings, threshold_rank)
+        return 0
+
+    # Baseline allowlist: suppress triaged, known-good findings so the CI gate
+    # can be enforcing without red-failing on legitimate-library noise.
+    if args.no_baseline:
+        baseline_path = None
+    elif args.baseline:
+        baseline_path = args.baseline
+    elif os.path.isfile(_DEFAULT_BASELINE_PATH):
+        baseline_path = _DEFAULT_BASELINE_PATH
+    else:
+        baseline_path = None
+    baseline = _load_baseline(baseline_path) if baseline_path else set()
+    active, suppressed = _partition_baseline(all_findings, baseline)
+
+    if suppressed:
+        crit_s = sum(1 for f in suppressed if f.severity == CRITICAL)
+        high_s = sum(1 for f in suppressed if f.severity == HIGH)
+        print(
+            f"\n[scan-npm] {len(suppressed)} finding(s) suppressed by baseline "
+            f"{baseline_path} ({crit_s} CRITICAL, {high_s} HIGH).",
+            flush = True,
+        )
+
+    # Exit code: 1 on a hard error, or a NON-baselined finding at/above the
+    # threshold. This is the signal CI gates on once the baseline is clean.
+    blocking = [f for f in active if _SEVERITY_RANK[f.severity] <= threshold_rank]
     if hard_errors or blocking:
         if blocking:
             print(
-                f"\n[scan-npm] FAIL: {len(blocking)} finding(s) "
-                f"at or above {threshold}",
+                f"\n[scan-npm] FAIL: {len(blocking)} finding(s) " f"at or above {threshold}",
                 file = sys.stderr,
             )
         return 1

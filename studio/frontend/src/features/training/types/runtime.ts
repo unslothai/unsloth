@@ -90,7 +90,8 @@ export interface TrainingRuntimeState {
   currentStep: number;
   totalSteps: number;
   currentEpoch: number;
-  currentLoss: number;
+  // null while the latest reported loss is non-finite
+  currentLoss: number | null;
   currentLearningRate: number;
   progressPercent: number;
   elapsedSeconds: number | null;
@@ -105,6 +106,9 @@ export interface TrainingRuntimeState {
   resetGeneration: number;
   stopRequested: boolean;
   selectedHistoryRunId: string | null;
+  // True while the studio "Current Run" tab is the active view, so the sidebar
+  // can highlight which run row the current run refers to (the active job).
+  currentRunViewActive: boolean;
 }
 
 export interface TrainingRuntimeActions {
@@ -127,6 +131,7 @@ export interface TrainingRuntimeActions {
   setStartQueued: (jobId: string, message: string) => void;
   setRuntimeError: (message: string) => void;
   setSelectedHistoryRunId: (id: string | null) => void;
+  setCurrentRunViewActive: (value: boolean) => void;
 }
 
 export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;
@@ -142,6 +147,9 @@ export interface TrainingViewData {
   currentEpoch: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
+  // True when a newer run reused this run's output_dir (resume), so its
+  // on-disk contents no longer match this (older) run's metrics.
+  resumedLater?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;

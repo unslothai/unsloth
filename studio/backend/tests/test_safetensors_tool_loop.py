@@ -1,46 +1,36 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Tests for the safetensors agentic tool loop.
+"""Tests for the safetensors agentic tool loop.
 
-Covers the shared ``tool_call_parser`` helpers and the cumulative-text
-state machine inside ``safetensors_agentic.run_safetensors_tool_loop``.
-The loop is exercised with hand-crafted fake single-turn generators so
-no model load is needed; the tests run in CI under a few seconds.
-
-Edge cases under coverage:
-* Plain answers (no tool calls) flush full content.
-* Single ``<tool_call>{json}</tool_call>`` triggers the tool and re-enters.
-* Single ``<function=name>...`` XML form triggers the same path.
-* Truncated unclosed ``<tool_call>`` is still parsed.
-* Tool result is fed back as ``role=tool`` for the next iteration.
-* Bad JSON inside ``<tool_call>`` does not raise and (when healed) is
-  routed as a ``{"query": ...}`` web search call.
-* Duplicate tool calls produce a synthetic "do not repeat" result the
-  second time.
-* ``__IMAGES__`` sentinel is stripped before the model sees the result.
-* Tool execution errors are tagged so the model gets a nudge but the
-  loop keeps streaming.
-* Cancel is honoured between iterations.
-* ``max_tool_iterations`` cap is respected and a final-answer attempt
-  closes the stream cleanly.
+Covers the ``tool_call_parser`` helpers and the cumulative-text state machine in
+``run_safetensors_tool_loop``, run against fake single-turn generators (no model
+load). Edge cases: plain answers, JSON and XML tool-call forms, truncated/unclosed
+calls, tool-result feedback, bad-JSON heal, duplicate-call short-circuit,
+``__IMAGES__`` sentinel stripping, executor errors, cancel, and the iteration cap.
 """
 
+import json
 import threading
+from typing import cast
 
 import pytest
 
 from core.inference import safetensors_agentic
 from core.inference.safetensors_agentic import (
     _coerce_arguments,
+    _detect_render_html_tool_start,
     run_safetensors_tool_loop,
+    strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
+from state import tool_approvals
+from state.tool_approvals import resolve_tool_decision
 from utils.datasets import is_gpt_oss_model_name
 
 
@@ -51,9 +41,7 @@ from utils.datasets import is_gpt_oss_model_name
 
 class TestParser:
     def test_json_tool_call(self):
-        text = (
-            '<tool_call>{"name":"web_search","arguments":{"query":"hello"}}</tool_call>'
-        )
+        text = '<tool_call>{"name":"web_search","arguments":{"query":"hello"}}</tool_call>'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         tc = result[0]
@@ -64,11 +52,61 @@ class TestParser:
         assert "hello" in tc["function"]["arguments"]
 
     def test_json_tool_call_unclosed(self):
-        # No </tool_call>; balanced-brace extractor must still close.
+        # No </tool_call>; balanced-brace extractor must still close it.
         text = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
+
+    def test_json_tool_call_unclosed_requires_healing(self):
+        text = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}'
+        assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
+    def test_gemma_native_tool_call(self):
+        text = '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "terminal"
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"command": "ls -la", "workdir": "."}
+
+    def test_gemma_native_tool_call_template_quotes(self):
+        text = '<|tool_call>call:web_search{query:<|"|>openai news<|"|>}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        assert json.loads(result[0]["function"]["arguments"]) == {"query": "openai news"}
+
+    def test_gemma_native_tool_call_template_quotes_escape_backslashes(self):
+        text = r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "ls"
+        assert json.loads(result[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
+
+    def test_gemma_native_tool_call_hyphenated_argument_name(self):
+        text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "mcp__srv__create-issue"
+        assert json.loads(result[0]["function"]["arguments"]) == {"issue-title": "Bug report"}
+
+    def test_gemma_native_tool_call_keeps_braces_inside_string_value(self):
+        text = '<|tool_call>call:terminal{command:"echo {foo:bar}"}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "terminal"
+        assert json.loads(result[0]["function"]["arguments"]) == {"command": "echo {foo:bar}"}
+
+    def test_gemma_native_tool_call_bare_string_values(self):
+        text = "<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "location": "Tokyo",
+            "unit": "celsius",
+        }
 
     def test_xml_function_call(self):
         text = "<function=python><parameter=code>print('hi')</parameter></function>"
@@ -85,17 +123,31 @@ class TestParser:
         assert result[0]["function"]["name"] == "terminal"
         assert "ls -la" in result[0]["function"]["arguments"]
 
+    def test_xml_unclosed_requires_healing(self):
+        text = "<function=terminal><parameter=command>ls -la"
+        assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "terminal"
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
     def test_code_with_embedded_xml(self):
-        # A code parameter contains the literal </parameter>. Must not
-        # truncate the value because the parser uses end-of-body as the
-        # only boundary for single-parameter calls.
+        # A code parameter with a literal </parameter> must not truncate: the
+        # parser uses end-of-body as the only boundary for single-param calls.
         text = (
-            "<function=python><parameter=code>html = '<a></a>'\n"
-            "print('hi')</parameter></function>"
+            "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert "print('hi')" in result[0]["function"]["arguments"]
+
+    def test_function_signal_inside_parameter_is_literal(self):
+        text = (
+            "<function=python>"
+            "<parameter=code>print('<function=render_html>')</parameter>"
+            "</function>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "python"
+        assert "<function=render_html>" in result[0]["function"]["arguments"]
 
     def test_multiple_calls(self):
         text = (
@@ -110,24 +162,57 @@ class TestParser:
     def test_bad_json_does_not_raise(self):
         text = "<tool_call>{not valid json}</tool_call>"
         result = parse_tool_calls_from_text(text)
-        # Bad JSON is silently dropped; caller can fall back to text.
+        # Bad JSON is dropped silently; caller can fall back to text.
         assert result == []
 
     def test_has_tool_signal(self):
         assert has_tool_signal("blah <tool_call> x")
+        assert has_tool_signal("blah <|tool_call>call:terminal")
         assert has_tool_signal("hi <function=foo>...")
         assert not has_tool_signal("hello world")
+
+    def test_render_html_start_detector_uses_first_tool(self):
+        assert _detect_render_html_tool_start("<function=render_html>")
+        assert _detect_render_html_tool_start(
+            '<tool_call>{"name":"render_html","arguments":{"code":"<html>"}'
+        )
+        assert not _detect_render_html_tool_start(
+            "<function=python><parameter=code>'<function=render_html>'"
+        )
+        assert not _detect_render_html_tool_start(
+            '<tool_call>{"name":"python","arguments":{"code":"<function=render_html>"}}'
+        )
 
     def test_strip_markup_closed(self):
         text = "before <tool_call>{}</tool_call> after"
         assert strip_tool_markup(text) == "before  after"
+        text = 'before <|tool_call>call:terminal{command:"ls"}<tool_call|> after'
+        assert strip_tool_markup(text) == "before  after"
 
     def test_strip_markup_unclosed_final(self):
         text = "before <tool_call>{partial"
-        # With final=True the trailing run is dropped.
+        # final=True drops the trailing run.
         assert strip_tool_markup(text, final = True) == "before"
         # Without final=True the unclosed run is preserved.
         assert "partial" in strip_tool_markup(text)
+        assert strip_tool_markup("before <|tool_call>call:terminal{", final = True) == "before"
+
+    def test_streaming_strip_respects_disabled_healing(self):
+        raw = 'before <tool_call>{"name":"web_search"'
+        assert strip_tool_markup_streaming(raw, auto_heal_tool_calls = False) == raw
+        assert strip_tool_markup_streaming(raw) == "before "
+
+    def test_streaming_strip_respects_disabled_healing_without_tool_protocol(self):
+        raw = 'before <tool_call>{"name":"web_search"'
+        assert strip_tool_markup_streaming(raw, auto_heal_tool_calls = False) == raw
+        assert (
+            strip_tool_markup_streaming(
+                raw,
+                auto_heal_tool_calls = False,
+                tool_protocol_active = True,
+            )
+            == "before "
+        )
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -172,6 +257,8 @@ class FakeExecuteTool:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        rag_scope = None,
+        disable_sandbox = False,
     ):
         self.calls.append((name, arguments))
         result = self.results.pop(0) if self.results else "OK"
@@ -189,11 +276,15 @@ def _collect_events(generator, max_events = 200):
     return events
 
 
-def _make_loop(*, turns, exec_results = None, **kwargs):
+def _make_loop(
+    *,
+    turns,
+    exec_results = None,
+    **kwargs,
+):
     """Build a configured loop with a multi-turn fake generator.
 
-    ``turns`` is a list of chunk-lists; iteration N yields chunks from
-    ``turns[N]``.
+    ``turns`` is a list of chunk-lists; iteration N yields chunks from ``turns[N]``.
     """
     turn_iter = iter(turns)
 
@@ -221,6 +312,41 @@ def _make_loop(*, turns, exec_results = None, **kwargs):
     ), exec_fn
 
 
+def test_active_tools_are_passed_to_single_turn_after_render_html_success():
+    captured_tool_names: list[list[str]] = []
+    exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+
+    def fake_single_turn(_messages, *, active_tools = None):
+        captured_tool_names.append(
+            [
+                (tool.get("function") or {}).get("name")
+                for tool in (active_tools or [])
+                if (tool.get("function") or {}).get("name")
+            ]
+        )
+        if len(captured_tool_names) == 1:
+            yield '<tool_call>{"name":"render_html","arguments":{"code":"<html>one</html>"}}</tool_call>'
+        else:
+            yield "Done."
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [
+                {"type": "function", "function": {"name": "render_html"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            execute_tool = exec_fn,
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
+    assert captured_tool_names == [["render_html", "web_search"], ["web_search"]]
+    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+
+
 class TestLoopBasic:
     def test_plain_answer(self):
         # No tool XML; loop should yield content then status="".
@@ -232,7 +358,7 @@ class TestLoopBasic:
         contents = [e for e in events if e["type"] == "content"]
         statuses = [e for e in events if e["type"] == "status"]
         assert contents, "expected at least one content event"
-        # Final cumulative content should contain the answer.
+        # Final cumulative content must contain the answer.
         final_text = contents[-1]["text"]
         assert "Hello world!" in final_text
         assert statuses and statuses[-1]["text"] == ""
@@ -240,13 +366,13 @@ class TestLoopBasic:
     def test_single_tool_then_answer(self):
         loop, exec_fn = _make_loop(
             turns = [
-                # : tool call only.
+                # Tool call only.
                 [
                     '<tool_call>{"name":"web_search",',
                     '"arguments":{"query":"weather"}}',
                     "</tool_call>",
                 ],
-                # : final answer.
+                # Final answer.
                 ["The ", "weather is ", "sunny."],
             ],
             exec_results = ["Sunny and 22C"],
@@ -256,7 +382,7 @@ class TestLoopBasic:
 
         assert "tool_start" in kinds
         assert "tool_end" in kinds
-        # Tool was actually called with the parsed arguments.
+        # Tool was called with the parsed arguments.
         assert exec_fn.calls == [("web_search", {"query": "weather"})]
 
         tool_start = next(e for e in events if e["type"] == "tool_start")
@@ -280,11 +406,234 @@ class TestLoopBasic:
         contents = [e for e in events if e["type"] == "content"]
         assert "Result: 1" in contents[-1]["text"]
 
+    def test_render_html_emits_provisional_tool_start(self):
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert len(tool_starts) == 2
+        assert tool_starts[0]["tool_name"] == "render_html"
+        assert tool_starts[0]["arguments"] == {}
+        assert tool_starts[1]["tool_name"] == "render_html"
+        assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
+        assert exec_fn.calls[0][0] == "render_html"
+        assert "<!doctype html>" in exec_fn.calls[0][1]["code"]
+
+    def test_render_html_confirmation_gate_suppresses_early_provisional(self, monkeypatch):
+        """When a human confirmation gate is active, render_html must not surface
+        an early provisional tool_start: that card (keyed by tool_call_id, no
+        approval) would show the tool 'running' before the user approves. The
+        gated real tool_start is the first signal the UI receives instead."""
+        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: "approval-rh")
+        monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
+        monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "allow")
+
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            confirm_tool_calls = True,
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        # No early provisional (empty-args) card while confirmation is pending.
+        assert [e for e in tool_starts if e.get("arguments") == {}] == []
+        # The real, gated tool_start still surfaces with the full arguments.
+        real = [e for e in tool_starts if e.get("arguments", {}).get("code")]
+        assert len(real) == 1
+        assert real[0].get("awaiting_confirmation") is True
+        assert "<!doctype html>" in real[0]["arguments"]["code"]
+        assert exec_fn.calls[0][0] == "render_html"
+
+    def test_render_html_bypass_permissions_keeps_early_provisional(self, monkeypatch):
+        """bypass_permissions wins over the confirm gate, so the early provisional
+        card is preserved (no human approval is required)."""
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            confirm_tool_calls = True,
+            bypass_permissions = True,
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert len(tool_starts) == 2
+        assert tool_starts[0]["arguments"] == {}
+        assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
+
+    def test_render_html_provisional_card_closed_on_generator_exception(self):
+        """If the model generator raises mid-stream after a provisional render_html
+        card was surfaced, the loop must close that card as errored before the
+        exception propagates, so the UI never leaves a tool spinning forever."""
+        exec_fn = FakeExecuteTool([])
+
+        def _gen(_messages):
+            acc = ""
+            for chunk in ["<function=render_html>", "<parameter=code><!doctype html><html>"]:
+                acc += chunk
+                yield acc
+            raise RuntimeError("model pipeline exploded")
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+        )
+
+        collected: list[dict] = []
+        raised = False
+        try:
+            for event in loop:
+                collected.append(event)
+        except RuntimeError as exc:
+            raised = True
+            assert "exploded" in str(exc)
+
+        assert raised
+        provisional = [
+            e for e in collected if e["type"] == "tool_start" and e.get("arguments") == {}
+        ]
+        assert len(provisional) == 1
+        # The provisional card is closed (as an error) before the exception
+        # propagates, so it never dangles.
+        closing = [
+            e
+            for e in collected
+            if e["type"] == "tool_end" and e.get("tool_call_id") == provisional[0]["tool_call_id"]
+        ]
+        assert len(closing) == 1
+        assert "Error" in (closing[0].get("result") or "")
+
+    def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<function=python>",
+                    "<parameter=code>print('<function=render_html>')",
+                    "</parameter></function>",
+                ],
+                ["Done."],
+            ],
+            exec_results = ["ok"],
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert len(tool_starts) == 1
+        assert tool_starts[0]["tool_name"] == "python"
+        assert exec_fn.calls == [("python", {"code": "print('<function=render_html>')"})]
+
+    def test_render_html_success_blocks_second_canvas_call(self):
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    '<tool_call>{"name":"render_html",',
+                    '"arguments":{"code":"<html>one</html>"}}',
+                ],
+                [
+                    '<tool_call>{"name":"render_html",',
+                    '"arguments":{"code":"<html>two</html>"}}',
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
+        assert [e["arguments"] for e in tool_starts] == [{}, {"code": "<html>one</html>"}]
+
     def test_truncated_unclosed_tool_call(self):
         loop, exec_fn = _make_loop(
             turns = [
-                # No </tool_call>; balanced-brace parser must still
-                # succeed because the JSON itself is balanced.
+                # No </tool_call>; balanced-brace parser still succeeds because
+                # the JSON itself is balanced.
                 ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}'],
                 ["done"],
             ],
@@ -294,17 +643,11 @@ class TestLoopBasic:
         assert exec_fn.calls == [("web_search", {"query": "x"})]
 
     def test_bad_json_healed_to_query(self):
-        # Tool call with non-JSON string arguments. With auto_heal_tool_calls
-        # the string is routed as {"query": ...}.
+        # Non-JSON string arguments heal to {"query": ...} under auto_heal_tool_calls.
         loop, exec_fn = _make_loop(
             turns = [
-                # JSON inside the tool call is well-formed; the
-                # ``arguments`` is a string that is not itself valid
-                # JSON for ``_coerce_arguments`` to parse, so the
-                # heal path runs.
-                [
-                    '<tool_call>{"name":"web_search","arguments":"hello world"}</tool_call>'
-                ],
+                # ``arguments`` is a string _coerce_arguments can't parse, so heal runs.
+                ['<tool_call>{"name":"web_search","arguments":"hello world"}</tool_call>'],
                 ["ok"],
             ],
             exec_results = ["..."],
@@ -315,38 +658,203 @@ class TestLoopBasic:
 
 
 class TestLoopBehaviour:
-    def test_duplicate_tool_call_synthetic_result(self):
-        # Two identical successful calls in a row: the second is short-
-        # circuited with a "do not repeat" message and execute_tool is
-        # called only once.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
+    def test_duplicate_tool_call_internal_noop(self):
+        captured_messages: list[list[dict]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ["final"],
-            ],
-            exec_results = ["search-result-1"],
+            ]
+        )
+
+        def fake_single_turn(messages):
+            captured_messages.append([dict(message) for message in messages])
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result-1"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 3,
+            )
+        )
+
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == ["call_0"]
+        assert not [
+            e
+            for e in events
+            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
+        ]
+        duplicate_nudges = [
+            message
+            for message in captured_messages[-1]
+            if message.get("role") == "user"
+            and "already completed successfully" in message.get("content", "")
+        ]
+        assert len(duplicate_nudges) == 1
+
+    def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
+        captured_messages: list[list[dict]] = []
+        captured_tool_names: list[list[str]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                ["final"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_messages.append([dict(message) for message in messages])
+            captured_tool_names.append(
+                [
+                    tool["function"]["name"]
+                    for tool in (active_tools or [])
+                    if tool.get("function", {}).get("name")
+                ]
+            )
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result-1", "python-result"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "python"}},
+                ],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+            )
+        )
+
+        assert exec_fn.calls == [
+            ("web_search", {"query": "x"}),
+            ("python", {"code": "print(1)"}),
+        ]
+        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == [
+            "call_0",
+            "call_2",
+        ]
+        assert not [
+            e
+            for e in events
+            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
+        ]
+        duplicate_nudges = [
+            message
+            for message in captured_messages[2]
+            if message.get("role") == "user"
+            and "already completed successfully" in message.get("content", "")
+        ]
+        assert len(duplicate_nudges) == 1
+        assert captured_tool_names[2] == ["web_search", "python"]
+
+    def test_repeated_duplicate_noop_transitions_to_final_attempt(self):
+        captured_tool_names: list[list[str]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ["final from first result"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_tool_names.append(
+                [
+                    (tool.get("function") or {}).get("name")
+                    for tool in (active_tools or [])
+                    if (tool.get("function") or {}).get("name")
+                ]
+            )
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 10,
+            )
+        )
+
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+        assert [
+            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+        ] == ["call_0"]
+        assert captured_tool_names[-1] == []
+        assert any(
+            event.get("type") == "content" and "final from first result" in event.get("text", "")
+            for event in events
+        )
+
+    def test_kb_search_capped_per_turn(self):
+        # Paraphrased KB searches differ by args (dup guard misses them); the
+        # per-turn cap stops the runaway re-search loop.
+        n = RAG_MAX_SEARCHES_PER_TURN
+        queries = [f"paraphrase {i}" for i in range(n + 1)]
+        turns = [
+            [
+                '<tool_call>{"name":"search_knowledge_base",'
+                f'"arguments":{{"query":"{q}"}}}}</tool_call>'
+            ]
+            for q in queries
+        ] + [["final answer"]]
+        turn_iter = iter(turns)
+
+        def _gen(_messages):
+            try:
+                chunks = next(turn_iter)
+            except StopIteration:
+                return
+            acc = ""
+            for c in chunks:
+                acc += c
+                yield acc
+
+        exec_fn = FakeExecuteTool([f"chunk-{i}" for i in range(n)])
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            execute_tool = exec_fn,
         )
         events = _collect_events(loop)
-        # Only one real call.
-        assert len(exec_fn.calls) == 1
+        assert len(exec_fn.calls) == n
+        assert all(c[0] == "search_knowledge_base" for c in exec_fn.calls)
         tool_end_events = [e for e in events if e["type"] == "tool_end"]
-        assert len(tool_end_events) == 2
-        assert "do not repeat" in tool_end_events[1]["result"].lower()
+        assert len(tool_end_events) == n + 1
+        assert "do not search again" in tool_end_events[n]["result"].lower()
 
     def test_image_sentinel_stripped_from_model_feed(self):
-        # The tool result has a frontend image sentinel that should be
-        # stripped before being fed back into the next turn, BUT the
-        # tool_end event still carries the raw result for the UI.
+        # The image sentinel is stripped before the next turn, but tool_end still
+        # carries the raw result for the UI.
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"python","arguments":{"code":"plot()"}}</tool_call>'],
                 ["see chart"],
             ],
             exec_results = ["chart\n__IMAGES__:/tmp/chart.png"],
@@ -379,14 +887,12 @@ class TestLoopBehaviour:
                 auto_heal_tool_calls = True,
             )
         )
-        # Model's second turn must not see "__IMAGES__".
+        # The model's second turn must not see "__IMAGES__".
         assert len(captured) >= 2
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs, "no tool message reached the model"
         for tm in tool_msgs:
-            assert (
-                "__IMAGES__" not in tm["content"]
-            ), f"sentinel leaked to model: {tm['content']!r}"
+            assert "__IMAGES__" not in tm["content"], f"sentinel leaked to model: {tm['content']!r}"
 
     def test_image_sentinel_stripped_with_multiple_markers(self):
         # Consecutive sentinels: cut at the first, nothing leaks.
@@ -416,19 +922,13 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs
         for tm in tool_msgs:
-            assert (
-                "__IMAGES__" not in tm["content"]
-            ), f"second sentinel leaked: {tm['content']!r}"
-            assert (
-                tm["content"] == "panel"
-            ), f"expected payload-only 'panel', got {tm['content']!r}"
+            assert "__IMAGES__" not in tm["content"], f"second sentinel leaked: {tm['content']!r}"
+            assert tm["content"] == "panel", f"expected payload-only 'panel', got {tm['content']!r}"
 
     def test_tool_execution_error_is_emitted_but_loop_continues(self):
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ["sorry, that failed"],
             ],
             exec_results = ["Error: network unreachable"],
@@ -436,16 +936,14 @@ class TestLoopBehaviour:
         events = _collect_events(loop)
         tool_end = next(e for e in events if e["type"] == "tool_end")
         assert tool_end["result"].startswith("Error")
-        # The loop must still produce a content event after the failure.
+        # The loop must still emit a content event after the failure.
         contents = [e for e in events if e["type"] == "content"]
         assert contents
 
     def test_exception_in_executor_does_not_raise(self):
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ["recovered"],
             ],
             exec_results = [RuntimeError("boom")],
@@ -459,14 +957,12 @@ class TestLoopControl:
     def test_cancel_event_breaks_loop(self):
         cancel = threading.Event()
         cancel.set()
-        # Even with a fake stream that emits tool calls, the loop must
-        # bail before invoking execute_tool when cancel is set.
+        # With cancel set, the loop bails before invoking execute_tool.
         exec_fn = FakeExecuteTool([])
         events = list(
             run_safetensors_tool_loop(
                 single_turn = _const_stream(
-                    '<tool_call>{"name":"web_search",'
-                    '"arguments":{"query":"x"}}</tool_call>'
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
                 ),
                 messages = [{"role": "user", "content": "hi"}],
                 tools = [],
@@ -478,15 +974,13 @@ class TestLoopControl:
         assert exec_fn.calls == []
 
     def test_max_iterations_caps_loop(self):
-        # The loop should stop after max_tool_iterations even if the
-        # model keeps asking for tools, then emit a final-attempt round.
+        # The loop stops after max_tool_iterations even if the model keeps
+        # asking for tools, then emits a final-attempt round.
         loop, exec_fn = _make_loop(
             turns = [
-                # : tool call (executes once)
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'
-                ],
-                # : model gives a final answer when nudged.
+                # Tool call (executes once).
+                ['<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'],
+                # Model gives a final answer when nudged.
                 ["here is the final answer"],
             ],
             exec_results = ["result"],
@@ -494,48 +988,38 @@ class TestLoopControl:
         )
         events = _collect_events(loop)
         contents = [e for e in events if e["type"] == "content"]
-        # Final content must include the final answer.
+        # Final content must contain the final answer.
         assert contents and "final answer" in contents[-1]["text"]
 
 
 class TestStatusFormatting:
     def test_status_for_known_tools(self):
-        # Use the private helper directly to verify status formatting.
+        # Call the private helper directly to verify status formatting.
         assert (
-            safetensors_agentic._status_for_tool("web_search", {"query": "abc"})
-            == "Searching: abc"
+            safetensors_agentic._status_for_tool("web_search", {"query": "abc"}) == "Searching: abc"
         )
         assert (
-            safetensors_agentic._status_for_tool(
-                "web_search", {"url": "https://www.example.com/x"}
-            )
+            safetensors_agentic._status_for_tool("web_search", {"url": "https://www.example.com/x"})
             == "Reading: example.com"
         )
-        assert safetensors_agentic._status_for_tool(
-            "python", {"code": "x = 1"}
-        ).startswith("Running Python:")
-        assert safetensors_agentic._status_for_tool(
-            "terminal", {"command": "ls"}
-        ).startswith("Running:")
-        assert safetensors_agentic._status_for_tool("unknown_tool", {}).startswith(
-            "Calling:"
+        assert safetensors_agentic._status_for_tool("python", {"code": "x = 1"}).startswith(
+            "Running Python:"
         )
+        assert safetensors_agentic._status_for_tool("terminal", {"command": "ls"}).startswith(
+            "Running:"
+        )
+        assert safetensors_agentic._status_for_tool("unknown_tool", {}).startswith("Calling:")
 
 
 class TestProseMentioningToolCall:
     def test_assistant_prose_with_literal_tool_call_text_survives(self):
-        # Regression: if the assistant text legitimately mentions
-        # ``<tool_call>`` as a literal string and the parser finds no
-        # actual call, the loop must surface the full content instead
-        # of silently stripping everything past the literal marker.
+        # Regression: prose that mentions a literal ``<tool_call>`` (no real call)
+        # must surface in full, not be stripped past the marker.
         loop, exec_fn = _make_loop(
             turns = [
-                # : a real tool call so the loop moves to
-                # .
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
-                # : prose that mentions the literal text.
+                # A real tool call so the loop advances a turn.
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                # Prose that mentions the literal text.
                 ["the docs say <tool_call> means an LLM tool call wrapper"],
             ],
             exec_results = ["result"],
@@ -549,14 +1033,11 @@ class TestProseMentioningToolCall:
         ), f"prose mentioning <tool_call> should not be truncated; got {final!r}"
 
     def test_tool_result_with_tool_call_text_does_not_retrigger(self):
-        # Tool result text contains the literal ``<tool_call>`` string.
-        # The loop must only parse the MODEL output, not the tool
-        # result, so we should see exactly one call.
+        # A literal ``<tool_call>`` in the tool result must not re-trigger: the
+        # loop parses only model output, so exactly one call.
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ["the docs mention <tool_call> wrappers"],
             ],
             exec_results = ["Page text: <tool_call> appears here in the docs"],
@@ -572,7 +1053,6 @@ class TestChatTemplateHelper:
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
         )
-
         self.apply = apply_chat_template_for_generation
 
     class _Tok:
@@ -582,7 +1062,12 @@ class TestChatTemplateHelper:
             self.last_kwargs = None
 
         def apply_chat_template(
-            self, messages, *, tokenize = False, add_generation_prompt = True, **kw
+            self,
+            messages,
+            *,
+            tokenize = False,
+            add_generation_prompt = True,
+            **kw,
         ):
             self.call_count += 1
             unknown = set(kw) - self.accepted
@@ -595,6 +1080,7 @@ class TestChatTemplateHelper:
         tok = self._Tok({"tools", "enable_thinking"})
         self.apply(tok, [], tools = [{}], enable_thinking = True)
         assert tok.call_count == 1
+        assert tok.last_kwargs is not None
         assert "tools" in tok.last_kwargs
         assert "enable_thinking" in tok.last_kwargs
 
@@ -631,46 +1117,66 @@ class TestChatTemplateHelper:
 
 class TestGuardrails:
     def test_disabled_tool_is_not_executed(self):
-        exec_fn = FakeExecuteTool([])
-        loop = run_safetensors_tool_loop(
-            single_turn = _fake_stream(
-                [
-                    '<tool_call>{"name":"terminal","arguments":{"command":"echo bypass"}}</tool_call>'
-                ]
-            ),
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            execute_tool = exec_fn,
-            max_tool_iterations = 2,
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
-        tool_ends = [e for e in events if e["type"] == "tool_end"]
-        assert tool_ends and "not enabled" in tool_ends[0]["result"].lower()
+        captured_messages: list[list[dict]] = []
 
-    def test_empty_tools_list_does_not_enforce_allowlist(self):
-        exec_fn = FakeExecuteTool(["OK"])
-        loop = run_safetensors_tool_loop(
-            single_turn = _fake_stream(
-                [
-                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
-                ]
-            ),
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [],
-            execute_tool = exec_fn,
-            max_tool_iterations = 2,
+        def fake_single_turn(messages):
+            captured_messages.append([dict(message) for message in messages])
+            if len(captured_messages) == 1:
+                yield '<tool_call>{"name":"terminal","arguments":{"command":"echo bypass"}}</tool_call>'
+            else:
+                yield "final"
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 2,
+            )
         )
-        _collect_events(loop)
+
+        assert exec_fn.calls == []
+        assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+        disabled_nudges = [
+            message
+            for message in captured_messages[-1]
+            if message.get("role") == "user" and "not enabled" in message.get("content", "")
+        ]
+        assert len(disabled_nudges) == 1
+
+    def test_empty_tools_list_means_allow_all_in_core_loop(self):
+        turns = iter(
+            [
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                ["done"],
+            ]
+        )
+
+        def fake_single_turn(_messages, active_tools = None):
+            assert active_tools == []
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["OK"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [],
+                execute_tool = exec_fn,
+                max_tool_iterations = 2,
+            )
+        )
         assert exec_fn.calls == [("python", {"code": "print(1)"})]
+        assert any(event.get("type") == "tool_end" for event in events)
 
     def test_max_iterations_zero_executes_no_tools(self):
         loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ]
-            ],
+            turns = [['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>']],
             exec_results = ["OK"],
             max_tool_iterations = 0,
         )
@@ -701,9 +1207,7 @@ class TestGuardrails:
     def test_auto_heal_disabled_still_parses_valid_tool_call(self):
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ["done"],
             ],
             exec_results = ["OK"],
@@ -713,50 +1217,169 @@ class TestGuardrails:
         _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "x"})]
 
+    def test_confirm_tool_calls_close_after_prompt_cleans_slot(self, monkeypatch):
+        approval_id = "approval-close-sf"
+        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: approval_id)
+
+        loop, exec_fn = _make_loop(
+            turns = [['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']],
+            exec_results = ["OK"],
+            confirm_tool_calls = True,
+            session_id = "sess",
+            max_tool_iterations = 1,
+        )
+
+        with tool_approvals._lock:
+            tool_approvals._pending.clear()
+
+        try:
+            assert next(loop)["type"] == "status"
+            start = next(loop)
+            assert start["type"] == "tool_start"
+            assert start["approval_id"] == approval_id
+            with tool_approvals._lock:
+                assert approval_id in tool_approvals._pending
+        finally:
+            loop.close()
+
+        with tool_approvals._lock:
+            assert approval_id not in tool_approvals._pending
+        assert resolve_tool_decision(approval_id, "allow", session_id = "sess") is False
+        assert exec_fn.calls == []
+
+    def test_confirm_tool_calls_skips_rag_autoinject(self, monkeypatch):
+        def fail_autoinject(*_args, **_kwargs):
+            raise AssertionError("RAG autoinject must not run before approval")
+
+        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+        loop, exec_fn = _make_loop(
+            turns = [["plain answer"]],
+            confirm_tool_calls = True,
+            rag_scope = {"thread_id": "t1"},
+        )
+        events = _collect_events(loop)
+        assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
+        assert exec_fn.calls == []
+
+    def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"literal"}}</tool_call>'],
+            ]
+        )
+
+        def fake_single_turn(_messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["OK"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "show literal"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 1,
+                auto_heal_tool_calls = False,
+            )
+        )
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+        assert any(
+            event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+            for event in events
+        )
+
+    def test_auto_heal_disabled_does_not_repair_unclosed_tool_call(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}'],
+            ],
+            exec_results = ["OK"],
+            auto_heal_tool_calls = False,
+            max_tool_iterations = 1,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert any(
+            event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+            for event in events
+        )
+
+    def test_auto_heal_enabled_strips_unparseable_xml_tool_call(self):
+        loop, exec_fn = _make_loop(
+            turns = [["<tool_call>{not valid json}</tool_call>"]],
+            exec_results = ["OK"],
+            auto_heal_tool_calls = True,
+            max_tool_iterations = 1,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert not any(
+            event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+            for event in events
+        )
+
     def test_non_consecutive_duplicate_is_short_circuited(self):
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
                 ["final"],
             ],
             exec_results = ["res-A", "res-B"],
             max_tool_iterations = 4,
         )
         events = _collect_events(loop)
-        assert exec_fn.calls == [
-            ("web_search", {"query": "A"}),
-            ("web_search", {"query": "B"}),
+        assert exec_fn.calls == [("web_search", {"query": "A"}), ("web_search", {"query": "B"})]
+        assert [
+            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+        ] == ["call_0", "call_1"]
+        assert not [
+            event
+            for event in events
+            if event.get("tool_call_id") == "call_2"
+            and event.get("type") in {"tool_start", "tool_end"}
         ]
-        tool_ends = [e for e in events if e["type"] == "tool_end"]
-        assert "already made this exact call" in tool_ends[-1]["result"]
+
+    def test_same_turn_duplicate_is_short_circuited(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
+                ],
+                ["final"],
+            ],
+            exec_results = ["res-A"],
+            max_tool_iterations = 2,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "A"})]
+        assert [
+            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
+        ] == ["call_0"]
+        assert not [
+            event
+            for event in events
+            if event.get("tool_call_id") == "call_1"
+            and event.get("type") in {"tool_start", "tool_end"}
+        ]
 
     def test_coerce_string_args_python_uses_code_key(self):
-        assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {
-            "code": "print(1)"
-        }
+        assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}
 
     def test_coerce_string_args_terminal_uses_command_key(self):
-        assert _coerce_arguments("ls -la", heal = True, tool_name = "terminal") == {
-            "command": "ls -la"
-        }
+        assert _coerce_arguments("ls -la", heal = True, tool_name = "terminal") == {"command": "ls -la"}
 
     def test_tool_call_ids_unique_across_loop_iterations(self):
         loop, _exec = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"A"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"B"}}</tool_call>'],
                 ["done"],
             ],
             exec_results = ["A", "B"],
@@ -781,7 +1404,7 @@ class TestGptOssNameDetection:
 
     def test_empty_or_none_returns_false(self):
         assert is_gpt_oss_model_name("") is False
-        assert is_gpt_oss_model_name(None) is False
+        assert is_gpt_oss_model_name(cast(str, None)) is False
 
 
 if __name__ == "__main__":

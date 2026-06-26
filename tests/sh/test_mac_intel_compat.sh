@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # End-to-end sandbox tests for Mac Intel compatibility and UNSLOTH_NO_TORCH propagation.
 # Tests version_ge, arch detection (existing), plus E2E venv creation, torch skip
 # via a mock uv shim, and UNSLOTH_NO_TORCH env propagation in install.sh.
@@ -562,6 +564,80 @@ else
     echo "  FAIL: --no-torch not found in install.sh"
     FAIL=$((FAIL + 1))
 fi
+
+echo ""
+echo "=== Apple Silicon x86_64 (Rosetta) venv rebuild ==="
+
+# Extract the real guard block from install.sh so we exercise the shipped logic
+# (comment header down to its column-0 closing fi).
+_GUARD_FILE=$(mktemp)
+awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
+    "$INSTALL_SH" > "$_GUARD_FILE"
+
+if [ ! -s "$_GUARD_FILE" ]; then
+    echo "  FAIL: could not extract Apple Silicon venv guard from install.sh"
+    FAIL=$((FAIL + 1))
+else
+    # Runner: stub uv (via run_install_cmd) + a fake venv python, source the
+    # guard, then print "<final_arch> <final_ver> | <recreate_selectors>".
+    # The stub maps a uv arm64 selector to the interpreter uv would produce:
+    # cpython-3.12-* -> arm64 3.12.7, cpython-3.13-* -> arm64 $REBUILD_313_VERSION.
+    _RUNNER=$(mktemp)
+    cat > "$_RUNNER" << 'RUNNER_EOF'
+GUARD="$1"; VENV_DIR="$2"
+make_python() {  # dir machine version
+    mkdir -p "$1/bin"
+    printf '#!/usr/bin/env bash\necho "%s %s"\n' "$2" "$3" > "$1/bin/python"
+    chmod +x "$1/bin/python"
+}
+RECREATE_LOG=$(mktemp); : > "$RECREATE_LOG"
+run_install_cmd() {
+    shift  # drop the human label
+    if [ "$1" = "uv" ] && [ "$2" = "venv" ]; then
+        dir="$3"; sel=""; shift 3
+        while [ $# -gt 0 ]; do [ "$1" = "--python" ] && { sel="$2"; shift; }; shift; done
+        echo "$sel" >> "$RECREATE_LOG"
+        case "$sel" in
+            *3.12-macos-aarch64*) make_python "$dir" arm64 "3.12.7" ;;
+            *3.13-macos-aarch64*) make_python "$dir" arm64 "${REBUILD_313_VERSION:-3.13.3}" ;;
+            *)                    make_python "$dir" arm64 "$sel" ;;
+        esac
+    fi
+}
+[ "$INIT_ARCH" != none ] && make_python "$VENV_DIR" "$INIT_ARCH" "$INIT_VER"
+PYTHON_VERSION="3.13"
+. "$GUARD" >&2  # guard's user-facing echoes go to stderr; keep stdout clean
+final="none"; [ -x "$VENV_DIR/bin/python" ] && final="$("$VENV_DIR/bin/python" -c x)"
+printf '%s | %s\n' "$final" "$(paste -sd, "$RECREATE_LOG" 2>/dev/null)"
+rm -f "$RECREATE_LOG"
+RUNNER_EOF
+
+    _run_guard() {  # _USER_PYTHON OS _ARCH INIT_ARCH INIT_VER REBUILD_313_VERSION
+        _vd=$(mktemp -d)
+        env _USER_PYTHON="$1" OS="$2" _ARCH="$3" INIT_ARCH="$4" INIT_VER="$5" \
+            REBUILD_313_VERSION="$6" bash "$_RUNNER" "$_GUARD_FILE" "$_vd/venv"
+        rm -rf "$_vd"
+    }
+
+    assert_eq "clean arm64 venv left untouched" \
+        "arm64 3.13.3 | " "$(_run_guard '' macos arm64 arm64 3.13.3 '')"
+    assert_eq "x86_64 venv rebuilt as arm64" \
+        "arm64 3.13.3 | cpython-3.13-macos-aarch64-none" \
+        "$(_run_guard '' macos arm64 x86_64 3.13.3 '')"
+    assert_eq "x86_64 venv that lands on 3.13.8 is rebuilt then downgraded to 3.12" \
+        "arm64 3.12.7 | cpython-3.13-macos-aarch64-none,cpython-3.12-macos-aarch64-none" \
+        "$(_run_guard '' macos arm64 x86_64 3.13.3 3.13.8)"
+    assert_eq "arm64 3.13.8 venv downgraded to 3.12" \
+        "arm64 3.12.7 | cpython-3.12-macos-aarch64-none" \
+        "$(_run_guard '' macos arm64 arm64 3.13.8 '')"
+    assert_eq "--python override skips the guard entirely" \
+        "x86_64 3.13.3 | " "$(_run_guard 3.11 macos arm64 x86_64 3.13.3 '')"
+    assert_eq "x86_64 host (Intel/Rosetta shell) is a no-op here" \
+        "x86_64 3.13.3 | " "$(_run_guard '' macos x86_64 x86_64 3.13.3 '')"
+
+    rm -f "$_RUNNER"
+fi
+rm -f "$_GUARD_FILE"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

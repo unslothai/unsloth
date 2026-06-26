@@ -31,15 +31,22 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      const ramAvailableGb = data?.memory?.available_gb ?? 0;
       const gpuData = data?.gpu;
-      if (!gpuData?.available || !gpuData.devices?.length) return DEFAULT_GPU;
+      if (!gpuData?.available || !gpuData.devices?.length) {
+        // No discrete GPU (e.g. Mac): still surface system RAM so memory math
+        // (unified memory) has a budget to work with.
+        const info: GpuInfo = { ...DEFAULT_GPU, systemRamAvailableGb: ramAvailableGb };
+        cachedGpu = info;
+        return info;
+      }
       const devices = gpuData.devices as Array<{ name?: string; memory_total_gb?: number }>;
       const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
       const info: GpuInfo = {
         available: true,
         name: devices[0]?.name ?? "Unknown",
         memoryTotalGb: totalGb,
-        systemRamAvailableGb: data?.memory?.available_gb ?? 0,
+        systemRamAvailableGb: ramAvailableGb,
       };
       cachedGpu = info;
       return info;
@@ -54,10 +61,8 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
 }
 
 /**
- * Fetch GPU info from the backend /api/system endpoint.
- *
- * The result is cached at module level -- only one network request is made
- * regardless of how many components call this hook.
+ * Fetch GPU info from /api/system. Cached at module level, so only one request
+ * is made no matter how many components call this hook.
  */
 export function useGpuInfo(): GpuInfo {
   const [gpu, setGpu] = useState<GpuInfo>(cachedGpu ?? DEFAULT_GPU);

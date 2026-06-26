@@ -1,10 +1,4 @@
-"""Fake llama-server for simulation tests.
-
-Knobs: tok_status / tok_body / tok_reset / tok_response_map and the
-matching detok_* set let tests inject every failure mode for the
-audio-type probe (timeouts, partial bodies, malformed JSON, codec
-marker hits).
-"""
+"""Fake llama-server: tok_*/detok_* knobs inject failure modes for the audio-type probe."""
 
 from __future__ import annotations
 
@@ -41,7 +35,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _send_raw(
-        self, status: int, body: bytes, *, content_type: str = "application/json"
+        self,
+        status: int,
+        body: bytes,
+        *,
+        content_type: str = "application/json",
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -50,8 +48,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_reset(self, partial: bytes) -> None:
-        """Write a partial body and slam the connection. Simulates a
-        crashed llama-server returning a RemoteProtocolError to httpx."""
+        """Write a partial body and drop the connection (simulates a crashed server)."""
         # Don't call send_response -- write a half-finished response.
         try:
             self.wfile.write(
@@ -62,7 +59,7 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         try:
-            # Use socket-level shutdown so the next read sees a reset.
+            # Socket-level shutdown so the next read sees a reset.
             sock = self.connection
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\1\0\0\0\0\0\0\0")
             sock.close()
@@ -103,10 +100,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_raw(srv.config.tok_status, srv.config.tok_body)
                 return
             content = str(body.get("content", ""))
-            # tok_response_map lets the test inject a specific token count
-            # for a specific input text. Used to synthesise "this text
-            # tokenises to exactly one token" for the csm / bicodec / dac
-            # detection branches.
+            # tok_response_map injects a token count per input text (e.g. the
+            # one-token cases for csm / bicodec / dac detection branches).
             if content in srv.config.tok_response_map:
                 tokens = list(srv.config.tok_response_map[content])
             else:
@@ -119,9 +114,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_raw(srv.config.detok_status, srv.config.detok_body)
                 return
             tids = body.get("tokens") or []
-            content = "".join(
-                srv.config.detok_map.get(int(t), f"<tok_{t}>") for t in tids
-            )
+            content = "".join(srv.config.detok_map.get(int(t), f"<tok_{t}>") for t in tids)
             self._send_json(srv.config.detok_status, {"content": content})
             return
         if path == "/completion":
@@ -197,8 +190,7 @@ class FakeLlamaServer:
         detok_body: Optional[bytes] = None,
         detok_map: Optional[dict] = None,
         completion_delay: float = 0.0,
-        # Cosmetic: appears in the stdout template only; production
-        # code under test does not parse this.
+        # Cosmetic: only appears in the stdout template; not parsed.
         model_path: str = "<test-fixture>/gemma-4.gguf",
     ) -> None:
         self.host = host
@@ -222,11 +214,8 @@ class FakeLlamaServer:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> "FakeLlamaServer":
-        # port=0 lets ThreadingHTTPServer pick a free port atomically
-        # (avoids find-port-then-bind race); read back via server_address[1].
-        self._server = FakeLlamaServer._Server(
-            (self.host, self._requested_port), _Handler
-        )
+        # port=0 lets the server pick a free port atomically (no find-then-bind race).
+        self._server = FakeLlamaServer._Server((self.host, self._requested_port), _Handler)
         self._server.config = self.config
         bound_port = self._server.server_address[1]
         self._thread = threading.Thread(

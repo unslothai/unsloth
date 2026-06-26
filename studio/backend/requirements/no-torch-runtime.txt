@@ -22,14 +22,11 @@ rich>=13.0
 markdown-it-py>=3.0
 mdurl>=0.1
 pygments>=2.0
-pydantic
-# pydantic 2.x deps. With --no-deps, `import pydantic` blows up
-# with `ModuleNotFoundError: 'pydantic_core'` (compiled Rust core,
-# separate wheel), then `'annotated_types'`, then
-# `'typing_inspection'` (used by pydantic 2.10+ for fields).
-pydantic-core
-annotated-types>=0.6
-typing-inspection>=0.4
+# pydantic is intentionally NOT pinned here. install.sh / install.ps1
+# / install_python_stack.py run `pip install pydantic` WITH deps just
+# before this --no-deps file is applied, so pip resolves pydantic-core
+# to the exact version pydantic's _ensure_pydantic_core_version check
+# expects. Pinning both under --no-deps used to drift them apart.
 pyyaml
 nest-asyncio
 
@@ -63,7 +60,7 @@ httpx
 httpcore
 certifi
 idna
-anyio
+anyio>=3.0,<4.14.0  # 4.14 asyncio cancel-scope RuntimeError on Py3.13 streaming (#6483); 4.13 unaffected
 sniffio
 h11
 
@@ -75,3 +72,9 @@ trl>=0.18.2,!=0.19.0,<=0.24.0
 sentence-transformers
 cut_cross_entropy
 pillow
+
+# RAG store + document parsing, mirroring studio.txt. Pinned here because
+# this file installs --no-deps; without them Studio runs with RAG disabled.
+sqlite-vec==0.1.9
+pymupdf==1.27.2.3
+python-docx==1.2.0

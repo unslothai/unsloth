@@ -1,47 +1,35 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Validator for user-supplied llama-server pass-through args.
+"""Boundary validator for user-supplied llama-server pass-through args.
 
-Studio runs llama-server as a managed subprocess and lets callers pass
-extra flags directly (CLI: ``unsloth run ... --top-k 20``; HTTP:
-``LoadRequest.llama_extra_args``). This module is the boundary that
-rejects only flags Studio fundamentally cannot share with the user --
-model identity, the auth key, and the network endpoint Studio's HTTP
-proxy targets. Anything else passes through.
+Reject only flags Studio manages (model identity, auth, network, parallel
+slots). Everything else (sampling, ``-c``, ``-ngl``, ``--flash-attn``,
+``--cache-type-*``, ``--spec-*``, ``--jinja``, ...) is appended after
+Studio's auto-set flags so llama.cpp's last-wins parser lets the user override.
 
-User-supplied args are appended to ``cmd`` after Studio's auto-set
-flags, so llama.cpp's last-wins CLI parsing makes the user's value
-override the auto-set one. That covers tunable knobs the user might
-reasonably want to override -- ``-c``/``--ctx-size``,
-``-np``/``--parallel``, ``-fa``/``--flash-attn``,
-``-ngl``/``--gpu-layers``, ``-t``/``--threads``, ``-fit``/``--fit*``,
-``--cache-type-k/v``, ``--chat-template-file/-kwargs``,
-``--spec-*``, ``--jinja``/``--no-jinja``,
-``--no-context-shift``/``--context-shift``, sampling params, etc.
-
-Reference: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 """
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+import os
+from typing import Iterable, Mapping, Optional
 
-# Each group is the full set of aliases (short + long) for one
-# hard-denied flag, taken from the llama-server README. If llama.cpp
-# adds a new alias for an existing denied flag, extend the relevant
-# group.
-#
-# Flags NOT in this list (e.g. -c, --parallel, --flash-attn, -ngl,
-# -t/--threads, --jinja, --no-context-shift, --fit*, --cache-type-*,
-# --chat-template-*, --spec-*) pass through and override Studio's
-# auto-set version via llama.cpp's last-wins CLI parsing.
+# Each group = every alias (short + long) of one hard-denied flag.
+# Extend the matching group when llama.cpp adds a new alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
-    # Model identity -- Studio resolves the model from LoadRequest and
-    # passes -m / mmproj after downloading from HF if needed. A second
-    # -m would point at a different model than the one Studio thinks
-    # is loaded.
+    # Parallel slots: owned by typer --parallel; a pass-through would desync
+    # app.state.llama_parallel_slots from llama-server.
+    frozenset({"-np", "--parallel", "--n-parallel"}),
+    # Model identity: Studio resolves it from LoadRequest; a second -m would
+    # load a different model than Studio thinks it loaded.
     frozenset({"-m", "--model"}),
+    # Public model id: Studio sets a sanitized --alias so the OpenAI API never
+    # exposes the local .gguf path. A user-supplied alias is appended after
+    # Studio's and, with llama.cpp's last-wins parsing, would reintroduce the
+    # path leak this is meant to prevent.
+    frozenset({"-a", "--alias"}),
     frozenset({"-mu", "--model-url"}),
     frozenset({"-dr", "--docker-repo"}),
     frozenset({"-hf", "-hfr", "--hf-repo"}),
@@ -51,28 +39,21 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hft", "--hf-token"}),
     frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
-    # Networking -- Studio binds llama-server's port and reverse-proxies
-    # HTTP traffic to it. Retargeting host/port/path/prefix would
-    # orphan Studio's proxy and the UI would lose the server.
+    # Networking: Studio binds + proxies; retargeting orphans the proxy.
     frozenset({"--host"}),
     frozenset({"--port"}),
     frozenset({"--path"}),
     frozenset({"--api-prefix"}),
     frozenset({"--reuse-port"}),
-    # Auth / TLS -- Studio terminates auth at its own layer; an
-    # upstream --api-key would shadow Studio's UNSLOTH_DIRECT_STREAM
-    # key, and TLS on llama-server would break the local proxy hop.
+    # Auth / TLS: Studio terminates auth; upstream --api-key / TLS shadows
+    # Studio's key and breaks the proxy hop.
     frozenset({"--api-key"}),
     frozenset({"--api-key-file"}),
     frozenset({"--ssl-key-file"}),
     frozenset({"--ssl-cert-file"}),
-    # Single-model server -- Studio runs one model per llama-server
-    # process and serves its own UI. Enabling multi-model loading or
-    # llama-server's built-in web UI changes the surface clients see.
-    # ``--webui``/``--no-webui`` are the legacy spelling; current
-    # upstream uses ``--ui``/``--no-ui`` + ``--ui-*`` companions.
-    # Keep both so the denylist matches old and new llama-server
-    # binaries (Studio's prebuilt vs system-llama.cpp).
+    # Built-in web UI. --webui/--no-webui is the legacy spelling; upstream
+    # renamed to --ui/--no-ui + --ui-*. Keep both so prebuilt and system
+    # llama.cpp binaries match.
     frozenset({"--webui", "--no-webui"}),
     frozenset({"--ui", "--no-ui"}),
     frozenset({"--ui-config"}),
@@ -82,32 +63,44 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--models-preset"}),
     frozenset({"--models-max"}),
     frozenset({"--models-autoload", "--no-models-autoload"}),
+    # Server-mode flips: --embedding / --rerank restrict llama-server to
+    # those endpoints, breaking Studio's /v1/chat/completions hop.
+    frozenset({"--embedding", "--embeddings"}),
+    frozenset({"--rerank", "--reranking"}),
+    # llama-server's own built-in tools flag would silently stack on top of
+    # Studio's --enable-tools / --disable-tools policy resolver.
+    frozenset({"--tools"}),
 )
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 
 
 def _flag_name(token: str) -> Optional[str]:
-    """Return the flag name for a token, or None if it isn't a flag.
+    """Flag name for ``token``, or None if it isn't a flag.
 
-    Peels ``--key=value`` to the bare ``--key``. Plain numeric values
-    like ``-1`` or ``-0.5`` (e.g. ``--seed -1``) are values, not flags;
-    llama-server short-form flags always start with a letter.
+    Peels `--key=value` to `--key`, treats `-1`/`-0.5` as values (shorts
+    always start with a letter), and normalises attached `-np8` / `-np-1` /
+    `-np8x` to `-np`. Mirrors the CLI's `_expand_attached_np_short`.
     """
+    token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
         return None
     if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
         return None
-    return token.split("=", 1)[0]
+    name = token.split("=", 1)[0]
+    if len(name) > 3 and name.startswith("-np"):
+        suffix = name[3:]
+        if suffix[0].isdigit() or (
+            len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1].isdigit()
+        ):
+            return "-np"
+    return name
 
 
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
-    """Validate user-supplied llama-server args.
-
-    Returns the args as a flat list ready to extend the llama-server
-    command. Raises ``ValueError`` (with the offending flag in the
-    message) the moment a token resolves to a Studio-managed flag.
-    """
+    """Validate user-supplied llama-server args. Returns a flat list ready to
+    extend the llama-server command; raises ``ValueError`` naming the
+    offending flag on the first managed token."""
     if not args:
         return []
     out: list[str] = []
@@ -120,23 +113,26 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
                 f"and cannot be passed as an extra arg"
             )
         out.append(token)
+    parse_ctx_override(out)
+    parse_cache_override(out)
+    parse_split_mode_override(out)
     return out
 
 
 def is_managed_flag(flag: str) -> bool:
-    """True if ``flag`` is a Studio-managed llama-server flag."""
-    return flag in _DENYLIST
+    """True if ``flag`` is Studio-managed. Normalises via ``_flag_name`` so
+    `-np8` / `--parallel=8` classify like the canonical tokens."""
+    normalised = _flag_name(flag)
+    return normalised is not None and normalised in _DENYLIST
 
 
-# Pass-through flags that shadow first-class ``LoadRequest`` fields
-# (max_seq_length, cache_type_kv, speculative_type,
-# chat_template_override). Stripped from inherited extras so they
-# can't last-wins-override an Apply that re-sets the same first-class
-# field.
+# Pass-through flags that shadow first-class LoadRequest fields; stripped
+# from inherited extras so they can't last-wins-override an Apply that
+# re-sets the same field.
 _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
-_CACHE_FLAGS: frozenset[str] = frozenset(
-    {"-ctk", "--cache-type-k", "-ctv", "--cache-type-v"}
-)
+_CACHE_TYPE_K_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k"})
+_CACHE_TYPE_V_FLAGS: frozenset[str] = frozenset({"-ctv", "--cache-type-v"})
+_CACHE_FLAGS: frozenset[str] = _CACHE_TYPE_K_FLAGS | _CACHE_TYPE_V_FLAGS
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
         "--spec-default",
@@ -145,7 +141,22 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         "--spec-ngram-size",
         "--draft-min",
         "--draft-max",
-        # MTP path (llama.cpp #22673).
+        # MTP path (llama.cpp #22673). The drafter selectors (local --model-draft
+        # and HF --spec-draft-hf aliases) are Studio-managed since the separate-
+        # drafter support (Gemma 4): an inherited copy must not last-wins-override
+        # the auto-detected drafter. Explicit extras for the current load are never
+        # stripped. The per-drafter tuning knobs (--spec-draft-type-*, -ngld,
+        # --spec-draft-device) are deliberately NOT stripped: the VRAM budget reads
+        # them via the same parsers the child honors, so they stay consistent on
+        # inherit, and stripping them would silently move a CPU-offloaded drafter
+        # back onto the GPU.
+        "--model-draft",
+        "-md",
+        "--spec-draft-model",
+        "--spec-draft-hf",
+        "-hfd",
+        "-hfrd",
+        "--hf-repo-draft",
         "--spec-draft-n-max",
         "--spec-draft-n-min",
         "--spec-draft-p-min",
@@ -164,17 +175,245 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
     }
 )
+# Multi-GPU split mode shadows the Tensor Parallelism toggle
+# (--split-mode tensor). Pass-through stays allowed so users keep the
+# row/none/layer modes the toggle doesn't expose, but it's stripped on
+# inherit and reconciled into the round-tripped tensor_parallel state.
+# --tensor-split is coupled to the split mode and is stripped with it: Studio
+# owns the tensor-mode split ratios, so an inherited/stale --tensor-split must
+# not last-wins-override Studio's computed asymmetric split.
+_SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
+_TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
+_SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 
 _SHADOWING_FLAGS: frozenset[str] = (
-    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS
+    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
 )
 
-# Boolean flags inside _SHADOWING_FLAGS that take no value. The
-# value-consuming heuristic in strip_shadowing_flags must skip just the
-# flag for these, never the following token.
-_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
-    {"--spec-default", "--jinja", "--no-jinja"}
-)
+# Shadowing flags that take no value -- strip the flag only, not the next token.
+_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset({"--spec-default", "--jinja", "--no-jinja"})
+
+
+def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``-c`` / ``--ctx-size`` value.
+
+    Mirrors llama.cpp's last-wins parsing for the one numeric knob Studio's
+    load-time fit logic needs.
+    """
+    if not args:
+        return None
+
+    tokens = [str(a) for a in args]
+    override: Optional[int] = None
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None or flag not in _CONTEXT_FLAGS:
+            i += 1
+            continue
+
+        if "=" in tok:
+            raw_value = tok.split("=", 1)[1]
+            i += 1
+        else:
+            if i + 1 >= n or _flag_name(tokens[i + 1]) is not None:
+                raise ValueError(f"llama-server flag '{flag}' requires an integer value")
+            raw_value = tokens[i + 1]
+            i += 2
+
+        try:
+            value = int(str(raw_value).strip())
+        except ValueError as exc:
+            raise ValueError(f"llama-server flag '{flag}' requires an integer value") from exc
+        if value < 0:
+            raise ValueError(f"llama-server flag '{flag}' requires a non-negative integer value")
+        override = value
+
+    return override
+
+
+def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
+    """Return the context size load_model should treat as requested.
+
+    Single source of truth for load_model's ctx-override conditional so
+    tests don't reimplement and assert against their own logic.
+    """
+    override = parse_ctx_override(args)
+    return override if override is not None else fallback_n_ctx
+
+
+def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
+    """Return the last-wins string value among ``flags`` in extras, or None.
+
+    Handles both ``--flag=value`` and ``--flag value`` forms and raises if a
+    matched flag has no (or an empty) value. Shared by the single-knob
+    last-wins parsers (cache type, split mode).
+    """
+    if not args:
+        return None
+
+    tokens = [str(a) for a in args]
+    override: Optional[str] = None
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None or flag not in flags:
+            i += 1
+            continue
+
+        if "=" in tok:
+            raw_value = tok.split("=", 1)[1]
+            i += 1
+        else:
+            if i + 1 >= n or _flag_name(tokens[i + 1]) is not None:
+                raise ValueError(f"llama-server flag '{flag}' requires a value")
+            raw_value = tokens[i + 1]
+            i += 2
+
+        value = str(raw_value).strip()
+        if not value:
+            raise ValueError(f"llama-server flag '{flag}' requires a non-empty value")
+        override = value
+
+    return override
+
+
+def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last-wins cache type if extras pass cache flags.
+
+    Mirrors parse_ctx_override but for cache type. Recognises both -ctk
+    (key) and -ctv (value). When both flags appear, returns the last-wins
+    value, treating key and value cache flags as the same setting because
+    Studio's KV estimate has a single cache_type_kv knob.
+    """
+    return _last_flag_value(args, _CACHE_FLAGS)
+
+
+def parse_cache_override_per_axis(
+    args: Optional[Iterable[str]],
+) -> tuple[Optional[str], Optional[str]]:
+    """Last-wins --cache-type-k / --cache-type-v values kept apart, as (k, v).
+
+    parse_cache_override collapses both axes to one last-wins value; this keeps
+    them separate so an asymmetric K/V can be budgeted by its heavier axis.
+    """
+    return (
+        _last_flag_value(args, _CACHE_TYPE_K_FLAGS),
+        _last_flag_value(args, _CACHE_TYPE_V_FLAGS),
+    )
+
+
+def resolve_cache_type_kv(
+    args: Optional[Iterable[str]], fallback_cache_type_kv: Optional[str]
+) -> Optional[str]:
+    """Return the cache type load_model should treat as requested.
+
+    Single source of truth for ``load_model``'s cache override conditional.
+    """
+    override = parse_cache_override(args)
+    return override if override is not None else fallback_cache_type_kv
+
+
+def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last-wins ``--split-mode`` / ``-sm`` value from extras.
+
+    Mirrors parse_cache_override for the multi-GPU split mode. Returns the
+    raw mode string (e.g. ``tensor`` / ``row`` / ``none`` / ``layer``), or
+    None when extras don't set it.
+    """
+    return _last_flag_value(args, _SPLIT_MODE_FLAGS)
+
+
+def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_parallel: bool) -> bool:
+    """Return the tensor-parallel state load_model should treat as requested.
+
+    A user-supplied ``--split-mode`` in extras last-wins-overrides the
+    toggle, so reconcile it back into the boolean: any explicit split mode
+    means tensor-parallel is on iff that mode is ``tensor``. Falls back to
+    the toggle value when extras don't set it.
+    """
+    override = parse_split_mode_override(args)
+    if override is None:
+        return fallback_tensor_parallel
+    return override.strip().lower() == "tensor"
+
+
+def _env_split_mode_is_tensor(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when the inherited LLAMA_ARG_SPLIT_MODE env selects tensor. Studio
+    emits --split-mode only on its tensor branch, so a tensor env on the layer
+    path would run the child tensor-parallel unbudgeted; this flips the budget
+    to tensor. Only tensor is heavier, so other modes are ignored."""
+    raw = (os.environ if env is None else env).get("LLAMA_ARG_SPLIT_MODE")
+    return bool(raw) and raw.strip().lower() == "tensor"
+
+
+def _effective_tensor_parallel(
+    extra_args: Optional[Iterable[str]],
+    tensor_parallel: bool,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Tensor-parallel decision including the inherited LLAMA_ARG_SPLIT_MODE env.
+
+    resolve_tensor_parallel (extras + toggle), flipped on when extras set no split
+    mode but the child inherits a tensor split env. Shared by load_model (which
+    budgets and launches it) and the tensor-fallback wrapper (so an env-only
+    tensor crash still retries layer split)."""
+    resolved = resolve_tensor_parallel(extra_args, tensor_parallel)
+    if (
+        not resolved
+        and parse_split_mode_override(extra_args) is None
+        and _env_split_mode_is_tensor(env)
+    ):
+        return True
+    return resolved
+
+
+def _tensor_parallel_matches_loaded(
+    extra_args: Optional[Iterable[str]],
+    requested_tensor_parallel: bool,
+    loaded_tensor_parallel: bool,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether a duplicate load request matches a loaded server's tensor state.
+
+    Env-only tensor mode is a launch hint load_model may downgrade to layer split
+    (capacity/buffer), scrubbing the child env. So only let an inherited tensor env
+    raise a match against a server that *actually* launched tensor; on a downgraded
+    (layer) server the env is ignored, and an identical request would downgrade the
+    same way -- avoiding an endless reload of a healthy server."""
+    requested = resolve_tensor_parallel(extra_args, requested_tensor_parallel)
+    if (
+        loaded_tensor_parallel
+        and not requested
+        and parse_split_mode_override(extra_args) is None
+        and _env_split_mode_is_tensor(env)
+    ):
+        requested = True
+    return requested == loaded_tensor_parallel
+
+
+_MMPROJ_DISABLE_FLAGS: frozenset[str] = frozenset({"--no-mmproj", "--no-mmproj-auto"})
+_MMPROJ_ENABLE_FLAGS: frozenset[str] = frozenset({"--mmproj-auto"})
+
+
+def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
+    """True when pass-through args opt out of vision mmproj loading.
+
+    llama-server parses --mmproj-auto / --no-mmproj / --no-mmproj-auto as one
+    boolean with last-wins semantics; mirror that here.
+    """
+    if not args:
+        return False
+    disabled = False
+    for raw in args:
+        flag = _flag_name(str(raw))
+        if flag in _MMPROJ_DISABLE_FLAGS:
+            disabled = True
+        elif flag in _MMPROJ_ENABLE_FLAGS:
+            disabled = False
+    return disabled
 
 
 def strip_shadowing_flags(
@@ -184,17 +423,15 @@ def strip_shadowing_flags(
     strip_cache: bool = True,
     strip_spec: bool = True,
     strip_template: bool = True,
+    strip_split_mode: bool = True,
 ) -> list[str]:
     """Strip flags that shadow first-class Studio settings.
 
-    Used when the route inherits a previous load's ``llama_extra_args``
-    so that an inherited ``-c 4096`` cannot override the current
-    request's ``max_seq_length`` (and equivalents for cache /
-    speculative / chat template). Each ``strip_*`` flag controls one
-    group; the route only strips groups whose corresponding first-class
-    field was actually supplied by the caller, so an inherited
-    ``--chat-template-file`` survives an Apply that omits both
-    ``llama_extra_args`` and ``chat_template_override``.
+    Used when inheriting a previous load's ``llama_extra_args`` so an
+    inherited `-c 4096` can't override the current `max_seq_length`
+    (same for cache / spec / template / split-mode). Each ``strip_*``
+    toggle controls one group; the route only strips groups whose
+    first-class field the caller actually supplied.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -205,6 +442,8 @@ def strip_shadowing_flags(
         shadowing |= _SPEC_FLAGS
     if strip_template:
         shadowing |= _TEMPLATE_FLAGS
+    if strip_split_mode:
+        shadowing |= _SPLIT_SHADOWING_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -216,9 +455,8 @@ def strip_shadowing_flags(
             out.append(tok)
             i += 1
             continue
-        # Drop this token. Boolean shadowing flags never carry a value;
-        # other shadowing flags consume the next token when it isn't a
-        # flag and the value isn't already packed as ``--key=value``.
+        # Drop the flag; also consume the next token unless it's boolean,
+        # already inline (`-c=4096`), or another flag.
         if flag in _BOOLEAN_SHADOWING_FLAGS or "=" in tok:
             i += 1
         elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
@@ -226,3 +464,20 @@ def strip_shadowing_flags(
         else:
             i += 1
     return out
+
+
+def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Remove the split-mode group (``--split-mode`` / ``-sm`` and the coupled
+    ``--tensor-split`` / ``-ts``) from ``args``, keeping every other shadow flag.
+    Preserves a None/empty input so the inherit-vs-explicit-empty distinction
+    survives. Used where tensor mode is being forced off (downgrade / fallback)."""
+    if not args:
+        return args
+    return strip_shadowing_flags(
+        args,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = True,
+    )

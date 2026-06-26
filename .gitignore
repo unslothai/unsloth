@@ -237,5 +237,8 @@ package-lock.json
 !studio/package-lock.json
 llama.cpp/
 
+# Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
+/~/
+
 # Local implementation plans / drafts
 docs/superpowers/
