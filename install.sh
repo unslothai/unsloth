@@ -1642,15 +1642,14 @@ export UV_HTTP_TIMEOUT
 # and rejects intercepted connections with "invalid peer certificate: UnknownIssuer".
 # Set both vars: UV_SYSTEM_CERTS is the modern one (uv >= 0.11), UV_NATIVE_TLS the
 # legacy one understood by uv 0.8.16-0.10.x, which the installer keeps if already
-# present (UV_MIN_VERSION) and which ignores UV_SYSTEM_CERTS. Opt out with UV_SYSTEM_CERTS=0.
-if [ "$OS" = "macos" ] && [ -z "${UV_SYSTEM_CERTS:-}" ] && [ -z "${UV_NATIVE_TLS:-}" ]; then
-    UV_SYSTEM_CERTS=1
-    UV_NATIVE_TLS=1
+# present (UV_MIN_VERSION) and which ignores UV_SYSTEM_CERTS. Mirror the choice onto
+# both so it works on either uv. Opt out with UV_SYSTEM_CERTS=0.
+if [ "$OS" = "macos" ]; then
+    : "${UV_SYSTEM_CERTS:=1}"
+    : "${UV_NATIVE_TLS:=$UV_SYSTEM_CERTS}"
 fi
-: "${UV_SYSTEM_CERTS:=}"
-: "${UV_NATIVE_TLS:=}"
-[ -n "$UV_SYSTEM_CERTS" ] && export UV_SYSTEM_CERTS
-[ -n "$UV_NATIVE_TLS" ] && export UV_NATIVE_TLS
+[ -n "${UV_SYSTEM_CERTS:-}" ] && export UV_SYSTEM_CERTS
+[ -n "${UV_NATIVE_TLS:-}" ] && export UV_NATIVE_TLS
 
 version_ge() {
     # returns 0 if $1 >= $2
