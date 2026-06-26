@@ -59,6 +59,7 @@ import {
   getExternalProviderApiKey,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  CUSTOM_PROVIDER_DISPLAY_NAME,
   removeExternalProviderApiKey,
   setExternalProviderApiKey,
   supportsProviderPromptCaching,
@@ -176,7 +177,8 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
   return (
     providerType === "ollama" ||
     providerType === "llama_cpp" ||
-    providerType === "vllm"
+    providerType === "vllm" ||
+    providerType === LEGACY_CUSTOM_PROVIDER_TYPE
   );
 }
 
@@ -212,6 +214,7 @@ export function ChatProvidersSettings({
   onProvidersChange,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
+  const seededProviderTypeRef = useRef<string | null>(null);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
@@ -229,7 +232,9 @@ export function ChatProvidersSettings({
   const [mutatingProvider, setMutatingProvider] = useState(false);
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
-  const [customProviderName, setCustomProviderName] = useState("Custom");
+  const [customProviderName, setCustomProviderName] = useState(
+    CUSTOM_PROVIDER_DISPLAY_NAME,
+  );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
@@ -317,6 +322,8 @@ export function ChatProvidersSettings({
 
   useEffect(() => {
     if (!providerType || editingProviderId) return;
+    if (seededProviderTypeRef.current === providerType) return;
+    seededProviderTypeRef.current = providerType;
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
@@ -326,9 +333,8 @@ export function ChatProvidersSettings({
       return;
     }
     // Seed default_models only for curated providers (catalog too large to
-    // enumerate — defaults are the suggestion shortlist). Remote-mode cloud
-    // providers and local OpenAI-compat presets stay empty until the user
-    // clicks "Load available models".
+    // enumerate). Remote cloud providers and local OpenAI-compat presets stay
+    // empty until the user clicks "Load available models".
     const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
@@ -345,20 +351,27 @@ export function ChatProvidersSettings({
 
   useEffect(() => {
     let isMounted = true;
-    const syncFromBackend = async () => {
-      setRegistryLoading(true);
-      setSyncingProviders(true);
+    const syncFromBackend = async ({
+      showSpinner = true,
+    }: { showSpinner?: boolean } = {}) => {
+      if (showSpinner) {
+        setRegistryLoading(true);
+        setSyncingProviders(true);
+      }
+      let syncSucceeded = false;
       try {
         const [registryRows, configRows] = await Promise.all([
           listProviderRegistry(),
           listProviderConfigs(),
         ]);
         if (!isMounted) return;
+        syncSucceeded = true;
         setRegistry(registryRows);
         setProviderType((current) => {
           if (
             current &&
-            registryRows.some((entry) => entry.provider_type === current)
+            (isCustomProviderType(current) ||
+              registryRows.some((entry) => entry.provider_type === current))
           ) {
             return current;
           }
@@ -385,9 +398,22 @@ export function ChatProvidersSettings({
             const updatedAt = Number.isFinite(Date.parse(config.updated_at))
               ? Date.parse(config.updated_at)
               : Date.now();
+            const registryEntry =
+              registryRows.find((entry) => entry.provider_type === uiProviderType) ??
+              registryRows.find((entry) => entry.provider_type === config.provider_type);
+            const defaultModels = pruneProviderModelIds(
+              uiProviderType,
+              registryEntry?.default_models ?? [],
+            );
+            const savedModels = existing?.models ?? [];
+            const savedAvailableModels = existing?.availableModels ?? [];
             const existingModels = pruneProviderModelIds(
               uiProviderType,
-              existing?.models ?? [],
+              savedModels.length > 0 ? savedModels : defaultModels,
+            );
+            const existingAvailableModels = pruneProviderModelIds(
+              uiProviderType,
+              savedAvailableModels.length > 0 ? savedAvailableModels : defaultModels,
             );
             return {
               id: config.id,
@@ -395,7 +421,7 @@ export function ChatProvidersSettings({
               name: config.display_name,
               baseUrl: config.base_url ?? "",
               models: existingModels,
-              availableModels: existing?.availableModels ?? [],
+              availableModels: existingAvailableModels,
               enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
                 ? (existing?.enablePromptCaching ?? true)
                 : undefined,
@@ -406,25 +432,44 @@ export function ChatProvidersSettings({
               updatedAt,
             };
           });
-        // Don't wipe localStorage providers when the server has no rows.
-        if (syncedProviders.length === 0 && providersRef.current.length > 0) {
-          return;
-        }
+        // Trust the backend response. An empty array means every connection was
+        // removed (often from another tab); mirror that locally, else stale
+        // entries become un-removable here until localStorage is cleared.
         onProvidersChange(syncedProviders);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Unknown error";
-        toast.error(`Failed to load connections: ${message}`);
+        // Only surface a toast for real failures, not for the silent
+        // background re-sync on tab focus.
+        if (showSpinner) {
+          const message =
+            error instanceof Error ? error.message : "Unknown error";
+          toast.error(`Failed to load connections: ${message}`);
+        }
       } finally {
-        if (isMounted) {
+        if (isMounted && showSpinner) {
           setRegistryLoading(false);
           setSyncingProviders(false);
         }
       }
+      return syncSucceeded;
     };
     void syncFromBackend();
+    // Re-sync silently when the tab regains focus so deletes made in
+    // another browser propagate without forcing the user to reopen the
+    // dialog. Skip when the document is hidden to avoid background work.
+    const handleVisibilityChange = () => {
+      if (typeof document === "undefined" || document.hidden) return;
+      void syncFromBackend({ showSpinner: false });
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", handleVisibilityChange);
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
     return () => {
       isMounted = false;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", handleVisibilityChange);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
     };
   }, [onProvidersChange]);
 
@@ -898,8 +943,12 @@ export function ChatProvidersSettings({
 
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = getExternalProviderApiKey(provider.id).trim();
-    // Local OpenAI-compat presets skip API keys — run the connection check.
-    if (!savedKey && !supportsRemoteModelCatalog(provider.providerType)) {
+    // Hosted registry providers require keys. Local OpenAI-compatible presets
+    // may be keyless.
+    if (
+      !savedKey &&
+      !supportsRemoteModelCatalog(provider.providerType)
+    ) {
       if (isCustomProviderType(provider.providerType)) {
         await editProvider(provider);
         toast.info(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
@@ -916,6 +965,10 @@ export function ChatProvidersSettings({
           provider.providerType,
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
+        modelId:
+          provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
+            ? (provider.models[0] ?? null)
+            : null,
       });
       if (result.success) {
         toast.success(result.message);
@@ -1021,6 +1074,16 @@ export function ChatProvidersSettings({
                           </span>
                         </SelectItem>
                       ))}
+                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
+                        <span className="flex items-center gap-2">
+                          <ApiProviderLogo
+                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
+                            className="size-4"
+                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
+                          />
+                          {CUSTOM_PROVIDER_DISPLAY_NAME}
+                        </span>
+                      </SelectItem>
                     </SelectGroup>
                     <SelectSeparator />
                     <SelectGroup>
@@ -1103,7 +1166,7 @@ export function ChatProvidersSettings({
                     onChange={(event) =>
                       setCustomProviderName(event.target.value)
                     }
-                    placeholder="Custom"
+                    placeholder={CUSTOM_PROVIDER_DISPLAY_NAME}
                     className="h-9 text-sm"
                   />
                 </div>
@@ -1470,7 +1533,7 @@ export function ChatProvidersSettings({
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="font-heading text-lg font-semibold">Connections</h1>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Manage model connections for chat through the Studio proxy.
+            Manage model connections for chat.
           </p>
         </div>
       </header>

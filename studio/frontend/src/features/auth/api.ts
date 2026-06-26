@@ -18,11 +18,18 @@ type RefreshResponse = {
 };
 
 let isRedirecting = false;
+let refreshInflight: Promise<boolean> | null = null;
+let refreshInflightToken: string | null = null;
+let logoutGeneration = 0;
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function clearAuthTokensIfCurrent(refreshToken: string | null): void {
+  if (!refreshToken || getRefreshToken() === refreshToken) clearAuthTokens();
 }
 
 async function fetchWithTauriNetworkRetry(
@@ -98,19 +105,15 @@ async function retryWithTauriAutoAuth(
   return null;
 }
 
-// Singleflight: the backend consumes the refresh token atomically, so
-// concurrent callers must share one in-flight promise (loser would 401).
-let refreshInflight: Promise<boolean> | null = null;
-// Bumped by logout(); a refresh that resolves after logout drops its
-// new tokens instead of silently re-auth-ing the SPA.
-let logoutGeneration = 0;
-
 export async function refreshSession(): Promise<boolean> {
-  if (refreshInflight) return refreshInflight;
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return false;
+  if (refreshInflight && refreshInflightToken === refreshToken) {
+    return refreshInflight;
+  }
+
   const startGeneration = logoutGeneration;
-  refreshInflight = (async () => {
-    const refreshToken = getRefreshToken();
-    if (!refreshToken) return false;
+  const promise = (async () => {
     try {
       const response = await fetchWithTauriNetworkRetry(
         apiUrl("/api/auth/refresh"),
@@ -121,11 +124,12 @@ export async function refreshSession(): Promise<boolean> {
         },
       );
       if (!response.ok) {
-        clearAuthTokens();
+        clearAuthTokensIfCurrent(refreshToken);
         return false;
       }
       const payload = (await response.json()) as RefreshResponse;
       if (startGeneration !== logoutGeneration) return false;
+      if (getRefreshToken() !== refreshToken) return false;
       storeAuthTokens(payload.access_token, payload.refresh_token);
       setMustChangePassword(payload.must_change_password ?? false);
       return true;
@@ -133,10 +137,15 @@ export async function refreshSession(): Promise<boolean> {
       return false;
     }
   })();
+  refreshInflight = promise;
+  refreshInflightToken = refreshToken;
   try {
-    return await refreshInflight;
+    return await promise;
   } finally {
-    refreshInflight = null;
+    if (refreshInflight === promise) {
+      refreshInflight = null;
+      refreshInflightToken = null;
+    }
   }
 }
 
@@ -159,15 +168,14 @@ export async function authFetch(
     });
   } catch (err) {
     if (err instanceof TypeError) {
-      // fetch TypeError = offline | backend down | CORS/DNS. In Tauri
-      // it's always backend-down; in the web build distinguish offline
-      // so the user gets the right recovery path.
+      // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always
+      // backend-down; the web build distinguishes offline for the right message.
       if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
         throw new Error(
           "You appear to be offline. Check your network connection and try again.",
         );
       }
-      throw new Error("Studio isn't running -- please relaunch it.");
+      throw new Error("Unsloth isn't running -- please relaunch it.");
     }
     throw err;
   }
@@ -181,12 +189,13 @@ export async function authFetch(
   }
   if (response.status !== 401) return response;
 
+  const refreshToken = getRefreshToken();
   const refreshed = await refreshSession();
   if (!refreshed) {
     if (isTauri) {
       return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
     }
-    clearAuthTokens();
+    clearAuthTokensIfCurrent(refreshToken);
     void redirectToAuth();
     return response;
   }
@@ -217,10 +226,9 @@ async function postLogout(accessToken: string | null): Promise<Response | null> 
 }
 
 export async function logout(): Promise<void> {
-  // Server-side revoke. If the access token is expired the 401 fires
-  // BEFORE revoke runs; rotate via the refresh token and retry so the
-  // refresh family is actually revoked. Generation bump in finally
-  // invalidates any in-flight refresh from before this call.
+  // Server-side revoke. If the access token is expired, the 401 fires before
+  // revoke runs; rotate via the refresh token and retry so the refresh family
+  // is revoked. The finally generation bump invalidates in-flight refreshes.
   try {
     let response = await postLogout(getAuthToken());
     if (response && response.status === 401 && getRefreshToken()) {

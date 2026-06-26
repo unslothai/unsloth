@@ -264,6 +264,8 @@ export type ModelConfig = {
   kind: "model_config";
   name: string;
   model: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  gguf_variant?: string;
   provider: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   inference_temperature?: string;
