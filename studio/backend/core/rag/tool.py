@@ -187,22 +187,23 @@ def search_for_autoinject(
 
 
 def whole_document_context(
-    *,
-    scope_thread_id: str | None = None,
-    scope_project_id: str | None = None,
-    max_tokens: int,
+    *, scope_thread_id: str | None = None, max_tokens: int
 ) -> tuple[str, list[dict]] | None:
-    """Render EVERY chunk of the thread's documents (in order) as the same
-    ``<chunk>`` blocks + citation source-map retrieval produces, so the model
-    reads the entire attached file rather than top-K passages.
+    """Render EVERY chunk of the THREAD's attached documents (in order) as the same
+    ``<chunk>`` blocks + citation source-map retrieval produces, so the model reads
+    the entire attached file rather than top-K passages.
 
-    Returns ``None`` (caller falls back to retrieval) when there are no completed
-    chunks or the total exceeds ``max_tokens``. KB scope is never whole-document:
-    a knowledge base is a corpus to search, not a single attachment.
+    Only thread-attached files go whole-document. KB and project corpora are never
+    whole-document (a knowledge base or a project's sources are corpora to search,
+    not a single attachment), so this resolves the thread scope alone and never the
+    project or KB scope.
+
+    Returns ``None`` (caller falls back to retrieval) when there is no thread scope,
+    no completed chunks, or the total exceeds ``max_tokens``.
     """
-    scope = _resolve_scope(None, scope_thread_id, scope_project_id)
-    if scope is None:
+    if not scope_thread_id:
         return None
+    scope = thread_scope(scope_thread_id)
     conn = rag_db.get_connection()
     try:
         rows = all_chunks_for_scope(conn, scope)

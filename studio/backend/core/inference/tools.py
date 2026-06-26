@@ -1194,13 +1194,14 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
     # Whole-document mode: a thread-attached file small enough to fit is injected
     # in full so the model reads everything (summaries, cross-references, etc.).
-    # Oversized files (or no thread doc) fall through to top-K retrieval below.
+    # Thread attachments only: a KB selection is exclusive (search that corpus), and
+    # project sources stay retrieval-ranked, so both keep top-K below. Oversized
+    # files (or no thread doc) also fall through to top-K retrieval.
     thread_id = rag_scope.get("thread_id")
-    if thread_id and _thread_whole_doc_enabled(rag_scope):
+    if thread_id and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope):
         try:
             whole = whole_document_context(
                 scope_thread_id = thread_id,
-                scope_project_id = rag_scope.get("project_id"),
                 max_tokens = _whole_doc_budget(),
             )
         except Exception as exc:  # noqa: BLE001

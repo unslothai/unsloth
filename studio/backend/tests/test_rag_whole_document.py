@@ -217,6 +217,51 @@ def test_build_rag_autoinject_kb_scope_never_whole_doc(rag_conn, monkeypatch):
     assert _injected_text(result) == "KB_RETRIEVAL_TEXT"
 
 
+def test_whole_document_context_thread_scope_only(rag_conn):
+    # A project corpus chunk must never be whole-document injected, even when a
+    # thread attachment exists under the same chat.
+    _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["thread attachment"])
+    _add_doc(rag_conn, store.project_scope("p1"), "pd", "project.txt", "h2", ["project corpus"])
+    text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert "thread attachment" in text
+    assert "project corpus" not in text
+    assert {s["filename"] for s in sources} == {"thread.txt"}
+
+
+def test_build_rag_autoinject_excludes_project_scope(rag_conn):
+    # Real frontend payload: project chat sends both thread_id and project_id.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["thread attachment text"]
+    )
+    _add_doc(
+        rag_conn, store.project_scope("p1"), "pd", "project.txt", "h2", ["project corpus text"]
+    )
+    result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "project_id": "p1"})
+    injected = _injected_text(result)
+    assert "thread attachment text" in injected
+    assert "project corpus text" not in injected
+
+
+def test_build_rag_autoinject_thread_whole_doc_ignores_project_size(rag_conn):
+    # A large project corpus must not push a small thread attachment over budget.
+    _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["small thread file"])
+    _add_doc(
+        rag_conn, store.project_scope("p1"), "pd", "project.txt", "h2", ["big"], tokens = [50_000]
+    )
+    result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "project_id": "p1"})
+    assert "small thread file" in _injected_text(result)
+
+
+def test_build_rag_autoinject_kb_defers_to_retrieval(rag_conn, monkeypatch):
+    # A KB selection is exclusive: a thread attachment must not preempt it with
+    # whole-doc; the KB goes through retrieval.
+    _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["thread attachment"])
+    sentinel = ("KB_RETRIEVAL", [{"citationId": 1, "filename": "kb.pdf", "text": "x"}])
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
+    result = inf_tools.build_rag_autoinject(_convo(), {"kb_id": "K1", "thread_id": "t1"})
+    assert _injected_text(result) == "KB_RETRIEVAL"
+
+
 def test_build_rag_autoinject_no_scope_returns_none(rag_conn):
     assert inf_tools.build_rag_autoinject(_convo(), None) is None
     assert inf_tools.build_rag_autoinject(_convo(), {}) is None
