@@ -10104,8 +10104,14 @@ async def generate_diffusion_image(
             batch_size = request.batch_size,
         )
     except RuntimeError as exc:
-        # No model loaded (or unloaded mid-flight) — a client-state problem.
-        raise HTTPException(status_code = 409, detail = str(exc))
+        if not backend.is_loaded:
+            # The only genuine client-state 409: nothing is loaded to generate with.
+            raise HTTPException(status_code = 409, detail = "No diffusion model is loaded.")
+        # A pipeline RuntimeError (CUDA OOM, shape/device) is a server failure; fall
+        # through to the sanitized 500 instead of echoing raw exception text (which
+        # would 409 an OOM as retryable and leak VRAM totals / tensor shapes).
+        logger.error("diffusion.generate_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Image generation failed.")
     except Exception as exc:
         logger.error("diffusion.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")

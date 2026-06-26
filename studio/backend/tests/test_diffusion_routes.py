@@ -223,6 +223,22 @@ def test_generate_without_load_returns_409(client):
     assert resp.status_code == 409
 
 
+def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
+    # A loaded model that fails mid-pipeline (CUDA OOM, a RuntimeError) is a server
+    # failure: 500 with a generic message, not a 409 echoing the raw exception.
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _oom(**kwargs):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 20.00 GiB (24.00 GiB total)")
+
+    monkeypatch.setattr(backend, "generate", _oom)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Image generation failed."
+    assert "CUDA" not in resp.json()["detail"]
+
+
 def test_load_unknown_family_returns_400(client, monkeypatch):
     def _raise(*a, **k):
         raise ValueError("'x/y' isn't a supported image-generation model. Supported: Z-Image.")

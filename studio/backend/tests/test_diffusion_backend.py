@@ -47,9 +47,13 @@ def test_detect_family_from_repo_id():
     # Qwen-Image guides via true_cfg_scale, not guidance_scale.
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").cfg_kwarg == "true_cfg_scale"
     assert detect_family("unsloth/Z-Image-GGUF").cfg_kwarg == "guidance_scale"
-    # Image-editing checkpoints are rejected (text-to-image backend only).
+    # Image-editing checkpoints are rejected (text-to-image backend only): the
+    # edit keyword is matched as a whole id segment, so an "edit" that's only a
+    # substring of a normal word ("Edition") still loads.
     assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF") is None
     assert detect_family("unsloth/FLUX.1-Kontext-dev-GGUF") is None
+    assert detect_family("unsloth/Qwen-Image-Inpainting-GGUF") is None
+    assert detect_family("unsloth/Z-Image-Edition-GGUF").name == "z-image"
     assert detect_family("meta-llama/Llama-3-8B") is None
 
 

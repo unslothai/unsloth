@@ -990,11 +990,14 @@ export const IMAGE_GEN_TASKS = [
 // id so they don't show in the Images picker only to 400 on load. Keeping the
 // image-to-image task itself is required: some supported models (FLUX.2-klein)
 // carry that tag too.
-const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint"] as const;
+const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "inpainting"] as const;
 function isImageEditModel(repoId: string | null | undefined): boolean {
   if (!repoId) return false;
-  const id = repoId.toLowerCase();
-  return IMAGE_EDIT_KEYWORDS.some((kw) => id.includes(kw));
+  // Whole-segment match (not substring) so a normal model like "...-edition"
+  // isn't hidden; mirrors the backend detect_family segment check. Split on
+  // both path separators so a Windows local path is segmented too.
+  const segments = new Set(repoId.toLowerCase().split(/[-_./\\]+/));
+  return IMAGE_EDIT_KEYWORDS.some((kw) => segments.has(kw));
 }
 
 // Gate an on-device model by the picker's task scope. With a filter (the Images
