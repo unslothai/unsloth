@@ -234,8 +234,7 @@ class TestParser:
         end-of-string as a terminator. Regression for the Gemini
         high-severity flag on this PR."""
         text = (
-            "<think>I should call web_search[ARGS]"
-            '{"query":"weather"} next to find the answer.'
+            "<think>I should call web_search[ARGS]" '{"query":"weather"} next to find the answer.'
         )
         result = parse_tool_calls_from_text(text)
         # Inside an unclosed think block, parse_tool_calls_from_text
@@ -265,9 +264,7 @@ class TestParser:
     def test_mistral_bracket_nested_json(self):
         # Brace-balance scan must handle nested objects and braces
         # inside string literals.
-        text = (
-            "[TOOL_CALLS]web_search" '{"query":"a {nested} brace","opts":{"limit":5}}'
-        )
+        text = "[TOOL_CALLS]web_search" '{"query":"a {nested} brace","opts":{"limit":5}}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         import json as _json
@@ -312,9 +309,7 @@ class TestParser:
         assert "print(1)" in result[0]["function"]["arguments"]
 
     def test_rehearsal_with_prose(self):
-        text = (
-            "I should call the python tool. Like this: " 'python[ARGS]{"code":"x = 1"}'
-        )
+        text = "I should call the python tool. Like this: " 'python[ARGS]{"code":"x = 1"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
@@ -340,8 +335,7 @@ class TestParser:
 
     def test_think_block_stripped_before_bracket_tag(self):
         text = (
-            "<think>Let me search for that.</think>\n"
-            '[TOOL_CALLS]web_search{"query":"weather"}'
+            "<think>Let me search for that.</think>\n" '[TOOL_CALLS]web_search{"query":"weather"}'
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -349,10 +343,7 @@ class TestParser:
 
     def test_uppercase_think_tag_stripped(self):
         # Some templates use [THINK]...[/THINK] instead of <think>.
-        text = (
-            "[THINK]planning my next call[/THINK]"
-            '[TOOL_CALLS]python{"code":"print(1)"}'
-        )
+        text = "[THINK]planning my next call[/THINK]" '[TOOL_CALLS]python{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"

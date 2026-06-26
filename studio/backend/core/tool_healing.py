@@ -72,9 +72,7 @@ _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
 # Accept an unclosed trailing block during streaming. Without that, a
 # rehearsed tool call inside an open <think> survives this pass and
 # may be executed as a real call when the surrounding parser sees it.
-_THINK_TAG_RE = re.compile(
-    r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL
-)
+_THINK_TAG_RE = re.compile(r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL)
 
 # Mistral ``[TOOL_CALLS]name{json}`` prefix.
 _MISTRAL_BRACKET_RE = re.compile(r"\[TOOL_CALLS\](\w+)\s*(?=\{)")

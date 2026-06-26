@@ -1487,6 +1487,7 @@ _TOOL_ARTIFACT_TIP = (
     "canvases may call render_html once."
 )
 
+
 def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
     tool_names = {
         (tool.get("function") or {}).get("name")
