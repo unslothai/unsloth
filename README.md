@@ -246,11 +246,14 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
 ```
 
-Install behind a TLS-inspecting proxy (Cisco Umbrella, Zscaler, etc.) on macOS — enabled by default on macOS, set to `0` to opt out:
+On macOS, the installer defaults to using the system certificate store (`UV_SYSTEM_CERTS=1`) so uv reads your system Keychain. This is required behind TLS-inspecting proxies (Cisco Umbrella, Zscaler, etc.); your corporate CA must be trusted in the Keychain first:
 ```bash
-curl -fsSL https://unsloth.ai/install.sh | UV_NATIVE_TLS=1 sh
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /path/to/ProxyCA.cer
 ```
-This switches uv to macOS SecureTransport so it reads your system Keychain. Your corporate CA must be trusted in the Keychain first (`sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /path/to/ProxyCA.cer`).
+To opt out of system certs on macOS:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UV_SYSTEM_CERTS=0 sh
+```
 
 Point the frontend build at a corporate npm mirror/proxy with `UNSLOTH_NPM_REGISTRY` (for the developer install behind a firewall that blocks `registry.npmjs.org`):
 ```bash
