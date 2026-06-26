@@ -387,8 +387,9 @@ export function HistoryCardGrid({
           const isRunning = run.status === "running";
           const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
-          // Backend /p ref, gated on previewability + route-expressible depth.
-          const canCopyPreview = !!run.preview_ref;
+          // Backend /p ref + its capability token. Both are required: the link
+          // is useless (404s) without the signature, so don't offer to copy it.
+          const canCopyPreview = !!run.preview_ref && !!run.preview_sig;
           return (
             <div
               role="button"
@@ -456,7 +457,9 @@ export function HistoryCardGrid({
                       serverUrl ??
                       window.location.origin
                     ).replace(/\/+$/, "");
-                    const url = `${base}/p/${ref}`;
+                    // The signature is a bearer capability carried as ?k=; the
+                    // recipient's page forwards it on its chat requests.
+                    const url = `${base}/p/${ref}?k=${encodeURIComponent(run.preview_sig ?? "")}`;
                     const ok = await copyToClipboard(url);
                     toast[ok ? "success" : "error"](
                       t(

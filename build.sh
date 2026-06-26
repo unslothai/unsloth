@@ -35,10 +35,19 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
+# Corporate-mirror / proxy escape hatch (#6491). When UNSLOTH_NPM_REGISTRY is set we
+# thread it as `--registry <url>` into the installs (overrides frontend/.npmrc's pinned
+# registry for both bun and npm; min-release-age / save-exact stay in force). Empty
+# array (the default) expands to nothing under `set -u`.
+_NPM_REGISTRY_ARGS=()
+if [ -n "${UNSLOTH_NPM_REGISTRY:-}" ]; then
+    _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
+fi
+
 # Use bun for install if available (faster), fall back to npm.
 _install_ok=false
 if command -v bun &>/dev/null; then
-    if bun install; then
+    if bun install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"; then
         _install_ok=true
     else
         echo "⚠ bun install failed, falling back to npm"
@@ -46,8 +55,10 @@ if command -v bun &>/dev/null; then
     fi
 fi
 if [ "$_install_ok" != "true" ]; then
-    if ! npm install; then
+    if ! npm install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"; then
         echo "❌ ERROR: package install failed" >&2
+        echo "   If you are behind a corporate firewall/proxy, set UNSLOTH_NPM_REGISTRY to your mirror and retry, e.g.:" >&2
+        echo "   UNSLOTH_NPM_REGISTRY=https://your-mirror.example/api/npm/ ./build.sh" >&2
         exit 1
     fi
 fi
