@@ -155,6 +155,34 @@ def test_strips_tail_only_parameter_orphan_no_trailing_ws():
     assert "Final answer." in cleaned
 
 
+def test_strips_complete_bracket_tag_keeps_trailing_prose():
+    # A complete Mistral [TOOL_CALLS] call strips only its balanced JSON,
+    # leaving following prose intact.
+    cleaned = _TOOL_XML_RE.sub("", '[TOOL_CALLS]web_search{"q":"x"} and then prose')
+    assert "[TOOL_CALLS]" not in cleaned
+    assert "and then prose" in cleaned
+
+
+def test_strips_unclosed_bracket_tail():
+    # Close brace lost to EOS: the truncated tail is stripped up to the end
+    # instead of leaking the raw bracket marker to the UI.
+    cleaned = _TOOL_XML_RE.sub("", 'here [TOOL_CALLS]web_search{"query":"weather"')
+    assert "[TOOL_CALLS]" not in cleaned
+    assert cleaned.strip() == "here"
+
+
+def test_strips_unclosed_rehearsal_tail():
+    cleaned = _TOOL_XML_RE.sub("", 'text python[ARGS]{"code":"print(1)"')
+    assert "[ARGS]" not in cleaned
+    assert cleaned.strip() == "text"
+
+
+def test_strips_hyphenated_mcp_bracket_name():
+    cleaned = _TOOL_XML_RE.sub("", 'x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}')
+    assert "list-issues" not in cleaned
+    assert cleaned.strip() == "x"
+
+
 def test_preserves_mid_string_parameter_in_code_sample():
     # Tail-anchor on `</parameter>` so doc/example prose survives.
     text = (

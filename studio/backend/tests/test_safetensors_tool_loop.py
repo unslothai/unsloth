@@ -319,6 +319,30 @@ class TestParser:
         result = parse_tool_calls_from_text(text)
         assert result == []
 
+    def test_mistral_bracket_hyphenated_mcp_name(self):
+        # MCP function names may contain dashes; the bracket parser must
+        # capture the whole name, not truncate at the first dash.
+        text = '[TOOL_CALLS]mcp__srv__list-issues{"q":"x"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "mcp__srv__list-issues"
+
+    def test_rehearsal_hyphenated_mcp_name(self):
+        text = 'mcp__srv__list-issues[ARGS]{"q":"x"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "mcp__srv__list-issues"
+
+    def test_streaming_strip_removes_partial_bracket_marker(self):
+        # A bracket tag streamed before its opening brace (split delta) must
+        # be stripped on the final pass instead of leaking the raw marker to
+        # the UI, the same way a bare <tool_call> open tag is stripped.
+        assert strip_tool_markup("answer [TOOL_CALLS]web_search", final = True) == "answer"
+        assert strip_tool_markup("text python[ARGS]", final = True) == "text"
+        # Non-final must keep the in-progress tag buffered (not yet stripped).
+        partial = "answer [TOOL_CALLS]web_search"
+        assert strip_tool_markup(partial, final = False) == partial
+
     # <think> pre-strip.
 
     def test_think_block_stripped_before_xml(self):

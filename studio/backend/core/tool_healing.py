@@ -31,21 +31,26 @@ _BRACKETED_JSON_ONE_LEVEL = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
 
 # Pre-compiled patterns for tool XML stripping. The hyphen in the name
 # char-class lets dashed MCP tool/parameter names (mcp__srv__list-issues,
-# issue-number) parse alongside the built-ins.
+# issue-number) parse alongside the built-ins, including the Mistral
+# [TOOL_CALLS] and rehearsal [ARGS] bracket-tag forms.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
     re.compile(r"<tool_call\|>"),
     re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
-    re.compile(r"\[TOOL_CALLS\]\w+\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
-    re.compile(r"\b\w+\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
+    re.compile(r"\[TOOL_CALLS\][\w-]+\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
+    re.compile(r"\b[\w-]+\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
 ]
+# Trailing-unclosed patterns. The bracket-tag open forms match the bare marker
+# (not requiring the `{`) so a partial `[TOOL_CALLS]web_search` / `python[ARGS]`
+# streamed before its opening brace is stripped instead of leaking to the UI,
+# matching how `<tool_call>.*$` strips a bare open tag.
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
-    re.compile(r"\[TOOL_CALLS\]\w+\s*\{.*$", re.DOTALL),
-    re.compile(r"\b\w+\[ARGS\]\s*\{.*$", re.DOTALL),
+    re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
+    re.compile(r"\b[\w-]+\[ARGS\].*$", re.DOTALL),
 ]
 
 # Pre-compiled patterns for tool-call XML parsing.
@@ -74,11 +79,12 @@ _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
 # may be executed as a real call when the surrounding parser sees it.
 _THINK_TAG_RE = re.compile(r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL)
 
-# Mistral ``[TOOL_CALLS]name{json}`` prefix.
-_MISTRAL_BRACKET_RE = re.compile(r"\[TOOL_CALLS\](\w+)\s*(?=\{)")
+# Mistral ``[TOOL_CALLS]name{json}`` prefix. The name char-class includes the
+# hyphen so dashed MCP function names (mcp__srv__list-issues) are captured whole.
+_MISTRAL_BRACKET_RE = re.compile(r"\[TOOL_CALLS\]([\w-]+)\s*(?=\{)")
 
 # Rehearsal ``name[ARGS]{json}`` prefix.
-_REHEARSAL_RE = re.compile(r"\b(\w+)\[ARGS\]\s*(?=\{)")
+_REHEARSAL_RE = re.compile(r"\b([\w-]+)\[ARGS\]\s*(?=\{)")
 
 
 def _balanced_json_span(text: str, start: int) -> int | None:

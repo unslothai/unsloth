@@ -1576,7 +1576,9 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
 #   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
 #      `\Z` so mid-text `<parameter>` in user code samples survives.
 #   5. Mistral `[TOOL_CALLS]name{json}` / rehearsal `name[ARGS]{json}` bracket
-#      tags (one level of nested JSON objects).
+#      tags. A complete call strips only its balanced JSON object (one level of
+#      nesting); a truncated tail (close brace lost to EOS) is stripped up to
+#      `\Z` so it does not leak, mirroring the orphan-opening XML shapes.
 _TOOL_XML_RE = _re.compile(
     # Hyphen in the name char-class matches MCP tool names with dashes
     # (mcp__srv__list-issues) that would otherwise leak past this strip.
@@ -1585,8 +1587,8 @@ _TOOL_XML_RE = _re.compile(
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
     r"|</parameter>\s*\Z"
-    r"|\[TOOL_CALLS\]\w+\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
-    r"|\b\w+\[ARGS\]\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}",
+    r"|\[TOOL_CALLS\][\w-]+\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
+    r"|\b[\w-]+\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)",
     _re.DOTALL,
 )
 
