@@ -804,6 +804,17 @@ def test_mlx_trl_shim_installs_real_trl_or_stub(monkeypatch):
     assert trl.__UNSLOTH_MLX_COMPAT__ is True
 
 
+def test_mlx_trl_star_import_exports_public_shims():
+    """Existing `from trl import *` callers should receive MLX SFT shims."""
+    unsloth = _import_mlx_unsloth()
+    namespace = {}
+
+    exec("from trl import *", namespace)
+
+    assert namespace["SFTTrainer"] is unsloth.UnslothTrainer
+    assert namespace["SFTConfig"] is unsloth.UnslothTrainingArguments
+
+
 def test_mlx_vision_collator_is_constructor_compatible():
     """Vision notebooks should be able to instantiate the collator placeholder."""
     unsloth = _import_mlx_unsloth()
@@ -905,7 +916,7 @@ def test_mlx_get_chat_template_uses_light_tokenizer_patch(monkeypatch):
 
 
 def test_mlx_gpu_memory_stats_helper_shape():
-    """The portable memory helper should return notebook-compatible values."""
+    """The portable memory helper should return CUDA-shaped values."""
     unsloth = _import_mlx_unsloth()
 
     stats, used, total = unsloth.get_gpu_memory_stats()
@@ -914,3 +925,39 @@ def test_mlx_gpu_memory_stats_helper_shape():
     assert hasattr(stats, "total_memory")
     assert isinstance(used, float)
     assert total > 0
+
+
+def test_mlx_torch_cuda_compatibility_shim():
+    """Existing CUDA memory and move calls should run on MLX."""
+    unsloth = _import_mlx_unsloth()
+    torch = pytest.importorskip("torch")
+    from transformers.tokenization_utils_base import BatchEncoding
+
+    stats, used, total = unsloth.get_gpu_memory_stats()
+    cuda_stats = torch.cuda.get_device_properties(0)
+
+    assert cuda_stats.name == stats.name
+    assert cuda_stats.total_memory == stats.total_memory
+    assert torch.cuda.get_device_name(0) == stats.name
+    assert torch.cuda.max_memory_reserved() == int(used * 1024 * 1024 * 1024)
+    assert torch.cuda.max_memory_allocated() == torch.cuda.max_memory_reserved()
+    assert torch.cuda.memory_reserved() == torch.cuda.max_memory_reserved()
+    assert torch.cuda.device_count() == 1
+    assert torch.cuda.current_device() == 0
+    assert torch.cuda.get_device_capability() == (0, 0)
+    assert total > 0
+
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    torch.cuda.set_device(0)
+
+    tensor = torch.tensor([1, 2, 3])
+    assert tensor.to("cuda") is tensor
+    assert tensor.cuda() is tensor
+    assert tensor.to(device = "cuda") is tensor
+    assert tensor.to("cuda", dtype = torch.float32).dtype == torch.float32
+
+    batch = BatchEncoding({"input_ids": tensor})
+    assert batch.to("cuda") is batch
+    assert batch.to(device = "cuda") is batch

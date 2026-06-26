@@ -34,7 +34,7 @@ if platform.system() == "Windows":
 
 
 class _UnslothDeviceStats:
-    """Portable device metadata used by notebook memory-reporting cells."""
+    """Portable device metadata used by backend memory-reporting helpers."""
 
     def __init__(
         self,
@@ -44,6 +44,9 @@ class _UnslothDeviceStats:
         """Store a display name and total memory in bytes."""
         self.name = name
         self.total_memory = int(total_memory or 0)
+        self.major = 0
+        self.minor = 0
+        self.multi_processor_count = 0
 
 
 def _bytes_to_gb(value):
@@ -106,6 +109,12 @@ if _IS_MLX:
     __version__ = unsloth_zoo.__version__
     DEVICE_TYPE = "mlx"
 
+    def _is_mlx_cuda_device_target(device):
+        """Return True when a torch .to/.cuda target asks for CUDA on MLX."""
+        if device is None:
+            return False
+        return str(device).lower().startswith("cuda")
+
     def _patch_mlx_batch_encoding_to_cuda():
         """Treat tokenizer_output.to("cuda") as a no-op on the MLX backend."""
         try:
@@ -123,8 +132,8 @@ if _IS_MLX:
             *args,
             **kwargs,
         ):
-            target = str(device).lower() if device is not None else ""
-            if target.startswith("cuda"):
+            target = kwargs.get("device", device)
+            if _is_mlx_cuda_device_target(target):
                 return self
             return original_to(self, device, *args, **kwargs)
 
@@ -212,10 +221,87 @@ if _IS_MLX:
         return stats, _bytes_to_gb(peak), max_memory
 
     def clear_gpu_memory():
-        """Clear MLX's cached GPU memory for notebook cleanup cells."""
+        """Clear MLX's cached GPU memory for compatibility cleanup helpers."""
         import mlx.core as mx
         if hasattr(mx, "clear_cache"):
             mx.clear_cache()
+
+    def _patch_mlx_torch_cuda_compat_api():
+        """Expose CUDA-shaped torch helpers for compatibility callers on MLX."""
+        try:
+            import torch
+        except Exception:
+            return
+
+        cuda = getattr(torch, "cuda", None)
+        if cuda is not None and not getattr(cuda, "_unsloth_mlx_cuda_compat_api", False):
+
+            def get_device_properties(device = None):
+                """Return MLX device stats through torch.cuda's compatibility API."""
+                return get_gpu_memory_stats()[0]
+
+            def get_device_name(device = None):
+                """Return the MLX device name through torch.cuda's compatibility API."""
+                return get_device_properties(device).name
+
+            def max_memory_reserved(device = None):
+                """Return MLX peak memory in bytes for torch.cuda compatibility API."""
+                return int(get_gpu_memory_stats()[1] * 1024 * 1024 * 1024)
+
+            def empty_cache():
+                """Clear MLX cache through torch.cuda.empty_cache()."""
+                clear_gpu_memory()
+
+            cuda.get_device_properties = get_device_properties
+            cuda.get_device_name = get_device_name
+            cuda.max_memory_reserved = max_memory_reserved
+            cuda.max_memory_allocated = max_memory_reserved
+            cuda.memory_reserved = max_memory_reserved
+            cuda.memory_allocated = max_memory_reserved
+            cuda.empty_cache = empty_cache
+            cuda.reset_peak_memory_stats = lambda device = None: None
+            cuda.synchronize = lambda device = None: None
+            cuda.current_device = lambda: 0
+            cuda.device_count = lambda: 1
+            cuda.set_device = lambda device = None: None
+            cuda.get_device_capability = lambda device = None: (0, 0)
+            cuda.is_bf16_supported = lambda *args, **kwargs: is_bfloat16_supported()
+            cuda._unsloth_mlx_cuda_compat_api = True
+
+        tensor_to = getattr(torch.Tensor, "to", None)
+        if tensor_to is not None and not getattr(tensor_to, "_unsloth_mlx_cuda_noop", False):
+
+            def mlx_tensor_to(self, *args, **kwargs):
+                """Ignore CUDA device targets while preserving dtype conversions."""
+                args = list(args)
+                kwargs = dict(kwargs)
+                removed_cuda_device = False
+                if args and _is_mlx_cuda_device_target(args[0]):
+                    args.pop(0)
+                    removed_cuda_device = True
+                if _is_mlx_cuda_device_target(kwargs.get("device", None)):
+                    kwargs.pop("device", None)
+                    removed_cuda_device = True
+                if removed_cuda_device and not args and not kwargs:
+                    return self
+                return tensor_to(self, *args, **kwargs)
+
+            mlx_tensor_to._unsloth_mlx_cuda_noop = True
+            mlx_tensor_to._unsloth_original_to = tensor_to
+            torch.Tensor.to = mlx_tensor_to
+
+        tensor_cuda = getattr(torch.Tensor, "cuda", None)
+        if tensor_cuda is not None and not getattr(tensor_cuda, "_unsloth_mlx_cuda_noop", False):
+
+            def mlx_tensor_cuda(self, *args, **kwargs):
+                """Treat tensor.cuda() as a no-op on MLX."""
+                return self
+
+            mlx_tensor_cuda._unsloth_mlx_cuda_noop = True
+            mlx_tensor_cuda._unsloth_original_cuda = tensor_cuda
+            torch.Tensor.cuda = mlx_tensor_cuda
+
+    _patch_mlx_torch_cuda_compat_api()
 
     _MLX_TRAINING_CONFIG_FIELDS = {_field.name for _field in _dataclasses.fields(MLXTrainingConfig)}
     _MLX_TRAINING_ARGUMENT_ALIASES = {
@@ -936,6 +1022,7 @@ if _IS_MLX:
 
         _trl.SFTTrainer = UnslothTrainer
         _trl.SFTConfig = UnslothTrainingArguments
+        _trl.__all__ = ["SFTConfig", "SFTTrainer"]
         _trl.__UNSLOTH_MLX_COMPAT__ = True
 
     def _install_mlx_unsloth_trainer_shim():
