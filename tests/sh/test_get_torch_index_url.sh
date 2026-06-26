@@ -415,6 +415,14 @@ assert_eq "url override beats family override -> url" "https://mirror.example.co
 _result=$(UNSLOTH_TORCH_INDEX_FAMILY="" UNSLOTH_TORCH_INDEX_URL="" run_func "none")
 assert_eq "empty overrides ignored -> detected cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 
+# 46) ALL trailing slashes are stripped from a URL override (not just one).
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128///" run_func "none")
+assert_eq "url override double slash stripped" "https://mirror.example.com/whl/cu128" "$_result"
+
+# 47) Leading and trailing slashes stripped from a family override.
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="//cu128//" run_func "none")
+assert_eq "family override slashes stripped" "https://download.pytorch.org/whl/cu128" "$_result"
+
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
 rm -rf "$_TOOLS_DIR"

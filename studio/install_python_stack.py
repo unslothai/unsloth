@@ -1429,6 +1429,23 @@ NO_TORCH = _infer_no_torch()
 # GPU detection. Values: "cuda", "rocm", or "cpu". Empty means unknown
 # (standalone `unsloth studio update` runs, where we re-detect normally).
 _TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
+# When install.sh did not run (standalone `unsloth studio update`) but the caller
+# pinned the wheel index explicitly, derive the backend from that override so the
+# CUDA/ROCm repair helpers honour it instead of re-probing the GPU and possibly
+# reinstalling a different family. Classify on the final URL/family segment,
+# mirroring install.sh's UNSLOTH_TORCH_BACKEND case.
+if not _TORCH_BACKEND:
+    _idx_override = (
+        os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
+        or os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
+    )
+    _idx_leaf = _idx_override.rstrip("/").rsplit("/", 1)[-1].lower()
+    if _idx_leaf.startswith(("rocm", "gfx")):
+        _TORCH_BACKEND = "rocm"
+    elif _idx_leaf == "cpu":
+        _TORCH_BACKEND = "cpu"
+    elif _idx_leaf.startswith("cu"):
+        _TORCH_BACKEND = "cuda"
 
 
 def _torch_step_label(suffix: str) -> str:

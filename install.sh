@@ -1994,11 +1994,18 @@ get_torch_index_url() {
     # is the convenience form (cpu, cu124, cu126, cu128, cu130, rocm6.4, ...)
     # appended to the mirror base so UNSLOTH_PYTORCH_MIRROR is still honoured.
     if [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ]; then
-        echo "${UNSLOTH_TORCH_INDEX_URL%/}"; return
+        # Strip ALL trailing slashes (match the Python side's .rstrip("/") and the
+        # Strix mirror handling below) -- a double/triple-slash URL 404s on strict
+        # pip proxies (artifactory, sonatype).
+        _url="${UNSLOTH_TORCH_INDEX_URL}"
+        while [ "${_url%/}" != "$_url" ]; do _url="${_url%/}"; done
+        echo "$_url"; return
     fi
     if [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
-        _family="${UNSLOTH_TORCH_INDEX_FAMILY#/}"
-        echo "$_base/${_family%/}"; return
+        _family="${UNSLOTH_TORCH_INDEX_FAMILY}"
+        while [ "${_family#/}" != "$_family" ]; do _family="${_family#/}"; done
+        while [ "${_family%/}" != "$_family" ]; do _family="${_family%/}"; done
+        echo "$_base/$_family"; return
     fi
     # macOS: always CPU (no CUDA support)
     case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
@@ -2396,7 +2403,16 @@ _maybe_bootstrap_rocm_wsl() {
     [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
     return 0
 }
-_maybe_bootstrap_rocm_wsl || true
+# When the caller pins the wheel index (UNSLOTH_TORCH_INDEX_URL / _FAMILY),
+# honour it everywhere downstream: skip the WSL ROCm bootstrap (which can run
+# sudo + large downloads after probing /dev/dxg) and the Radeon/Strix rerouting
+# below (which would re-probe the GPU and overwrite the pinned URL). A headless /
+# container / CI build must get exactly the index it asked for.
+_torch_index_pinned=false
+if [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] || [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
+    _torch_index_pinned=true
+fi
+[ "$_torch_index_pinned" = true ] || _maybe_bootstrap_rocm_wsl || true
 
 TORCH_INDEX_URL=$(get_torch_index_url)
 
@@ -2424,7 +2440,11 @@ esac
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*
 # (gfx in rocminfo or amd-smi list). Then require rocminfo "Marketing Name:.*Radeon".
+# Skipped entirely when the index is pinned: an explicit override (even a ROCm
+# one like UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4) must not be rerouted to the
+# Radeon/Strix repos by GPU probing.
 _amd_gpu_radeon=false
+if [ "$_torch_index_pinned" = false ]; then
 case "$TORCH_INDEX_URL" in
     */rocm*)
         if _has_amd_rocm_gpu && command -v rocminfo >/dev/null 2>&1 && \
@@ -2505,6 +2525,7 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+fi  # _torch_index_pinned guard (Radeon + Strix reroute)
 _TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
 if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
     _TAURI_TORCH_INDEX_FAMILY="radeon"
