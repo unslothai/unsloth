@@ -123,7 +123,13 @@ _TC_FUNC_START_RE = re.compile(r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")
 # trailing prose leaked into the last parameter value.
 _TC_END_TAG_RE = re.compile(r"</(?:tool_call|function)>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-_TC_PARAM_START_RE = re.compile(r'<(?:parameter|param)(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*')
+# Trailing class is horizontal whitespace only (``[^\S\n]*``, not ``\s*``) so the
+# wrapping newline + the value's first-line indentation are NOT consumed here;
+# ``_trim_param_value`` then trims exactly one wrapping newline, preserving code
+# indentation (matches SGLang's qwen3_coder detector).
+_TC_PARAM_START_RE = re.compile(
+    r'<(?:parameter|param)(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>[^\S\n]*'
+)
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</(?:parameter|param)>\s*$")
 
 # Llama-3 ``<|python_tag|>NAME.call(...)``.
@@ -398,6 +404,19 @@ def _parse_tool_call_json(
     return out
 
 
+def _trim_param_value(val: str) -> str:
+    """Trim a single wrapping newline the chat template adds around an XML
+    parameter value (``<parameter=k>\nVALUE\n</parameter>``) while preserving any
+    significant leading indentation / trailing whitespace inside VALUE. Using
+    ``str.strip()`` here destroyed the indentation of code/diff arguments; SGLang's
+    qwen3_coder detector trims only the wrapping newline."""
+    if val.startswith("\n"):
+        val = val[1:]
+    if val.endswith("\n"):
+        val = val[:-1]
+    return val
+
+
 def _parse_function_xml(
     content: str,
     *,
@@ -432,7 +451,7 @@ def _parse_function_xml(
             if not _TC_PARAM_CLOSE_RE.search(raw_val):
                 param_unclosed = True
             val = _TC_PARAM_CLOSE_RE.sub("", raw_val)
-            args[pm.group(1) or pm.group(2)] = val.strip()
+            args[pm.group(1) or pm.group(2)] = _trim_param_value(val)
         else:
             for pidx, pm in enumerate(param_starts):
                 val_start = pm.end()
@@ -443,7 +462,7 @@ def _parse_function_xml(
                 if not _TC_PARAM_CLOSE_RE.search(raw_val):
                     param_unclosed = True
                 val = _TC_PARAM_CLOSE_RE.sub("", raw_val)
-                args[pm.group(1) or pm.group(2)] = val.strip()
+                args[pm.group(1) or pm.group(2)] = _trim_param_value(val)
 
         # Strict mode: every parameter must close with ``</parameter>`` /
         # ``</param>``; a dangling parameter means the call was cut off.
@@ -821,7 +840,12 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
     if not isinstance(obj, dict):
         return
     name = obj.get("name") or ""
-    args = obj.get("arguments") or {}
+    # Mistral templates use ``arguments``; accept the ``parameters`` alias too
+    # (the sibling JSON/XML paths and SGLang's base detector both alias it) so an
+    # array object keyed on ``parameters`` does not lose its payload.
+    args = obj.get("arguments")
+    if args is None:
+        args = obj.get("parameters", {})
     if isinstance(args, dict):
         args_str = json.dumps(args)
     elif isinstance(args, str):
