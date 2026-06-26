@@ -874,7 +874,6 @@ class FastLanguageModel(FastLlamaModel):
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = local_files_only,
                 fast_inference = fast_inference,
-                subfolder = kwargs.get("subfolder"),
                 force_download = kwargs.get("force_download", False),
                 use_safetensors = kwargs.get("use_safetensors"),
             )
@@ -882,14 +881,14 @@ class FastLanguageModel(FastLlamaModel):
             # the in-process load reuses that warm cache instead of re-forcing.
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
-            # Read the adapter from the same place the prefetch warmed: forward
-            # cache_dir / subfolder when set (local_files_only is already passed
-            # explicitly below), while leaving PEFT's own defaults untouched otherwise.
+            # Read the adapter from the same place the prefetch warmed: forward cache_dir
+            # when set (local_files_only is already passed explicitly below). subfolder is
+            # NOT forwarded -- it targets the base checkpoint, and an adapter typically
+            # lives at the repo root, so forwarding it would make PeftModel look under
+            # old_model_name/<subfolder> and miss a root adapter.
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
-            if kwargs.get("subfolder") is not None:
-                peft_load_kwargs["subfolder"] = kwargs["subfolder"]
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -1824,7 +1823,6 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = local_files_only,
                 fast_inference = fast_inference,
-                subfolder = kwargs.get("subfolder"),
                 force_download = kwargs.get("force_download", False),
                 use_safetensors = kwargs.get("use_safetensors"),
             )
@@ -1832,14 +1830,14 @@ class FastModel(FastBaseModel):
             # the in-process load reuses that warm cache instead of re-forcing.
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
-            # Read the adapter from the same place the prefetch warmed: forward
-            # cache_dir / subfolder when set (local_files_only is already passed
-            # explicitly below), while leaving PEFT's own defaults untouched otherwise.
+            # Read the adapter from the same place the prefetch warmed: forward cache_dir
+            # when set (local_files_only is already passed explicitly below). subfolder is
+            # NOT forwarded -- it targets the base checkpoint, and an adapter typically
+            # lives at the repo root, so forwarding it would make PeftModel look under
+            # old_model_name/<subfolder> and miss a root adapter.
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
-            if kwargs.get("subfolder") is not None:
-                peft_load_kwargs["subfolder"] = kwargs["subfolder"]
             try:
                 model = PeftModel.from_pretrained(
                     model,

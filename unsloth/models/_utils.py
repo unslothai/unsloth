@@ -863,6 +863,21 @@ def _in_requested_load_scope(filename, subfolder):
     return "/" not in filename
 
 
+def _is_model_weight_safetensors(filename):
+    """True if a repo-relative *filename* is a model-weights safetensors file rather than
+    a PEFT adapter / sidecar (e.g. ``adapter_model.safetensors``).
+
+    Only a real model-weights safetensors proves the ``.bin`` full-model weights are
+    redundant. A repo can ship an ``adapter_model.safetensors`` sidecar while its actual
+    weights are ``pytorch_model.bin``; counting the sidecar would wrongly skip the needed
+    ``.bin`` and leave the in-process load to fetch it without the Xet fallback.
+    """
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    if not name.endswith((".safetensors", ".safetensors.index.json")):
+        return False
+    return not name.startswith("adapter_")
+
+
 def _prefetch_ignore_patterns(
     model_name,
     *,
@@ -917,11 +932,13 @@ def _prefetch_ignore_patterns(
                 .siblings
                 or []
             )
-            # Only count safetensors that the load will actually read (same
-            # subfolder / root), so a .bin-only subfolder is not stripped of its
-            # weights because some other path in the repo ships safetensors.
+            # Only count model-weights safetensors that the load will actually read
+            # (same subfolder / root, and not an adapter / sidecar), so a .bin-only
+            # subfolder is not stripped of its weights because some other path in the
+            # repo ships safetensors, nor because an adapter_model.safetensors sidecar
+            # sits next to real pytorch_model.bin weights.
             has_safetensors = any(
-                sibling.rfilename.endswith((".safetensors", ".safetensors.index.json"))
+                _is_model_weight_safetensors(sibling.rfilename)
                 and _in_requested_load_scope(sibling.rfilename, subfolder)
                 for sibling in siblings
             )
