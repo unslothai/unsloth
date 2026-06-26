@@ -281,6 +281,8 @@ if _IS_MLX:
     def _normalize_mlx_training_value(key, value):
         if key == "eval_steps" and value is None:
             return 0
+        if key == "lr_scheduler_type" and hasattr(value, "value"):
+            return value.value
         if key != "optim":
             return value
         try:

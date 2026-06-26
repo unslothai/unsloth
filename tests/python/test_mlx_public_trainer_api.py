@@ -246,9 +246,13 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
     """Common notebook optimizer names and object aliases should normalize."""
     unsloth = _import_mlx_unsloth()
 
+    class Scheduler:
+        value = "cosine"
+
     class ArgsObject:
         optim = "adamw_8bit"
         eval_steps = None
+        lr_scheduler_type = Scheduler()
         max_length = 321
         max_steps = 10
         save_steps = 500
@@ -261,6 +265,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
 
     assert args.optim == "adamw"
     assert args.eval_steps == 0
+    assert args.lr_scheduler_type == "cosine"
     assert args.max_seq_length == 321
     assert args.save_steps == 0
     assert args.warmup_steps == 1
