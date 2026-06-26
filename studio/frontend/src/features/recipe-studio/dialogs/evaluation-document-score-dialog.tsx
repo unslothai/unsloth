@@ -137,9 +137,7 @@ export function EvaluationDocumentScoreDialog({
           />
           <Select
             value={config.prediction_column || undefined}
-            onValueChange={(value) =>
-              onUpdate({ prediction_column: value })
-            }
+            onValueChange={(value) => onUpdate({ prediction_column: value })}
           >
             <SelectTrigger
               id={`${config.id}-pred`}
@@ -171,9 +169,7 @@ export function EvaluationDocumentScoreDialog({
           />
           <Select
             value={config.reference_column || undefined}
-            onValueChange={(value) =>
-              onUpdate({ reference_column: value })
-            }
+            onValueChange={(value) => onUpdate({ reference_column: value })}
           >
             <SelectTrigger
               id={`${config.id}-ref`}
@@ -218,14 +214,21 @@ export function EvaluationDocumentScoreDialog({
             htmlFor={`${config.id}-cmp`}
             hint="Fallback comparator when no schema is given."
           />
-          <Input
-            id={`${config.id}-cmp`}
-            className="nodrag"
-            value={config.default_comparator}
-            onChange={(event) =>
-              onUpdate({ default_comparator: event.target.value })
-            }
-          />
+          <Select
+            value={config.default_comparator || "string"}
+            onValueChange={(value) => onUpdate({ default_comparator: value })}
+          >
+            <SelectTrigger id={`${config.id}-cmp`} className="nodrag">
+              <SelectValue placeholder="Select a comparator" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="string">string</SelectItem>
+              <SelectItem value="categorical">categorical</SelectItem>
+              <SelectItem value="numeric">numeric</SelectItem>
+              <SelectItem value="money">money</SelectItem>
+              <SelectItem value="date">date</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div className="grid gap-1.5">
           <FieldLabel

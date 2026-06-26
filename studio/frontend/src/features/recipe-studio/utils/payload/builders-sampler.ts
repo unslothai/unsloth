@@ -42,7 +42,6 @@ function buildCategoryConditionalParams(
       continue;
     }
     output[condition] = {
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "category",
       values,
       weights: hasWeights
@@ -120,11 +119,8 @@ function buildSamplerParams(
   }
   if (config.sampler_type === "timedelta") {
     return {
-      // biome-ignore lint/style/useNamingConvention: api schema
       dt_min: parseNumber(config.dt_min),
-      // biome-ignore lint/style/useNamingConvention: api schema
       dt_max: parseNumber(config.dt_max),
-      // biome-ignore lint/style/useNamingConvention: api schema
       reference_column_name: config.reference_column_name || undefined,
       unit: config.timedelta_unit || undefined,
     };
@@ -139,7 +135,6 @@ function buildSamplerParams(
       return {};
     }
     if (raw.toLowerCase() === "short" || raw.toLowerCase() === "short_form") {
-      // biome-ignore lint/style/useNamingConvention: api schema
       return { short_form: true };
     }
     if (raw.toLowerCase() === "upper" || raw.toLowerCase() === "uppercase") {
@@ -169,7 +164,6 @@ function buildSamplerParams(
   if (config.person_age_range?.trim()) {
     const parsed = parseAgeRange(config.person_age_range);
     if (parsed) {
-      // biome-ignore lint/style/useNamingConvention: api schema
       params.age_range = parsed;
     } else {
       errors.push(`Person ${config.name}: age range must be like 18-70.`);
@@ -183,20 +177,16 @@ export function buildSamplerColumn(
   errors: string[],
 ): Record<string, unknown> {
   const samplerColumn: Record<string, unknown> = {
-    // biome-ignore lint/style/useNamingConvention: api schema
     column_type: "sampler",
     name: config.name,
     drop: config.drop ?? false,
-    // biome-ignore lint/style/useNamingConvention: api schema
     sampler_type: config.sampler_type,
     params: buildSamplerParams(config, errors),
-    // biome-ignore lint/style/useNamingConvention: api schema
     convert_to: config.convert_to ?? undefined,
   };
   if (config.sampler_type === "category") {
     const conditionalParams = buildCategoryConditionalParams(config, errors);
     if (conditionalParams) {
-      // biome-ignore lint/style/useNamingConvention: api schema
       samplerColumn.conditional_params = conditionalParams;
     }
   }

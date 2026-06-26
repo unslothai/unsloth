@@ -181,7 +181,6 @@ function McpServerCard({
             value={provider.provider_type}
             onValueChange={(value) =>
               onUpdateProviderAt(index, {
-                // biome-ignore lint/style/useNamingConvention: ui schema
                 provider_type: value === "stdio" ? "stdio" : "streamable_http",
               })
             }
@@ -316,7 +315,6 @@ function McpServerCard({
                     placeholder="TOOL_SERVER_API_KEY"
                     onChange={(event) =>
                       onUpdateProviderAt(index, {
-                        // biome-ignore lint/style/useNamingConvention: api schema
                         api_key_env: event.target.value,
                       })
                     }
@@ -333,7 +331,6 @@ function McpServerCard({
                     placeholder="token"
                     onChange={(event) =>
                       onUpdateProviderAt(index, {
-                        // biome-ignore lint/style/useNamingConvention: api schema
                         api_key: event.target.value,
                       })
                     }
@@ -371,15 +368,12 @@ export function ToolProfileDialog({
       JSON.stringify(
         providers.map((provider) => ({
           name: provider.name,
-          // biome-ignore lint/style/useNamingConvention: ui schema
           provider_type: provider.provider_type,
           command: provider.command,
           args: provider.args,
           env: provider.env,
           endpoint: provider.endpoint,
-          // biome-ignore lint/style/useNamingConvention: api schema
           api_key: provider.api_key,
-          // biome-ignore lint/style/useNamingConvention: api schema
           api_key_env: provider.api_key_env,
         })),
       ),
@@ -401,7 +395,6 @@ export function ToolProfileDialog({
     setDuplicateTools({});
     if (Object.keys(config.fetched_tools_by_provider ?? {}).length > 0) {
       onUpdate({
-        // biome-ignore lint/style/useNamingConvention: ui schema
         fetched_tools_by_provider: {},
       });
     }
@@ -425,7 +418,6 @@ export function ToolProfileDialog({
 
   function updateProviders(nextProviders: LlmMcpProviderConfig[]): void {
     onUpdate({
-      // biome-ignore lint/style/useNamingConvention: ui schema
       mcp_providers: nextProviders,
     });
   }
@@ -462,15 +454,12 @@ export function ToolProfileDialog({
       {
         id: createMcpProviderId(config.id, providers.length),
         name: "",
-        // biome-ignore lint/style/useNamingConvention: ui schema
         provider_type: "stdio",
         command: "",
         args: [],
         env: [],
         endpoint: "",
-        // biome-ignore lint/style/useNamingConvention: api schema
         api_key: "",
-        // biome-ignore lint/style/useNamingConvention: api schema
         api_key_env: "",
       },
     ]);
@@ -547,9 +536,7 @@ export function ToolProfileDialog({
           ? Number(timeoutRaw)
           : 15;
       const response = await listMcpTools({
-        // biome-ignore lint/style/useNamingConvention: api schema
         mcp_providers: readyProviders.map(toApiProvider),
-        // biome-ignore lint/style/useNamingConvention: api schema
         timeout_sec: timeoutSec,
       });
       const nextToolsByProvider = Object.fromEntries(
@@ -559,7 +546,6 @@ export function ToolProfileDialog({
       );
       setToolsByProvider(nextToolsByProvider);
       onUpdate({
-        // biome-ignore lint/style/useNamingConvention: ui schema
         fetched_tools_by_provider: nextToolsByProvider,
       });
       setProviderErrors(
@@ -715,13 +701,11 @@ export function ToolProfileDialog({
                 suggestions={availableTools}
                 onAdd={(value) =>
                   onUpdate({
-                    // biome-ignore lint/style/useNamingConvention: api schema
                     allow_tools: addUnique(config.allow_tools ?? [], value),
                   })
                 }
                 onRemove={(toolIndex) =>
                   onUpdate({
-                    // biome-ignore lint/style/useNamingConvention: api schema
                     allow_tools: (config.allow_tools ?? []).filter(
                       (_, currentIndex) => currentIndex !== toolIndex,
                     ),
@@ -750,7 +734,6 @@ export function ToolProfileDialog({
                       value={config.max_tool_call_turns ?? ""}
                       onChange={(event) =>
                         onUpdate({
-                          // biome-ignore lint/style/useNamingConvention: api schema
                           max_tool_call_turns: event.target.value,
                         })
                       }
@@ -766,7 +749,6 @@ export function ToolProfileDialog({
                       value={config.timeout_sec ?? ""}
                       onChange={(event) =>
                         onUpdate({
-                          // biome-ignore lint/style/useNamingConvention: api schema
                           timeout_sec: event.target.value,
                         })
                       }

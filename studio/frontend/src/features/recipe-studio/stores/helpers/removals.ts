@@ -38,9 +38,7 @@ export function applyNodeRemovals(
         }
         configs[config.id] = {
           ...config,
-          // biome-ignore lint/style/useNamingConvention: api schema
           subcategory_parent: "",
-          // biome-ignore lint/style/useNamingConvention: api schema
           subcategory_mapping: {},
         };
       }

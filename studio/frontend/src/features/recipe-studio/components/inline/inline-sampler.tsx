@@ -77,7 +77,6 @@ export function InlineSampler({
             value={config.convert_to}
             onValueChange={(value) =>
               onUpdate({
-                // biome-ignore lint/style/useNamingConvention: api schema
                 convert_to: value,
               })
             }
@@ -113,7 +112,6 @@ export function InlineSampler({
             value={config.convert_to}
             onValueChange={(value) =>
               onUpdate({
-                // biome-ignore lint/style/useNamingConvention: api schema
                 convert_to: value,
               })
             }
@@ -149,7 +147,6 @@ export function InlineSampler({
           value={config.uuid_format ?? ""}
           onChange={(event) =>
             onUpdate({
-              // biome-ignore lint/style/useNamingConvention: api schema
               uuid_format: event.target.value,
             })
           }

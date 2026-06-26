@@ -72,7 +72,6 @@ export function UniformDialog({
           value={config.convert_to ?? "none"}
           onValueChange={(value) =>
             onUpdate({
-              // biome-ignore lint/style/useNamingConvention: api schema
               convert_to: value === "none" ? undefined : (value as "int" | "float" | "str"),
             })
           }

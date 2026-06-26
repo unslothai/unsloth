@@ -50,7 +50,6 @@ function parseCategoryConditionalParams(
       ? rawParams.weights.map((item) => (typeof item === "number" ? item : null))
       : undefined;
     conditional[condition] = {
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "category",
       values,
       weights,
@@ -91,15 +90,12 @@ export function parseSampler(
     return {
       id,
       kind: "sampler",
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "category",
       name,
       drop,
-      // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       values,
       weights,
-      // biome-ignore lint/style/useNamingConvention: api schema
       conditional_params: parseCategoryConditionalParams(column),
     };
   }
@@ -116,15 +112,11 @@ export function parseSampler(
     return {
       id,
       kind: "sampler",
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "subcategory",
       name,
       drop,
-      // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
-      // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: readString(params.category) ?? "",
-      // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_mapping: mapping,
     };
   }
@@ -133,11 +125,9 @@ export function parseSampler(
     return {
       id,
       kind: "sampler",
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "uniform",
       name,
       drop,
-      // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       low: readNumberString(params.low),
       high: readNumberString(params.high),
@@ -148,11 +138,9 @@ export function parseSampler(
     return {
       id,
       kind: "sampler",
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "gaussian",
       name,
       drop,
-      // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       mean: readNumberString(params.mean),
       std: readNumberString(params.std),
@@ -163,11 +151,9 @@ export function parseSampler(
     return {
       id,
       kind: "sampler",
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "bernoulli",
       name,
       drop,
-      // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
       p: readNumberString(params.p),
     };
@@ -177,17 +163,12 @@ export function parseSampler(
     return {
       id,
       kind: "sampler",
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "datetime",
       name,
       drop,
-      // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
-      // biome-ignore lint/style/useNamingConvention: api schema
       datetime_start: readString(params.start) ?? "",
-      // biome-ignore lint/style/useNamingConvention: api schema
       datetime_end: readString(params.end) ?? "",
-      // biome-ignore lint/style/useNamingConvention: api schema
       datetime_unit: readString(params.unit) ?? "",
     };
   }
@@ -201,19 +182,13 @@ export function parseSampler(
     return {
       id,
       kind: "sampler",
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "timedelta",
       name,
       drop,
-      // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
-      // biome-ignore lint/style/useNamingConvention: api schema
       dt_min: readNumberString(params.dt_min),
-      // biome-ignore lint/style/useNamingConvention: api schema
       dt_max: readNumberString(params.dt_max),
-      // biome-ignore lint/style/useNamingConvention: api schema
       reference_column_name: readString(params.reference_column_name) ?? "",
-      // biome-ignore lint/style/useNamingConvention: api schema
       timedelta_unit: unit,
     };
   }
@@ -222,13 +197,10 @@ export function parseSampler(
     return {
       id,
       kind: "sampler",
-      // biome-ignore lint/style/useNamingConvention: api schema
       sampler_type: "uuid",
       name,
       drop,
-      // biome-ignore lint/style/useNamingConvention: api schema
       convert_to: normalizedConvertTo,
-      // biome-ignore lint/style/useNamingConvention: api schema
       uuid_format: readString(params.format) ?? "",
     };
   }
@@ -245,24 +217,17 @@ export function parseSampler(
     kind: "sampler",
     name,
     drop,
-    // biome-ignore lint/style/useNamingConvention: api schema
     sampler_type: samplerType as SamplerType,
-    // biome-ignore lint/style/useNamingConvention: api schema
     convert_to: normalizedConvertTo,
-    // biome-ignore lint/style/useNamingConvention: api schema
     person_locale: readString(params.locale) ?? "",
-    // biome-ignore lint/style/useNamingConvention: api schema
     person_sex: readString(params.sex) ?? "",
-    // biome-ignore lint/style/useNamingConvention: api schema
     person_age_range: ageRange,
-    // biome-ignore lint/style/useNamingConvention: api schema
     person_city: readString(params.city) ?? "",
   };
 
   if (samplerType === "person") {
     return {
       ...base,
-      // biome-ignore lint/style/useNamingConvention: api schema
       person_with_synthetic_personas:
         typeof params.with_synthetic_personas === "boolean"
           ? params.with_synthetic_personas

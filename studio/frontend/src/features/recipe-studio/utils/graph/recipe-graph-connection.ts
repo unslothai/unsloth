@@ -39,7 +39,6 @@ function syncSubcategoryMapping(
   if (!isCategoryConfig(parent)) {
     return {
       ...subcategory,
-      // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: parent.name,
     };
   }
@@ -53,9 +52,7 @@ function syncSubcategoryMapping(
   }
   return {
     ...subcategory,
-    // biome-ignore lint/style/useNamingConvention: api schema
     subcategory_parent: parent.name,
-    // biome-ignore lint/style/useNamingConvention: api schema
     subcategory_mapping: nextMapping,
   };
 }
@@ -412,7 +409,6 @@ export function applyRecipeConnection(
       ...(shouldClearModel ? { model: "" } : {}),
       ...(shouldClearModel || !isSourceLocal
         ? {
-            // biome-ignore lint/style/useNamingConvention: api schema
             gguf_variant: undefined,
           }
         : {}),
@@ -435,7 +431,6 @@ export function applyRecipeConnection(
   ) {
     const next = {
       ...target,
-      // biome-ignore lint/style/useNamingConvention: api schema
       reference_column_name: source.name,
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
@@ -452,9 +447,7 @@ export function applyRecipeConnection(
     );
     const next = {
       ...target,
-      // biome-ignore lint/style/useNamingConvention: api schema
       target_columns: [source.name],
-      // biome-ignore lint/style/useNamingConvention: api schema
       code_lang: (canUseCodeLangForTarget
         ? nextCodeLang
         : target.code_lang) as typeof target.code_lang,

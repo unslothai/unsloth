@@ -40,40 +40,28 @@ export function buildValidatorColumn(
       }
     }
     return {
-      // biome-ignore lint/style/useNamingConvention: api schema
       column_type: "validation",
       name: config.name,
       drop: config.drop ?? false,
-      // biome-ignore lint/style/useNamingConvention: api schema
       target_columns: targetColumns,
-      // biome-ignore lint/style/useNamingConvention: api schema
       validator_type: "local_callable",
-      // biome-ignore lint/style/useNamingConvention: api schema
       validator_params: {
         // backend resolves this marker to a real callable.
-        // biome-ignore lint/style/useNamingConvention: api schema
         validation_function: `${OXC_VALIDATION_FN_MARKER}:${codeLang}:${config.oxc_validation_mode}:${config.oxc_code_shape ?? "auto"}`,
       },
-      // biome-ignore lint/style/useNamingConvention: api schema
       batch_size: parseBatchSize(config.batch_size),
     };
   }
 
   return {
-    // biome-ignore lint/style/useNamingConvention: api schema
     column_type: "validation",
     name: config.name,
     drop: config.drop ?? false,
-    // biome-ignore lint/style/useNamingConvention: api schema
     target_columns: targetColumns,
-    // biome-ignore lint/style/useNamingConvention: api schema
     validator_type: "code",
-    // biome-ignore lint/style/useNamingConvention: api schema
     validator_params: {
-      // biome-ignore lint/style/useNamingConvention: api schema
       code_lang: config.code_lang,
     },
-    // biome-ignore lint/style/useNamingConvention: api schema
     batch_size: parseBatchSize(config.batch_size),
   };
 }

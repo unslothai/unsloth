@@ -94,7 +94,6 @@ function parseProcessors(input: unknown): RecipeProcessorConfig[] {
           : '{\n  "text": "{{ column_name }}"\n}';
     processors.push({
       id: `p${index + 1}`,
-      // biome-ignore lint/style/useNamingConvention: api schema
       processor_type: "schema_transform",
       name,
       template,
@@ -126,19 +125,13 @@ function parseEvaluations(input: unknown): EvaluationDocumentScoreConfig[] {
     evaluations.push({
       id: `eval${index + 1}`,
       kind: "evaluation",
-      // biome-ignore lint/style/useNamingConvention: api schema
       evaluation_type: "json_document_score",
       name: readString(item.name) ?? `doc_score_${index + 1}`,
-      // biome-ignore lint/style/useNamingConvention: api schema
       prediction_column: readString(item.prediction_column) ?? "",
-      // biome-ignore lint/style/useNamingConvention: api schema
       reference_column: readString(item.reference_column) ?? "",
       schema: schemaText,
-      // biome-ignore lint/style/useNamingConvention: api schema
       default_comparator: readString(item.default_comparator) ?? "string",
-      // biome-ignore lint/style/useNamingConvention: api schema
       score_column: readString(item.score_column) ?? "doc_score",
-      // biome-ignore lint/style/useNamingConvention: api schema
       breakdown_column: readString(item.breakdown_column) ?? "",
     });
   });
@@ -206,15 +199,12 @@ function parseMcpProviders(input: unknown): Map<string, LlmMcpProviderConfig> {
     providers.set(name, {
       id: `mcp-${index + 1}`,
       name,
-      // biome-ignore lint/style/useNamingConvention: ui schema
       provider_type: providerType,
       command: readString(item.command) ?? "",
       args,
       env: envPairs,
       endpoint: readString(item.endpoint) ?? "",
-      // biome-ignore lint/style/useNamingConvention: api schema
       api_key: readString(item.api_key) ?? "",
-      // biome-ignore lint/style/useNamingConvention: api schema
       api_key_env: readString(item.api_key_env) ?? "",
     });
   });
@@ -242,18 +232,14 @@ function parseToolConfigs(input: unknown): Map<string, LlmToolConfig> {
       : [];
     toolConfigs.set(toolAlias, {
       id: `tool-${index + 1}`,
-      // biome-ignore lint/style/useNamingConvention: api schema
       tool_alias: toolAlias,
       providers,
-      // biome-ignore lint/style/useNamingConvention: api schema
       allow_tools: allowTools,
-      // biome-ignore lint/style/useNamingConvention: api schema
       max_tool_call_turns:
         item.max_tool_call_turns === null ||
         item.max_tool_call_turns === undefined
           ? "5"
           : String(item.max_tool_call_turns),
-      // biome-ignore lint/style/useNamingConvention: api schema
       timeout_sec:
         item.timeout_sec === null || item.timeout_sec === undefined
           ? ""
@@ -394,18 +380,13 @@ function buildToolProfileConfig(
     id,
     kind: "tool_config",
     name: canonical.tool_alias,
-    // biome-ignore lint/style/useNamingConvention: ui schema
     mcp_providers: canonical.providers
       .map((providerName) => mcpProvidersByName.get(providerName))
       .flatMap((provider) => (provider ? [cloneMcpProvider(provider)] : [])),
-    // biome-ignore lint/style/useNamingConvention: ui schema
     fetched_tools_by_provider:
       fetchedToolsByProfileName.get(canonical.tool_alias) ?? {},
-    // biome-ignore lint/style/useNamingConvention: api schema
     allow_tools: [...(canonical.allow_tools ?? [])],
-    // biome-ignore lint/style/useNamingConvention: api schema
     max_tool_call_turns: canonical.max_tool_call_turns ?? "5",
-    // biome-ignore lint/style/useNamingConvention: api schema
     timeout_sec: canonical.timeout_sec ?? "",
   };
 }

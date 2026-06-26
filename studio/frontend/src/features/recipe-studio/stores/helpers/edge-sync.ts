@@ -305,9 +305,7 @@ export function syncSubcategoryConfigsForCategoryUpdate(
     }
     const updated: NodeConfig = {
       ...config,
-      // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: nameChanged ? newName : config.subcategory_parent,
-      // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_mapping: valuesChanged ? nextMapping : mapping,
     };
     nextConfigs = { ...nextConfigs, [config.id]: updated };

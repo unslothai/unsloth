@@ -118,7 +118,6 @@ export function ValidatorDialog({
           onValueChange={(value) => {
             if (value === NONE_VALUE) {
               onUpdate({
-                // biome-ignore lint/style/useNamingConvention: api schema
                 target_columns: [],
               });
               return;
@@ -126,9 +125,7 @@ export function ValidatorDialog({
             const targetConfig = codeOptions.find((item) => item.name === value);
             const nextCodeLang = targetConfig?.codeLang?.trim();
             onUpdate({
-              // biome-ignore lint/style/useNamingConvention: api schema
               target_columns: [value],
-              // biome-ignore lint/style/useNamingConvention: api schema
               code_lang:
                 nextCodeLang && isValidatorCodeLang(nextCodeLang)
                   ? nextCodeLang

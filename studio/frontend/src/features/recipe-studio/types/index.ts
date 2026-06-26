@@ -84,7 +84,6 @@ export type RecipeNodeData = {
 export type RecipeNode = Node<RecipeNodeData, "builder">;
 
 export type CategoryConditionalParams = {
-  // biome-ignore lint/style/useNamingConvention: api schema
   sampler_type: "category";
   values: string[];
   weights?: Array<number | null>;
@@ -95,11 +94,9 @@ export type SamplerConfig = {
   kind: "sampler";
   // ui-only
   advancedOpen?: boolean;
-  // biome-ignore lint/style/useNamingConvention: api schema
   sampler_type: SamplerType;
   name: string;
   drop?: boolean;
-  // biome-ignore lint/style/useNamingConvention: api schema
   convert_to?: "float" | "int" | "str";
   values?: string[];
   weights?: Array<number | null>;
@@ -108,37 +105,21 @@ export type SamplerConfig = {
   mean?: string;
   std?: string;
   p?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   datetime_start?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   datetime_end?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   datetime_unit?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   dt_min?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   dt_max?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   reference_column_name?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   timedelta_unit?: "D" | "h" | "m" | "s";
-  // biome-ignore lint/style/useNamingConvention: api schema
   uuid_format?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   person_locale?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   person_sex?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   person_age_range?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   person_city?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   person_with_synthetic_personas?: boolean;
-  // biome-ignore lint/style/useNamingConvention: api schema
   subcategory_parent?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   subcategory_mapping?: Record<string, string[]>;
-  // biome-ignore lint/style/useNamingConvention: api schema
   conditional_params?: Record<string, CategoryConditionalParams>;
 };
 
@@ -163,28 +144,21 @@ export type McpEnvVar = {
 export type LlmMcpProviderConfig = {
   id: string;
   name: string;
-  // biome-ignore lint/style/useNamingConvention: ui schema
   provider_type: McpProviderType;
   command?: string;
   args?: string[];
   env?: McpEnvVar[];
   endpoint?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   api_key?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   api_key_env?: string;
 };
 
 export type LlmToolConfig = {
   id: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   tool_alias: string;
   providers: string[];
-  // biome-ignore lint/style/useNamingConvention: api schema
   allow_tools?: string[];
-  // biome-ignore lint/style/useNamingConvention: api schema
   max_tool_call_turns?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   timeout_sec?: string;
 };
 
@@ -192,21 +166,15 @@ export type ToolProfileConfig = {
   id: string;
   kind: "tool_config";
   name: string;
-  // biome-ignore lint/style/useNamingConvention: ui schema
   mcp_providers: LlmMcpProviderConfig[];
-  // biome-ignore lint/style/useNamingConvention: ui schema
   fetched_tools_by_provider?: Record<string, string[]>;
-  // biome-ignore lint/style/useNamingConvention: api schema
   allow_tools?: string[];
-  // biome-ignore lint/style/useNamingConvention: api schema
   max_tool_call_turns?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   timeout_sec?: string;
 };
 
 export type LlmImageContextConfig = {
   enabled: boolean;
-  // biome-ignore lint/style/useNamingConvention: api schema
   column_name: string;
 };
 
@@ -217,28 +185,19 @@ export type LlmConfig = {
   kind: "llm";
   // ui-only
   advancedOpen?: boolean;
-  // biome-ignore lint/style/useNamingConvention: api schema
   llm_type: LlmType;
   name: string;
   drop?: boolean;
-  // biome-ignore lint/style/useNamingConvention: api schema
   model_alias: string;
   prompt: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   system_prompt: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   code_lang?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   output_format?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   tool_alias?: string;
   scores?: Score[];
   // ui-only, serialized into multi_modal_context for DataDesigner
-  // biome-ignore lint/style/useNamingConvention: ui schema
   image_context?: LlmImageContextConfig;
-  // biome-ignore lint/style/useNamingConvention: api schema
   with_trace?: LlmTraceType;
-  // biome-ignore lint/style/useNamingConvention: api schema
   extract_reasoning_content?: boolean;
 };
 
@@ -247,17 +206,11 @@ export type ModelProviderConfig = {
   kind: "model_provider";
   name: string;
   endpoint: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   provider_type: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   api_key_env?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   api_key?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   extra_headers?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   extra_body?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   is_local?: boolean;
 };
 
@@ -266,20 +219,13 @@ export type ModelConfig = {
   kind: "model_config";
   name: string;
   model: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   gguf_variant?: string;
   provider: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   inference_temperature?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   inference_top_p?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   inference_max_tokens?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   inference_timeout?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   inference_extra_body?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   skip_health_check?: boolean;
 };
 
@@ -299,11 +245,9 @@ export type ValidatorConfig = {
   advancedOpen?: boolean;
   name: string;
   drop?: boolean;
-  // biome-ignore lint/style/useNamingConvention: api schema
   target_columns: string[];
   // ui-only
   validator_type: ValidatorType;
-  // biome-ignore lint/style/useNamingConvention: api schema
   code_lang: ValidatorCodeLang;
   // ui-only (used for OXC validators)
   oxc_validation_mode: OxcValidationMode;
@@ -345,19 +289,12 @@ export type SeedConfig = {
   unstructured_file_ids?: string[];
   unstructured_file_names?: string[];
   unstructured_file_sizes?: number[];
-  // biome-ignore lint/style/useNamingConvention: api schema
   github_repo_slug?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   github_token?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   github_limit?: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   github_item_types?: GithubItemType[];
-  // biome-ignore lint/style/useNamingConvention: api schema
   github_state?: GithubStateFilter;
-  // biome-ignore lint/style/useNamingConvention: api schema
   github_include_comments?: boolean;
-  // biome-ignore lint/style/useNamingConvention: api schema
   github_max_comments_per_item?: string;
   resolved_paths?: string[];
   // ui-only
@@ -368,7 +305,6 @@ export type SeedConfig = {
   unstructured_chunk_overlap?: string;
   seed_splits?: string[];
   // ui-only
-  // biome-ignore lint/style/useNamingConvention: ui schema
   seed_globs_by_split?: Record<string, string>;
   seed_columns?: string[];
   sampling_strategy: SeedSamplingStrategy;
@@ -381,7 +317,6 @@ export type SeedConfig = {
 
 export type SchemaTransformProcessorConfig = {
   id: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   processor_type: "schema_transform";
   name: string;
   template: string;
@@ -390,20 +325,14 @@ export type SchemaTransformProcessorConfig = {
 export type EvaluationDocumentScoreConfig = {
   id: string;
   kind: "evaluation";
-  // biome-ignore lint/style/useNamingConvention: api schema
   evaluation_type: "json_document_score";
   name: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   prediction_column: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   reference_column: string;
   // JSON Schema or studio field-comparator map; raw text so the user can paste.
   schema: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   default_comparator: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   score_column: string;
-  // biome-ignore lint/style/useNamingConvention: api schema
   breakdown_column: string;
 };
 

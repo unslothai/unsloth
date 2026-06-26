@@ -30,9 +30,7 @@ function updateTemplateFields(
     return {
       ...config,
       prompt: nextPrompt,
-      // biome-ignore lint/style/useNamingConvention: api schema
       system_prompt: nextSystem,
-      // biome-ignore lint/style/useNamingConvention: api schema
       output_format: nextOutput,
     };
   }
@@ -62,7 +60,6 @@ export function applyRenameToConfig(
     const base = next as SamplerConfig;
     next = {
       ...base,
-      // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: to,
     };
   }
@@ -74,7 +71,6 @@ export function applyRenameToConfig(
     const base = next as SamplerConfig;
     next = {
       ...base,
-      // biome-ignore lint/style/useNamingConvention: api schema
       reference_column_name: to,
     };
   }
@@ -96,7 +92,6 @@ export function applyRenameToConfig(
       const base = next as typeof config;
       next = {
         ...base,
-        // biome-ignore lint/style/useNamingConvention: api schema
         target_columns: targets.map((target) =>
           target === from ? to : target,
         ),
@@ -119,9 +114,7 @@ export function applyRemovalToConfig(
     const base = next as SamplerConfig;
     next = {
       ...base,
-      // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_parent: "",
-      // biome-ignore lint/style/useNamingConvention: api schema
       subcategory_mapping: {},
     };
   }
@@ -133,7 +126,6 @@ export function applyRemovalToConfig(
     const base = next as SamplerConfig;
     next = {
       ...base,
-      // biome-ignore lint/style/useNamingConvention: api schema
       reference_column_name: "",
     };
   }
@@ -143,7 +135,6 @@ export function applyRemovalToConfig(
       ...base,
       provider: "",
       model: "",
-      // biome-ignore lint/style/useNamingConvention: api schema
       gguf_variant: undefined,
     };
   }
@@ -163,7 +154,6 @@ export function applyRemovalToConfig(
       const base = next as typeof config;
       next = {
         ...base,
-        // biome-ignore lint/style/useNamingConvention: api schema
         target_columns: targets,
       };
     }

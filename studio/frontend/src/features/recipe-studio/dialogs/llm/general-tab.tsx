@@ -148,7 +148,6 @@ export function LlmGeneralTab({
   }, [seedColumns, seedPreviewRows]);
   const imageContext = config.image_context ?? {
     enabled: false,
-    // biome-ignore lint/style/useNamingConvention: api schema
     column_name: "",
   };
   const imageContextToggleId = `${config.id}-image-context-enabled`;
@@ -366,7 +365,6 @@ export function LlmGeneralTab({
                   image_context: {
                     ...imageContext,
                     enabled: checked,
-                    // biome-ignore lint/style/useNamingConvention: api schema
                     column_name:
                       checked && !imageContext.column_name
                         ? (imageContextColumnOptions[0] ?? "")
@@ -389,7 +387,6 @@ export function LlmGeneralTab({
                   onUpdate({
                     image_context: {
                       ...imageContext,
-                      // biome-ignore lint/style/useNamingConvention: api schema
                       column_name: value,
                     },
                   })
@@ -475,7 +472,6 @@ export function LlmGeneralTab({
               value={config.with_trace ?? "none"}
               onValueChange={(value) =>
                 onUpdate({
-                  // biome-ignore lint/style/useNamingConvention: api schema
                   with_trace: normalizeTraceMode(value),
                 })
               }
@@ -503,7 +499,6 @@ export function LlmGeneralTab({
               checked={config.extract_reasoning_content === true}
               onCheckedChange={(checked) =>
                 onUpdate({
-                  // biome-ignore lint/style/useNamingConvention: api schema
                   extract_reasoning_content: checked,
                 })
               }

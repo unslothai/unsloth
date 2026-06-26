@@ -792,7 +792,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
               [cfgId]: {
                 ...cfg,
                 model: "",
-                // biome-ignore lint/style/useNamingConvention: api schema
                 gguf_variant: undefined,
               },
             };

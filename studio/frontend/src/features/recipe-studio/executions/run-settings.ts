@@ -100,19 +100,12 @@ function buildRunConfigPayload(
 ): Record<string, unknown> {
   const useBatching = kind === "full" && settings.batchEnabled;
   return {
-    // biome-ignore lint/style/useNamingConvention: backend schema
     buffer_size: useBatching ? settings.batchSize : toPositiveInt(rows, 1000, 1, 200_000),
-    // biome-ignore lint/style/useNamingConvention: backend schema
     non_inference_max_parallel_workers: settings.nonInferenceWorkers,
-    // biome-ignore lint/style/useNamingConvention: backend schema
     max_conversation_restarts: settings.maxConversationRestarts,
-    // biome-ignore lint/style/useNamingConvention: backend schema
     max_conversation_correction_steps: settings.maxConversationCorrectionSteps,
-    // biome-ignore lint/style/useNamingConvention: backend schema
     disable_early_shutdown: settings.disableEarlyShutdown,
-    // biome-ignore lint/style/useNamingConvention: backend schema
     shutdown_error_rate: settings.shutdownErrorRate,
-    // biome-ignore lint/style/useNamingConvention: backend schema
     shutdown_error_window: settings.shutdownErrorWindow,
   };
 }
@@ -134,9 +127,7 @@ function applyGlobalParallelismOverride(
       !Array.isArray(inferenceRaw)
         ? { ...(inferenceRaw as Record<string, unknown>) }
         : {};
-    // biome-ignore lint/style/useNamingConvention: backend schema
     inference.max_parallel_requests = llmParallelRequests;
-    // biome-ignore lint/style/useNamingConvention: backend schema
     nextModelConfig.inference_parameters = inference;
     return nextModelConfig;
   });
@@ -145,7 +136,6 @@ function applyGlobalParallelismOverride(
     ...payload,
     recipe: {
       ...payload.recipe,
-      // biome-ignore lint/style/useNamingConvention: backend schema
       model_configs: modelConfigs,
     },
   };
@@ -168,16 +158,12 @@ export function buildExecutionPayload(input: {
     run: {
       ...payloadWithParallelism.run,
       rows: input.rows,
-      // biome-ignore lint/style/useNamingConvention: backend schema
       execution_type: input.kind,
-      // biome-ignore lint/style/useNamingConvention: backend schema
       run_config: buildRunConfigPayload(normalizedSettings, input.rows, input.kind),
-      // biome-ignore lint/style/useNamingConvention: backend schema
       merge_batches:
         input.kind === "full" &&
         normalizedSettings.batchEnabled &&
         normalizedSettings.mergeBatches,
-      // biome-ignore lint/style/useNamingConvention: backend schema
       run_name: input.kind === "full" ? (input.runName ?? null) : null,
     },
   };

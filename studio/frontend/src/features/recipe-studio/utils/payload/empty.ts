@@ -6,13 +6,9 @@ import type { RecipePayload } from "./types";
 export function createEmptyRecipePayload(): RecipePayload {
   return {
     recipe: {
-      // biome-ignore lint/style/useNamingConvention: api schema
       model_providers: [],
-      // biome-ignore lint/style/useNamingConvention: api schema
       mcp_providers: [],
-      // biome-ignore lint/style/useNamingConvention: api schema
       model_configs: [],
-      // biome-ignore lint/style/useNamingConvention: api schema
       tool_configs: [],
       columns: [],
       processors: [],
@@ -20,7 +16,6 @@ export function createEmptyRecipePayload(): RecipePayload {
     run: {
       rows: 5,
       preview: true,
-      // biome-ignore lint/style/useNamingConvention: api schema
       output_formats: ["jsonl"],
     },
     ui: {

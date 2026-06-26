@@ -85,7 +85,6 @@ export function GithubCrawlerEasyView({
     }
     updateConfig(modelConfig.id, {
       model: value,
-      // biome-ignore lint/style/useNamingConvention: api schema
       gguf_variant: undefined,
     });
   };
@@ -99,7 +98,6 @@ export function GithubCrawlerEasyView({
     }
     updateConfig(modelConfig.id, {
       model,
-      // biome-ignore lint/style/useNamingConvention: api schema
       gguf_variant: variant ?? undefined,
     });
   };

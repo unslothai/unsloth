@@ -244,27 +244,16 @@ async function loadLocalModelSelection(
   try {
     const isGguf = GGUF_MODEL_PATTERN.test(target) || Boolean(ggufVariant);
     await loadModel({
-      // biome-ignore lint/style/useNamingConvention: api schema
       model_path: target,
-      // biome-ignore lint/style/useNamingConvention: api schema
       hf_token: null,
-      // biome-ignore lint/style/useNamingConvention: api schema
       max_seq_length: isGguf ? 0 : 4096,
-      // biome-ignore lint/style/useNamingConvention: api schema
       load_in_4bit: true,
-      // biome-ignore lint/style/useNamingConvention: api schema
       is_lora: false,
-      // biome-ignore lint/style/useNamingConvention: api schema
       gguf_variant: ggufVariant || null,
-      // biome-ignore lint/style/useNamingConvention: api schema
       trust_remote_code: false,
-      // biome-ignore lint/style/useNamingConvention: api schema
       chat_template_override: null,
-      // biome-ignore lint/style/useNamingConvention: api schema
       cache_type_kv: null,
-      // biome-ignore lint/style/useNamingConvention: api schema
       speculative_type: null,
-      // biome-ignore lint/style/useNamingConvention: api schema
       tensor_parallel: false,
     });
     toast.success(`Loaded ${modelLabel}`, { id: toastId, duration: 2000 });

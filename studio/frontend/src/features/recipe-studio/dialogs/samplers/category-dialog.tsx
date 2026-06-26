@@ -59,11 +59,9 @@ export function CategoryDialog({
       return;
     }
     onUpdate({
-      // biome-ignore lint/style/useNamingConvention: api schema
       conditional_params: {
         ...conditional,
         [condition]: {
-          // biome-ignore lint/style/useNamingConvention: api schema
           sampler_type: "category",
           values: [],
           weights: [],
@@ -77,7 +75,6 @@ export function CategoryDialog({
     const next = { ...conditional };
     delete next[condition];
     onUpdate({
-      // biome-ignore lint/style/useNamingConvention: api schema
       conditional_params: Object.keys(next).length > 0 ? next : undefined,
     });
   };
@@ -216,7 +213,6 @@ export function CategoryDialog({
                       value,
                     );
                     onUpdate({
-                      // biome-ignore lint/style/useNamingConvention: api schema
                       conditional_params: {
                         ...conditional,
                         [condition]: { ...params, values, weights },
@@ -230,7 +226,6 @@ export function CategoryDialog({
                       index,
                     );
                     onUpdate({
-                      // biome-ignore lint/style/useNamingConvention: api schema
                       conditional_params: {
                         ...conditional,
                         [condition]: { ...params, values, weights },
@@ -272,7 +267,6 @@ export function CategoryDialog({
                               ? Number(event.target.value)
                               : null;
                             onUpdate({
-                              // biome-ignore lint/style/useNamingConvention: api schema
                               conditional_params: {
                                 ...conditional,
                                 [condition]: { ...params, weights },

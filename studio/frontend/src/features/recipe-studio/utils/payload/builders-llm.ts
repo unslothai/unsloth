@@ -24,7 +24,6 @@ function buildImageContext(
   return [
     {
       modality: "image",
-      // biome-ignore lint/style/useNamingConvention: api schema
       column_name: columnName,
     },
   ];
@@ -38,27 +37,19 @@ export function buildLlmColumn(
   const base = {
     name: config.name,
     drop: config.drop ?? false,
-    // biome-ignore lint/style/useNamingConvention: api schema
     model_alias: config.model_alias,
     prompt: config.prompt,
-    // biome-ignore lint/style/useNamingConvention: api schema
     system_prompt: config.system_prompt || undefined,
-    // biome-ignore lint/style/useNamingConvention: api schema
     multi_modal_context: buildImageContext(config, errors),
-    // biome-ignore lint/style/useNamingConvention: api schema
     tool_alias: toolAlias || undefined,
-    // biome-ignore lint/style/useNamingConvention: api schema
     with_trace: config.with_trace ?? "none",
-    // biome-ignore lint/style/useNamingConvention: api schema
     extract_reasoning_content: config.extract_reasoning_content === true,
   };
 
   if (config.llm_type === "code") {
     return {
-      // biome-ignore lint/style/useNamingConvention: api schema
       column_type: "llm-code",
       ...base,
-      // biome-ignore lint/style/useNamingConvention: api schema
       code_lang: config.code_lang || "python",
     };
   }
@@ -72,10 +63,8 @@ export function buildLlmColumn(
       }
     }
     return {
-      // biome-ignore lint/style/useNamingConvention: api schema
       column_type: "llm-structured",
       ...base,
-      // biome-ignore lint/style/useNamingConvention: api schema
       output_format: outputFormat,
     };
   }
@@ -105,14 +94,12 @@ export function buildLlmColumn(
       errors.push(`LLM ${config.name}: scores required for LLM Judge.`);
     }
     return {
-      // biome-ignore lint/style/useNamingConvention: api schema
       column_type: "llm-judge",
       ...base,
       scores,
     };
   }
   return {
-    // biome-ignore lint/style/useNamingConvention: api schema
     column_type: "llm-text",
     ...base,
   };
@@ -142,7 +129,6 @@ export function buildLlmMcpProvider(
       }
     }
     return {
-      // biome-ignore lint/style/useNamingConvention: api schema
       provider_type: "stdio",
       name,
       command,
@@ -156,13 +142,10 @@ export function buildLlmMcpProvider(
     return null;
   }
   return {
-    // biome-ignore lint/style/useNamingConvention: api schema
     provider_type: "streamable_http",
     name,
     endpoint,
-    // biome-ignore lint/style/useNamingConvention: api schema
     api_key: provider.api_key?.trim() || undefined,
-    // biome-ignore lint/style/useNamingConvention: api schema
     api_key_env: provider.api_key_env?.trim() || undefined,
   };
 }
@@ -197,14 +180,10 @@ export function buildLlmToolConfig(
       ? Number(timeoutRaw)
       : undefined;
   return {
-    // biome-ignore lint/style/useNamingConvention: api schema
     tool_alias: toolAlias,
     providers,
-    // biome-ignore lint/style/useNamingConvention: api schema
     allow_tools: allowTools.length > 0 ? allowTools : undefined,
-    // biome-ignore lint/style/useNamingConvention: api schema
     max_tool_call_turns: maxToolCallTurns,
-    // biome-ignore lint/style/useNamingConvention: api schema
     timeout_sec: timeoutSec,
   };
 }
@@ -213,9 +192,7 @@ export function buildToolProfilePayload(
   config: ToolProfileConfig,
   errors: string[],
 ): {
-  // biome-ignore lint/style/useNamingConvention: api schema
   mcp_providers: Record<string, unknown>[];
-  // biome-ignore lint/style/useNamingConvention: api schema
   tool_config: Record<string, unknown> | null;
 } {
   const mcpProviders = config.mcp_providers
@@ -224,24 +201,18 @@ export function buildToolProfilePayload(
   const toolConfig = buildLlmToolConfig(
     {
       id: config.id,
-      // biome-ignore lint/style/useNamingConvention: api schema
       tool_alias: config.name,
       providers: mcpProviders
         .map((provider) => String(provider.name ?? "").trim())
         .filter(Boolean),
-      // biome-ignore lint/style/useNamingConvention: api schema
       allow_tools: config.allow_tools,
-      // biome-ignore lint/style/useNamingConvention: api schema
       max_tool_call_turns: config.max_tool_call_turns,
-      // biome-ignore lint/style/useNamingConvention: api schema
       timeout_sec: config.timeout_sec,
     },
     errors,
   );
   return {
-    // biome-ignore lint/style/useNamingConvention: api schema
     mcp_providers: mcpProviders,
-    // biome-ignore lint/style/useNamingConvention: api schema
     tool_config: toolConfig,
   };
 }
