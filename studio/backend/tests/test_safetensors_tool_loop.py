@@ -978,9 +978,7 @@ class TestParserGLM:
     def test_glm_unclosed_tool_call_does_not_lose_value(self):
         # Truncated mid-stream (no </tool_call>) -- the parser must
         # still surface what it found rather than dropping the call.
-        text = (
-            "<tool_call>web_search\n<arg_key>query</arg_key>\n<arg_value>partial</arg_value>"
-        )
+        text = "<tool_call>web_search\n<arg_key>query</arg_key>\n<arg_value>partial</arg_value>"
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"

@@ -1493,7 +1493,10 @@ def _parse_kimi_tool_calls(
 
 
 def _parse_kimi_section_body(
-    body: str, *, id_offset: int, allow_incomplete: bool = True
+    body: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
 ) -> list[dict]:
     """Parse one Kimi K2 section body (between begin / end markers)."""
     out: list[dict] = []
