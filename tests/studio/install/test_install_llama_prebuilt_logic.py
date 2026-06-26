@@ -1005,9 +1005,7 @@ def test_binary_env_drops_explicit_credential_file_pointers(
         assert var not in env
 
 
-def test_linux_runtime_dirs_probes_with_secret_free_env(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_linux_runtime_dirs_probes_with_secret_free_env(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
     def fake_missing(binary_path, *, env = None):
