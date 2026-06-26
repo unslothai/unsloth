@@ -21,7 +21,7 @@ are not intercepted -- the driven `unsloth-run` handles those by parsing the
 notebook directly.
 """
 
-import os, re, sys, subprocess
+import os, re, sys, subprocess, tempfile
 
 REAL = {"pip": "/opt/unsloth-venv/bin/pip", "uv": "/opt/unsloth-venv/bin/uv"}
 MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
@@ -95,6 +95,56 @@ def _version_pin(token):
     return m.group(1) if m else None
 
 
+def _filter_requirements_file(path):
+    """Strip baked/protected packages out of a `-r` requirements file.
+
+    Returns (path_to_use, recorded_transformers_version, dropped_specs). The same
+    _KEEP / transformers rules the inline args get are applied to each requirement
+    line, so a notebook `pip install -r reqs.txt` cannot overwrite the cu128 torch
+    / vLLM / transformers stack with versions pinned inside the file. When nothing
+    is protected, or the file cannot be read/written, the original path is returned
+    unchanged. Comments, blank lines, option lines and nested `-r`/`-c` includes are
+    kept verbatim (nested includes are passed through, i.e. filtered one level).
+    """
+    try:
+        with open(path, encoding = "utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return path, None, []  # remote URL / unreadable -> let the real tool handle it
+    out, dropped, recorded, changed = [], [], None, False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "-")):
+            out.append(line)  # comment / blank / option / nested include -> keep
+            continue
+        spec = stripped.split(" #", 1)[0].strip()  # drop any inline comment
+        name = _canon(spec)
+        if name is None:
+            out.append(line)  # url / path / vcs / unparseable -> keep
+            continue
+        if name == "transformers":
+            v = _version_pin(spec)
+            if v and not recorded:
+                recorded = v
+            dropped.append(spec)
+            changed = True
+            continue
+        if name in _KEEP or name.startswith(_KEEP_PREFIX):
+            dropped.append(spec)
+            changed = True
+            continue
+        out.append(line)
+    if not changed:
+        return path, None, []
+    try:
+        fd, tmp = tempfile.mkstemp(prefix = "unsloth-nb-req-", suffix = ".txt")
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+            f.writelines(out)
+    except OSError:
+        return path, None, []  # can't write temp -> pass the file through unchanged
+    return tmp, recorded, dropped
+
+
 def main():
     tool = "uv" if os.path.basename(sys.argv[0]).startswith("uv") else "pip"
     argv = sys.argv[1:]
@@ -125,12 +175,21 @@ def main():
     prev_flag = None
     for tok in tail:
         if skip_next:
-            keep_args.append(tok)
-            # The value of -r/--requirement pulls real requirements (a target);
-            # the value of an index-url / find-links / constraint / etc. flag is
-            # an option, not something to install.
+            # The value of -r/--requirement pulls real requirements (a target); the
+            # value of an index-url / find-links / constraint / etc. flag is an
+            # option, not something to install.
             if prev_flag in _REQ_FILE_FLAGS:
+                # Filter baked/protected packages out of the requirements file so a
+                # notebook `pip install -r reqs.txt` cannot clobber the cu128 stack
+                # or push transformers into the base venv.
+                _req_path, _req_rec, _req_drp = _filter_requirements_file(tok)
+                keep_args.append(_req_path)
                 has_target = True
+                if _req_rec and not recorded:
+                    recorded = _req_rec
+                dropped.extend(_req_drp)
+            else:
+                keep_args.append(tok)
             skip_next = False
             prev_flag = None
             continue

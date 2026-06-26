@@ -694,8 +694,20 @@ ENV PATH=/opt/unsloth-nb/bin:${PATH}
 # / announcements / footer moved upstream (the tutorial body is unchanged) --
 # see unsloth_sync_notebooks.sh + unsloth_nb_content_sig.py. Inherited as-is by
 # the studio image (FROM base).
+#
+# UNSLOTH_NOTEBOOKS_REF pins ONE commit/branch/tag so a multi-arch publish bakes
+# identical templates into both arch legs even if unslothai/notebooks advances
+# mid-build. The publish workflow resolves the live HEAD sha once (like
+# LLAMA_PREBUILT_TAG) and passes it here; the default "main" keeps a plain
+# `docker build` tracking the tip. We fetch the single resolved ref (a full
+# 40-char sha fetches by object; a branch/tag fetches by name) at depth 1, so
+# the bake stays a shallow one-commit pull.
+ARG UNSLOTH_NOTEBOOKS_REF=main
 RUN set -eux \
- && git clone --depth 1 https://github.com/unslothai/notebooks /opt/unsloth-notebooks \
+ && git init -q /opt/unsloth-notebooks \
+ && git -C /opt/unsloth-notebooks remote add origin https://github.com/unslothai/notebooks \
+ && git -C /opt/unsloth-notebooks fetch -q --depth 1 origin "${UNSLOTH_NOTEBOOKS_REF}" \
+ && git -C /opt/unsloth-notebooks checkout -q FETCH_HEAD \
  && git -C /opt/unsloth-notebooks rev-parse HEAD > /opt/unsloth-notebooks/.unsloth_template_commit \
  && rm -rf /opt/unsloth-notebooks/.git \
  && du -sh /opt/unsloth-notebooks
