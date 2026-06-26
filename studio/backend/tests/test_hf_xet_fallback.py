@@ -37,10 +37,13 @@ except ImportError:
 import huggingface_hub
 
 try:
-    import unsloth_zoo.hf_xet_fallback as shared
+    import unsloth_zoo.hf_xet_fallback as _shared_mod
+    shared = _shared_mod
 except ModuleNotFoundError as exc:
-    # The degraded-path test must still run on an unsloth_zoo without the helper.
-    if exc.name != "unsloth_zoo.hf_xet_fallback":
+    # The degraded-path test must still collect when unsloth_zoo lacks the helper
+    # OR is not installed at all (a Studio-only test/build env without the heavy
+    # ML package) -- the same two cases the shim itself degrades for.
+    if exc.name not in ("unsloth_zoo", "unsloth_zoo.hf_xet_fallback"):
         raise
     shared = None
 
@@ -208,5 +211,45 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
         sys.modules.pop("utils.hf_xet_fallback", None)
         if saved_shared is not None:
             sys.modules["unsloth_zoo.hf_xet_fallback"] = saved_shared
+        if saved_shim is not None:
+            sys.modules["utils.hf_xet_fallback"] = saved_shim
+
+
+def test_degrades_when_unsloth_zoo_entirely_absent():
+    """Studio-only test/build environments do not install unsloth_zoo at all. The
+    shim must degrade for that case too: ``import unsloth_zoo.hf_xet_fallback``
+    then raises ModuleNotFoundError(name='unsloth_zoo') (the top-level package),
+    not name='unsloth_zoo.hf_xet_fallback'. Regression guard for the shim re-raising
+    and breaking every Studio import that transitively pulls it in."""
+    import importlib
+
+    class _BlockZoo:
+        def find_spec(self, name, path = None, target = None):
+            # Simulate the whole package being absent: the first missing component
+            # is 'unsloth_zoo', so that is what ModuleNotFoundError.name carries.
+            if name == "unsloth_zoo" or name.startswith("unsloth_zoo."):
+                raise ModuleNotFoundError("No module named 'unsloth_zoo'", name = "unsloth_zoo")
+            return None
+
+    finder = _BlockZoo()
+    saved = {
+        k: v for k, v in list(sys.modules.items())
+        if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")
+    }
+    for k in saved:
+        del sys.modules[k]
+    saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
+    sys.meta_path.insert(0, finder)
+    try:
+        degraded = importlib.import_module("utils.hf_xet_fallback")
+        # Boots without raising and exposes the stub API.
+        assert issubclass(degraded.DownloadStallError, RuntimeError)
+        assert degraded.get_hf_download_state(["x"]) is None
+        event = degraded.start_watchdog(repo_ids = ["x"], on_stall = lambda m: None)
+        assert hasattr(event, "set") and not event.is_set()
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("utils.hf_xet_fallback", None)
+        sys.modules.update(saved)
         if saved_shim is not None:
             sys.modules["utils.hf_xet_fallback"] = saved_shim

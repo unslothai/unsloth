@@ -992,12 +992,20 @@ def maybe_prefetch_hf_snapshot(
         subfolder = subfolder,
         use_safetensors = use_safetensors,
     )
+    # When loading from a subfolder, warm only that subfolder instead of the whole
+    # repo: a from_pretrained(..., subfolder=X) resolves every file under X/, so the
+    # rest is wasted bandwidth and disk. This also scopes the stall protection to the
+    # weights the load actually reads.
+    allow_patterns = None
+    if isinstance(subfolder, str) and subfolder.strip("/"):
+        allow_patterns = [f"{subfolder.strip('/')}/*"]
     try:
         snapshot_download_with_xet_fallback(
             model_name,
             token = token,
             revision = revision,
             cache_dir = cache_dir,
+            allow_patterns = allow_patterns,
             ignore_patterns = ignore_patterns,
             force_download = force_download,
         )

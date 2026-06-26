@@ -18,29 +18,36 @@ import threading
 from typing import Any, Callable, Optional
 
 try:
-    from unsloth_zoo.hf_xet_fallback import (
-        DEFAULT_GRACE_PERIOD,
-        DEFAULT_HEARTBEAT_INTERVAL,
-        DEFAULT_STALL_TIMEOUT,
-        DownloadStallError,
-        child_should_disable_xet,
-        get_hf_download_state,
-        start_watchdog,
-    )
-    from unsloth_zoo.hf_xet_fallback import (
-        hf_hub_download_with_xet_fallback as _shared_hf_hub_download_with_xet_fallback,
-        snapshot_download_with_xet_fallback as _shared_snapshot_download_with_xet_fallback,
-    )
+    import unsloth_zoo.hf_xet_fallback as _shared
+    _shared_available = True
 except ModuleNotFoundError as exc:
-    if exc.name != "unsloth_zoo.hf_xet_fallback":
+    # Degrade when the shared helper is unavailable: either unsloth_zoo is too old
+    # to ship hf_xet_fallback, or unsloth_zoo is not importable at all (a
+    # Studio-only test/build environment without the heavy ML package). Re-raise
+    # any other missing module, which would indicate a real bug inside the helper.
+    if exc.name not in ("unsloth_zoo", "unsloth_zoo.hf_xet_fallback"):
         raise
+    _shared_available = False
 
-    # The shared helper lives in a newer unsloth_zoo. Rather than crash Studio at
-    # startup on an older (but dependency-satisfying) unsloth_zoo, degrade
-    # gracefully: plain HF downloads with the no-progress stall watchdog disabled
-    # -- the same best-effort posture core Unsloth uses in from_pretrained. The
-    # automatic Xet -> HTTP recovery returns as soon as unsloth_zoo is upgraded.
-    # These are thin stubs, not a second copy of the orchestration.
+if _shared_available:
+    # Bind the shared API by assignment (not `from ... import`) so each public name
+    # has a single, unambiguous module-level binding shared between this branch and
+    # the degraded one below.
+    DEFAULT_GRACE_PERIOD = _shared.DEFAULT_GRACE_PERIOD
+    DEFAULT_HEARTBEAT_INTERVAL = _shared.DEFAULT_HEARTBEAT_INTERVAL
+    DEFAULT_STALL_TIMEOUT = _shared.DEFAULT_STALL_TIMEOUT
+    DownloadStallError = _shared.DownloadStallError
+    child_should_disable_xet = _shared.child_should_disable_xet
+    get_hf_download_state = _shared.get_hf_download_state
+    start_watchdog = _shared.start_watchdog
+    _shared_hf_hub_download_with_xet_fallback = _shared.hf_hub_download_with_xet_fallback
+    _shared_snapshot_download_with_xet_fallback = _shared.snapshot_download_with_xet_fallback
+else:
+    # Rather than crash Studio at startup, degrade gracefully: plain HF downloads
+    # with the no-progress stall watchdog disabled -- the same best-effort posture
+    # core Unsloth uses in from_pretrained. Automatic Xet -> HTTP recovery returns
+    # as soon as unsloth_zoo is upgraded. These are thin stubs, not a second copy
+    # of the orchestration.
     import logging as _logging
 
     _logging.getLogger(__name__).warning(
