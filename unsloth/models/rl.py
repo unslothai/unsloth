@@ -390,9 +390,20 @@ try:
     from unsloth_zoo.gradient_checkpointing import reset_unsloth_gradient_checkpointing_buffers
 except:
     def reset_unsloth_gradient_checkpointing_buffers(): pass
+# Canonical reset lives in unsloth.models._utils so the SFT auto-packing wrapper and the plain
+# Trainer loop can import the same helper; fall back to a no-op only if it can't be imported.
+try:
+    from unsloth.models._utils import _unsloth_reset_stray_compile_cache
+except Exception:
+    def _unsloth_reset_stray_compile_cache(self): pass
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Drop any torch.compile graph cache poisoned by a stray pre-train forward.
+        try:
+            _unsloth_reset_stray_compile_cache(self)
+        except Exception:
+            pass
         # Finish the previous W&B run if this is a subsequent train() call.
         # We do this at the START of train() (not the end) so that
         # evaluate() / log() still work after train() completes.
@@ -1901,10 +1912,14 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
                 if trl_version >= Version("0.23.0"):
-                    # We need to set this flag for sleep mode auto working with trl update
+                    # Align TRL sleep mode with the engine's actual enable_sleep_mode
+                    # (the vision standby gate may have disabled it); fall back to the
+                    # standby env var when the engine cannot be introspected.
                     vllm_setter += (
                         " " * 12
-                        + "if os.environ.get('UNSLOTH_VLLM_STANDBY', '0') == '1':\n"
+                        + "_unsloth_esm = getattr(getattr(getattr(getattr(model.vllm_engine, 'llm_engine', None), 'vllm_config', None), 'model_config', None), 'enable_sleep_mode', None)\n"
+                        + " " * 12
+                        + "if (_unsloth_esm if _unsloth_esm is not None else os.environ.get('UNSLOTH_VLLM_STANDBY', '0') != '0'):\n"
                         + " " * 16
                         + "args.vllm_enable_sleep_mode=True\n"
                     )

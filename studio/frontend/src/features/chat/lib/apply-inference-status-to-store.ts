@@ -7,10 +7,12 @@ import {
   CHAT_REASONING_ENABLED_KEY,
   loadOptionalBool,
   type ReasoningEffort,
+  type ReasoningStyle,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { isMultimodalResponse, type InferenceStatusResponse } from "../types/api";
+import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import type { ChatModelSummary } from "../types/runtime";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -47,6 +49,38 @@ export function clampLocalReasoningEffort(
     return value;
   }
   return "low";
+}
+
+/**
+ * Reasoning capability fields derived from a model load/status response.
+ *
+ * Centralises the effort-levels + can-disable derivation so every load path
+ * (main load, status sync, shared/Compare composer, first-chat auto-load) agrees:
+ * a hybrid GLM-style `enable_thinking_effort` model keeps its high|max|Off
+ * controls no matter which path loaded it, instead of falling back to the
+ * default low|medium|high and losing Max/Off.
+ */
+export function reasoningCapsFromLoad(resp: {
+  reasoning_style?: ReasoningStyle | null;
+  reasoning_effort_levels?: string[] | null;
+}): {
+  reasoningStyle: ReasoningStyle;
+  reasoningEffortLevels: readonly ReasoningEffort[];
+  supportsReasoningOff: boolean;
+} {
+  const reasoningStyle: ReasoningStyle =
+    resp.reasoning_style ?? "enable_thinking";
+  const reasoningEffortLevels: readonly ReasoningEffort[] =
+    resp.reasoning_effort_levels && resp.reasoning_effort_levels.length > 0
+      ? (resp.reasoning_effort_levels as ReasoningEffort[])
+      : (["low", "medium", "high"] as const);
+  // enable_thinking and enable_thinking_effort can both be turned off; only the
+  // pure gpt-oss-style reasoning_effort is always-on.
+  return {
+    reasoningStyle,
+    reasoningEffortLevels,
+    supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+  };
 }
 
 export function resolveInferenceCheckpointId(
@@ -110,9 +144,11 @@ export function applyActiveModelStatusToStore(
   const supportsReasoning = status.supports_reasoning ?? false;
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
+  // GLM-5.2-style models report their own effort levels (e.g. high|max);
+  // everything else keeps the default low/medium/high.
   const reasoningEffortLevels =
-    reasoningStyle === "reasoning_effort"
-      ? (["low", "medium", "high"] as const)
+    status.reasoning_effort_levels && status.reasoning_effort_levels.length > 0
+      ? (status.reasoning_effort_levels as ReasoningEffort[])
       : (["low", "medium", "high"] as const);
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
   const supportsTools = status.supports_tools ?? false;
@@ -128,13 +164,20 @@ export function applyActiveModelStatusToStore(
     : null;
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
-  const clampedReasoningEffort = clampLocalReasoningEffort(
-    prevState.reasoningEffort,
-  );
+  const clampedReasoningEffort =
+    reasoningStyle === "enable_thinking_effort"
+      ? clampReasoningEffortToLevels(
+          prevState.reasoningEffort,
+          reasoningEffortLevels,
+        )
+      : clampLocalReasoningEffort(prevState.reasoningEffort);
   const nextDefaultChatTemplate =
     status.chat_template === undefined
       ? prevState.defaultChatTemplate
       : status.chat_template;
+  // While a load is in flight, performLoad owns the load params. Seeding them
+  // from a stale poll here would clobber the values the load dialog just set.
+  const seedLoadParams = !prevState.modelLoading;
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -159,22 +202,26 @@ export function applyActiveModelStatusToStore(
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
-    ...(prevState.loadedSpeculativeType === null && {
-      speculativeType: currentSpecType,
-      loadedSpeculativeType: currentSpecType,
-    }),
-    ...(status.spec_draft_n_max !== undefined &&
+    ...(seedLoadParams &&
+      prevState.loadedSpeculativeType === null && {
+        speculativeType: currentSpecType,
+        loadedSpeculativeType: currentSpecType,
+      }),
+    ...(seedLoadParams &&
+      status.spec_draft_n_max !== undefined &&
       prevState.loadedSpecDraftNMax === null &&
       prevState.specDraftNMax === null && {
         specDraftNMax: status.spec_draft_n_max ?? null,
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
       }),
-    ...(status.cache_type_kv !== undefined &&
+    ...(seedLoadParams &&
+      status.cache_type_kv !== undefined &&
       prevState.loadedKvCacheDtype === null && {
         kvCacheDtype: status.cache_type_kv,
         loadedKvCacheDtype: status.cache_type_kv,
       }),
-    ...(status.tensor_parallel !== undefined &&
+    ...(seedLoadParams &&
+      status.tensor_parallel !== undefined &&
       prevState.loadedTensorParallel === null && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,

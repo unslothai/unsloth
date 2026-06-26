@@ -26,6 +26,8 @@ from hub.utils.hf_cache_state import (
 from hub.utils.gguf import (
     extract_quant_label,
     iter_hf_cache_snapshots,
+    is_big_endian_gguf_path,
+    list_empty_gguf_variant_dirs,
     list_gguf_variants,
     list_gguf_variants_from_hf_cache,
     list_local_gguf_variants,
@@ -333,6 +335,32 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
+def _mark_empty_dir_cleanables(
+    repo_id: str, response: GgufVariantsResponse
+) -> GgufVariantsResponse:
+    """Surface empty leftover ``<quant>/`` folders (interrupted downloads) as
+    partial so the UI can delete them -- on local/offline paths too, not just a
+    remote listing. A listed quant is flipped to partial; an unlisted one is
+    appended as a zero-byte cleanable entry."""
+    try:
+        empty_labels = list_empty_gguf_variant_dirs(repo_id)
+    except Exception as e:
+        logger.warning(f"Failed to scan empty GGUF variant folders for {repo_id}: {e}")
+        return response
+    if not empty_labels:
+        return response
+    empty_by_key = {label.lower(): label for label in empty_labels}
+    variants = list(response.variants)
+    listed = {v.quant.lower() for v in variants}
+    for i, v in enumerate(variants):
+        if v.quant.lower() in empty_by_key and not v.downloaded and not v.partial:
+            variants[i] = v.model_copy(update = {"partial": True})
+    for key, label in sorted(empty_by_key.items()):
+        if key not in listed:
+            variants.append(GgufVariantDetail(filename = f"{label}.gguf", quant = label, partial = True))
+    return response.model_copy(update = {"variants": variants})
+
+
 async def get_gguf_variants_response(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -482,7 +510,10 @@ async def get_gguf_variants_response(
                     by_filename[key] = max(by_filename.get(key, 0), size)
                     if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
                         continue
-                    q = extract_quant_label(rel).lower()
+                    q = extract_quant_label(rel)
+                    if is_big_endian_gguf_path(rel, q):
+                        continue
+                    q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
                 if by_filename:
                     cached_filenames_by_snapshot.append(by_filename)
@@ -521,33 +552,51 @@ async def get_gguf_variants_response(
             return False
 
         def _any_mmproj_cached(filenames: frozenset[str]) -> bool:
-            return any(
+            if any(
                 by_filename.get(name.lower()) is not None
                 for by_filename in cached_filenames_by_snapshot
                 for name in filenames
+            ):
+                return True
+            return any(
+                _is_mmproj_filename(name.rsplit("/", 1)[-1])
+                for by_filename in cached_filenames_by_snapshot
+                for name in by_filename
+            )
+
+        def _quant_bytes_present(quant: str, size_bytes: int) -> bool:
+            # Small rounding tolerance for symlinks vs real sizes.
+            if size_bytes <= 0:
+                return False
+            return any(
+                by_quant.get(quant, 0) >= size_bytes * 0.99
+                for by_quant in cached_quant_bytes_by_snapshot
             )
 
         def _is_fully_downloaded(variant) -> bool:
-            requirement = requirements_by_quant.get(variant.quant.lower())
-            if requirement is None:
-                if variant.size_bytes == 0:
-                    return False
-                quant = variant.quant.lower()
-                # Allow small rounding tolerance (symlinks vs real sizes).
-                return any(
-                    by_quant.get(quant, 0) >= variant.size_bytes * 0.99
-                    for by_quant in cached_quant_bytes_by_snapshot
+            quant = variant.quant.lower()
+            requirement = requirements_by_quant.get(quant)
+            # Vision repos ship an mmproj adapter; any precision on disk suffices.
+            if (
+                requirement is not None
+                and _filenames_cached(
+                    requirement.main_filenames,
+                    requirement.main_size_bytes,
                 )
-            if not _filenames_cached(
-                requirement.main_filenames,
-                requirement.main_size_bytes,
+                and (
+                    not requirement.mmproj_filenames
+                    or _any_mmproj_cached(requirement.mmproj_filenames)
+                )
             ):
+                return True
+            # Byte fallback so a present quant isn't demoted by a filename mismatch;
+            # vision repos still need an mmproj cached (any precision).
+            if not _quant_bytes_present(quant, variant.size_bytes):
                 return False
-            # Vision repos ship an mmproj adapter per variant. Any mmproj
-            # precision on disk suffices (the loader picks whichever is present);
-            # requiring the API-preferred one would falsely demote variants.
-            if requirement.mmproj_filenames and not _any_mmproj_cached(
-                requirement.mmproj_filenames,
+            if (
+                requirement is not None
+                and requirement.mmproj_filenames
+                and not _any_mmproj_cached(requirement.mmproj_filenames)
             ):
                 return False
             return True
@@ -631,8 +680,28 @@ async def get_gguf_variants_response(
             default_variant = default_variant,
         )
 
+    def _compute_with_cleanables() -> GgufVariantsResponse:
+        skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
+        try:
+            response = _compute()
+        except Exception:
+            # Offline / metadata fetch failed with only an empty leftover
+            # <quant>/ folder cached: still surface it so the UI can delete it,
+            # otherwise re-raise the original error.
+            if skip:
+                raise
+            enriched = _mark_empty_dir_cleanables(
+                repo_id, GgufVariantsResponse(repo_id = repo_id, variants = [])
+            )
+            if enriched.variants:
+                return enriched
+            raise
+        if skip:
+            return response
+        return _mark_empty_dir_cleanables(repo_id, response)
+
     try:
-        return await asyncio.to_thread(_compute)
+        return await asyncio.to_thread(_compute_with_cleanables)
     except HTTPException:
         raise
     except Exception as e:

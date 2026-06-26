@@ -260,6 +260,40 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
     assert _inference.find_studio_server() is None
 
 
+def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
+    # localhost resolving ::1-first must not hide a Studio bound to 127.0.0.1:
+    # discovery tries each loopback address and returns the one that answers.
+    import socket
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://localhost:8888")
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::1", 8888, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 8888)),
+        ],
+    )
+
+    class _OK:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def only_ipv4(request, *a, **k):
+        if "127.0.0.1" not in request.full_url:
+            raise OSError("connection refused")
+        return _OK()
+
+    monkeypatch.setattr(urllib.request, "urlopen", only_ipv4)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
+
+
 class _FakeSSEResponse:
     def __init__(self, lines):
         self._lines = lines

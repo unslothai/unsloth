@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pytest configuration for studio/install tests.
-
-install_python_stack.py does ``from backend.utils.wheel_utils import ...``
-which requires the ``studio/`` directory to be on sys.path.  When tests are
-run from the repo root (the normal case), the studio package is not
-automatically importable, so we add it here.
-"""
+"""Pytest config for studio/install tests: add studio/ to sys.path so `backend` imports work from the repo root."""
 
 from __future__ import annotations
 

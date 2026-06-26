@@ -1,13 +1,4 @@
-"""End-to-end sandbox tests: Studio modules in isolated no-torch venvs.
-
-Covers:
-- Python 3.12 and 3.13 venv creation (Intel Mac uses 3.12, Apple Silicon/Linux 3.13)
-- data_collators.py loads and dataclasses instantiate without torch
-- chat_templates.py top-level exec works with stubs for relative imports
-- Negative control: prepending 'import torch' fails in no-torch venv
-- Negative control: installing torchao (from overrides.txt) fails in no-torch venv
-- AST structural checks for top-level torch imports
-"""
+"""Sandbox tests: Studio dataset modules load/run in isolated no-torch venvs."""
 
 from __future__ import annotations
 
@@ -48,10 +39,7 @@ def _create_venv(venv_dir: Path, python_version: str) -> Path | None:
 
 @pytest.fixture(params = ["3.12", "3.13"], scope = "module")
 def no_torch_venv(request, tmp_path_factory):
-    """Create a temporary venv at the requested Python version with no torch.
-
-    Parametrized for 3.12 (Intel Mac) and 3.13 (Apple Silicon / Linux).
-    """
+    """Temp no-torch venv, parametrized for 3.12 (Intel Mac) and 3.13 (Apple Silicon / Linux)."""
     if not _has_uv():
         pytest.skip("uv not available")
 
@@ -266,10 +254,15 @@ class TestChatTemplatesNoTorchVenv:
             model_mappings.MODEL_TO_TEMPLATE_MAPPER = {{}}
             sys.modules['model_mappings'] = model_mappings
 
+            iterable = types.ModuleType('iterable')
+            iterable.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = iterable
+
             # Read and transform the source: replace relative imports with absolute
             source = open({str(CHAT_TEMPLATES)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
+            source = source.replace('from .iterable import', 'from iterable import')
 
             exec(source)
 
@@ -307,10 +300,15 @@ class TestChatTemplatesNoTorchVenv:
             model_mappings.MODEL_TO_TEMPLATE_MAPPER = {{}}
             sys.modules['model_mappings'] = model_mappings
 
+            iterable = types.ModuleType('iterable')
+            iterable.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = iterable
+
             ns = {{}}
             source = open({str(CHAT_TEMPLATES)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
+            source = source.replace('from .iterable import', 'from iterable import')
             exec(source, ns)
 
             assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined"
@@ -353,7 +351,7 @@ class TestFormatConversionAST:
                         and child.module
                         and child.module.startswith("torch")
                     ):
-                        # This torch import must be inside a Try node
+                        # This torch import must be inside a Try node.
                         found_in_try = False
                         for try_node in ast.walk(node):
                             if isinstance(try_node, ast.Try):
@@ -391,6 +389,10 @@ class TestFormatConversionNoTorchVenv:
             datasets_mod.IterableDataset = type('IterableDataset', (), {{}})
             sys.modules['datasets'] = datasets_mod
 
+            iterable_mod = types.ModuleType('iterable')
+            iterable_mod.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = iterable_mod
+
             # Stub utils.hardware
             utils_mod = types.ModuleType('utils')
             hardware_mod = types.ModuleType('utils.hardware')
@@ -402,6 +404,7 @@ class TestFormatConversionNoTorchVenv:
             # Read and exec format_conversion.py
             source = open({str(FORMAT_CONVERSION)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
+            source = source.replace('from .iterable import', 'from iterable import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
@@ -449,6 +452,10 @@ class TestFormatConversionNoTorchVenv:
             datasets_mod.IterableDataset = type('IterableDataset', (), {{}})
             sys.modules['datasets'] = datasets_mod
 
+            iterable_mod = types.ModuleType('iterable')
+            iterable_mod.is_streaming_dataset = lambda *a, **k: False
+            sys.modules['iterable'] = iterable_mod
+
             utils_mod = types.ModuleType('utils')
             hardware_mod = types.ModuleType('utils.hardware')
             hardware_mod.dataset_map_num_proc = lambda n=None: 1
@@ -458,6 +465,7 @@ class TestFormatConversionNoTorchVenv:
 
             source = open({str(FORMAT_CONVERSION)!r}).read()
             source = source.replace('from .format_detection import', 'from format_detection import')
+            source = source.replace('from .iterable import', 'from iterable import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
@@ -524,10 +532,7 @@ class TestNegativeControls:
             os.unlink(temp_file)
 
     def test_torchao_install_fails_no_torch_venv(self, no_torch_venv):
-        """Installing torchao (from overrides.txt) fails in a no-torch venv.
-
-        This proves the overrides.txt skip is necessary for Intel Mac.
-        """
+        """torchao install fails in a no-torch venv: proves the overrides.txt skip is needed."""
         result = subprocess.run(
             [
                 no_torch_venv,
@@ -541,10 +546,10 @@ class TestNegativeControls:
             timeout = 60,
         )
         if result.returncode != 0:
-            # torchao install/resolution failed as expected
+            # torchao install/resolution failed as expected.
             pass
         else:
-            # pip dry-run may not catch dependency issues; verify torch is missing
+            # dry-run may miss dep issues; verify torch is absent instead.
             check = subprocess.run(
                 [no_torch_venv, "-c", "import torch"],
                 capture_output = True,

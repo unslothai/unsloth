@@ -483,7 +483,7 @@ export function ChatMcpServersDialog({
               />
               <span className="text-xs text-muted-foreground">
                 An http(s) URL for a remote server, or a local command to run an
-                stdio server (desktop app only).
+                stdio server (local installs only).
               </span>
             </div>
 

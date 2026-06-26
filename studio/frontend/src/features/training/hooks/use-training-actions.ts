@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { useCallback } from "react";
 import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -87,6 +88,10 @@ export function useTrainingActions() {
           useTrainingConfigStore.setState({
             isDatasetImage: isImage,
             isDatasetAudio: isAudio,
+            // Streaming is unsupported for image/audio datasets; clear the flag
+            // so buildTrainingStartPayload never ships dataset_streaming=true
+            // for a modality the backend would reject with a 422.
+            ...(isImage || isAudio ? { datasetStreaming: false } : {}),
           });
         }
 
@@ -125,6 +130,24 @@ export function useTrainingActions() {
       if (useTrainingRuntimeStore.getState().stopRequested) {
         runtimeStore.setStarting(false);
         return false;
+      }
+
+      // Consent gate for the selected model's custom (auto_map) code.
+      if (config.selectedModel) {
+        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+          modelName: config.selectedModel,
+          hfToken: config.hfToken.trim() || null,
+          requiresTrustRemoteCode: config.trustRemoteCode,
+          onApprove: (fingerprint) =>
+            useTrainingConfigStore.setState({
+              trustRemoteCode: true,
+              approvedRemoteCodeFingerprint: fingerprint,
+            }),
+        });
+        if (!remoteCodeOk) {
+          runtimeStore.setStarting(false);
+          return false;
+        }
       }
 
       // Re-read config after potential store updates from dataset check
@@ -198,6 +221,29 @@ export function useTrainingActions() {
       } as TrainingStartRequest;
 
       runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, true);
+
+      // Resume goes straight to startTraining, so it runs the same consent gate as a
+      // fresh start; otherwise a resumed custom-code run hits the worker block with no dialog.
+      if (payload.model_name) {
+        let trustRemoteCode = Boolean(payload.trust_remote_code);
+        let approvedRemoteCodeFingerprint =
+          payload.approved_remote_code_fingerprint ?? null;
+        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+          modelName: payload.model_name,
+          hfToken: payload.hf_token ?? null,
+          requiresTrustRemoteCode: trustRemoteCode,
+          onApprove: (fingerprint) => {
+            trustRemoteCode = true;
+            approvedRemoteCodeFingerprint = fingerprint;
+          },
+        });
+        if (!remoteCodeOk) {
+          runtimeStore.setStarting(false);
+          return false;
+        }
+        payload.trust_remote_code = trustRemoteCode;
+        payload.approved_remote_code_fingerprint = approvedRemoteCodeFingerprint;
+      }
 
       const response = await startTraining(payload);
       if (response.status === "error") {

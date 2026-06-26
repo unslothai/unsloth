@@ -143,7 +143,7 @@ record_state() {
     ( cd "$DEST" && find . -type f -print0 ) | while IFS= read -r -d '' rel; do
         rel="${rel#./}"
         case "$rel" in
-            .unsloth_sync_state|.unsloth_sync_commit) continue ;;
+            .unsloth_sync_state|.unsloth_sync_state.tmp|.unsloth_sync_commit) continue ;;
         esac
         printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
     done
@@ -156,6 +156,16 @@ if [ ! -f "$STATE" ]; then
         rel="${rel#./}"
         case "$rel" in .unsloth_template_commit) continue ;; esac
         mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
+        # A pre-existing file at this path (bind-mounted or hand-created before
+        # the first boot) is user data: never clobber it. Only lay down the baked
+        # template when the path is empty or already byte-identical to it. The
+        # refresh path below has the same ownership rule; this keeps first boot
+        # symmetric so a mounted notebook survives the very first start too.
+        if [ -e "$DEST/$rel" ] \
+           && [ "$(hash_of "$DEST/$rel")" != "$(hash_of "$TEMPLATE/$rel")" ]; then
+            echo "[unsloth-nb] kept existing user file: $DEST/$rel"
+            continue
+        fi
         cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null || true
     done
     record_state

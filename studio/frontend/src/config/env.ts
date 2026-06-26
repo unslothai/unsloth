@@ -18,6 +18,15 @@ export type DeviceType = "mac" | "windows" | "linux" | string;
 interface PlatformState {
   deviceType: DeviceType;
   chatOnly: boolean;
+  // Why chatOnly is set (null when training is enabled), from /api/health.
+  // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
+  // Train/Export instead of silently disabling them.
+  chatOnlyReason: string | null;
+  // From /api/health (authed): live tunnel URL, direct (non-tunnel) base, and
+  // whether the server was launched with --secure.
+  cloudflareUrl: string | null;
+  serverUrl: string | null;
+  secure: boolean;
   fetched: boolean;
   isChatOnly: () => boolean;
 }
@@ -37,13 +46,20 @@ const localDeviceType = detectLocalPlatform();
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
   chatOnly: localDeviceType === "mac",
+  chatOnlyReason: null,
+  cloudflareUrl: null,
+  serverUrl: null,
+  secure: false,
   fetched: false,
   isChatOnly: () => get().chatOnly,
 }));
 
-export async function fetchDeviceType(): Promise<DeviceType> {
+// `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
+export async function fetchDeviceType(options?: {
+  force?: boolean;
+}): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
-  if (fetched) return usePlatformStore.getState().deviceType;
+  if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
 
   try {
     // /api/health only reports the server's device_type to authed callers.
@@ -57,15 +73,27 @@ export async function fetchDeviceType(): Promise<DeviceType> {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
     if (res.ok) {
-      const data = (await res.json()) as { device_type?: string; chat_only?: boolean };
+      const data = (await res.json()) as {
+        device_type?: string;
+        chat_only?: boolean;
+        chat_only_reason?: string | null;
+        cloudflare_url?: string | null;
+        server_url?: string | null;
+        secure?: boolean;
+      };
       const deviceType = data.device_type ?? detectLocalPlatform();
       const chatOnly = data.chat_only ?? false;
+      const chatOnlyReason = data.chat_only_reason ?? null;
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.
       usePlatformStore.setState({
         deviceType,
         chatOnly,
+        chatOnlyReason,
+        cloudflareUrl: data.cloudflare_url ?? null,
+        serverUrl: data.server_url ?? null,
+        secure: data.secure ?? false,
         fetched: data.device_type !== undefined,
       });
       return deviceType;

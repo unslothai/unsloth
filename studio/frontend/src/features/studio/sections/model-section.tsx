@@ -41,10 +41,10 @@ import {
 import {
   useDebouncedValue,
   useGpuInfo,
-  useHfModelSearch,
   useHfTokenValidation,
-  useInfiniteScroll,
 } from "@/hooks";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import { extractParamLabel } from "@/lib/model-size";
 import { formatCompact } from "@/lib/utils";
 import {
@@ -168,12 +168,16 @@ export function ModelSection() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfModelSearch(debouncedQuery, {
+  } = useHubModelSearch(debouncedQuery, {
     task,
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
+    // Curated unsloth listing by default, but a typed query searches the whole
+    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    ownerScope: debouncedQuery.trim() ? "all" : "unsloth",
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
@@ -255,10 +259,11 @@ export function ModelSection() {
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const localComboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMore,
-    hfResults.length,
-  );
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
+    isFetching: isLoading || isLoadingMore,
+    resultCount: hfResults.length,
+    resetKey: debouncedQuery,
+  });
 
   return (
     <div data-tour="studio-model" className="w-full min-w-0">
@@ -470,7 +475,7 @@ export function ModelSection() {
                   )}
                   <div
                     ref={scrollRef}
-                    className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                    className="hover-scrollbar max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
                   >
                     <ComboboxList className="p-1 !max-h-none !overflow-visible">
                       {(id: string) => {

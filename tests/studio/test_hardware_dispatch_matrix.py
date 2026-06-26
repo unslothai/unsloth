@@ -1,12 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Hardware dispatch matrix for Studio.
-
-Spoofs platform / torch.cuda / torch.xpu / sys.modules['mlx'] to exercise the
-CUDA, ROCm, XPU, MLX, and CPU dispatch paths deterministically without real
-hardware. Each profile in ``PROFILES`` (CUDA, ROCm, XPU, Apple+/-mlx, the
-linux-arm64-with-mlx canary, CPU) asserts three contracts: ``unsloth._IS_MLX``,
-``detect_hardware()`` DeviceType + ``IS_ROCM``, and ``is_apple_silicon()``.
-Add a row to ``PROFILES`` to extend coverage; tests parametrize over it."""
+"""Studio hardware dispatch matrix: spoofs platform/torch/mlx per PROFILES to exercise CUDA/ROCm/XPU/MLX/CPU paths without real hardware."""
 
 from __future__ import annotations
 
@@ -24,11 +17,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STUDIO_BACKEND = REPO_ROOT / "studio" / "backend"
-
-
-# ---------------------------------------------------------------------------
-# Profile definition
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -158,15 +146,9 @@ PROFILES = [
 PROFILE_IDS = [p.name for p in PROFILES]
 
 
-# ---------------------------------------------------------------------------
-# Spoofing helpers
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def spoof_hardware(monkeypatch):
-    """Return a function that applies a HardwareProfile to the live process.
-    Idempotent; monkeypatch cleans up on test exit."""
+    """Return a function that applies a HardwareProfile to the live process; monkeypatch cleans up on exit."""
 
     def _apply(profile: HardwareProfile) -> None:
         import platform
@@ -177,8 +159,7 @@ def spoof_hardware(monkeypatch):
         monkeypatch.setattr(platform, "machine", lambda: profile.machine)
 
         monkeypatch.setattr(torch.cuda, "is_available", lambda: profile.cuda_available)
-        # Stub get_device_properties: detect_hardware reads .name when CUDA is
-        # available, which crashes on a CPU CI runner ("No CUDA GPUs").
+        # Stub get_device_properties: detect_hardware reads .name, which crashes on a CPU CI runner.
         if profile.cuda_available:
             stub_props = types.SimpleNamespace(
                 name = "Stub GPU" if not profile.hip_version else "Stub AMD GPU",
@@ -194,8 +175,7 @@ def spoof_hardware(monkeypatch):
         torch_version = torch.version
         monkeypatch.setattr(torch_version, "hip", profile.hip_version, raising = False)
 
-        # Stub torch.xpu.* (detect_hardware reads both); real get_device_name
-        # needs the XPU torch build, so always stub to stay hardware-agnostic.
+        # Stub torch.xpu.* always; real get_device_name needs the XPU torch build.
         if hasattr(torch, "xpu"):
             monkeypatch.setattr(torch.xpu, "is_available", lambda: profile.xpu_available)
             monkeypatch.setattr(
@@ -224,9 +204,18 @@ def spoof_hardware(monkeypatch):
             fake_mlx.core = fake_mlx_core
             monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
             monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
+            # detect_hardware now gates MLX on the full stack via
+            # utils.mlx_repair.mlx_stack_available() (it imports mlx_lm/mlx_vlm and
+            # checks dist versions), which faking only mlx.core cannot satisfy. An
+            # mlx profile means a complete, healthy stack, so model that here;
+            # mlx_stack_available's own internals are covered by test_mlx_repair.py.
+            if str(STUDIO_BACKEND) not in sys.path:
+                sys.path.insert(0, str(STUDIO_BACKEND))
+            import utils.mlx_repair as _mlx_repair  # type: ignore
+
+            monkeypatch.setattr(_mlx_repair, "mlx_stack_available", lambda: True)
         else:
-            # Drop cached mlx and patch find_spec so the unsloth gate sees
-            # mlx as absent.
+            # Drop cached mlx and patch find_spec so the unsloth gate sees mlx as absent.
             monkeypatch.delitem(sys.modules, "mlx", raising = False)
             monkeypatch.delitem(sys.modules, "mlx.core", raising = False)
             real_find_spec = importlib.util.find_spec
@@ -238,9 +227,8 @@ def spoof_hardware(monkeypatch):
 
             monkeypatch.setattr(importlib.util, "find_spec", _no_mlx)
 
-            # Studio's _has_mlx() does `import mlx.core`, not find_spec, so on a
-            # real Apple Silicon host with mlx installed it would still succeed.
-            # Block it via a meta_path finder that raises ImportError for mlx.*.
+            # Studio's _has_mlx() does `import mlx.core`, not find_spec; block it
+            # with a meta_path finder that raises ImportError for mlx.*.
             class _BlockMLXFinder:
                 def find_spec(
                     self_inner,
@@ -255,8 +243,7 @@ def spoof_hardware(monkeypatch):
                     return None
 
             blocker = _BlockMLXFinder()
-            # New list so monkeypatch fully restores on teardown (mutating in
-            # place would survive the test).
+            # New list so monkeypatch fully restores on teardown.
             monkeypatch.setattr(
                 sys,
                 "meta_path",
@@ -282,17 +269,12 @@ def _import_studio_hardware_module():
     """Lazy-load Studio's hardware module under the bare-imports layout."""
     if str(STUDIO_BACKEND) not in sys.path:
         sys.path.insert(0, str(STUDIO_BACKEND))
-    # Force a fresh import so detect_hardware re-runs under the current spoofs.
+    # Fresh import so detect_hardware re-runs under the current spoofs.
     sys.modules.pop("utils.hardware.hardware", None)
     sys.modules.pop("utils.hardware", None)
     from utils.hardware import hardware as hw  # type: ignore
 
     return hw
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
@@ -333,14 +315,11 @@ def test_studio_is_apple_silicon_matches_profile(profile, spoof_hardware):
     )
 
 
-# ---------------------------------------------------------------------------
 # Negative-space tests: catch regressions where the dispatch order changes.
-# ---------------------------------------------------------------------------
 
 
 def test_cuda_takes_priority_over_mlx_when_both_available(spoof_hardware):
-    """If both CUDA and MLX are available, Studio MUST pick CUDA: the canary
-    guarding GPU users from being silently routed to MLX after refactors."""
+    """CUDA wins over MLX when both available: canary against GPU users being routed to MLX after refactors."""
     profile = HardwareProfile(
         name = "cuda_plus_mlx",
         system = "Darwin",

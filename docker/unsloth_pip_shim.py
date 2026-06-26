@@ -155,9 +155,12 @@ def main():
     if dropped:
         print("[unsloth-nb] kept baked versions, skipped: " + " ".join(dropped))
 
-    # Anything left to actually install? (a requirement, not just flags)
-    real_reqs = [t for t in keep_args if _canon(t)]
-    if not real_reqs:
+    # Anything left to actually install? Count any non-flag token as a target,
+    # not just tokens with a canonical pkg name: editable / local / url / vcs
+    # installs (`-e .`, `.`, `git+https://...`, a wheel URL) carry no canonical
+    # name but must still run, and a `-r`/`-c` file pulls in real requirements.
+    has_install_target = any(not t.startswith("-") for t in keep_args)
+    if not has_install_target:
         print("[unsloth-nb] nothing to install after keeping the baked stack; ok.")
         return
     cmd = [REAL[tool]] + head + keep_args

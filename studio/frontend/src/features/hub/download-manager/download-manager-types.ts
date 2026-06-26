@@ -14,8 +14,8 @@ export interface ManagedDownload {
   state: DownloadJobState;
   downloadedBytes: number;
   // Finalized bytes on disk (excludes the in-progress `.incomplete` portion in
-  // `downloadedBytes`). The idle/registry-loss completion fallback keys off this
-  // so a partial can't be marked complete.
+  // `downloadedBytes`). The completion fallback keys off this so a partial can't
+  // be marked complete.
   completedBytes: number;
   // Server-verified completion; not trusted across reloads (hydration re-probes).
   completeOnDisk: boolean;
