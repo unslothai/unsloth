@@ -24,6 +24,7 @@ extract_archive = INSTALL_LLAMA_PREBUILT.extract_archive
 binary_env = INSTALL_LLAMA_PREBUILT.binary_env
 is_secret_env_name = INSTALL_LLAMA_PREBUILT.is_secret_env_name
 strip_secret_env = INSTALL_LLAMA_PREBUILT.strip_secret_env
+isolated_runtime_home = INSTALL_LLAMA_PREBUILT.isolated_runtime_home
 HostInfo = INSTALL_LLAMA_PREBUILT.HostInfo
 AssetChoice = INSTALL_LLAMA_PREBUILT.AssetChoice
 ApprovedArtifactHash = INSTALL_LLAMA_PREBUILT.ApprovedArtifactHash
@@ -922,6 +923,46 @@ def test_binary_env_strips_secrets_from_downloaded_binary_environment(
     # library/runtime resolution unaffected
     assert str(bin_dir) in env["LD_LIBRARY_PATH"].split(os.pathsep)
     assert env["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_binary_env_redirects_home_away_from_real_credential_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    binary_path = bin_dir / "llama-server"
+    binary_path.write_bytes(b"fake")
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+
+    real_home = str(tmp_path / "real_home")
+    monkeypatch.setenv("HOME", real_home)
+    monkeypatch.setenv("HF_HOME", real_home + "/.cache/huggingface")
+
+    env = binary_env(binary_path, install_dir, host)
+
+    # HOME and the cache pointers are redirected to a single empty, existing dir.
+    assert env["HOME"] != real_home
+    assert env["HF_HOME"] == env["HOME"]
+    assert env["HOME"] == isolated_runtime_home()
+    assert os.path.isdir(env["HOME"])
+    assert os.listdir(env["HOME"]) == []
 
 
 def test_install_prebuilt_falls_back_to_older_release_plan(

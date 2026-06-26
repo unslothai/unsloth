@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import errno
 import fnmatch
 import hashlib
@@ -5574,6 +5575,38 @@ def strip_secret_env(env: dict[str, str]) -> dict[str, str]:
     }
 
 
+# Home / cache / config pointers that locate on-disk token stores
+# (~/.cache/huggingface/token, ~/.aws/credentials, ~/.config/gh, ...). Stripping
+# the token env vars is not enough: a tampered binary can still read those files
+# via $HOME, so point these at an empty throwaway home for the binary launch.
+_RUNTIME_HOME_POINTER_VARS = (
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "HF_HOME",
+    "HUGGINGFACE_HUB_CACHE",
+    "HF_HUB_CACHE",
+)
+
+_isolated_runtime_home_dir: str | None = None
+
+
+def isolated_runtime_home() -> str:
+    # One empty dir, created lazily and removed at exit. Defeats env-driven
+    # credential-file lookups; a binary resolving the real home via getpwuid is
+    # out of scope and needs OS sandboxing.
+    global _isolated_runtime_home_dir
+    if _isolated_runtime_home_dir is None:
+        path = tempfile.mkdtemp(prefix = "unsloth-prebuilt-home-")
+        atexit.register(shutil.rmtree, path, ignore_errors = True)
+        _isolated_runtime_home_dir = path
+    return _isolated_runtime_home_dir
+
+
 def binary_env(
     binary_path: Path,
     install_dir: Path,
@@ -5582,6 +5615,9 @@ def binary_env(
     runtime_line: str | None = None,
 ) -> dict[str, str]:
     env = strip_secret_env(os.environ.copy())
+    runtime_home = isolated_runtime_home()
+    for pointer in _RUNTIME_HOME_POINTER_VARS:
+        env[pointer] = runtime_home
     if host.is_windows:
         path_dirs = [
             str(binary_path.parent),
