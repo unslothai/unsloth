@@ -38,47 +38,6 @@ def _assert_env_unset(output: str, name: str) -> None:
     assert needle in output, f"{needle!r} not found in:\n{output}"
 
 
-@pytest.fixture()
-def claude_settings(tmp_path, monkeypatch):
-    path = tmp_path / "claude" / "settings.json"
-    monkeypatch.setattr(start, "claude_settings_path", lambda: path)
-    return path
-
-
-def test_claude_settings_created_when_missing(claude_settings):
-    start.ensure_claude_attribution_header()
-    settings = json.loads(claude_settings.read_text())
-    assert settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
-
-
-def test_claude_settings_merge_preserves_existing(claude_settings):
-    claude_settings.parent.mkdir(parents = True)
-    claude_settings.write_text(
-        json.dumps({"effortLevel": "high", "env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "0"}})
-    )
-    start.ensure_claude_attribution_header()
-    settings = json.loads(claude_settings.read_text())
-    assert settings["effortLevel"] == "high"
-    assert settings["env"]["CLAUDE_CODE_ENABLE_TELEMETRY"] == "0"
-    assert settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
-
-
-def test_claude_settings_already_set_untouched(claude_settings):
-    claude_settings.parent.mkdir(parents = True)
-    original = json.dumps({"env": {"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}})
-    claude_settings.write_text(original)
-    start.ensure_claude_attribution_header()
-    assert claude_settings.read_text() == original
-
-
-def test_claude_settings_bad_json_left_alone(claude_settings, capsys):
-    claude_settings.parent.mkdir(parents = True)
-    claude_settings.write_text("{not json")
-    start.ensure_claude_attribution_header()
-    assert claude_settings.read_text() == "{not json"
-    assert "couldn't parse" in capsys.readouterr().err
-
-
 def _fake_claude(monkeypatch, version_output: str) -> None:
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(
@@ -88,19 +47,23 @@ def _fake_claude(monkeypatch, version_output: str) -> None:
     )
 
 
-def test_cache_flags_passed_to_supported_claude(monkeypatch):
+def test_claude_flags_passed_to_supported_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.1.98 (Claude Code)\n")
-    assert start._claude_cache_flags() == ["--exclude-dynamic-system-prompt-sections"]
+    assert start._claude_flags() == [
+        "--exclude-dynamic-system-prompt-sections",
+        "--settings",
+        start._CLAUDE_SETTINGS_OVERLAY,
+    ]
 
 
-def test_cache_flags_skipped_on_old_claude(monkeypatch):
+def test_claude_flags_skipped_on_old_claude(monkeypatch):
     _fake_claude(monkeypatch, "2.0.14 (Claude Code)\n")
-    assert start._claude_cache_flags() == []
+    assert start._claude_flags() == []
 
 
-def test_cache_flags_skipped_on_unparseable_version(monkeypatch):
+def test_claude_flags_skipped_on_unparseable_version(monkeypatch):
     _fake_claude(monkeypatch, "weird build string\n")
-    assert start._claude_cache_flags() == []
+    assert start._claude_flags() == []
 
 
 def _parse_toml(text: str) -> dict:
@@ -147,9 +110,8 @@ def test_merge_codex_config_keeps_user_oss_provider():
     assert _parse_toml(merged)["oss_provider"] == "ollama"
 
 
-def test_write_codex_config_profile(tmp_path, monkeypatch):
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    start.write_codex_config(BASE, MODEL)
+def test_write_codex_config_profile(tmp_path):
+    start.write_codex_config(BASE, MODEL, tmp_path)
     profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
     assert profile["oss_provider"] == "unsloth_api"
     assert profile["model_provider"] == "unsloth_api"
@@ -160,7 +122,7 @@ def test_write_codex_config_profile(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def fake_studio(tmp_path, monkeypatch, claude_settings):
+def fake_studio(tmp_path, monkeypatch):
     calls = []
     state = {"models": [MODEL]}
 
@@ -191,14 +153,15 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
     monkeypatch.setattr(start, "_studio_token", lambda: "jwt-token")
     monkeypatch.setattr(start, "_http_json", http_json)
     monkeypatch.setattr(start, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
-    # No `claude` on PATH, so _claude_cache_flags never probes the real binary.
+    # --no-launch session configs land under tmp instead of the real Unsloth dir.
+    monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
+    # No `claude` on PATH, so _claude_flags never probes the real binary.
     monkeypatch.setattr(start.shutil, "which", lambda _: None)
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
     return calls
 
 
-def test_connect_claude_no_launch(fake_studio, claude_settings):
+def test_connect_claude_no_launch(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_unset(result.output, "ANTHROPIC_API_KEY")
@@ -208,9 +171,13 @@ def test_connect_claude_no_launch(fake_studio, claude_settings):
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
     _assert_env_set(result.output, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
     _assert_env_set(result.output, "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "1")
+    # Attribution header is suppressed for the session via env + --settings, never
+    # by writing the user's ~/.claude/settings.json.
+    _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
-    settings = json.loads(claude_settings.read_text())
-    assert settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
+    assert "--settings" in result.output
+    assert ".claude/settings.json" not in result.output
 
 
 def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypatch):
@@ -218,7 +185,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start, "_claude_cache_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda: [])
 
     def run(command, env):
         captured["command"] = command
@@ -235,6 +202,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
+    assert captured["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
 
 
 @pytest.mark.skipif(
@@ -250,7 +218,7 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
     )
-    monkeypatch.setattr(start, "_claude_cache_flags", lambda: [])
+    monkeypatch.setattr(start, "_claude_flags", lambda: [])
 
     def run(command, env):
         captured["command"] = command
@@ -307,8 +275,43 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "UNSLOTH_STUDIO_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     assert "codex --oss --profile unsloth_api" in result.output
-    assert (tmp_path / "codex" / "config.toml").exists()
-    assert (tmp_path / "codex" / "unsloth_api.config.toml").exists()
+    # Config lands in the session-scoped CODEX_HOME, not the user's ~/.codex.
+    home = tmp_path / "agents" / "codex"
+    _assert_env_set(result.output, "CODEX_HOME", str(home))
+    assert (home / "config.toml").exists()
+    assert (home / "unsloth_api.config.toml").exists()
+
+
+def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
+    # Launch mode writes config to a throwaway temp CODEX_HOME and removes it after
+    # the agent exits; the user's real ~/.codex is never the target.
+    captured = {}
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+
+    def run(command, env):
+        captured["home"] = env["CODEX_HOME"]
+        captured["config_present"] = (Path(env["CODEX_HOME"]) / "config.toml").exists()
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    result = CliRunner().invoke(start.start_app, ["codex"])
+    assert result.exit_code == 0, result.output
+    home = Path(captured["home"])
+    assert captured["config_present"]  # config existed while codex ran
+    assert "unsloth-codex-" in home.name  # an ephemeral temp dir, not ~/.codex
+    assert not home.exists()  # cleaned up after the agent exits
+
+
+def test_no_launch_output_is_parseable(fake_studio):
+    # Mirror the #6547 CI parser: status lines, then `export`/`unset`, then exactly
+    # one launch command on the last line.
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    lines = [ln for ln in result.output.splitlines() if ln.strip()]
+    skip = ("export ", "unset ", "Studio ", "Updated ", "Disabled ", "Warning", "Loading")
+    body = [ln for ln in lines if not ln.startswith(skip)]
+    assert body[-1].startswith("codex --oss --profile unsloth_api")
+    assert any(ln.startswith("export CODEX_HOME=") for ln in lines)
 
 
 def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
@@ -803,10 +806,9 @@ def test_connect_explicit_api_key_skips_mint(fake_studio):
 # ── OpenClaw (Anthropic /v1/messages) ────────────────────────────────
 
 
-def test_write_openclaw_config_fresh(tmp_path, monkeypatch):
+def test_write_openclaw_config_fresh(tmp_path):
     path = tmp_path / "openclaw.json"
-    monkeypatch.setattr(start, "openclaw_config_path", lambda: path)
-    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     provider = config["models"]["providers"]["unsloth"]
     assert provider["baseUrl"] == f"{BASE}/v1"
@@ -823,9 +825,8 @@ def test_write_openclaw_config_fresh(tmp_path, monkeypatch):
         assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_write_openclaw_config_preserves_and_idempotent(tmp_path, monkeypatch):
+def test_write_openclaw_config_preserves_and_idempotent(tmp_path):
     path = tmp_path / "openclaw.json"
-    monkeypatch.setattr(start, "openclaw_config_path", lambda: path)
     path.write_text(
         json.dumps(
             {
@@ -835,7 +836,7 @@ def test_write_openclaw_config_preserves_and_idempotent(tmp_path, monkeypatch):
             }
         )
     )
-    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["theme"] == "dark"
     assert config["agents"]["defaults"]["temperature"] == 0.5  # other agent defaults kept
@@ -844,27 +845,27 @@ def test_write_openclaw_config_preserves_and_idempotent(tmp_path, monkeypatch):
     assert config["models"]["providers"]["openrouter"]["baseUrl"] == "x"
     assert config["models"]["providers"]["unsloth"]["baseUrl"] == f"{BASE}/v1"
     before = path.read_text()
-    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
     assert path.read_text() == before
 
 
-def test_write_openclaw_config_corrupt_left_alone(tmp_path, monkeypatch, capsys):
+def test_write_openclaw_config_corrupt_left_alone(tmp_path, capsys):
     path = tmp_path / "openclaw.json"
-    monkeypatch.setattr(start, "openclaw_config_path", lambda: path)
     path.write_text("{not json")
-    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
     assert path.read_text() == "{not json"
     assert "couldn't parse" in capsys.readouterr().err
 
 
-def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
-    path = tmp_path / "openclaw.json"
-    monkeypatch.setattr(start, "openclaw_config_path", lambda: path)
+def test_connect_openclaw_no_launch(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "openclaw" in result.output
-    assert "export" not in result.output  # key lives in the config, not the env
-    config = json.loads(path.read_text())
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    # Config + state are scoped to the session dir, not the user's ~/.openclaw.
+    _assert_env_set(result.output, "OPENCLAW_CONFIG_PATH", str(config_path))
+    _assert_env_set(result.output, "OPENCLAW_STATE_DIR", str(tmp_path / "agents" / "openclaw"))
+    config = json.loads(config_path.read_text())
     assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
@@ -874,10 +875,9 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
 # ── OpenCode (OpenAI /v1/chat/completions) ───────────────────────────
 
 
-def test_write_opencode_config_fresh(tmp_path, monkeypatch):
+def test_write_opencode_config_fresh(tmp_path):
     path = tmp_path / "opencode.json"
-    monkeypatch.setattr(start, "opencode_config_path", lambda: path)
-    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     provider = config["provider"]["unsloth"]
     assert provider["npm"] == "@ai-sdk/openai-compatible"
@@ -886,29 +886,29 @@ def test_write_opencode_config_fresh(tmp_path, monkeypatch):
     assert config["model"] == f"unsloth/{MODEL['id']}"
 
 
-def test_write_opencode_config_preserves_and_idempotent(tmp_path, monkeypatch):
+def test_write_opencode_config_preserves_and_idempotent(tmp_path):
     path = tmp_path / "opencode.json"
-    monkeypatch.setattr(start, "opencode_config_path", lambda: path)
     path.write_text(
         json.dumps({"theme": "tokyonight", "provider": {"anthropic": {"name": "Anthropic"}}})
     )
-    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["theme"] == "tokyonight"
     assert config["provider"]["anthropic"]["name"] == "Anthropic"
     assert config["provider"]["unsloth"]["options"]["baseURL"] == f"{BASE}/v1"
     before = path.read_text()
-    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     assert path.read_text() == before
 
 
-def test_connect_opencode_no_launch(fake_studio, tmp_path, monkeypatch):
-    path = tmp_path / "opencode.json"
-    monkeypatch.setattr(start, "opencode_config_path", lambda: path)
+def test_connect_opencode_no_launch(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "opencode" in result.output
-    config = json.loads(path.read_text())
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    # OPENCODE_CONFIG overlay points at the session file, not the user's global config.
+    _assert_env_set(result.output, "OPENCODE_CONFIG", str(config_path))
+    config = json.loads(config_path.read_text())
     assert config["provider"]["unsloth"]["options"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["model"] == f"unsloth/{MODEL['id']}"
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
@@ -918,15 +918,13 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def hermes_config(tmp_path, monkeypatch):
-    path = tmp_path / "config.yaml"
-    monkeypatch.setattr(start, "hermes_config_path", lambda: path)
-    return path
+def hermes_config(tmp_path):
+    return tmp_path / "config.yaml"
 
 
 def test_write_hermes_config_fresh(hermes_config):
     yaml = pytest.importorskip("yaml")
-    start.write_hermes_config(BASE, MODEL)
+    start.write_hermes_config(BASE, MODEL, hermes_config)
     config = yaml.safe_load(hermes_config.read_text())
     # Hermes only honors the key for a *named* custom provider, so the endpoint
     # is registered under providers.* and model.provider points at it.
@@ -952,7 +950,7 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
             }
         )
     )
-    start.write_hermes_config(BASE, MODEL)
+    start.write_hermes_config(BASE, MODEL, hermes_config)
     config = yaml.safe_load(hermes_config.read_text())
     assert config["terminal"] == {"backend": "local"}  # unrelated sections kept
     assert config["model"]["temperature"] == 0.7  # unrelated model keys kept
@@ -960,7 +958,7 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
     assert config["providers"]["openrouter"]["base_url"] == "https://openrouter.ai/api/v1"
     assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
     before = hermes_config.read_text()
-    start.write_hermes_config(BASE, MODEL)
+    start.write_hermes_config(BASE, MODEL, hermes_config)
     assert hermes_config.read_text() == before
 
 
@@ -968,18 +966,21 @@ def test_write_hermes_config_preserves_non_mapping_file(hermes_config, capsys):
     pytest.importorskip("yaml")
     original = "- just\n- a\n- list\n"  # valid YAML, but not a mapping
     hermes_config.write_text(original)
-    start.write_hermes_config(BASE, MODEL)
+    start.write_hermes_config(BASE, MODEL, hermes_config)
     assert hermes_config.read_text() == original  # user-managed file left untouched
     assert "couldn't parse" in capsys.readouterr().err
 
 
-def test_connect_hermes_no_launch(fake_studio, hermes_config):
+def test_connect_hermes_no_launch(fake_studio, tmp_path):
     yaml = pytest.importorskip("yaml")
     result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "UNSLOTH_API_KEY", "sk-unsloth-feedfacefeedface")
+    # HERMES_HOME relocates the whole hermes home, so the user's ~/.hermes is untouched.
+    home = tmp_path / "agents" / "hermes"
+    _assert_env_set(result.output, "HERMES_HOME", str(home))
     assert "hermes" in result.output
-    config = yaml.safe_load(hermes_config.read_text())
+    config = yaml.safe_load((home / "config.yaml").read_text())
     assert config["model"]["provider"] == "custom:unsloth"
     assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
     assert config["model"]["default"] == MODEL["id"]

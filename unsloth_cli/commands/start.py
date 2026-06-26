@@ -3,6 +3,7 @@
 
 """`unsloth start` — launch a coding agent against a running Studio server."""
 
+import contextlib
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -376,71 +378,39 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
     )
 
 
-def claude_settings_path() -> Path:
-    return Path.home() / ".claude" / "settings.json"
-
-
-def ensure_claude_attribution_header() -> None:
-    # The header invalidates the llama.cpp KV cache (~90% slower) and Claude
-    # Code only honors this setting from settings.json, not the env var.
-    path = claude_settings_path()
-    settings = {}
-    if path.exists():
-        try:
-            settings = json.loads(path.read_text(encoding = "utf-8"))
-        except (ValueError, OSError):
-            settings = None
-        if not isinstance(settings, dict):
-            typer.echo(
-                f"Warning: couldn't parse {path} — set CLAUDE_CODE_ATTRIBUTION_HEADER "
-                'to "0" in its "env" section yourself, or local inference will be much slower.',
-                err = True,
-            )
-            return
-    env = settings.get("env")
-    if not isinstance(env, dict):
-        env = settings["env"] = {}
-    if str(env.get("CLAUDE_CODE_ATTRIBUTION_HEADER")) == "0":
-        return
-    env["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "0"
-    try:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(json.dumps(settings, indent = 2) + "\n", encoding = "utf-8")
-    except OSError:
-        typer.echo(
-            f"Warning: couldn't write {path} — set CLAUDE_CODE_ATTRIBUTION_HEADER "
-            'to "0" in its "env" section yourself, or local inference will be much slower.',
-            err = True,
-        )
-        return
-    typer.echo(f"Disabled Claude Code's attribution header in {path} (it breaks KV-cache reuse).")
-
-
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
+# Session overlay applied via `claude --settings`; suppresses the attribution header
+# for THIS run only (no ~/.claude write) so llama.cpp KV-cache reuse is preserved. It
+# reinforces the CLAUDE_CODE_ATTRIBUTION_HEADER env var on builds that read the setting
+# only from settings.json.
+_CLAUDE_SETTINGS_OVERLAY = '{"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0"}}'
 
 
-def _claude_cache_flags() -> list:
-    # The flag moves per-machine context (cwd, env info, git status) out of
-    # the system prompt, where it changes every session and defeats llama.cpp
-    # prefix caching. As of 2.1.175 it only takes effect in print mode (`-p`
-    # passed through ctx.args); interactive sessions accept and ignore it.
-    # Claude Code < 2.1.98 aborts on the unknown flag, so check the version
-    # first; no local binary means a --no-launch printout for another machine.
+def _claude_version() -> Optional[tuple]:
+    # None = no local `claude` (a --no-launch printout for another machine; assume a
+    # current build). An unparseable version is treated as too old for the new flags.
     executable = shutil.which("claude")
     if executable is None:
-        return [_DYNAMIC_SECTIONS_FLAG]
+        return None
     try:
         result = subprocess.run(
             [executable, "--version"], capture_output = True, text = True, timeout = 10
         )
-        version = tuple(int(part) for part in result.stdout.split()[0].split("."))
+        return tuple(int(part) for part in result.stdout.split()[0].split("."))
     except Exception:
+        return (0,)
+
+
+def _claude_flags() -> list:
+    # Both knobs preserve llama.cpp KV-cache reuse: --exclude-dynamic-system-prompt-sections
+    # moves per-session context out of the system prompt, and --settings suppresses the
+    # attribution header for this session only (no persistent ~/.claude write; the env var
+    # sets it too). Claude Code < 2.1.98 aborts on unknown flags, so gate on the version;
+    # no local binary means a printout for another machine, so assume a current build.
+    version = _claude_version()
+    if version is not None and version < (2, 1, 98):
         return []
-    return [_DYNAMIC_SECTIONS_FLAG] if version >= (2, 1, 98) else []
-
-
-def codex_home() -> Path:
-    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    return [_DYNAMIC_SECTIONS_FLAG, "--settings", _CLAUDE_SETTINGS_OVERLAY]
 
 
 def _merge_codex_config(existing: str, base: str) -> str:
@@ -466,8 +436,7 @@ def _merge_codex_config(existing: str, base: str) -> str:
     )
 
 
-def write_codex_config(base: str, model: dict) -> None:
-    home = codex_home()
+def write_codex_config(base: str, model: dict, home: Path) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
     config = home / "config.toml"
@@ -596,12 +565,36 @@ def _run(
     _launch(command, env, install_hint = install_hint, unset_env = unset_env)
 
 
-def openclaw_config_path() -> Path:
-    return Path.home() / ".openclaw" / "openclaw.json"
+def _agents_config_root() -> Path:
+    ensure_studio_backend_path()
+    from utils.paths import auth_root
+
+    return auth_root() / "agents"
 
 
-def write_openclaw_config(base: str, key: str, model: dict) -> None:
-    path = openclaw_config_path()
+@contextlib.contextmanager
+def _session_config(agent: str, launch: bool):
+    """Yield a private directory for an agent's session config (never the user's own).
+
+    launch: an ephemeral temp dir removed after the agent process exits, so nothing
+    persists. no-launch: a stable Unsloth-owned dir (the printed recipe is run later
+    on this machine), reset each run. Either way the user's real ~/.<agent> config is
+    left untouched.
+    """
+    if launch:
+        path = Path(tempfile.mkdtemp(prefix = f"unsloth-{agent}-"))
+        try:
+            yield path
+        finally:
+            shutil.rmtree(path, ignore_errors = True)
+    else:
+        path = _agents_config_root() / agent
+        shutil.rmtree(path, ignore_errors = True)
+        path.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        yield path
+
+
+def write_openclaw_config(base: str, key: str, model: dict, path: Path) -> None:
     config = _read_json_object(path)
     if config is None:
         typer.echo(
@@ -637,13 +630,7 @@ def write_openclaw_config(base: str, key: str, model: dict) -> None:
         typer.echo(f"Updated {path}")
 
 
-def opencode_config_path() -> Path:
-    config_home = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
-    return Path(config_home) / "opencode" / "opencode.json"
-
-
-def write_opencode_config(base: str, key: str, model: dict) -> None:
-    path = opencode_config_path()
+def write_opencode_config(base: str, key: str, model: dict, path: Path) -> None:
     config = _read_json_object(path)
     if config is None:
         typer.echo(
@@ -667,14 +654,9 @@ def write_opencode_config(base: str, key: str, model: dict) -> None:
         typer.echo(f"Updated {path}")
 
 
-def hermes_config_path() -> Path:
-    return Path.home() / ".hermes" / "config.yaml"
-
-
-def write_hermes_config(base: str, model: dict) -> None:
+def write_hermes_config(base: str, model: dict, path: Path) -> None:
     import yaml
 
-    path = hermes_config_path()
     config: dict = {}
     if path.exists():
         try:
@@ -731,19 +713,21 @@ def claude(
         api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
     )
     model_id = entry["id"]
-    ensure_claude_attribution_header()
 
     env = {
         "ANTHROPIC_BASE_URL": base,
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_MODEL": model_id,
+        # Session-only (no ~/.claude write): suppress the attribution header so
+        # llama.cpp KV-cache reuse is preserved; --settings below reinforces it.
+        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
         # Update checks, beta features, and other background requests either
         # stall against a local server or evict the conversation from
         # llama-server's KV-cache slots, so turn off everything nonessential.
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
     }
-    command = ["claude", "--model", model_id, *_claude_cache_flags(), *ctx.args]
+    command = ["claude", "--model", model_id, *_claude_flags(), *ctx.args]
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"
         if os.name == "nt"
@@ -776,11 +760,11 @@ def codex(
         api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
     )
     _require_gguf_for_codex(base, key, entry["id"])
-    write_codex_config(base, entry)
-
-    env = {_CODEX_ENV_KEY: key}
     command = ["codex", "--oss", "--profile", _CODEX_PROFILE, *ctx.args]
-    _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
+    with _session_config("codex", launch) as home:
+        write_codex_config(base, entry, home)
+        env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
+        _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
 
 
 @start_app.command("openclaw", context_settings = _PASSTHROUGH)
@@ -798,15 +782,18 @@ def openclaw(
     base, key, entry = _connect(
         api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
     )
-    write_openclaw_config(base, key, entry)  # key lives in the config, not the env
-
     command = ["openclaw", *ctx.args]
     install_hint = (
         "iwr -useb https://openclaw.ai/install.ps1 | iex"
         if os.name == "nt"
         else "curl -fsSL https://openclaw.ai/install.sh | bash"
     )
-    _run(base, entry, {}, command, launch = launch, install_hint = install_hint)
+    with _session_config("openclaw", launch) as cfg:
+        config_path = cfg / "openclaw.json"
+        write_openclaw_config(base, key, entry, config_path)  # key lives in the config, not the env
+        # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
+        env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
+        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
 @start_app.command("opencode", context_settings = _PASSTHROUGH)
@@ -824,10 +811,15 @@ def opencode(
     base, key, entry = _connect(
         api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
     )
-    write_opencode_config(base, key, entry)  # key lives in the config, not the env
-
     command = ["opencode", *ctx.args]
-    _run(base, entry, {}, command, launch = launch, install_hint = "npm install -g opencode-ai")
+    with _session_config("opencode", launch) as cfg:
+        config_path = cfg / "opencode.json"
+        # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
+        # configs), so this adds the Unsloth provider/model for the session without
+        # changing the user's default model. Key lives in the config, not the env.
+        write_opencode_config(base, key, entry, config_path)
+        env = {"OPENCODE_CONFIG": str(config_path)}
+        _run(base, entry, env, command, launch = launch, install_hint = "npm install -g opencode-ai")
 
 
 @start_app.command("hermes", context_settings = _PASSTHROUGH)
@@ -845,12 +837,14 @@ def hermes(
     base, key, entry = _connect(
         api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
     )
-    write_hermes_config(base, entry)
-
-    env = {_HERMES_ENV_KEY: key}
     command = ["hermes", *ctx.args]
     install_hint = (
         "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
         "/main/scripts/install.sh | bash"
     )
-    _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+    with _session_config("hermes", launch) as home:
+        # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
+        # like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
+        write_hermes_config(base, entry, home / "config.yaml")
+        env = {_HERMES_ENV_KEY: key, "HERMES_HOME": str(home)}
+        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
