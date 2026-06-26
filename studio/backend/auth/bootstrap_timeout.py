@@ -3,12 +3,12 @@
 
 """Auto-shutdown for an exposed first-run Studio whose admin password is unchanged.
 
-The local-direct gate in ``main.py`` keeps the seeded bootstrap password off the
-network, but it stays a valid login credential until first login changes it.
-When the web UI is put on the network (``--secure`` / ``0.0.0.0``) and nobody
-completes that first-login change within a deadline, tear Studio down so a
-fresh, unconfigured instance does not stay publicly reachable indefinitely. If
-the password was changed, Studio keeps running.
+On a fresh install the seeded bootstrap admin password stays a valid login
+credential until first login changes it. When the web UI is put on the network
+(``--secure`` / ``0.0.0.0``) and nobody completes that first-login change within
+a deadline, tear Studio down so a fresh, unconfigured instance does not stay
+publicly reachable indefinitely. If the password was changed, Studio keeps
+running.
 
 Scope: web UI launches only (never ``--api-only``, which authenticates by API
 key rather than the admin password, and never Colab). Configurable via
