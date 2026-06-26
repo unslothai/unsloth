@@ -84,6 +84,34 @@ def test_normal_404_is_still_logged(logs):
     assert logs.events[0][2]["status_code"] == 404
 
 
+def _status_app(status):
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+    return app
+
+
+# ── status/progress poll: quiet on success, logged on error ────────────
+
+def test_success_poll_200_suppressed(logs):
+    # The high-frequency /api/export/status poll (838x in a real run) is silenced.
+    for _ in range(5):
+        _run(LoggingMiddleware(_status_app(200))(_scope("/api/export/status"), _noop_receive, _send))
+    assert logs.events == []
+
+
+def test_success_poll_error_is_still_logged(logs):
+    # ... but a 401/500 on that same poll path must surface.
+    _run(LoggingMiddleware(_status_app(401))(_scope("/api/export/status"), _noop_receive, _send))
+    assert len(logs.events) == 1
+    assert logs.events[0][2]["status_code"] == 401
+
+
+def test_load_progress_poll_suppressed(logs):
+    _run(LoggingMiddleware(_status_app(200))(_scope("/api/inference/load-progress"), _noop_receive, _send))
+    assert logs.events == []
+
+
 def test_verbose_keeps_scanner_requests(logs, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_VERBOSE", "1")
     _run(

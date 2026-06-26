@@ -54,11 +54,17 @@ _NATIVE_PATH_LEASE_RE = re.compile(
     r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
 )
 _STANDARD_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
+# Status/progress polls the UI hits every few seconds while an operation runs.
+# Their successful 200s carry no signal (the operation's own module logs state
+# changes), so they're suppressed on success but STILL logged on any error.
 _EXCLUDED_PATHS = {
     "/api/train/status",
     "/api/train/metrics",
     "/api/train/hardware",
     "/api/system",
+    "/api/export/status",
+    "/api/export/logs",
+    "/api/inference/load-progress",
 }
 _EXCLUDED_SUFFIXES = (
     ".png",
@@ -108,18 +114,15 @@ class LoggingMiddleware:
             return
 
         path = scope["path"]
+        method = scope["method"]
         # Scanner/proxy probes (CONNECT, absolute-form "GET http://...", PRI,
-        # random verbs) are never legitimate app traffic; drop their access
-        # line unless verbose. A normal GET/POST 404 is real signal and stays.
-        scanner = scope["method"] not in _STANDARD_METHODS or "://" in path
-        if scanner and not _logs_verbose():
-            excluded = True
-        else:
-            excluded = (
-                path in _EXCLUDED_PATHS
-                or path.startswith("/assets/")
-                or path.endswith(_EXCLUDED_SUFFIXES)
-            )
+        # random verbs) are never legitimate app traffic. Static assets are pure
+        # noise too. Both are quiet even on 4xx. Status/progress polls
+        # (_EXCLUDED_PATHS) are quiet on success but still log on error. A normal
+        # GET/POST 404 is real signal and stays. Verbose keeps everything.
+        scanner = method not in _STANDARD_METHODS or "://" in path
+        static = path.startswith("/assets/") or path.endswith(_EXCLUDED_SUFFIXES)
+        success_poll = path in _EXCLUDED_PATHS
         start_time = time.perf_counter()
         status_code = 500
 
@@ -144,12 +147,21 @@ class LoggingMiddleware:
             raise
         else:
             end_time = time.perf_counter()
-            if not excluded and not self._is_redundant_repeat(
-                scope["method"], path, scope.get("query_string", b""), status_code, end_time
+            is_success = 200 <= status_code < 300
+            if _logs_verbose():
+                suppress = False
+            elif scanner or static:
+                suppress = True
+            elif success_poll and is_success:
+                suppress = True
+            else:
+                suppress = False
+            if not suppress and not self._is_redundant_repeat(
+                method, path, scope.get("query_string", b""), status_code, end_time
             ):
                 logger.info(
                     "request_completed",
-                    method = scope["method"],
+                    method = method,
                     path = path,
                     status_code = status_code,
                     process_time_ms = round((end_time - start_time) * 1000, 2),
