@@ -90,3 +90,16 @@ def test_in_flight_doc_is_failed_and_its_chunks_dropped(rag_conn):
     assert _chunk_count(rag_conn, "partial") == 0
     # Failed doc is re-ingestible (not deduped).
     assert store.document_by_hash(rag_conn, "kb_a", "partial") is None
+
+
+def test_already_failed_doc_has_its_chunks_dropped(rag_conn):
+    # Worker committed chunks then marked the doc 'failed', but crashed before
+    # retiring the job row. Reconcile won't re-flip the doc (already failed), but
+    # its chunks must still be purged so they aren't retrievable/citable.
+    _add_doc(rag_conn, "kb_a", "failed_doc", "failed", ["alpha bravo"])
+    _orphan_job(rag_conn, "failed_doc", "kb_a")
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 1
+
+    assert store.get_document(rag_conn, "failed_doc")["status"] == "failed"
+    assert _chunk_count(rag_conn, "failed_doc") == 0
