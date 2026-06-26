@@ -872,9 +872,13 @@ def _prefetch_ignore_patterns(
     use_safetensors = None,
 ):
     """ignore_patterns for the prewarm snapshot: the static skip list, minus the
-    checkpoint guard when loading from a checkpoint-* subfolder, plus *.bin when
-    the repo also ships safetensors (Transformers prefers safetensors, so pulling
-    the .bin copies just to discard them doubles the very download we optimize)."""
+    checkpoint guard when loading from a checkpoint-* subfolder, minus the weight
+    format the load will not read. An explicit use_safetensors is treated as a format
+    allowlist (True -> skip *.bin, False -> skip *.safetensors) so a bin-only repo is
+    not pulled in full just to be rejected by a safetensors-only load. use_safetensors
+    is None (auto) skips *.bin only when in-scope safetensors are also shipped, since
+    Transformers prefers them (pulling the other format just to discard it doubles the
+    very download we optimize)."""
     # A checkpoint-* subfolder is exactly what "checkpoint-*/*" would drop, so
     # do not ignore it when the caller is explicitly loading from that subfolder.
     ignore_patterns = [
@@ -886,10 +890,20 @@ def _prefetch_ignore_patterns(
             and subfolder.startswith("checkpoint-")
         )
     ]
-    # Skip .bin only when the caller has not explicitly asked for it and the repo
-    # actually ships safetensors to load instead. Best-effort: any failure leaves
-    # both formats eligible (correct, just less efficient).
-    if use_safetensors is not False:
+    # Drop the weight format the load will not read. Transformers reads exactly one
+    # format, so prefetching the other doubles the very download we optimize.
+    if use_safetensors is True:
+        # Explicit safetensors: the load never reads .bin, so skip it outright -- even
+        # for a bin-only repo, where the load fails anyway, do not pull multi-GB of
+        # PyTorch weights first. No model_info call needed for an explicit request.
+        ignore_patterns.extend(("*.bin", "*.bin.index.json"))
+    elif use_safetensors is False:
+        # Explicit .bin: the load never reads safetensors, so skip them.
+        ignore_patterns.extend(("*.safetensors", "*.safetensors.index.json"))
+    else:
+        # Auto (use_safetensors is None): skip .bin only once in-scope safetensors are
+        # confirmed to load instead, since Transformers prefers them. Best-effort: any
+        # failure leaves both formats eligible (correct, just less efficient).
         try:
             from huggingface_hub import HfApi
 
