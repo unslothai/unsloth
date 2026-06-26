@@ -2080,9 +2080,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
-    if trainer.stop_requested and not _stop_save[0]:
-        # User clicked "Cancel" (save=False) — skip saving
-        _send("complete", output_dir = None, status_message = "Training cancelled")
+    if trainer.stop_requested:
+        if not _stop_save[0]:
+            # User clicked "Cancel" (save=False) — skip saving.
+            _send("complete", output_dir = None, status_message = "Training cancelled")
+        else:
+            _send("status", status_message = "Saving stopped model...")
+            mx.synchronize()
+            trainer.save_model(output_dir)
+            _send("complete", output_dir = output_dir, status_message = "Training stopped")
     else:
         _send("status", status_message = "Saving model...")
         mx.synchronize()
@@ -2119,6 +2125,12 @@ def run_mlx_training_process(
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
+
+    from utils.hf_xet_fallback import child_should_disable_xet
+
+    if child_should_disable_xet(config):
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
     if not transformers_activated:
         # Activate before hardware detection: detect_hardware() validates the
@@ -2243,9 +2255,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from .training import should_use_mlx_training_backend
+    from .training import is_apple_silicon_training_platform, should_use_mlx_training_backend
 
-    mlx_backend_requested = should_use_mlx_training_backend()
+    mlx_backend_requested = is_apple_silicon_training_platform()
 
     mlx_transformers_activated = False
     if mlx_backend_requested and _is_current_process_apple_silicon():
@@ -2257,7 +2269,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
-    if should_use_mlx_training_backend(device = _hw.DEVICE):
+    if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
         run_mlx_training_process(
             event_queue = event_queue,
             stop_queue = stop_queue,
