@@ -1073,16 +1073,31 @@ def _ensure_cuda_torch() -> None:
     _marker_lines = [
         line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
     ]
-    if not _marker_lines or _marker_lines[-1] != "hip":
+    if not _marker_lines:
+        return
+    _marker = _marker_lines[-1]
+    # Reinstall CUDA torch when the venv carries a ROCm build on an NVIDIA host
+    # (the poisoning signature), OR when an explicit CUDA index is pinned but the
+    # venv still has a CPU wheel. The latter is the headless CPU-venv-to-CUDA
+    # cross-install (`studio update` with UNSLOTH_TORCH_INDEX_FAMILY=cu128): the
+    # update path preserves torch rather than preinstalling it from install.sh, so
+    # without this the explicit CUDA pin stays ineffective. A healthy CUDA torch,
+    # or a CPU wheel with no CUDA pin, is deliberate and left alone.
+    _pin = _explicit_torch_index_url()
+    _pinned_cuda = bool(_pin) and _pin.rstrip("/").rsplit("/", 1)[-1].lower().startswith("cu")
+    if _marker == "hip":
+        _why = "torch is a ROCm build on an NVIDIA host"
+    elif _marker == "cpu" and _pinned_cuda:
+        _why = "torch is a CPU build but an explicit CUDA index is pinned"
+    else:
         return  # healthy CUDA torch, or a deliberate CPU wheel -- leave as-is
 
     index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
     print(
-        f"   torch is a ROCm build on an NVIDIA host -- reinstalling "
-        f"CUDA torch from {index_url}\n"
-        f"   (set UNSLOTH_TORCH_BACKEND=rocm to keep a deliberate ROCm torch "
-        f"on a mixed AMD+NVIDIA host)"
+        f"   {_why} -- reinstalling CUDA torch from {index_url}\n"
+        f"   (set UNSLOTH_TORCH_BACKEND=rocm or cpu to keep a deliberate "
+        f"non-CUDA torch)"
     )
     pip_install(
         "CUDA torch repair",

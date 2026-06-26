@@ -2540,6 +2540,11 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             if ($finished -and $proc.ExitCode -eq 0 -and $torchVer) {
                 if ($torchVer -match '\+(cu\d+)') {
                     $installedTorchTag = $Matches[1]
+                } elseif ($torchVer -match '\+rocm') {
+                    # Any +rocm / gfx wheel -> generic "rocm" flavor. The exact ROCm
+                    # version is repaired later by install_python_stack.py; here we
+                    # only need the flavor so a correct ROCm venv is not marked stale.
+                    $installedTorchTag = "rocm"
                 } elseif ($torchVer -match '\+cpu') {
                     $installedTorchTag = "cpu"
                 } else {
@@ -2560,7 +2565,17 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
 
     if (-not $shouldRebuild) {
         $_pinnedIdx = Get-PinnedTorchIndexUrl
-        $expectedTorchTag = if ($_pinnedIdx) { Get-TorchIndexLeaf $_pinnedIdx } elseif ($HasNvidiaSmi) { Get-PytorchCudaTag } else { "cpu" }
+        if ($_pinnedIdx) {
+            $_pinLeaf = Get-TorchIndexLeaf $_pinnedIdx
+            # Normalize a pinned rocm*/gfx* leaf to the generic "rocm" flavor so it
+            # compares against the installed +rocm wheel (also "rocm"); cu*/cpu
+            # leaves stay specific so a cu126-vs-cu128 mismatch still rebuilds.
+            $expectedTorchTag = if ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') { "rocm" } else { $_pinLeaf }
+        } elseif ($HasNvidiaSmi) {
+            $expectedTorchTag = Get-PytorchCudaTag
+        } else {
+            $expectedTorchTag = "cpu"
+        }
         if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
             $shouldRebuild = $true
         }

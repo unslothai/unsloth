@@ -2043,6 +2043,8 @@ exit 0
     # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
     $ROCmIndexUrl = $null
     $ROCmTorchFloor = $null
+    $PinnedRocmVisionSpec = $null
+    $PinnedRocmAudioSpec = $null
     if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         $archFamilyMap = @{
@@ -2090,6 +2092,30 @@ exit 0
             substep "AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
         } else {
             substep "AMD GPU detected but arch unknown -- falling back to CPU-only PyTorch" "Yellow"
+        }
+    }
+
+    # An explicit gfx*/rocm pin skips the auto-reroute above, but the generic
+    # CPU/CUDA install below would use torch>=2.4,<2.11 and pull a known-bad wheel
+    # on the gfx115x/gfx120x/rocm>=7.2 indexes (the torch._C._grouped_mm null-ptr
+    # bug). Route a pinned ROCm index through the ROCm install path with the same
+    # 2.11 floor/companions the unpinned reroute derives from the gfx arch.
+    if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {
+        $_pinLeaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLower()
+        $_pinRocm211 = $false
+        if ($_pinLeaf -match '^rocm(\d+)\.(\d+)') {
+            $_pinRocm211 = ([int]$Matches[1] -gt 7) -or ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -ge 2)
+        }
+        if ($_pinLeaf -like 'gfx*' -or $_pinRocm211) {
+            $ROCmIndexUrl = $TorchIndexUrl
+            $ROCmTorchFloor = "torch>=2.11.0,<2.12.0"
+            $PinnedRocmVisionSpec = "torchvision>=0.26.0,<0.27.0"
+            $PinnedRocmAudioSpec = "torchaudio>=2.11.0,<2.12.0"
+            substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchFloor" "Cyan"
+        } elseif ($_pinLeaf -like 'rocm*') {
+            # Older rocm (<=7.1) ships torch <2.11; route via the ROCm path with the
+            # default floor so the pinned family resolves its own wheels.
+            $ROCmIndexUrl = $TorchIndexUrl
         }
     }
 
@@ -2205,8 +2231,8 @@ exit 0
             $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
             # Pin the companions to match $torchSpec; bare names can resolve an
             # ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
-            $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
-            $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+            $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
+            $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             if ($torchInstallExit -ne 0) {
                 # Transient AMD-index failure: fall back to a CPU base so the install
@@ -2326,8 +2352,8 @@ exit 0
                     $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
                     # Pin companions like the fresh ROCm path (bare names can pull an
                     # ABI-incompatible torchvision/torchaudio from the per-arch index).
-                    $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
-                    $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+                    $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
+                    $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
                     $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0) {
