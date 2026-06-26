@@ -741,7 +741,7 @@ def _kv_budget_b(model_gb, gpus = _ASYM):
 
 
 def test_tp_plan_weighted_split_on_asymmetric_big_model():
-    b, (ec, mac, gi, ts) = _plan(45)
+    b, (ec, mac, gi, ts) = _plan(50)
     reserve = b._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     assert gi == [0, 1]
     # split weighted by (usable - buffer); with no totals usable is free*frac
@@ -765,15 +765,15 @@ def test_tp_plan_symmetric_gpus_use_even_split():
 
 
 def test_tp_plan_context_fits_pool_budget_no_oom():
-    b, (ec, mac, gi, ts) = _plan(45)
+    b, (ec, mac, gi, ts) = _plan(50)
     # the chosen context's KV must fit the pooled budget (weights + buffers)
-    assert b._estimate_kv_cache_bytes(ec) <= _kv_budget_b(45)
+    assert b._estimate_kv_cache_bytes(ec) <= _kv_budget_b(50)
 
 
 def test_tp_plan_uses_available_vram_not_wasteful():
     # when the cap engages, the chosen context nearly fills the budget
-    b, (ec, mac, gi, ts) = _plan(45)
-    assert b._estimate_kv_cache_bytes(ec) >= 0.9 * _kv_budget_b(45)
+    b, (ec, mac, gi, ts) = _plan(50)
+    assert b._estimate_kv_cache_bytes(ec) >= 0.9 * _kv_budget_b(50)
 
 
 def test_tp_plan_weights_exceed_pool_floors_context():
@@ -787,17 +787,17 @@ def test_tp_plan_floor_never_exceeds_explicit_small_context():
     # asking for 1024 should not have KV sized for 2048 (avoidable OOM).
     _, (ec, mac, gi, ts) = _plan(70, target = 1024)  # weights exceed pool -> floor path
     assert ec == 1024
-    _, (ec2, *_rest) = _plan(45, target = 1024)  # cap path with a tiny budget
+    _, (ec2, *_rest) = _plan(50, target = 1024)  # cap path with a tiny budget
     assert ec2 <= 1024
 
 
 def test_tp_plan_explicit_context_honored_when_it_fits():
-    _, (ec, mac, gi, ts) = _plan(45, target = 8192)
+    _, (ec, mac, gi, ts) = _plan(50, target = 8192)
     assert ec == 8192
 
 
 def test_tp_plan_explicit_context_capped_when_too_large():
-    _, (ec, mac, gi, ts) = _plan(45, target = 131072)
+    _, (ec, mac, gi, ts) = _plan(50, target = 131072)
     assert 2048 <= ec < 131072
 
 
@@ -805,15 +805,15 @@ def test_tp_plan_max_available_ctx_reports_native_not_explicit_ctx():
     # An explicit small ctx caps effective_ctx but the UI ceiling
     # (max_available_ctx) must reflect the native/hardware cap, not the request.
     b = _kv_seeded_backend()
-    ec, mac, _gi, _ts = b._plan_tensor_parallel(_ASYM, int(45 * _GB), 8192, max_target_ctx = 131072)
-    _, native_mac, *_ = b._plan_tensor_parallel(_ASYM, int(45 * _GB), 131072)
+    ec, mac, _gi, _ts = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 8192, max_target_ctx = 131072)
+    _, native_mac, *_ = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
     assert ec == 8192  # explicit request honored for the load
     assert mac == native_mac > ec  # ceiling reflects the hardware cap
 
 
 def test_tp_plan_mtp_reserves_extra_and_shrinks_context():
-    _, (ec_no, *_rest) = _plan(45)
-    _, (ec_mtp, *_rest) = _plan(45, mtp = True)
+    _, (ec_no, *_rest) = _plan(50)
+    _, (ec_mtp, *_rest) = _plan(50, mtp = True)
     assert ec_mtp < ec_no
 
 
@@ -1021,12 +1021,11 @@ def test_tensor_fallback_propagates_non_tensor_crash():
 
 def test_tensor_caps_context_to_total_vram_budget():
     # Partly-used 80 GB cards: 20 GB free each. With total_by_idx the planner must
-    # cap occupancy at the fit fraction of total (not spend the cushion the
-    # layer-split paths keep).
+    # cap occupancy at 0.95*total (not spend the cushion the layer-split paths keep).
     b = _kv_seeded_backend()
     gpus = [(0, 20000), (1, 20000)]
     totals = {0: 81920, 1: 81920}
-    model = int(4 * _GB)
+    model = int(18 * _GB)
     with_total, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = totals)
     without, *_ = b._plan_tensor_parallel(gpus, model, 131072)
     assert with_total < without  # total cap tightens the chosen context
@@ -1042,7 +1041,7 @@ def test_tensor_caps_context_to_total_vram_budget():
 
 def test_tensor_unknown_total_keeps_fraction_cushion():
     # A two-column nvidia-smi probe yields total 0. The planner must fall back to
-    # free*frac (keep the cushion), like _select_gpus/_gpu_usable, not raw free,
+    # free*frac (keep the 5% cushion), like _select_gpus/_gpu_usable, not raw free,
     # or it over-advertises context exactly where the PR is hardening the budget.
     b = _kv_seeded_backend()
     gpus = [(0, 20000), (1, 20000)]
@@ -1098,11 +1097,11 @@ def test_plan_tensor_carries_unsized_mtp_flat_reserve():
 
 def test_tensor_admission_drops_gpu_below_usable_budget():
     # A partly-used big card can clear the buffer reserve on raw free yet have no
-    # usable budget left. Admit by usable budget: GPU 0 here is 6100 free on an
-    # 80 GB card -> usable 0 < flat reserve 5120, so it's dropped (leaving <2 ->
-    # no split). Without total_by_idx, free*frac clears the reserve and admits it.
+    # usable budget left (free - 0.05*total). Admit by usable budget: GPU 0 here is
+    # 6000 free on an 80 GB card -> usable 1904 < flat reserve 5120, so it's dropped
+    # (leaving <2 -> no split). Without total_by_idx, raw free 6000 >= 5120 admits it.
     b = _kv_seeded_backend()
-    gpus = [(0, 6100), (1, 40000)]
+    gpus = [(0, 6000), (1, 40000)]
     totals = {0: 81920, 1: 81920}
     _ec, _mac, gi, ts = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192, total_by_idx = totals)
     assert gi == [1] and ts is None  # GPU 0 excluded on usable budget

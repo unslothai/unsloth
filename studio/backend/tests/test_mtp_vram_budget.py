@@ -561,26 +561,13 @@ class TestExtraArgsMtpDetection:
         assert "_mtp_kv_unsized" in compact
         assert "mtp_overhead_fnisNoneor_mtp_kv_unsized" in compact
 
-    def test_load_model_ranks_auto_subsets_by_fit_fraction(self):
-        # Auto/cap subset ranking uses the active fit budget fraction (lowered by
-        # the flat MTP reserve), not the looser pin fraction, so mixed/free GPU
-        # prefixes are tried in the same order the fit budget admits them.
+    def test_load_model_ranks_subsets_by_active_pin_fraction(self):
+        # Auto/cap subset ranking uses the active budget fraction (lowered by the
+        # flat MTP reserve), not a hard-coded 0.95, so the ranking order matches
+        # the fit budget that is then tested (Finding G4).
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert (
-            "ranked=sorted(gpus,key=lambdag:_gpu_usable(g,_fit_fraction),reverse=True)" in compact
-        )
-        assert "_gpu_usable(g,_fit_fraction)" in compact
-
-    def test_auto_context_uses_tighter_fit_budget_not_pin_budget(self):
-        # Auto context may pin directly only after fitting against the tighter
-        # context budget. Using the looser pin budget here can preserve a native
-        # context when flat-MTP weights sit above the 80% fit budget but below the
-        # 85% pin budget, reintroducing the spill this PR prevents.
-        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_fit_fraction=max(0.0,_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
-        assert "fit_budget=_pool_budget_mib(subset,_fit_fraction)" in compact
-        assert "footprint_mib<=fit_budget" in compact
-        assert "_pool_budget_mib(subset,_fit_fraction)" in compact
+        assert "_gpu_usable(g,pin_fraction)" in compact
+        assert "_gpu_usable(g,_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -979,17 +966,17 @@ class TestExtraArgsMtpDetection:
         assert "(_mtp_reserves_gpuand_mtp_kv_unsized)" in compact
         assert "mtp_flat_reserve_bytes=_tp_unsized_mtp_reserve" in compact
 
-    def test_pool_budget_sums_per_gpu_usable(self):
-        # Finding #1: the multi-GPU pooled budget must sum each GPU's own usable
-        # budget (so an unknown-total GPU gets the free*frac cushion) rather than
-        # pooling free and total separately. The fit calls pass the precomputed
-        # budget as an absolute (budget_frac=1.0, total_mib=None) so fit and check
-        # agree. Whitespace-stripped for formatter.
+    def test_pool_budget_delegates_to_pooled_usable(self):
+        # #6682: the multi-GPU pooled budget applies the absolute VRAM floor ONCE per
+        # pool (via _pooled_usable_mib), not a per-device floor summed k times -- the
+        # latter over-reserved k x the floor and dropped tight k-GPU pools to the 4096
+        # fallback. The unknown-total (MIG/vGPU) free*frac cushion is preserved inside
+        # the helper (behaviorally: test_pooled_usable_unknown_total_keeps_per_device_
+        # cushion). The fit calls still pass the precomputed budget as an absolute
+        # (budget_frac=1.0, total_mib=None) so fit and check agree.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "def_pool_budget_mib(subset,frac):" in compact
-        assert "sum(max(0.0,_gpu_usable(g,frac))forginsubset)" in compact
-        # No revert to the pooled free/total form.
-        assert "def_pool_total(" not in compact
+        assert "_pooled_usable_mib(subset,frac,total_by_idx)" in compact
         assert "budget_frac=1.0" in compact
 
 

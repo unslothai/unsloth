@@ -70,7 +70,11 @@ sys.modules.setdefault("httpx", _httpx_stub)
 from core.inference.llama_cpp import (
     _APPLE_UNIFIED_MEMORY_FRACTION,
     _CTX_FIT_VRAM_FRACTION,
+    _MAX_VRAM_RESERVE_FRAC,
+    _MIN_VRAM_RESERVE_MIB,
     LlamaCppBackend,
+    _pooled_usable_mib,
+    _vram_reserve_mib,
     classify_gpu_offload_lines,
 )
 from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
@@ -192,7 +196,6 @@ def _drive(
             ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
             matched = False
             pin_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
-            fit_fraction = _CTX_FIT_VRAM_FRACTION
             for n_gpus in range(1, len(ranked) + 1):
                 subset = ranked[:n_gpus]
                 pool_mib = sum(free for _, free in subset)
@@ -204,7 +207,7 @@ def _drive(
                 )
                 kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
                 total_mib = (model_size + kv) / (1024 * 1024)
-                if total_mib <= pool_mib * fit_fraction:
+                if total_mib <= pool_mib * pin_fraction:
                     effective_ctx = capped
                     gpu_indices = sorted(idx for idx, _ in subset)
                     use_fit = False
@@ -219,7 +222,7 @@ def _drive(
                         pool_mib = sum(free for _, free in subset)
                         kv = inst._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
                         total_mib = (model_size + kv) / (1024 * 1024)
-                        if total_mib <= pool_mib * fit_fraction:
+                        if total_mib <= pool_mib * pin_fraction:
                             gpu_indices = sorted(idx for idx, _ in subset)
                             use_fit = False
                             break
@@ -457,33 +460,19 @@ class TestFittableAutoPickRegressions:
 
 
 # ---------------------------------------------------------------------------
-# Auto mode uses the tighter context-fit budget, while explicit ctx only decides
-# whether the requested footprint is safe to pin directly.
+# #5106 regression: 91-95% utilization must still pin GPU.
 # ---------------------------------------------------------------------------
 
 
 class TestTightFitPinsToGPU:
-    """Tight models above the fit budget defer to ``--fit on`` in auto mode."""
+    """Models that fit at 91-95% of free VRAM must use the GPU."""
 
-    def test_auto_ctx_at_94_pct_uses_fit(self):
+    def test_rtx_4090_qwen_24gb_class(self):
         # noahterbest's #5106 log: 20.8 GB model on 22805 MiB free GPU,
-        # ctx=4096 -> ~94% utilization. With the 85% context-fit budget, auto
-        # mode should not pin this directly.
+        # ctx=4096 -> ~94% utilization, ~1.4 GiB headroom.
         plan = _drive(
             n_ctx = 0,
             model_gib = 20.8,
-            gpus = [(0, 22_805)],
-            native_ctx = 131072,
-            kv_per_token_bytes = 25_000,
-        )
-        assert plan["c_arg"] == FALLBACK_CTX
-        assert plan["use_fit"] is True
-        assert plan["gpu_indices"] is None
-
-    def test_auto_ctx_below_fit_budget_pins_to_gpu(self):
-        plan = _drive(
-            n_ctx = 0,
-            model_gib = 18.5,
             gpus = [(0, 22_805)],
             native_ctx = 131072,
             kv_per_token_bytes = 25_000,
@@ -491,9 +480,8 @@ class TestTightFitPinsToGPU:
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
 
-    def test_explicit_ctx_at_94_pct_uses_fit(self):
-        # Explicit-ctx branch honors the requested context and only decides
-        # whether the exact footprint is within the direct-pin threshold.
+    def test_explicit_ctx_at_94_pct_pins_to_gpu(self):
+        # Explicit-ctx branch must agree with auto-ctx on headroom.
         plan = _drive(
             n_ctx = 4096,
             model_gib = 20.8,
@@ -501,11 +489,11 @@ class TestTightFitPinsToGPU:
             native_ctx = 131072,
             kv_per_token_bytes = 25_000,
         )
-        assert plan["use_fit"] is True
-        assert plan["gpu_indices"] is None
+        assert plan["use_fit"] is False
+        assert plan["gpu_indices"] == [0]
 
     def test_genuine_overflow_still_uses_fit(self):
-        # Beyond the direct-pin threshold must still defer to --fit on.
+        # Beyond 95% must still defer to --fit on.
         plan = _drive(
             n_ctx = 4096,
             model_gib = 23,
@@ -716,26 +704,26 @@ class TestClassifyGpuOffload:
 
 
 def test_select_gpus_ranks_by_usable_not_raw_free():
-    # 80 GB card (30 GB free -> 21.8 GB usable) vs 32 GB card (29 GB free -> 25.7
-    # GB usable). A 25.5 GB model fits the 32 GB card alone; raw-free ranking would
+    # 80 GB card (30 GB free -> 25.9 GB usable) vs 32 GB card (29 GB free -> 27.4
+    # GB usable). A 27 GB model fits the 32 GB card alone; raw-free ranking would
     # try the 80 GB card first and split across both. Usable ranking picks [1].
     gpus = [(0, 30000), (1, 29000)]
     totals = {0: 81920, 1: 32607}
-    model = int(25500 * 1024 * 1024)
+    model = int(27000 * 1024 * 1024)
     idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx = totals)
     assert idxs == [1] and use_fit is False
 
 
 def test_select_gpus_reserves_per_device_overhead():
-    # Two 16 GB cards, ~14362 MiB usable each at 0.90 -> 28723 MiB pooled. A 28000
+    # Two 16 GB cards, ~15181 MiB usable each at 0.95 -> 30362 MiB pooled. A 30000
     # MiB model fits the pool with no per-device overhead, but a layer split also
-    # pays ~1 GiB/extra-GPU; that pushes the 2-GPU need to 29024 MiB > pool, so a
+    # pays ~1 GiB/extra-GPU; that pushes the 2-GPU need to 31024 MiB > pool, so a
     # pin would OOM -> must fall back to --fit. Single-GPU fits add no overhead
     # (Finding F1, the explicit/file-size multi-GPU pin gap).
     gpus = [(0, 16000), (1, 16000)]
     totals = {0: 16384, 1: 16384}
     gib = 1024 * 1024 * 1024
-    model = int(28000 * 1024 * 1024)
+    model = int(30000 * 1024 * 1024)
     idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx = totals)
     assert idxs == [0, 1] and use_fit is False  # fits 2 GPUs without overhead
     idxs2, use_fit2 = LlamaCppBackend._select_gpus(
@@ -743,12 +731,87 @@ def test_select_gpus_reserves_per_device_overhead():
     )
     assert idxs2 is None and use_fit2 is True  # overhead tips it past the pool
     # A single-GPU fit is unchanged by the overhead (k=1 adds nothing).
-    small = int(14000 * 1024 * 1024)
+    small = int(15000 * 1024 * 1024)
     a, _ = LlamaCppBackend._select_gpus(small, gpus, total_by_idx = totals)
     b, _ = LlamaCppBackend._select_gpus(
         small, gpus, total_by_idx = totals, per_device_overhead_bytes = gib
     )
     assert a == [0] and b == [0]
+
+
+# ---------------------------------------------------------------------------
+# VRAM reserve floor (#6682): 5% of total is too thin on consumer cards (1.2 GB
+# on 24 GB) to absorb CUDA context, the nvidia-smi vs CUDA free gap, and a shared
+# desktop's drift, so auto-fit advertised a context that pinned then offloaded to
+# CPU at runtime. The reserve is floored at _MIN_VRAM_RESERVE_MIB, capped at
+# _MAX_VRAM_RESERVE_FRAC, and unchanged where 5% already exceeds the floor.
+# ---------------------------------------------------------------------------
+
+
+def test_vram_reserve_floor_on_consumer_card():
+    # 24 GB: 5% = 1229 MiB is below the floor, so the floor wins (and equals the
+    # 12.5% cap = 3072), giving a real cushion instead of #6312's thin 5%.
+    total = 24576
+    assert (1.0 - _CTX_FIT_VRAM_FRACTION) * total < _MIN_VRAM_RESERVE_MIB
+    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MIN_VRAM_RESERVE_MIB
+
+
+def test_vram_reserve_unchanged_on_datacenter_card():
+    # 80 GB: 5% = 4096 MiB already exceeds the floor, so behaviour is unchanged
+    # from #6312 (no over-reserving the big cards it was tuned for).
+    total = 81920
+    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == (1.0 - _CTX_FIT_VRAM_FRACTION) * total
+
+
+def test_vram_reserve_capped_on_small_card():
+    # 8 GB: a flat floor would be 37% of the card; the cap holds it to the 24 GB
+    # design fraction (12.5%) so a small card running a model that nearly fills it
+    # isn't pushed off the GPU, and never reserves a larger fraction than a 24 GB card.
+    total = 8192
+    assert _MIN_VRAM_RESERVE_MIB > _MAX_VRAM_RESERVE_FRAC * total
+    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MAX_VRAM_RESERVE_FRAC * total
+
+
+def test_pooled_usable_single_gpu_applies_floor():
+    # Single GPU: pool budget == free - floor (unchanged by the per-pool refactor).
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(1, 23700)]
+    totals = {1: 24576}
+    assert _pooled_usable_mib(subset, frac, totals) == 23700 - _vram_reserve_mib(24576, frac)
+
+
+def test_pooled_usable_floor_applied_once_across_pool():
+    # Two 24 GB cards: the floor is reserved ONCE on the pooled total (3072), not
+    # 2x (6144). That is the #6682 multi-GPU fix -- the old per-device sum reserved
+    # 2x the floor and dropped tight pools to the 4096 fallback.
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(0, 12000), (1, 12000)]
+    totals = {0: 24576, 1: 24576}
+    pooled = _pooled_usable_mib(subset, frac, totals)
+    assert pooled == 24000 - _vram_reserve_mib(2 * 24576, frac)  # one floor on the pool
+    per_device = sum(max(0.0, f - _vram_reserve_mib(totals[i], frac)) for i, f in subset)
+    assert pooled > per_device  # the refactor recovers ~one floor's worth of budget
+
+
+def test_pooled_usable_unknown_total_keeps_per_device_cushion():
+    # An unknown-total GPU (MIG/vGPU/N/A: total 0) keeps free*frac; the known card
+    # gets the pooled floor. The two contributions add, no full-free-no-reserve leak.
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(0, 24000), (1, 12000)]
+    totals = {0: 0, 1: 24576}  # GPU 0 total unknown
+    expected = 24000 * frac + max(0.0, 12000 - _vram_reserve_mib(24576, frac))
+    assert _pooled_usable_mib(subset, frac, totals) == expected
+
+
+def test_floored_budget_defers_tight_consumer_model_to_fit():
+    # noahterbest's #5106-class case (carried over from #6688): a 20.8 GB model with
+    # 22805 MiB free on a 24 GB card. The floored reserve leaves 19733 MiB usable, so
+    # the model can't pin and auto-fit defers to --fit instead of advertising a
+    # context that spills at runtime (#6682). A smaller model still pins.
+    frac = _CTX_FIT_VRAM_FRACTION
+    budget = _pooled_usable_mib([(0, 22805)], frac, {0: 24576})
+    assert int(20.8 * 1024) > budget  # tight model exceeds the floored budget -> --fit
+    assert int(18.5 * 1024) < budget  # a smaller model fits and pins
 
 
 # ---------------------------------------------------------------------------
