@@ -140,6 +140,9 @@ function sanitizeInferenceParams(
   if (typeof value.systemPrompt === "string") {
     params.systemPrompt = value.systemPrompt;
   }
+  if (typeof value.systemVariables === "string") {
+    params.systemVariables = value.systemVariables;
+  }
   // trustRemoteCode is no longer persisted: custom code is consented per model via the dialog.
   if (typeof value.fastMode === "boolean") {
     params.fastMode = value.fastMode;
