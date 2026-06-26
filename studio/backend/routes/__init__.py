@@ -16,7 +16,6 @@ from routes.export import router as export_router
 from routes.training_history import router as training_history_router
 from routes.chat_history import router as chat_history_router
 from routes.providers import router as providers_router
-from routes.eval import router as eval_router
 
 __all__ = [
     "training_router",
@@ -30,5 +29,4 @@ __all__ = [
     "training_history_router",
     "chat_history_router",
     "providers_router",
-    "eval_router",
 ]

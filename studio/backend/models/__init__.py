@@ -70,17 +70,6 @@ from .data_recipe import (
     ValidateResponse,
     JobCreateResponse,
 )
-from .eval import (
-    EvalDatasetRef,
-    EvalStartRequest,
-    EvalProgress,
-    EvalLastResult,
-    EvalRunSummary,
-    EvalResultRow,
-    EvalRunDetail,
-    MetricInfo,
-    MetricConfigField,
-)
 
 __all__ = [
     # Training schemas
@@ -140,14 +129,4 @@ __all__ = [
     "ValidateError",
     "ValidateResponse",
     "JobCreateResponse",
-    # Eval schemas
-    "EvalDatasetRef",
-    "EvalStartRequest",
-    "EvalProgress",
-    "EvalLastResult",
-    "EvalRunSummary",
-    "EvalResultRow",
-    "EvalRunDetail",
-    "MetricInfo",
-    "MetricConfigField",
 ]

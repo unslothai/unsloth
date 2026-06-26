@@ -22,7 +22,6 @@ from typing import Optional
 
 import structlog
 
-from loggers.capture import capture_processor
 from loggers.handlers import filter_sensitive_data
 
 
@@ -75,7 +74,6 @@ class LogConfig:
                         if k not in ["timestamp", "level", "event", "extra"]
                     },
                 },
-                capture_processor,
                 (
                     structlog.processors.JSONRenderer(sort_keys = False)  # Preserve order
                     if env == "production"
