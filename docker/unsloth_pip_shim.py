@@ -82,6 +82,15 @@ def _canon(token):
     if the token is not a plain pkg spec (url / path / vcs / option)."""
     if token.startswith("-"):
         return None
+    # PEP 508 direct reference: "name [extras] @ <url>" (e.g.
+    # "torch @ https://.../torch.whl", "unsloth @ git+https://..."). The name is
+    # at the front, so pull it out BEFORE the url/vcs guard below -- otherwise a
+    # protected package pinned through a URL slips past _KEEP and reinstalls into
+    # the base venv. A non-protected direct reference still returns its name and
+    # is kept by the caller exactly as before (treated as an install target).
+    _dref = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*@(?:\s|git\+|hg\+|bzr\+|svn\+|[a-z]+://)", token)
+    if _dref:
+        return _dref.group(1).lower().replace("_", "-") or None
     if re.match(r"^[a-z]+\+", token) or "://" in token or token.startswith((".", "/")):
         return None  # vcs / url / local path -> let it pass through
     # strip extras and any version/marker tail
@@ -193,6 +202,24 @@ def main():
             skip_next = False
             prev_flag = None
             continue
+        # --flag=value form: pip accepts --requirement=reqs.txt / --index-url=URL
+        # as a single token. Without this the token starts with "-", so it is kept
+        # as an opaque option and a `-r` file is never filtered -- and worse, it
+        # never counts as a target, so a cell whose only target is that file
+        # silently no-ops and installs nothing.
+        if tok.startswith("--") and "=" in tok:
+            _flag, _, _val = tok.partition("=")
+            if _flag in _VALUE_FLAGS:
+                if _flag in _REQ_FILE_FLAGS:
+                    _req_path, _req_rec, _req_drp = _filter_requirements_file(_val)
+                    keep_args.append(_flag + "=" + _req_path)
+                    has_target = True
+                    if _req_rec and not recorded:
+                        recorded = _req_rec
+                    dropped.extend(_req_drp)
+                else:
+                    keep_args.append(tok)  # option with inline value, not a target
+                continue
         if tok in _VALUE_FLAGS:
             keep_args.append(tok)
             skip_next = True
