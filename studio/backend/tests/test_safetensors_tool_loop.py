@@ -10,6 +10,7 @@ calls, tool-result feedback, bad-JSON heal, duplicate-call short-circuit,
 ``__IMAGES__`` sentinel stripping, executor errors, cancel, and the iteration cap.
 """
 
+import json
 import threading
 from typing import cast
 
@@ -61,6 +62,51 @@ class TestParser:
         text = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}'
         assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
+    def test_gemma_native_tool_call(self):
+        text = '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "terminal"
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"command": "ls -la", "workdir": "."}
+
+    def test_gemma_native_tool_call_template_quotes(self):
+        text = '<|tool_call>call:web_search{query:<|"|>openai news<|"|>}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        assert json.loads(result[0]["function"]["arguments"]) == {"query": "openai news"}
+
+    def test_gemma_native_tool_call_template_quotes_escape_backslashes(self):
+        text = r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "ls"
+        assert json.loads(result[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
+
+    def test_gemma_native_tool_call_hyphenated_argument_name(self):
+        text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "mcp__srv__create-issue"
+        assert json.loads(result[0]["function"]["arguments"]) == {"issue-title": "Bug report"}
+
+    def test_gemma_native_tool_call_keeps_braces_inside_string_value(self):
+        text = '<|tool_call>call:terminal{command:"echo {foo:bar}"}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "terminal"
+        assert json.loads(result[0]["function"]["arguments"]) == {"command": "echo {foo:bar}"}
+
+    def test_gemma_native_tool_call_bare_string_values(self):
+        text = "<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "location": "Tokyo",
+            "unit": "celsius",
+        }
 
     def test_xml_function_call(self):
         text = "<function=python><parameter=code>print('hi')</parameter></function>"
@@ -121,6 +167,7 @@ class TestParser:
 
     def test_has_tool_signal(self):
         assert has_tool_signal("blah <tool_call> x")
+        assert has_tool_signal("blah <|tool_call>call:terminal")
         assert has_tool_signal("hi <function=foo>...")
         assert not has_tool_signal("hello world")
 
@@ -139,6 +186,8 @@ class TestParser:
     def test_strip_markup_closed(self):
         text = "before <tool_call>{}</tool_call> after"
         assert strip_tool_markup(text) == "before  after"
+        text = 'before <|tool_call>call:terminal{command:"ls"}<tool_call|> after'
+        assert strip_tool_markup(text) == "before  after"
 
     def test_strip_markup_unclosed_final(self):
         text = "before <tool_call>{partial"
@@ -146,6 +195,7 @@ class TestParser:
         assert strip_tool_markup(text, final = True) == "before"
         # Without final=True the unclosed run is preserved.
         assert "partial" in strip_tool_markup(text)
+        assert strip_tool_markup("before <|tool_call>call:terminal{", final = True) == "before"
 
     def test_streaming_strip_respects_disabled_healing(self):
         raw = 'before <tool_call>{"name":"web_search"'
@@ -392,6 +442,138 @@ class TestLoopBasic:
         assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
         assert exec_fn.calls[0][0] == "render_html"
         assert "<!doctype html>" in exec_fn.calls[0][1]["code"]
+
+    def test_render_html_confirmation_gate_suppresses_early_provisional(self, monkeypatch):
+        """When a human confirmation gate is active, render_html must not surface
+        an early provisional tool_start: that card (keyed by tool_call_id, no
+        approval) would show the tool 'running' before the user approves. The
+        gated real tool_start is the first signal the UI receives instead."""
+        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: "approval-rh")
+        monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
+        monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "allow")
+
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            confirm_tool_calls = True,
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        # No early provisional (empty-args) card while confirmation is pending.
+        assert [e for e in tool_starts if e.get("arguments") == {}] == []
+        # The real, gated tool_start still surfaces with the full arguments.
+        real = [e for e in tool_starts if e.get("arguments", {}).get("code")]
+        assert len(real) == 1
+        assert real[0].get("awaiting_confirmation") is True
+        assert "<!doctype html>" in real[0]["arguments"]["code"]
+        assert exec_fn.calls[0][0] == "render_html"
+
+    def test_render_html_bypass_permissions_keeps_early_provisional(self, monkeypatch):
+        """bypass_permissions wins over the confirm gate, so the early provisional
+        card is preserved (no human approval is required)."""
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            confirm_tool_calls = True,
+            bypass_permissions = True,
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert len(tool_starts) == 2
+        assert tool_starts[0]["arguments"] == {}
+        assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
+
+    def test_render_html_provisional_card_closed_on_generator_exception(self):
+        """If the model generator raises mid-stream after a provisional render_html
+        card was surfaced, the loop must close that card as errored before the
+        exception propagates, so the UI never leaves a tool spinning forever."""
+        exec_fn = FakeExecuteTool([])
+
+        def _gen(_messages):
+            acc = ""
+            for chunk in ["<function=render_html>", "<parameter=code><!doctype html><html>"]:
+                acc += chunk
+                yield acc
+            raise RuntimeError("model pipeline exploded")
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+        )
+
+        collected: list[dict] = []
+        raised = False
+        try:
+            for event in loop:
+                collected.append(event)
+        except RuntimeError as exc:
+            raised = True
+            assert "exploded" in str(exc)
+
+        assert raised
+        provisional = [
+            e for e in collected if e["type"] == "tool_start" and e.get("arguments") == {}
+        ]
+        assert len(provisional) == 1
+        # The provisional card is closed (as an error) before the exception
+        # propagates, so it never dangles.
+        closing = [
+            e
+            for e in collected
+            if e["type"] == "tool_end" and e.get("tool_call_id") == provisional[0]["tool_call_id"]
+        ]
+        assert len(closing) == 1
+        assert "Error" in (closing[0].get("result") or "")
 
     def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(self):
         loop, exec_fn = _make_loop(

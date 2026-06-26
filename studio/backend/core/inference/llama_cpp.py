@@ -226,6 +226,10 @@ _MAX_REPROMPTS = 1
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
+
+# Only large streamed tool payloads get an early provisional card; render_html
+# is exempt because it needs immediate artifact feedback.
+_PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 _REPROMPT_MAX_CHARS = 2000
 _FORCED_REPEAT_PLAN_SIGNAL = re.compile(
@@ -798,6 +802,10 @@ _MTP_MIN_SIZE_B = 3.0
 # absolute (1 - frac) * total per GPU when total VRAM is known, else a fraction
 # of free (see _fit_context_to_vram), plus a byte-accurate MTP draft reserve.
 _CTX_FIT_VRAM_FRACTION = 0.95
+
+# Apple unified memory is shared with the OS, so tighter than VRAM. Matches the
+# 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
+_APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 
 # Flat MTP reserve, used only when GGUF dims are too sparse for the byte-accurate
 # reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
@@ -2162,6 +2170,34 @@ class LlamaCppBackend:
         return [(idx, free) for idx, free, _total in LlamaCppBackend._get_gpu_memory()]
 
     @staticmethod
+    def _apple_metal_memory_budget_bytes() -> int:
+        """Unified-memory budget for GGUF context fitting on Apple Silicon.
+
+        No GPU is enumerated on Metal, so the context would default to native and
+        over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
+        fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
+        when unresolvable, so callers skip the cap.
+        """
+        from utils.hardware import is_apple_silicon
+
+        if not is_apple_silicon():
+            return 0
+        rec_bytes = 0
+        try:
+            import mlx.core as mx
+            if mx.metal.is_available():
+                rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
+        except Exception:
+            rec_bytes = 0
+        if rec_bytes <= 0:
+            try:
+                import psutil
+                rec_bytes = int(psutil.virtual_memory().total)
+            except Exception:
+                return 0
+        return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
+
+    @staticmethod
     def _get_gpu_memory() -> list[tuple[int, int, int]]:
         """Query free AND total memory per GPU.
 
@@ -3111,9 +3147,10 @@ class LlamaCppBackend:
                         except (ValueError, OSError):
                             # Log file closed under us; tee silently.
                             pass
-        except (ValueError, OSError):
-            # Pipe closed -- process terminating.
-            pass
+        except Exception:
+            # Never let the drain thread die: a full stdout pipe can deadlock
+            # llama-server (Windows). Pipe-closed on exit is the common case.
+            logger.debug("llama-server stdout drain stopped", exc_info = True)
 
     # GGUF KV type sizes for fast skipping
     _GGUF_TYPE_SIZE = {
@@ -5023,6 +5060,8 @@ class LlamaCppBackend:
                         else 0.0
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+                    # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
+                    _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
                     def _restore_after_tensor_downgrade():
                         # Tensor mode dropped a quantized KV and stripped the cache
@@ -5305,6 +5344,52 @@ class LlamaCppBackend:
                             # Weights don't fit on any subset; default UI to 4096
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
+
+                    elif _apple_budget_mib > 0 and effective_ctx > 0:
+                        # No GPU on Metal: the branches above are skipped and the context
+                        # stays at native, over-committing unified memory (#5118, #6529).
+                        # Cap with the same fit math (--fit on stays as a backstop); only
+                        # auto context shrinks, explicit is honored.
+                        native_ctx_for_cap = self._context_length or effective_ctx
+                        # Reserve the flat MTP fraction up front like the discrete
+                        # _pin_fraction, so an unsized MTP draft (e.g. Qwen3.6-MTP, #6529)
+                        # can't over-commit. No-op when MTP is off; exclusive with the
+                        # byte-accurate _mtp_bytes reserve.
+                        _apple_fit_budget_mib = int(
+                            _apple_budget_mib * max(0.0, 1.0 - _flat_mtp_reserve)
+                        )
+                        if self._can_estimate_kv():
+                            cap = self._fit_context_to_vram(
+                                native_ctx_for_cap,
+                                _apple_fit_budget_mib,
+                                model_size_fit,
+                                cache_type_kv,
+                                n_parallel = n_parallel,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                budget_frac = 1.0,
+                                total_mib = None,
+                            )
+                            _cap_footprint_mib = (
+                                model_size_fit
+                                + self._estimate_kv_cache_bytes(
+                                    cap, cache_type_kv, n_parallel = n_parallel
+                                )
+                                + _mtp_bytes(cap)
+                            ) / (1024 * 1024)
+                            # Fit returns the request unchanged when it fits OR weights
+                            # exceed budget; only the latter over-commits, so floor to 4096.
+                            max_available_ctx = (
+                                cap
+                                if _cap_footprint_mib <= _apple_fit_budget_mib
+                                else min(4096, native_ctx_for_cap)
+                            )
+                        else:
+                            # No KV estimate: mirror the discrete file-size-only fallback
+                            # and floor to 4096 rather than launch at native and over-commit.
+                            max_available_ctx = min(4096, native_ctx_for_cap)
+                        if not explicit_ctx:
+                            effective_ctx = max_available_ctx
 
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
@@ -7753,6 +7838,15 @@ class LlamaCppBackend:
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
+        # GGUF buffers reasoning; emit server-side timing before answer text.
+        _reasoning_started_at: Optional[float] = None
+        _reasoning_summary_emitted = False
+
+        def _reasoning_summary_event(started_at: float) -> dict:
+            return {
+                "type": "reasoning_summary",
+                "duration_ms": round((time.monotonic() - started_at) * 1000.0),
+            }
 
         def _strip_tool_markup(
             text: str,
@@ -7788,13 +7882,18 @@ class LlamaCppBackend:
                     _mt["predicted_per_second"] = _mt["predicted_n"] / (
                         _mt["predicted_ms"] / 1000.0
                     )
+            _usage = {
+                "prompt_tokens": _fp,
+                "completion_tokens": _tc,
+                "total_tokens": _fp + _tc,
+            }
+            # Preserve KV-cache hit details (cached_tokens) so the tool path
+            # reports them like the standard non-tool path does, not always 0.
+            if _fu.get("prompt_tokens_details"):
+                _usage["prompt_tokens_details"] = _fu["prompt_tokens_details"]
             return {
                 "type": "metadata",
-                "usage": {
-                    "prompt_tokens": _fp,
-                    "completion_tokens": _tc,
-                    "total_tokens": _fp + _tc,
-                },
+                "usage": _usage,
                 "timings": _mt,
                 "finish_reason": finish_reason,
             }
@@ -7890,6 +7989,9 @@ class LlamaCppBackend:
                 content_buffer = ""  # Raw content held during BUFFERING
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
+                # Time each reasoning pass so final answers can replace tool timing.
+                _reasoning_started_at = None
+                _reasoning_summary_emitted = False
                 cumulative_display = ""  # Cumulative yielded text (with <think>)
                 in_thinking = False
                 has_content_tokens = False
@@ -7900,7 +8002,9 @@ class LlamaCppBackend:
                 _iter_finish_reason = None
                 _stream_done = False
                 _last_emitted = ""
-                provisional_render_html_tool_call_ids = set()
+                # Provisional tool_start cards already shown, keyed by tool_call_id.
+                provisional_started_tool_calls: dict[str, str] = {}
+                resolved_provisional_tool_call_ids: set[str] = set()
                 _suppress_visible_output = _forced_tool_call_pending
 
                 with self._open_stream(url, payload, cancel_event) as (
@@ -7966,11 +8070,8 @@ class LlamaCppBackend:
                                 # ── Structured tool_calls ──
                                 tc_deltas = delta.get("tool_calls")
                                 if tc_deltas:
-                                    # llama-server can emit visible assistant
-                                    # preface content before native structured
-                                    # tool_calls. Preserve content_accum as
-                                    # the assistant pre-tool text and still
-                                    # drain/execute the structured call.
+                                    # Preserve any visible preface before draining
+                                    # the structured tool call.
                                     has_structured_tc = True
                                     detect_state = _S_DRAINING
                                     for tc_d in tc_deltas:
@@ -8001,27 +8102,54 @@ class LlamaCppBackend:
                                         fallback_id = f"call_{idx}"
                                         current_id = tool_calls_acc[idx].get("id", fallback_id)
                                         already_started = (
-                                            current_id in provisional_render_html_tool_call_ids
+                                            current_id in provisional_started_tool_calls
                                         )
-                                        has_real_id = current_id != fallback_id
-                                        if (
+                                        # Empty/synthetic ids cannot reconcile with real starts.
+                                        has_real_id = bool(current_id) and current_id != fallback_id
+                                        # Show one early card per eligible streamed tool call.
+                                        _is_completed_one_shot = (
                                             current_name == "render_html"
-                                            and not _tool_succeeded("render_html")
+                                            and _tool_succeeded("render_html")
+                                        )
+                                        # render_html is one-shot.
+                                        _one_shot_already_provisional = (
+                                            current_name == "render_html"
+                                            and "render_html"
+                                            in provisional_started_tool_calls.values()
+                                        )
+                                        # Later parallel cards only reconcile when parallel use is enabled.
+                                        _confirm_gated = (
+                                            confirm_tool_calls and not bypass_permissions
+                                        )
+                                        # Keep small-argument tools on the normal path.
+                                        _args_len = len(
+                                            tool_calls_acc[idx]["function"].get("arguments", "")
+                                        )
+                                        _payload_is_large = (
+                                            current_name == "render_html"
+                                            or _args_len >= _PROVISIONAL_ARGS_MIN_CHARS
+                                        )
+                                        if (
+                                            current_name
+                                            and (idx == 0 or not disable_parallel_tool_use)
+                                            and has_real_id
+                                            and not already_started
+                                            and not _is_completed_one_shot
+                                            and not _one_shot_already_provisional
+                                            and not _confirm_gated
+                                            and _payload_is_large
                                             and any(
-                                                (
-                                                    (tool.get("function") or {}).get("name")
-                                                    == "render_html"
-                                                )
+                                                (tool.get("function") or {}).get("name")
+                                                == current_name
                                                 for tool in active_tools
                                             )
-                                            and not already_started
-                                            and not provisional_render_html_tool_call_ids
-                                            and has_real_id
                                         ):
-                                            provisional_render_html_tool_call_ids.add(current_id)
+                                            provisional_started_tool_calls[current_id] = (
+                                                current_name
+                                            )
                                             yield {
                                                 "type": "tool_start",
-                                                "tool_name": "render_html",
+                                                "tool_name": current_name,
                                                 "tool_call_id": current_id,
                                                 "arguments": {},
                                                 "provenance": tool_event_provenance(
@@ -8038,6 +8166,8 @@ class LlamaCppBackend:
                                 # between tool iterations).
                                 reasoning = delta.get("reasoning_content", "")
                                 if reasoning:
+                                    if _reasoning_started_at is None:
+                                        _reasoning_started_at = time.monotonic()
                                     reasoning_accum += reasoning
                                     if detect_state == _S_STREAMING:
                                         if not in_thinking:
@@ -8053,6 +8183,13 @@ class LlamaCppBackend:
                                 # ── Content tokens ──
                                 token = delta.get("content", "")
                                 if token:
+                                    # First answer token ends reasoning.
+                                    if (
+                                        _reasoning_started_at is not None
+                                        and not _reasoning_summary_emitted
+                                    ):
+                                        _reasoning_summary_emitted = True
+                                        yield _reasoning_summary_event(_reasoning_started_at)
                                     has_content_tokens = True
                                     content_accum += token
 
@@ -8150,9 +8287,10 @@ class LlamaCppBackend:
                                     ),
                                 }
                         elif reasoning_accum and not has_content_tokens:
-                            # Reasoning-only response: show reasoning as plain
-                            # text, matching the final streaming pass for
-                            # models that put everything in reasoning.
+                            # Reasoning-only reply: show it as plain text.
+                            if _reasoning_started_at is not None and not _reasoning_summary_emitted:
+                                _reasoning_summary_emitted = True
+                                yield _reasoning_summary_event(_reasoning_started_at)
                             cumulative_display = reasoning_accum
                             if not _suppress_visible_output:
                                 yield {
@@ -8343,20 +8481,30 @@ class LlamaCppBackend:
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
-                    provisional_render_html_match = (
-                        tool_name == "render_html"
-                        and tc.get("id") in provisional_render_html_tool_call_ids
-                    )
+                    provisional_match = tc.get("id") in provisional_started_tool_calls
                     decision = tool_controller.prepare_call(
                         tc,
                         forced = _forced_tool_call_pending,
-                        provisional = provisional_render_html_match,
+                        provisional = provisional_match,
                     )
 
                     if not decision.should_execute:
                         if content_text and not assistant_appended:
                             conversation.append(assistant_msg)
                             assistant_appended = True
+                        if provisional_match:
+                            # A provisional tool card is already on screen for this
+                            # id; close it so it never dangles when the controller
+                            # turns the call into an internal no-op (duplicate /
+                            # disabled / render_html_repeat).
+                            resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": decision.tool_name,
+                                "tool_call_id": decision.tool_call_id,
+                                "result": "",
+                                "provenance": decision.provenance,
+                            }
                         completion = tool_controller.record_noop(decision)
                         conversation.append(completion.model_message())
                         if _forced_tool_call_pending:
@@ -8401,6 +8549,7 @@ class LlamaCppBackend:
                             == "deny"
                         ):
                             decision_slot = None
+                            resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                             yield {
                                 "type": "tool_end",
                                 "tool_name": decision.tool_name,
@@ -8444,11 +8593,24 @@ class LlamaCppBackend:
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
+                    resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
+
+                # Close provisional cards not resolved by execution/no-op handling.
+                for _pid, _pname in provisional_started_tool_calls.items():
+                    if _pid not in resolved_provisional_tool_call_ids:
+                        resolved_provisional_tool_call_ids.add(_pid)
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": _pname,
+                            "tool_call_id": _pid,
+                            "result": "",
+                            "provenance": tool_event_provenance(provisional = True),
+                        }
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
@@ -8458,10 +8620,32 @@ class LlamaCppBackend:
                 continue
 
             except httpx.ConnectError:
+                # Mark unresolved provisional cards as failed before raising.
+                for _pid, _pname in provisional_started_tool_calls.items():
+                    if _pid not in resolved_provisional_tool_call_ids:
+                        resolved_provisional_tool_call_ids.add(_pid)
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": _pname,
+                            "tool_call_id": _pid,
+                            "result": "Error: lost connection to llama-server before the tool call completed.",
+                            "provenance": tool_event_provenance(provisional = True),
+                        }
                 raise RuntimeError("Lost connection to llama-server")
             except Exception as e:
                 if cancel_event is not None and cancel_event.is_set():
                     return
+                # Same cleanup for other mid-iteration failures.
+                for _pid, _pname in provisional_started_tool_calls.items():
+                    if _pid not in resolved_provisional_tool_call_ids:
+                        resolved_provisional_tool_call_ids.add(_pid)
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": _pname,
+                            "tool_call_id": _pid,
+                            "result": "Error: the tool call was interrupted before it completed.",
+                            "provenance": tool_event_provenance(provisional = True),
+                        }
                 raise
 
         # ── Tool iteration cap reached -- synthesize final answer ──
@@ -8515,6 +8699,8 @@ class LlamaCppBackend:
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
+        _final_reasoning_started_at: Optional[float] = None
+        _final_reasoning_summary_emitted = False
         _metadata_usage = None
         _metadata_timings = None
         _metadata_finish_reason = None
@@ -8540,6 +8726,12 @@ class LlamaCppBackend:
                             continue
                         if line == "data: [DONE]":
                             if in_thinking:
+                                if (
+                                    _final_reasoning_started_at is not None
+                                    and not _final_reasoning_summary_emitted
+                                ):
+                                    _final_reasoning_summary_emitted = True
+                                    yield _reasoning_summary_event(_final_reasoning_started_at)
                                 if has_content_tokens:
                                     cumulative += "</think>"
                                     yield {
@@ -8572,6 +8764,8 @@ class LlamaCppBackend:
 
                                 reasoning = delta.get("reasoning_content", "")
                                 if reasoning:
+                                    if _final_reasoning_started_at is None:
+                                        _final_reasoning_started_at = time.monotonic()
                                     reasoning_text += reasoning
                                     if not in_thinking:
                                         cumulative += "<think>"
@@ -8581,6 +8775,12 @@ class LlamaCppBackend:
 
                                 token = delta.get("content", "")
                                 if token:
+                                    if (
+                                        _final_reasoning_started_at is not None
+                                        and not _final_reasoning_summary_emitted
+                                    ):
+                                        _final_reasoning_summary_emitted = True
+                                        yield _reasoning_summary_event(_final_reasoning_started_at)
                                     has_content_tokens = True
                                     if in_thinking:
                                         cumulative += "</think>"
