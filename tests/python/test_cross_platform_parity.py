@@ -207,6 +207,6 @@ class TestTorchIndexOverrideParity:
         # The AMD ROCm reroute must be skipped when the index is explicitly pinned,
         # so an explicit cpu / cu* / rocm pin on an AMD host is not overwritten.
         text = path.read_text(encoding = "utf-8")
-        assert "TorchIndexPinned" in text, (
-            f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
-        )
+        assert (
+            "TorchIndexPinned" in text
+        ), f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
