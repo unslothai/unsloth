@@ -141,6 +141,7 @@ export const DEFAULT_HYPERPARAMS = {
   finetuneAttentionModules: true,
   finetuneMLPModules: true,
   targetModules: TARGET_MODULES,
+  s3Config: null as import("@/types/training").S3Config | null,
 };
 
 export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {

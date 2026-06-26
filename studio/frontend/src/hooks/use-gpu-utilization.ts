@@ -31,10 +31,8 @@ const DEFAULT: GpuUtilization = {
 };
 
 /**
- * Poll `GET /api/train/hardware` for live GPU utilization stats.
- *
- * Only polls while `enabled` is true (i.e. training is running).
- * Polling interval defaults to 10 000 ms.
+ * Poll `GET /api/train/hardware` for live GPU utilization stats while
+ * `enabled` (training running). Interval defaults to 10 000 ms.
  */
 export function useGpuUtilization(
     enabled: boolean,

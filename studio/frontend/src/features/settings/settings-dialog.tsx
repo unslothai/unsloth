@@ -7,7 +7,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useT, type TranslationKey } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
@@ -23,8 +23,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef } from "react";
 import {
-  useSettingsDialogStore,
   type SettingsTab,
+  useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
 import { AboutTab } from "./tabs/about-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
@@ -49,17 +49,21 @@ const TABS: TabDef[] = [
     labelKey: "settings.tabs.appearance",
     icon: PaintBrush02Icon,
   },
-  { id: "chat", labelKey: "settings.tabs.chat", icon: Message01Icon },
   {
-    id: "connections",
-    labelKey: "settings.tabs.connections",
-    icon: CloudIcon,
+    id: "chat",
+    labelKey: "settings.tabs.chat",
+    icon: Message01Icon,
     badgeKey: "common.new",
   },
   {
     id: "api-keys",
     labelKey: "settings.tabs.apiKeys",
     icon: Globe02Icon,
+  },
+  {
+    id: "connections",
+    labelKey: "settings.tabs.connections",
+    icon: CloudIcon,
     badgeKey: "common.new",
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
@@ -114,31 +118,37 @@ export function SettingsDialog() {
     <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
       <DialogContent
         showCloseButton={false}
-        overlayClassName="bg-background/40"
+        overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
         onCloseAutoFocus={(e) => {
-          // Restore focus to the element that triggered openDialog().
-          // Radix's FocusScope races our rAF-scheduled tab-button focus
-          // and loses the previous-focus reference, so we restore by hand.
+          // Restore focus to the element that triggered openDialog(). Radix's
+          // FocusScope races our rAF-scheduled tab focus and loses the
+          // previous-focus reference, so restore it by hand.
           if (opener && opener.isConnected) {
             e.preventDefault();
             opener.focus({ preventScroll: true });
           }
         }}
         className={cn(
-          // Cap at 820px but shrink to the viewport so we don't clip
-          // on iPad-portrait widths (640-820px) where the fixed
-          // `w-[820px]` overflows by 26px on each side.
-          "!max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
-          "shadow-border rounded-xl border-border",
+          // Cap at 820px but shrink to the viewport so it doesn't clip on
+          // iPad-portrait widths (640-820px) where fixed `w-[820px]` overflows.
+          "settings-surface !max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
+          // Soft shadow, no outline ring. Pin --radius to the light value so
+          // corner rounding matches in dark mode.
+          "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
           "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
         )}
       >
-        <DialogTitle className="sr-only">{t("settings.dialog.title")}</DialogTitle>
+        <DialogTitle className="sr-only">
+          {t("settings.dialog.title")}
+        </DialogTitle>
         <DialogDescription className="sr-only">
           {t("settings.dialog.description")}
         </DialogDescription>
         <div className="flex h-full min-h-0 max-sm:flex-col">
-          <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-border bg-muted/20 p-2 max-sm:w-full max-sm:border-r-0 max-sm:border-b">
+          <aside className="font-heading flex w-[216px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
+            <h2 className="pl-3 pr-2.5 pt-3.5 pb-3.5 text-[19px] font-semibold text-foreground max-sm:hidden">
+              {t("settings.dialog.title")}
+            </h2>
             <nav className="flex flex-col gap-0.5 max-sm:flex-row max-sm:overflow-x-auto">
               {TABS.map((tab) => {
                 const active = activeTab === tab.id;
@@ -151,18 +161,18 @@ export function SettingsDialog() {
                     type="button"
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      "relative flex h-[32px] items-center gap-2.5 rounded-[8px] px-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
+                      "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
                       "max-sm:shrink-0",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       active
                         ? "text-black dark:text-white"
-                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white",
+                        : "text-[#383835] dark:text-[#c7c7c4] hover:bg-[#ececec] dark:hover:bg-[#3a3d43] hover:text-black dark:hover:text-white",
                     )}
                   >
                     {active && (
                       <motion.span
                         layoutId="settings-active-pill"
-                        className="absolute inset-0 rounded-[8px] bg-[#ececec] dark:bg-[#2d2f33]"
+                        className="absolute inset-0 rounded-full bg-[#ececec] dark:bg-[#3a3d43]"
                         transition={
                           reduced
                             ? { duration: 0 }
@@ -184,7 +194,7 @@ export function SettingsDialog() {
                       {t(tab.labelKey)}
                     </span>
                     {tab.badgeKey ? (
-                      <span className="relative z-10 ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                      <span className="relative z-10 ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                         {t(tab.badgeKey)}
                       </span>
                     ) : null}
@@ -198,12 +208,12 @@ export function SettingsDialog() {
             <button
               type="button"
               onClick={closeDialog}
-              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#3a3d43] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label={t("settings.dialog.closeAriaLabel")}
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
             </button>
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]">
+            <div className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]">
               {renderTab(activeTab)}
             </div>
           </main>

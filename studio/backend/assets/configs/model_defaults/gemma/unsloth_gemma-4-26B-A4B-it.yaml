@@ -2,7 +2,6 @@
 # Also applies to: google/gemma-4-26B-A4B-it, unsloth/gemma-4-26B-A4B-it-GGUF
 
 training:
-  trust_remote_code: false
   max_seq_length: 2048
   num_epochs: 0
   learning_rate: 2e-4
@@ -40,7 +39,6 @@ logging:
   log_frequency: 10
 
 inference:
-  trust_remote_code: false
   temperature: 1.0
   top_p: 0.95
   top_k: 64

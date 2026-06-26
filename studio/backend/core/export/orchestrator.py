@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Export orchestrator — subprocess-based.
+"""Export orchestrator — subprocess-based.
 
-Provides the same API as ExportBackend, but delegates all ML work
-to a persistent subprocess. The subprocess is spawned on first checkpoint
-load and stays alive for subsequent export operations.
+Same API as ExportBackend, but delegates all ML work to a persistent
+subprocess spawned on first checkpoint load and reused for later exports.
 
-When switching between checkpoints that need different transformers versions,
-the old subprocess is killed and a new one is spawned with the correct version.
+When switching between checkpoints needing different transformers
+versions, the old subprocess is killed and a new one spawned.
 
 Pattern follows core/inference/orchestrator.py.
 """
@@ -30,9 +28,7 @@ logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 
-# Maximum number of captured log lines kept in memory per export
-# orchestrator. Acts as scrollback for the live export log panel in the
-# UI. 4000 lines is ~1 MB worst-case at 256 chars/line.
+# Max log lines kept per orchestrator (live log panel scrollback); ~1 MB worst-case.
 _LOG_BUFFER_MAXLEN = 4000
 
 
@@ -41,47 +37,45 @@ class ExportOrchestrator:
     Export backend orchestrator — subprocess-based.
 
     Exposes the same API surface as ExportBackend so routes/export.py
-    needs minimal changes. Internally, all heavy ML operations happen in
-    a persistent subprocess.
+    needs minimal changes. All heavy ML work happens in a persistent
+    subprocess.
     """
 
     def __init__(self):
-        # Subprocess state
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
-        # Serializes export operations (load_checkpoint, export_*,
-        # cleanup) so concurrent HTTP requests can never interleave
-        # commands on the subprocess queue. Previously unused.
+        # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
 
-        # Local state mirrors (updated from subprocess responses)
+        # Local state mirrors (updated from subprocess responses).
         self.current_checkpoint: Optional[str] = None
         self.is_vision: bool = False
         self.is_peft: bool = False
 
-        # ── Live log capture ─────────────────────────────────────
-        # Thread-safe ring buffer of log lines forwarded from the
-        # worker subprocess. Powers the GET /api/export/logs/stream
-        # SSE endpoint that the export dialog consumes.
+        # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
         self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
         self._log_lock = threading.Lock()
-        # Monotonically increasing sequence number. Never reset across
-        # operations, so SSE clients can use it as a stable cursor even
-        # if clear_logs() is called mid-session.
+        # Monotonic seq, never reset, so SSE clients have a stable cursor across clear_logs().
         self._log_seq: int = 0
-        # Snapshot of _log_seq captured at the start of the current run
-        # (updated by clear_logs()). The SSE endpoint defaults its
-        # cursor to this value so a client that connects AFTER the
-        # worker has already emitted its first lines still sees the
-        # full run. Every line appended during the current run has seq
-        # strictly greater than _run_start_seq, and every line from
-        # prior runs has seq less than or equal to it.
+        # _log_seq snapshot at the current run's start; SSE defaults its cursor here so a
+        # late-connecting client still sees the full run. Current run has seq > this.
         self._run_start_seq: int = 0
-        # True while an export operation (load/export/cleanup) is
-        # running. The SSE endpoint ends the stream 1 second after
-        # this flips back to False to drain any trailing log lines.
+        # True while an export op runs; SSE ends the stream 1s after this flips False.
         self._export_active: bool = False
+        # Set by cancel_export(); reset when a new load/export run starts. Lets the
+        # caller distinguish a user cancel from a genuine subprocess crash.
+        self._cancel_requested: bool = False
+
+        # Last finished operation, so a client whose blocking POST was cut off by a
+        # Cloudflare tunnel timeout (524 at ~100s, while the op runs for minutes) can
+        # poll /api/export/status and still learn the real outcome. Guarded by
+        # _op_lock. `_op_seq` is a monotonic counter the client uses as a baseline to
+        # tell "my op finished" (seq grew) from a stale previous result.
+        self._op_lock = threading.Lock()
+        self._op_seq: int = 0
+        self._active_op_kind: Optional[str] = None
+        self._last_op: Optional[Dict[str, Any]] = None
 
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
@@ -91,13 +85,7 @@ class ExportOrchestrator:
     # ------------------------------------------------------------------
 
     def _append_log(self, entry: Dict[str, Any]) -> None:
-        """Append a log line from the worker subprocess to the buffer.
-
-        Entries look like {"type": "log", "stream": "stdout"|"stderr",
-        "line": "...", "ts": ...}. Each is stamped with a monotonic
-        seq number before it lands in the buffer so SSE clients can
-        cursor through new lines.
-        """
+        """Append a worker log line to the buffer, stamped with a monotonic seq."""
         line = entry.get("line")
         if not line:
             return
@@ -113,18 +101,10 @@ class ExportOrchestrator:
             )
 
     def clear_logs(self) -> None:
-        """Drop any buffered log lines from a previous operation.
+        """Drop buffered log lines from a previous op so the UI shows only this run.
 
-        Called at the start of each export op so the UI shows only the
-        output of the current run. The seq counter is NOT reset, so an
-        SSE client that captured the cursor before clear_logs() will
-        still see new lines (with strictly greater seq numbers).
-
-        Also snapshots the current seq into ``_run_start_seq`` so the
-        SSE endpoint can anchor its default cursor at the start of
-        this run. Anything appended after this call has seq strictly
-        greater than the snapshot and is reachable via
-        ``get_logs_since(get_run_start_seq())``.
+        The seq counter is NOT reset (clients keep a stable cursor); the current seq
+        is snapshotted into ``_run_start_seq`` to anchor the SSE default cursor.
         """
         with self._log_lock:
             self._log_buffer.clear()
@@ -144,18 +124,79 @@ class ExportOrchestrator:
             return self._log_seq
 
     def get_run_start_seq(self) -> int:
-        """Return the seq value captured at the start of the current run.
-
-        The SSE endpoint uses this as the default cursor so a client
-        that connects AFTER the worker has already started emitting
-        output still sees every line from the current run.
-        """
+        """Return the seq captured at the current run's start (SSE default cursor)."""
         with self._log_lock:
             return self._run_start_seq
 
     def is_export_active(self) -> bool:
         """True while an export / load / cleanup command is running."""
         return self._export_active
+
+    def was_cancelled(self) -> bool:
+        """True if the in-flight (or most recent) run was cancelled by the user."""
+        return self._cancel_requested
+
+    def _record_op_finished(self, success: bool, message: str, output_path: Optional[str]) -> None:
+        """Snapshot the just-finished op so status pollers can recover its outcome.
+
+        Called from each op's ``finally`` (with ``_active_op_kind`` still set) BEFORE
+        ``_export_active`` is cleared, so a status read that observes the op as
+        inactive is guaranteed to also see this matching result.
+        """
+        with self._op_lock:
+            self._op_seq += 1
+            status = "cancelled" if self._cancel_requested else ("success" if success else "error")
+            self._last_op = {
+                "seq": self._op_seq,
+                "kind": self._active_op_kind,
+                "status": status,
+                "output_path": output_path if success else None,
+                "error": None if success else (message or None),
+            }
+
+    def get_last_op(self) -> Optional[Dict[str, Any]]:
+        """Return the last finished op record (or None), for status recovery."""
+        with self._op_lock:
+            return dict(self._last_op) if self._last_op is not None else None
+
+    def get_active_op_kind(self) -> Optional[str]:
+        """Return the kind of the currently running op (or None when idle)."""
+        return self._active_op_kind
+
+    def cancel_export(self) -> bool:
+        """Terminate the in-flight export subprocess immediately.
+
+        An export op holds ``self._lock`` for its whole duration (blocked in
+        ``_wait_response``), so we deliberately do NOT take the lock here -- we
+        kill the worker process directly, which unblocks that wait and makes the
+        in-flight op return a failure the caller surfaces as "cancelled".
+
+        Only the export subprocess is touched; training and inference run in
+        their own subprocesses and are left untouched.
+
+        Returns True if a live subprocess was terminated, False if none ran.
+        """
+        self._cancel_requested = True
+        proc = self._proc
+        if proc is None or not proc.is_alive():
+            return False
+        logger.info(
+            "Export cancel requested: terminating export subprocess (pid=%s)",
+            proc.pid,
+        )
+        try:
+            proc.terminate()
+            proc.join(timeout = 5)
+        except Exception:
+            pass
+        if proc.is_alive():
+            logger.warning("Export subprocess survived terminate, killing")
+            try:
+                proc.kill()
+                proc.join(timeout = 3)
+            except Exception:
+                pass
+        return True
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle
@@ -185,6 +226,9 @@ class ExportOrchestrator:
                 daemon = True,
             )
             self._proc.start()
+        from utils.process_lifetime import adopt_pid
+
+        adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
         logger.info("Export subprocess started (pid=%s)", self._proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
@@ -193,22 +237,19 @@ class ExportOrchestrator:
             self._proc = None
             return
 
-        # 1. Drain stale responses
         self._drain_queue()
 
-        # 2. Send shutdown command
         try:
             self._cmd_queue.put({"type": "shutdown"})
         except (OSError, ValueError):
             pass
 
-        # 3. Wait for graceful shutdown
         try:
             self._proc.join(timeout = timeout)
         except Exception:
             pass
 
-        # 4. Force kill if still alive
+        # Force kill if still alive.
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Export subprocess did not exit gracefully, terminating")
             try:
@@ -261,12 +302,15 @@ class ExportOrchestrator:
         except (EOFError, OSError, ValueError):
             return None
 
-    def _wait_response(self, expected_type: str, timeout: float = 3600.0) -> dict:
+    def _wait_response(
+        self,
+        expected_type: str,
+        timeout: float = 3600.0,
+    ) -> dict:
         """Block until a response of the expected type arrives.
 
-        Export operations can take a very long time — GGUF conversion for
-        large models (30B+) easily takes 20-30 minutes. Default timeout
-        is 1 hour.
+        Export ops can take a long time — GGUF conversion for large
+        models (30B+) easily takes 20-30 minutes. Default timeout 1 hour.
         """
         deadline = time.monotonic() + timeout
 
@@ -275,7 +319,6 @@ class ExportOrchestrator:
             resp = self._read_resp(timeout = min(remaining, 2.0))
 
             if resp is None:
-                # Check subprocess health
                 if not self._ensure_subprocess_alive():
                     raise RuntimeError("Export subprocess crashed during wait")
                 continue
@@ -290,17 +333,14 @@ class ExportOrchestrator:
                 raise RuntimeError(f"Subprocess error: {error_msg}")
 
             if rtype == "log":
-                # Forwarded stdout/stderr line from the worker process.
+                # Forwarded stdout/stderr line from the worker.
                 self._append_log(resp)
                 continue
 
             if rtype == "status":
                 message = resp.get("message", "")
                 logger.info("Export subprocess status: %s", message)
-                # Surface status messages in the live log panel too so
-                # users see high level progress (e.g. "Importing
-                # Unsloth...", "Loading checkpoint: ...") alongside
-                # subprocess output.
+                # Surface status in the live log panel for high-level progress.
                 if message:
                     self._append_log(
                         {
@@ -311,16 +351,14 @@ class ExportOrchestrator:
                     )
                 continue
 
-            # Other response types during wait — skip
+            # Other response types during wait — skip.
             logger.debug(
                 "Skipping response type '%s' while waiting for '%s'",
                 rtype,
                 expected_type,
             )
 
-        raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response after {timeout}s"
-        )
+        raise RuntimeError(f"Timeout waiting for '{expected_type}' response after {timeout}s")
 
     def _drain_queue(self) -> list:
         """Drain all pending responses."""
@@ -345,7 +383,9 @@ class ExportOrchestrator:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
+        approved_remote_code_fingerprint: Optional[str] = None,
         hf_token: Optional[str] = None,
+        subject: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -356,24 +396,26 @@ class ExportOrchestrator:
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "trust_remote_code": trust_remote_code,
+            "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
+            "subject": subject,
             "hf_token": hf_token,
         }
 
         with self._lock:
-            # Start a fresh log buffer for this operation so the UI
-            # sees only the current run's output.
+            # Fresh log buffer so the UI sees only this run's output.
             self.clear_logs()
+            self._cancel_requested = False
+            self._active_op_kind = "load_checkpoint"
             self._export_active = True
+            op_success, op_message = False, ""
             try:
-                # Always kill existing subprocess and spawn fresh.
+                # Always kill any existing subprocess and spawn fresh.
                 if self._ensure_subprocess_alive():
                     self._shutdown_subprocess()
                 elif self._proc is not None:
                     self._shutdown_subprocess(timeout = 2)
 
-                logger.info(
-                    "Spawning fresh export subprocess for '%s'", checkpoint_path
-                )
+                logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
                 self._spawn_subprocess(sub_config)
 
                 try:
@@ -383,6 +425,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    op_success, op_message = False, str(exc)
                     return False, str(exc)
 
                 if resp.get("success"):
@@ -390,15 +433,19 @@ class ExportOrchestrator:
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
-                    return True, resp.get("message", "Loaded successfully")
+                    op_success, op_message = True, resp.get("message", "Loaded successfully")
+                    return True, op_message
                 else:
                     error = resp.get("message", "Failed to load checkpoint")
                     logger.error("Failed to load checkpoint: %s", error)
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    op_success, op_message = False, error
                     return False, error
             finally:
+                self._record_op_finished(op_success, op_message, None)
+                self._active_op_kind = None
                 self._export_active = False
 
     def export_merged_model(
@@ -485,17 +532,11 @@ class ExportOrchestrator:
             },
         )
 
-    def _run_export(
-        self, export_type: str, params: dict
-    ) -> Tuple[bool, str, Optional[str]]:
-        """Send an export command to the subprocess and wait for result.
+    def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
+        """Send an export command and wait for the result.
 
-        Returns ``(success, message, output_path)``. ``output_path`` is the
-        resolved on-disk directory the worker actually wrote to (None when
-        the export only pushed to Hub or failed before any file was
-        written). Surfaced via the export route's ``details.output_path``
-        so the dialog's success screen can show the user where the model
-        landed.
+        Returns ``(success, message, output_path)``. ``output_path`` is the on-disk
+        dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
         """
         with self._lock:
             if not self._ensure_subprocess_alive():
@@ -506,7 +547,10 @@ class ExportOrchestrator:
                 )
 
             self.clear_logs()
+            self._cancel_requested = False
+            self._active_op_kind = f"export_{export_type}"
             self._export_active = True
+            op_success, op_message, op_output_path = False, "", None
             try:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
@@ -515,27 +559,30 @@ class ExportOrchestrator:
                         f"export_{export_type}_done",
                         timeout = 3600,  # GGUF for 30B+ models can take 30+ min
                     )
-                    return (
-                        resp.get("success", False),
-                        resp.get("message", ""),
-                        resp.get("output_path"),
-                    )
+                    op_success = resp.get("success", False)
+                    op_message = resp.get("message", "")
+                    op_output_path = resp.get("output_path")
+                    return op_success, op_message, op_output_path
                 except RuntimeError as exc:
+                    op_success, op_message = False, str(exc)
                     return False, str(exc), None
             finally:
+                self._record_op_finished(op_success, op_message, op_output_path)
+                self._active_op_kind = None
                 self._export_active = False
 
     def cleanup_memory(self) -> bool:
         """Cleanup export-related models from memory."""
         with self._lock:
             if not self._ensure_subprocess_alive():
-                # No subprocess — just clear local state
                 self.current_checkpoint = None
                 self.is_vision = False
                 self.is_peft = False
                 return True
 
+            self._active_op_kind = "cleanup"
             self._export_active = True
+            success = False
             try:
                 try:
                     self._send_cmd({"type": "cleanup"})
@@ -544,7 +591,7 @@ class ExportOrchestrator:
                 except RuntimeError:
                     success = False
 
-                # Shut down subprocess after cleanup — no model loaded
+                # Shut down subprocess after cleanup — no model loaded.
                 self._shutdown_subprocess()
 
                 self.current_checkpoint = None
@@ -552,14 +599,13 @@ class ExportOrchestrator:
                 self.is_peft = False
                 return success
             finally:
+                self._record_op_finished(success, "", None)
+                self._active_op_kind = None
                 self._export_active = False
 
-    def scan_checkpoints(
-        self, outputs_dir: str = str(outputs_root())
-    ) -> List[Tuple[str, list]]:
-        """Scan for checkpoints — no ML imports needed, runs locally."""
+    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:
+        """Scan for checkpoints — runs locally, no ML imports."""
         from utils.models.checkpoints import scan_checkpoints
-
         return scan_checkpoints(outputs_dir = outputs_dir)
 
 

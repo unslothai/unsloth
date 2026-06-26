@@ -29,6 +29,14 @@ import json
 import re
 from typing import Any
 
+# The Qwen/Hermes ``<tool_call>{json}``, Qwen3.5 ``<function=...>`` XML, and
+# Gemma 4 ``<|tool_call>call:...`` formats are parsed by the shared
+# ``core.tool_healing`` helper, which external inference servers also import
+# and which carries the strict/Auto-Heal (``allow_incomplete``) contract. This
+# module adds the formats tool_healing does not cover (Llama-3 ``<|python_tag|>``,
+# Mistral ``[TOOL_CALLS]``, and Llama-3.2 bare JSON).
+from core import tool_healing as _tool_healing
+
 
 # Markers that flip the streaming buffer from STREAMING to DRAINING so
 # partial markup never leaks before the parser sees it.
@@ -107,6 +115,12 @@ DUPLICATE_CALL_NUDGE = (
     "provide your final answer now."
 )
 
+RENDER_HTML_REPEAT_NUDGE = (
+    "Error: render_html was already called for this response. Do not call "
+    "render_html again in this response unless the user asks for changes. "
+    "Provide the final answer now."
+)
+
 TOOL_ERROR_NUDGE = (
     "\n\nThe tool call encountered an issue. Please try a different "
     "approach or rephrase your request."
@@ -116,6 +130,15 @@ BUDGET_EXHAUSTED_NUDGE = (
     "You have used all available tool calls. Based on everything you "
     "have found so far, provide your final answer now. Do not call "
     "any more tools."
+)
+
+# The exact-args dup guard misses paraphrased re-searches, so also cap executed
+# KB searches per turn, then nudge.
+RAG_MAX_SEARCHES_PER_TURN = 3
+RAG_SEARCH_CAP_NUDGE = (
+    "You have already searched the knowledge base several times this turn. "
+    "Do not search again. Answer the question using the passages already "
+    "retrieved above; if they do not contain the answer, say so plainly."
 )
 
 
@@ -300,7 +323,7 @@ def _strip_mistral_reasoning(content: str) -> str:
     close = content.find(_MISTRAL_THINK_CLOSE, i + len(_MISTRAL_THINK_OPEN))
     if close == -1:
         return content[:i]
-    return content[:i] + content[close + len(_MISTRAL_THINK_CLOSE):]
+    return content[:i] + content[close + len(_MISTRAL_THINK_CLOSE) :]
 
 
 def _strip_mistral_closed_calls(text: str) -> str:
@@ -375,37 +398,75 @@ def has_tool_signal(text: str) -> bool:
     return any(s in text for s in TOOL_XML_SIGNALS)
 
 
-def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict]:
-    """Return OpenAI-format tool calls. First match wins.
+def parse_tool_calls_from_text(
+    content: str,
+    *,
+    id_offset: int = 0,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    """Return OpenAI-format tool calls. Tries each format and returns
+    as soon as one matches so we never double-count.
 
-    Order: DeepSeek / Kimi (full-width or unique markers, no collision)
-    -&gt; Qwen JSON -&gt; GLM (shares ``<tool_call>`` opener with Qwen but
-    Qwen needs ``\\s*{`` after the tag, GLM has a bare name) -&gt;
-    Qwen3.5 XML -&gt; Llama-3 python_tag -&gt; Mistral -&gt; Gemma -&gt;
-    Llama-3.2 bare JSON (strict ``{`` start).
+    ``allow_incomplete`` controls Auto-Heal: when True (default) genuinely
+    truncated calls (no closing ``</function>`` / ``<tool_call|>``, or a
+    parameter that never closes) are still healed into a call; when False the
+    parser only accepts a well-formed, closed call (trailing prose after the
+    close is still tolerated), matching the strict path llama-server uses when
+    Auto-Heal is disabled.
     """
+    # DeepSeek / Kimi use unique (often full-width) markers that do not collide
+    # with the shared formats, so try them first.
     for parser in (
         _parse_deepseek_tool_calls,
         _parse_kimi_tool_calls,
-        _parse_tool_call_json,
-        _parse_glm_tool_calls,
-        _parse_function_xml,
-        _parse_llama3_python_tag,
-        _parse_mistral_tool_calls,
-        _parse_gemma_tool_calls,
     ):
-        calls = parser(content, id_offset = id_offset)
+        calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
+        if calls:
+            return calls
+
+    # Qwen/Hermes ``<tool_call>{json}`` (arguments + parameters keys), Qwen3.5
+    # ``<function=...>`` XML, and Gemma 4 native ``<|tool_call>call:...`` go
+    # through the shared tool_healing parser, which carries the strict/Auto-Heal
+    # contract plus nested-marker, trailing-prose (rfind close), and ``<|"|>``
+    # quoted-string handling the GGUF path already relies on.
+    calls = _tool_healing.parse_tool_calls_from_text(
+        content,
+        id_offset = id_offset,
+        allow_incomplete = allow_incomplete,
+    )
+    if calls:
+        return calls
+
+    # Formats tool_healing does not cover. GLM shares the ``<tool_call>`` opener
+    # but uses a bare name (no ``{``), so tool_healing skips it;
+    # ``_parse_function_xml`` adds the ``<function name="...">`` attribute syntax;
+    # the rest add Llama-3 and Mistral emissions. These run only after
+    # tool_healing finds nothing, so a call it rejected in strict mode is never
+    # re-healed here.
+    for parser in (
+        _parse_glm_tool_calls,  # GLM 4.x <tool_call>name
+        _parse_function_xml,  # <function name="..."> attribute form
+        _parse_llama3_python_tag,  # Llama-3 <|python_tag|>
+        _parse_mistral_tool_calls,  # Mistral [TOOL_CALLS]
+        _parse_gemma_tool_calls,  # Gemma wrapper-less call:NAME{...} (tokens stripped)
+    ):
+        calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
         if calls:
             return calls
     return _parse_llama3_bare_json(content, id_offset = id_offset)
 
 
-def _parse_tool_call_json(content: str, *, id_offset: int) -> list[dict]:
+def _parse_tool_call_json(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
     out: list[dict] = []
     for m in _TC_JSON_START_RE.finditer(content):
         brace_start = m.end() - 1
         end = _balanced_brace_end(content, brace_start)
         if end is None:
+            continue
+        # Strict mode: a balanced JSON body that never closed its ``<tool_call>``
+        # is a truncated call, not a finished one. Trailing prose after the close
+        # is still tolerated (matches the GGUF strict path).
+        if not allow_incomplete and not content[end + 1 :].lstrip().startswith("</tool_call>"):
             continue
         try:
             obj = json.loads(content[brace_start : end + 1])
@@ -436,7 +497,7 @@ def _parse_tool_call_json(content: str, *, id_offset: int) -> list[dict]:
     return out
 
 
-def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
+def _parse_function_xml(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
     out: list[dict] = []
     func_starts = list(_TC_FUNC_START_RE.finditer(content))
     for idx, fm in enumerate(func_starts):
@@ -447,18 +508,26 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
             func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
         )
         end_tag = _TC_END_TAG_RE.search(content[body_start:])
-        if end_tag:
+        has_close = end_tag is not None and (body_start + end_tag.start()) < next_func
+        if has_close:
             body_end = body_start + end_tag.start()
         else:
-            body_end = len(content)
-        body_end = min(body_end, next_func)
+            body_end = min(len(content), next_func)
+        # Strict mode: a function call that never reached its ``</function>`` /
+        # ``</tool_call>`` close is truncated, so do not heal it into a call.
+        if not allow_incomplete and not has_close:
+            continue
         body = _TC_FUNC_CLOSE_RE.sub("", content[body_start:body_end])
 
         args: dict = {}
+        param_unclosed = False
         param_starts = list(_TC_PARAM_START_RE.finditer(body))
         if len(param_starts) == 1:
             pm = param_starts[0]
-            val = _TC_PARAM_CLOSE_RE.sub("", body[pm.end() :])
+            raw_val = body[pm.end() :]
+            if not _TC_PARAM_CLOSE_RE.search(raw_val):
+                param_unclosed = True
+            val = _TC_PARAM_CLOSE_RE.sub("", raw_val)
             args[pm.group(1) or pm.group(2)] = val.strip()
         else:
             for pidx, pm in enumerate(param_starts):
@@ -468,8 +537,16 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
                     if pidx + 1 < len(param_starts)
                     else len(body)
                 )
-                val = _TC_PARAM_CLOSE_RE.sub("", body[val_start:next_param])
+                raw_val = body[val_start:next_param]
+                if not _TC_PARAM_CLOSE_RE.search(raw_val):
+                    param_unclosed = True
+                val = _TC_PARAM_CLOSE_RE.sub("", raw_val)
                 args[pm.group(1) or pm.group(2)] = val.strip()
+
+        # Strict mode: every parameter must close with ``</parameter>`` /
+        # ``</param>``; a dangling parameter means the call was cut off.
+        if not allow_incomplete and (param_unclosed or not param_starts):
+            continue
 
         out.append(
             {
@@ -481,7 +558,7 @@ def _parse_function_xml(content: str, *, id_offset: int) -> list[dict]:
     return out
 
 
-def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
+def _parse_llama3_python_tag(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
     """Parse the four Llama-3 emissions: ``<|python_tag|>NAME.call(...)``
     (built-in), ``<|python_tag|>{"name":..., "parameters":...}`` (custom),
     multi-call via ``; `` separators, ``parameters`` or ``arguments`` key.
@@ -594,7 +671,7 @@ def _parse_llama3_python_tag(content: str, *, id_offset: int) -> list[dict]:
     return out
 
 
-def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
+def _parse_llama3_bare_json(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
     """Llama-3.2 ``custom_tools``: bare ``{"name":..., "parameters":{...}}``
     without ``<|python_tag|>``. Strict (must start with ``{`` after sentinel
     strip; ``name`` non-empty; ``parameters`` or ``arguments`` is a dict) so
@@ -686,7 +763,7 @@ def _parse_llama3_bare_json(content: str, *, id_offset: int) -> list[dict]:
     return out
 
 
-def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
+def _parse_mistral_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
     """Parse all Mistral emissions: pre-v11 ``[TOOL_CALLS][...]`` /
     ``[TOOL_CALLS]{...}`` and v11+ ``[TOOL_CALLS]name{json}`` /
     ``[TOOL_CALLS]name[ARGS]{json}`` (parallel-friendly)."""
@@ -837,7 +914,7 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
         )
 
 
-def _parse_gemma_tool_calls(content: str, *, id_offset: int) -> list[dict]:
+def _parse_gemma_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
     """Gemma 4: ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``.
 
     Also handles the ``skip_special_tokens`` stream where the ``<|tool_call>``
@@ -845,31 +922,11 @@ def _parse_gemma_tool_calls(content: str, *, id_offset: int) -> list[dict]:
     ``call:NAME{k:v, ...}`` with unquoted values.
     """
     out: list[dict] = []
-    for m in _GEMMA_TC_RE.finditer(content):
-        name = m.group(1)
-        body_start = m.end() - 1
-        end_marker = content.find(_GEMMA_TC_END, body_start)
-        scan_end = end_marker if end_marker >= 0 else len(content)
-        end = _gemma_balanced_brace_end(content, body_start, scan_end)
-        if end is None:
-            continue
-        body = content[body_start + 1 : end]
-        try:
-            args = _gemma_parse_mapping_body(body)
-        except Exception:
-            args = {}
-        out.append(
-            {
-                "id": f"call_{id_offset + len(out)}",
-                "type": "function",
-                "function": {"name": name, "arguments": json.dumps(args)},
-            }
-        )
-    if out:
-        return out
-
-    # Wrapper-less form (special tokens stripped from the stream). Skip when
-    # the wrapped markers are present so we never double-parse the same call.
+    # The wrapped ``<|tool_call>call:...<tool_call|>`` form -- including its
+    # strict (Auto-Heal off) and nested-marker handling -- is owned by the
+    # shared tool_healing parser, which runs before this fallback. Only the
+    # wrapper-less ``call:NAME{...}`` stream (special tokens stripped) is left
+    # for us, so defer anything still carrying the wrapper or ``<|"|>`` markers.
     if "<|tool_call>" in content or _GEMMA_STR_BEGIN in content:
         return out
     for m in _GEMMA_BARE_TC_RE.finditer(content):
@@ -1115,7 +1172,7 @@ def _gemma_parse_mapping_body(body: str) -> dict[str, Any]:
 # ── DeepSeek R1 / V3 / V3.1 ─────────────────────────────────────────
 
 
-def _parse_deepseek_tool_calls(content: str, *, id_offset: int) -> list[dict]:
+def _parse_deepseek_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
     """DeepSeek R1 / V3 / V3.1.
 
     R1:    ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`<｜tool▁call▁end｜>...``
@@ -1228,7 +1285,7 @@ def _parse_deepseek_tool_calls(content: str, *, id_offset: int) -> list[dict]:
 # ── GLM 4.5 / 4.6 / 4.7 ─────────────────────────────────────────────
 
 
-def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
+def _parse_glm_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
     """GLM 4.5 / 4.6 / 4.7.
 
     ``<tool_call>NAME[\\n]<arg_key>K</arg_key>[\\n]<arg_value>V</arg_value>
@@ -1287,7 +1344,7 @@ def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
 # ── Kimi K2 / Moonshot ──────────────────────────────────────────────
 
 
-def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
+def _parse_kimi_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
     """Kimi K2.
 
     ``<|tool_calls_section_begin|><|tool_call_begin|>functions.NAME:IDX

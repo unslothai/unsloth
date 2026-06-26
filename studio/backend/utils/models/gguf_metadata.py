@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Free-function ``general.*`` reader for GGUF headers, used by
-``detect_mmproj_file`` to pair weights and projectors via
-``general.base_model.0.repo_url``. ~30 ms per file, cached by
-(path, mtime, size)."""
+"""``general.*`` reader for GGUF headers, used by ``detect_mmproj_file`` to
+pair weights and projectors via ``general.base_model.0.repo_url``. ~30 ms
+per file, cached by (path, mtime, size)."""
 
 from __future__ import annotations
 
@@ -47,6 +46,14 @@ _METADATA_CACHE: Dict[_CacheKey, Optional[Dict[str, str]]] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX_ENTRIES = 4096
 
+# Separate cache for single bool capability keys (e.g. clip.has_audio_encoder),
+# keyed by (file cache key, wanted key). None = key absent / file unreadable.
+_BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
+
+# Native training context length (``{arch}.context_length``). None = absent /
+# unreadable. Lets the UI show the real context ceiling before a model loads.
+_CONTEXT_CACHE: Dict[_CacheKey, Optional[int]] = {}
+
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
     try:
@@ -61,9 +68,9 @@ def _cache_key(path: str) -> Optional[_CacheKey]:
 
 
 def read_gguf_general_metadata(path: str) -> Optional[Dict[str, str]]:
-    """Return ``general.*`` strings from a GGUF header, or ``None`` if
-    the file is missing, unreadable, or not a GGUF. ``{}`` means the
-    file is valid but carries none of the wanted keys."""
+    """Return ``general.*`` strings from a GGUF header, or ``None`` if the
+    file is missing, unreadable, or not a GGUF. ``{}`` means valid but
+    carrying none of the wanted keys."""
     key = _cache_key(path)
     if key is None:
         return None
@@ -135,6 +142,92 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
     return out
 
 
+def read_gguf_context_length(path: str) -> Optional[int]:
+    """Return the GGUF's native training context length (``{arch}.context_length``),
+    or ``None`` if missing/unreadable/not a GGUF. Cached by (path, mtime, size).
+    Lets the UI populate the context slider before the model is loaded."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _CONTEXT_CACHE:
+            return _CONTEXT_CACHE[key]
+    result = _parse_gguf_context_length(path)
+    with _CACHE_LOCK:
+        while len(_CONTEXT_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _CONTEXT_CACHE.pop(next(iter(_CONTEXT_CACHE)))
+            except StopIteration:
+                break
+        _CONTEXT_CACHE[key] = result
+    return result
+
+
+def _parse_gguf_context_length(path: str) -> Optional[int]:
+    # The context key is architecture-namespaced (``llama.context_length`` etc.),
+    # so we learn the key only after reading ``general.architecture``. GGUF writes
+    # general.* before arch.* keys, matching the loader's own parser.
+    ctx_key: Optional[str] = None
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+
+            for _ in range(kv_count):
+                try:
+                    klen_bytes = f.read(8)
+                    if len(klen_bytes) < 8:
+                        break
+                    klen = struct.unpack("<Q", klen_bytes)[0]
+                    if klen > 1 << 20:  # 1 MB sanity bound
+                        break
+                    kbytes = f.read(klen)
+                    if len(kbytes) < klen:
+                        break
+                    key = kbytes.decode("utf-8", "replace")
+                    vt_bytes = f.read(4)
+                    if len(vt_bytes) < 4:
+                        break
+                    vtype = struct.unpack("<I", vt_bytes)[0]
+
+                    if vtype == 8 and key == "general.architecture":
+                        slen_bytes = f.read(8)
+                        if len(slen_bytes) < 8:
+                            break
+                        slen = struct.unpack("<Q", slen_bytes)[0]
+                        if slen > 1 << 22:  # 4 MB sanity bound
+                            break
+                        sbytes = f.read(slen)
+                        if len(sbytes) < slen:
+                            break
+                        ctx_key = f"{sbytes.decode('utf-8', 'replace')}.context_length"
+                    elif ctx_key is not None and key == ctx_key and vtype in (4, 10):
+                        width = 4 if vtype == 4 else 8
+                        n_bytes = f.read(width)
+                        if len(n_bytes) < width:
+                            break
+                        value = struct.unpack("<I" if vtype == 4 else "<Q", n_bytes)[0]
+                        # A real context length is positive; treat 0/garbage as
+                        # absent so the UI never builds a slider with max < min.
+                        return value if value > 0 else None
+                    else:
+                        if not _skip_gguf_value(f, vtype):
+                            break
+                except (struct.error, UnicodeDecodeError):
+                    break
+    except OSError as e:
+        logger.debug(f"read_gguf_context_length: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"read_gguf_context_length: parse failure on {path}: {e}")
+        return None
+    return None
+
+
 # Strings (8) and arrays (9) are handled inline.
 _FIXED_VTYPE_SIZES: Dict[int, int] = {
     0: 1,  # uint8
@@ -152,9 +245,9 @@ _FIXED_VTYPE_SIZES: Dict[int, int] = {
 
 
 def _skip_gguf_value(f, vtype: int) -> bool:
-    """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal
-    on a regular file so truncation is detected on the next read; we
-    only return False for unknown types or sanity-bound overflow."""
+    """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal on a
+    regular file, so truncation is caught on the next read; return False only
+    for unknown types or sanity-bound overflow."""
     if vtype == 8:  # STRING
         slen_bytes = f.read(8)
         if len(slen_bytes) < 8:
@@ -193,6 +286,80 @@ def _skip_gguf_value(f, vtype: int) -> bool:
     return True
 
 
+def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
+    """Bool value of ``wanted_key`` (GGUF vtype 7), or ``None`` if absent /
+    unreadable. Mirrors ``_parse_gguf_header`` for a single bool key."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+
+            for _ in range(kv_count):
+                try:
+                    klen_bytes = f.read(8)
+                    if len(klen_bytes) < 8:
+                        break
+                    klen = struct.unpack("<Q", klen_bytes)[0]
+                    if klen > 1 << 20:  # 1 MB sanity bound
+                        break
+                    kbytes = f.read(klen)
+                    if len(kbytes) < klen:
+                        break
+                    key = kbytes.decode("utf-8", "replace")
+                    vt_bytes = f.read(4)
+                    if len(vt_bytes) < 4:
+                        break
+                    vtype = struct.unpack("<I", vt_bytes)[0]
+
+                    if key == wanted_key and vtype == 7:  # BOOL (1 byte)
+                        bbyte = f.read(1)
+                        if len(bbyte) < 1:
+                            break
+                        return bbyte[0] != 0
+                    if not _skip_gguf_value(f, vtype):
+                        break
+                except (struct.error, UnicodeDecodeError):
+                    break
+    except OSError as e:
+        logger.debug(f"_parse_gguf_bool: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_bool: parse failure on {path}: {e}")
+        return None
+    return None
+
+
+def _read_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
+    """Cached single-bool-key read, keyed by (path, mtime, size, wanted_key)."""
+    fkey = _cache_key(path)
+    if fkey is None:
+        return None
+    ckey = (fkey, wanted_key)
+    with _CACHE_LOCK:
+        if ckey in _BOOL_CACHE:
+            return _BOOL_CACHE[ckey]
+    result = _parse_gguf_bool(path, wanted_key)
+    with _CACHE_LOCK:
+        while len(_BOOL_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _BOOL_CACHE.pop(next(iter(_BOOL_CACHE)))
+            except StopIteration:
+                break
+        _BOOL_CACHE[ckey] = result
+    return result
+
+
+def read_mmproj_audio_capability(path: str) -> Optional[bool]:
+    """``clip.has_audio_encoder`` from an mmproj GGUF (e.g. Gemma 4's
+    gemma4ua): ``True``/``False`` if present, ``None`` if absent/unreadable.
+    Flags audio-input models independently of tokenizer token names."""
+    return _read_gguf_bool(path, "clip.has_audio_encoder")
+
+
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
     """True/False from ``general.type``; None means fall back to filename."""
     if not meta:
@@ -204,8 +371,7 @@ def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
 
 
 def pairing_score(
-    weight_meta: Optional[Dict[str, str]],
-    mmproj_meta: Optional[Dict[str, str]],
+    weight_meta: Optional[Dict[str, str]], mmproj_meta: Optional[Dict[str, str]]
 ) -> int:
     """Pairing confidence: 100 = base_model URL match, 80 = basename + org,
     60 = basename, -1 = definitive mismatch, 0 = decide from filename."""

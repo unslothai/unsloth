@@ -18,7 +18,11 @@ from core.inference.pricing import (
 )
 
 
-def _isclose(a, b, tol = 1e-6):
+def _isclose(
+    a,
+    b,
+    tol = 1e-6,
+):
     return math.isclose(a, b, rel_tol = tol, abs_tol = tol)
 
 
@@ -26,8 +30,8 @@ def _isclose(a, b, tol = 1e-6):
 
 
 def test_prefix_match_requires_dash_boundary_opus_variant():
-    # `claude-opus-4-15` must not inherit `claude-opus-4-1` pricing;
-    # next char must be `-` or end-of-string.
+    # `claude-opus-4-15` must not inherit `claude-opus-4-1` pricing; the next
+    # char must be `-` or end-of-string.
     assert _lookup("anthropic", "claude-opus-4-15") is None
     out = calculate_cost(
         "anthropic",
@@ -51,8 +55,8 @@ def test_prefix_match_requires_dash_boundary_gpt_variant():
 
 
 def test_prefix_match_requires_dash_boundary_pro_lookalike():
-    # `gpt-5.5-prod` must fall through `gpt-5.5-pro` (6x overcharge)
-    # and land on the canonical `gpt-5.5` row.
+    # `gpt-5.5-prod` must fall through `gpt-5.5-pro` (6x overcharge) and land on
+    # the canonical `gpt-5.5` row.
     prices = _lookup("openai", "gpt-5.5-prod")
     assert prices is not None
     assert (
@@ -77,7 +81,7 @@ def test_prefix_match_still_resolves_legit_dated_snapshots():
     assert out["priced"] is True
     assert _isclose(out["input_usd"], 0.75)
 
-    # And Anthropic dated snapshot still resolves to canonical row.
+    # Anthropic dated snapshot still resolves to the canonical row.
     out = calculate_cost(
         "anthropic",
         "claude-opus-4-7-20260414",
@@ -91,7 +95,6 @@ def test_prefix_match_still_resolves_legit_dated_snapshots():
 
 
 def test_explicit_zero_input_tokens_wins_over_stale_prompt_tokens():
-    # Input-side mirror of the output zero precedence test.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -106,7 +109,7 @@ def test_explicit_zero_input_tokens_wins_over_stale_prompt_tokens():
 
 
 def test_none_input_tokens_falls_through_to_prompt_tokens():
-    # `None` is "key present but unset"; chat-style mirror wins.
+    # `None` means "key present but unset"; chat-style mirror wins.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -172,8 +175,8 @@ def test_negative_prompt_tokens_chat_style_clamp():
 
 
 def test_anthropic_chat_cache_read_exceeds_prompt_no_negative_billable():
-    # cache_read > prompt_tokens clamps uncached_input at 0; billable
-    # still reflects cache buckets (we charge for what we got).
+    # cache_read > prompt_tokens clamps uncached_input at 0; billable still
+    # reflects cache buckets (we charge for what we got).
     out = calculate_cost(
         "anthropic",
         "claude-opus-4-7",
@@ -188,9 +191,7 @@ def test_anthropic_chat_cache_read_exceeds_prompt_no_negative_billable():
     assert out["billable_input_tokens"] == 500  # 0 uncached + 500 cache_read
     # cache_read still priced at the discount rate.
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
-    assert _isclose(
-        out["cache_read_usd"], 500 / 1_000_000.0 * base * ANTHROPIC_CACHE_READ_MULT
-    )
+    assert _isclose(out["cache_read_usd"], 500 / 1_000_000.0 * base * ANTHROPIC_CACHE_READ_MULT)
 
 
 def test_openai_raw_cached_tokens_exceeds_input_clamp_non_cached():
@@ -207,17 +208,15 @@ def test_openai_raw_cached_tokens_exceeds_input_clamp_non_cached():
     )
     assert out["input_usd"] == 0.0
     # Cache read still priced (the 0.1x bucket).
-    assert _isclose(
-        out["cache_read_usd"], 500 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT
-    )
+    assert _isclose(out["cache_read_usd"], 500 / 1_000_000.0 * base * OPENAI_CACHE_READ_MULT)
 
 
 # ── long-context tier crosses on billable, including cache_creation ──
 
 
 def test_openai_long_context_triggers_on_cache_creation_inflated_billable():
-    # cache_creation pushes billable past 272k -> long-context tier
-    # must fire to avoid undercounting.
+    # cache_creation pushes billable past 272k -> long-context tier must fire to
+    # avoid undercounting.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
@@ -272,8 +271,8 @@ def test_openai_chat_envelope_long_context_parity_with_raw():
 
 
 def test_cache_creation_as_int_does_not_crash():
-    # Proxies sometimes fold cache_creation to an int; tolerate it
-    # and fall back to the 5m default.
+    # Proxies sometimes fold cache_creation to an int; tolerate it and fall back
+    # to the 5m default.
     base = ANTHROPIC_PRICING["claude-opus-4-7"]["input_per_mtok"]
     out = calculate_cost(
         "anthropic",
@@ -363,16 +362,16 @@ def test_empty_usage_dict_zero_bill():
 
 
 def test_anthropic_prompt_tokens_details_fallback_when_native_key_missing():
-    """Chat-style envelope without `cache_read_input_tokens` but with
-    mirrored `prompt_tokens_details.cached_tokens` should still apply
-    the cache_read discount."""
+    """Chat-style envelope without `cache_read_input_tokens` but with mirrored
+    `prompt_tokens_details.cached_tokens` should still apply the cache_read
+    discount."""
     r = calculate_cost(
         provider = "anthropic",
         model = "claude-opus-4-7",
         usage = {
             "prompt_tokens": 1_000_000,
             "completion_tokens": 0,
-            # Only the mirrored shape (no native key).
+            # Mirrored shape only (no native key).
             "prompt_tokens_details": {"cached_tokens": 1_000_000},
             "cache_creation_input_tokens": 0,
         },
@@ -383,8 +382,8 @@ def test_anthropic_prompt_tokens_details_fallback_when_native_key_missing():
 
 
 def test_anthropic_native_key_takes_precedence_over_mirrored():
-    """When both native and mirrored cache-read fields are present,
-    the native Anthropic field wins (mirror is fallback-only)."""
+    """When both native and mirrored cache-read fields are present, the native
+    Anthropic field wins (mirror is fallback-only)."""
     r = calculate_cost(
         provider = "anthropic",
         model = "claude-opus-4-7",
@@ -403,8 +402,8 @@ def test_anthropic_native_key_takes_precedence_over_mirrored():
 
 
 def test_anthropic_native_zero_takes_precedence_over_mirrored():
-    """Explicit `cache_read_input_tokens: 0` is authoritative; a stale
-    mirrored block from a proxy must not inflate cache_read past it."""
+    """Explicit `cache_read_input_tokens: 0` is authoritative; a stale mirrored
+    block from a proxy must not inflate cache_read past it."""
     r = calculate_cost(
         provider = "anthropic",
         model = "claude-opus-4-7",
@@ -429,8 +428,8 @@ def test_anthropic_native_zero_takes_precedence_over_mirrored():
 
 
 def test_build_usage_chunk_forwards_anthropic_cache_creation_breakdown():
-    """Chat-style envelope must carry the 5m/1h cache-write breakdown
-    so downstream cost calc applies the 2x 1h premium."""
+    """Chat-style envelope must carry the 5m/1h cache-write breakdown so
+    downstream cost calc applies the 2x 1h premium."""
     import json
     from core.inference.external_provider import _build_usage_chunk
 
