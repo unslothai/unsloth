@@ -2848,6 +2848,14 @@ async def load_model(
                 and (llama_backend.model_identifier or "").lower()
                 == (model_identifier or "").lower()
             )
+            # For HF repos model_identifier is variant-agnostic, so also require the
+            # loaded quant to match -- a different variant of the same repo bypassed
+            # dedupe on the variant mismatch and must not inherit the prior variant's
+            # preserved intent (local direct-file loads already differ by path). #6659
+            if _same_model_loaded and config.gguf_hf_repo:
+                _same_model_loaded = (llama_backend.hf_variant or "").lower() == (
+                    config.gguf_variant or ""
+                ).lower()
             _tensor_intent_overall = _effective_tensor_parallel(
                 extra_llama_args, request.tensor_parallel
             ) or _carry_preserved_tensor_intent(

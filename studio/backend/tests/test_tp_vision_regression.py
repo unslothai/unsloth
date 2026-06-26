@@ -481,6 +481,18 @@ def test_preserved_fallback_carried_across_non_drop_reload():
     assert "explicit_drop = _explicit_tensor_drop" in block
 
 
+def test_same_model_guard_checks_hf_variant():
+    """The same-model guard also matches the HF quant, so a different variant of the
+    same repo doesn't inherit the prior variant's preserved tensor intent (#6659)."""
+    route = Path(_BACKEND_DIR) / "routes" / "inference.py"
+    src = route.read_text()
+    idx = src.find("_same_model_loaded = (")
+    assert idx != -1
+    block = src[idx : idx + 800]
+    assert "config.gguf_hf_repo" in block
+    assert "llama_backend.hf_variant" in block and "config.gguf_variant" in block
+
+
 def test_diffusion_load_clears_preserved_tensor_flag():
     """The diffusion early-return path (skips the command builder) clears the
     preserved-fallback flag, so a prior tensor fallback doesn't churn it (#6659)."""
