@@ -1578,15 +1578,27 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             return
 
-    model, tokenizer = FastMLXModel.from_pretrained(
-        model_name,
-        load_in_4bit = config.get("load_in_4bit", True),
-        full_finetuning = not use_lora,
-        text_only = None if is_dataset_image else True,
-        token = hf_token,
-        trust_remote_code = bool(config.get("trust_remote_code", False)),
-        random_state = model_random_state,
+    from utils.hf_xet_fallback import start_watchdog
+
+    _send("model_load_started")
+    _load_watchdog_stop = start_watchdog(
+        repo_ids = [model_name],
+        on_stall = lambda msg: _send("stall", message = msg),
+        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
     )
+    try:
+        model, tokenizer = FastMLXModel.from_pretrained(
+            model_name,
+            load_in_4bit = config.get("load_in_4bit", True),
+            full_finetuning = not use_lora,
+            text_only = None if is_dataset_image else True,
+            token = hf_token,
+            trust_remote_code = bool(config.get("trust_remote_code", False)),
+            random_state = model_random_state,
+        )
+    finally:
+        _load_watchdog_stop.set()
+        _send("model_load_completed")
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
@@ -2083,9 +2095,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
-    if trainer.stop_requested and not _stop_save[0]:
-        # User clicked "Cancel" (save=False) — skip saving
-        _send("complete", output_dir = None, status_message = "Training cancelled")
+    if trainer.stop_requested:
+        if not _stop_save[0]:
+            # User clicked "Cancel" (save=False) — skip saving.
+            _send("complete", output_dir = None, status_message = "Training cancelled")
+        else:
+            _send("status", status_message = "Saving stopped model...")
+            mx.synchronize()
+            trainer.save_model(output_dir)
+            _send("complete", output_dir = output_dir, status_message = "Training stopped")
     else:
         _send("status", status_message = "Saving model...")
         mx.synchronize()
@@ -2122,6 +2140,12 @@ def run_mlx_training_process(
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
+
+    from utils.hf_xet_fallback import child_should_disable_xet
+
+    if child_should_disable_xet(config):
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
     if not transformers_activated:
         # Activate before hardware detection: detect_hardware() validates the
@@ -2246,9 +2270,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from .training import should_use_mlx_training_backend
+    from .training import is_apple_silicon_training_platform, should_use_mlx_training_backend
 
-    mlx_backend_requested = should_use_mlx_training_backend()
+    mlx_backend_requested = is_apple_silicon_training_platform()
 
     mlx_transformers_activated = False
     if mlx_backend_requested and _is_current_process_apple_silicon():
@@ -2260,7 +2284,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
-    if should_use_mlx_training_backend(device = _hw.DEVICE):
+    if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
         run_mlx_training_process(
             event_queue = event_queue,
             stop_queue = stop_queue,

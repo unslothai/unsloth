@@ -202,6 +202,9 @@ def _clear_trainer_modules(package: str):
 
 def _set_training_platform(monkeypatch, package: str, backend: str):
     training_mod = importlib.import_module(f"{package}.training")
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", None)
     if backend == "mlx":
         monkeypatch.setattr(training_mod.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(training_mod.platform, "machine", lambda: "arm64")
@@ -220,7 +223,14 @@ def _load_trainer_module(
     if package in sys.modules:
         importlib.reload(sys.modules[package])
 
-    return importlib.import_module(f"{package}.trainer")
+    trainer_mod = importlib.import_module(f"{package}.trainer")
+    training_mod = importlib.import_module(f"{package}.training")
+    monkeypatch.setattr(
+        training_mod._MLXTrainerAdapter,
+        "_activate_transformers_for_model",
+        lambda self, model_name, hf_token: None,
+    )
+    return trainer_mod
 
 
 def _load_training_package(
@@ -281,6 +291,20 @@ def test_torch_backend_instantiates_existing_unsloth_trainer(monkeypatch):
     assert trainer.__class__ is trainer_mod.UnslothTrainer
 
 
+def test_unsloth_trainer_uses_torch_when_detected_device_is_cpu(monkeypatch):
+    package = "core.training"
+    _set_training_platform(monkeypatch, package, "mlx")
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    _clear_trainer_modules(package)
+    trainer_mod = importlib.import_module(f"{package}.trainer")
+
+    trainer = trainer_mod.UnslothTrainer()
+
+    assert trainer.__class__ is trainer_mod.UnslothTrainer
+
+
 def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monkeypatch):
     trainer_mod = _load_trainer_module(monkeypatch, "mlx")
 
@@ -297,7 +321,13 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
                 "learning_rate": 2e-4,
             }
         )
-        event_queue.put({"type": "complete", "status_message": "done"})
+        event_queue.put(
+            {
+                "type": "complete",
+                "status_message": "done",
+                "output_dir": str(output_dir.resolve()),
+            }
+        )
 
     trainer = trainer_mod.UnslothTrainer()
     monkeypatch.setattr(trainer, "_run_mlx_worker", fake_run_mlx_worker)
@@ -333,7 +363,7 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
         eval_steps = 0.2,
         dataset_slice_start = 5,
         dataset_slice_end = 25,
-        is_cpt = True,
+        is_cpt = False,
     )
 
     assert dataset["final_format"] == "deferred_mlx_cli"
@@ -364,6 +394,8 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
     assert progress.total_steps == 1
     assert progress.loss == 0.25
     assert progress.status_message == "done"
+    assert progress.output_dir == str(output_dir.resolve())
+    assert trainer.output_dir == str(output_dir.resolve())
 
     config = captured["config"]
     assert config["model_name"] == "mlx-community/Qwen3-0.6B-4bit"
@@ -382,7 +414,7 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
     assert config["dataset_streaming"] is True
     assert config["dataset_slice_start"] == 5
     assert config["dataset_slice_end"] == 25
-    assert config["training_type"] == "Continued Pretraining"
+    assert config["training_type"] == "LoRA/QLoRA"
     assert config["use_lora"] is True
     assert config["lora_r"] == 8
     assert config["target_modules"] == ["q_proj", "v_proj"]
@@ -397,6 +429,34 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
     assert config["random_seed"] == 123
     assert config["output_dir"] == str(output_dir.resolve())
     assert config["allow_external_output_dir"] is True
+
+
+def test_mlx_trainer_rejects_cpt_before_worker_start(monkeypatch):
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
+
+    trainer = trainer_mod.UnslothTrainer()
+    assert trainer.load_model("mlx-community/Qwen3-0.6B-4bit")
+    assert trainer.load_and_format_dataset("org/dataset", is_cpt = True) is not None
+
+    assert not trainer.start_training(max_steps = 1)
+    assert (
+        trainer.get_training_progress().error
+        == "Continued Pretraining is not supported for MLX training yet."
+    )
+
+
+def test_mlx_trainer_full_finetune_forces_16bit(monkeypatch):
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
+
+    trainer = trainer_mod.UnslothTrainer()
+    assert trainer.load_model("mlx-community/Qwen3-0.6B-4bit", load_in_4bit = True)
+    assert trainer.prepare_model_for_training(use_lora = False)
+    assert trainer.load_and_format_dataset("org/dataset") is not None
+
+    config = trainer._build_worker_config({"max_steps": 1})
+
+    assert config["training_type"] == "Full Finetuning"
+    assert config["load_in_4bit"] is False
 
 
 def test_mlx_trainer_default_output_dir_uses_worker_run_dir(monkeypatch):
@@ -425,6 +485,25 @@ def test_mlx_trainer_cancel_complete_event_is_not_completed(monkeypatch):
     assert not progress.is_completed
     assert progress.error is None
     assert progress.status_message == "Training cancelled"
+
+
+def test_mlx_trainer_stop_complete_event_is_not_completed(monkeypatch):
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
+
+    trainer = trainer_mod.UnslothTrainer()
+    trainer.should_stop = True
+
+    trainer._handle_event(
+        {"type": "complete", "status_message": "Training stopped", "output_dir": "/tmp/out"}
+    )
+
+    progress = trainer.get_training_progress()
+    assert not progress.is_training
+    assert not progress.is_completed
+    assert progress.error is None
+    assert progress.status_message == "Training stopped"
+    assert progress.output_dir == "/tmp/out"
+    assert trainer.output_dir == "/tmp/out"
 
 
 def test_mlx_trainer_rejects_new_run_while_old_pump_is_alive(monkeypatch):
@@ -475,9 +554,11 @@ def test_mlx_trainer_uses_shared_mlx_worker_entrypoint(monkeypatch):
 def test_cli_mlx_trainer_uses_studio_namespace_worker(monkeypatch):
     import unsloth_cli.commands.train as train_cmd
     from studio.backend.core.training import training as training_mod
+    from utils.hardware import hardware as hw
 
     monkeypatch.setattr(training_mod.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(training_mod.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(hw, "DEVICE", None)
     monkeypatch.setattr(train_cmd, "_activate_mlx_transformers", lambda model_name, hf_token: None)
     trainer = train_cmd._create_cli_trainer("mlx-community/Qwen3-0.6B-4bit", None)
 
@@ -564,7 +645,7 @@ def test_mlx_stop_poller_exits_on_worker_complete():
     assert _is_stop_requested() is False
 
 
-def test_cli_mlx_selector_avoids_legacy_trainer_import():
+def test_cli_mlx_selector_uses_backend_aware_unsloth_trainer():
     repo_root = Path(__file__).resolve().parents[3]
     script = """
 import json
@@ -573,8 +654,10 @@ import sys
 
 import unsloth_cli.commands.train as train_cmd
 from studio.backend.core.training import training as training_mod
+from utils.hardware import hardware as hw
 training_mod.platform.system = lambda: "Darwin"
 training_mod.platform.machine = lambda: "arm64"
+hw.DEVICE = None
 train_cmd._activate_mlx_transformers = lambda model_name, hf_token: None
 trainer = train_cmd._create_cli_trainer("mlx-community/Qwen3-0.6B-4bit", None)
 print(json.dumps({
@@ -584,10 +667,6 @@ print(json.dumps({
         "core.training.trainer" in sys.modules
         or "studio.backend.core.training.trainer" in sys.modules
     ),
-    "heavy_loaded": {
-        name: name in sys.modules
-        for name in ("torch", "transformers", "unsloth", "trl")
-    },
 }))
 """
     env = os.environ.copy()
@@ -611,13 +690,7 @@ print(json.dumps({
 
     assert payload["has_start_training"] is True
     assert payload["has_progress"] is True
-    assert payload["legacy_trainer_loaded"] is False
-    assert payload["heavy_loaded"] == {
-        "torch": False,
-        "transformers": False,
-        "unsloth": False,
-        "trl": False,
-    }
+    assert payload["legacy_trainer_loaded"] is True
 
 
 def test_cli_train_dry_run_output_dir_matches_runtime_default(monkeypatch):
@@ -668,9 +741,11 @@ def test_cli_train_dry_run_output_dir_matches_runtime_default(monkeypatch):
 def test_cli_mlx_auto_selector_is_platform_only(monkeypatch):
     import unsloth_cli.commands.train as train_cmd
     from studio.backend.core.training import training as training_mod
+    from utils.hardware import hardware as hw
 
     monkeypatch.setattr(training_mod.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(training_mod.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(hw, "DEVICE", None)
 
     assert train_cmd._should_use_mlx_backend_for_cli()
     assert "mlx_lm" not in sys.modules
@@ -721,6 +796,32 @@ def test_shared_mlx_worker_activates_transformers_before_hardware_detection(monk
     )
 
     assert order == [("activate", "mlx-community/Gemma-4-12B", "hf_test"), "detect", "run"]
+
+
+def test_shared_mlx_worker_applies_disable_xet_before_detection(monkeypatch):
+    _load_trainer_module(monkeypatch, "mlx")
+    from core.training import worker
+    from utils.hardware import hardware as hw
+
+    def fake_detect_hardware():
+        hw.DEVICE = hw.DeviceType.CPU
+        return hw.DEVICE
+
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+    monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising = False)
+    monkeypatch.setattr(worker, "_activate_transformers_version_or_warn", lambda *args: None)
+    monkeypatch.setattr(hw, "detect_hardware", fake_detect_hardware)
+
+    event_queue = queue.Queue()
+    worker.run_mlx_training_process(
+        event_queue = event_queue,
+        stop_queue = queue.Queue(),
+        config = {"model_name": "mlx-community/Gemma-4-12B", "disable_xet": True},
+    )
+
+    assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+    assert os.environ["HF_HUB_ENABLE_HF_TRANSFER"] == "0"
+    assert "MLX training requires Apple Silicon" in event_queue.get_nowait()["error"]
 
 
 def test_shared_mlx_worker_sends_stop_poller_sentinel(monkeypatch):
@@ -780,6 +881,38 @@ def test_studio_training_process_preactivates_mlx_before_hardware_detection(monk
     )
 
     assert order == [("activate", "mlx-community/Gemma-4-12B", None), "detect", ("run", True)]
+
+
+def test_studio_training_process_broken_mlx_stack_uses_mlx_error_path(monkeypatch):
+    _load_trainer_module(monkeypatch, "mlx")
+    from core.training import worker
+    from utils.hardware import hardware as hw
+
+    order = []
+
+    def fake_detect_hardware():
+        order.append("detect")
+        hw.DEVICE = hw.DeviceType.CPU
+        return hw.DEVICE
+
+    def fake_run_mlx_training_process(*, event_queue, stop_queue, config, transformers_activated):
+        order.append(("run_mlx", transformers_activated))
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(worker, "apply_gpu_ids", lambda gpu_ids: None)
+    monkeypatch.setattr(worker, "_is_current_process_apple_silicon", lambda: True)
+    monkeypatch.setattr(worker, "_activate_transformers_version_or_warn", lambda *args: None)
+    monkeypatch.setattr(hw, "detect_hardware", fake_detect_hardware)
+    monkeypatch.setattr(worker, "run_mlx_training_process", fake_run_mlx_training_process)
+    monkeypatch.setattr("loggers.config.LogConfig.setup_logging", lambda **kwargs: None)
+
+    worker.run_training_process(
+        event_queue = queue.Queue(),
+        stop_queue = queue.Queue(),
+        config = {"model_name": "mlx-community/Gemma-4-12B", "resolved_gpu_ids": None},
+    )
+
+    assert order == ["detect", ("run_mlx", True)]
 
 
 if __name__ == "__main__":

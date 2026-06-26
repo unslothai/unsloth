@@ -100,7 +100,11 @@ def _coerce_optional_nonneg_float(name: str, value):
     return coerced
 
 
-def _device_is_mlx(device: Any) -> bool:
+def is_apple_silicon_training_platform() -> bool:
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def is_mlx_training_device(device: Any) -> bool:
     return (
         str(device).lower() == "mlx"
         or str(device).lower().endswith(".mlx")
@@ -108,10 +112,21 @@ def _device_is_mlx(device: Any) -> bool:
     )
 
 
+def _detected_training_device() -> Any | None:
+    try:
+        from utils.hardware import hardware as _hw
+        return _hw.DEVICE
+    except Exception:
+        return None
+
+
 def should_use_mlx_training_backend(*, device: Any | None = None) -> bool:
     if device is not None:
-        return _device_is_mlx(device)
-    return platform.system() == "Darwin" and platform.machine() == "arm64"
+        return is_mlx_training_device(device)
+    detected_device = _detected_training_device()
+    if detected_device is not None:
+        return is_mlx_training_device(detected_device)
+    return is_apple_silicon_training_platform()
 
 
 def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
@@ -191,6 +206,8 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     for key in ("output_dir", "allow_external_output_dir", "full_finetuning"):
         if key in values:
             config[key] = values.get(key)
+    if config["training_type"] == "Full Finetuning":
+        config["load_in_4bit"] = False
     return config
 
 
@@ -296,6 +313,7 @@ class TrainingProgress:
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    output_dir: Optional[str] = None
 
 
 class _MLXTrainerAdapter:
@@ -312,6 +330,7 @@ class _MLXTrainerAdapter:
         self.should_stop = False
         self.save_on_stop = True
         self.load_in_4bit = True
+        self.output_dir = None
 
         self.is_cpt = False
         self.is_vlm = False
@@ -327,6 +346,13 @@ class _MLXTrainerAdapter:
         self._stop_queue: queue.Queue | None = None
         self._pump_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+
+    def _activate_transformers_for_model(self, model_name: str, hf_token: Optional[str]) -> None:
+        try:
+            from utils.transformers_version import activate_transformers_for_subprocess
+            activate_transformers_for_subprocess(model_name, hf_token)
+        except Exception as exc:
+            logger.warning("MLX trainer adapter Transformers activation failed", error = str(exc))
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         self.progress_callbacks.append(callback)
@@ -359,6 +385,7 @@ class _MLXTrainerAdapter:
         self.max_seq_length = max_seq_length
         self.load_in_4bit = load_in_4bit
         self._audio_type = None
+        self._activate_transformers_for_model(model_name, hf_token)
         try:
             from utils.models import detect_audio_type, is_vision_model
 
@@ -487,6 +514,13 @@ class _MLXTrainerAdapter:
             return False
         if not self._dataset_config:
             self._update_progress(error = "Dataset not loaded")
+            return False
+        if self.is_cpt:
+            self._update_progress(
+                error = "Continued Pretraining is not supported for MLX training yet.",
+                is_training = False,
+                is_completed = False,
+            )
             return False
 
         config = self._build_worker_config(training_args)
@@ -644,15 +678,18 @@ class _MLXTrainerAdapter:
             return
         if etype == "complete":
             status_message = event.get("status_message") or "Training completed"
+            output_dir = event.get("output_dir")
             was_cancelled = self.should_stop or status_message.strip().lower() in {
                 "training cancelled",
                 "training stopped",
             }
+            self.output_dir = output_dir
             self._update_progress(
                 is_training = False,
                 is_completed = not was_cancelled,
                 error = None,
                 status_message = status_message,
+                output_dir = output_dir,
             )
             self.is_training = False
             return
@@ -661,6 +698,14 @@ class _MLXTrainerAdapter:
                 is_training = False,
                 is_completed = False,
                 error = event.get("error") or event.get("message") or "Training failed",
+            )
+            self.is_training = False
+            return
+        if etype == "stall":
+            self._update_progress(
+                is_training = False,
+                is_completed = False,
+                error = event.get("message") or "Model download stalled",
             )
             self.is_training = False
 
@@ -790,10 +835,6 @@ class TrainingBackend:
 
         # Build config dict for the subprocess.
         config = _build_training_worker_config(kwargs)
-
-        # Full finetuning always runs in 16-bit; LoRA/QLoRA/CPT keep the request.
-        if config["training_type"] == "Full Finetuning":
-            config["load_in_4bit"] = False
 
         # Split GPU validation from placement around the VRAM hook:
         #   * Explicit gpu_ids are validated here (raises -> the route returns 400
@@ -1448,6 +1489,7 @@ class TrainingBackend:
                 self._progress.is_training = False
                 self._progress.is_completed = not stopped
                 self._output_dir = event.get("output_dir")
+                self._progress.output_dir = self._output_dir
                 self._progress.status_message = msg
                 if not self._db_run_created and self.current_job_id and self._db_config:
                     db_action = "create_and_finalize"

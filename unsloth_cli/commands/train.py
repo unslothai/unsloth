@@ -32,10 +32,6 @@ def _activate_mlx_transformers(model_name: str, hf_token: str | None) -> None:
 def _create_cli_trainer(model_name: str, hf_token: str | None):
     if _should_use_mlx_backend_for_cli():
         _activate_mlx_transformers(model_name, hf_token)
-        ensure_studio_backend_path()
-        from studio.backend.core.training.training import create_mlx_trainer_adapter
-
-        return create_mlx_trainer_adapter()
 
     ensure_studio_backend_path()
     from studio.backend.core.training.trainer import UnslothTrainer
@@ -155,13 +151,20 @@ def train(
 
     try:
         while trainer.training_thread and trainer.training_thread.is_alive():
+            progress = trainer.get_training_progress()
+            if getattr(progress, "error", None):
+                break
             time.sleep(1)
     except KeyboardInterrupt:
         typer.echo("Stopping training (Ctrl+C detected)...")
         trainer.stop_training()
     finally:
         if trainer.training_thread:
-            trainer.training_thread.join()
+            progress = trainer.get_training_progress()
+            if getattr(progress, "error", None):
+                trainer.training_thread.join(timeout = 5)
+            else:
+                trainer.training_thread.join()
 
     final = trainer.get_training_progress()
     if getattr(final, "error", None):
