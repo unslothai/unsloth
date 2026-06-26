@@ -44,6 +44,10 @@ on:
         description: 'unsloth-zoo git ref to bake in'
         required: false
         default: 'main'
+      llama_prebuilt_tag:
+        description: 'unslothai/llama.cpp prebuilt release tag to bake (blank = newest)'
+        required: false
+        default: ''
 
 env:
   REGISTRY: docker.io
@@ -67,6 +71,36 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # Resolve the llama.cpp prebuilt release ONCE, up front, so both arch legs of
+  # the base build bake the identical GGUF binaries. Resolving "latest" inside
+  # each leg would let upstream publish a new release between the amd64 and
+  # arm64 builds, putting different binaries under one published image tag.
+  # An explicit dispatch input pins a frozen release; otherwise we follow the
+  # /releases/latest redirect to a concrete tag (mirrors docker/build.sh).
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      llama_tag: ${{ steps.llama.outputs.tag }}
+    steps:
+      - name: Resolve llama.cpp prebuilt tag
+        id: llama
+        env:
+          INPUT_TAG: ${{ github.event.inputs.llama_prebuilt_tag }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+              TAG="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+                  https://github.com/unslothai/llama.cpp/releases/latest \
+                  | sed -n 's#.*/releases/tag/##p')"
+          fi
+          echo "tag=${TAG:-latest}" >> "$GITHUB_OUTPUT"
+          echo "llama.cpp prebuilt tag: ${TAG:-latest}"
+
+  # ---------------------------------------------------------------------------
   # Per-arch build. The matrix fans out two parallel jobs on the matching
   # native runner. Each pushes a single-arch image *by digest* (no human-
   # readable tag), and the merge job below stitches the two digests into one
@@ -75,6 +109,7 @@ jobs:
   # that you get when two jobs push the same tag separately.
   # ---------------------------------------------------------------------------
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -170,12 +205,15 @@ jobs:
           #   UNSLOTH_ZOO_REF (from the resolve step above): explicit dispatch
           #     input, else the pushed tag IF the zoo repo has it, else main -- a
           #     branch SHA does not exist in the zoo repo.
+          #   LLAMA_PREBUILT_TAG (from the prepare job): one concrete tag shared
+          #     by both arch legs so the published manifest is reproducible.
           build-args: |
             CUDA_VERSION=12.8.1
             UBUNTU_VERSION=24.04
             PYTHON_VERSION=3.12
             UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || github.sha || 'main' }}
             UNSLOTH_ZOO_REF=${{ steps.zoo_ref.outputs.ref }}
+            LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
 
       # Stash the per-arch digest as an artifact for the merge job to pick up.
       # Filenames need to be unique across the matrix; `platform` contains a
