@@ -240,23 +240,18 @@ jobs:
       # llama-server /completion end to end. An install failure or a
       # non-zero binary exit is an Unsloth/Studio bug.
       - name: Studio prebuilt llama.cpp install + GGUF inference (Mac M1)
-        env:
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-          # install_llama_prebuilt.py hits the GitHub releases API to
-          # resolve the asset URL. Anonymous calls share the runner-IP
-          # rate-limit bucket and 403 quickly -- pass the workflow's
-          # automatic GITHUB_TOKEN to bump us to the 5000/hr authenticated
-          # bucket.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
           rm -rf "$INSTALL_DIR"
-          # Mirror studio/setup.sh on macOS (the install.sh user path):
-          # it plans against the unslothai/llama.cpp fork's latest
-          # release with no policy or tag flags.
+          # Mirror studio/setup.sh on macOS: plan against the unslothai/llama.cpp
+          # fork's latest release (no tag flags). Scope tokens to this call, not the
+          # step, so the downloaded binaries below run without secrets; the installer
+          # reads them from os.environ for the releases API and probe fetch. HF_TOKEN
+          # withheld on PRs (PR code).
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+          GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+          HF_TOKEN="${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}" \
           python studio/install_llama_prebuilt.py \
             --install-dir "$INSTALL_DIR" \
             --published-repo unslothai/llama.cpp
@@ -276,6 +271,8 @@ jobs:
           "$LLAMA_QUANT" --help >/dev/null && echo "  llama-quantize loads OK"
 
           mkdir -p /tmp/ggufs
+          # Public GGUF; HF_TOKEN only eases the HF rate limit, scoped to this call.
+          HF_TOKEN="${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}" \
           bash .github/scripts/hf-download-with-retry.sh \
             'unsloth/gemma-3-270m-it-GGUF' \
             'gemma-3-270m-it-Q4_K_M.gguf' \
