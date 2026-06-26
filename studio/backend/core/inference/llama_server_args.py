@@ -25,6 +25,11 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # Model identity: Studio resolves it from LoadRequest; a second -m would
     # load a different model than Studio thinks it loaded.
     frozenset({"-m", "--model"}),
+    # Public model id: Studio sets a sanitized --alias so the OpenAI API never
+    # exposes the local .gguf path. A user-supplied alias is appended after
+    # Studio's and, with llama.cpp's last-wins parsing, would reintroduce the
+    # path leak this is meant to prevent.
+    frozenset({"-a", "--alias"}),
     frozenset({"-mu", "--model-url"}),
     frozenset({"-dr", "--docker-repo"}),
     frozenset({"-hf", "-hfr", "--hf-repo"}),
