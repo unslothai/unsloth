@@ -111,7 +111,7 @@ const TestTubeOutlineIcon = TestTube01Icon.slice(
   3,
 ) as typeof TestTube01Icon;
 
-function runStatusDotClass(status: string): string {
+function runStatusDotClass(status: TrainingRunSummary["status"]): string {
   switch (status) {
     case "running":
       return "bg-blue-500 animate-pulse";
@@ -244,7 +244,6 @@ export function AppSidebar() {
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
-
 
   const chatDisabled = isTrainingRunning;
 
@@ -681,7 +680,6 @@ export function AppSidebar() {
           </SidebarGroup>
           </Collapsible>
         )}
-
       </SidebarContent>
 
       <SidebarFooter className="border-t border-sidebar-border group-data-[collapsible=icon]:border-transparent group-data-[collapsible=icon]:px-0">

@@ -2,25 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { VisuallyHidden } from "radix-ui";
 import { type ReactElement, useMemo } from "react";
-import type {
-  RecipeProcessorConfig,
-  SchemaTransformProcessorConfig,
-} from "../types";
+import type { RecipeProcessorConfig } from "../types";
 import { buildDefaultSchemaTransform } from "../utils/processors";
 import { AvailableVariables } from "./shared/available-variables";
 import { FieldLabel } from "./shared/field-label";
-
 type ProcessorsDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -43,14 +34,17 @@ export function ProcessorsDialog({
       ),
     [processors],
   );
-  const schemaProcessor =
-    schemaIndex >= 0
-      ? (processors[schemaIndex] as SchemaTransformProcessorConfig)
-      : null;
+  const schemaProcessor = schemaIndex >= 0 ? processors[schemaIndex] : null;
+  const nameId = schemaProcessor ? `${schemaProcessor.id}-name` : "schema-transform-name";
+  const templateId = schemaProcessor
+    ? `${schemaProcessor.id}-template`
+    : "schema-transform-template";
 
   const setSchemaEnabled = (enabled: boolean) => {
     if (enabled) {
-      if (schemaProcessor) return;
+      if (schemaProcessor) {
+        return;
+      }
       onProcessorsChange([...processors, buildDefaultSchemaTransform()]);
       return;
     }
@@ -61,8 +55,10 @@ export function ProcessorsDialog({
     );
   };
 
-  const updateSchema = (patch: Partial<SchemaTransformProcessorConfig>) => {
-    if (!schemaProcessor) return;
+  const updateSchema = (patch: Partial<RecipeProcessorConfig>) => {
+    if (!schemaProcessor) {
+      return;
+    }
     const next = [...processors];
     next[schemaIndex] = { ...schemaProcessor, ...patch };
     onProcessorsChange(next);
@@ -100,11 +96,11 @@ export function ProcessorsDialog({
               <div className="grid gap-1.5">
                 <FieldLabel
                   label="Name"
-                  htmlFor={`${schemaProcessor.id}-name`}
+                  htmlFor={nameId}
                   hint="Processor name shown in graph and payload."
                 />
                 <Input
-                  id={`${schemaProcessor.id}-name`}
+                  id={nameId}
                   className="nodrag"
                   value={schemaProcessor.name}
                   onChange={(event) => updateSchema({ name: event.target.value })}
@@ -113,11 +109,11 @@ export function ProcessorsDialog({
               <div className="grid gap-1.5">
                 <FieldLabel
                   label="Template (JSON)"
-                  htmlFor={`${schemaProcessor.id}-template`}
+                  htmlFor={templateId}
                   hint="Target output schema template using Jinja references."
                 />
                 <Textarea
-                  id={`${schemaProcessor.id}-template`}
+                  id={templateId}
                   className="corner-squircle nodrag min-h-[220px]"
                   value={schemaProcessor.template}
                   onChange={(event) =>
