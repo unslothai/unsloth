@@ -185,6 +185,9 @@ def test_auto_group_offload_when_transformer_overflows_but_companions_fit():
         base_overhead_mib = 1000,
     )
     assert plan.offload_policy == OFFLOAD_GROUP
+    # Group keeps the VAE resident, so it uses exact slicing but NOT lossy tiling
+    # -> balanced stays bit-identical while still capping the offload footprint.
+    assert plan.vae_slicing is True and plan.vae_tiling is False
 
 
 def test_auto_model_offload_when_companions_exceed_budget():

@@ -214,6 +214,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             hf_token = os.environ.get("HF_TOKEN"),
             cpu_offload = args.cpu_offload,
             memory_mode = args.memory_mode,
+            speed_mode = args.speed_mode,
             text_encoder_quant = args.text_encoder_quant,
         )
         _wait_for_load(backend)
@@ -293,6 +294,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             "seed": args.seed,
             "batch_size": args.batch_size,
             "memory_mode": args.memory_mode,
+            "speed_mode": args.speed_mode,
             "cpu_offload": args.cpu_offload,
             "text_encoder_quant": args.text_encoder_quant,
         },
@@ -440,6 +442,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default = None,
         choices = ["auto", "fast", "balanced", "low_vram"],
         help = "memory policy (default: backend auto)",
+    )
+    p.add_argument(
+        "--speed-mode",
+        default = None,
+        choices = ["off", "default", "max"],
+        help = "speed profile: off is bit-identical; default adds compile + "
+               "cudnn.benchmark (near-lossless); max also adds TF32 + fused QKV",
     )
     p.add_argument(
         "--text-encoder-quant",

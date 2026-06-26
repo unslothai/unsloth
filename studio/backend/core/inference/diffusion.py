@@ -44,7 +44,13 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     snapshot_device_memory,
 )
-from .diffusion_speed import SPEED_OFF, apply_speed_optims
+from .diffusion_speed import (
+    SPEED_OFF,
+    apply_speed_optims,
+    resolve_speed_mode,
+    restore_backend_flags,
+    snapshot_backend_flags,
+)
 from .diffusion_precision import quantize_text_encoders
 
 logger = get_logger(__name__)
@@ -69,6 +75,10 @@ class _LoadState:
     # The opt-in speed profile (Phase 3).
     speed_mode: str = SPEED_OFF
     speed_optims: tuple = ()
+    # Process-wide torch backend flags (TF32 / cudnn.benchmark) captured before the
+    # speed layer mutated them, restored on unload so a later `off` load is not
+    # contaminated by this one's globals. None when nothing was changed.
+    backend_flags_before: Optional[dict] = None
     # Text-encoder quantisation actually engaged: "fp8" | "nvfp4" | None (Phase 2B/2C).
     text_encoder_quant: Optional[str] = None
 
@@ -462,14 +472,22 @@ class DiffusionBackend:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
                 pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
 
+                # Resolve the effective speed mode: GGUF models default to the
+                # near-lossless `default` profile (compile is ~2.2x and sits below
+                # the quant noise floor), dense models stay bit-identical `off`. An
+                # explicit speed_mode (incl. "off") is honored verbatim.
+                effective_speed = resolve_speed_mode(speed_mode, is_gguf = bool(gguf_filename))
                 # Opt-in speed optims run BEFORE placement (channels_last / compile
-                # must precede CPU offload). Off by default -> bit-identical output.
+                # must precede CPU offload). Snapshot the process-wide backend flags
+                # first so unload can restore them: TF32 / cudnn.benchmark are global,
+                # and a later `off` load must not inherit this load's settings.
+                backend_flags_before = snapshot_backend_flags()
                 speed_applied = apply_speed_optims(
                     pipe,
                     target,
                     is_gguf = bool(gguf_filename),
                     family = fam,
-                    speed_mode = speed_mode or SPEED_OFF,
+                    speed_mode = effective_speed,
                     logger = logger,
                 )
                 # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
@@ -508,8 +526,9 @@ class DiffusionBackend:
                     offload_policy = effective_policy,
                     vae_tiling = effective_tiling,
                     memory_mode = plan.requested_mode,
-                    speed_mode = (speed_mode or SPEED_OFF),
+                    speed_mode = effective_speed,
                     speed_optims = tuple(k for k, v in speed_applied.items() if v),
+                    backend_flags_before = backend_flags_before,
                     text_encoder_quant = te_quant,
                 )
 
@@ -646,7 +665,10 @@ class DiffusionBackend:
 
                 self._gen = gen
                 try:
-                    images = state.pipe(**kwargs).images
+                    # inference_mode is strictly faster than the no_grad diffusers
+                    # uses internally and numerically identical for inference.
+                    with torch.inference_mode():
+                        images = state.pipe(**kwargs).images
                 finally:
                     self._gen = None
                 # A cancelled denoise returns early with a partial/garbage image;
@@ -705,6 +727,9 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return
+        # Restore the process-wide backend flags (TF32 / cudnn.benchmark) this load
+        # may have flipped, so the next `off` load is bit-identical again.
+        restore_backend_flags(state.backend_flags_before)
         self._state = None
         del state
         clear_gpu_cache()
