@@ -1090,6 +1090,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
         "platform": platform.platform(),
         "python_version": platform.python_version(),
         "device_backend": _backend_label(get_device()),
+        "cpu_count": psutil.cpu_count(logical = True),
         "uptime_seconds": round(time.time() - boot_time) if boot_time else None,
         "cpu": {
             "logical_count": psutil.cpu_count(logical = True),

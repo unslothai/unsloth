@@ -186,6 +186,52 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertEqual(result, {"available": False, "backend": "cpu", "devices": []})
 
+    def test_gpu_utilization_xpu_uses_visible_devices(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU),
+            patch(
+                "utils.hardware.hardware.get_visible_gpu_utilization",
+                return_value = {
+                    "available": True,
+                    "backend": "xpu",
+                    "parent_visible_gpu_ids": [2, 0],
+                    "index_kind": "physical",
+                    "devices": [
+                        {
+                            "index": 2,
+                            "visible_ordinal": 1,
+                            "gpu_utilization_pct": None,
+                            "temperature_c": None,
+                            "vram_used_gb": 3.0,
+                            "vram_total_gb": 16.0,
+                            "vram_utilization_pct": 18.8,
+                            "power_draw_w": None,
+                            "power_limit_w": None,
+                            "power_utilization_pct": None,
+                        },
+                        {
+                            "index": 0,
+                            "visible_ordinal": 0,
+                            "gpu_utilization_pct": None,
+                            "temperature_c": None,
+                            "vram_used_gb": 1.0,
+                            "vram_total_gb": 16.0,
+                            "vram_utilization_pct": 6.3,
+                            "power_draw_w": None,
+                            "power_limit_w": None,
+                            "power_utilization_pct": None,
+                        },
+                    ],
+                },
+            ),
+        ):
+            result = get_gpu_utilization()
+
+        self.assertEqual(result["backend"], "xpu")
+        self.assertEqual(result["index"], 0)
+        self.assertEqual(result["visible_ordinal"], 0)
+        self.assertEqual([device["index"] for device in result["devices"]], [0, 2])
+
     def test_visible_gpu_utilization_filters_to_parent_visible_ids(self):
         smi_output = "\n".join(
             [

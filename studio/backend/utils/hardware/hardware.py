@@ -745,6 +745,15 @@ def get_gpu_utilization() -> Dict[str, Any]:
     """Live utilization snapshot for the primary GPU plus all visible GPUs."""
     device = get_device()
 
+    if device == DeviceType.XPU:
+        result = get_visible_gpu_utilization()
+        return _gpu_utilization_payload(
+            device,
+            result.get("devices", []),
+            parent_visible_gpu_ids = result.get("parent_visible_gpu_ids", []),
+            index_kind = result.get("index_kind"),
+        )
+
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
         result = _smi_query(

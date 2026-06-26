@@ -169,7 +169,7 @@ function curlWindows(
   model: string,
   variant: Variant,
 ): string {
-  return `$body = '\n${psSingle(winBody(model, variant))}'
+  return `$body = '${psSingle(winBody(model, variant))}'
 Set-Content -Path body.json -Value $body -Encoding ascii
 curl.exe ${base}/v1/chat/completions \`
   -H "Authorization: Bearer ${key}" \`
@@ -271,7 +271,7 @@ const response = await client.chat.completions.create({
 });
 
 for await (const chunk of response) {
-  process.stdout.write(chunk.choices[0]?.delta?.content || "");
+  process.stdout.write(chunk.choices?.[0]?.delta?.content || "");
 }`;
 }
 
