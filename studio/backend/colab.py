@@ -197,11 +197,15 @@ def _stop_cloudflare_tunnel() -> None:
 
 
 def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
-    """Return True if a Studio backend is already answering health checks on *port*."""
-    import urllib.request
+    """Return True only if Unsloth Studio (not some other app on *port*) answers /api/health.
+
+    Validates the service marker so the reuse fast-path never reuses or tunnels
+    an unrelated process that merely happens to serve /api/health.
+    """
+    import json, urllib.request
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout = timeout):
-            return True
+        with urllib.request.urlopen(f"http://localhost:{port}/api/health", timeout = timeout) as r:
+            return json.loads(r.read()).get("service") == "Unsloth UI Backend"
     except Exception:
         return False
 
