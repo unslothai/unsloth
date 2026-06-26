@@ -433,7 +433,8 @@ function RecipeGraphNodeBase({
     data.kind === "validator" ||
     data.kind === "expression" ||
     data.kind === "sampler" ||
-    data.kind === "seed";
+    data.kind === "seed" ||
+    data.kind === "evaluation";
   const showSemanticIn =
     data.kind === "model_config" || data.kind === "validator";
   const showSemanticOut =

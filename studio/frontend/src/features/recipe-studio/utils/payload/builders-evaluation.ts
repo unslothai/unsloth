@@ -4,25 +4,17 @@
 import type { EvaluationDocumentScoreConfig } from "../../types";
 import { parseJsonObject } from "./parse";
 
+// Always emit a processors[] entry so the block survives save/load. Missing
+// required fields are tolerated (emitted as empty strings) — the backend
+// scorer will skip rows where the column lookup fails, and on reload the
+// block remains on the canvas in its incomplete state for the user to finish.
 export function buildEvaluationDocumentScoreProcessor(
   config: EvaluationDocumentScoreConfig,
   errors: string[],
 ): Record<string, unknown> | null {
-  const name = config.name.trim();
-  if (!name) {
-    errors.push("Document score: name is required.");
-    return null;
-  }
+  const name = config.name.trim() || "doc_score";
   const predictionColumn = config.prediction_column.trim();
   const referenceColumn = config.reference_column.trim();
-  if (!predictionColumn) {
-    errors.push(`Document score ${name}: prediction column is required.`);
-    return null;
-  }
-  if (!referenceColumn) {
-    errors.push(`Document score ${name}: reference column is required.`);
-    return null;
-  }
   let schemaValue: unknown = null;
   const schemaText = config.schema.trim();
   if (schemaText) {
@@ -32,7 +24,7 @@ export function buildEvaluationDocumentScoreProcessor(
       errors,
     );
     if (!schemaValue) {
-      return null;
+      schemaValue = null;
     }
   }
   const breakdownColumn = config.breakdown_column.trim();
