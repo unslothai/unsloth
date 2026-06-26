@@ -70,7 +70,10 @@ sys.modules.setdefault("httpx", _httpx_stub)
 from core.inference.llama_cpp import (
     _APPLE_UNIFIED_MEMORY_FRACTION,
     _CTX_FIT_VRAM_FRACTION,
+    _MAX_VRAM_RESERVE_FRAC,
+    _MIN_VRAM_RESERVE_MIB,
     LlamaCppBackend,
+    _vram_reserve_mib,
     classify_gpu_offload_lines,
 )
 from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
@@ -733,6 +736,74 @@ def test_select_gpus_reserves_per_device_overhead():
         small, gpus, total_by_idx = totals, per_device_overhead_bytes = gib
     )
     assert a == [0] and b == [0]
+
+
+# ---------------------------------------------------------------------------
+# VRAM reserve floor (#6682): 5% of total is too thin on consumer cards (1.2 GB
+# on 24 GB) to absorb CUDA context, the nvidia-smi vs CUDA free gap, and a shared
+# desktop's drift, so auto-fit advertised a context that pinned then offloaded to
+# CPU at runtime. The reserve is floored at _MIN_VRAM_RESERVE_MIB, capped at
+# _MAX_VRAM_RESERVE_FRAC, and unchanged where 5% already exceeds the floor.
+# ---------------------------------------------------------------------------
+
+
+def test_vram_reserve_floor_on_consumer_card():
+    # 24 GB: 5% = 1229 MiB is below the floor, so the floor wins (and is under the
+    # 15% cap = 3686), giving a real cushion instead of #6312's thin 5%.
+    total = 24576
+    assert (1.0 - _CTX_FIT_VRAM_FRACTION) * total < _MIN_VRAM_RESERVE_MIB
+    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MIN_VRAM_RESERVE_MIB
+
+
+def test_vram_reserve_unchanged_on_datacenter_card():
+    # 80 GB: 5% = 4096 MiB already exceeds the floor, so behaviour is unchanged
+    # from #6312 (no over-reserving the big cards it was tuned for).
+    total = 81920
+    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == (1.0 - _CTX_FIT_VRAM_FRACTION) * total
+
+
+def test_vram_reserve_capped_on_small_card():
+    # 8 GB: a flat floor would be 38% of the card; the cap holds it to 15% so a
+    # small card running a model that nearly fills it isn't pushed off the GPU.
+    total = 8192
+    assert _MIN_VRAM_RESERVE_MIB > _MAX_VRAM_RESERVE_FRAC * total
+    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MAX_VRAM_RESERVE_FRAC * total
+
+
+def test_fit_context_floor_caps_below_thin_fraction():
+    # Exercises _fit_context_to_vram's total-based reserve branch (the line the fix
+    # edits): on a 24 GB card the floor (3072) is reserved instead of the thin 5%
+    # (1229), so the capped context's footprint leaves >= the floor free and is
+    # strictly smaller than the 5% reserve would have advertised. A 27B-class model.
+    inst = _make_backend(native_ctx = 262144)
+    inst._can_estimate_kv = lambda: True
+    inst._estimate_kv_cache_bytes = lambda n, *a, **k: 0 if n <= 0 else int(n * 34_000)
+    model_size = int(17.5 * GIB)
+    total = 24576
+    free = 23700
+
+    def _cap_via_total_branch():
+        # total_mib set -> the fit applies _vram_reserve_mib internally (the floored
+        # branch), unlike the production load loop which pre-reserves and passes None.
+        return inst._fit_context_to_vram(
+            262144, free, model_size, None,
+            total_mib = total, budget_frac = _CTX_FIT_VRAM_FRACTION,
+        )
+
+    def _footprint_mib(ctx):
+        return (model_size + inst._estimate_kv_cache_bytes(ctx)) / (1024 * 1024)
+
+    floored_cap = _cap_via_total_branch()
+    # The floor (not the 5% fraction) is what bounds the footprint.
+    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MIN_VRAM_RESERVE_MIB
+    assert _footprint_mib(floored_cap) <= free - _MIN_VRAM_RESERVE_MIB + 1
+    # Strictly tighter than #6312's thin 5% reserve: that budget would have fit a
+    # larger context (the over-advertisement #6682 reports).
+    thin_budget_mib = free - (1.0 - _CTX_FIT_VRAM_FRACTION) * total
+    thin_cap = inst._fit_context_to_vram(
+        262144, thin_budget_mib, model_size, None, budget_frac = 1.0,
+    )
+    assert floored_cap < thin_cap
 
 
 # ---------------------------------------------------------------------------
