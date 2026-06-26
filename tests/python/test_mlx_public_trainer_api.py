@@ -1018,6 +1018,10 @@ def test_mlx_torch_cuda_compatibility_shim():
     assert torch.cuda.get_device_capability() == (0, 0)
     assert total > 0
 
+    free_bytes, total_bytes = torch.cuda.mem_get_info()
+    assert total_bytes == int(total * 1024 * 1024 * 1024)
+    assert free_bytes == max(total_bytes - torch.cuda.max_memory_reserved(), 0)
+
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
     torch.cuda.reset_peak_memory_stats()

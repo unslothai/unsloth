@@ -253,6 +253,13 @@ if _IS_MLX:
                 """Clear MLX cache through torch.cuda.empty_cache()."""
                 clear_gpu_memory()
 
+            def mem_get_info(device = None):
+                """Return (free, total) bytes for torch.cuda compatibility API."""
+                _, peak_gb, total_gb = get_gpu_memory_stats()
+                total = int(total_gb * 1024 * 1024 * 1024)
+                peak = int(peak_gb * 1024 * 1024 * 1024)
+                return (max(total - peak, 0), total)
+
             cuda.get_device_properties = get_device_properties
             cuda.get_device_name = get_device_name
             cuda.max_memory_reserved = max_memory_reserved
@@ -260,6 +267,7 @@ if _IS_MLX:
             cuda.memory_reserved = max_memory_reserved
             cuda.memory_allocated = max_memory_reserved
             cuda.empty_cache = empty_cache
+            cuda.mem_get_info = mem_get_info
             cuda.reset_peak_memory_stats = lambda device = None: None
             cuda.synchronize = lambda device = None: None
             cuda.current_device = lambda: 0
