@@ -5476,6 +5476,15 @@ class LlamaCppBackend:
                     "--no-context-shift",
                 ]
 
+                # Report a clean public model id (matching GET /v1/models) rather
+                # than the raw -m path in llama-server's own /v1/models and the
+                # "model" field of its chat/completions responses.
+                from core.inference.model_ids import public_model_id
+
+                _alias = public_model_id(self._model_identifier or model_path)
+                if _alias:
+                    cmd.extend(["--alias", _alias])
+
                 fully_gpu_offloaded = False
                 if use_fit:
                     cmd.extend(["--fit", "on"])
