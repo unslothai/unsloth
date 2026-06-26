@@ -1271,9 +1271,8 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
         self._tensor_parallel: bool = False
-        # This (layer) load spreads across GPUs only to honor a tensor request
-        # that fell back (preserve_multi_gpu_on_layer); a later explicit tensor-off
-        # must reload rather than dedupe to this placement. See #6659.
+        # Layer load kept multi-GPU only to honor a downgraded tensor request, so a
+        # later explicit tensor-off reloads instead of deduping to it (#6659).
         self._layer_preserves_tensor_intent: bool = False
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
@@ -1649,8 +1648,7 @@ class LlamaCppBackend:
 
     @property
     def layer_preserves_tensor_intent(self) -> bool:
-        """True when this layer load spans GPUs only because a tensor request fell
-        back (preserve_multi_gpu_on_layer), so the dedup reloads on tensor-off."""
+        """True when a downgraded tensor request kept this layer load multi-GPU."""
         return self._layer_preserves_tensor_intent
 
     @property
@@ -2440,20 +2438,16 @@ class LlamaCppBackend:
     # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
     _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
 
-    # (binary, mtime, model) seen THIS process to abort on --split-mode tensor
-    # (#6415: a tensor-split geometry limit -- e.g. MQA n_head_kv=1 splits to
-    # GGML_BACKEND_SPLIT_AXIS_0 -- independent of mmproj/vision). Tensor is tried by
-    # default and recorded only on a real :541 abort (vs #6416's blanket skip).
-    # Model-keyed: the crash is model-geometry specific, so one model's abort must
-    # not skip tensor for others on the same binary; (path, mtime) re-probes a swap.
+    # (binary, mtime, model) that aborted on --split-mode tensor this process (#6415
+    # geometry limit, e.g. MQA n_head_kv=1). Model-keyed so one model's abort doesn't
+    # skip tensor for others; tensor is tried by default, recorded only on a real abort.
     _tensor_split_abort_keys: set[tuple[str, int, str]] = set()
 
     @classmethod
     def _tensor_split_cache_key(
         cls, binary: Optional[str], model: Optional[str]
     ) -> Optional[tuple[str, int, str]]:
-        """(path, mtime_ns, model) key: model-geometry specific; nanosecond mtime so
-        a swapped binary re-probes even when replaced within the same second."""
+        """(path, mtime_ns, model) key; ns mtime re-probes a same-second binary swap."""
         if not binary or not model:
             return None
         try:
@@ -2657,9 +2651,8 @@ class LlamaCppBackend:
         # card can have less usable room than a less-used small one.
         ranked = sorted(gpus, key = lambda g: _usable(g[0], g[1]), reverse = True)
 
-        # Cap a downgraded multi-GPU request (min_gpus >= 2) to the usable count so
-        # it doesn't pull in a near-full card just to hit the count. No-op for the
-        # default min_gpus == 1.
+        # Cap a downgraded multi-GPU request to the usable count so it doesn't pull
+        # in a near-full card to hit min_gpus. No-op for the default min_gpus == 1.
         usable_count = sum(1 for idx, free_mib in ranked if _usable(idx, free_mib) > overhead_mib)
         min_gpus = max(1, min(min_gpus, usable_count or 1))
 
@@ -2667,9 +2660,8 @@ class LlamaCppBackend:
         if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
             return [ranked[0][0]], False
 
-        # Try N GPUs (accumulate usable memory from most-free). Each GPU past the
-        # first adds a fixed per-device overhead the pool must hold. Require at
-        # least min_gpus devices before accepting a fit.
+        # Try N GPUs (most-free first); each past the first adds per-device overhead.
+        # Require at least min_gpus devices before accepting a fit.
         cumulative = 0.0
         selected = []
         for idx, free_mib in ranked:
@@ -4393,15 +4385,13 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_tensor_split_assert(output: str) -> bool:
-        """True for the specific #6415 split-mode warmup assert
-        ``GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_0)``, not any ggml
-        assert/abort -- so an unrelated invariant a corrupt GGUF/projector trips with
-        --mmproj isn't cached. stderr is merged into the output, so it's present."""
+        """True only for the #6415 split-axis warmup assert (GGML_BACKEND_SPLIT_AXIS_*),
+        not any ggml assert/abort, so an unrelated invariant isn't cached. stderr is
+        merged into output."""
         text = (output or "").lower()
         if "ggml_assert" not in text and "ggml_abort" not in text:
             return False
-        # split_axis: the GGML_BACKEND_SPLIT_AXIS_* enum, unique to this warmup
-        # assert -- match the token itself, not the (multi-assert) source file.
+        # the split-axis enum token, unique to this assert (not the source file).
         return "split_axis" in text
 
     @staticmethod
@@ -4418,15 +4408,14 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_abort_exit(returncode: Optional[int]) -> bool:
-        """Windows CRT abort() exit code (3): how GGML_ASSERT terminates on MSVC
-        builds, where it's neither a POSIX signal nor a 0xC0000000+ NTSTATUS."""
+        """Windows CRT abort() exit code (3) from GGML_ASSERT on MSVC -- not a POSIX
+        signal or 0xC0000000+ NTSTATUS."""
         return returncode == 3
 
     @classmethod
     def _should_record_tensor_split_abort(cls, returncode: Optional[int], output: str) -> bool:
-        """True when a crashed spawn is the #6415 split-axis abort: the definitive
-        marker plus a hard crash -- a POSIX signal or the Windows CRT abort() exit.
-        The marker is required so a generic exit 3 / signal isn't cached."""
+        """The #6415 split-axis abort: the marker plus a hard crash (POSIX signal or
+        Windows abort exit). Marker required so a generic crash isn't cached."""
         return cls._is_tensor_split_assert(output) and (
             cls._is_signal_crash(returncode) or cls._is_abort_exit(returncode)
         )
@@ -4575,8 +4564,7 @@ class LlamaCppBackend:
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
         n_parallel: int = 1,
         extra_args: Optional[List[str]] = None,
-        # Set on the route-level tensor->layer fallback retry (tensor-off): keep the
-        # multi-GPU intent on the layer split instead of pinning to one device.
+        # Route-level tensor->layer fallback retry: keep the layer split multi-GPU.
         preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
         """Start llama-server with a GGUF model.
@@ -4872,9 +4860,8 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 model_size = None  # set in the fit try; used by the APU RAM guard
-                # Min GPUs for the layer fallback; raised below when a tensor request
-                # is downgraded. Bound before the try so the --fit-on except path
-                # (GPU probe / sizing raised) still has it for the command builder.
+                # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
+                # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
@@ -5172,14 +5159,13 @@ class LlamaCppBackend:
                             else extra_args
                         )
 
-                    # The route fallback retry runs tensor-off, so carry the original
-                    # tensor intent in explicitly to keep the first fallback multi-GPU.
+                    # The route fallback retry is tensor-off; keep it multi-GPU.
                     if preserve_multi_gpu_on_layer:
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
 
                     if tensor_parallel and self._tensor_split_aborts(binary, model_identifier):
-                        # This binary aborted on --split-mode tensor for this model
-                        # this session (#6415); skip tensor upfront, layer split serves it.
+                        # Aborted on tensor for this model this session (#6415); skip
+                        # tensor upfront, layer split serves it.
                         logger.info(
                             "Tensor parallelism skipped: this llama.cpp build aborted "
                             "on --split-mode tensor for this model earlier this "
@@ -5187,8 +5173,7 @@ class LlamaCppBackend:
                             len(gpus),
                         )
                         tensor_parallel = False
-                        # Keep the multi-GPU request (gated on it, not the cache, so a
-                        # non-tensor load still minimizes device count).
+                        # Keep the multi-GPU request (gated on it, not the cache).
                         _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         _restore_after_tensor_downgrade()
 
@@ -5229,9 +5214,8 @@ class LlamaCppBackend:
                             len(gpus),
                         )
                         tensor_parallel = False
-                        # GPUs below tensor's replicated compute-buffer reserve can
-                        # still take layer split's lower overhead, so keep the
-                        # multi-GPU request (mirrors the budget/geometry downgrades);
+                        # GPUs below tensor's compute-buffer reserve can still do layer
+                        # split, so keep multi-GPU (mirrors the budget/geometry drops);
                         # _select_gpus caps unusable cards.
                         if len(gpus) >= 2:
                             _layer_min_gpus = max(_layer_min_gpus, len(gpus))
@@ -5271,12 +5255,12 @@ class LlamaCppBackend:
                                 "per-device compute buffers; falling back to layer split."
                             )
                             tensor_parallel = False
-                            # Weights needed >1 card, so keep the multi-GPU request
-                            # across the usable tensor GPUs (mirrors the vision drop).
+                            # Weights needed >1 card, so keep multi-GPU across the
+                            # usable tensor GPUs.
                             if len(tp_gpus) >= 2:
                                 _layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))
-                            # Restore the dropped quantized KV + original cache extras
-                            # (minus --split-mode); layer split supports them.
+                            # Restore the dropped quantized KV + cache extras (minus
+                            # --split-mode); layer split supports them.
                             _restore_after_tensor_downgrade()
 
                     if tensor_parallel and tp_gpus:
@@ -5389,9 +5373,8 @@ class LlamaCppBackend:
                             ranked = sorted(
                                 gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
                             )
-                            # This path skips _select_gpus, so apply its cap here:
-                            # only count a card whose usable VRAM clears the per-device
-                            # layer overhead, else a near-full GPU gets exposed / OOMs.
+                            # Skips _select_gpus, so apply its cap: count only cards
+                            # whose usable VRAM clears the per-device layer overhead.
                             _pipeline_overhead_mib = _pipeline_overhead_bytes / (1024 * 1024)
                             _auto_min_gpus = max(
                                 1,
@@ -5709,8 +5692,7 @@ class LlamaCppBackend:
                     )
                 else:
                     self._tensor_parallel = False
-                    # _layer_min_gpus > 1 only when a tensor request was downgraded
-                    # to layer but kept multi-GPU (route fallback / geometry / budget).
+                    # > 1 only when a tensor request was downgraded but kept multi-GPU.
                     self._layer_preserves_tensor_intent = _layer_min_gpus > 1
 
                 # Speculative decoding. See _build_speculative_flags for the
@@ -5995,9 +5977,8 @@ class LlamaCppBackend:
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
-                        # A split-axis geometry abort (#6415) is fit-independent, so the
-                        # --fit off retry would just crash again; skip it and let the
-                        # caller latch the abort straight away.
+                        # A split-axis abort (#6415) is fit-independent: skip the
+                        # --fit off retry and let the caller latch it.
                         _split_axis_crash = self._is_tensor_split_assert(
                             "\n".join(self._stdout_lines[-50:])
                         )
@@ -6052,15 +6033,11 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
-                # #6415: --split-mode tensor aborts at warmup on a tensor-split
-                # geometry limit (GGML_BACKEND_SPLIT_AXIS_0). Latch it from THIS first
-                # spawn: the flash-attn-off retry below can't run tensor
-                # (SPLIT_MODE_TENSOR requires flash_attn), so its output drops the
-                # :541 signature -- recording only after the full ladder would miss it
-                # and the crash loop would repeat every load. Record per (binary,
-                # model) and hand straight to the route fallback for layer split,
-                # skipping the futile flash-attn/MTP retries for this crash (the
-                # fit-off retry inside _spawn_and_wait already skips it on this marker).
+                # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
+                # the flash-attn-off retry below can't run tensor (needs flash_attn),
+                # so its output drops the marker and recording later would miss it,
+                # looping every load. Record and raise to the route's layer fallback,
+                # skipping the futile flash-attn/MTP retries.
                 if not healthy and self._tensor_parallel and not self._cancel_event.is_set():
                     _ts_out = "\n".join(self._stdout_lines[-50:])
                     _ts_rc = self._process.poll() if self._process is not None else None
@@ -6215,8 +6192,7 @@ class LlamaCppBackend:
                     # Read the crash code before _kill_process() clears _process.
                     _crash_rc = self._process.poll() if self._process is not None else None
                     self._kill_process()
-                    # The #6415 split-axis tensor abort is handled earlier (latched
-                    # on the first spawn, before flash-attn-off erases the signature).
+                    # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     if (
                         launched_with_mmproj
@@ -6690,13 +6666,10 @@ class LlamaCppBackend:
         # server. An identical request would downgrade the same way.
         if not _tensor_parallel_matches_loaded(extra_args, tensor_parallel, self._tensor_parallel):
             return False
-        # A preserved tensor->layer fallback spans GPUs only to honor a tensor
-        # request; both report tensor=off so the check above matches. If this
-        # request drops tensor intent, reload so placement re-selects rather than
-        # short-circuiting to the fallback's all-GPU mask (mirrors the route, #6659).
-        # kwargs are pre-resolved here so this is broader than the route's
-        # model_fields_set check; it only ever forces a reload (safe), never a wrong
-        # dedup, and the route runs first. env excluded (as _tensor_parallel_matches).
+        # Preserved tensor->layer fallback + a request that drops tensor intent:
+        # reload so placement re-selects instead of keeping the all-GPU mask (mirrors
+        # the route, #6659). Broader than the route check but only ever forces a
+        # reload (safe), and the route runs first.
         if self._layer_preserves_tensor_intent and not _effective_tensor_parallel(
             extra_args, tensor_parallel
         ):

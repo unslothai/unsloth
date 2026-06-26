@@ -78,10 +78,8 @@ _GB = 1024**3
 
 
 def _load_inference_routes_module():
-    """Load routes/inference.py directly, bypassing routes/__init__.py (which
-    imports every router and so drags in unrelated backend deps like
-    python-multipart). Keeps the route-dedup tests scoped to the module under
-    test (Codex review on #6659)."""
+    """Load routes/inference.py directly, bypassing routes/__init__.py (which imports
+    every router, dragging in unrelated deps like python-multipart) (Codex #6659)."""
     route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
     spec = importlib.util.spec_from_file_location(
         "tp_vision_regression_inference_routes", route_path
@@ -125,12 +123,10 @@ def _tensor_parallel_false_drop_guards() -> list[str]:
 # Every condition that may flip a requested tensor_parallel back to False. Adding
 # one must be conscious: update this allowlist and keep multi-GPU where possible.
 _ALLOWED_TP_DROP_GUARDS = {
-    # Capability/policy: --split-mode tensor aborted for this model on this binary
-    # (#6415 split-axis geometry). Self-healing -- attempted by default, skipped
-    # only for a (binary, model) already seen to abort (replaces #6416's blanket
-    # vision skip).
+    # Capability: --split-mode tensor aborted for this (binary, model) (#6415).
+    # Self-healing -- tried by default, skipped only after a real abort (vs #6416).
     "tensor_parallel and self._tensor_split_aborts(binary, model_identifier)",
-    # Capacity: tensor parallelism needs >= 2 GPUs that clear the compute-buffer reserve.
+    # Capacity: tensor needs >= 2 GPUs clearing the compute-buffer reserve.
     "tensor_parallel and len(tp_gpus) < 2",
     # Capacity: pooled usable VRAM can't hold weights + MTP reserve -> layer split.
     "_tp_weight_budget_mib <= _tp_required_mib",
@@ -138,12 +134,8 @@ _ALLOWED_TP_DROP_GUARDS = {
 
 
 def test_tensor_parallel_drop_sites_match_allowlist():
-    """The set of reasons a requested TP can be dropped is fixed and reviewed.
-
-    This is the guard that would have flagged #6416: it added a brand-new
-    `tensor_parallel = False` site, which would make this set-equality fail until
-    a reviewer consciously allowlisted it (and preserved multi-GPU).
-    """
+    """The set of reasons a requested TP can be dropped is fixed and reviewed: a new
+    drop site fails this set-equality until consciously allowlisted (would catch #6416)."""
     found = set(_tensor_parallel_false_drop_guards())
     assert found == _ALLOWED_TP_DROP_GUARDS, (
         "tensor_parallel drop sites changed.\n"
@@ -188,9 +180,8 @@ def test_every_tp_drop_is_logged_not_silent():
 
 
 def test_tensor_split_gate_is_self_healing_not_blanket():
-    """The tensor skip is conditional on a recorded (binary, model) abort, never a
-    blanket disable on is_vision / effective_is_vision (the #6416 regression that
-    single-GPU'd every mmproj GGUF)."""
+    """Skip is conditional on a recorded (binary, model) abort, not a blanket
+    is_vision disable (the #6416 regression)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "self._tensor_split_aborts(binary, model_identifier)" in src
     assert "if tensor_parallel and is_vision:" not in src
@@ -207,10 +198,8 @@ def test_tensor_split_skip_documents_layer_split_fallback():
 
 
 def test_tensor_split_abort_recorded_early_on_first_spawn():
-    """The abort is recorded on the FIRST spawn that shows the split-axis signature,
-    BEFORE the flash-attn-off retry -- which can't run tensor (SPLIT_MODE_TENSOR
-    requires flash_attn) so its output drops the :541 marker. Recording after the
-    ladder never sees it and the crash loop repeats every load (oobabooga, #6659)."""
+    """Recorded on the first spawn showing the marker, before the flash-attn-off
+    retry (which can't run tensor so drops the marker) -- else it loops (oobabooga, #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
     assert idx != -1, "load_model must record a (binary, model) tensor-split abort"
@@ -342,10 +331,8 @@ def test_tensor_abort_cache_invalidated_on_binary_mtime_change(tmp_path):
 
 
 def test_tensor_split_abort_raises_early_to_layer_fallback():
-    """The first-spawn split-axis abort raises (route fallback retries layer split)
-    rather than falling through to the text-only mmproj-strip path, and it does so
-    BEFORE the flash-attn-off retry, so the projector/vision is preserved and the
-    futile retry ladder is skipped (#6659)."""
+    """The first-spawn abort raises to the route's layer fallback (not the text-only
+    mmproj strip), before the flash-attn-off retry, preserving the projector (#6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     raise_idx = src.find("(split-axis geometry); retrying with layer split")
     assert raise_idx != -1, "the split-axis abort must raise to trigger a layer retry"
@@ -486,10 +473,8 @@ def test_is_tensor_split_assert_marker():
 
 
 def test_layer_preserve_hint_replayed_on_respawn():
-    """The preserve_multi_gpu_on_layer hint is in the replay snapshot
-    (_pending_load_kwargs), so a respawn after llama-server dies keeps the
-    downgraded model multi-GPU instead of silently coming back single-GPU
-    (Codex review on #6659)."""
+    """The preserve hint is in the replay snapshot (_pending_load_kwargs), so a
+    respawn keeps the downgraded model multi-GPU (Codex review on #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     pend = src.find("_pending_load_kwargs = {")
     assert pend != -1
@@ -501,9 +486,8 @@ def test_layer_preserve_hint_replayed_on_respawn():
 
 
 def test_should_record_tensor_split_abort_decision():
-    """Behavioral check of the record decision (marker AND (signal crash OR Windows
-    abort)), so an `or`->`and` typo that would silently break Windows recording, or
-    caching a generic crash, fails here -- not just the source-inspection pins."""
+    """Behavioral check of marker AND (signal crash OR Windows abort), so an
+    or->and typo or caching a generic crash fails here, not just the source pins."""
     f = LlamaCppBackend._should_record_tensor_split_abort
     marker = "ggml-backend-meta.cpp:541: GGML_ASSERT(x.axis != GGML_BACKEND_SPLIT_AXIS_0) failed"
     # marker + a hard crash records, across every platform's abort encoding
@@ -522,9 +506,8 @@ def test_should_record_tensor_split_abort_decision():
 
 
 def test_fit_off_retry_skipped_on_split_axis_abort():
-    """The --fit off retry in _spawn_and_wait is fit-independent for a split-axis
-    abort, so it's skipped on that marker -- otherwise the model warms up and crashes
-    a second time before the latch records it (reviewer.py follow-up, #6659)."""
+    """The fit-independent --fit off retry is skipped on the split-axis marker, else
+    the model crashes a second time before the latch records it (reviewer.py, #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     retry = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
     assert retry != -1
@@ -564,9 +547,8 @@ class _NoopProcess:
 
 
 def _fallback_loaded_backend(layer_preserves_tensor_intent: bool) -> LlamaCppBackend:
-    """A loaded backend in the tensor->layer fallback state: tensor reports off and
-    --split-mode layer is stored, differing only in whether the placement was kept
-    multi-GPU to honor a (now-downgraded) tensor request."""
+    """A loaded backend in the tensor->layer fallback state (tensor off, --split-mode
+    layer stored), differing only in the preserved-multi-GPU flag."""
     b = LlamaCppBackend()
     b._model_identifier = "owner/repo"
     b._requested_n_ctx = 0
@@ -581,10 +563,8 @@ def _fallback_loaded_backend(layer_preserves_tensor_intent: bool) -> LlamaCppBac
 
 
 def test_explicit_tensor_off_reloads_after_multi_gpu_fallback():
-    """A tensor->layer fallback (preserve_multi_gpu_on_layer) spans all GPUs while
-    reporting tensor=off. An explicit tensor-off Apply must reload so placement
-    re-selects (single GPU for a 1-GPU-fit model), not dedupe to the all-GPU mask;
-    a genuine layer load (no preserved intent) still dedupes (Codex review #6659)."""
+    """An explicit tensor-off Apply on a preserved fallback reloads (placement
+    re-selects); a genuine layer load (no preserved intent) dedupes (Codex #6659)."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()
@@ -609,10 +589,8 @@ def test_explicit_tensor_off_reloads_after_multi_gpu_fallback():
 
 
 def test_explicit_split_mode_layer_extras_reloads_after_multi_gpu_fallback():
-    """Tensor intent can be dropped via extras, not only the toggle: an explicit
-    llama_extra_args=[--split-mode, layer] matches the stored fallback extras, so
-    without this guard it would dedupe to the all-GPU placement. It must reload
-    (reviewer.py P1 on #6659)."""
+    """Tensor intent can be dropped via extras too: an explicit --split-mode layer
+    matches the stored fallback extras but must still reload (reviewer.py P1, #6659)."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()
@@ -628,9 +606,8 @@ def test_explicit_split_mode_layer_extras_reloads_after_multi_gpu_fallback():
 
 
 def test_tensor_off_reload_requires_explicit_toggle():
-    """An Apply that does not set the tensor toggle (e.g. only a context change)
-    must not be churned by the preserved-fallback reload -- the working multi-GPU
-    layer server is kept (Codex review #6659)."""
+    """An Apply that doesn't touch the toggle (e.g. a context change) isn't churned
+    by the preserved-fallback reload -- the working server is kept (Codex #6659)."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()
@@ -646,9 +623,8 @@ def test_tensor_off_reload_requires_explicit_toggle():
 
 
 def test_tensor_off_under_env_tensor_does_not_reload_loop(monkeypatch):
-    """With LLAMA_ARG_SPLIT_MODE=tensor still set, an explicit tensor-off request
-    can't actually drop tensor intent (a reload re-engages it and re-falls-back).
-    The guard must stay env-aware and dedupe instead of looping (Codex review #6659)."""
+    """With LLAMA_ARG_SPLIT_MODE=tensor set, a tensor-off request can't drop tensor
+    intent, so the env-aware guard dedupes instead of reload-looping (Codex #6659)."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()
@@ -677,9 +653,8 @@ def test_layer_preserves_tensor_intent_set_only_on_preserved_downgrade():
 
 
 def test_layer_min_gpus_bound_before_gpu_selection_try():
-    """_layer_min_gpus is initialized before the GPU-selection try, so the --fit-on
-    except path (GPU probe / sizing raised) can't UnboundLocalError when the command
-    builder reads it for _layer_preserves_tensor_intent (Codex review on #6659)."""
+    """_layer_min_gpus is bound before the GPU-selection try, so the --fit-on except
+    path can't UnboundLocalError when the command builder reads it (Codex #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert src.count("_layer_min_gpus = 1") == 1, "exactly one init, before the try"
     init = src.find("_layer_min_gpus = 1")
@@ -692,9 +667,8 @@ def test_layer_min_gpus_bound_before_gpu_selection_try():
 
 
 def test_already_in_target_state_reloads_on_tensor_off_after_fallback():
-    """The backend fast path mirrors the route dedup: a preserved tensor->layer
-    fallback must reload on an explicit tensor-off request (so placement re-selects)
-    instead of short-circuiting load_model as already loaded (Codex review on #6659)."""
+    """The backend fast path mirrors the route dedup: a preserved fallback reloads
+    on an explicit tensor-off request, not short-circuit as loaded (Codex #6659)."""
 
     def _backend(layer_preserves: bool) -> LlamaCppBackend:
         b = _fallback_loaded_backend(layer_preserves_tensor_intent = layer_preserves)

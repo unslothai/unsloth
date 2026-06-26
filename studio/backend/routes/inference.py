@@ -2117,15 +2117,11 @@ def _request_matches_loaded_settings(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
         return False
-    # A tensor->layer fallback spread this load across GPUs only to honor a tensor
-    # request (preserve_multi_gpu_on_layer). Both report tensor=off, so the check
-    # above matches, but if the user now explicitly drops that intent -- changing
-    # the toggle or extras to an effective tensor state of off -- reload so
-    # placement re-selects (single GPU for a 1-GPU-fit model) instead of deduping
-    # to the fallback's all-GPU mask (#6659). The effective check includes the env:
-    # if LLAMA_ARG_SPLIT_MODE=tensor still forces tensor, the request can't drop it
-    # (a reload would re-engage tensor and re-fall-back), so fall through to the
-    # env-downgrade matching below, which dedupes that case instead of looping.
+    # Preserved tensor->layer fallback (both report tensor=off, so the check above
+    # matches): if the user now explicitly drops tensor intent, reload so placement
+    # re-selects instead of keeping the all-GPU mask (#6659). The effective check
+    # includes the env, so an env-only tensor (LLAMA_ARG_SPLIT_MODE=tensor) that
+    # can't actually be dropped falls through to the env-downgrade match, not a loop.
     if llama_backend.layer_preserves_tensor_intent:
         _fields_set = getattr(request, "model_fields_set", set())
         _explicit_change = "tensor_parallel" in _fields_set or request.llama_extra_args is not None
@@ -2840,9 +2836,8 @@ async def load_model(
                     **_source_load_kwargs,
                     **attempt_kwargs,
                     tensor_parallel = tensor_parallel,
-                    # True on the tensor->layer fallback retry (tensor requested
-                    # overall via toggle/extras/env, but not on this attempt): keep
-                    # the multi-GPU intent. Same check the fallback keys its retry on.
+                    # True on the layer fallback retry (tensor requested overall but
+                    # not on this attempt): keep multi-GPU. Mirrors the fallback's key.
                     preserve_multi_gpu_on_layer = bool(
                         _effective_tensor_parallel(extra_llama_args, request.tensor_parallel)
                         and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
