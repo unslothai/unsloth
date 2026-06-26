@@ -367,7 +367,7 @@ export const ja = {
         commandCopied: "{label} をコピーしました",
         copyNamedCommand: "{label} をコピー",
         checkingInstall: "Unsloth がどのようにインストールされたかを確認中...",
-        installIntro: "To install or update Unsloth:",
+        installIntro: "Unsloth のインストールまたはアップデート方法:",
         localUpdateHeading: "ローカルアップデート",
         installCommandUnix: "macOS/Linux インストールコマンド",
         installCommandWindows: "Windows インストールコマンド",
