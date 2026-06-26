@@ -5499,6 +5499,60 @@ def _wsl_system_rocm_lib_dirs() -> list[str]:
     return out
 
 
+# Secret-bearing environment variables that downloaded llama.cpp binaries have no
+# reason to read. The prebuilt fork release is a supply-chain trust boundary: a
+# compromised or malicious release publisher could ship a tampered llama-server /
+# llama-quantize, and binary_env() would otherwise hand it a full copy of the
+# process environment -- exfiltrating CI tokens or, for end users running
+# install.sh / setup.sh, their own HF / cloud credentials. The installer's own
+# GitHub / Hugging Face API calls read os.environ directly (see auth_headers), so
+# stripping these from the *child* environment leaves auth and rate-limiting intact.
+_SECRET_ENV_EXACT_NAMES = frozenset(
+    {
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "WANDB_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AZURE_CLIENT_SECRET",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "ACTIONS_RUNTIME_TOKEN",
+    }
+)
+# Substring markers (matched case-insensitively) catch provider-specific names we
+# do not enumerate. Deliberately no bare "KEY" marker: it would strip benign
+# runtime variables. Runtime/library vars (PATH, LD_LIBRARY_PATH, DYLD_LIBRARY_PATH,
+# CUDA/ROCm, HOME, TMPDIR) contain none of these markers and are preserved.
+_SECRET_ENV_MARKERS = (
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "PRIVATE_KEY",
+    "API_KEY",
+)
+
+
+def is_secret_env_name(name: str) -> bool:
+    upper = name.upper()
+    return upper in _SECRET_ENV_EXACT_NAMES or any(
+        marker in upper for marker in _SECRET_ENV_MARKERS
+    )
+
+
+def strip_secret_env(env: dict[str, str]) -> dict[str, str]:
+    """Drop secret-bearing variables before handing an env to a downloaded binary."""
+    return {key: value for key, value in env.items() if not is_secret_env_name(key)}
+
+
 def binary_env(
     binary_path: Path,
     install_dir: Path,
@@ -5506,7 +5560,7 @@ def binary_env(
     *,
     runtime_line: str | None = None,
 ) -> dict[str, str]:
-    env = os.environ.copy()
+    env = strip_secret_env(os.environ.copy())
     if host.is_windows:
         path_dirs = [
             str(binary_path.parent),

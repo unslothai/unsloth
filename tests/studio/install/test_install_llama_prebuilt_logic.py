@@ -22,6 +22,8 @@ SPEC.loader.exec_module(INSTALL_LLAMA_PREBUILT)
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
 extract_archive = INSTALL_LLAMA_PREBUILT.extract_archive
 binary_env = INSTALL_LLAMA_PREBUILT.binary_env
+is_secret_env_name = INSTALL_LLAMA_PREBUILT.is_secret_env_name
+strip_secret_env = INSTALL_LLAMA_PREBUILT.strip_secret_env
 HostInfo = INSTALL_LLAMA_PREBUILT.HostInfo
 AssetChoice = INSTALL_LLAMA_PREBUILT.AssetChoice
 ApprovedArtifactHash = INSTALL_LLAMA_PREBUILT.ApprovedArtifactHash
@@ -777,6 +779,108 @@ def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
         str(bin_dir) in ld_dirs
     ), f"binary_path.parent ({bin_dir}) must be in LD_LIBRARY_PATH, got: {ld_dirs}"
     assert str(install_dir) in ld_dirs
+
+
+def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
+    raw = {
+        # secrets (exact names + marker-matched)
+        "HF_TOKEN": "hf_x",
+        "HUGGING_FACE_HUB_TOKEN": "hf_y",
+        "GH_TOKEN": "gh_x",
+        "GITHUB_TOKEN": "gh_y",
+        "WANDB_API_KEY": "wandb_x",
+        "AWS_SECRET_ACCESS_KEY": "aws_x",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc_x",
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc",
+        "SOME_VENDOR_API_KEY": "vendor_x",
+        "DB_PASSWORD": "pw",
+        "MY_PRIVATE_KEY": "pk",
+        # runtime / library vars that the binary legitimately needs
+        "PATH": "/usr/bin",
+        "LD_LIBRARY_PATH": "/opt/lib",
+        "DYLD_LIBRARY_PATH": "/opt/dyld",
+        "HOME": "/home/runner",
+        "TMPDIR": "/tmp",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
+    }
+
+    cleaned = strip_secret_env(raw)
+
+    for secret in (
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "WANDB_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "SOME_VENDOR_API_KEY",
+        "DB_PASSWORD",
+        "MY_PRIVATE_KEY",
+    ):
+        assert secret not in cleaned, f"{secret} must be stripped from binary env"
+
+    for keep in (
+        "PATH",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "HOME",
+        "TMPDIR",
+        "CUDA_VISIBLE_DEVICES",
+        "HSA_OVERRIDE_GFX_VERSION",
+    ):
+        assert cleaned[keep] == raw[keep], f"{keep} must be preserved for the binary"
+
+    # No bare "KEY" marker: a benign var that merely contains KEY survives.
+    assert is_secret_env_name("API_KEY") is True
+    assert is_secret_env_name("SSH_KEYFILE_PATH") is False
+    assert is_secret_env_name("PATH") is False
+
+
+def test_binary_env_strips_secrets_from_downloaded_binary_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    binary_path = bin_dir / "llama-server"
+    binary_path.write_bytes(b"fake")
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+
+    # A compromised prebuilt would otherwise see these via os.environ.copy().
+    monkeypatch.setenv("HF_TOKEN", "hf_secret_from_ci")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh_secret_from_ci")
+    monkeypatch.setenv("GH_TOKEN", "gh_secret_from_ci")
+    monkeypatch.setenv("WANDB_API_KEY", "wandb_secret_from_ci")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+
+    env = binary_env(binary_path, install_dir, host)
+
+    assert "HF_TOKEN" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "GH_TOKEN" not in env
+    assert "WANDB_API_KEY" not in env
+    # Library/runtime resolution is unaffected by the scrub.
+    assert str(bin_dir) in env["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
 
 
 def test_install_prebuilt_falls_back_to_older_release_plan(
