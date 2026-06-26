@@ -115,6 +115,24 @@ class TestParser:
         assert result[0]["function"]["name"] == "python"
         assert "print('hi')" in result[0]["function"]["arguments"]
 
+    def test_xml_param_preserves_leading_indentation(self):
+        import json
+
+        # The chat template wraps the value in a single \n on each side; only
+        # that wrapping newline is trimmed, so significant indentation in a code
+        # argument survives (str.strip() used to destroy it).
+        text = (
+            "<function=python><parameter=code>\n"
+            "    indented = 1\n"
+            "    more\n"
+            "</parameter></function>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "code": "    indented = 1\n    more"
+        }
+
     def test_xml_unclosed(self):
         # Closing tags omitted; parser must still extract the value.
         text = "<function=terminal><parameter=command>ls -la"
