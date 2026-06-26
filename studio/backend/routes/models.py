@@ -2745,8 +2745,7 @@ async def get_gguf_variants(
                 return [filename]
             width = len(total)
             return [
-                f"{prefix}-{index:0{width}d}-of-{total}.gguf"
-                for index in range(1, total_count + 1)
+                f"{prefix}-{index:0{width}d}-of-{total}.gguf" for index in range(1, total_count + 1)
             ]
 
         def _is_fully_downloaded(variant) -> bool:
@@ -3293,9 +3292,7 @@ def _remote_weights_changed(
                 remote_blobs.add(str(blob))
     except Exception:
         # Fallback to the old local-filename query if full metadata is unavailable.
-        remote_path_infos = get_paths_info(
-            repo_id = repo_id, paths = weight_filenames, token = hf_token
-        )
+        remote_path_infos = get_paths_info(repo_id = repo_id, paths = weight_filenames, token = hf_token)
         for path_info in remote_path_infos:
             remote_blob = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
             if remote_blob:

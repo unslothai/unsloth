@@ -283,9 +283,7 @@ def _gguf_remote_update(repo_id: str, local_blobs: dict[str, set[str]], hf_token
     from huggingface_hub import get_paths_info
 
     local_by_posix = {key.replace("\\", "/"): value for key, value in local_blobs.items()}
-    remote_path_infos = get_paths_info(
-        repo_id = repo_id, paths = list(local_by_posix), token = hf_token
-    )
+    remote_path_infos = get_paths_info(repo_id = repo_id, paths = list(local_by_posix), token = hf_token)
     for path_info in remote_path_infos:
         remote_blob = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
         local_set = local_by_posix.get(path_info.path.replace("\\", "/"))
