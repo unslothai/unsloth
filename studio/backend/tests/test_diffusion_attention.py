@@ -21,8 +21,8 @@ from core.inference.diffusion_attention import (
 )
 
 
-def _target(device="cuda"):
-    return types.SimpleNamespace(device=device)
+def _target(device = "cuda"):
+    return types.SimpleNamespace(device = device)
 
 
 # ── normalize ────────────────────────────────────────────────────────────────────
@@ -42,35 +42,35 @@ def test_normalize_rejects_unknown():
 # ── select policy ─────────────────────────────────────────────────────────────────
 def test_auto_upgrades_to_cudnn_on_nvidia_when_speed_active(monkeypatch):
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
-    assert select_attention_backend(_target(), "auto", speed_active=True) == "_native_cudnn"
+    assert select_attention_backend(_target(), "auto", speed_active = True) == "_native_cudnn"
 
 
 def test_auto_stays_native_when_speed_off(monkeypatch):
     # off must stay bit-identical -> no backend change even on NVIDIA.
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
-    assert select_attention_backend(_target(), "auto", speed_active=False) is None
+    assert select_attention_backend(_target(), "auto", speed_active = False) is None
 
 
 def test_auto_stays_native_off_nvidia(monkeypatch):
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
-    assert select_attention_backend(_target(device="mps"), "auto", speed_active=True) is None
+    assert select_attention_backend(_target(device = "mps"), "auto", speed_active = True) is None
 
 
 def test_explicit_backend_honored_regardless_of_speed(monkeypatch):
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
-    assert select_attention_backend(_target(), "sage", speed_active=False) == "sage"
-    assert select_attention_backend(_target(), "flash4", speed_active=False) == "flash_4_hub"
-    assert select_attention_backend(_target(), "cudnn", speed_active=False) == "_native_cudnn"
+    assert select_attention_backend(_target(), "sage", speed_active = False) == "sage"
+    assert select_attention_backend(_target(), "flash4", speed_active = False) == "flash_4_hub"
+    assert select_attention_backend(_target(), "cudnn", speed_active = False) == "_native_cudnn"
 
 
 def test_explicit_native_returns_none():
     # native is the default -> nothing to set.
-    assert select_attention_backend(_target(), "native", speed_active=True) is None
+    assert select_attention_backend(_target(), "native", speed_active = True) is None
 
 
 # ── apply ─────────────────────────────────────────────────────────────────────────
 class _FakeTransformer:
-    def __init__(self, *, fail=False):
+    def __init__(self, *, fail = False):
         self.fail = fail
         self.set_to = None
 
@@ -81,7 +81,7 @@ class _FakeTransformer:
 
 
 def _pipe(transformer):
-    return types.SimpleNamespace(transformer=transformer)
+    return types.SimpleNamespace(transformer = transformer)
 
 
 def test_apply_none_is_noop():
@@ -96,10 +96,10 @@ def test_apply_sets_backend():
 
 def test_apply_falls_back_on_unavailable_kernel():
     # an unavailable kernel must not fail the load -> returns None (diffusers default).
-    t = _FakeTransformer(fail=True)
+    t = _FakeTransformer(fail = True)
     assert apply_attention_backend(_pipe(t), "sage") is None
 
 
 def test_apply_handles_missing_method():
-    pipe = types.SimpleNamespace(transformer=types.SimpleNamespace())
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
     assert apply_attention_backend(pipe, "_native_cudnn") is None

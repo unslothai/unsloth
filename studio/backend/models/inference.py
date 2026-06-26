@@ -1747,7 +1747,18 @@ class DiffusionLoadRequest(BaseModel):
         "checkpoint if configured, else quantises the dense transformer at load time.",
     )
     attention_backend: Optional[
-        Literal["auto", "native", "cudnn", "flash", "flash2", "flash3", "flash4", "sage", "xformers", "aiter"]
+        Literal[
+            "auto",
+            "native",
+            "cudnn",
+            "flash",
+            "flash2",
+            "flash3",
+            "flash4",
+            "sage",
+            "xformers",
+            "aiter",
+        ]
     ] = Field(
         None,
         description = "Attention kernel via the diffusers dispatcher. auto picks the best "

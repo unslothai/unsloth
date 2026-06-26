@@ -77,10 +77,7 @@ def _is_cuda_nvidia(target: Any) -> bool:
 
 
 def select_attention_backend(
-    target: Any,
-    requested: Optional[str],
-    *,
-    speed_active: bool,
+    target: Any, requested: Optional[str], *, speed_active: bool
 ) -> Optional[str]:
     """The dispatcher backend name to apply, or None to leave the diffusers default.
 
