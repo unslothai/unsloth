@@ -845,6 +845,42 @@ def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
     assert is_secret_env_name("PATH") is False
 
 
+def test_strip_secret_env_drops_proxy_index_and_embedded_url_credentials():
+    raw = {
+        # proxy / package-index URLs whose values commonly embed credentials
+        "HTTPS_PROXY": "https://user:secret@proxy:8080",
+        "https_proxy": "https://user:secret@proxy:8080",  # lower-case variant
+        "ALL_PROXY": "socks5://user:secret@proxy:1080",
+        "PIP_INDEX_URL": "https://u:p@pypi.internal/simple",
+        "UV_INDEX_URL": "https://u:p@index.internal/simple",
+        # credentials embedded in an otherwise benign-named variable's value
+        "MY_DB_DSN": "postgres://admin:secret@db:5432/app",
+        # benign vars the binary needs, including a URL with no userinfo
+        "PATH": "/usr/bin",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "NO_PROXY": "localhost,127.0.0.1",
+        "SOME_ENDPOINT": "https://example.com:8080/v1",
+    }
+
+    cleaned = strip_secret_env(raw)
+
+    for secret in (
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "PIP_INDEX_URL",
+        "UV_INDEX_URL",
+        "MY_DB_DSN",
+    ):
+        assert secret not in cleaned, f"{secret} must be stripped from binary env"
+    for keep in ("PATH", "CUDA_VISIBLE_DEVICES", "NO_PROXY", "SOME_ENDPOINT"):
+        assert cleaned[keep] == raw[keep], f"{keep} must be preserved for the binary"
+
+    assert is_secret_env_name("HTTPS_PROXY") is True
+    assert is_secret_env_name("https_proxy") is True
+    assert is_secret_env_name("NO_PROXY") is False
+
+
 def test_binary_env_strips_secrets_from_downloaded_binary_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

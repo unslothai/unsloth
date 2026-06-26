@@ -5544,18 +5544,46 @@ _SECRET_ENV_MARKERS = (
     "PRIVATE_KEY",
     "API_KEY",
 )
+# Proxy / package-index variables routinely embed credentials in their *values*
+# (e.g. https://user:secret@host). The validation binaries run fully offline on a
+# local probe model, so they never need these; drop them by name regardless of
+# value. Matched case-insensitively, so lower-case `https_proxy` is covered too.
+_SECRET_ENV_URL_NAMES = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "FTP_PROXY",
+        "RSYNC_PROXY",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "UV_INDEX_URL",
+        "UV_DEFAULT_INDEX",
+        "UV_EXTRA_INDEX_URL",
+    }
+)
+# Catch credentials embedded as URL userinfo (scheme://user:secret@host) in the
+# value of any other variable the name-based rules above do not enumerate.
+_URL_USERINFO_CREDENTIAL_RE = re.compile(r"://[^/@\s]+:[^/@\s]+@")
 
 
 def is_secret_env_name(name: str) -> bool:
     upper = name.upper()
-    return upper in _SECRET_ENV_EXACT_NAMES or any(
-        marker in upper for marker in _SECRET_ENV_MARKERS
+    return (
+        upper in _SECRET_ENV_EXACT_NAMES
+        or upper in _SECRET_ENV_URL_NAMES
+        or any(marker in upper for marker in _SECRET_ENV_MARKERS)
     )
 
 
 def strip_secret_env(env: dict[str, str]) -> dict[str, str]:
     """Drop secret-bearing variables before handing an env to a downloaded binary."""
-    return {key: value for key, value in env.items() if not is_secret_env_name(key)}
+    return {
+        key: value
+        for key, value in env.items()
+        if not is_secret_env_name(key)
+        and not _URL_USERINFO_CREDENTIAL_RE.search(value or "")
+    }
 
 
 def binary_env(
