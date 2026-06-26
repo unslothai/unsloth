@@ -13,18 +13,18 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
-import { isTauri } from "@/lib/api-base";
-import { openModelsDir } from "@/features/native-intents";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { toast } from "@/lib/toast";
-import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
+import { openModelsDir } from "@/features/native-intents";
+import { emitTrainingRunsChanged } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Check, Eye, EyeOff } from "lucide-react";
@@ -34,6 +34,13 @@ import {
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
 } from "../api/helper-precache";
+import { type ModelsFolder, loadModelsFolder } from "../api/models-folder";
+import {
+  type PreviewSharingSettings,
+  loadPreviewSharing,
+  rotatePreviewLinks,
+  updatePreviewSharing,
+} from "../api/preview-sharing";
 import {
   DEFAULT_UPLOAD_LIMIT_MB,
   type UploadLimitSettings,
@@ -146,6 +153,14 @@ export function GeneralTab() {
     null,
   );
   const [isSavingHelperPrecache, setIsSavingHelperPrecache] = useState(false);
+  const [previewSharing, setPreviewSharing] =
+    useState<PreviewSharingSettings | null>(null);
+  const [previewSharingError, setPreviewSharingError] = useState<string | null>(
+    null,
+  );
+  const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
+  const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
+  const [isRevokingPreview, setIsRevokingPreview] = useState(false);
   const [modelsFolder, setModelsFolder] = useState<ModelsFolder | null>(null);
 
   const draftRef = useRef(draftToken);
@@ -222,6 +237,27 @@ export function GeneralTab() {
 
   useEffect(() => {
     let cancelled = false;
+    void loadPreviewSharing()
+      .then((settings) => {
+        if (cancelled) return;
+        setPreviewSharing(settings);
+        setPreviewSharingError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setPreviewSharingError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.previewSharing.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  useEffect(() => {
+    let cancelled = false;
     void loadModelsFolder()
       .then((folder) => {
         if (cancelled) return;
@@ -271,6 +307,44 @@ export function GeneralTab() {
       );
     } finally {
       setIsSavingHelperPrecache(false);
+    }
+  };
+
+  const savePreviewSharing = async (enabled: boolean) => {
+    setIsSavingPreviewSharing(true);
+    setPreviewSharingError(null);
+    try {
+      const settings = await updatePreviewSharing(enabled);
+      setPreviewSharing(settings);
+      // Toggling sharing changes whether /api/train/runs returns preview_sig, so
+      // refresh the history grid (hide/show the Copy preview link buttons).
+      emitTrainingRunsChanged();
+    } catch (error) {
+      setPreviewSharingError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.previewSharing.saveError"),
+      );
+    } finally {
+      setIsSavingPreviewSharing(false);
+    }
+  };
+
+  const revokePreviewLinks = async () => {
+    setIsRevokingPreview(true);
+    try {
+      await rotatePreviewLinks();
+      // The secret rotated, so any preview_sig the history grid still holds is
+      // now stale. Refresh so copied links use freshly minted signatures.
+      emitTrainingRunsChanged();
+      setRevokePreviewOpen(false);
+      toast.success(t("settings.general.previewSharing.revoked"));
+    } catch (error) {
+      toast.error(t("settings.general.previewSharing.revokeError"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIsRevokingPreview(false);
     }
   };
 
@@ -454,6 +528,42 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <SettingsSection
+        title={t("settings.general.previewSharing.sectionTitle")}
+      >
+        <SettingsRow
+          label={t("settings.general.previewSharing.enableLabel")}
+          description={t("settings.general.previewSharing.enableDescription")}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              checked={previewSharing?.enabled ?? false}
+              disabled={!previewSharing || isSavingPreviewSharing}
+              onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
+            />
+            {previewSharingError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {previewSharingError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          destructive={true}
+          label={t("settings.general.previewSharing.revokeLabel")}
+          description={t("settings.general.previewSharing.revokeDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRevokePreviewOpen(true)}
+            className="text-destructive hover:text-destructive hover:border-destructive/60"
+          >
+            {t("settings.general.previewSharing.revokeAction")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
         <SettingsRow
           label={t("settings.general.uploads.maxUploadSize")}
@@ -557,6 +667,36 @@ export function GeneralTab() {
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {t("settings.general.resetPreferences.confirmAction")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={revokePreviewOpen} onOpenChange={setRevokePreviewOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {t("settings.general.previewSharing.revokeConfirmTitle")}
+            </DialogTitle>
+            <DialogDescription>
+              {t("settings.general.previewSharing.revokeConfirmDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRevokePreviewOpen(false)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              onClick={() => void revokePreviewLinks()}
+              disabled={isRevokingPreview}
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+            >
+              {isRevokingPreview
+                ? t("settings.general.previewSharing.revoking")
+                : t("settings.general.previewSharing.revokeConfirmAction")}
             </Button>
           </DialogFooter>
         </DialogContent>
