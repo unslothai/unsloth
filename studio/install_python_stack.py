@@ -933,11 +933,20 @@ def _detect_cuda_torch_index_url() -> str:
 
     Mirrors install.sh::get_torch_index_url's CUDA ladder so `studio update`
     repairs to the same wheel family a fresh `curl | sh` install would pick.
-    Probes nvidia-smi (PATH, then /usr/bin/nvidia-smi) and parses both the
-    legacy "CUDA Version:" and the newer "CUDA UMD Version:" spellings.
-    Defaults to cu126 when nvidia-smi is missing or the version is unreadable
-    (e.g. NVIDIA detected only via the /proc/driver/nvidia/gpus fallback).
+    Honours the same explicit overrides first (UNSLOTH_TORCH_INDEX_URL /
+    UNSLOTH_TORCH_INDEX_FAMILY) so a headless / container / CI install never lets
+    the host GPU decide the wheel family. Otherwise probes nvidia-smi (PATH, then
+    /usr/bin/nvidia-smi) and parses both the legacy "CUDA Version:" and the newer
+    "CUDA UMD Version:" spellings. Defaults to cu126 when nvidia-smi is missing or
+    the version is unreadable (e.g. NVIDIA detected only via the
+    /proc/driver/nvidia/gpus fallback).
     """
+    _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
+    if _override_url:
+        return _override_url.rstrip("/")
+    _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
+    if _override_family:
+        return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
     exe = shutil.which("nvidia-smi")
     if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
         exe = "/usr/bin/nvidia-smi"

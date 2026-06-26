@@ -1985,6 +1985,21 @@ _has_usable_nvidia_gpu() {
 get_torch_index_url() {
     _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
     _base="${_base%/}"
+    # Explicit override -- skip ALL GPU probing when the caller pins the wheel
+    # index. Headless / container / CI builds (and anyone cross-installing for a
+    # different target) must not let the build host's GPU -- or the lack of one --
+    # decide the wheel family. This is the same "tell the build, don't ask the
+    # hardware" approach the Docker base image and vLLM/SGLang's Dockerfiles take.
+    # UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim); UNSLOTH_TORCH_INDEX_FAMILY
+    # is the convenience form (cpu, cu124, cu126, cu128, cu130, rocm6.4, ...)
+    # appended to the mirror base so UNSLOTH_PYTORCH_MIRROR is still honoured.
+    if [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ]; then
+        echo "${UNSLOTH_TORCH_INDEX_URL%/}"; return
+    fi
+    if [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
+        _family="${UNSLOTH_TORCH_INDEX_FAMILY#/}"
+        echo "$_base/${_family%/}"; return
+    fi
     # macOS: always CPU (no CUDA support)
     case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
     # Try nvidia-smi -- require the binary to actually list a usable GPU.
