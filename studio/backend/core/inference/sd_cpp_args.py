@@ -140,9 +140,7 @@ def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
         return ["--diffusion-fa"]
     if mode == NATIVE_SPEED_MAX:
         return ["--diffusion-fa", "--diffusion-conv-direct"]
-    raise ValueError(
-        f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'"
-    )
+    raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
 
 
 def offload_flags(

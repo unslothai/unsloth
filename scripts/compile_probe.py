@@ -40,8 +40,12 @@ def _gen(pipe, prompt, *, steps, seed, width, height, guidance):
     torch.cuda.synchronize()
     t0 = time.time()
     image = pipe(
-        prompt = prompt, width = width, height = height,
-        num_inference_steps = steps, guidance_scale = guidance, generator = gen,
+        prompt = prompt,
+        width = width,
+        height = height,
+        num_inference_steps = steps,
+        guidance_scale = guidance,
+        generator = gen,
     ).images[0]
     torch.cuda.synchronize()
     return image, time.time() - t0
@@ -54,14 +58,21 @@ def main(argv = None) -> int:
     p.add_argument("--base-repo", default = "Tongyi-MAI/Z-Image-Turbo")
     p.add_argument("--transformer-class", default = "ZImageTransformer2DModel")
     p.add_argument("--pipeline-class", default = "ZImagePipeline")
-    p.add_argument("--prompt", default = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed")
+    p.add_argument(
+        "--prompt",
+        default = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed",
+    )
     p.add_argument("--steps", type = int, default = 8)
     p.add_argument("--seed", type = int, default = 42)
     p.add_argument("--width", type = int, default = 1024)
     p.add_argument("--height", type = int, default = 1024)
     p.add_argument("--guidance", type = float, default = 0.0)
-    p.add_argument("--mode", default = "default", help = "compile mode: default | max-autotune-no-cudagraphs")
-    p.add_argument("--dynamic", action = "store_true", help = "dynamic=True (default False here for speed)")
+    p.add_argument(
+        "--mode", default = "default", help = "compile mode: default | max-autotune-no-cudagraphs"
+    )
+    p.add_argument(
+        "--dynamic", action = "store_true", help = "dynamic=True (default False here for speed)"
+    )
     p.add_argument("--out-dir", default = "outputs/compile_probe")
     args = p.parse_args(argv)
 
@@ -80,7 +91,9 @@ def main(argv = None) -> int:
     transformer = transformer_cls.from_single_file(
         gguf_path,
         quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype),
-        torch_dtype = dtype, config = args.base_repo, subfolder = "transformer",
+        torch_dtype = dtype,
+        config = args.base_repo,
+        subfolder = "transformer",
     )
     pipeline_cls = getattr(diffusers, args.pipeline_class)
     pipe = pipeline_cls.from_pretrained(args.base_repo, torch_dtype = dtype, transformer = transformer)
@@ -88,8 +101,24 @@ def main(argv = None) -> int:
     print("pipeline loaded on cuda", flush = True)
 
     # warm the eager path once (allocator / cudnn), then time eager.
-    _gen(pipe, args.prompt, steps = args.steps, seed = args.seed, width = args.width, height = args.height, guidance = args.guidance)
-    eager_img, eager_t = _gen(pipe, args.prompt, steps = args.steps, seed = args.seed, width = args.width, height = args.height, guidance = args.guidance)
+    _gen(
+        pipe,
+        args.prompt,
+        steps = args.steps,
+        seed = args.seed,
+        width = args.width,
+        height = args.height,
+        guidance = args.guidance,
+    )
+    eager_img, eager_t = _gen(
+        pipe,
+        args.prompt,
+        steps = args.steps,
+        seed = args.seed,
+        width = args.width,
+        height = args.height,
+        guidance = args.guidance,
+    )
     eager_img.save(out / "eager.png")
     eager_arr = np.array(eager_img)
     print(f"EAGER: {eager_t:.2f}s/gen", flush = True)
@@ -106,7 +135,10 @@ def main(argv = None) -> int:
     try:
         t0 = time.time()
         fn(**compile_kwargs)
-        print(f"  compile_repeated_blocks() returned in {time.time()-t0:.1f}s (compilation is lazy)", flush = True)
+        print(
+            f"  compile_repeated_blocks() returned in {time.time()-t0:.1f}s (compilation is lazy)",
+            flush = True,
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"RESULT: compile_repeated_blocks RAISED: {type(exc).__name__}: {exc}", flush = True)
         return 1
@@ -114,13 +146,29 @@ def main(argv = None) -> int:
     # first compiled gen triggers the actual compilation (untimed warmup).
     try:
         t0 = time.time()
-        _gen(pipe, args.prompt, steps = args.steps, seed = args.seed, width = args.width, height = args.height, guidance = args.guidance)
+        _gen(
+            pipe,
+            args.prompt,
+            steps = args.steps,
+            seed = args.seed,
+            width = args.width,
+            height = args.height,
+            guidance = args.guidance,
+        )
         print(f"  first compiled gen (compilation) took {time.time()-t0:.1f}s", flush = True)
     except Exception as exc:  # noqa: BLE001
         print(f"RESULT: first compiled generation RAISED: {type(exc).__name__}: {exc}", flush = True)
         return 2
 
-    comp_img, comp_t = _gen(pipe, args.prompt, steps = args.steps, seed = args.seed, width = args.width, height = args.height, guidance = args.guidance)
+    comp_img, comp_t = _gen(
+        pipe,
+        args.prompt,
+        steps = args.steps,
+        seed = args.seed,
+        width = args.width,
+        height = args.height,
+        guidance = args.guidance,
+    )
     comp_img.save(out / "compiled.png")
     psnr = _psnr(eager_arr, np.array(comp_img))
 
@@ -129,8 +177,11 @@ def main(argv = None) -> int:
     print(f"  eager:    {eager_t:.2f}s/gen", flush = True)
     print(f"  compiled: {comp_t:.2f}s/gen   ({speedup:+.1f}% vs eager)", flush = True)
     print(f"  PSNR(compiled vs eager): {psnr:.1f} dB", flush = True)
-    print(f"  verdict: {'COMPILE-WORKS' if psnr >= 30 else 'COMPILE-DIVERGES'} "
-          f"{'FASTER' if comp_t < eager_t else 'NOT-FASTER'}", flush = True)
+    print(
+        f"  verdict: {'COMPILE-WORKS' if psnr >= 30 else 'COMPILE-DIVERGES'} "
+        f"{'FASTER' if comp_t < eager_t else 'NOT-FASTER'}",
+        flush = True,
+    )
     return 0
 
 

@@ -45,7 +45,6 @@ def snapshot_backend_flags() -> Optional[dict]:
     caller can restore them on unload. None if torch is unavailable."""
     try:
         import torch
-
         return {
             "matmul_tf32": bool(torch.backends.cuda.matmul.allow_tf32),
             "cudnn_tf32": bool(torch.backends.cudnn.allow_tf32),
@@ -134,8 +133,11 @@ def apply_speed_optims(
     BEFORE placement / offload. Returns which optimisations actually engaged. Every
     step is best-effort: a pipeline that doesn't support one is simply skipped."""
     applied = {
-        "channels_last": False, "cudnn_benchmark": False,
-        "tf32": False, "fused_qkv": False, "compiled": False,
+        "channels_last": False,
+        "cudnn_benchmark": False,
+        "tf32": False,
+        "fused_qkv": False,
+        "compiled": False,
     }
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_OFF:
@@ -192,7 +194,6 @@ def _compile_repeated_blocks(pipe: Any, logger: Any) -> bool:
 def _enable_cudnn_benchmark(logger: Any) -> bool:
     try:
         import torch
-
         torch.backends.cudnn.benchmark = True
         return True
     except Exception as exc:  # noqa: BLE001 — optimisation only

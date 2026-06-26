@@ -152,8 +152,11 @@ def test_speed_off_applies_nothing(monkeypatch):
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_OFF
     )
     assert applied == {
-        "channels_last": False, "cudnn_benchmark": False,
-        "tf32": False, "fused_qkv": False, "compiled": False,
+        "channels_last": False,
+        "cudnn_benchmark": False,
+        "tf32": False,
+        "fused_qkv": False,
+        "compiled": False,
     }
     assert pipe.vae.mem_format is None and pipe.compiled is False
     # off must not touch any process-wide flag (bit-identical reference path).
@@ -188,8 +191,11 @@ def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
     applied = apply_speed_optims(
-        pipe, _target(device = "mps", compile_ok = False), is_gguf = True,
-        family = _family(), speed_mode = SPEED_DEFAULT,
+        pipe,
+        _target(device = "mps", compile_ok = False),
+        is_gguf = True,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
     )
     assert applied["cudnn_benchmark"] is False  # not CUDA -> no autotune flip
 

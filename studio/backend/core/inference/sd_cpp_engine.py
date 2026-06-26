@@ -212,9 +212,14 @@ class SdCppEngine:
         speed = [f for f in native_speed_flags(native_speed) if f not in offload]
         merged_extra = speed + list(extra_args or [])
         cmd = build_sd_cpp_command(
-            self._require_binary(), files, params,
-            output_path = str(self._prepare_out(output_path)), offload = offload,
-            threads = threads, verbose = verbose, extra_args = merged_extra,
+            self._require_binary(),
+            files,
+            params,
+            output_path = str(self._prepare_out(output_path)),
+            offload = offload,
+            threads = threads,
+            verbose = verbose,
+            extra_args = merged_extra,
         )
         return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
 

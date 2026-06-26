@@ -448,7 +448,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default = None,
         choices = ["off", "default", "max"],
         help = "speed profile: off is bit-identical; default adds compile + "
-               "cudnn.benchmark (near-lossless); max also adds TF32 + fused QKV",
+        "cudnn.benchmark (near-lossless); max also adds TF32 + fused QKV",
     )
     p.add_argument(
         "--text-encoder-quant",
