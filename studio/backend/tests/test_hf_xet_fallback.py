@@ -323,7 +323,11 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
             path = None,
             target = None,
         ):
-            if name == "unsloth_zoo.hf_xet_fallback":
+            # The real crash is in unsloth_zoo's package __init__ (device
+            # detection), i.e. the PARENT import fails before the submodule is
+            # reached -- so intercept "unsloth_zoo" itself. This works whether or
+            # not unsloth_zoo is installed (the finder is first on meta_path).
+            if name == "unsloth_zoo":
                 # Record the env each import attempt sees; raise the no-GPU error
                 # both times so the shim ends up degrading (the recovery-succeeds
                 # path is covered by real unsloth_zoo on a CPU host in CI).
