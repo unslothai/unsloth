@@ -14,6 +14,7 @@ from .local_callable_validators import (
     register_oxc_local_callable_validators,
     split_oxc_local_callable_validators,
 )
+from .post_processors import is_studio_processor_type
 
 _IMAGE_CONTEXT_PATCHED = False
 
@@ -227,12 +228,6 @@ def build_config_builder(recipe: dict[str, Any]):
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(
         recipe_core
     )
-
-    # data_designer's pydantic config validates processors against a closed enum
-    # (drop_columns / schema_transform). Strip studio-owned processors BEFORE
-    # handing the config to from_config — they run out-of-band in worker.py
-    # after the recipe finishes producing rows.
-    from .post_processors import is_studio_processor_type
 
     raw_processors = recipe_core.get("processors") or []
     designer_processors: list[dict[str, Any]] = []

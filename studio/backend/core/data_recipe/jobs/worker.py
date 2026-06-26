@@ -17,6 +17,10 @@ from typing import Any
 
 from ..jsonable import to_jsonable, to_preview_jsonable
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
+from ..post_processors import (
+    apply_studio_post_processors,
+    apply_studio_post_processors_to_dataframe,
+)
 from ..service import build_config_builder, create_data_designer
 from utils.paths import ensure_dir, recipe_datasets_root
 
@@ -151,10 +155,6 @@ def run_job_process(
                 else to_jsonable(results.analysis.model_dump(mode = "json"))
             )
 
-            # Run studio-owned post-processors on the preview DataFrame so the
-            # user sees the same score columns that a full run would produce.
-            from ..post_processors import apply_studio_post_processors_to_dataframe
-
             preview_df = results.dataset
             if preview_df is not None:
                 preview_df = apply_studio_post_processors_to_dataframe(
@@ -192,11 +192,6 @@ def run_job_process(
                 _merge_batches_to_single_parquet(
                     results.artifact_storage.base_dataset_path
                 )
-
-            # Run studio-owned post-processors (e.g. json_document_score) on
-            # the parquet output. data_designer doesn't know about these
-            # types — they were filtered out in service.build_config_builder.
-            from ..post_processors import apply_studio_post_processors
 
             apply_studio_post_processors(
                 base_dataset_path = results.artifact_storage.base_dataset_path,

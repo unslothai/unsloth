@@ -15,7 +15,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .json_document_score import run_json_document_score
+from .json_document_score import (
+    run_json_document_score,
+    run_json_document_score_on_dataframe,
+)
 
 STUDIO_PROCESSOR_TYPES: frozenset[str] = frozenset({"json_document_score"})
 
@@ -66,8 +69,6 @@ def apply_studio_post_processors_to_dataframe(
     """In-memory variant of apply_studio_post_processors. Runs studio-owned
     processors against an in-memory DataFrame (used by the preview path).
     Non-studio entries are ignored. Returns the (mutated) df."""
-    from .json_document_score import run_json_document_score_on_dataframe
-
     for processor in processors:
         if not isinstance(processor, dict):
             continue
