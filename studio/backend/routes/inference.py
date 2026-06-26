@@ -7309,9 +7309,15 @@ async def _responses_stream(
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
     async def event_generator():
-        # Clean public id for every response envelope, so a legacy raw .gguf path
-        # sent as payload.model is sanitized and never echoed back to the client.
-        _clean_model = public_model_id(payload.model) or payload.model
+        # Clean public id for every response envelope. Prefer the loaded model's
+        # id so the stream agrees with /v1/models, chat/completions and the
+        # non-streaming twin; fall back to a sanitized payload.model (a legacy
+        # raw .gguf path is stripped, never echoed back).
+        _clean_model = (
+            public_model_id(getattr(llama_backend, "model_identifier", None))
+            or public_model_id(payload.model)
+            or payload.model
+        )
         full_text = ""
         full_reasoning = ""
         input_tokens = 0
