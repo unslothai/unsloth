@@ -209,6 +209,13 @@ COPY --from=labext-builder /opt/labext-src/unsloth-jupyterlab/labextension /opt/
 # Also disable + lock the stock top-left Jupyter logo plugin so the Unsloth logo
 # widget shipped by the labextension is the only one rendered in the top bar
 # (lock keeps users from re-enabling it in the UI).
+# The sloth-sticker install is the ONLY fail-soft branding step: it is scoped to
+# its own { ...; } group with a `|| echo` fallback below, so a missing Studio
+# "Sloth emojis" folder does not break the build, while the REQUIRED steps above
+# it (JS resolve, favicon/logo/login copy) stay fatal. (The comment is kept out
+# of the RUN body so no comment line sits inside a backslash continuation, which
+# some Dockerfile parsers choke on.) login.html's onerror falls back to the
+# Unsloth logo if the sticker dir is ever absent.
 COPY jupyter/favicon.ico /tmp/unsloth-branding/favicon.ico
 COPY jupyter/logo.png /tmp/unsloth-branding/logo.png
 COPY jupyter/login.html /tmp/unsloth-branding/login.html
@@ -219,12 +226,6 @@ RUN JS="$(/opt/unsloth-venv/bin/python -c 'import os, jupyter_server; print(os.p
     done \
  && cp /tmp/unsloth-branding/logo.png "${JS}/static/logo/logo.png" \
  && cp /tmp/unsloth-branding/login.html "${JS}/templates/login.html" \
-    # Copy the curated Studio sloth stickers the login page rotates through into
-    # jupyter_server's static dir (sloth/NN.png). Fail-soft -- but scoped to ONLY
-    # the sticker step via the { ...; } group so a failure in a REQUIRED branding
-    # step above (JS resolve, favicon/logo/login copy) still fails the build
-    # instead of being swallowed by this fallback. If the Studio public folder
-    # ever moves, login.html's onerror falls back to the logo.
  && { /opt/unsloth-venv/bin/python /tmp/unsloth-branding/install_sloth_stickers.py \
         --src "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/public/Sloth emojis" \
         --dest "${JS}/static/sloth" \
