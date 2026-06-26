@@ -711,9 +711,7 @@ def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[floa
 
 
 def _gpu_utilization_payload(
-    device: DeviceType,
-    devices: list[Dict[str, Any]],
-    **metadata: Any,
+    device: DeviceType, devices: list[Dict[str, Any]], **metadata: Any
 ) -> Dict[str, Any]:
     """Keep the legacy primary-GPU shape and append all visible devices."""
     backend = _backend_label(device)
