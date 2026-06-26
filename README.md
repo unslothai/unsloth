@@ -246,11 +246,7 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
 ```
 
-On macOS, the installer defaults to using the system certificate store (`UV_SYSTEM_CERTS=1`) so uv reads your system Keychain. This is required behind TLS-inspecting proxies (Cisco Umbrella, Zscaler, etc.); your corporate CA must be trusted in the Keychain first:
-```bash
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /path/to/ProxyCA.cer
-```
-To opt out of system certs on macOS:
+On macOS, the installer defaults to the system certificate store (`UV_SYSTEM_CERTS=1`) so uv trusts the CAs in your Keychain, needed behind TLS-inspecting proxies (Cisco Umbrella, Zscaler, etc.). Opt out with:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UV_SYSTEM_CERTS=0 sh
 ```
