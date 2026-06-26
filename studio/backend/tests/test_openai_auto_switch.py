@@ -1988,12 +1988,12 @@ def test_anthropic_invalid_tool_rejected_before_switch(monkeypatch):
 
 
 def test_anthropic_validates_tools_before_auto_switch():
-    # Lock the order at the source: tool-shape validation precedes the hook.
+    # Lock the order at the source: tool-shape validation precedes the hook, for
+    # both /messages and /messages/count_tokens (shared helper).
     import inspect
-    src = inspect.getsource(inference_route.anthropic_messages)
-    assert src.index("missing required field 'input_schema'") < src.index(
-        "_maybe_auto_switch_model"
-    )
+    for fn in (inference_route.anthropic_messages, inference_route.anthropic_count_tokens):
+        src = inspect.getsource(fn)
+        assert src.index("_validate_anthropic_client_tools") < src.index("_maybe_auto_switch_model")
 
 
 # ── codex review (round 2): schema-default model, Responses tool validation ──
@@ -2259,6 +2259,99 @@ def test_chat_validates_confirm_and_modality_before_switch():
     hook = inspect.getsource(inference_route._maybe_auto_switch_model)
     assert hook.index("require_vision") < hook.index("_load_model_impl")
     assert "does not support vision" in hook
+
+
+# ── codex review (round 5): count_tokens tools, tool_choice, process-wide gate ──
+
+
+def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
+    # Codex P2: /v1/messages/count_tokens must reject a malformed tool before the
+    # switch, like /messages, so a count request can't evict the loaded model.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    payload = _anthropic_payload_with_tools([{"name": "broken"}])  # no input_schema/type
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
+def test_chat_rejects_malformed_tool_choice_before_switch(monkeypatch):
+    # Codex P2: a forcing object with no function name must 400 before the switch.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("org/B-GGUF", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    payload = _chat_request(model = "org/B-GGUF", tool_choice = {"type": "function", "function": {}})
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
+def test_chat_valid_tool_choice_reaches_hook(monkeypatch):
+    # A well-formed forcing object must pass the pre-check and reach the hook.
+    class _Reached(Exception):
+        pass
+
+    async def _boom(*a, **k):
+        raise _Reached()
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
+    payload = _chat_request(
+        model = "org/B-GGUF", tool_choice = {"type": "function", "function": {"name": "ok"}}
+    )
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+
+def test_lifecycle_gate_serializes_across_loops():
+    # Codex P2: the lifecycle gate must be process-wide so a swap on one loop blocks
+    # inference starting on another. Two loops must never hold the gate at once.
+    import threading
+    from core.inference import llama_keepwarm as kw
+
+    state = {"cur": 0, "max": 0}
+    slock = threading.Lock()
+
+    async def _use():
+        async with kw._unload_gate():
+            with slock:
+                state["cur"] += 1
+                state["max"] = max(state["max"], state["cur"])
+            await asyncio.sleep(0.05)
+            with slock:
+                state["cur"] -= 1
+
+    barrier = threading.Barrier(2)
+
+    def _run():
+        barrier.wait()
+        asyncio.run(_use())
+
+    threads = [threading.Thread(target = _run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert state["max"] == 1  # never held on two loops at once
 
 
 def test_auto_switch_serializes_across_event_loops(monkeypatch):

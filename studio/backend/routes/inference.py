@@ -5205,6 +5205,23 @@ async def openai_chat_completions(
                     param = "confirm_tool_calls",
                 ),
             )
+        # Reject a malformed tool_choice forcing object before the switch: a
+        # {"type": "function", "function": {}} with no name would otherwise be
+        # forwarded to llama-server and rejected only after the model swapped.
+        _tc = payload.tool_choice
+        if isinstance(_tc, dict) and _tc.get("type") == "function":
+            _tc_fn = _tc.get("function")
+            _tc_name = _tc_fn.get("name") if isinstance(_tc_fn, dict) else None
+            if not isinstance(_tc_name, str) or not _tc_name.strip():
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "Invalid 'tool_choice': the forced function must have a 'name'.",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "tool_choice",
+                    ),
+                )
         _needs_vision = bool(_pre_parsed[2]) or _request_has_image(payload)
 
     await _maybe_auto_switch_model(
@@ -8731,6 +8748,28 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
 
 
 @router.post("/messages/count_tokens")
+def _validate_anthropic_client_tools(tools) -> None:
+    # Reject malformed client tools before any model load, so an invalid request
+    # never evicts the loaded model. AnthropicTool relaxed name/input_schema to
+    # Optional for server tools, so the converter silently drops incomplete
+    # entries; surface them as 400 here. A `type` field marks a server-tool
+    # declaration (unrecognized server tools are no-ops); anything else without
+    # input_schema or name is malformed.
+    for tool in tools or []:
+        td = tool if isinstance(tool, dict) else tool.model_dump()
+        name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
+        if schema is None and not isinstance(type_, str):
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Tool {name!r} is missing required field 'input_schema'.",
+            )
+        if schema is not None and (not isinstance(name, str) or not name):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Client tool is missing required field 'name'.",
+            )
+
+
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
     request: Request,
@@ -8743,6 +8782,9 @@ async def anthropic_count_tokens(
     tokenizer, and returns ``{"input_tokens": int}`` only. Unlike /messages,
     max_tokens is NOT required here.
     """
+    # Reject malformed tools before the switch, like /messages, so an invalid
+    # count request can't evict the loaded model.
+    _validate_anthropic_client_tools(payload.tools)
     # Count with the requested model's tokenizer, like the sibling /messages.
     await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
 
@@ -8836,25 +8878,9 @@ async def anthropic_messages(
             ),
         )
 
-    # Reject malformed client tools before any model load, so an invalid request
-    # never evicts the loaded model. AnthropicTool relaxed name/input_schema to
-    # Optional for server tools, so the converter silently drops incomplete
-    # entries; surface them as 400 here instead. A `type` field marks a server-tool
-    # declaration (unrecognized server tools are accepted as no-ops); anything else
-    # without input_schema or name is malformed.
-    for tool in payload.tools or []:
-        td = tool if isinstance(tool, dict) else tool.model_dump()
-        name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
-        if schema is None and not isinstance(type_, str):
-            raise HTTPException(
-                status_code = 400,
-                detail = f"Tool {name!r} is missing required field 'input_schema'.",
-            )
-        if schema is not None and (not isinstance(name, str) or not name):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Client tool is missing required field 'name'.",
-            )
+    # Reject malformed client tools before any model load (see helper), so an
+    # invalid request never evicts the loaded model.
+    _validate_anthropic_client_tools(payload.tools)
 
     await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
     if not llama_backend.is_loaded:

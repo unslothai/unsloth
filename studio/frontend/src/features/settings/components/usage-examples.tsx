@@ -75,7 +75,10 @@ const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
 const PROMPT = "Can Unsloth Studio do API calling?";
 // Auto-switch demo: a second call naming a different downloaded GGUF so the
 // example shows that the model field selects which model serves.
-const SWITCH_MODEL = "unsloth/Qwen3-4B-Instruct-2507-GGUF";
+// A placeholder the user replaces with one of their downloaded GGUFs. A fixed
+// repo is usually not one they have, so the resolver would fall through and the
+// demo would keep serving the current model instead of switching.
+const SWITCH_MODEL = "your-other-downloaded-GGUF";
 const SWITCH_PROMPT = "Now answer as a different model.";
 // web_search + python + terminal are the reliable built-in tools.
 const TOOLS = ["web_search", "python", "terminal"];
@@ -211,8 +214,9 @@ curl.exe ${base}/v1/chat/completions \`
 function pythonSwitchDemo(): string {
   return `
 
-# "Switch model by request" is on: name any other downloaded GGUF and Studio
-# loads it before serving. Unknown names keep serving the current model.
+# "Switch model by request" is on: replace the model below with another GGUF you
+# have downloaded and Studio loads it before serving. Unknown names keep serving
+# the current model.
 response = client.chat.completions.create(
     model=${j(SWITCH_MODEL)},
     messages=[{"role": "user", "content": ${j(SWITCH_PROMPT)}}],
@@ -481,7 +485,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               {t("settings.general.modelAutoSwitch.enable")}
             </span>
             <Tooltip>
-              <TooltipTrigger asChild>
+              <TooltipTrigger asChild={true}>
                 <button
                   type="button"
                   className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -515,9 +519,9 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               </span>
               {/* Only when not launched with --secure: the raw 0.0.0.0 port is
                   still globally reachable, so point the user at --secure. */}
-              {!secure ? (
+              {secure ? null : (
                 <Tooltip>
-                  <TooltipTrigger asChild>
+                  <TooltipTrigger asChild={true}>
                     <button
                       type="button"
                       className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -533,7 +537,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                     {t("settings.apiKeys.secureHttpsHint")}
                   </TooltipContent>
                 </Tooltip>
-              ) : null}
+              )}
             </div>
             {/* Always rendered (dimmed when off) so toggling never changes the
                 row height and shifts the code block below. */}

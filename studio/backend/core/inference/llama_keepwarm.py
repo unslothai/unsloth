@@ -12,9 +12,9 @@ outlives the TTL is never unloaded mid-response.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
-import weakref
 
 from loggers import get_logger
 
@@ -30,22 +30,25 @@ _last_active = time.monotonic()
 # otherwise 503 against an empty backend can reload it (set on unload, cleared on
 # reload). Storing the quant means the reload restores the exact freed variant.
 _last_unloaded_model = None
-# Guards inflight bumps against the idle-check-then-unload race. One lock per
-# running loop: a module-level asyncio.Lock binds to one loop and breaks
-# multi-loop runners (e.g. pytest's per-test loops on pre-3.10).
-_unload_gates: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+# Guards inflight bumps against the idle-check-then-unload race, and blocks new
+# inference from starting mid-swap. Process-wide, not per-loop: the backend slot is
+# shared across every event loop in the process, so a per-loop gate would let a
+# request on loop B start inference while a swap on loop A tears the model down.
+_lifecycle_lock = threading.Lock()
 
 
-def _unload_gate() -> asyncio.Lock:
-    loop = asyncio.get_running_loop()
-    # WeakKeyDictionary mutation isn't thread-safe; guard get-or-create so two
-    # loops on different threads can't race it. (_lock is released here before
-    # the returned asyncio lock is awaited, so there is no nesting.)
-    with _lock:
-        gate = _unload_gates.get(loop)
-        if gate is None:
-            gate = _unload_gates[loop] = asyncio.Lock()
-        return gate
+@contextlib.asynccontextmanager
+async def _unload_gate():
+    # Acquire off the loop: non-blocking first (the common uncontended case), else
+    # poll a non-blocking acquire off a short sleep. Polling keeps the wait off this
+    # loop AND cancellation-safe -- a cancel lands during the sleep, when the gate is
+    # not held, so it never leaks (mirrors the auto-switch swap gate).
+    while not _lifecycle_lock.acquire(blocking = False):
+        await asyncio.sleep(0.02)
+    try:
+        yield
+    finally:
+        _lifecycle_lock.release()
 
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
@@ -152,8 +155,9 @@ def untrack_current_request(scope) -> None:
     _note_untracked_end()
 
 
-def inference_lifecycle_gate() -> asyncio.Lock:
-    """The gate a model swap holds so new inference can't start mid-load."""
+def inference_lifecycle_gate():
+    """The gate a model swap holds so new inference can't start mid-load. Process-
+    wide, so a swap on one loop blocks inference starting on any other loop."""
     return _unload_gate()
 
 
