@@ -24,10 +24,31 @@ _CAPTION_PROMPT = (
 
 _OCR_PROMPT = (
     "Transcribe all text on this document page exactly as it appears, in reading "
-    "order. Output only the transcribed text, with no commentary, labels, or code "
-    "fences. Preserve headings, lists, and line breaks. If the page has no readable "
-    "text, output nothing."
+    "order, including any text inside figures, diagrams, charts, and tables (keep "
+    "table rows readable). Output only the transcribed text, with no commentary or "
+    "code fences. Preserve headings, lists, and line breaks. If the page has no "
+    "readable text, output nothing."
 )
+
+
+def _collapse_runaway(text: str, max_repeat: int = 3) -> str:
+    """Bound pathological repetition: some vision models loop on sparse images and
+    emit the same line hundreds of times. Cap any run of identical consecutive lines
+    at ``max_repeat`` so the index is not flooded; legitimate short repeats survive."""
+    out: list[str] = []
+    prev: str | None = None
+    run = 0
+    for line in text.splitlines():
+        key = line.strip()
+        if key and key == prev:
+            run += 1
+            if run > max_repeat:
+                continue
+        else:
+            prev = key
+            run = 1
+        out.append(line)
+    return "\n".join(out)
 
 
 def vision_endpoint() -> tuple[str, str] | None:
@@ -135,7 +156,7 @@ def ocr_pages(
     for page_num in sorted(page_pngs)[: config.OCR_MAX_PAGES]:
         text = _ocr_one(base_url, model, page_pngs[page_num], config.OCR_TIMEOUT_S)
         if text:
-            out[int(page_num)] = text
+            out[int(page_num)] = _collapse_runaway(text)
     return out
 
 

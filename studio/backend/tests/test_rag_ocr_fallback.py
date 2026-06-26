@@ -86,6 +86,29 @@ def test_ocr_pages_no_endpoint(monkeypatch):
     assert captioner.ocr_pages({1: b"x"}) == {}
 
 
+def test_collapse_runaway_caps_repeated_lines():
+    # A vision model looping on a sparse image emits one line hundreds of times;
+    # the guard caps consecutive identical lines while keeping legitimate repeats.
+    text = "\n".join(["TITLE"] * 200 + ["body"] + ["Add & Norm"] * 3)
+    out = captioner._collapse_runaway(text)
+    lines = out.splitlines()
+    assert lines.count("TITLE") == 3  # 200 -> 3
+    assert lines.count("Add & Norm") == 3  # legitimate triple survives
+    assert "body" in lines
+
+
+def test_collapse_runaway_noop_on_normal_text():
+    text = "Heading\n\nFirst paragraph.\nSecond paragraph.\n\nFooter"
+    assert captioner._collapse_runaway(text) == text
+
+
+def test_ocr_pages_applies_runaway_guard(monkeypatch):
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
+    monkeypatch.setattr(captioner, "_ocr_one", lambda *a: "\n".join(["X"] * 50))
+    out = captioner.ocr_pages({1: b"img"}, endpoint = ("http://x", "local"))
+    assert out[1].splitlines().count("X") == 3  # guard applied to stored text
+
+
 def test_ocr_pages_transcribes_and_caps(monkeypatch):
     monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
     monkeypatch.setattr(captioner.config, "OCR_MAX_PAGES", 1)
