@@ -664,15 +664,13 @@ def _force_hf_offline():
         if _force_offline_depth == 0:
             saved = []
             saved_env = {}
-            for _k in _OFFLINE_ENV_KEYS:
-                saved_env[_k] = os.environ.get(_k)
-                os.environ[_k] = "1"
-            # In-process constants cover already-imported transformers/hf_hub.
+            # Snapshot in-process constants BEFORE forcing the env: a module first imported
+            # here would otherwise initialize its constant from the just-set "1" and we would
+            # save (then restore) True, pinning the process offline after the window.
             try:
                 import huggingface_hub.constants as _hfc
                 if hasattr(_hfc, "HF_HUB_OFFLINE"):
                     saved.append((_hfc, "HF_HUB_OFFLINE", _hfc.HF_HUB_OFFLINE))
-                    _hfc.HF_HUB_OFFLINE = True
             except Exception:
                 pass
             try:
@@ -680,9 +678,17 @@ def _force_hf_offline():
                 for _attr in ("_is_offline_mode", "OFFLINE"):
                     if hasattr(_tuh, _attr):
                         saved.append((_tuh, _attr, getattr(_tuh, _attr)))
-                        setattr(_tuh, _attr, True)
             except Exception:
                 pass
+            # Now force the env vars and flip the snapshotted constants to offline.
+            for _k in _OFFLINE_ENV_KEYS:
+                saved_env[_k] = os.environ.get(_k)
+                os.environ[_k] = "1"
+            for _obj, _attr, _ in saved:
+                try:
+                    setattr(_obj, _attr, True)
+                except Exception:
+                    pass
             _force_offline_saved = saved
             _force_offline_saved_env = saved_env
             # Rebuild cached sessions so they pick up the offline adapter.
@@ -792,14 +798,25 @@ def _has_local_tokenizer_files(path):
     )
 
 
-def _resolve_checkpoint_tokenizer_name(old_model_name, kwargs):
-    """tokenizer_name for a PEFT/checkpoint load: caller override, else the local
-    checkpoint dir if self-sufficient, else None (base repo). Always popped from kwargs
-    (also passed explicitly downstream)."""
+def _has_local_processor_files(path):
+    """True if a local dir ships a processor/image-processor config (a VLM needs this to
+    build AutoProcessor; tokenizer files alone are not enough)."""
+    return os.path.exists(os.path.join(path, "processor_config.json")) or os.path.exists(
+        os.path.join(path, "preprocessor_config.json")
+    )
+
+
+def _resolve_checkpoint_tokenizer_name(old_model_name, kwargs, require_processor = False):
+    """tokenizer_name for a PEFT/checkpoint load: caller override, else the local checkpoint
+    dir if self-sufficient, else None (base repo). Always popped from kwargs (also passed
+    explicitly downstream). For a VLM (require_processor), the dir must also ship processor
+    files; otherwise fall back to the base repo whose cached processor still loads."""
     explicit = kwargs.pop("tokenizer_name", None)
     if explicit is not None:
         return explicit
     has_config = os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
-    if has_config and _has_local_tokenizer_files(old_model_name):
-        return old_model_name
-    return None
+    if not (has_config and _has_local_tokenizer_files(old_model_name)):
+        return None
+    if require_processor and not _has_local_processor_files(old_model_name):
+        return None
+    return old_model_name

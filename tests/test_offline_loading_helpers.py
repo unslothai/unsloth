@@ -485,3 +485,56 @@ def test_retry_runs_gc_collect_between_attempts(monkeypatch):
     assert fake("model") == "ok"
     assert len(calls) == 2
     assert len(gc_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# _force_hf_offline — constant restore (no stale offline pin)
+# ---------------------------------------------------------------------------
+
+
+def test_force_offline_restores_freshly_imported_constant(monkeypatch):
+    # If huggingface_hub.constants is first imported inside the window, the saved value must
+    # be the pre-window state, not the just-forced "1"; otherwise the process pins offline.
+    import sys
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    saved_mod = sys.modules.get("huggingface_hub.constants")
+    saved_val = getattr(saved_mod, "HF_HUB_OFFLINE", None) if saved_mod else None
+    try:
+        sys.modules.pop("huggingface_hub.constants", None)  # simulate "not imported yet"
+        with L._force_hf_offline():
+            import huggingface_hub.constants as hfc_in
+
+            assert hfc_in.HF_HUB_OFFLINE is True  # forced offline inside the window
+        import huggingface_hub.constants as hfc_after
+
+        assert hfc_after.HF_HUB_OFFLINE is False  # restored, not pinned True
+        assert os.environ.get("HF_HUB_OFFLINE") is None
+    finally:
+        if saved_mod is not None:
+            sys.modules["huggingface_hub.constants"] = saved_mod
+            if saved_val is not None:
+                saved_mod.HF_HUB_OFFLINE = saved_val
+
+
+# ---------------------------------------------------------------------------
+# _resolve_checkpoint_tokenizer_name — VLM needs local processor files
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
+    # VLM checkpoint with tokenizer files but no processor config -> base repo (None), so its
+    # cached processor still loads instead of AutoProcessor failing on the local dir.
+    _touch(tmp_path, "tokenizer_config.json")
+    _touch(tmp_path, "tokenizer.json")
+    assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) is None
+
+
+def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
+    _touch(tmp_path, "tokenizer_config.json")
+    _touch(tmp_path, "tokenizer.json")
+    _touch(tmp_path, "preprocessor_config.json")
+    assert L._resolve_checkpoint_tokenizer_name(
+        str(tmp_path), {}, require_processor = True
+    ) == str(tmp_path)

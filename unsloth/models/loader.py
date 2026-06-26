@@ -1557,8 +1557,16 @@ class FastModel(FastBaseModel):
             if model_type in model_types_all:
                 supports_sdpa = False
 
-        # Keep the local checkpoint dir as tokenizer when self-sufficient (see _resolve_checkpoint_tokenizer_name).
-        tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, kwargs)
+        # Keep the local checkpoint dir as tokenizer when self-sufficient (see
+        # _resolve_checkpoint_tokenizer_name). A VLM also needs local processor files, else
+        # we fall back to the base repo so its cached processor loads.
+        _ckpt_arch = getattr(model_config, "architectures", None) or []
+        _ckpt_is_vlm = any(x.endswith("ForConditionalGeneration") for x in _ckpt_arch) or hasattr(
+            model_config, "vision_config"
+        )
+        tokenizer_name = _resolve_checkpoint_tokenizer_name(
+            old_model_name, kwargs, require_processor = _ckpt_is_vlm
+        )
 
         # Capture task intent before text_only can replace a parent VLM config
         # with its nested text config.
