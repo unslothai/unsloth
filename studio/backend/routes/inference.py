@@ -2255,10 +2255,14 @@ _auto_switch_process_lock = threading.Lock()
 
 
 async def _acquire_swap_gate() -> None:
-    # Non-blocking first for the common single-loop case; only wait off the loop
-    # (so it isn't blocked) when another loop actually holds the gate.
-    if not _auto_switch_process_lock.acquire(blocking = False):
-        await asyncio.to_thread(_auto_switch_process_lock.acquire)
+    # Non-blocking first for the common single-loop case; otherwise poll off a
+    # short sleep rather than awaiting to_thread(acquire). A cancelled to_thread
+    # (client disconnect mid-wait) leaves its worker thread still acquiring, so the
+    # gate gets taken but the finally that releases it never runs -- deadlocking
+    # later swaps. Polling keeps the wait off this loop AND cancellation-safe: a
+    # cancel lands during the sleep, when the gate is not held.
+    while not _auto_switch_process_lock.acquire(blocking = False):
+        await asyncio.sleep(0.02)
 
 
 # Counts in-flight auto-switch requests per (target, variant). The busy guard

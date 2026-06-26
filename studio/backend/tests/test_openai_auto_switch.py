@@ -2180,3 +2180,28 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
 
     assert state["max"] == 1  # the gate serialized the two cross-loop swaps
     assert sorted(loaded) == ["org/B-GGUF", "org/C-GGUF"]  # both still swapped
+
+
+def test_acquire_swap_gate_is_cancellation_safe():
+    # A waiter cancelled while waiting for the gate (client disconnect mid-swap)
+    # must not leak it: after the holder releases, a fresh acquire still succeeds.
+    # The to_thread(acquire) approach would leak here -- its worker thread keeps
+    # acquiring after cancel, so the gate is taken but never released.
+    async def main():
+        await inference_route._acquire_swap_gate()  # this loop holds the gate
+        try:
+            async def waiter():
+                await inference_route._acquire_swap_gate()
+
+            t = asyncio.create_task(waiter())
+            await asyncio.sleep(0.05)  # let it spin waiting on the held gate
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+        finally:
+            inference_route._auto_switch_process_lock.release()
+        # Gate is free again (the cancelled waiter never acquired it).
+        await asyncio.wait_for(inference_route._acquire_swap_gate(), timeout = 1)
+        inference_route._auto_switch_process_lock.release()
+
+    asyncio.run(asyncio.wait_for(main(), timeout = 5))
