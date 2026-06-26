@@ -329,6 +329,25 @@ class TestBucketKeyAndBlocking:
         auth_routes._record_login_failure(attacker)
         assert auth_routes._login_blocked(attacker) > 0
 
+    def test_overflow_shard_is_memory_bounded_under_cardinality_spray(
+        self, env_no_proxy, monkeypatch
+    ):
+        """A high-cardinality spray must not grow overflow memory without bound:
+        each shard tracks at most _LOGIN_IP_OVERFLOW_MAX distinct IPs.
+        """
+        from routes import auth as auth_routes
+
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_OVERFLOW_MAX", 8)
+
+        # Saturate the dict, then spray thousands of distinct one-off IPs.
+        for idx in range(10):
+            auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
+        for idx in range(5000):
+            auth_routes._record_login_failure((f"198.51.{idx // 256}.{idx % 256}", "admin"))
+
+        assert all(len(shard) <= 8 for shard in auth_routes._LOGIN_IP_OVERFLOW)
+
     def test_successful_login_clears_overflow_throttle(self, env_no_proxy, monkeypatch):
         """A successful login resets the IP's throttle, including overflow, so a
         single later typo is not immediately blocked.
