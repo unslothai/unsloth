@@ -1392,9 +1392,7 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         # on a package with a multi-MiB install script does not bloat the baseline
         # JSON while the digest still binds the full body. Whitespace-normalized to
         # match _evidence_hash so a reindent alone does not reopen.
-        body_digest = hashlib.sha256(
-            " ".join(body.split()).encode("utf-8", "replace")
-        ).hexdigest()
+        body_digest = hashlib.sha256(" ".join(body.split()).encode("utf-8", "replace")).hexdigest()
         if _LIFECYCLE_FETCH_EXEC.search(body):
             findings.append(
                 Finding(

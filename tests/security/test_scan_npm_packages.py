@@ -661,9 +661,7 @@ def _lifecycle_finding(body, frag):
     )
     text = json.dumps({"scripts": {"postinstall": body}})
     return [
-        f
-        for f in snp.scan_package_json(pkg, "package/package.json", text)
-        if frag in f.pattern
+        f for f in snp.scan_package_json(pkg, "package/package.json", text) if frag in f.pattern
     ][0]
 
 
