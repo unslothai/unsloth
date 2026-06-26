@@ -697,9 +697,7 @@ def _parse_mistral_tool_calls(
         return out
 
     if content[k] == "[":
-        return _parse_mistral_array(
-            content, k, id_offset, allow_incomplete = allow_incomplete
-        )
+        return _parse_mistral_array(content, k, id_offset, allow_incomplete = allow_incomplete)
 
     if content[k] == "{":
         # Pre-v11 single ``{"name":...}``; fall through if it doesn't

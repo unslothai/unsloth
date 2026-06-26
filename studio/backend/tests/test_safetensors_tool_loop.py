@@ -1579,9 +1579,9 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
-        assert "_shared_strip_tool_markup" in src, (
-            "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
-        )
+        assert (
+            "_shared_strip_tool_markup" in src
+        ), "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
 
     def test_gguf_uses_canonical_heal_keys(self):
         # GGUF and safetensors heal a bare-string ``arguments`` to the same
