@@ -268,7 +268,12 @@ def test_degrades_when_shared_helper_import_raises_importerror():
     import importlib
 
     class _BlockWithImportError:
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "unsloth_zoo.hf_xet_fallback":
                 # Mirror unsloth_zoo/__init__ raising on a torch-less install: a
                 # plain ImportError with no .name, surfaced while importing the
