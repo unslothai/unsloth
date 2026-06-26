@@ -17,16 +17,22 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable, Optional
 
+_shared_import_error = None
 try:
     import unsloth_zoo.hf_xet_fallback as _shared
     _shared_available = True
-except ModuleNotFoundError as exc:
-    # Degrade when the shared helper is unavailable: either unsloth_zoo is too old
-    # to ship hf_xet_fallback, or unsloth_zoo is not importable at all (a
-    # Studio-only test/build environment without the heavy ML package). Re-raise
-    # any other missing module, which would indicate a real bug inside the helper.
-    if exc.name not in ("unsloth_zoo", "unsloth_zoo.hf_xet_fallback"):
-        raise
+except ImportError as exc:
+    # The `as exc` name is unbound when the except block exits, so stash the cause
+    # in a module-level name the degraded branch below can still log.
+    _shared_import_error = exc
+    # Degrade whenever the shared helper cannot be imported. Real cases in Studio
+    # deployments: unsloth_zoo is absent or too old to ship hf_xet_fallback
+    # (ModuleNotFoundError), or unsloth_zoo IS installed but importing it raises
+    # ImportError because a heavy dependency it initializes at package import (e.g.
+    # torch) is missing -- a llama.cpp/GGUF-only Studio install has no torch. In
+    # every case Studio must still boot with plain HF downloads instead of crashing
+    # the server on import; a genuinely broken helper degrades here too, which is
+    # the intended best-effort posture (the cause is logged below).
     _shared_available = False
 
 if _shared_available:
@@ -51,9 +57,10 @@ else:
     import logging as _logging
 
     _logging.getLogger(__name__).warning(
-        "unsloth_zoo.hf_xet_fallback not found; the Xet stall watchdog is "
-        "disabled. Upgrade unsloth_zoo to re-enable automatic Xet -> HTTP "
-        "download recovery."
+        "unsloth_zoo.hf_xet_fallback unavailable (%s); the Xet stall watchdog is "
+        "disabled. Install/upgrade unsloth_zoo (and its torch dependency) to "
+        "re-enable automatic Xet -> HTTP download recovery.",
+        _shared_import_error,
     )
 
     DEFAULT_HEARTBEAT_INTERVAL = 30.0

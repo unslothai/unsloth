@@ -39,12 +39,10 @@ import huggingface_hub
 try:
     import unsloth_zoo.hf_xet_fallback as _shared_mod
     shared = _shared_mod
-except ModuleNotFoundError as exc:
-    # The degraded-path test must still collect when unsloth_zoo lacks the helper
-    # OR is not installed at all (a Studio-only test/build env without the heavy
-    # ML package) -- the same two cases the shim itself degrades for.
-    if exc.name not in ("unsloth_zoo", "unsloth_zoo.hf_xet_fallback"):
-        raise
+except ImportError:
+    # The degraded-path test must still collect when unsloth_zoo lacks the helper,
+    # is not installed at all, or is installed but fails to import because torch is
+    # absent -- the same ImportError cases the shim itself degrades for.
     shared = None
 
 import utils.hf_xet_fallback as xf
@@ -257,5 +255,44 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
         sys.meta_path.remove(finder)
         sys.modules.pop("utils.hf_xet_fallback", None)
         sys.modules.update(saved)
+        if saved_shim is not None:
+            sys.modules["utils.hf_xet_fallback"] = saved_shim
+
+
+def test_degrades_when_shared_helper_import_raises_importerror():
+    """unsloth_zoo can be installed yet fail to import because a heavy dependency
+    it initializes at package import (torch) is missing -- a llama.cpp/GGUF-only
+    Studio install has no torch. That raises ImportError (not ModuleNotFoundError),
+    so the shim must degrade for it too rather than crash the Studio server at
+    startup. Regression guard for the inference E2E jobs."""
+    import importlib
+
+    class _BlockWithImportError:
+        def find_spec(self, name, path = None, target = None):
+            if name == "unsloth_zoo.hf_xet_fallback":
+                # Mirror unsloth_zoo/__init__ raising on a torch-less install: a
+                # plain ImportError with no .name, surfaced while importing the
+                # submodule's parent package.
+                raise ImportError("Unsloth: Pytorch is not installed.")
+            return None
+
+    finder = _BlockWithImportError()
+    saved_shared = sys.modules.pop("unsloth_zoo.hf_xet_fallback", None)
+    saved_zoo = sys.modules.pop("unsloth_zoo", None)
+    saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
+    sys.meta_path.insert(0, finder)
+    try:
+        degraded = importlib.import_module("utils.hf_xet_fallback")
+        assert issubclass(degraded.DownloadStallError, RuntimeError)
+        assert degraded.get_hf_download_state(["x"]) is None
+        event = degraded.start_watchdog(repo_ids = ["x"], on_stall = lambda m: None)
+        assert hasattr(event, "set") and not event.is_set()
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("utils.hf_xet_fallback", None)
+        if saved_shared is not None:
+            sys.modules["unsloth_zoo.hf_xet_fallback"] = saved_shared
+        if saved_zoo is not None:
+            sys.modules["unsloth_zoo"] = saved_zoo
         if saved_shim is not None:
             sys.modules["utils.hf_xet_fallback"] = saved_shim
