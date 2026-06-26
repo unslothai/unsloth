@@ -2120,9 +2120,14 @@ def _request_matches_loaded_settings(
     # A tensor->layer fallback spread this load across GPUs only to honor a tensor
     # request (preserve_multi_gpu_on_layer). Both report tensor=off, so the check
     # above matches, but if the user now explicitly drops that intent -- via the
-    # toggle or via extras (e.g. --split-mode layer, matching the stored extras) --
-    # reload so placement re-selects (single GPU for a 1-GPU-fit model) instead of
-    # deduping to the fallback's all-GPU mask (#6659).
+    # toggle, or via any explicit extras whose effective tensor state is off (a
+    # --split-mode layer that matches the stored extras, or any non-tensor extras
+    # that clear the preserved pin) -- reload so placement re-selects (single GPU
+    # for a 1-GPU-fit model) instead of deduping to the all-GPU mask (#6659). The
+    # toggle is read from model_fields_set (explicit vs default); extras intent is
+    # _effective_tensor_parallel without env, so an env-only tensor request reads as
+    # off here, matching _tensor_parallel_matches_loaded which ignores env on a
+    # downgraded server.
     if llama_backend.layer_preserves_tensor_intent:
         _fields_set = getattr(request, "model_fields_set", set())
         _explicit_toggle_off = "tensor_parallel" in _fields_set and not request.tensor_parallel

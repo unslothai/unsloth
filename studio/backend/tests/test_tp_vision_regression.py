@@ -216,8 +216,9 @@ def test_tensor_split_abort_recorded_early_on_first_spawn():
     assert idx != -1, "load_model must record a (binary, model) tensor-split abort"
     guard = src[max(0, idx - 600) : idx]
     assert "self._tensor_parallel" in guard
-    assert "_is_signal_crash" in guard, "record must be gated on a hard signal crash"
-    assert "_is_tensor_split_assert" in guard, "record must be confirmed by the :541 marker"
+    assert (
+        "_should_record_tensor_split_abort" in guard
+    ), "record must be gated on the marker-plus-hard-crash decision helper"
     # Recorded before the flash-attn-off retry, not after the full ladder.
     fa_off = src.find("_with_flash_attn_off")
     assert 0 <= idx < fa_off, "recording must latch on the first spawn, before flash-off"
@@ -351,9 +352,9 @@ def test_tensor_split_abort_raises_early_to_layer_fallback():
     # raises before both the flash-attn-off retry and the text-only mmproj strip
     assert raise_idx < src.find("_with_flash_attn_off")
     assert raise_idx < src.find("_strip_mmproj_args(_last_spawn_cmd)")
-    # gated on the :541 signature, which also drives the record just above
+    # gated on the marker-plus-crash helper, which also drives the record just above
     guard = src[max(0, raise_idx - 600) : raise_idx]
-    assert "_is_tensor_split_assert" in guard
+    assert "_should_record_tensor_split_abort" in guard
     rec_idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
     assert rec_idx != -1 and rec_idx < raise_idx
 
@@ -499,19 +500,39 @@ def test_layer_preserve_hint_replayed_on_respawn():
     )
 
 
-def test_tensor_split_record_requires_signal_crash_and_marker():
-    """The record is gated on the split-axis marker plus a hard crash (POSIX signal
-    or the Windows CRT abort() exit), so a projector that SIGSEGVs independent of
-    split mode, or an unrelated assert, is not cached (Codex reviews on #6659)."""
+def test_should_record_tensor_split_abort_decision():
+    """Behavioral check of the record decision (marker AND (signal crash OR Windows
+    abort)), so an `or`->`and` typo that would silently break Windows recording, or
+    caching a generic crash, fails here -- not just the source-inspection pins."""
+    f = LlamaCppBackend._should_record_tensor_split_abort
+    marker = "ggml-backend-meta.cpp:541: GGML_ASSERT(x.axis != GGML_BACKEND_SPLIT_AXIS_0) failed"
+    # marker + a hard crash records, across every platform's abort encoding
+    assert f(-6, marker) is True  # POSIX SIGABRT
+    assert f(-11, marker) is True  # POSIX SIGSEGV
+    assert f(3, marker) is True  # Windows CRT abort() exit (not a signal)
+    assert f(0xC0000005, marker) is True  # Windows NTSTATUS access violation
+    # marker present but no hard crash -> not recorded
+    assert f(0, marker) is False  # clean exit
+    assert f(-9, marker) is False  # SIGKILL (OOM / unload), not a fault
+    assert f(None, marker) is False  # still running
+    # hard crash but not the split-axis marker -> not recorded (no over-caching)
+    assert f(3, "some other failure") is False
+    assert f(-6, "GGML_ASSERT(buf != NULL) failed") is False
+    assert f(0xC0000005, "") is False
+
+
+def test_fit_off_retry_skipped_on_split_axis_abort():
+    """The --fit off retry in _spawn_and_wait is fit-independent for a split-axis
+    abort, so it's skipped on that marker -- otherwise the model warms up and crashes
+    a second time before the latch records it (reviewer.py follow-up, #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
-    assert idx != -1
-    guard = src[max(0, idx - 400) : idx]
-    assert "_is_signal_crash" in guard
-    assert "_is_tensor_split_assert" in guard
-    # Windows: GGML_ASSERT aborts via the CRT (exit 3), not a signal, so the marker
-    # must also accept the abort exit or the cache never fills on Windows builds.
-    assert "_is_abort_exit" in guard
+    retry = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
+    assert retry != -1
+    guard = src[max(0, retry - 1000) : retry]
+    assert "_fit_retry_allowed" in guard and "_startup_crashed" in guard
+    assert (
+        "not _split_axis_crash" in guard
+    ), "the fit-off retry must be skipped when the crash is a split-axis abort"
 
 
 def test_is_abort_exit_recognizes_windows_crt_abort():

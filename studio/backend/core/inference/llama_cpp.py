@@ -4422,6 +4422,15 @@ class LlamaCppBackend:
         builds, where it's neither a POSIX signal nor a 0xC0000000+ NTSTATUS."""
         return returncode == 3
 
+    @classmethod
+    def _should_record_tensor_split_abort(cls, returncode: Optional[int], output: str) -> bool:
+        """True when a crashed spawn is the #6415 split-axis abort: the definitive
+        marker plus a hard crash -- a POSIX signal or the Windows CRT abort() exit.
+        The marker is required so a generic exit 3 / signal isn't cached."""
+        return cls._is_tensor_split_assert(output) and (
+            cls._is_signal_crash(returncode) or cls._is_abort_exit(returncode)
+        )
+
     @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
@@ -5986,7 +5995,18 @@ class LlamaCppBackend:
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
-                        if _spawn_attempt == 0 and _fit_retry_allowed and _startup_crashed:
+                        # A split-axis geometry abort (#6415) is fit-independent, so the
+                        # --fit off retry would just crash again; skip it and let the
+                        # caller latch the abort straight away.
+                        _split_axis_crash = self._is_tensor_split_assert(
+                            "\n".join(self._stdout_lines[-50:])
+                        )
+                        if (
+                            _spawn_attempt == 0
+                            and _fit_retry_allowed
+                            and _startup_crashed
+                            and not _split_axis_crash
+                        ):
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
                                 "with the default memory-fit step enabled; Studio "
@@ -6039,15 +6059,12 @@ class LlamaCppBackend:
                 # :541 signature -- recording only after the full ladder would miss it
                 # and the crash loop would repeat every load. Record per (binary,
                 # model) and hand straight to the route fallback for layer split,
-                # skipping the (futile, ~1min) flash-attn/MTP retries for this crash.
+                # skipping the futile flash-attn/MTP retries for this crash (the
+                # fit-off retry inside _spawn_and_wait already skips it on this marker).
                 if not healthy and self._tensor_parallel and not self._cancel_event.is_set():
                     _ts_out = "\n".join(self._stdout_lines[-50:])
                     _ts_rc = self._process.poll() if self._process is not None else None
-                    # The split-axis marker is definitive, so accept a POSIX signal
-                    # crash or the Windows CRT abort() exit (3) it can also raise.
-                    if self._is_tensor_split_assert(_ts_out) and (
-                        self._is_signal_crash(_ts_rc) or self._is_abort_exit(_ts_rc)
-                    ):
+                    if self._should_record_tensor_split_abort(_ts_rc, _ts_out):
                         LlamaCppBackend._record_tensor_split_abort(binary, model_identifier)
                         self._kill_process()
                         raise RuntimeError(
@@ -6677,6 +6694,9 @@ class LlamaCppBackend:
         # request; both report tensor=off so the check above matches. If this
         # request drops tensor intent, reload so placement re-selects rather than
         # short-circuiting to the fallback's all-GPU mask (mirrors the route, #6659).
+        # kwargs are pre-resolved here so this is broader than the route's
+        # model_fields_set check; it only ever forces a reload (safe), never a wrong
+        # dedup, and the route runs first. env excluded (as _tensor_parallel_matches).
         if self._layer_preserves_tensor_intent and not _effective_tensor_parallel(
             extra_args, tensor_parallel
         ):
