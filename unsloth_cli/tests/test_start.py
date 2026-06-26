@@ -302,6 +302,10 @@ def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
     assert not home.exists()  # cleaned up after the agent exits
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "the #6547 CI parser is bash-only; on Windows --no-launch prints PowerShell",
+)
 def test_no_launch_output_is_parseable(fake_studio):
     # Mirror the #6547 CI parser: status lines, then `export`/`unset`, then exactly
     # one launch command on the last line.
