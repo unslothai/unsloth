@@ -23,6 +23,7 @@ export type PresetOwnedParams = Pick<
   | "presencePenalty"
   | "maxTokens"
   | "systemPrompt"
+  | "systemVariables"
 >;
 
 export const BUILTIN_PRESETS: Preset[] = [
@@ -104,7 +105,8 @@ export function getPresetOwnedParams(
     repetitionPenalty: params.repetitionPenalty,
     presencePenalty: params.presencePenalty,
     maxTokens: params.maxTokens,
-    systemPrompt: params.systemPrompt,
+    systemPrompt: params.systemPrompt ?? "",
+    systemVariables: params.systemVariables ?? "",
   };
 }
 
@@ -122,7 +124,8 @@ export function isSamePresetConfig(
     left.repetitionPenalty === right.repetitionPenalty &&
     left.presencePenalty === right.presencePenalty &&
     left.maxTokens === right.maxTokens &&
-    left.systemPrompt === right.systemPrompt
+    left.systemPrompt === right.systemPrompt &&
+    left.systemVariables === right.systemVariables
   );
 }
 

@@ -60,6 +60,7 @@ from utils.transformers_version import (
     activate_transformers_for_subprocess,
     _venv_dir_is_valid,
     _ensure_venv_dir,
+    hf_endpoint_unreachable,
 )
 
 
@@ -2428,3 +2429,124 @@ class TestMalformedInputRobustness:
 
     def test_empty_name_returns_default(self):
         assert get_transformers_tier("") == "default"
+
+
+# ---------------------------------------------------------------------------
+# Offline negatives must not poison the version caches (persistent worker)
+# ---------------------------------------------------------------------------
+
+
+class TestOfflineCacheNotPoisoned:
+    """An offline first load must not leave a stale negative for a later online read."""
+
+    def setup_method(self):
+        _tokenizer_class_cache.clear()
+        _config_json_cache.clear()
+
+    def test_offline_tokenizer_assumption_not_cached(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        # No local file, not a local dir -> offline branch returns False without caching.
+        assert _check_tokenizer_config_needs_v5("org/uncached") is False
+        assert ("org/uncached", None) not in _tokenizer_class_cache
+
+    def test_offline_then_online_refetches(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        # 1) Offline: returns False, nothing cached.
+        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        assert _check_tokenizer_config_needs_v5("org/needs5") is False
+        assert ("org/needs5", None) not in _tokenizer_class_cache
+
+        # 2) Back online: the real fetch runs (cache was not poisoned) and is honored.
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+
+        class _Resp:
+            def read(self):
+                return json.dumps({"tokenizer_class": "TokenizersBackend"}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout = 10: _Resp())
+        assert _check_tokenizer_config_needs_v5("org/needs5") is True
+
+    def test_offline_config_miss_not_cached(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        monkeypatch.setattr(tv, "_config_json_from_hf_cache", lambda name: None)
+        assert _load_config_json("org/uncached-config", None) is None
+        assert ("org/uncached-config", None) not in _config_json_cache
+
+
+# ---------------------------------------------------------------------------
+# hf_endpoint_unreachable — bounded, proxy/egress-aware reachability probe
+# ---------------------------------------------------------------------------
+
+
+class TestHfEndpointUnreachable:
+    def test_reachable_returns_false(self, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_gateway_error_is_unreachable(self, monkeypatch):
+        import urllib.error
+
+        def _gw(*a, **k):
+            raise urllib.error.HTTPError("http://x", 504, "Gateway Timeout", {}, None)
+
+        monkeypatch.setattr("urllib.request.urlopen", _gw)
+        assert hf_endpoint_unreachable(timeout = 2) is True
+
+    def test_other_http_status_is_reachable(self, monkeypatch):
+        import urllib.error
+
+        def _405(*a, **k):
+            raise urllib.error.HTTPError("http://x", 405, "Method Not Allowed", {}, None)
+
+        monkeypatch.setattr("urllib.request.urlopen", _405)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_tls_failure_is_reachable(self, monkeypatch):
+        import ssl
+        import urllib.error
+
+        def _tls(*a, **k):
+            raise urllib.error.URLError(ssl.SSLCertVerificationError("self-signed"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _tls)
+        # TLS reached the server: treat as reachable so the load surfaces the cert error.
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_dns_failure_is_unreachable(self, monkeypatch):
+        import socket
+        import urllib.error
+
+        def _dns(*a, **k):
+            raise urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _dns)
+        assert hf_endpoint_unreachable(timeout = 2) is True
+
+    def test_hung_probe_is_bounded(self, monkeypatch):
+        import time
+
+        def _hang(*a, **k):
+            time.sleep(30)
+
+        monkeypatch.setattr("urllib.request.urlopen", _hang)
+        t0 = time.time()
+        result = hf_endpoint_unreachable(timeout = 2)
+        assert result is True and (time.time() - t0) < 6.0
