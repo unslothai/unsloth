@@ -2237,15 +2237,15 @@ exit 0
             if ($torchInstallExit -ne 0) {
                 # Transient AMD-index failure: fall back to a CPU base so the install
                 # still completes; Studio setup retries ROCm afterwards.
+                # Use an explicit CPU index: in the unpinned AMD path $TorchIndexUrl is
+                # already */cpu, but for a pinned ROCm index it IS the ROCm mirror, so
+                # reusing it here would just retry the failing ROCm index, not fall back.
+                $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Studio setup retries ROCm." "Yellow"
                 # --force-reinstall: a failed ROCm install can leave an unpinned ROCm
                 # torch (e.g. 2.10.0+rocm on gfx110X/gfx90a) that still satisfies the CPU
                 # torch>= range, so without it uv would keep the ROCm build and only swap
                 # the companions -- a mismatched venv the flavor-repair block won't fix.
-                # Use an explicit CPU index: in the unpinned AMD path $TorchIndexUrl is
-                # already */cpu, but for a pinned ROCm index it IS the ROCm mirror, so
-                # reusing it here would just retry the failing ROCm index, not fall back.
-                $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
