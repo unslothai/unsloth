@@ -41,7 +41,9 @@ def apply_studio_post_processors(
                 default_comparator = str(evaluation.get("default_comparator", "string")),
                 score_column = str(evaluation.get("score_column", "doc_score")),
                 breakdown_column = (
-                    evaluation.get("breakdown_column") if evaluation.get("breakdown_column") else None
+                    evaluation.get("breakdown_column")
+                    if evaluation.get("breakdown_column")
+                    else None
                 ),
             )
 
@@ -63,7 +65,9 @@ def apply_studio_post_processors_to_dataframe(*, df, evaluations: list[dict[str,
                 default_comparator = str(evaluation.get("default_comparator", "string")),
                 score_column = str(evaluation.get("score_column", "doc_score")),
                 breakdown_column = (
-                    evaluation.get("breakdown_column") if evaluation.get("breakdown_column") else None
+                    evaluation.get("breakdown_column")
+                    if evaluation.get("breakdown_column")
+                    else None
                 ),
             )
     return df
