@@ -94,6 +94,41 @@ def _embed_all(texts: list[str], model_name: str | None):
     return vectors
 
 
+def _ocr_scanned_pages(pages: list, stored_path: str, conn, job_id: str) -> list:
+    """Replace text on near-empty (scanned/image-only) PDF pages with vision-model
+    OCR, so image PDFs become searchable and readable like any other document.
+
+    No-op when OCR is disabled, no page looks scanned, or no vision model is loaded
+    (degrades exactly like figure captioning). Returns new ``Page`` objects for the
+    OCR'd pages, the originals otherwise."""
+    if not config.OCR_SCANNED:
+        return pages
+    scanned = [
+        p.page_number
+        for p in pages
+        if p.page_number is not None and len((p.text or "").strip()) < config.OCR_MIN_CHARS
+    ]
+    if not scanned or captioner.vision_endpoint() is None:
+        return pages
+    scanned = scanned[: config.OCR_MAX_PAGES]
+    _progress(conn, job_id, "ocr", 0.25)
+    page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
+    texts = captioner.ocr_pages(page_pngs)
+    if not texts:
+        return pages
+
+    from .parsers import Page
+
+    out: list = []
+    for page in pages:
+        text = texts.get(page.page_number)
+        if text:
+            out.append(Page(text = text, page_number = page.page_number, char_count = len(text)))
+        else:
+            out.append(page)
+    return out
+
+
 def _run(
     job_id: str, document_id: str, scope: str, stored_path: str, model_name: str | None
 ) -> None:
@@ -101,6 +136,8 @@ def _run(
     try:
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
+        if stored_path.lower().endswith(".pdf"):
+            pages = _ocr_scanned_pages(pages, stored_path, conn, job_id)
         if config.CAPTION_IMAGES and stored_path.lower().endswith(".pdf"):
             # Caption figures, splice into page text (no-op without a vision model).
             try:

@@ -180,6 +180,43 @@ def render_pdf_figures(
         doc.close()
 
 
+def render_pdf_pages(
+    path: str,
+    page_numbers,
+    *,
+    dpi: int = 150,
+) -> dict[int, bytes]:
+    """Render whole PDF pages (given as 1-based numbers) to PNG bytes, keyed by
+    page number. Backs scanned-page OCR. Any failure yields ``{}`` (or skips that
+    page), never an exception.
+    """
+    wanted = {int(n) for n in page_numbers}
+    if not wanted:
+        return {}
+    try:
+        import pymupdf
+    except Exception:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[int, bytes] = {}
+    try:
+        for i, page in enumerate(doc):
+            num = i + 1
+            if num not in wanted:
+                continue
+            try:
+                pix = page.get_pixmap(dpi = dpi)
+                out[num] = pix.tobytes("png")
+            except Exception:
+                continue
+        return out
+    finally:
+        doc.close()
+
+
 def _docx(path: str) -> list[Page]:
     import docx
 

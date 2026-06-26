@@ -31,6 +31,18 @@ CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "0") == "1"
 CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "8"))
 CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "30"))
 
+# Scanned-PDF OCR: a page with little or no extractable text (an image-only/scanned
+# page) is rendered and transcribed by the loaded vision model so it becomes
+# searchable and readable like any other page. Needs a vision model loaded; skipped
+# (page stays empty) otherwise. MIN_CHARS is the text length below which a page is
+# treated as scanned; MAX_PAGES bounds per-doc cost.
+OCR_SCANNED = os.environ.get("RAG_OCR_SCANNED", "1") == "1"
+OCR_MIN_CHARS = int(os.environ.get("RAG_OCR_MIN_CHARS", "16"))
+OCR_MAX_PAGES = int(os.environ.get("RAG_OCR_MAX_PAGES", "20"))
+OCR_DPI = int(os.environ.get("RAG_OCR_DPI", "150"))
+OCR_TIMEOUT_S = float(os.environ.get("RAG_OCR_TIMEOUT_S", "60"))
+OCR_MAX_TOKENS = int(os.environ.get("RAG_OCR_MAX_TOKENS", "2048"))
+
 # Embedder backend. "auto": sentence-transformers on a CUDA/ROCm GPU (torch fp16
 # wins bulk indexing), else torch-free GGUF llama-server. Switching backends changes
 # the vectors, so the index must be rebuilt.

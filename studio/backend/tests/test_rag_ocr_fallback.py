@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Scanned-PDF OCR fallback: a PDF page with no extractable text layer is rendered
+and transcribed by the loaded vision model during ingestion, so image-only PDFs
+become searchable and feed whole-document context. The vision call is stubbed, so
+no model is needed."""
+
+import pymupdf
+
+from core.rag import captioner, ingestion, parsers, store, tool
+
+
+def _image_only_pdf(path, *, pages = 1):
+    """A PDF whose pages carry only a raster image, so get_text returns ''."""
+    doc = pymupdf.open()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 120, 120))
+    pix.clear_with(220)
+    for _ in range(pages):
+        page = doc.new_page()
+        page.insert_image(page.rect, pixmap = pix)
+    doc.save(str(path))
+    doc.close()
+
+
+def _text_pdf(path, body):
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_textbox(pymupdf.Rect(40, 40, 550, 800), body, fontsize = 11)
+    doc.save(str(path))
+    doc.close()
+
+
+def _ingest(rag_conn, thread_id, filename, path):
+    """Drive the real ingestion worker synchronously and return the document row."""
+    scope = store.thread_scope(thread_id)
+    document_id = store.create_document(
+        rag_conn,
+        scope = scope,
+        filename = filename,
+        sha256 = filename,
+        thread_id = thread_id,
+        status = "pending",
+        stored_path = str(path),
+    )
+    job_id = ingestion._new_job(rag_conn, document_id, scope)
+    ingestion._run(job_id, document_id, scope, str(path), None)
+    return store.get_document(rag_conn, document_id)
+
+
+# ── parsers.render_pdf_pages ─────────────────────────────────────────
+
+
+def test_render_pdf_pages_returns_png_per_page(tmp_path):
+    pdf = tmp_path / "two.pdf"
+    _image_only_pdf(pdf, pages = 2)
+    out = parsers.render_pdf_pages(str(pdf), [1, 2], dpi = 72)
+    assert set(out) == {1, 2}
+    assert all(b.startswith(b"\x89PNG") for b in out.values())
+
+
+def test_render_pdf_pages_excludes_unwanted(tmp_path):
+    pdf = tmp_path / "three.pdf"
+    _image_only_pdf(pdf, pages = 3)
+    out = parsers.render_pdf_pages(str(pdf), [2], dpi = 72)
+    assert set(out) == {2}
+
+
+def test_render_pdf_pages_empty_request(tmp_path):
+    pdf = tmp_path / "one.pdf"
+    _image_only_pdf(pdf, pages = 1)
+    assert parsers.render_pdf_pages(str(pdf), [], dpi = 72) == {}
+
+
+# ── captioner.ocr_pages gating ───────────────────────────────────────
+
+
+def test_ocr_pages_disabled(monkeypatch):
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", False)
+    assert captioner.ocr_pages({1: b"x"}, endpoint = ("http://x", "local")) == {}
+
+
+def test_ocr_pages_no_endpoint(monkeypatch):
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: None)
+    assert captioner.ocr_pages({1: b"x"}) == {}
+
+
+def test_ocr_pages_transcribes_and_caps(monkeypatch):
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
+    monkeypatch.setattr(captioner.config, "OCR_MAX_PAGES", 1)
+    calls = []
+    monkeypatch.setattr(
+        captioner,
+        "_ocr_one",
+        lambda base, model, b, t: (calls.append(1) or "transcribed text"),
+    )
+    out = captioner.ocr_pages({1: b"a", 2: b"b"}, endpoint = ("http://x", "local"))
+    assert out == {1: "transcribed text"}  # page 2 dropped by the cap
+    assert len(calls) == 1
+
+
+# ── end-to-end ingestion ─────────────────────────────────────────────
+
+
+def test_scanned_pdf_is_ocred_into_chunks(rag_conn, stub_embeddings, monkeypatch, tmp_path):
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
+    monkeypatch.setattr(
+        captioner, "_ocr_one", lambda base, model, b, t: "Invoice total is zebra-42 due Friday"
+    )
+
+    pdf = tmp_path / "scan.pdf"
+    _image_only_pdf(pdf, pages = 1)
+    doc = _ingest(rag_conn, "t1", "scan.pdf", pdf)
+
+    assert doc["status"] == "completed"
+    assert doc["num_chunks"] >= 1
+    # The OCR'd text is now indexed and reaches whole-document injection.
+    text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert "zebra-42" in text
+
+
+def test_born_digital_pdf_skips_ocr(rag_conn, stub_embeddings, monkeypatch, tmp_path):
+    called = []
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
+    monkeypatch.setattr(captioner, "_ocr_one", lambda *a: called.append(1) or "should not run")
+
+    pdf = tmp_path / "digital.pdf"
+    _text_pdf(pdf, "Real born digital body text. " * 30 + "marker-quokka")
+    doc = _ingest(rag_conn, "t1", "digital.pdf", pdf)
+
+    assert doc["status"] == "completed"
+    assert called == []  # page had real text -> never considered scanned
+    text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert "marker-quokka" in text
+
+
+def test_ocr_disabled_leaves_scanned_pdf_empty(rag_conn, stub_embeddings, monkeypatch, tmp_path):
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", False)
+
+    pdf = tmp_path / "scan.pdf"
+    _image_only_pdf(pdf, pages = 1)
+    doc = _ingest(rag_conn, "t1", "scan.pdf", pdf)
+
+    # With OCR off, a text-less scanned page yields no chunks (prior behavior).
+    assert doc["status"] == "completed"
+    assert doc["num_chunks"] == 0
+    assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000) is None
