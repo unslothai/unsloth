@@ -73,6 +73,7 @@ from core.inference.llama_cpp import (
     _MAX_VRAM_RESERVE_FRAC,
     _MIN_VRAM_RESERVE_MIB,
     LlamaCppBackend,
+    _pooled_usable_mib,
     _vram_reserve_mib,
     classify_gpu_offload_lines,
 )
@@ -805,6 +806,46 @@ def test_fit_context_floor_caps_below_thin_fraction():
         262144, thin_budget_mib, model_size, None, budget_frac = 1.0,
     )
     assert floored_cap < thin_cap
+
+
+def test_pooled_usable_single_gpu_applies_floor():
+    # Single GPU: pool budget == free - floor (unchanged by the per-pool refactor).
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(1, 23700)]
+    totals = {1: 24576}
+    assert _pooled_usable_mib(subset, frac, totals) == 23700 - _vram_reserve_mib(24576, frac)
+
+
+def test_pooled_usable_floor_applied_once_across_pool():
+    # Two 24 GB cards: the floor is reserved ONCE on the pooled total (3072), not
+    # 2x (6144). That is the #6682 multi-GPU fix -- the old per-device sum reserved
+    # 2x the floor and dropped tight pools to the 4096 fallback.
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(0, 12000), (1, 12000)]
+    totals = {0: 24576, 1: 24576}
+    pooled = _pooled_usable_mib(subset, frac, totals)
+    assert pooled == 24000 - _vram_reserve_mib(2 * 24576, frac)  # one floor on the pool
+    per_device = sum(max(0.0, f - _vram_reserve_mib(totals[i], frac)) for i, f in subset)
+    assert pooled > per_device  # the refactor recovers ~one floor's worth of budget
+
+
+def test_pooled_usable_datacenter_unchanged():
+    # Two 80 GB cards: 5% of the 160 GB pool (8192) exceeds the floor, so the pool
+    # reserves the fraction -- datacenter behaviour is unchanged.
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(0, 70000), (1, 70000)]
+    totals = {0: 81920, 1: 81920}
+    assert _pooled_usable_mib(subset, frac, totals) == 140000 - (1.0 - frac) * (2 * 81920)
+
+
+def test_pooled_usable_unknown_total_keeps_per_device_cushion():
+    # An unknown-total GPU (MIG/vGPU/N/A: total 0) keeps free*frac; the known card
+    # gets the pooled floor. The two contributions add, no full-free-no-reserve leak.
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(0, 24000), (1, 12000)]
+    totals = {0: 0, 1: 24576}  # GPU 0 total unknown
+    expected = 24000 * frac + max(0.0, 12000 - _vram_reserve_mib(24576, frac))
+    assert _pooled_usable_mib(subset, frac, totals) == expected
 
 
 # ---------------------------------------------------------------------------

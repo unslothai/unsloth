@@ -835,6 +835,24 @@ def _vram_reserve_mib(total_mib: float, frac: float) -> float:
     VRAM is known; the unknown-total paths keep the legacy ``free * frac``."""
     return min(max((1.0 - frac) * total_mib, _MIN_VRAM_RESERVE_MIB), _MAX_VRAM_RESERVE_FRAC * total_mib)
 
+
+def _pooled_usable_mib(subset, frac, total_by_idx):
+    """Pooled usable VRAM (MiB) for a GPU ``subset`` of (idx, free_mib) pairs.
+
+    The absolute floor in _vram_reserve_mib is a per-POOL cushion (the desktop drift
+    and the one-lump layer-split compute buffer it covers are not per-device), so it
+    is applied ONCE across the known-total GPUs via their pooled total -- a k-GPU
+    split must not reserve k x the floor or it under-advertises context (#6682).
+    Unknown-total GPUs (MIG/vGPU/N/A) keep their own ``free * frac`` cushion; pooling
+    their free with no total would add full free with no reserve. Single GPU is
+    unchanged (pool total == its own total)."""
+    known_free = sum(f for i, f in subset if total_by_idx.get(i, 0) > 0)
+    known_total = sum(total_by_idx.get(i, 0) for i, _ in subset if total_by_idx.get(i, 0) > 0)
+    budget = sum(f * frac for i, f in subset if total_by_idx.get(i, 0) <= 0)
+    if known_total > 0:
+        budget += max(0.0, known_free - _vram_reserve_mib(known_total, frac))
+    return budget
+
 # Apple unified memory is shared with the OS, so tighter than VRAM. Matches the
 # 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
@@ -4843,10 +4861,8 @@ class LlamaCppBackend:
                         return free * frac
 
                     def _pool_budget_mib(subset, frac):
-                        # Sum each GPU's own usable budget. Pooling free and total
-                        # separately would let an unknown-total GPU (MIG/vGPU/N/A)
-                        # add full free with no cushion among known-total GPUs.
-                        return sum(max(0.0, _gpu_usable(g, frac)) for g in subset)
+                        # Floor applied once per pool, not per device; see _pooled_usable_mib.
+                        return _pooled_usable_mib(subset, frac, total_by_idx)
 
                     # Resolve effective context: 0 means let llama-server use
                     # the model's native length. Only expand to a known native
