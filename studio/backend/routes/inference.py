@@ -6391,6 +6391,9 @@ async def serve_sandbox_file(
 # OpenAI-Compatible Models Listing  (/models → /v1/models)
 # =====================================================================
 
+# `owned_by` marker on every /v1/models entry (loaded and available alike).
+_OWNED_BY = "unsloth-studio"
+
 
 def _openai_model_objects() -> list[dict]:
     """The model objects GET /v1/models exposes (one per loaded local backend).
@@ -6410,7 +6413,7 @@ def _openai_model_objects() -> list[dict]:
             "id": public_model_id(llama_backend.model_identifier),
             "object": "model",
             "created": _created,
-            "owned_by": "unsloth-studio",
+            "owned_by": _OWNED_BY,
         }
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
@@ -6431,7 +6434,7 @@ def _openai_model_objects() -> list[dict]:
             "id": public_model_id(backend.active_model_name),
             "object": "model",
             "created": _created,
-            "owned_by": "unsloth-studio",
+            "owned_by": _OWNED_BY,
         }
         _ctx = _positive_int_or_none(model_info.get("context_length"))
         if _ctx is None:
@@ -6476,11 +6479,9 @@ async def _cached_local_catalog() -> list:
         if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
             return _CATALOG_CACHE["models"]
         try:
-            from pathlib import Path as _Path
-
             from routes.models import collect_local_models
             _CATALOG_CACHE["models"] = await asyncio.to_thread(
-                collect_local_models, _Path("./models").resolve()
+                collect_local_models, Path("./models").resolve()
             )
         except Exception as exc:
             logger.debug("model catalog scan failed: %s", exc)
@@ -6509,7 +6510,7 @@ async def _openai_catalog_objects() -> list[dict]:
             "id": cid,
             "object": "model",
             "created": _created,
-            "owned_by": "unsloth-studio",
+            "owned_by": _OWNED_BY,
             "loaded": False,
         }
         display = getattr(info, "display_name", None)
