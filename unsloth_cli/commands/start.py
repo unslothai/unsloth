@@ -568,7 +568,6 @@ def _run(
 def _agents_config_root() -> Path:
     ensure_studio_backend_path()
     from utils.paths import auth_root
-
     return auth_root() / "agents"
 
 
