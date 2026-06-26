@@ -6485,7 +6485,9 @@ async def _cached_local_catalog() -> list:
         except Exception as exc:
             logger.debug("model catalog scan failed: %s", exc)
             _CATALOG_CACHE["models"] = []
-        _CATALOG_CACHE["at"] = now
+        # Stamp after the scan, not the pre-scan "now": a scan slower than the TTL
+        # would otherwise leave the cache already expired, so every waiter rescans.
+        _CATALOG_CACHE["at"] = time.monotonic()
     return _CATALOG_CACHE["models"]
 
 

@@ -157,6 +157,35 @@ def test_empty_and_errored_scans_are_cached(monkeypatch):
         assert calls["n"] == 1, f"{outcome} scan ran {calls['n']}x (TTL not honored)"
 
 
+def test_catalog_ttl_starts_after_scan_completes(monkeypatch):
+    # The cache timestamp must be taken AFTER the scan, not before it. A scan that
+    # outlives the TTL would otherwise leave the cache born-expired, so the next
+    # caller rescans instead of reusing the just-computed catalog.
+    import routes.models as models_mod
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(inf.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(inf, "_CATALOG_CACHE", {"at": 0.0, "models": []})
+
+    calls = {"n": 0}
+
+    def _slow_scan(_root):
+        calls["n"] += 1
+        clock["t"] += inf._CATALOG_TTL_S + 10  # the scan itself outlives the TTL
+        return [_Info("/m/A.gguf", "A")]
+
+    monkeypatch.setattr(models_mod, "collect_local_models", _slow_scan)
+
+    async def _run():
+        first = await inf._cached_local_catalog()
+        second = await inf._cached_local_catalog()  # clock unchanged since scan end
+        return first, second
+
+    first, second = asyncio.run(_run())
+    assert [i.id for i in first] == ["/m/A.gguf"]
+    assert calls["n"] == 1, "TTL started before the scan -> cache born expired, rescanned"
+
+
 def test_retrieve_loaded_model_skips_catalog_scan(monkeypatch):
     # Retrieving a loaded id must resolve from the loaded set alone, never paying
     # for the filesystem scan that _cached_local_catalog drives.
