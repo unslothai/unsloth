@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -14,7 +18,10 @@ import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scro
 import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { cn } from "@/lib/utils";
 import { usePlatformStore } from "@/config/env";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import {
+  hfApiToken,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
 import {
   getInferenceStatus,
   isExternalModelId,
@@ -78,12 +85,17 @@ import type {
   CachedInventoryRow,
   CapabilityFilter,
   DiscoverRow,
+  GpuFitFilter,
   LocalInventoryRow,
   ModelFormatFilter,
   ModelsTab,
   ResourceTypeFilter,
   SelectedModelView,
 } from "./types";
+import {
+  classifyGpuFit,
+  matchesGpuFitFilter,
+} from "./lib/gpu-fit-filter";
 
 const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
@@ -406,6 +418,7 @@ export function ModelsPage() {
   );
   const [capabilityFilter, setCapabilityFilter] =
     useState<CapabilityFilter>("all");
+  const [gpuFitFilter, setGpuFitFilter] = useState<GpuFitFilter>("all");
   const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
     readAllModelsViewPreference,
   );
@@ -551,8 +564,10 @@ export function ModelsPage() {
   const deferredDebouncedQuery = useDeferredValue(debouncedQuery);
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
+  const apiHfToken = hfApiToken(debouncedHfToken);
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
+  const deferredGpuFitFilter = useDeferredValue(gpuFitFilter);
 
   const hasQuery = deferredDebouncedQuery.trim() !== "";
   const mode: DiscoverMode = !isModelDiscover
@@ -605,7 +620,7 @@ export function ModelsPage() {
     handleRetrySearch,
   } = useDiscoverSearch({
     debouncedQuery,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     isDiscoverTab,
     isDatasetMode,
     sortBy: effectiveSort,
@@ -619,7 +634,7 @@ export function ModelsPage() {
     channelId: isChannelListMode ? activeChannelId : null,
     results,
     isLoading,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
   });
 
   const {
@@ -682,27 +697,66 @@ export function ModelsPage() {
 
   const discoverRows = isDatasetMode ? datasetDiscoverRows : modelDiscoverRows;
 
+  // Pre-compute GPU fit level for every discover row so filteredDiscoverRows
+  // and model cards can both consume the same classification.
+  const gpuFitLevelById = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof classifyGpuFit>>();
+    for (const row of discoverRows) {
+      map.set(
+        row.id,
+        classifyGpuFit({
+          totalParams: row.result.totalParams,
+          estimatedSizeBytes: row.result.estimatedSizeBytes,
+          repoId: row.id,
+          gpu,
+        }),
+      );
+    }
+    return map;
+  }, [discoverRows, gpu]);
+
+  const addGpuFitLevel = useCallback(
+    (row: DiscoverRow): DiscoverRow => ({
+      ...row,
+      fitLevel: classifyGpuFit({
+        totalParams: row.result.totalParams,
+        estimatedSizeBytes: row.result.estimatedSizeBytes,
+        repoId: row.id,
+        gpu,
+      }),
+    }),
+    [gpu],
+  );
+
   const filteredDiscoverRows = useMemo(() => {
     if (isDatasetMode) return discoverRows;
-    return discoverRows.filter(
-      (row) =>
-        !isHiddenModelId(row.id) &&
-        matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
-        matchesCapability(row.capabilities, deferredCapabilityFilter) &&
-        (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)),
-    );
+    return discoverRows
+      .filter(
+        (row) =>
+          !isHiddenModelId(row.id) &&
+          matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
+          matchesCapability(row.capabilities, deferredCapabilityFilter) &&
+          matchesGpuFitFilter(gpuFitLevelById.get(row.id) ?? null, deferredGpuFitFilter) &&
+          (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)),
+      )
+      .map((row) => ({
+        ...row,
+        fitLevel: gpuFitLevelById.get(row.id) ?? null,
+      }));
   }, [
     discoverRows,
     isDatasetMode,
     effectiveDiscoverFormat,
     deferredCapabilityFilter,
+    deferredGpuFitFilter,
+    gpuFitLevelById,
     activeChannel,
   ]);
 
   const listRows = filteredDiscoverRows;
 
   const hubFeed = useHubFeed({
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     online,
     enabled: isFeedMode,
     deviceType,
@@ -716,8 +770,17 @@ export function ModelsPage() {
         effectiveLocalRows,
       )
         .filter((row) => !isHiddenModelId(row.id))
-        .filter((row) => matchesFormat(row.result.isGguf, "gguf")),
-    [hubFeed.trending.results, modelDiscoveryInventorySignature],
+        .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
+        .map(addGpuFitLevel)
+        .filter((row) =>
+          matchesGpuFitFilter(row.fitLevel ?? null, deferredGpuFitFilter),
+        ),
+    [
+      hubFeed.trending.results,
+      modelDiscoveryInventorySignature,
+      addGpuFitLevel,
+      deferredGpuFitFilter,
+    ],
   );
   const feedRows = useMemo(() => {
     if (!isFeedMode) return [];
@@ -834,6 +897,7 @@ export function ModelsPage() {
         resourceType,
         deferredFormatFilter,
         deferredCapabilityFilter,
+        deferredGpuFitFilter,
         effectiveSort,
         effectiveDirection,
         activeChannelId,
@@ -844,6 +908,7 @@ export function ModelsPage() {
       resourceType,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      deferredGpuFitFilter,
       effectiveSort,
       effectiveDirection,
       activeChannelId,
@@ -864,6 +929,7 @@ export function ModelsPage() {
       setDownloadedFormat("all");
     }
     setCapabilityFilter("all");
+    setGpuFitFilter("all");
   }, [isDiscoverTab, urlSection, navigate]);
   const handleDiscoverFetchIntent = useCallback(() => {
     setDiscoverFetchIntent((value) => value + 1);
@@ -908,7 +974,7 @@ export function ModelsPage() {
     filteredCachedRows,
     filteredLocalRows,
     results: selectionResults,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: apiHfToken,
     online,
   });
 
@@ -1084,11 +1150,32 @@ export function ModelsPage() {
         openNewChat();
         return;
       }
+      // Detach any leftover staged pick first so its edited knobs (e.g. a custom
+      // context length) don't leak into this load -- mirrors the chat page's
+      // detachStaged(); keepDownload keeps any staged download running.
+      useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
+      // Load-on-selection skips the chat sheet, so seed this GGUF pick's saved
+      // load knobs here the way the sheet's restore effect would; otherwise the
+      // remembered config is silently ignored on the Hub run path. keepSpeculative
+      // then honors the restored speculative choice across the switch.
+      const remembered =
+        opts.ggufVariant != null || selectedModel.isGguf
+          ? loadRememberedLoadSettings(
+              rememberedLoadSettingsKey({
+                id: runId,
+                ggufVariant: opts.ggufVariant,
+              }),
+            )
+          : null;
+      if (remembered) {
+        useChatRuntimeStore.getState().applyRememberedLoadSettings(remembered);
+      }
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
         isDownloaded,
         expectedBytes: opts.expectedBytes,
+        keepSpeculative: remembered != null,
         throwOnError: true,
       })
         .then(() => {
@@ -1208,8 +1295,10 @@ export function ModelsPage() {
       hasMore,
       manualFetchAvailable: discoverManualFetchAvailable,
       hasActiveFilters:
-        !isFeedMode &&
-        (deferredFormatFilter !== "all" || deferredCapabilityFilter !== "all"),
+        deferredGpuFitFilter !== "all" ||
+        (!isFeedMode &&
+          (deferredFormatFilter !== "all" ||
+            deferredCapabilityFilter !== "all")),
     }),
     [
       tab,
@@ -1235,6 +1324,7 @@ export function ModelsPage() {
       discoverManualFetchAvailable,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      deferredGpuFitFilter,
     ],
   );
 
@@ -1419,6 +1509,8 @@ export function ModelsPage() {
           onFormatFilterChange={setFormatFilter}
           capabilityFilter={capabilityFilter}
           onCapabilityFilterChange={setCapabilityFilter}
+          gpuFitFilter={gpuFitFilter}
+          onGpuFitFilterChange={setGpuFitFilter}
           onManageLocalFolders={handleManageLocalFolders}
           onOpenFineTune={() => handleOpenList("finetune")}
         />

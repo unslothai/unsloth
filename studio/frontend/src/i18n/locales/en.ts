@@ -23,6 +23,7 @@ export const en = {
     brand: "unsloth",
     product: "Unsloth Studio",
     accountMenu: "{name} account menu",
+    updateAvailable: "Update available",
     aria: {
       home: "Unsloth home",
       closeSidebar: "Close sidebar",
@@ -105,6 +106,7 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
+      tokenSaved: "Token saved",
       password: "Password",
       passwordDescription: "Change the password for this Studio account.",
       passwordDialog: {
@@ -140,6 +142,25 @@ export const en = {
         loadError: "Failed to load Helper LLM settings.",
         saveError: "Failed to save Helper LLM settings.",
       },
+      previewSharing: {
+        sectionTitle: "Preview sharing",
+        enableLabel: "Public preview links",
+        enableDescription:
+          "Let anyone with a signed link chat with a finished model, no login required. Turn off to take the public preview surface offline; shared links stop working.",
+        loadError: "Failed to load preview sharing settings.",
+        saveError: "Failed to save preview sharing settings.",
+        revokeLabel: "Revoke all preview links",
+        revokeDescription:
+          "Rotate the signing secret so every link you've shared stops working. Newly copied links keep working.",
+        revokeAction: "Revoke links",
+        revoking: "Revoking...",
+        revokeConfirmTitle: "Revoke all preview links?",
+        revokeConfirmDescription:
+          "Every preview link you've shared will stop working immediately. This can't be undone.",
+        revokeConfirmAction: "Revoke all links",
+        revoked: "All preview links revoked",
+        revokeError: "Couldn't revoke preview links",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "llama.cpp update notifications",
@@ -159,8 +180,7 @@ export const en = {
       storage: {
         sectionTitle: "Storage",
         modelsFolder: "Models folder",
-        modelsFolderDescription:
-          "Where downloaded models are stored.",
+        modelsFolderDescription: "Where downloaded models are stored.",
         openAction: "Open",
         copyAction: "Copy path",
         copied: "Path copied",
@@ -761,6 +781,9 @@ export const en = {
         running: "Training in progress",
         errored: "Training errored",
       },
+      copyPreviewLink: "Copy preview link",
+      previewLinkCopied: "Preview link copied",
+      previewLinkCopyFailed: "Couldn't copy the link",
     },
     charts: {
       settings: "Chart Settings",

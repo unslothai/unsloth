@@ -803,6 +803,10 @@ _MTP_MIN_SIZE_B = 3.0
 # of free (see _fit_context_to_vram), plus a byte-accurate MTP draft reserve.
 _CTX_FIT_VRAM_FRACTION = 0.95
 
+# Apple unified memory is shared with the OS, so tighter than VRAM. Matches the
+# 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
+_APPLE_UNIFIED_MEMORY_FRACTION = 0.85
+
 # Flat MTP reserve, used only when GGUF dims are too sparse for the byte-accurate
 # reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
 _MTP_VRAM_RESERVE_FRAC = 0.05
@@ -2171,6 +2175,34 @@ class LlamaCppBackend:
         return [(idx, free) for idx, free, _total in LlamaCppBackend._get_gpu_memory()]
 
     @staticmethod
+    def _apple_metal_memory_budget_bytes() -> int:
+        """Unified-memory budget for GGUF context fitting on Apple Silicon.
+
+        No GPU is enumerated on Metal, so the context would default to native and
+        over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
+        fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
+        when unresolvable, so callers skip the cap.
+        """
+        from utils.hardware import is_apple_silicon
+
+        if not is_apple_silicon():
+            return 0
+        rec_bytes = 0
+        try:
+            import mlx.core as mx
+            if mx.metal.is_available():
+                rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
+        except Exception:
+            rec_bytes = 0
+        if rec_bytes <= 0:
+            try:
+                import psutil
+                rec_bytes = int(psutil.virtual_memory().total)
+            except Exception:
+                return 0
+        return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
+
+    @staticmethod
     def _get_gpu_memory() -> list[tuple[int, int, int]]:
         """Query free AND total memory per GPU.
 
@@ -3120,9 +3152,10 @@ class LlamaCppBackend:
                         except (ValueError, OSError):
                             # Log file closed under us; tee silently.
                             pass
-        except (ValueError, OSError):
-            # Pipe closed -- process terminating.
-            pass
+        except Exception:
+            # Never let the drain thread die: a full stdout pipe can deadlock
+            # llama-server (Windows). Pipe-closed on exit is the common case.
+            logger.debug("llama-server stdout drain stopped", exc_info = True)
 
     # GGUF KV type sizes for fast skipping
     _GGUF_TYPE_SIZE = {
@@ -5046,6 +5079,8 @@ class LlamaCppBackend:
                         else 0.0
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+                    # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
+                    _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
                     def _restore_after_tensor_downgrade():
                         # Tensor mode dropped a quantized KV and stripped the cache
@@ -5329,6 +5364,52 @@ class LlamaCppBackend:
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
 
+                    elif _apple_budget_mib > 0 and effective_ctx > 0:
+                        # No GPU on Metal: the branches above are skipped and the context
+                        # stays at native, over-committing unified memory (#5118, #6529).
+                        # Cap with the same fit math (--fit on stays as a backstop); only
+                        # auto context shrinks, explicit is honored.
+                        native_ctx_for_cap = self._context_length or effective_ctx
+                        # Reserve the flat MTP fraction up front like the discrete
+                        # _pin_fraction, so an unsized MTP draft (e.g. Qwen3.6-MTP, #6529)
+                        # can't over-commit. No-op when MTP is off; exclusive with the
+                        # byte-accurate _mtp_bytes reserve.
+                        _apple_fit_budget_mib = int(
+                            _apple_budget_mib * max(0.0, 1.0 - _flat_mtp_reserve)
+                        )
+                        if self._can_estimate_kv():
+                            cap = self._fit_context_to_vram(
+                                native_ctx_for_cap,
+                                _apple_fit_budget_mib,
+                                model_size_fit,
+                                cache_type_kv,
+                                n_parallel = n_parallel,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                budget_frac = 1.0,
+                                total_mib = None,
+                            )
+                            _cap_footprint_mib = (
+                                model_size_fit
+                                + self._estimate_kv_cache_bytes(
+                                    cap, cache_type_kv, n_parallel = n_parallel
+                                )
+                                + _mtp_bytes(cap)
+                            ) / (1024 * 1024)
+                            # Fit returns the request unchanged when it fits OR weights
+                            # exceed budget; only the latter over-commits, so floor to 4096.
+                            max_available_ctx = (
+                                cap
+                                if _cap_footprint_mib <= _apple_fit_budget_mib
+                                else min(4096, native_ctx_for_cap)
+                            )
+                        else:
+                            # No KV estimate: mirror the discrete file-size-only fallback
+                            # and floor to 4096 rather than launch at native and over-commit.
+                            max_available_ctx = min(4096, native_ctx_for_cap)
+                        if not explicit_ctx:
+                            effective_ctx = max_available_ctx
+
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
                     if _mtp_will_engage:
@@ -5413,6 +5494,15 @@ class LlamaCppBackend:
                     # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
                     "--no-context-shift",
                 ]
+
+                # Report a clean public model id (matching GET /v1/models) rather
+                # than the raw -m path in llama-server's own /v1/models and the
+                # "model" field of its chat/completions responses.
+                from core.inference.model_ids import public_model_id
+
+                _alias = public_model_id(self._model_identifier or model_path)
+                if _alias:
+                    cmd.extend(["--alias", _alias])
 
                 fully_gpu_offloaded = False
                 if use_fit:
@@ -7781,6 +7871,15 @@ class LlamaCppBackend:
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
+        # GGUF buffers reasoning; emit server-side timing before answer text.
+        _reasoning_started_at: Optional[float] = None
+        _reasoning_summary_emitted = False
+
+        def _reasoning_summary_event(started_at: float) -> dict:
+            return {
+                "type": "reasoning_summary",
+                "duration_ms": round((time.monotonic() - started_at) * 1000.0),
+            }
 
         def _strip_tool_markup(
             text: str,
@@ -7816,13 +7915,18 @@ class LlamaCppBackend:
                     _mt["predicted_per_second"] = _mt["predicted_n"] / (
                         _mt["predicted_ms"] / 1000.0
                     )
+            _usage = {
+                "prompt_tokens": _fp,
+                "completion_tokens": _tc,
+                "total_tokens": _fp + _tc,
+            }
+            # Preserve KV-cache hit details (cached_tokens) so the tool path
+            # reports them like the standard non-tool path does, not always 0.
+            if _fu.get("prompt_tokens_details"):
+                _usage["prompt_tokens_details"] = _fu["prompt_tokens_details"]
             return {
                 "type": "metadata",
-                "usage": {
-                    "prompt_tokens": _fp,
-                    "completion_tokens": _tc,
-                    "total_tokens": _fp + _tc,
-                },
+                "usage": _usage,
                 "timings": _mt,
                 "finish_reason": finish_reason,
             }
@@ -7918,6 +8022,9 @@ class LlamaCppBackend:
                 content_buffer = ""  # Raw content held during BUFFERING
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
+                # Time each reasoning pass so final answers can replace tool timing.
+                _reasoning_started_at = None
+                _reasoning_summary_emitted = False
                 cumulative_display = ""  # Cumulative yielded text (with <think>)
                 in_thinking = False
                 has_content_tokens = False
@@ -8092,6 +8199,8 @@ class LlamaCppBackend:
                                 # between tool iterations).
                                 reasoning = delta.get("reasoning_content", "")
                                 if reasoning:
+                                    if _reasoning_started_at is None:
+                                        _reasoning_started_at = time.monotonic()
                                     reasoning_accum += reasoning
                                     if detect_state == _S_STREAMING:
                                         if not in_thinking:
@@ -8107,6 +8216,13 @@ class LlamaCppBackend:
                                 # ── Content tokens ──
                                 token = delta.get("content", "")
                                 if token:
+                                    # First answer token ends reasoning.
+                                    if (
+                                        _reasoning_started_at is not None
+                                        and not _reasoning_summary_emitted
+                                    ):
+                                        _reasoning_summary_emitted = True
+                                        yield _reasoning_summary_event(_reasoning_started_at)
                                     has_content_tokens = True
                                     content_accum += token
 
@@ -8204,9 +8320,10 @@ class LlamaCppBackend:
                                     ),
                                 }
                         elif reasoning_accum and not has_content_tokens:
-                            # Reasoning-only response: show reasoning as plain
-                            # text, matching the final streaming pass for
-                            # models that put everything in reasoning.
+                            # Reasoning-only reply: show it as plain text.
+                            if _reasoning_started_at is not None and not _reasoning_summary_emitted:
+                                _reasoning_summary_emitted = True
+                                yield _reasoning_summary_event(_reasoning_started_at)
                             cumulative_display = reasoning_accum
                             if not _suppress_visible_output:
                                 yield {
@@ -8615,6 +8732,8 @@ class LlamaCppBackend:
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
+        _final_reasoning_started_at: Optional[float] = None
+        _final_reasoning_summary_emitted = False
         _metadata_usage = None
         _metadata_timings = None
         _metadata_finish_reason = None
@@ -8640,6 +8759,12 @@ class LlamaCppBackend:
                             continue
                         if line == "data: [DONE]":
                             if in_thinking:
+                                if (
+                                    _final_reasoning_started_at is not None
+                                    and not _final_reasoning_summary_emitted
+                                ):
+                                    _final_reasoning_summary_emitted = True
+                                    yield _reasoning_summary_event(_final_reasoning_started_at)
                                 if has_content_tokens:
                                     cumulative += "</think>"
                                     yield {
@@ -8672,6 +8797,8 @@ class LlamaCppBackend:
 
                                 reasoning = delta.get("reasoning_content", "")
                                 if reasoning:
+                                    if _final_reasoning_started_at is None:
+                                        _final_reasoning_started_at = time.monotonic()
                                     reasoning_text += reasoning
                                     if not in_thinking:
                                         cumulative += "<think>"
@@ -8681,6 +8808,12 @@ class LlamaCppBackend:
 
                                 token = delta.get("content", "")
                                 if token:
+                                    if (
+                                        _final_reasoning_started_at is not None
+                                        and not _final_reasoning_summary_emitted
+                                    ):
+                                        _final_reasoning_summary_emitted = True
+                                        yield _reasoning_summary_event(_final_reasoning_started_at)
                                     has_content_tokens = True
                                     if in_thinking:
                                         cumulative += "</think>"

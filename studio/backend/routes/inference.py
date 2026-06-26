@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
+from starlette.requests import ClientDisconnect
 from typing import Any, List, Optional, Union
 import json
 import httpx
@@ -235,8 +236,15 @@ def _sse_streaming_response(content) -> StreamingResponse:
     a one-shot connection. Two callers build their response inline instead: the
     external-provider proxy omits ``Connection: close``, and the OpenAI
     passthrough returns an empty ``keep-alive`` stream when the request is
-    cancelled before the upstream response starts."""
-    return StreamingResponse(
+    cancelled before the upstream response starts.
+
+    Built on ``_SameTaskStreamingResponse`` (not Starlette's stock
+    ``StreamingResponse``) so the SSE generator runs in the request task. The
+    legacy AnyIO task-group wrapper trips "Attempted to exit a cancel scope in a
+    different task" on Python 3.13 + httpx, which surfaced as a mid-stream
+    ``response.failed``. The streaming paths that take their response inline use
+    ``_SameTaskStreamingResponse`` directly for the same reason."""
+    return _SameTaskStreamingResponse(
         content,
         media_type = "text/event-stream",
         headers = {
@@ -750,6 +758,121 @@ def _set_stream_response_read_timeout(
         pass
 
 
+_STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
+
+
+class _CompatSameTaskTimeout:
+    """Same-task timeout fallback for Python versions before asyncio.timeout."""
+
+    def __init__(self, timeout_s: float):
+        self.timeout_s = timeout_s
+        self._task = None
+        self._handle = None
+        self._timed_out = False
+        self._cancelling = 0
+
+    async def __aenter__(self):
+        self._task = asyncio.current_task()
+        if self._task is None:
+            return self
+        if hasattr(self._task, "cancelling"):
+            self._cancelling = self._task.cancelling()
+        loop = asyncio.get_running_loop()
+        self._handle = loop.call_later(max(self.timeout_s, 0), self._cancel_task)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._handle is not None:
+            self._handle.cancel()
+        if exc_type is not None and issubclass(exc_type, asyncio.CancelledError):
+            if self._timed_out:
+                if self._task is not None and hasattr(self._task, "uncancel"):
+                    if self._task.uncancel() > self._cancelling:
+                        return None
+                raise asyncio.TimeoutError from exc
+        return None
+
+    def _cancel_task(self) -> None:
+        self._timed_out = True
+        if self._task is not None:
+            self._task.cancel()
+
+
+def _same_task_timeout(timeout_s: float):
+    timeout_ctx = getattr(asyncio, "timeout", None)
+    if timeout_ctx is not None:
+        return timeout_ctx(timeout_s)
+    return _CompatSameTaskTimeout(timeout_s)
+
+
+class _SameTaskStreamingResponse(StreamingResponse):
+    """StreamingResponse without Starlette's legacy AnyIO task-group wrapper."""
+
+    def __init__(
+        self,
+        *args,
+        unstarted_cleanup = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        # Async callable invoked when the client disconnects before the body
+        # iterator is ever advanced. A generator that never started cannot run
+        # its own try/finally, so a stream that acquires resources before its
+        # first yield (the passthrough opens an upstream httpx stream eagerly)
+        # passes this to release them.
+        self._unstarted_cleanup = unstarted_cleanup
+
+    async def __call__(self, scope, receive, send) -> None:
+        # Track whether the body iterator was ever advanced: send() only emits a
+        # body message after the generator yields its first chunk, so a failure
+        # before then means it never entered its try/finally.
+        body_started = False
+
+        async def _tracking_send(message) -> None:
+            nonlocal body_started
+            if message.get("type") == "http.response.body":
+                body_started = True
+            await send(message)
+
+        try:
+            await self.stream_response(_tracking_send)
+        except OSError:
+            # Client disconnected mid-send.
+            if body_started:
+                # The generator produced at least one chunk and is suspended in
+                # its try/finally. Throw CancelledError into it (not aclose's
+                # GeneratorExit) so its `except asyncio.CancelledError` handler
+                # runs and finishes any api_monitor entry; GeneratorExit would
+                # skip it and only run `finally`. Fall back to aclose() without
+                # athrow.
+                athrow = getattr(self.body_iterator, "athrow", None)
+                if athrow is not None:
+                    try:
+                        await athrow(asyncio.CancelledError())
+                    except (asyncio.CancelledError, StopAsyncIteration, RuntimeError):
+                        pass
+                else:
+                    aclose = getattr(self.body_iterator, "aclose", None)
+                    if aclose is not None:
+                        await aclose()
+            else:
+                # http.response.start failed before the body iterator advanced,
+                # so its try/finally never armed and aclose()/athrow() are no-ops
+                # on an unstarted generator. Release any resources acquired
+                # before the first yield via the explicit cleanup hook.
+                aclose = getattr(self.body_iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+                if self._unstarted_cleanup is not None:
+                    try:
+                        await self._unstarted_cleanup()
+                    except Exception:
+                        pass
+            raise ClientDisconnect()
+        if self.background is not None:
+            await self.background()
+
+
 async def _aclose_stream_resources(
     *,
     watchers = (),
@@ -875,8 +998,23 @@ async def _aiter_llama_stream_items(
                     raise httpx.ReadTimeout("The model did not produce a first token in time.")
                 if response is not None:
                     _set_stream_response_read_timeout(response, remaining_s)
-                item = await asyncio.wait_for(async_iter.__anext__(), timeout = remaining_s)
+                # Keep httpx/httpcore's AnyIO cancel scope in this task.
+                # asyncio.wait_for would drive __anext__ in a child task.
+                async with _same_task_timeout(remaining_s):
+                    item = await async_iter.__anext__()
             else:
+                if (
+                    request is not None
+                    and response is not None
+                    and post_first_item_read_timeout_s is not None
+                    and last_item_at is not None
+                ):
+                    stall_remaining_s = post_first_item_read_timeout_s - (
+                        time.monotonic() - last_item_at
+                    )
+                    if stall_remaining_s <= 0:
+                        raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
+                    _set_stream_response_read_timeout(response, stall_remaining_s)
                 item = await async_iter.__anext__()
         except asyncio.TimeoutError as exc:
             if waiting_first_item:
@@ -889,6 +1027,12 @@ async def _aiter_llama_stream_items(
             if last_item_at is None:
                 if now >= first_token_deadline:
                     raise
+                continue
+            if (
+                request is not None
+                and post_first_item_read_timeout_s is not None
+                and now - last_item_at < post_first_item_read_timeout_s
+            ):
                 continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
         if (
@@ -963,6 +1107,7 @@ from auth.authentication import get_current_subject
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
+from core.inference.model_ids import public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.providers import get_base_url
@@ -1090,15 +1235,13 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
-async def artifact_preview_frame(
-    request: Request,
-    allow_network: bool = False,
-    token: Optional[str] = None,
-):
-    """Serve the opaque sandbox shell used for client-side HTML canvases."""
+async def artifact_preview_frame(allow_network: bool = False):
+    """Serve the opaque sandbox shell for client-side HTML canvases.
 
-    if allow_network:
-        await _authenticate_header_or_query(request, token)
+    No auth token by design: the URL is readable by the untrusted canvas via
+    location.href, and this static shell exposes no server resource (frame-ancestors
+    plus the sandbox already gate it), so the CSP is chosen from allow_network alone.
+    """
 
     csp = (
         _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
@@ -1125,16 +1268,17 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # Our safetensors loop only parses <tool_call>{json}</tool_call> and
-    # <function=name>...</function>. Llama uses <|python_tag|>, Mistral uses
-    # [TOOL_CALLS]; advertising tools for those enables a pill the parser
-    # can't honour. GGUF is unaffected -- llama-server normalises every
-    # format into structured deltas.
+    # Our safetensors loop only parses <tool_call>{json}</tool_call>,
+    # <function=name>...</function>, and Gemma native <|tool_call>...<tool_call|>.
+    # Llama uses <|python_tag|>, Mistral uses [TOOL_CALLS]; advertising tools for
+    # those enables a pill the parser can't honour. GGUF is unaffected --
+    # llama-server normalises every format into structured deltas.
     if (
         flags.get("supports_tools")
         and chat_template
         and "<tool_call>" not in chat_template
         and "<function=" not in chat_template
+        and "<|tool_call>" not in chat_template
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "
@@ -1297,6 +1441,24 @@ async def _await_disconnect_then_close(request, resp, cancel_event) -> None:
         return
 
 
+async def _await_disconnect_then_cancel(request, cancel_event) -> None:
+    """Set ``cancel_event`` when a same-task local stream disconnects."""
+    try:
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.1)
+        cancel_event.set()
+    except asyncio.CancelledError:
+        return
+
+
+async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
+    watcher.cancel()
+    try:
+        await watcher
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
 # where the canvas tool is actually present in the tool schema; otherwise
 # small local models can hallucinate a missing tool call instead of following
@@ -1418,7 +1580,9 @@ _TOOL_XML_RE = _re.compile(
     # Hyphen in the name char-class matches MCP tool names with dashes
     # (mcp__srv__list-issues) that would otherwise leak past this strip.
     r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
+    r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
+    r"|<tool_call\|>"
     r"|</parameter>\s*\Z",
     _re.DOTALL,
 )
@@ -3234,7 +3398,9 @@ async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(ge
 
 @router.post("/generate/stream")
 async def generate_stream(
-    request: GenerateRequest, current_subject: str = Depends(get_current_subject)
+    request: GenerateRequest,
+    fastapi_request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
     """
     Generate a chat response with Server-Sent Events (SSE) streaming.
@@ -3284,6 +3450,13 @@ async def generate_stream(
     async def stream():
         gen = None
         completed = False
+        # Cancel the generation when the client disconnects. The generator only
+        # awaits asyncio.to_thread(next, gen, ...), so without a concurrent
+        # watcher a disconnect during a long prefill/generation would go
+        # unnoticed until the next send and the backend would keep generating.
+        disconnect_watcher = asyncio.create_task(
+            _await_disconnect_then_cancel(fastapi_request, cancel_event)
+        )
         try:
             gen = backend.generate_chat_response(
                 messages = request.messages,
@@ -3298,12 +3471,22 @@ async def generate_stream(
             )
             _DONE = object()
             while True:
+                if cancel_event.is_set():
+                    # The disconnect watcher set cancel_event between chunks.
+                    # Reset the backend here: closing the Python generator does
+                    # not signal a subprocess backend, so without this it keeps
+                    # decoding after the client is gone. The finally's reset is
+                    # guarded on cancel_event being unset, so it will not run
+                    # again for this path.
+                    backend.reset_generation_state()
+                    break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
                 if chunk is _DONE:
+                    completed = True
                     break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
-            completed = True
-            yield "data: [DONE]\n\n"
+            if completed:
+                yield "data: [DONE]\n\n"
 
         except asyncio.CancelledError:
             cancel_event.set()
@@ -3315,6 +3498,7 @@ async def generate_stream(
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
         finally:
+            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
             if not completed and not cancel_event.is_set():
                 cancel_event.set()
                 backend.reset_generation_state()
@@ -3534,7 +3718,7 @@ async def generate_audio(
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
-        model_name = llama_backend.model_identifier
+        model_name = public_model_id(llama_backend.model_identifier)
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -3552,7 +3736,7 @@ async def generate_audio(
         model_info = backend.models.get(backend.active_model_name, {})
         if not model_info.get("is_audio"):
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
-        model_name = backend.active_model_name
+        model_name = public_model_id(backend.active_model_name)
         gen = lambda: backend.generate_audio_response(
             text = text,
             temperature = payload.temperature,
@@ -4317,6 +4501,14 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            # Surface the failure: a bare EOF (e.g. after a read timeout) is treated
+            # by the chat client as success, saving a partial answer with no error.
+            yield (
+                "data: "
+                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
         finally:
             try:
                 await gen.aclose()
@@ -4660,7 +4852,8 @@ async def openai_chat_completions(
         return response
 
     if using_gguf:
-        model_name = llama_backend.model_identifier or payload.model
+        # Echo a clean public id in the response, never the absolute .gguf path.
+        model_name = public_model_id(llama_backend.model_identifier) or payload.model
         if getattr(llama_backend, "_is_audio", False):
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF audio chat completions")
@@ -4675,7 +4868,9 @@ async def openai_chat_completions(
                 status_code = 400,
                 detail = "No model loaded. Call POST /inference/load first.",
             )
-        model_name = backend.active_model_name or payload.model
+        # Clean public id so the response never echoes a local path; the audio
+        # branch below receives this sanitized label too.
+        model_name = public_model_id(backend.active_model_name) or payload.model
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("non-GGUF chat completions")
 
@@ -4739,6 +4934,9 @@ async def openai_chat_completions(
                 _tracker.__enter__()
 
                 async def audio_input_stream():
+                    disconnect_watcher = asyncio.create_task(
+                        _await_disconnect_then_cancel(request, cancel_event)
+                    )
                     try:
                         yield _chat_role_chunk(completion_id, created, model_name)
 
@@ -4774,9 +4972,18 @@ async def openai_chat_completions(
                         api_monitor.fail(monitor_id, _friendly_error(e))
                         yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
                     finally:
+                        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                         _tracker.__exit__(None, None, None)
 
-                return _sse_streaming_response(audio_input_stream())
+                return _SameTaskStreamingResponse(
+                    audio_input_stream(),
+                    media_type = "text/event-stream",
+                    headers = {
+                        "Cache-Control": "no-cache",
+                        "Connection": "close",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
             else:
                 try:
                     full_text = "".join(audio_input_generate())
@@ -4951,6 +5158,28 @@ async def openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        def _new_chat_reasoning_extractor():
+            return _ResponsesReasoningExtractor(
+                parse_think_markers = _responses_should_parse_think_markers(
+                    payload,
+                    llama_backend,
+                )
+            )
+
+        def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
+            chunk = ChatCompletionChunk(
+                id = completion_id,
+                created = created,
+                model = model_name,
+                choices = [
+                    ChunkChoice(
+                        delta = delta,
+                        finish_reason = finish_reason,
+                    )
+                ],
+            )
+            return f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+
         # ── Tool-calling path (agentic loop) ──────────────────
         # `_effective_enable_tools` lets `unsloth run --enable-tools/--disable-tools`
         # hard-override the per-request value, else falls back to
@@ -5063,6 +5292,9 @@ async def openai_chat_completions(
 
             async def gguf_tool_stream():
                 gen = None
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_cancel(request, cancel_event)
+                )
                 try:
                     yield _chat_role_chunk(completion_id, created, model_name)
 
@@ -5070,9 +5302,25 @@ async def openai_chat_completions(
                     # stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
                     prev_text = ""
+                    reasoning_extractor = _new_chat_reasoning_extractor()
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
+
+                    def _flush_reasoning_extractor():
+                        final_reasoning, final_visible = reasoning_extractor.finish()
+                        chunks = []
+                        if final_reasoning:
+                            chunks.append(
+                                _gguf_chat_delta_line(
+                                    ChoiceDelta(reasoning_content = final_reasoning)
+                                )
+                            )
+                        if final_visible:
+                            api_monitor.append_reply(monitor_id, final_visible)
+                            chunks.append(_gguf_chat_delta_line(ChoiceDelta(content = final_visible)))
+                        return chunks
+
                     while True:
                         if cancel_event.is_set():
                             break
@@ -5091,7 +5339,10 @@ async def openai_chat_completions(
                             # cumulative cursor so the next assistant turn
                             # streams cleanly.
                             if not event["text"]:
+                                for chunk in _flush_reasoning_extractor():
+                                    yield chunk
                                 prev_text = ""
+                                reasoning_extractor = _new_chat_reasoning_extractor()
                             # Emit tool status as a custom SSE event (including
                             # empty ones to clear UI badges)
                             status_data = json.dumps(
@@ -5105,7 +5356,10 @@ async def openai_chat_completions(
 
                         if event["type"] in ("tool_start", "tool_end"):
                             if event["type"] == "tool_start":
+                                for chunk in _flush_reasoning_extractor():
+                                    yield chunk
                                 prev_text = ""
+                                reasoning_extractor = _new_chat_reasoning_extractor()
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -5113,6 +5367,11 @@ async def openai_chat_completions(
                             _stream_usage = event.get("usage")
                             _stream_timings = event.get("timings")
                             _stream_finish = event.get("finish_reason")
+                            continue
+
+                        if event["type"] == "reasoning_summary":
+                            # Forward server-side reasoning timing to the UI.
+                            yield f"data: {json.dumps(event)}\n\n"
                             continue
 
                         # "content" type -- cumulative text. Sanitize the full
@@ -5127,15 +5386,33 @@ async def openai_chat_completions(
                         prev_text = clean_cumulative
                         if not new_text:
                             continue
-                        api_monitor.append_reply(monitor_id, new_text)
-                        yield _chat_content_chunk(completion_id, created, model_name, new_text)
+                        reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                        if reasoning_delta:
+                            yield _gguf_chat_delta_line(
+                                ChoiceDelta(reasoning_content = reasoning_delta)
+                            )
+                        if visible_delta:
+                            api_monitor.append_reply(monitor_id, visible_delta)
+                            yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
 
-                    yield _chat_final_chunk(
-                        completion_id,
-                        created,
-                        model_name,
-                        _clamp_finish_reason(_stream_finish),
+                    for chunk in _flush_reasoning_extractor():
+                        yield chunk
+
+                    final_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [
+                            ChunkChoice(
+                                delta = ChoiceDelta(),
+                                finish_reason = _clamp_finish_reason(_stream_finish),
+                            )
+                        ],
                     )
+                    # Emit the terminal chunk carrying finish_reason before the
+                    # optional usage chunk and [DONE], so OpenAI-compatible
+                    # clients can detect stop/length/tool_calls.
+                    yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     usage_line = _openai_stream_usage_chunk(
                         payload,
                         completion_id,
@@ -5164,6 +5441,7 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
+                    await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                     if gen is not None:
                         try:
                             gen.close()
@@ -5171,7 +5449,123 @@ async def openai_chat_completions(
                             pass
                     _tracker.__exit__(None, None, None)
 
-            return _sse_streaming_response(gguf_tool_stream())
+            if payload.stream:
+                return _SameTaskStreamingResponse(
+                    gguf_tool_stream(),
+                    media_type = "text/event-stream",
+                    headers = {
+                        "Cache-Control": "no-cache",
+                        "Connection": "close",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+
+            # Non-streaming JSON: drain the agentic generator into one
+            # ChatCompletion, like the standard GGUF `else` branch. stream:false
+            # with tools enabled used to return an SSE body, breaking
+            # non-streaming clients; `unsloth studio run --model` forces tools on
+            # process-wide, so plain requests reach this path (#6570).
+            def _drain_gguf_tool_loop():
+                full_text = ""
+                usage = None
+                finish = None
+                gen = gguf_generate_with_tools()
+                try:
+                    for event in gen:
+                        if cancel_event.is_set():
+                            break
+                        if event.get("type") == "metadata":
+                            usage = event.get("usage")
+                            finish = event.get("finish_reason")
+                        elif event.get("type") == "content":
+                            # Content is cumulative within a turn and resets
+                            # between turns, so the last event holds the final
+                            # turn's text. As in the safetensors drain, a visible
+                            # preamble emitted before a tool call (its own earlier
+                            # turn) isn't carried -- only the final turn is.
+                            full_text = _strip_tool_xml_for_display(
+                                event.get("text", ""),
+                                auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                            )
+                    return full_text, usage, finish
+                finally:
+                    # Close the generator on early break/cancel so the underlying
+                    # llama-server stream socket is released, like the SSE path.
+                    try:
+                        gen.close()
+                    except (RuntimeError, ValueError):
+                        pass
+
+            try:
+                full_text, completion_usage, completion_finish = await asyncio.to_thread(
+                    _drain_gguf_tool_loop
+                )
+                reasoning_text, visible_text = _extract_responses_reasoning(
+                    full_text,
+                    parse_think_markers = _responses_should_parse_think_markers(
+                        payload, llama_backend
+                    ),
+                )
+                message_kwargs = {"content": visible_text}
+                if reasoning_text:
+                    message_kwargs["reasoning_content"] = reasoning_text
+                _usage = completion_usage or {}
+                _prompt_tokens = _usage.get("prompt_tokens") or 0
+                _completion_tokens = _usage.get("completion_tokens") or 0
+                response = ChatCompletion(
+                    id = completion_id,
+                    created = created,
+                    model = model_name,
+                    choices = [
+                        CompletionChoice(
+                            message = CompletionMessage(**message_kwargs),
+                            finish_reason = _clamp_finish_reason(completion_finish),
+                        )
+                    ],
+                    usage = CompletionUsage(
+                        prompt_tokens = _prompt_tokens,
+                        completion_tokens = _completion_tokens,
+                        total_tokens = _prompt_tokens + _completion_tokens,
+                        prompt_tokens_details = _prompt_tokens_details(
+                            _usage.get("prompt_tokens_details")
+                        ),
+                    ),
+                )
+                api_monitor.set_reply(monitor_id, visible_text)
+                _monitor_usage(
+                    monitor_id,
+                    {
+                        "prompt_tokens": _prompt_tokens,
+                        "completion_tokens": _completion_tokens,
+                        "total_tokens": _prompt_tokens + _completion_tokens,
+                    },
+                    _monitor_context_length(),
+                )
+                api_monitor.finish(
+                    monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                )
+                return _model_json_response(response)
+            except Exception as e:
+                logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
+                api_monitor.fail(monitor_id, _friendly_error(e))
+                # Recover if an MTP+tensor crash killed the server.
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                # An over-context prompt makes llama-server return 400; map any
+                # upstream 4xx to a 400 client error rather than leaking a 500.
+                _cls = _classify_llama_generation_error(e)
+                if _cls is not None:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = openai_error_body(
+                            _friendly_error(e),
+                            status = 400,
+                            code = "context_length_exceeded" if _cls else None,
+                            param = "messages",
+                        ),
+                    )
+                raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+            finally:
+                _tracker.__exit__(None, None, None)
 
         # ── Standard GGUF path (no tools) ─────────────────────
 
@@ -5207,6 +5601,9 @@ async def openai_chat_completions(
             _tracker.__enter__()
 
             async def gguf_stream_chunks():
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_cancel(request, cancel_event)
+                )
                 try:
                     yield _chat_role_chunk(completion_id, created, model_name)
 
@@ -5214,6 +5611,7 @@ async def openai_chat_completions(
                     # stays free for disconnect detection.
                     gen = gguf_generate()
                     prev_text = ""
+                    reasoning_extractor = _new_chat_reasoning_extractor()
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
@@ -5247,15 +5645,38 @@ async def openai_chat_completions(
                         prev_text = cumulative
                         if not new_text:
                             continue
-                        api_monitor.append_reply(monitor_id, new_text)
-                        yield _chat_content_chunk(completion_id, created, model_name, new_text)
+                        reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                        if reasoning_delta:
+                            yield _gguf_chat_delta_line(
+                                ChoiceDelta(reasoning_content = reasoning_delta)
+                            )
+                        if visible_delta:
+                            api_monitor.append_reply(monitor_id, visible_delta)
+                            yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
 
-                    yield _chat_final_chunk(
-                        completion_id,
-                        created,
-                        model_name,
-                        _clamp_finish_reason(_stream_finish),
+                    final_reasoning, final_visible = reasoning_extractor.finish()
+                    if final_reasoning:
+                        yield _gguf_chat_delta_line(ChoiceDelta(reasoning_content = final_reasoning))
+                    if final_visible:
+                        api_monitor.append_reply(monitor_id, final_visible)
+                        yield _gguf_chat_delta_line(ChoiceDelta(content = final_visible))
+
+                    # Final chunk
+                    final_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [
+                            ChunkChoice(
+                                delta = ChoiceDelta(),
+                                finish_reason = _clamp_finish_reason(_stream_finish),
+                            )
+                        ],
                     )
+                    # Emit the terminal chunk carrying finish_reason before the
+                    # optional usage chunk and [DONE], so OpenAI-compatible
+                    # clients can detect stop/length/tool_calls.
+                    yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     usage_line = _openai_stream_usage_chunk(
                         payload,
                         completion_id,
@@ -5282,9 +5703,18 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
+                    await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                     _tracker.__exit__(None, None, None)
 
-            return _sse_streaming_response(gguf_stream_chunks())
+            return _SameTaskStreamingResponse(
+                gguf_stream_chunks(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "close",
+                    "X-Accel-Buffering": "no",
+                },
+            )
         else:
             try:
                 # ``n`` requests several independent completions; the single
@@ -5311,14 +5741,24 @@ async def openai_chat_completions(
                             continue
                         full_text = token
 
+                    reasoning_text, visible_text = _extract_responses_reasoning(
+                        full_text,
+                        parse_think_markers = _responses_should_parse_think_markers(
+                            payload,
+                            llama_backend,
+                        ),
+                    )
+                    message_kwargs = {"content": visible_text}
+                    if reasoning_text:
+                        message_kwargs["reasoning_content"] = reasoning_text
                     _choices.append(
                         CompletionChoice(
                             index = _idx,
-                            message = CompletionMessage(content = full_text),
+                            message = CompletionMessage(**message_kwargs),
                             finish_reason = _clamp_finish_reason(completion_finish),
                         )
                     )
-                    _monitor_replies.append(full_text)
+                    _monitor_replies.append(visible_text)
                     if completion_usage:
                         # The prompt is shared across all n choices, so count its
                         # tokens ONCE (OpenAI bills only generated tokens for each
@@ -5340,7 +5780,7 @@ async def openai_chat_completions(
                         prompt_tokens_details = _prompt_tokens_details(_prompt_details),
                     ),
                 )
-                monitor_reply = full_text
+                monitor_reply = _monitor_replies[-1] if _monitor_replies else ""
                 if _n > 1:
                     monitor_reply = "\n\n".join(
                         f"Choice {_idx + 1}:\n{text}" for _idx, text in enumerate(_monitor_replies)
@@ -5550,6 +5990,9 @@ async def openai_chat_completions(
 
         async def sf_tool_stream():
             gen = None
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_cancel(request, cancel_event)
+            )
             try:
                 yield _chat_role_chunk(completion_id, created, model_name)
 
@@ -5641,6 +6084,7 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 if gen is not None:
                     try:
                         gen.close()
@@ -5649,7 +6093,15 @@ async def openai_chat_completions(
                 _sf_tracker.__exit__(None, None, None)
 
         if payload.stream:
-            return _sse_streaming_response(sf_tool_stream())
+            return _SameTaskStreamingResponse(
+                sf_tool_stream(),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "close",
+                    "X-Accel-Buffering": "no",
+                },
+            )
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
@@ -5751,6 +6203,9 @@ async def openai_chat_completions(
         _tracker.__enter__()
 
         async def stream_chunks():
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_cancel(request, cancel_event)
+            )
             try:
                 yield _chat_role_chunk(completion_id, created, model_name)
 
@@ -5827,9 +6282,18 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 _tracker.__exit__(None, None, None)
 
-        return _sse_streaming_response(stream_chunks())
+        return _SameTaskStreamingResponse(
+            stream_chunks(),
+            media_type = "text/event-stream",
+            headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "close",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # ── Non-streaming response ────────────────────────────────────
     else:
@@ -5955,7 +6419,9 @@ def _openai_model_objects() -> list[dict]:
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded:
         entry = {
-            "id": llama_backend.model_identifier,
+            # Public id, never the absolute .gguf path (which leaks the host
+            # filesystem layout); see core.inference.model_ids.public_model_id.
+            "id": public_model_id(llama_backend.model_identifier),
             "object": "model",
             "created": _created,
             "owned_by": "local",
@@ -5976,7 +6442,7 @@ def _openai_model_objects() -> list[dict]:
     if backend.active_model_name:
         model_info = backend.models.get(backend.active_model_name, {})
         entry = {
-            "id": backend.active_model_name,
+            "id": public_model_id(backend.active_model_name),
             "object": "model",
             "created": _created,
             "owned_by": "local",
@@ -6017,9 +6483,24 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     model, or 404 model_not_found otherwise. Defined after the LIST route so
     it does not shadow it; ``{model_id:path}`` keeps ids with slashes intact.
     """
-    for model in _openai_model_objects():
+    objects = _openai_model_objects()
+    for model in objects:
         if model["id"] == model_id:
             return model
+    # Backward compatibility: a client may still send the legacy raw identifier
+    # (e.g. an absolute .gguf path cached from an older /v1/models). Resolve it to
+    # the clean object so it keeps working, without ever echoing the path back.
+    llama_backend = get_llama_cpp_backend()
+    backend = get_inference_backend()
+    for raw in (
+        llama_backend.model_identifier if llama_backend.is_loaded else None,
+        backend.active_model_name or None,
+    ):
+        if raw and model_id == raw:
+            clean = public_model_id(raw)
+            for model in objects:
+                if model["id"] == clean:
+                    return model
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(
@@ -6547,8 +7028,9 @@ def _responses_should_parse_think_markers(
     if llama_backend is not None and getattr(llama_backend, "is_loaded", False):
         if getattr(llama_backend, "reasoning_always_on", False):
             return True
-        if not getattr(llama_backend, "supports_reasoning", False):
-            return False
+        if getattr(llama_backend, "supports_reasoning", False):
+            return True
+        return False
     if chat_req.enable_thinking is True:
         return True
     return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
@@ -6844,8 +7326,6 @@ async def _responses_non_streaming(
         # the model produced content, so clients expecting a pure tool-call turn
         # (finish_reason="tool_calls") don't see a spurious empty message item.
         output_items: list[dict] = []
-        if reasoning_text and not text and not tool_calls:
-            text = reasoning_text
         if reasoning_text:
             output_items.append(_responses_reasoning_output_item(reasoning_text))
         if text:
@@ -6957,6 +7437,15 @@ async def _responses_stream(
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
     async def event_generator():
+        # Clean public id for every response envelope. Prefer the loaded model's
+        # id so the stream agrees with /v1/models, chat/completions and the
+        # non-streaming twin; fall back to a sanitized payload.model (a legacy
+        # raw .gguf path is stripped, never echoed back).
+        _clean_model = (
+            public_model_id(getattr(llama_backend, "model_identifier", None))
+            or public_model_id(payload.model)
+            or payload.model
+        )
         full_text = ""
         full_reasoning = ""
         input_tokens = 0
@@ -7118,7 +7607,7 @@ async def _responses_stream(
                     "object": "response",
                     "created_at": created_at,
                     "status": "failed",
-                    "model": payload.model,
+                    "model": _clean_model,
                     "output": _snapshot_output(),
                     "usage": {
                         "input_tokens": input_tokens,
@@ -7142,7 +7631,7 @@ async def _responses_stream(
                     "object": "response",
                     "created_at": created_at,
                     "status": "in_progress",
-                    "model": payload.model,
+                    "model": _clean_model,
                     "output": [],
                     "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                 },
@@ -7158,8 +7647,8 @@ async def _responses_stream(
         client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
         resp = None
         lines_iter = None
-        disconnect_event = threading.Event()
         disconnect_watcher = None
+        disconnect_event = threading.Event()
         try:
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}
@@ -7182,7 +7671,7 @@ async def _responses_stream(
                             "object": "response",
                             "created_at": created_at,
                             "status": "failed",
-                            "model": payload.model,
+                            "model": _clean_model,
                             "output": [],
                             "error": {"code": 502, "message": _friendly_error(e)},
                         },
@@ -7208,7 +7697,7 @@ async def _responses_stream(
                             "object": "response",
                             "created_at": created_at,
                             "status": "failed",
-                            "model": payload.model,
+                            "model": _clean_model,
                             "output": [],
                             "error": {
                                 "code": resp.status_code,
@@ -7219,10 +7708,10 @@ async def _responses_stream(
                 )
                 return
 
+            lines_iter = resp.aiter_lines()
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, disconnect_event)
             )
-            lines_iter = resp.aiter_lines()
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = disconnect_event,
@@ -7342,6 +7831,7 @@ async def _responses_stream(
 
                 _apply_usage(chunk_data.get("usage"))
         except asyncio.CancelledError:
+            disconnect_event.set()
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
@@ -7406,21 +7896,6 @@ async def _responses_stream(
                     "output_index": message_state["output_index"],
                     "content_index": 0,
                     "delta": final_visible,
-                },
-            )
-        if full_reasoning and not full_text and not tool_call_state:
-            for event in _ensure_message_open():
-                yield event
-            full_text = full_reasoning
-            api_monitor.set_reply(monitor_id, full_text)
-            yield _sse(
-                "response.output_text.delta",
-                {
-                    "type": "response.output_text.delta",
-                    "item_id": message_state["item_id"],
-                    "output_index": message_state["output_index"],
-                    "content_index": 0,
-                    "delta": full_text,
                 },
             )
 
@@ -7571,7 +8046,7 @@ async def _responses_stream(
                 "object": "response",
                 "created_at": created_at,
                 "status": "completed",
-                "model": payload.model,
+                "model": _clean_model,
                 "output": _snapshot_output(),
                 "usage": {
                     "input_tokens": input_tokens,
@@ -7583,7 +8058,15 @@ async def _responses_stream(
         api_monitor.finish(monitor_id)
         yield _sse("response.completed", completed_response)
 
-    return _sse_streaming_response(event_generator())
+    return _SameTaskStreamingResponse(
+        event_generator(),
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "close",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/responses")
@@ -7835,7 +8318,13 @@ async def anthropic_messages(
             ),
         )
 
-    model_name = getattr(llama_backend, "model_identifier", None) or payload.model
+    # Clean public id so /v1/messages never echoes the local .gguf path (and a
+    # legacy raw path sent as payload.model is sanitized rather than returned).
+    model_name = (
+        public_model_id(getattr(llama_backend, "model_identifier", None))
+        or public_model_id(payload.model)
+        or payload.model
+    )
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
 
     # ── Translate Anthropic → OpenAI ──────────────────────────
@@ -8199,9 +8688,17 @@ async def _anthropic_tool_stream(
         drop_until_tool_end = False
 
         gen = run_gen()
+        # Concurrent disconnect watcher: the loop only polls is_disconnected()
+        # between events, so a client disconnect during a long prefill or
+        # generation step would otherwise hold the decode slot until the next
+        # event or a failed send. The watcher sets cancel_event so the backend
+        # stops promptly.
+        disconnect_watcher = asyncio.create_task(
+            _await_disconnect_then_cancel(request, cancel_event)
+        )
         try:
             while True:
-                if await request.is_disconnected():
+                if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
                 event = await asyncio.to_thread(next, gen, _sentinel)
@@ -8249,6 +8746,8 @@ async def _anthropic_tool_stream(
             if _error_event is not None:
                 yield _error_event
                 return
+        finally:
+            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
 
         stop_reason = openai_finish_to_anthropic_stop(
             captured_finish_reason, had_tool_calls = ends_on_tool_use
@@ -8285,9 +8784,17 @@ async def _anthropic_plain_stream(
         captured_finish_reason = None
 
         gen = run_gen()
+        # Concurrent disconnect watcher: the loop only polls is_disconnected()
+        # between chunks, so a client disconnect during a long prefill or
+        # generation step would otherwise hold the decode slot until the next
+        # chunk or a failed send. The watcher sets cancel_event so the backend
+        # stops promptly.
+        disconnect_watcher = asyncio.create_task(
+            _await_disconnect_then_cancel(request, cancel_event)
+        )
         try:
             while True:
-                if await request.is_disconnected():
+                if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
                 cumulative = await asyncio.to_thread(next, gen, _sentinel)
@@ -8310,6 +8817,8 @@ async def _anthropic_plain_stream(
             if _error_event is not None:
                 yield _error_event
                 return
+        finally:
+            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
 
         stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
@@ -9201,7 +9710,7 @@ async def _openai_passthrough_stream(
                 except Exception:
                     pass
                 _tracker.__exit__(None, None, None)
-                return StreamingResponse(
+                return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
                     headers = {
@@ -9252,6 +9761,29 @@ async def _openai_passthrough_stream(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
             monitor_done = False
+            saw_finish_reason = False
+            saw_done = False
+            saw_stream_error = False
+            saw_tool_call_delta = False
+            last_chunk_id = completion_id
+            last_chunk_model = model_name
+            last_chunk_created = int(time.time())
+
+            def _synthetic_finish_line() -> str:
+                finish_reason = "tool_calls" if saw_tool_call_delta else "stop"
+                chunk = ChatCompletionChunk(
+                    id = last_chunk_id,
+                    created = last_chunk_created,
+                    model = last_chunk_model,
+                    choices = [
+                        ChunkChoice(
+                            delta = ChoiceDelta(),
+                            finish_reason = finish_reason,
+                        )
+                    ],
+                )
+                return f"data: {chunk.model_dump_json(exclude_none = True)}"
+
             try:
                 lines_iter = resp.aiter_lines()
                 async for raw_line in _aiter_llama_stream_items(
@@ -9265,23 +9797,117 @@ async def _openai_passthrough_stream(
                         continue
                     if not raw_line.startswith("data: "):
                         continue
+                    data_text = raw_line[6:].strip()
+                    if data_text == "[DONE]":
+                        saw_done = True
+                        if (
+                            not saw_finish_reason
+                            and not saw_stream_error
+                            and not cancel_event.is_set()
+                        ):
+                            finish_line = _synthetic_finish_line()
+                            _monitor_openai_sse_line(
+                                monitor_id,
+                                finish_line,
+                                llama_backend.context_length,
+                            )
+                            yield finish_line + "\n\n"
+                            saw_finish_reason = True
+                        _monitor_openai_sse_line(
+                            monitor_id,
+                            raw_line,
+                            llama_backend.context_length,
+                        )
+                        yield raw_line + "\n\n"
+                        monitor_done = True
+                        break
                     # Honor parallel_tool_calls=false (best-effort): drop tool_call
                     # deltas with index>=1 so only the first call streams. Only
                     # lines carrying tool_calls are reparsed; everything else is
                     # relayed byte-for-byte.
                     if payload.parallel_tool_calls is False and '"tool_calls"' in raw_line:
                         raw_line = _cap_parallel_tool_calls_sse_line(raw_line)
+                        data_text = raw_line[6:].strip()
+                    try:
+                        chunk_data = json.loads(data_text)
+                    except json.JSONDecodeError:
+                        chunk_data = None
+                    if isinstance(chunk_data, dict):
+                        if isinstance(chunk_data.get("id"), str):
+                            last_chunk_id = chunk_data["id"]
+                        if isinstance(chunk_data.get("model"), str):
+                            last_chunk_model = chunk_data["model"]
+                        if isinstance(chunk_data.get("created"), int):
+                            last_chunk_created = chunk_data["created"]
+                        choices = chunk_data.get("choices")
+                        if isinstance(choices, list) and choices:
+                            choice = choices[0]
+                            if isinstance(choice, dict):
+                                if choice.get("finish_reason"):
+                                    saw_finish_reason = True
+                                delta = choice.get("delta")
+                                if isinstance(delta, dict) and delta.get("tool_calls"):
+                                    saw_tool_call_delta = True
+                        # Detect an upstream error chunk independently of API
+                        # monitoring: when monitor_id is None (skip_api_monitor),
+                        # _monitor_openai_sse_line returns before inspecting the
+                        # error, so without this the synthetic-finish guard would
+                        # emit a successful finish_reason after a failed stream.
+                        if _monitor_openai_error_message(chunk_data):
+                            saw_stream_error = True
                     monitor_event = _monitor_openai_sse_line(
                         monitor_id,
                         raw_line,
                         llama_backend.context_length,
                     )
+                    if monitor_event == "error":
+                        saw_stream_error = True
+                    # If a trailing usage-only chunk (include_usage) arrives before
+                    # any finish chunk, emit the synthetic finish first so the order
+                    # stays finish -> usage -> [DONE], matching the other streams.
+                    if (
+                        isinstance(chunk_data, dict)
+                        and chunk_data.get("usage")
+                        and not (
+                            isinstance(chunk_data.get("choices"), list) and chunk_data["choices"]
+                        )
+                        and not saw_finish_reason
+                        and not saw_stream_error
+                        and not cancel_event.is_set()
+                    ):
+                        finish_line = _synthetic_finish_line()
+                        _monitor_openai_sse_line(
+                            monitor_id, finish_line, llama_backend.context_length
+                        )
+                        yield finish_line + "\n\n"
+                        saw_finish_reason = True
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
                     yield raw_line + "\n\n"
-                    if monitor_event == "done" or raw_line[6:].strip() == "[DONE]":
+                    if monitor_event == "done":
                         monitor_done = True
                         break
+                if not saw_done and not saw_stream_error and not cancel_event.is_set():
+                    # Synthesize a finish chunk only if one was not already
+                    # emitted (e.g. before a trailing usage-only chunk), but
+                    # always close with [DONE] whenever the upstream omitted it,
+                    # so the stream ends on the [DONE] sentinel either way.
+                    if not saw_finish_reason:
+                        finish_line = _synthetic_finish_line()
+                        _monitor_openai_sse_line(
+                            monitor_id,
+                            finish_line,
+                            llama_backend.context_length,
+                        )
+                        yield finish_line + "\n\n"
+                    done_line = "data: [DONE]"
+                    _monitor_openai_sse_line(
+                        monitor_id,
+                        done_line,
+                        llama_backend.context_length,
+                    )
+                    yield done_line + "\n\n"
+                    monitor_done = True
                 if not monitor_done:
                     api_monitor.finish(
                         monitor_id,
@@ -9317,7 +9943,24 @@ async def _openai_passthrough_stream(
                 )
                 _tracker.__exit__(None, None, None)
 
-        return _sse_streaming_response(_stream())
+        async def _unstarted_cleanup() -> None:
+            # Client disconnected before the body stream started, so _stream()'s
+            # finally never ran. Release the eagerly-opened upstream resp/client
+            # and the cancel-registry entry here; the watchers and line iterator
+            # are created inside _stream(), so there is nothing else to close.
+            await _aclose_stream_resources(resp = resp, client = client)
+            _tracker.__exit__(None, None, None)
+
+        return _SameTaskStreamingResponse(
+            _stream(),
+            media_type = "text/event-stream",
+            headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "close",
+                "X-Accel-Buffering": "no",
+            },
+            unstarted_cleanup = _unstarted_cleanup,
+        )
     except BaseException:
         _tracker.__exit__(None, None, None)
         raise
