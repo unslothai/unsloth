@@ -65,22 +65,24 @@ def _require_run_active(viewer: Tuple[str, str]) -> None:
 @router.post("/share", response_model = PhoneShareResponse)
 async def share_to_phone(request: Request, current_subject: str = Depends(get_current_subject)):
     try:
+        scheme = request.url.scheme or "http"
+        port = request.url.port or (443 if scheme == "https" else 80)
+
         host = _phone_host()
         if not host:
+            # Loopback bind: hand the UI a code + relaunch command, not a raw error.
             raise HTTPException(
-                status_code = 422,
-                detail = (
-                    "Studio is only reachable on this computer. Restart it with "
-                    "`-H 0.0.0.0` so your phone can open the link on the same Wi-Fi."
-                ),
+                status_code = 409,
+                detail = {
+                    "code": "loopback_only",
+                    "command": f"unsloth studio -H 0.0.0.0 -p {port}",
+                },
             )
 
         backend = get_training_backend()
         run_id = getattr(backend, "current_job_id", "") or ""
         token, expires_at = create_phone_token(current_subject, run_id)
 
-        scheme = request.url.scheme or "http"
-        port = request.url.port or (443 if scheme == "https" else 80)
         # Fragment, not path — keeps the token out of server logs.
         page_url = f"{scheme}://{host}:{port}/m#{token}"
 

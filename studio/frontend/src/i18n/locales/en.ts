@@ -884,6 +884,15 @@ export const en = {
       creatingLink: "Creating link…",
       error: "Could not create a phone link.",
       copied: "Copied ✓",
+      notReachableTitle: "One step to watch on your phone",
+      notReachableDescription:
+        "Studio is only listening on this computer, so only it can open the link.",
+      notReachableBody:
+        "Restart Studio so your phone can reach it on the same Wi-Fi, then reopen this:",
+      copyCommand: "Copy",
+      commandCopied: "Copied ✓",
+      notReachableHint:
+        "Only do this on trusted networks — it exposes Studio on your local network.",
     },
     trainingStart: {
       ready: "Ready",
