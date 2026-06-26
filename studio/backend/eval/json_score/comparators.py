@@ -56,6 +56,7 @@ def money_comparator(rel_tol: float = 0.0, abs_tol: float = 0.0) -> Comparator:
     Both zero scores 1.0; within ``abs_tol`` or ``rel_tol`` scores 1.0;
     uncoercible input scores 0.0.
     """
+
     def score(gt: Any, pred: Any) -> float:
         a, b = _to_number(gt), _to_number(pred)
         if a is None or b is None:
@@ -88,7 +89,6 @@ def categorical_comparator(case_insensitive: bool = False, strip: bool = False) 
 
 def string_comparator(threshold: float = 0.5) -> Comparator:
     from rapidfuzz.distance import Levenshtein
-
     def score(gt: Any, pred: Any) -> float:
         a = "" if gt is None else str(gt)
         b = "" if pred is None else str(pred)
@@ -110,7 +110,7 @@ def _to_date(x: Any) -> datetime | None:
             from dateutil import parser as _dateparser
 
             # fixed default so absent components are deterministic
-            return _dateparser.parse(x, default=datetime(2000, 1, 1))
+            return _dateparser.parse(x, default = datetime(2000, 1, 1))
         except (ValueError, OverflowError, TypeError):
             return None
     return None
@@ -118,9 +118,7 @@ def _to_date(x: Any) -> datetime | None:
 
 def date_comparator(granularity: str = "day", day_tol: int = 0) -> Comparator:
     if granularity not in ("year", "month", "day"):
-        raise ValueError(
-            f"Unknown granularity {granularity!r}; expected 'year', 'month', or 'day'"
-        )
+        raise ValueError(f"Unknown granularity {granularity!r}; expected 'year', 'month', or 'day'")
 
     def score(gt: Any, pred: Any) -> float:
         da, db = _to_date(gt), _to_date(pred)
@@ -156,9 +154,7 @@ def is_comparator(name: str) -> bool:
 
 def get_comparator(name: str, **params: Any) -> Comparator:
     if name not in _REGISTRY:
-        raise ValueError(
-            f"Unknown comparator {name!r}. Known: {sorted(_REGISTRY)}"
-        )
+        raise ValueError(f"Unknown comparator {name!r}. Known: {sorted(_REGISTRY)}")
     try:
         return _REGISTRY[name](**params)
     except TypeError as e:

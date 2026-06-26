@@ -531,10 +531,7 @@ _HF_SPLITS_API = "https://datasets-server.huggingface.co/splits"
 
 
 @router.post("/splits", response_model = SplitsResponse)
-def get_splits(
-    request: SplitsRequest,
-    current_subject: str = Depends(get_current_subject),
-):
+def get_splits(request: SplitsRequest, current_subject: str = Depends(get_current_subject)):
     """
     Return the available configs (subsets) and splits for a HuggingFace dataset.
 
@@ -545,11 +542,7 @@ def get_splits(
     Uses the HuggingFace datasets-server ``/splits`` endpoint which returns
     all configs and splits in a single request.
     """
-    token = (
-        (request.hf_token or "").strip()
-        or (os.environ.get("HF_TOKEN") or "").strip()
-        or None
-    )
+    token = (request.hf_token or "").strip() or (os.environ.get("HF_TOKEN") or "").strip() or None
 
     headers: dict[str, str] = {}
     if token:
@@ -572,8 +565,7 @@ def get_splits(
         entries = [
             SplitEntry(dataset = s["dataset"], config = s["config"], split = s["split"])
             for s in splits_data
-            if isinstance(s, dict)
-            and all(k in s for k in ("dataset", "config", "split"))
+            if isinstance(s, dict) and all(k in s for k in ("dataset", "config", "split"))
         ]
         return SplitsResponse(splits = entries)
 
@@ -598,9 +590,7 @@ def get_splits(
         raise HTTPException(status_code = upstream_status, detail = detail)
 
     except http_requests.RequestException as e:
-        logger.error(
-            f"Failed to fetch splits for {request.dataset!r}: {e}", exc_info = True
-        )
+        logger.error(f"Failed to fetch splits for {request.dataset!r}: {e}", exc_info = True)
         raise HTTPException(
             status_code = 502, detail = "Failed to fetch dataset splits from HuggingFace"
         )

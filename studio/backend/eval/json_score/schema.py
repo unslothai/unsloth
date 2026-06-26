@@ -12,7 +12,7 @@ from .comparators import get_comparator, is_comparator
 @dataclass
 class LeafNode:
     comparator: str
-    params: dict = field(default_factory=dict)
+    params: dict = field(default_factory = dict)
 
 
 @dataclass
@@ -79,20 +79,14 @@ def json_schema_to_node(node: Any) -> Node:
     if t == "object" or isinstance(node.get("properties"), dict):
         props = node.get("properties")
         fields = (
-            {k: json_schema_to_node(v) for k, v in props.items()}
-            if isinstance(props, dict)
-            else {}
+            {k: json_schema_to_node(v) for k, v in props.items()} if isinstance(props, dict) else {}
         )
         return ObjectNode(fields)
     if t == "array" or "items" in node:
         items = node.get("items")
         if isinstance(items, list):  # tuple validation → use the first item schema
             items = items[0] if items else None
-        item = (
-            json_schema_to_node(items)
-            if isinstance(items, dict)
-            else LeafNode("string", {})
-        )
+        item = json_schema_to_node(items) if isinstance(items, dict) else LeafNode("string", {})
         return ArrayNode(item)
     if t in ("number", "integer"):
         return LeafNode("numeric", {})
@@ -123,16 +117,12 @@ def normalize_schema(raw: Any) -> Node:
 
     if isinstance(raw, str):
         if not is_comparator(raw):
-            raise ValueError(
-                f"Unknown comparator {raw!r}. Use a registered comparator name."
-            )
+            raise ValueError(f"Unknown comparator {raw!r}. Use a registered comparator name.")
         return LeafNode(raw, {})
 
     if isinstance(raw, list):
         if len(raw) != 1:
-            raise ValueError(
-                "array schema must be a single-element list [item_schema]"
-            )
+            raise ValueError("array schema must be a single-element list [item_schema]")
         return ArrayNode(normalize_schema(raw[0]))
 
     if isinstance(raw, dict):

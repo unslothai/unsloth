@@ -35,9 +35,7 @@ def test_array_schema():
 
 
 def test_nested_schema():
-    node = normalize_schema(
-        {"vendor": {"name": "string"}, "items": [{"price": "money"}]}
-    )
+    node = normalize_schema({"vendor": {"name": "string"}, "items": [{"price": "money"}]})
     assert node == ObjectNode(
         {
             "vendor": ObjectNode({"name": LeafNode("string", {})}),
@@ -47,22 +45,22 @@ def test_nested_schema():
 
 
 def test_empty_array_schema_is_error():
-    with pytest.raises(ValueError, match="single-element list"):
+    with pytest.raises(ValueError, match = "single-element list"):
         normalize_schema([])
 
 
 def test_multi_element_array_schema_is_error():
-    with pytest.raises(ValueError, match="single-element list"):
+    with pytest.raises(ValueError, match = "single-element list"):
         normalize_schema(["string", "money"])
 
 
 def test_unknown_comparator_is_error():
-    with pytest.raises(ValueError, match="Unknown comparator"):
+    with pytest.raises(ValueError, match = "Unknown comparator"):
         normalize_schema("not_a_comparator")
 
 
 def test_bad_leaf_param_is_error():
-    with pytest.raises(ValueError, match="Invalid params"):
+    with pytest.raises(ValueError, match = "Invalid params"):
         normalize_schema({"type": "money", "bogus": 1})
 
 
@@ -130,9 +128,7 @@ def test_json_schema_with_type_named_field_is_preserved():
             },
         }
     )
-    assert node == ObjectNode(
-        {"type": LeafNode("string", {}), "amount": LeafNode("numeric", {})}
-    )
+    assert node == ObjectNode({"type": LeafNode("string", {}), "amount": LeafNode("numeric", {})})
 
 
 def test_normalize_detects_json_schema_via_dollar_schema():

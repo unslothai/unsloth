@@ -13,15 +13,15 @@ anls_star = pytest.importorskip("anls_star")
 # reordered lists. Hallucinated keys and non-perfect nested objects are
 # intentionally NOT cross-checked (this metric diverges there by design).
 REFERENCE_CASES = [
-    ({"a": "hello", "b": "world"}, {"a": "hello", "b": "world"}),       # 1.0
-    ({"a": "hello", "b": "world"}, {"a": "hello", "b": "earth"}),       # flat, b differs
+    ({"a": "hello", "b": "world"}, {"a": "hello", "b": "world"}),  # 1.0
+    ({"a": "hello", "b": "world"}, {"a": "hello", "b": "earth"}),  # flat, b differs
     (
         {"items": ["alpha", "beta", "gamma"]},
-        {"items": ["gamma", "alpha", "beta"]},                          # reorder -> 1.0
+        {"items": ["gamma", "alpha", "beta"]},  # reorder -> 1.0
     ),
     (
         {"v": {"name": "Acme", "id": "X1"}, "n": "Bob"},
-        {"v": {"name": "Acme", "id": "X1"}, "n": "Bob"},                # nested, perfect
+        {"v": {"name": "Acme", "id": "X1"}, "n": "Bob"},  # nested, perfect
     ),
 ]
 
@@ -52,13 +52,13 @@ def test_end_to_end_invoice_breakdown():
         ],
     }
     pred = {
-        "total": 90,                       # money: 1 - 10/100 = 0.9
-        "currency": "EUR",                 # categorical wrong: 0.0
-        "issue_date": "Jan 15, 2024",      # date correct: 1.0
+        "total": 90,  # money: 1 - 10/100 = 0.9
+        "currency": "EUR",  # categorical wrong: 0.0
+        "issue_date": "Jan 15, 2024",  # date correct: 1.0
         "vendor": {"name": "Acme Inc", "vat_id": "X1"},  # 1.0, 1.0 (2 leaves)
         "line_items": [
-            {"desc": "Apple", "qty": 1, "price": 40},    # perfect
-            {"desc": "Banana", "qty": 2, "price": 60},   # perfect
+            {"desc": "Apple", "qty": 1, "price": 40},  # perfect
+            {"desc": "Banana", "qty": 2, "price": 60},  # perfect
         ],
     }
     # Per-child (score, n_leaves) contributions to the top object:
@@ -69,7 +69,7 @@ def test_end_to_end_invoice_breakdown():
     #   line_items  (1.0, 2) -> 2.0   (2 perfect slots)
     # sum = 5.9 over n_leaves = 7
     expected = 5.9 / 7
-    score, node = json_anls_score(gt, pred, schema, return_key_scores=True)
+    score, node = json_anls_score(gt, pred, schema, return_key_scores = True)
     assert abs(score - expected) < 1e-9
     assert node.children["currency"].score == 0.0
     assert abs(node.children["total"].score - 0.9) < 1e-9

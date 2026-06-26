@@ -52,7 +52,7 @@ def _score_leaf(gt: Any, pred: Any, comparator: str, params: dict) -> ScoreNode:
     if gt is None and pred is None:
         return ScoreNode(1.0, 1)
     if (gt is None) != (pred is None):
-        return ScoreNode(0.0, 1, note="missing or hallucinated")
+        return ScoreNode(0.0, 1, note = "missing or hallucinated")
     cmp = get_comparator(comparator, **params)
     return ScoreNode(float(cmp(gt, pred)), 1)
 
@@ -61,7 +61,7 @@ def _score(gt: Any, pred: Any, node: Node | None, default: str) -> ScoreNode:
     # Options: a ground-truth tuple lists acceptable alternatives -> take the best
     if isinstance(gt, tuple):
         if not gt:
-            return ScoreNode(0.0, 1, note="empty alternatives tuple")
+            return ScoreNode(0.0, 1, note = "empty alternatives tuple")
         best: ScoreNode | None = None
         best_i = -1
         for i, opt in enumerate(gt):
@@ -99,7 +99,7 @@ def _mismatch(gt: Any, pred: Any, node: Node | None) -> ScoreNode:
     # (scalar) side, _leaf_count is 1; when GT carries the structure, it's that
     # subtree's size. Either way the local score is 0.
     n = _leaf_count(gt, node) if gt is not None else 1
-    return ScoreNode(0.0, max(n, 1), note="type mismatch")
+    return ScoreNode(0.0, max(n, 1), note = "type mismatch")
 
 
 def _score_object(gt: dict, pred: dict, node: Node | None, default: str) -> ScoreNode:
@@ -111,17 +111,15 @@ def _score_object(gt: dict, pred: dict, node: Node | None, default: str) -> Scor
         if k in gt and k in pred:
             cn = _score(gt[k], pred[k], child_node, default)
         elif k in gt:  # present in gt, missing from prediction
-            cn = ScoreNode(
-                0.0, _leaf_count(gt[k], child_node), note="missing in prediction"
-            )
+            cn = ScoreNode(0.0, _leaf_count(gt[k], child_node), note = "missing in prediction")
         else:  # present in prediction only -> hallucinated, one zero-leaf
-            cn = ScoreNode(0.0, 1, note="hallucinated")
+            cn = ScoreNode(0.0, 1, note = "hallucinated")
         children[k] = cn
         total_sum += cn.score * cn.n_leaves
         total_n += cn.n_leaves
     if total_n == 0:
-        return ScoreNode(1.0, 0, children=children)
-    return ScoreNode(total_sum / total_n, total_n, children=children)
+        return ScoreNode(1.0, 0, children = children)
+    return ScoreNode(total_sum / total_n, total_n, children = children)
 
 
 def _score_array(gt: list, pred: list, node: Node | None, default: str) -> ScoreNode:
@@ -129,20 +127,18 @@ def _score_array(gt: list, pred: list, node: Node | None, default: str) -> Score
     n_g, n_p = len(gt), len(pred)
     slots = max(n_g, n_p)
     if slots == 0:
-        return ScoreNode(1.0, 0, children=[])
+        return ScoreNode(1.0, 0, children = [])
     if n_g == 0 or n_p == 0:
         # all hallucinated or all missing
-        return ScoreNode(0.0, slots, children=[])
+        return ScoreNode(0.0, slots, children = [])
 
     import numpy as np
     from scipy.optimize import linear_sum_assignment
 
     # full ScoreNode for every (gt_i, pred_j) pair; matching maximises mean score
-    node_matrix = [
-        [_score(g, p, item_node, default) for p in pred] for g in gt
-    ]
+    node_matrix = [[_score(g, p, item_node, default) for p in pred] for g in gt]
     score_matrix = np.array([[n.score for n in row] for row in node_matrix])
-    row_ind, col_ind = linear_sum_assignment(score_matrix, maximize=True)
+    row_ind, col_ind = linear_sum_assignment(score_matrix, maximize = True)
 
     matched = list(zip(row_ind.tolist(), col_ind.tolist()))
     total = sum(score_matrix[i][j] for i, j in matched)
@@ -153,13 +149,7 @@ def _score_array(gt: list, pred: list, node: Node | None, default: str) -> Score
     matched_g = {i for i, _ in matched}
     matched_p = {j for _, j in matched}
     children += [
-        ScoreNode(0.0, 1, note="missing in prediction")
-        for i in range(n_g)
-        if i not in matched_g
+        ScoreNode(0.0, 1, note = "missing in prediction") for i in range(n_g) if i not in matched_g
     ]
-    children += [
-        ScoreNode(0.0, 1, note="hallucinated")
-        for j in range(n_p)
-        if j not in matched_p
-    ]
-    return ScoreNode(float(total) / slots, slots, children=children)
+    children += [ScoreNode(0.0, 1, note = "hallucinated") for j in range(n_p) if j not in matched_p]
+    return ScoreNode(float(total) / slots, slots, children = children)

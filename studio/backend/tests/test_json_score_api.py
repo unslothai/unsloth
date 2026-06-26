@@ -35,7 +35,7 @@ def test_returns_float_by_default():
 
 
 def test_return_key_scores_gives_breakdown():
-    score, node = json_anls_score(_gt(), _gt(), SCHEMA, return_key_scores=True)
+    score, node = json_anls_score(_gt(), _gt(), SCHEMA, return_key_scores = True)
     assert score == 1.0
     assert isinstance(node, ScoreNode)
     assert "total" in node.children
@@ -57,9 +57,7 @@ def test_score_from_text_unparseable_is_zero():
 
 
 def test_score_from_text_unparseable_breakdown():
-    score, node = score_from_text(
-        _gt(), "no json here", SCHEMA, return_key_scores=True
-    )
+    score, node = score_from_text(_gt(), "no json here", SCHEMA, return_key_scores = True)
     assert score == 0.0 and node.note == "unparseable prediction"
 
 
@@ -86,7 +84,7 @@ def test_score_from_text_repairs_truncated_json():
         {"currency": "USD", "total": 100},
         raw,
         {"currency": "categorical", "total": "money"},
-        return_key_scores=True,
+        return_key_scores = True,
     )
     assert node.note != "unparseable prediction"
     assert score == 1.0
@@ -100,7 +98,9 @@ def test_score_from_text_repairs_trailing_comma_and_single_quotes():
 def test_score_from_text_prose_still_unparseable():
     # Pure prose has no JSON to repair → stays unparseable (no false positives).
     score, node = score_from_text(
-        _gt(), "* Bullet one\n* Bullet two — a summary, not JSON.",
-        SCHEMA, return_key_scores=True,
+        _gt(),
+        "* Bullet one\n* Bullet two — a summary, not JSON.",
+        SCHEMA,
+        return_key_scores = True,
     )
     assert score == 0.0 and node.note == "unparseable prediction"

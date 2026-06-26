@@ -49,9 +49,7 @@ def test_dispatch_leaf():
 
 def test_options_tuple_takes_best_alternative():
     schema = normalize_schema("string")
-    node = _score(
-        ("Acme Inc", "Acme Incorporated"), "Acme Incorporated", schema, "string"
-    )
+    node = _score(("Acme Inc", "Acme Incorporated"), "Acme Incorporated", schema, "string")
     assert node.score == 1.0 and node.matched_option == 1
 
 

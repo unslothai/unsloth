@@ -44,19 +44,14 @@ def _coerce_reference(value: Any) -> Any:
 
 
 def _score_row(
-    *,
-    prediction: Any,
-    reference: Any,
-    schema: Any,
-    default_comparator: str,
-    want_breakdown: bool,
+    *, prediction: Any, reference: Any, schema: Any, default_comparator: str, want_breakdown: bool
 ) -> tuple[float, Any]:
     score, node = score_from_text(
         _coerce_reference(reference),
         _coerce_value(prediction),
         schema,
-        default_comparator=default_comparator,
-        return_key_scores=True,
+        default_comparator = default_comparator,
+        return_key_scores = True,
     )
     breakdown = (
         dataclasses.asdict(node)
@@ -79,13 +74,11 @@ def _score_dataframe(
     """Add score (and optionally breakdown) columns to `df` in place and return it."""
     if prediction_column not in df.columns:
         raise ValueError(
-            f"prediction_column {prediction_column!r} not in dataset "
-            f"(have: {list(df.columns)})"
+            f"prediction_column {prediction_column!r} not in dataset " f"(have: {list(df.columns)})"
         )
     if reference_column not in df.columns:
         raise ValueError(
-            f"reference_column {reference_column!r} not in dataset "
-            f"(have: {list(df.columns)})"
+            f"reference_column {reference_column!r} not in dataset " f"(have: {list(df.columns)})"
         )
 
     want_breakdown = bool(breakdown_column)
@@ -96,11 +89,11 @@ def _score_dataframe(
     breakdowns: list[str] = []
     for prediction_value, reference_value in zip(predictions, references):
         score, breakdown = _score_row(
-            prediction=prediction_value,
-            reference=reference_value,
-            schema=schema,
-            default_comparator=default_comparator,
-            want_breakdown=want_breakdown,
+            prediction = prediction_value,
+            reference = reference_value,
+            schema = schema,
+            default_comparator = default_comparator,
+            want_breakdown = want_breakdown,
         )
         scores.append(score)
         if want_breakdown:
@@ -133,15 +126,15 @@ def run_json_document_score(
         df = pd.read_parquet(parquet_file)
         _score_dataframe(
             df,
-            prediction_column=prediction_column,
-            reference_column=reference_column,
-            schema=schema,
-            default_comparator=default_comparator,
-            score_column=score_column,
-            breakdown_column=breakdown_column,
+            prediction_column = prediction_column,
+            reference_column = reference_column,
+            schema = schema,
+            default_comparator = default_comparator,
+            score_column = score_column,
+            breakdown_column = breakdown_column,
         )
         tmp_file = parquet_file.with_suffix(parquet_file.suffix + ".tmp")
-        df.to_parquet(tmp_file, index=False)
+        df.to_parquet(tmp_file, index = False)
         os.replace(tmp_file, parquet_file)
 
 
@@ -158,10 +151,10 @@ def run_json_document_score_on_dataframe(
     """In-memory entrypoint for the preview path. Returns the (mutated) df."""
     return _score_dataframe(
         df,
-        prediction_column=prediction_column,
-        reference_column=reference_column,
-        schema=schema,
-        default_comparator=default_comparator,
-        score_column=score_column,
-        breakdown_column=breakdown_column,
+        prediction_column = prediction_column,
+        reference_column = reference_column,
+        schema = schema,
+        default_comparator = default_comparator,
+        score_column = score_column,
+        breakdown_column = breakdown_column,
     )

@@ -28,12 +28,12 @@ def test_money_zero_vs_nonzero_is_zero():
 
 
 def test_money_within_abs_tol():
-    cmp = get_comparator("money", abs_tol=0.5)
+    cmp = get_comparator("money", abs_tol = 0.5)
     assert cmp(100.0, 100.4) == 1.0
 
 
 def test_money_within_rel_tol():
-    cmp = get_comparator("money", rel_tol=0.05)
+    cmp = get_comparator("money", rel_tol = 0.05)
     assert cmp(100.0, 96.0) == 1.0  # 4% diff <= 5%
 
 
@@ -93,13 +93,13 @@ def test_money_none_is_zero():
 
 
 def test_get_comparator_unknown_raises():
-    with pytest.raises(ValueError, match="Unknown comparator"):
+    with pytest.raises(ValueError, match = "Unknown comparator"):
         get_comparator("nope")
 
 
 def test_get_comparator_bad_param_raises():
-    with pytest.raises(ValueError, match="Invalid params"):
-        get_comparator("money", bogus=1)
+    with pytest.raises(ValueError, match = "Invalid params"):
+        get_comparator("money", bogus = 1)
 
 
 def test_categorical_exact():
@@ -109,7 +109,7 @@ def test_categorical_exact():
 
 
 def test_categorical_case_insensitive_and_strip():
-    cmp = get_comparator("categorical", case_insensitive=True, strip=True)
+    cmp = get_comparator("categorical", case_insensitive = True, strip = True)
     assert cmp("USD", " usd ") == 1.0
 
 
@@ -125,12 +125,12 @@ def test_string_identical():
 
 
 def test_string_below_threshold_is_zero():
-    cmp = get_comparator("string", threshold=0.5)
+    cmp = get_comparator("string", threshold = 0.5)
     assert cmp("abcdefgh", "zzzzzzzz") == 0.0
 
 
 def test_string_high_similarity_kept():
-    cmp = get_comparator("string", threshold=0.5)
+    cmp = get_comparator("string", threshold = 0.5)
     assert cmp("Acme Incorporated", "Acme Incorporatd") > 0.9
 
 
@@ -151,12 +151,12 @@ def test_date_different_days():
 
 
 def test_date_day_tolerance():
-    cmp = get_comparator("date", day_tol=1)
+    cmp = get_comparator("date", day_tol = 1)
     assert cmp("2024-01-15", "2024-01-16") == 1.0
 
 
 def test_date_granularity_month():
-    cmp = get_comparator("date", granularity="month")
+    cmp = get_comparator("date", granularity = "month")
     assert cmp("2024-01-15", "2024-01-28") == 1.0
     assert cmp("2024-01-15", "2024-02-15") == 0.0
 
@@ -167,8 +167,8 @@ def test_date_unparseable_is_zero():
 
 
 def test_date_unknown_granularity_raises():
-    with pytest.raises(ValueError, match="Unknown granularity"):
-        get_comparator("date", granularity="week")
+    with pytest.raises(ValueError, match = "Unknown granularity"):
+        get_comparator("date", granularity = "week")
 
 
 def test_date_accepts_date_objects():
@@ -180,7 +180,7 @@ def test_date_accepts_date_objects():
 
 
 def test_date_year_granularity_ignores_day_tol():
-    cmp = get_comparator("date", granularity="year", day_tol=999)
+    cmp = get_comparator("date", granularity = "year", day_tol = 999)
     assert cmp("2024-06-01", "2024-12-31") == 1.0
     assert cmp("2024-06-01", "2025-06-01") == 0.0
 

@@ -64,7 +64,7 @@ def _extract_json(text: Any) -> Any | None:
             pass
 
     try:
-        repaired = repair_json(s, return_objects=True)
+        repaired = repair_json(s, return_objects = True)
         if isinstance(repaired, (dict, list)) and repaired:
             return repaired
     except Exception:
@@ -89,7 +89,7 @@ def score_from_text(
     if pred is None:
         node: Node | None = normalize_schema(schema) if schema is not None else None
         n = max(_leaf_count(ground_truth, node), 1)
-        zero = ScoreNode(0.0, n, note="unparseable prediction")
+        zero = ScoreNode(0.0, n, note = "unparseable prediction")
         if return_key_scores:
             return 0.0, zero
         return 0.0
@@ -97,6 +97,6 @@ def score_from_text(
         ground_truth,
         pred,
         schema,
-        default_comparator=default_comparator,
-        return_key_scores=return_key_scores,
+        default_comparator = default_comparator,
+        return_key_scores = return_key_scores,
     )

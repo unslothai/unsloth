@@ -21,7 +21,7 @@ from core.data_recipe.post_processors.json_document_score import (
 @pytest.fixture
 def parquet_dir(tmp_path: Path) -> Path:
     parquet_dir = tmp_path / "parquet-files"
-    parquet_dir.mkdir(parents=True)
+    parquet_dir.mkdir(parents = True)
     df = pd.DataFrame(
         {
             "prediction": [
@@ -36,7 +36,7 @@ def parquet_dir(tmp_path: Path) -> Path:
             ],
         }
     )
-    df.to_parquet(parquet_dir / "batch_00000.parquet", index=False)
+    df.to_parquet(parquet_dir / "batch_00000.parquet", index = False)
     return parquet_dir
 
 
@@ -47,12 +47,12 @@ def test_run_json_document_score_adds_score_column(parquet_dir: Path) -> None:
     # for "Bob" vs "Bobby".
     run_json_document_score(
         parquet_dir,
-        prediction_column="prediction",
-        reference_column="reference",
-        schema=None,
-        default_comparator="categorical",
-        score_column="doc_score",
-        breakdown_column=None,
+        prediction_column = "prediction",
+        reference_column = "reference",
+        schema = None,
+        default_comparator = "categorical",
+        score_column = "doc_score",
+        breakdown_column = None,
     )
 
     df = pd.read_parquet(parquet_dir / "batch_00000.parquet")
@@ -69,12 +69,12 @@ def test_run_json_document_score_adds_score_column(parquet_dir: Path) -> None:
 def test_run_json_document_score_adds_breakdown_when_requested(parquet_dir: Path) -> None:
     run_json_document_score(
         parquet_dir,
-        prediction_column="prediction",
-        reference_column="reference",
-        schema=None,
-        default_comparator="string",
-        score_column="doc_score",
-        breakdown_column="doc_score_breakdown",
+        prediction_column = "prediction",
+        reference_column = "reference",
+        schema = None,
+        default_comparator = "string",
+        score_column = "doc_score",
+        breakdown_column = "doc_score_breakdown",
     )
 
     df = pd.read_parquet(parquet_dir / "batch_00000.parquet")
@@ -85,15 +85,15 @@ def test_run_json_document_score_adds_breakdown_when_requested(parquet_dir: Path
 
 
 def test_run_json_document_score_missing_column_raises(parquet_dir: Path) -> None:
-    with pytest.raises(ValueError, match="prediction_column 'missing' not in dataset"):
+    with pytest.raises(ValueError, match = "prediction_column 'missing' not in dataset"):
         run_json_document_score(
             parquet_dir,
-            prediction_column="missing",
-            reference_column="reference",
-            schema=None,
-            default_comparator="string",
-            score_column="doc_score",
-            breakdown_column=None,
+            prediction_column = "missing",
+            reference_column = "reference",
+            schema = None,
+            default_comparator = "string",
+            score_column = "doc_score",
+            breakdown_column = None,
         )
 
 
@@ -104,8 +104,8 @@ def test_studio_processor_types_includes_json_document_score() -> None:
 def test_apply_studio_post_processors_dispatches_by_type(parquet_dir: Path) -> None:
     base_dataset_path = parquet_dir.parent
     apply_studio_post_processors(
-        base_dataset_path=base_dataset_path,
-        processors=[
+        base_dataset_path = base_dataset_path,
+        processors = [
             {
                 "processor_type": "json_document_score",
                 "name": "score",
@@ -126,23 +126,23 @@ def test_run_json_document_score_handles_list_column(tmp_path: Path) -> None:
     """A list-typed parquet column round-trips through pyarrow as numpy.ndarray.
     Make sure that's treated as a list, not as 'unparseable'."""
     parquet_dir = tmp_path / "parquet-files"
-    parquet_dir.mkdir(parents=True)
+    parquet_dir.mkdir(parents = True)
     df = pd.DataFrame(
         {
             "prediction": [[1, 2, 3], [1, 2, 4]],
             "reference": [[1, 2, 3], [1, 2, 3]],
         }
     )
-    df.to_parquet(parquet_dir / "batch_00000.parquet", index=False)
+    df.to_parquet(parquet_dir / "batch_00000.parquet", index = False)
 
     run_json_document_score(
         parquet_dir,
-        prediction_column="prediction",
-        reference_column="reference",
-        schema=None,
-        default_comparator="categorical",
-        score_column="doc_score",
-        breakdown_column=None,
+        prediction_column = "prediction",
+        reference_column = "reference",
+        schema = None,
+        default_comparator = "categorical",
+        score_column = "doc_score",
+        breakdown_column = None,
     )
     out = pd.read_parquet(parquet_dir / "batch_00000.parquet")
     # Row 0: exact list match -> 1.0; Row 1: last element differs -> 2/3
@@ -154,14 +154,14 @@ def test_run_json_document_score_uses_schema_field_comparators(tmp_path: Path) -
     """Verify the schema arg is threaded through to normalize_schema and
     drives per-field comparator selection."""
     parquet_dir = tmp_path / "parquet-files"
-    parquet_dir.mkdir(parents=True)
+    parquet_dir.mkdir(parents = True)
     df = pd.DataFrame(
         {
             "prediction": [json.dumps({"name": "ALICE", "id": "42"})],
             "reference": [{"name": "alice", "id": "42"}],
         }
     )
-    df.to_parquet(parquet_dir / "batch_00000.parquet", index=False)
+    df.to_parquet(parquet_dir / "batch_00000.parquet", index = False)
 
     # `categorical` with `case_insensitive=True` on `name` → "ALICE" == "alice";
     # plain `categorical` on `id` → "42" == "42". There is no `case_insensitive`
@@ -172,12 +172,12 @@ def test_run_json_document_score_uses_schema_field_comparators(tmp_path: Path) -
     }
     run_json_document_score(
         parquet_dir,
-        prediction_column="prediction",
-        reference_column="reference",
-        schema=schema,
-        default_comparator="categorical",
-        score_column="doc_score",
-        breakdown_column=None,
+        prediction_column = "prediction",
+        reference_column = "reference",
+        schema = schema,
+        default_comparator = "categorical",
+        score_column = "doc_score",
+        breakdown_column = None,
     )
     out = pd.read_parquet(parquet_dir / "batch_00000.parquet")
     assert out["doc_score"].iloc[0] == pytest.approx(1.0)
@@ -186,8 +186,8 @@ def test_run_json_document_score_uses_schema_field_comparators(tmp_path: Path) -
 def test_apply_studio_post_processors_ignores_non_studio_types(parquet_dir: Path) -> None:
     # schema_transform is owned by data_designer — we should not touch it.
     apply_studio_post_processors(
-        base_dataset_path=parquet_dir.parent,
-        processors=[
+        base_dataset_path = parquet_dir.parent,
+        processors = [
             {"processor_type": "schema_transform", "name": "x", "template": {}},
         ],
     )
@@ -221,15 +221,18 @@ def test_build_config_builder_skips_studio_owned_processors(monkeypatch):
 
     monkeypatch.setattr(service, "_apply_data_designer_image_context_patch", lambda: None)
     monkeypatch.setattr(
-        service, "split_oxc_local_callable_validators",
+        service,
+        "split_oxc_local_callable_validators",
         lambda recipe_core: (recipe_core, []),
     )
     monkeypatch.setattr(
-        service, "register_oxc_local_callable_validators",
+        service,
+        "register_oxc_local_callable_validators",
         lambda **_: None,
     )
 
     import sys, types
+
     fake_config = types.ModuleType("data_designer.config")
     fake_config.DataDesignerConfigBuilder = _StubBuilderFactory
     fake_processors = types.ModuleType("data_designer.config.processors")
@@ -237,12 +240,14 @@ def test_build_config_builder_skips_studio_owned_processors(monkeypatch):
     monkeypatch.setitem(sys.modules, "data_designer.config", fake_config)
     monkeypatch.setitem(sys.modules, "data_designer.config.processors", fake_processors)
 
-    service.build_config_builder({
-        "processors": [
-            {"processor_type": "schema_transform", "name": "a", "template": {}},
-            {"processor_type": "json_document_score", "name": "b"},
-        ]
-    })
+    service.build_config_builder(
+        {
+            "processors": [
+                {"processor_type": "schema_transform", "name": "a", "template": {}},
+                {"processor_type": "json_document_score", "name": "b"},
+            ]
+        }
+    )
     assert captured == ["schema_transform"]
 
 
@@ -250,18 +255,18 @@ def test_apply_runs_in_declaration_order(tmp_path: Path) -> None:
     """Two post-processors on the same parquet — later ones see earlier ones'
     columns. Verifies the worker's call-site behavior end-to-end."""
     parquet_dir = tmp_path / "parquet-files"
-    parquet_dir.mkdir(parents=True)
+    parquet_dir.mkdir(parents = True)
     df = pd.DataFrame(
         {
             "prediction": [json.dumps({"a": 1})],
             "reference": [{"a": 1}],
         }
     )
-    df.to_parquet(parquet_dir / "batch_00000.parquet", index=False)
+    df.to_parquet(parquet_dir / "batch_00000.parquet", index = False)
 
     apply_studio_post_processors(
-        base_dataset_path=tmp_path,
-        processors=[
+        base_dataset_path = tmp_path,
+        processors = [
             {
                 "processor_type": "json_document_score",
                 "name": "first",
@@ -302,12 +307,12 @@ def test_run_json_document_score_on_dataframe_adds_score_column() -> None:
     )
     out = run_json_document_score_on_dataframe(
         df,
-        prediction_column="prediction",
-        reference_column="reference",
-        schema=None,
-        default_comparator="categorical",
-        score_column="doc_score",
-        breakdown_column=None,
+        prediction_column = "prediction",
+        reference_column = "reference",
+        schema = None,
+        default_comparator = "categorical",
+        score_column = "doc_score",
+        breakdown_column = None,
     )
     assert "doc_score" in out.columns
     assert out["doc_score"].iloc[0] == pytest.approx(1.0)
@@ -325,8 +330,8 @@ def test_apply_studio_post_processors_to_dataframe_dispatches_by_type() -> None:
         }
     )
     apply_studio_post_processors_to_dataframe(
-        df=df,
-        processors=[
+        df = df,
+        processors = [
             # non-studio entry is ignored
             {"processor_type": "schema_transform", "name": "x", "template": {}},
             {
