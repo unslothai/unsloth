@@ -100,11 +100,21 @@ class _FakeBackend:
         loaded = True,
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
         base_repo = None,
+        generate_error = None,
+        unload_on_generate = False,
     ) -> None:
         self._loaded = loaded
         self._repo_id = repo_id
         self._base_repo = base_repo
+        # When set, generate() raises this; unload_on_generate flips is_loaded off
+        # first, to model the eviction/unload race vs an in-pipeline failure (OOM).
+        self._generate_error = generate_error
+        self._unload_on_generate = unload_on_generate
         self.calls = []
+
+    @property
+    def is_loaded(self):
+        return self._loaded
 
     def status(self):
         return {
@@ -129,6 +139,10 @@ class _FakeBackend:
     ):
         if not self._loaded:
             raise RuntimeError("No diffusion model is loaded.")
+        if self._generate_error is not None:
+            if self._unload_on_generate:
+                self._loaded = False
+            raise self._generate_error
         self.calls.append(
             dict(
                 prompt = prompt,
@@ -211,6 +225,51 @@ def test_local_load_uses_base_repo_for_defaults(monkeypatch):
     resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
     assert backend.calls[0]["steps"] == 28 and backend.calls[0]["guidance"] == 3.5
+
+
+def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
+    # A RuntimeError raised inside the pipeline while the model stays loaded (e.g.
+    # CUDA OOM, a RuntimeError subclass) must be a sanitized 500, not a 503 that
+    # echoes the raw exception text.
+    oom = RuntimeError("CUDA out of memory. Tried to allocate 20.00 GiB (GPU 0; 47.5 GiB total)")
+    backend = _FakeBackend(generate_error = oom)
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    assert resp.status_code == 500
+    assert resp.json()["error"]["message"] == "Image generation failed."
+    assert "CUDA" not in resp.text  # raw exception text must not leak
+
+
+def test_unload_race_returns_503(monkeypatch):
+    # The model is evicted/unloaded between the readiness check and the call: the
+    # RuntimeError with is_loaded now False is the one case that maps to 503.
+    backend = _FakeBackend(
+        generate_error = RuntimeError("No diffusion model is loaded."),
+        unload_on_generate = True,
+    )
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    assert resp.status_code == 503
+    err = resp.json()["error"]
+    assert err["type"] == "api_error"
+    # The 503 carries the fixed sanitized message, not the raw exception text.
+    assert err["message"] == "No image model loaded. Load an image model first."
+
+
+def test_non_runtime_pipeline_error_is_500(monkeypatch):
+    # A non-RuntimeError from the pipeline (the model stays loaded) must not route
+    # to the 503 branch (which is gated on isinstance RuntimeError) -> sanitized 500.
+    backend = _FakeBackend(generate_error = ValueError("bad tensor shape"))
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    assert resp.status_code == 500
+    assert "shape" not in resp.text
 
 
 def test_n_maps_to_batch(client):

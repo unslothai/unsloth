@@ -10252,6 +10252,9 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 # generate paths accept the same geometry.
 _IMAGE_SIZE_RE = _re.compile(r"^(\d{1,5})\s*x\s*(\d{1,5})$")
 _IMAGE_DIM_MIN, _IMAGE_DIM_MAX = 256, 2048
+# Sanitized 503 detail shared by the pre-check and the unload-race branch, so both
+# "no image model" responses stay identical.
+_NO_IMAGE_MODEL_MSG = "No image model loaded. Load an image model first."
 
 
 def _parse_openai_image_size(size: str) -> tuple[int, int]:
@@ -10317,9 +10320,7 @@ async def openai_image_generations(
     if not status.get("loaded"):
         # Mirror /v1/completions and /v1/embeddings, which 503 when their backend
         # isn't loaded; the global handler turns this into the OpenAI envelope.
-        raise HTTPException(
-            status_code = 503, detail = "No image model loaded. Load an image model first."
-        )
+        raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
 
     # Fall back to the resolved base repo so a local-path load (whose repo_id is a
     # filesystem path) still gets the right per-model steps/guidance.
@@ -10334,11 +10335,13 @@ async def openai_image_generations(
             guidance = guidance,
             batch_size = body.n,
         )
-    except RuntimeError as exc:
-        # Unloaded between the status check and the call (an arbiter eviction or a
-        # concurrent /images/unload) — a transient server-readiness problem.
-        raise HTTPException(status_code = 503, detail = str(exc))
-    except Exception as exc:  # noqa: BLE001 — single boundary -> 500 envelope
+    except Exception as exc:  # noqa: BLE001 (single boundary, sanitized envelope)
+        # A RuntimeError with the model now unloaded means it was evicted/unloaded
+        # between the readiness check above and the call (a transient race): 503.
+        # Every other failure (CUDA OOM, a diffusers shape/device error, both also
+        # RuntimeError) is a real 500, and its raw message must not reach the client.
+        if isinstance(exc, RuntimeError) and not backend.is_loaded:
+            raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
         logger.error("openai_images.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
