@@ -208,6 +208,13 @@ class FastDiffusionModel:
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
+        # Honor an explicit weight format on the real load too, so it reads the same
+        # format the prefetch warmed. The prefetch filters .bin / .safetensors by
+        # use_safetensors; without forwarding it the load could pick the other format
+        # on a mixed-format repo and start an unprotected in-process Xet download.
+        # use_safetensors=None (auto) already matches the prefetch's auto heuristic.
+        if kwargs.get("use_safetensors") is not None:
+            load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
 
         # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
         # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.

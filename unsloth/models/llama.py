@@ -2375,11 +2375,15 @@ class FastLlamaModel:
 
         # Pre-download the repo in a killable subprocess that falls back from Xet
         # to HTTP on a no-progress stall, so the in-process load below is a cache
-        # hit and cannot hang on a stalled Xet transfer.
+        # hit and cannot hang on a stalled Xet transfer. revision is intentionally
+        # not forwarded: the base-model load below resolves model_name (possibly a
+        # remapped prequantized repo, where the caller's revision does not exist) on
+        # its default branch without a revision, so warming a specific revision would
+        # predownload a snapshot the load never reads and leave the real transfer
+        # unprotected.
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
-            revision = revision,
             cache_dir = kwargs.get("cache_dir"),
             local_files_only = kwargs.get("local_files_only", False),
             fast_inference = fast_inference,

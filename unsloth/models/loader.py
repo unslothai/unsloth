@@ -883,15 +883,13 @@ class FastLanguageModel(FastLlamaModel):
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
             # Read the adapter from the same place the prefetch warmed: forward
-            # cache_dir / subfolder when set and local_files_only when on, while
-            # leaving PEFT's own defaults untouched otherwise.
+            # cache_dir / subfolder when set (local_files_only is already passed
+            # explicitly below), while leaving PEFT's own defaults untouched otherwise.
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
             if kwargs.get("subfolder") is not None:
                 peft_load_kwargs["subfolder"] = kwargs["subfolder"]
-            if local_files_only:
-                peft_load_kwargs["local_files_only"] = True
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -1835,15 +1833,13 @@ class FastModel(FastBaseModel):
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
             # Read the adapter from the same place the prefetch warmed: forward
-            # cache_dir / subfolder when set and local_files_only when on, while
-            # leaving PEFT's own defaults untouched otherwise.
+            # cache_dir / subfolder when set (local_files_only is already passed
+            # explicitly below), while leaving PEFT's own defaults untouched otherwise.
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
             if kwargs.get("subfolder") is not None:
                 peft_load_kwargs["subfolder"] = kwargs["subfolder"]
-            if local_files_only:
-                peft_load_kwargs["local_files_only"] = True
             try:
                 model = PeftModel.from_pretrained(
                     model,
