@@ -366,7 +366,10 @@ def test_compute_buffer_downgrade_preserves_multi_gpu_intent():
     src = inspect.getsource(LlamaCppBackend.load_model)
     gate = src.find("tensor_parallel and len(tp_gpus) < 2")
     assert gate != -1
-    block = src[gate : gate + 1300]
+    # Bound to exactly this block: from its gate to the next (budget) downgrade.
+    nxt = src.find("_tp_weight_budget_mib <= _tp_required_mib", gate)
+    assert nxt != -1
+    block = src[gate:nxt]
     assert "tensor_parallel = False" in block
     assert (
         "_layer_min_gpus = max(_layer_min_gpus, len(gpus))" in block
@@ -451,16 +454,31 @@ def test_fallback_hint_uses_effective_tensor_request_not_just_toggle():
     )
 
 
+def test_carry_preserved_tensor_intent_truth_table():
+    """Behavioral check of the carry-forward decision: carried only for the SAME
+    model, preserved, and not an explicit drop. Catches a `not` inversion (ctx-only
+    collapse) and a missing same-model guard (cross-model leak) (#6659)."""
+    inference_routes = _load_inference_routes_module()
+    f = inference_routes._carry_preserved_tensor_intent
+    assert f(preserved = True, same_model = True, explicit_drop = False) is True
+    assert f(preserved = True, same_model = True, explicit_drop = True) is False  # explicit drop
+    assert f(preserved = True, same_model = False, explicit_drop = False) is False  # model switch
+    assert f(preserved = False, same_model = True, explicit_drop = False) is False  # not a fallback
+
+
 def test_preserved_fallback_carried_across_non_drop_reload():
-    """A reload that doesn't drop tensor intent (e.g. ctx-only) carries the preserved
-    fallback into the hint, so a fitting model isn't collapsed to one GPU (#6659)."""
+    """The hint carries the preserved fallback via _carry_preserved_tensor_intent,
+    gated on the same model loaded, so a ctx-only reload keeps multi-GPU but a model
+    switch / explicit drop doesn't inherit it (#6659)."""
     route = Path(_BACKEND_DIR) / "routes" / "inference.py"
     src = route.read_text()
     idx = src.find("_tensor_intent_overall = _effective_tensor_parallel(")
     assert idx != -1
-    block = src[idx : idx + 320]
-    assert "llama_backend.layer_preserves_tensor_intent" in block
-    assert "_explicit_tensor_drop" in block
+    block = src[idx : idx + 400]
+    assert "_carry_preserved_tensor_intent(" in block
+    assert "preserved = llama_backend.layer_preserves_tensor_intent" in block
+    assert "same_model = _same_model_loaded" in block
+    assert "explicit_drop = _explicit_tensor_drop" in block
 
 
 def test_diffusion_load_clears_preserved_tensor_flag():

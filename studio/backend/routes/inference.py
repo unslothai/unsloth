@@ -2079,6 +2079,16 @@ def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[
     )
 
 
+def _carry_preserved_tensor_intent(
+    *, preserved: bool, same_model: bool, explicit_drop: bool
+) -> bool:
+    """Carry a preserved multi-GPU layer fallback forward only for a reload of the
+    SAME loaded model that doesn't explicitly drop tensor intent, so a fitting model
+    isn't collapsed to one GPU on a ctx-only change -- but an unrelated model switch
+    (without /unload) or an explicit tensor-off doesn't inherit it (#6659)."""
+    return preserved and same_model and not explicit_drop
+
+
 def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
@@ -2824,16 +2834,27 @@ async def load_model(
                 )
 
             # Tensor intent for this load: the request itself, or a preserved
-            # multi-GPU layer fallback carried across a reload that doesn't drop it
-            # (e.g. a ctx-only change), so a fitting model doesn't silently collapse
-            # to one GPU. An explicit tensor-off/extras-off request is a drop (#6659).
+            # multi-GPU layer fallback carried across a reload of the SAME model that
+            # doesn't drop it (e.g. a ctx-only change), so a fitting model doesn't
+            # silently collapse to one GPU. The drop check reads the raw request
+            # extras (a deliberate change), not the inherited ones; the same-model
+            # guard stops a switch-without-unload inheriting the prior model's intent.
             _fields_set = getattr(request, "model_fields_set", set())
             _explicit_tensor_drop = (
                 "tensor_parallel" in _fields_set or request.llama_extra_args is not None
             ) and not _effective_tensor_parallel(request.llama_extra_args, request.tensor_parallel)
+            _same_model_loaded = (
+                llama_backend.is_loaded
+                and (llama_backend.model_identifier or "").lower()
+                == (model_identifier or "").lower()
+            )
             _tensor_intent_overall = _effective_tensor_parallel(
                 extra_llama_args, request.tensor_parallel
-            ) or (llama_backend.layer_preserves_tensor_intent and not _explicit_tensor_drop)
+            ) or _carry_preserved_tensor_intent(
+                preserved = llama_backend.layer_preserves_tensor_intent,
+                same_model = _same_model_loaded,
+                explicit_drop = _explicit_tensor_drop,
+            )
 
             # Run a single load attempt with the given tensor flag + extras.
             async def _attempt_gguf_load(
