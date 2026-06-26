@@ -160,9 +160,7 @@ def test_scan_checkpoints_strips_project_suffix_without_history(tmp_path, monkey
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
 
-def test_scan_checkpoints_preserves_project_marker_in_model_without_history(
-    tmp_path, monkeypatch
-):
+def test_scan_checkpoints_preserves_project_marker_in_model_without_history(tmp_path, monkeypatch):
     outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
     run_name = build_default_output_dir_name(
         "org/foo__project-bar",
