@@ -3700,15 +3700,17 @@ def _unsloth_save_compressed_tensors(
     #    merge_and_overwrite_lora deletes save_directory when push_to_hub=True.
     print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
     merge_args = dict(merge_kwargs)
-    merge_args.update(dict(
-        model = model,
-        tokenizer = tokenizer,
-        save_directory = save_directory,
-        save_method = "merged_16bit",
-        push_to_hub = False,
-        token = token,
-        is_main_process = is_main_process,
-    ))
+    merge_args.update(
+        dict(
+            model = model,
+            tokenizer = tokenizer,
+            save_directory = save_directory,
+            save_method = "merged_16bit",
+            push_to_hub = False,
+            token = token,
+            is_main_process = is_main_process,
+        )
+    )
     unsloth_generic_save(**merge_args)
 
     for _ in range(3):
@@ -3764,11 +3766,15 @@ def _unsloth_save_compressed_tensors(
             calib_kind = "disk" if os.path.isdir(calib_value) else "hfid"
         elif hasattr(calibration_dataset, "save_to_disk"):
             import tempfile
+
             # Only persist the samples we need, so multi-GB training sets are not fully copied.
             ds_to_save = calibration_dataset
             try:
-                if (num_calibration_samples and hasattr(ds_to_save, "select")
-                        and len(ds_to_save) > num_calibration_samples):
+                if (
+                    num_calibration_samples
+                    and hasattr(ds_to_save, "select")
+                    and len(ds_to_save) > num_calibration_samples
+                ):
                     ds_to_save = ds_to_save.shuffle(seed = 42).select(range(num_calibration_samples))
             except Exception:
                 ds_to_save = calibration_dataset

@@ -186,7 +186,7 @@ def main():
     cfg_path = os.path.join(args.out, "config.json")
     cfg = {}
     if os.path.exists(cfg_path):
-        with open(cfg_path, "r", encoding="utf-8") as f:
+        with open(cfg_path, "r", encoding = "utf-8") as f:
             cfg = json.load(f)
     if "quantization_config" not in cfg:
         print(f"Unsloth: ERROR - no quantization_config written to {cfg_path}", flush = True)
