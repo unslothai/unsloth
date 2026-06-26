@@ -224,7 +224,12 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
     import importlib
 
     class _BlockZoo:
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             # Simulate the whole package being absent: the first missing component
             # is 'unsloth_zoo', so that is what ModuleNotFoundError.name carries.
             if name == "unsloth_zoo" or name.startswith("unsloth_zoo."):
@@ -233,7 +238,8 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
 
     finder = _BlockZoo()
     saved = {
-        k: v for k, v in list(sys.modules.items())
+        k: v
+        for k, v in list(sys.modules.items())
         if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")
     }
     for k in saved:
