@@ -5524,6 +5524,10 @@ _SECRET_ENV_EXACT_NAMES = frozenset(
         "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
         "ACTIONS_ID_TOKEN_REQUEST_URL",
         "ACTIONS_RUNTIME_TOKEN",
+        # Credential pointers / capabilities a downloaded binary never needs but
+        # could use to reach cluster or remote-host credentials.
+        "KUBECONFIG",
+        "SSH_AUTH_SOCK",
     }
 )
 # Substring markers (matched case-insensitively) catch provider-specific names we
@@ -5535,6 +5539,7 @@ _SECRET_ENV_MARKERS = (
     "SECRET",
     "PASSWORD",
     "PASSWD",
+    "PASSPHRASE",
     "CREDENTIAL",
     "PRIVATE_KEY",
     "API_KEY",

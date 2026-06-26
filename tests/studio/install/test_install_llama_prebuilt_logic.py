@@ -795,6 +795,9 @@ def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
         "SOME_VENDOR_API_KEY": "vendor_x",
         "DB_PASSWORD": "pw",
         "MY_PRIVATE_KEY": "pk",
+        "KUBECONFIG": "/home/runner/.kube/config",
+        "SSH_AUTH_SOCK": "/tmp/ssh-agent.sock",
+        "SSH_PASSPHRASE": "ssh_pass",
         # runtime / library vars that the binary legitimately needs
         "PATH": "/usr/bin",
         "LD_LIBRARY_PATH": "/opt/lib",
@@ -819,6 +822,9 @@ def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
         "SOME_VENDOR_API_KEY",
         "DB_PASSWORD",
         "MY_PRIVATE_KEY",
+        "KUBECONFIG",
+        "SSH_AUTH_SOCK",
+        "SSH_PASSPHRASE",
     ):
         assert secret not in cleaned, f"{secret} must be stripped from binary env"
 
