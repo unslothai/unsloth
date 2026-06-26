@@ -160,6 +160,31 @@ def test_scan_checkpoints_strips_project_suffix_without_history(tmp_path, monkey
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
 
+def test_scan_checkpoints_preserves_project_marker_in_model_without_history(
+    tmp_path, monkeypatch
+):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_name = build_default_output_dir_name(
+        "org/foo__project-bar",
+        timestamp = 1771227800,
+    )
+    run_dir = outputs_dir / run_name
+    run_dir.mkdir()
+    (run_dir / "config.json").write_text("{}")
+
+    db_path = tmp_path / "studio.db"
+    _setup_training_runs_table(db_path)
+    monkeypatch.setattr(
+        checkpoints_module,
+        "get_connection",
+        lambda: _make_history_connection(db_path),
+    )
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert models[0][2]["base_model"] == "org/foo__project-bar"
+
+
 def test_scan_checkpoints_preserves_legacy_folder_name_fallback(tmp_path, monkeypatch):
     outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
     run_dir = outputs_dir / "unsloth_Llama-3.2-3B-Instruct_1771227800"

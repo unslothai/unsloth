@@ -590,6 +590,10 @@ export const en = {
     params: {
       title: "Parameters",
       description: "Configure training hyperparameters",
+      projectName: "Project Name",
+      optional: "Optional",
+      projectNameDescription:
+        "Used in training output folder names, export defaults, and history.",
       loraSettings: "LoRA Settings",
       trainingHyperparameters: "Training Hyperparameters",
       maxSteps: "Max Steps",

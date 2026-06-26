@@ -101,6 +101,7 @@ class TrainingStartRequest(BaseModel):
     )
     project_name: Optional[str] = Field(
         None,
+        max_length = 80,
         description = "Optional user-defined project name appended to run folders and shown in history",
     )
     training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = Field(

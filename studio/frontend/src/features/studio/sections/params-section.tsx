@@ -231,9 +231,9 @@ export function ParamsSection(): ReactElement {
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              Project Name
+              {t("studio.params.projectName")}
               <span className="text-[10px] font-normal text-muted-foreground/70">
-                Optional
+                {t("studio.params.optional")}
               </span>
             </span>
             <Input
@@ -243,7 +243,7 @@ export function ParamsSection(): ReactElement {
               maxLength={80}
             />
             <p className="text-[10px] text-muted-foreground">
-              Used in training output folder names, export defaults, and history.
+              {t("studio.params.projectNameDescription")}
             </p>
           </div>
 

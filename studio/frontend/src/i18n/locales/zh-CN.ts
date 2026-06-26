@@ -540,6 +540,9 @@ export const zhCN = {
     params: {
       title: "参数",
       description: "配置训练超参数",
+      projectName: "项目名称",
+      optional: "可选",
+      projectNameDescription: "用于训练输出文件夹名称、导出默认值和历史记录。",
       loraSettings: "LoRA 设置",
       trainingHyperparameters: "训练超参数",
       maxSteps: "最大步数",

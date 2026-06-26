@@ -70,6 +70,27 @@ def test_model_segment_from_default_output_dir_name_strips_project_slug():
     )
 
 
+def test_model_segment_preserves_project_marker_text_in_model_name():
+    output_dir = build_default_output_dir_name(
+        "org/foo__project-bar",
+        timestamp = 1771227800,
+    )
+
+    assert output_dir == "org_foo__project--bar_1771227800"
+    assert model_segment_from_default_output_dir_name(output_dir) == "org_foo__project-bar"
+
+
+def test_model_segment_strips_project_slug_after_escaped_model_marker():
+    output_dir = build_default_output_dir_name(
+        "org/foo__project-bar",
+        "Customer Support",
+        timestamp = 1771227800,
+    )
+
+    assert output_dir == "org_foo__project--bar__project-customer-support_1771227800"
+    assert model_segment_from_default_output_dir_name(output_dir) == "org_foo__project-bar"
+
+
 def test_extract_project_name_from_config_json_returns_normalized_name():
     config_json = json.dumps({"project_name": "  Sales   Assistant  "})
 
