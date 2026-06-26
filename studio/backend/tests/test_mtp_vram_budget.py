@@ -567,7 +567,18 @@ class TestExtraArgsMtpDetection:
         # the fit budget that is then tested (Finding G4).
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_gpu_usable(g,pin_fraction)" in compact
-        assert "_gpu_usable(g,_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
+        assert "_gpu_usable(g,_fit_fraction)" in compact
+
+    def test_auto_context_uses_tighter_fit_budget_not_pin_budget(self):
+        # Auto context may pin directly only after fitting against the tighter
+        # context budget. Using the looser pin budget here can preserve a native
+        # context when flat-MTP weights sit above the 80% fit budget but below the
+        # 85% pin budget, reintroducing the spill this PR prevents.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_fit_fraction=max(0.0,_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
+        assert "fit_budget=_pool_budget_mib(subset,_fit_fraction)" in compact
+        assert "footprint_mib<=fit_budget" in compact
+        assert "_pool_budget_mib(subset,_fit_fraction)" in compact
 
     @pytest.mark.parametrize(
         "args,expected",

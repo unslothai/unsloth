@@ -192,6 +192,7 @@ def _drive(
             ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
             matched = False
             pin_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
+            fit_fraction = _CTX_FIT_VRAM_FRACTION
             for n_gpus in range(1, len(ranked) + 1):
                 subset = ranked[:n_gpus]
                 pool_mib = sum(free for _, free in subset)
@@ -203,7 +204,7 @@ def _drive(
                 )
                 kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
                 total_mib = (model_size + kv) / (1024 * 1024)
-                if total_mib <= pool_mib * pin_fraction:
+                if total_mib <= pool_mib * fit_fraction:
                     effective_ctx = capped
                     gpu_indices = sorted(idx for idx, _ in subset)
                     use_fit = False
@@ -218,7 +219,7 @@ def _drive(
                         pool_mib = sum(free for _, free in subset)
                         kv = inst._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
                         total_mib = (model_size + kv) / (1024 * 1024)
-                        if total_mib <= pool_mib * pin_fraction:
+                        if total_mib <= pool_mib * fit_fraction:
                             gpu_indices = sorted(idx for idx, _ in subset)
                             use_fit = False
                             break
@@ -456,16 +457,18 @@ class TestFittableAutoPickRegressions:
 
 
 # ---------------------------------------------------------------------------
-# #5106 regression: 91-95% utilization must still pin GPU.
+# Auto mode uses the tighter context-fit budget, while explicit ctx only decides
+# whether the requested footprint is safe to pin directly.
 # ---------------------------------------------------------------------------
 
 
 class TestTightFitPinsToGPU:
-    """Models that fit at 91-95% of free VRAM must use the GPU."""
+    """Tight models above the fit budget defer to ``--fit on`` in auto mode."""
 
-    def test_rtx_4090_qwen_24gb_class(self):
+    def test_auto_ctx_at_94_pct_uses_fit(self):
         # noahterbest's #5106 log: 20.8 GB model on 22805 MiB free GPU,
-        # ctx=4096 -> ~94% utilization, ~1.4 GiB headroom.
+        # ctx=4096 -> ~94% utilization. With the 85% context-fit budget, auto
+        # mode should not pin this directly.
         plan = _drive(
             n_ctx = 0,
             model_gib = 20.8,
@@ -473,14 +476,14 @@ class TestTightFitPinsToGPU:
             native_ctx = 131072,
             kv_per_token_bytes = 25_000,
         )
-        assert plan["use_fit"] is False
-        assert plan["gpu_indices"] == [0]
+        assert plan["c_arg"] == FALLBACK_CTX
+        assert plan["use_fit"] is True
+        assert plan["gpu_indices"] is None
 
-    def test_explicit_ctx_at_94_pct_pins_to_gpu(self):
-        # Explicit-ctx branch must agree with auto-ctx on headroom.
+    def test_auto_ctx_below_fit_budget_pins_to_gpu(self):
         plan = _drive(
-            n_ctx = 4096,
-            model_gib = 20.8,
+            n_ctx = 0,
+            model_gib = 18.5,
             gpus = [(0, 22_805)],
             native_ctx = 131072,
             kv_per_token_bytes = 25_000,
@@ -488,8 +491,21 @@ class TestTightFitPinsToGPU:
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
 
+    def test_explicit_ctx_at_94_pct_uses_fit(self):
+        # Explicit-ctx branch honors the requested context and only decides
+        # whether the exact footprint is within the direct-pin threshold.
+        plan = _drive(
+            n_ctx = 4096,
+            model_gib = 20.8,
+            gpus = [(0, 22_805)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
+        )
+        assert plan["use_fit"] is True
+        assert plan["gpu_indices"] is None
+
     def test_genuine_overflow_still_uses_fit(self):
-        # Beyond 95% must still defer to --fit on.
+        # Beyond the direct-pin threshold must still defer to --fit on.
         plan = _drive(
             n_ctx = 4096,
             model_gib = 23,
@@ -700,26 +716,26 @@ class TestClassifyGpuOffload:
 
 
 def test_select_gpus_ranks_by_usable_not_raw_free():
-    # 80 GB card (30 GB free -> 25.9 GB usable) vs 32 GB card (29 GB free -> 27.4
-    # GB usable). A 27 GB model fits the 32 GB card alone; raw-free ranking would
+    # 80 GB card (30 GB free -> 21.8 GB usable) vs 32 GB card (29 GB free -> 25.7
+    # GB usable). A 25.5 GB model fits the 32 GB card alone; raw-free ranking would
     # try the 80 GB card first and split across both. Usable ranking picks [1].
     gpus = [(0, 30000), (1, 29000)]
     totals = {0: 81920, 1: 32607}
-    model = int(27000 * 1024 * 1024)
+    model = int(25500 * 1024 * 1024)
     idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx = totals)
     assert idxs == [1] and use_fit is False
 
 
 def test_select_gpus_reserves_per_device_overhead():
-    # Two 16 GB cards, ~15181 MiB usable each at 0.95 -> 30362 MiB pooled. A 30000
+    # Two 16 GB cards, ~14362 MiB usable each at 0.90 -> 28723 MiB pooled. A 28000
     # MiB model fits the pool with no per-device overhead, but a layer split also
-    # pays ~1 GiB/extra-GPU; that pushes the 2-GPU need to 31024 MiB > pool, so a
+    # pays ~1 GiB/extra-GPU; that pushes the 2-GPU need to 29024 MiB > pool, so a
     # pin would OOM -> must fall back to --fit. Single-GPU fits add no overhead
     # (Finding F1, the explicit/file-size multi-GPU pin gap).
     gpus = [(0, 16000), (1, 16000)]
     totals = {0: 16384, 1: 16384}
     gib = 1024 * 1024 * 1024
-    model = int(30000 * 1024 * 1024)
+    model = int(28000 * 1024 * 1024)
     idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx = totals)
     assert idxs == [0, 1] and use_fit is False  # fits 2 GPUs without overhead
     idxs2, use_fit2 = LlamaCppBackend._select_gpus(
@@ -727,7 +743,7 @@ def test_select_gpus_reserves_per_device_overhead():
     )
     assert idxs2 is None and use_fit2 is True  # overhead tips it past the pool
     # A single-GPU fit is unchanged by the overhead (k=1 adds nothing).
-    small = int(15000 * 1024 * 1024)
+    small = int(14000 * 1024 * 1024)
     a, _ = LlamaCppBackend._select_gpus(small, gpus, total_by_idx = totals)
     b, _ = LlamaCppBackend._select_gpus(
         small, gpus, total_by_idx = totals, per_device_overhead_bytes = gib
