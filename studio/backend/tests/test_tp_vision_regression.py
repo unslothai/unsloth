@@ -526,6 +526,22 @@ def test_is_abort_exit_recognizes_windows_crt_abort():
 # ── tensor-off after a multi-GPU fallback forces a reload (route dedup) ─
 
 
+class _NoopProcess:
+    """Stand-in for Popen so is_loaded is True and atexit cleanup doesn't crash."""
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout = None):
+        return 0
+
+    def kill(self):
+        pass
+
+    def poll(self):
+        return 0
+
+
 def _fallback_loaded_backend(layer_preserves_tensor_intent: bool) -> LlamaCppBackend:
     """A loaded backend in the tensor->layer fallback state: tensor reports off and
     --split-mode layer is stored, differing only in whether the placement was kept
@@ -617,3 +633,49 @@ def test_layer_preserves_tensor_intent_set_only_on_preserved_downgrade():
     assert 0 <= on and 0 <= off
     assert "self._layer_preserves_tensor_intent = False" in src[on : on + 120]
     assert "self._layer_preserves_tensor_intent = _layer_min_gpus > 1" in src[off : off + 400]
+
+
+def test_layer_min_gpus_bound_before_gpu_selection_try():
+    """_layer_min_gpus is initialized before the GPU-selection try, so the --fit-on
+    except path (GPU probe / sizing raised) can't UnboundLocalError when the command
+    builder reads it for _layer_preserves_tensor_intent (Codex review on #6659)."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert src.count("_layer_min_gpus = 1") == 1, "exactly one init, before the try"
+    init = src.find("_layer_min_gpus = 1")
+    try_body = src.find("gguf_size = self._get_gguf_size_bytes")
+    fit_except = src.find("GPU selection failed")
+    use_after = src.find("self._layer_preserves_tensor_intent = _layer_min_gpus > 1")
+    assert (
+        -1 < init < try_body < fit_except < use_after
+    ), "the init must precede the try body, the except, and the command-builder use"
+
+
+def test_already_in_target_state_reloads_on_tensor_off_after_fallback():
+    """The backend fast path mirrors the route dedup: a preserved tensor->layer
+    fallback must reload on an explicit tensor-off request (so placement re-selects)
+    instead of short-circuiting load_model as already loaded (Codex review on #6659)."""
+
+    def _backend(layer_preserves: bool) -> LlamaCppBackend:
+        b = _fallback_loaded_backend(layer_preserves_tensor_intent = layer_preserves)
+        b._process = _NoopProcess()
+        b._healthy = True
+        return b
+
+    kwargs = dict(
+        gguf_path = None,
+        mtp_draft_path = None,
+        model_identifier = "owner/repo",
+        hf_variant = None,
+        n_ctx = 0,
+        cache_type_kv = None,
+        speculative_type = None,
+        spec_draft_n_max = None,
+        tensor_parallel = False,
+        chat_template_override = None,
+        extra_args = ["--split-mode", "layer"],
+        is_vision = False,
+    )
+    # Preserved fallback + tensor dropped -> reload (not already in target state).
+    assert _backend(True)._already_in_target_state(**kwargs) is False
+    # A genuine layer load (no preserved intent) -> dedupe, no churn.
+    assert _backend(False)._already_in_target_state(**kwargs) is True

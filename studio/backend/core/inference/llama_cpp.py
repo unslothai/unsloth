@@ -4863,6 +4863,10 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                # Min GPUs for the layer fallback; raised below when a tensor request
+                # is downgraded. Bound before the try so the --fit-on except path
+                # (GPU probe / sizing raised) still has it for the command builder.
+                _layer_min_gpus = 1
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -5158,10 +5162,6 @@ class LlamaCppBackend:
                             if _tensor_dropped_extra_args is not None
                             else extra_args
                         )
-
-                    # Min GPUs for the layer fallback; raised below when a tensor
-                    # request is downgraded so it isn't pinned to one GPU.
-                    _layer_min_gpus = 1
 
                     # The route fallback retry runs tensor-off, so carry the original
                     # tensor intent in explicitly to keep the first fallback multi-GPU.
@@ -6672,6 +6672,14 @@ class LlamaCppBackend:
         # the child env, so the env must not force an endless reload of a healthy
         # server. An identical request would downgrade the same way.
         if not _tensor_parallel_matches_loaded(extra_args, tensor_parallel, self._tensor_parallel):
+            return False
+        # A preserved tensor->layer fallback spans GPUs only to honor a tensor
+        # request; both report tensor=off so the check above matches. If this
+        # request drops tensor intent, reload so placement re-selects rather than
+        # short-circuiting to the fallback's all-GPU mask (mirrors the route, #6659).
+        if self._layer_preserves_tensor_intent and not _effective_tensor_parallel(
+            extra_args, tensor_parallel
+        ):
             return False
 
         # Compare on the canonical requested mode. With --spec-type in
