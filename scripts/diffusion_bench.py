@@ -217,6 +217,9 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             speed_mode = args.speed_mode,
             text_encoder_quant = args.text_encoder_quant,
             transformer_quant = args.transformer_quant,
+            transformer_quant_fast_accum = {"auto": None, "on": True, "off": False}[
+                args.fp8_fast_accum
+            ],
         )
         _wait_for_load(backend)
         _cuda_sync()
@@ -299,6 +302,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             "cpu_offload": args.cpu_offload,
             "text_encoder_quant": args.text_encoder_quant,
             "transformer_quant": args.transformer_quant,
+            "fp8_fast_accum": args.fp8_fast_accum,
         },
     }
 
@@ -465,6 +469,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help = "opt-in fast transformer: load the DENSE bf16 transformer and torchao-"
         "quantise it onto the low-precision tensor cores (faster than GGUF, higher "
         "VRAM). auto picks per GPU; falls back to GGUF if unsupported / no VRAM",
+    )
+    p.add_argument(
+        "--fp8-fast-accum",
+        default = "auto",
+        choices = ["auto", "on", "off"],
+        help = "fp8 accumulate: auto picks by GPU class (fast on consumer, precise on "
+        "data-center); on/off force it",
     )
     p.add_argument(
         "--cpu-offload", action = "store_true", help = "legacy: force whole-module CPU offload"

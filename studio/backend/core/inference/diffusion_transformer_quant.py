@@ -59,6 +59,41 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
+# Data-center GPU model tokens (un-nerfed FP32 accumulate). Matched as whole tokens of
+# torch.cuda.get_device_name(), so the workstation "A4000" is not mistaken for the
+# data-center "A40". Anything not here -- GeForce, workstation RTX, or an unknown name --
+# is treated as consumer-class (FP32-accumulate halved). See developer.nvidia.com/cuda/gpus.
+_DATACENTER_GPU_TOKENS = frozenset({
+    "B200", "B100", "GB200", "GB300", "GB10",          # Blackwell data center
+    "H200", "H100", "H800", "H20",                      # Hopper data center
+    "A100", "A800", "A30", "A40", "A16", "A10", "A2",  # Ampere data center
+    "L40", "L40S", "L4", "L20", "L2",                   # Ada data center
+    "V100", "P100", "P40", "T4",                        # legacy data center
+})
+
+
+def _is_consumer_gpu(device: Any = None) -> bool:
+    """Whether the active GPU is consumer / workstation class (GDDR), where fp8 FP32
+    accumulate is throughput-halved so fast (FP16) accumulate is a ~2x win. Data-center
+    HBM parts (recognised by name token) are not nerfed and return False, so they keep
+    the higher-precision default accumulate for free. Heuristic on the device name: a
+    GeForce / TITAN name is always consumer; a recognised data-center token is not;
+    anything else (workstation RTX, unknown) defaults to consumer -- the safe choice,
+    since fast accumulate is free on data-center and a win on consumer. Best-effort:
+    True on any probe failure."""
+    try:
+        import re
+
+        import torch
+
+        name = torch.cuda.get_device_name(device).upper()
+    except Exception:  # noqa: BLE001 — no torch / no device -> assume consumer
+        return True
+    if "GEFORCE" in name or "TITAN" in name:
+        return True
+    tokens = set(re.split(r"[^A-Z0-9]+", name))
+    return not (tokens & _DATACENTER_GPU_TOKENS)
+
 
 def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
     """Lower/strip a requested transformer quant; None / "" / "none" / "off" -> None.
@@ -162,9 +197,17 @@ def _smoke_probe(scheme: str, device: str) -> bool:
     return ok
 
 
-def _make_quant_config(scheme: str) -> Any:
+def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
+    """The fp8 ``use_fast_accum`` to apply. ``None`` auto-detects by GPU class
+    (consumer / workstation -> fast; data-center -> precise); an explicit bool forces it."""
+    return _is_consumer_gpu() if fast_accum is None else bool(fast_accum)
+
+
+def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     """The torchao dynamic-activation config for ``scheme`` (lazy import; prototype
-    import for the Blackwell fp4 / mx schemes is inside the branch that needs it)."""
+    import for the Blackwell fp4 / mx schemes is inside the branch that needs it).
+
+    ``fast_accum`` applies to fp8 only: None auto-detects by GPU class, True/False force it."""
     from torchao.quantization import (
         Float8DynamicActivationFloat8WeightConfig,
         Int8DynamicActivationInt8WeightConfig,
@@ -173,15 +216,17 @@ def _make_quant_config(scheme: str) -> Any:
     if scheme == TQ_INT8:
         return Int8DynamicActivationInt8WeightConfig()
     if scheme == TQ_FP8:
-        # Lock fast (FP16) accumulate. On consumer Blackwell (e.g. RTX 50xx) the fp8
-        # tensor cores run at ~838 TFLOPS with FP16 accumulate but only ~419 with FP32,
-        # so the fast-accum path is a free ~2x there. torchao already defaults it on;
-        # set it explicitly so a future default change can't silently halve consumer
-        # throughput. (Negligible numeric effect for diffusion's short reductions.)
+        # Choose fp8 accumulate by GPU class (unless forced). On consumer / workstation
+        # cards (GDDR) the fp8 tensor cores run ~2x faster with FP16 (fast) accumulate
+        # than FP32 (e.g. ~838 vs ~419 TFLOPS on RTX 50xx), so fast accumulate is a real
+        # win there. Data-center HBM parts default to the higher-precision accumulate.
+        # fast accumulate is a precision (not overflow) tradeoff and stays below the fp8
+        # quant noise floor (measured 0 non-finite even on Z-Image's ~1e6 activations).
         try:
             from torchao.float8 import Float8MMConfig
+
             return Float8DynamicActivationFloat8WeightConfig(
-                mm_config = Float8MMConfig(use_fast_accum = True)
+                mm_config = Float8MMConfig(use_fast_accum = _resolve_fast_accum(fast_accum))
             )
         except Exception:  # noqa: BLE001 — older torchao without the explicit knob
             return Float8DynamicActivationFloat8WeightConfig()
@@ -226,12 +271,16 @@ def quantize_transformer(
     *,
     mode: Optional[str],
     min_features: int = DEFAULT_MIN_LINEAR_FEATURES,
+    fast_accum: Optional[bool] = None,
     logger: Any = None,
 ) -> Optional[str]:
     """Quantise ``pipe.transformer``'s FLOP-heavy linears in place with the arch-chosen
     dynamic scheme. Returns the scheme actually engaged, or None when disabled /
     unsupported / failed -- the caller then loads GGUF instead. Best-effort: it never
-    raises for an ordinary unsupported environment (a failure leaves the module dense)."""
+    raises for an ordinary unsupported environment (a failure leaves the module dense).
+
+    ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None
+    auto-detects (fast on consumer, precise on data-center), True/False force it."""
     scheme = select_transformer_quant_scheme(target, mode)
     if scheme is None:
         return None
@@ -241,7 +290,11 @@ def quantize_transformer(
     try:
         from torchao.quantization import quantize_
 
-        quantize_(transformer, _make_quant_config(scheme), filter_fn = make_filter_fn(min_features))
+        quantize_(
+            transformer,
+            _make_quant_config(scheme, fast_accum = fast_accum),
+            filter_fn = make_filter_fn(min_features),
+        )
         # Runtime-only marker (torchao tensors are not safetensors-serializable; this
         # backend is inference-only, so this is purely diagnostic).
         try:

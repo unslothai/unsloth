@@ -207,6 +207,50 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     assert tq._smoke_probe(TQ_FP8, "cuda") is False
 
 
+# ── consumer-vs-datacenter detection (fp8 fast-accumulate gate) ──────────────────
+
+
+def _stub_device_name(monkeypatch, name):
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(get_device_name=lambda device=None: name)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+
+@pytest.mark.parametrize("name", [
+    "NVIDIA GeForce RTX 5090",
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA RTX A4000",            # workstation: A4000 token, NOT the data-center A40
+    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA Some Future Card 9000",  # unknown -> default consumer (fast accum is free on DC)
+])
+def test_is_consumer_gpu_true(monkeypatch, name):
+    _stub_device_name(monkeypatch, name)
+    assert tq._is_consumer_gpu() is True
+
+
+@pytest.mark.parametrize("name", [
+    "NVIDIA B200",
+    "NVIDIA H100 80GB HBM3",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA A40",                  # data-center Ampere (distinct token from RTX A4000)
+    "NVIDIA L40S",
+    "NVIDIA L4",
+    "Tesla V100-SXM2-16GB",
+])
+def test_is_consumer_gpu_false_for_datacenter(monkeypatch, name):
+    _stub_device_name(monkeypatch, name)
+    assert tq._is_consumer_gpu() is False
+
+
+def test_is_consumer_gpu_defaults_true_on_probe_failure(monkeypatch):
+    # No torch / no device name available -> assume consumer (safe: fast accum is free
+    # on data center and a win on consumer).
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace()  # no get_device_name
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    assert tq._is_consumer_gpu() is True
+
+
 # ── filter ──────────────────────────────────────────────────────────────────────
 
 
@@ -230,9 +274,25 @@ def test_make_filter_fn(monkeypatch):
 # ── apply ───────────────────────────────────────────────────────────────────────
 
 
+def test_resolve_fast_accum(monkeypatch):
+    # None auto-detects by GPU class; an explicit bool forces it.
+    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a: True)
+    assert tq._resolve_fast_accum(None) is True
+    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a: False)
+    assert tq._resolve_fast_accum(None) is False
+    assert tq._resolve_fast_accum(True) is True  # forced on (e.g. on a data-center card)
+    assert tq._resolve_fast_accum(False) is False  # forced off (e.g. on a consumer card)
+
+
 def test_quantize_transformer_applies_and_marks(monkeypatch):
     monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda target, mode: TQ_FP8)
-    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme: f"{scheme}cfg")
+    seen: dict = {}
+
+    def _mk(scheme, fast_accum = None):
+        seen["scheme"], seen["fast_accum"] = scheme, fast_accum
+        return f"{scheme}cfg"
+
+    monkeypatch.setattr(tq, "_make_quant_config", _mk)
     recorder: list = []
     tqz = types.ModuleType("torchao.quantization")
     tqz.quantize_ = lambda module, config, filter_fn = None: recorder.append(
@@ -242,10 +302,11 @@ def test_quantize_transformer_applies_and_marks(monkeypatch):
 
     transformer = types.SimpleNamespace()
     pipe = types.SimpleNamespace(transformer = transformer)
-    assert quantize_transformer(pipe, _target(), mode = "fp8") == TQ_FP8
+    assert quantize_transformer(pipe, _target(), mode = "fp8", fast_accum = False) == TQ_FP8
     assert len(recorder) == 1 and recorder[0][0] is transformer and recorder[0][1] == "fp8cfg"
     assert callable(recorder[0][2])  # a filter_fn was passed
     assert transformer._unsloth_runtime_quant == TQ_FP8  # diagnostic marker set
+    assert seen["fast_accum"] is False  # the override is forwarded into the config
 
 
 def test_quantize_transformer_none_when_unsupported(monkeypatch):

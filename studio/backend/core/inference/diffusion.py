@@ -276,6 +276,7 @@ class DiffusionBackend:
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         transformer_quant: Optional[str] = None,
+        transformer_quant_fast_accum: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         fam = self.validate_load_request(
@@ -308,6 +309,7 @@ class DiffusionBackend:
                 speed_mode = speed_mode,
                 text_encoder_quant = text_encoder_quant,
                 transformer_quant = transformer_quant,
+                transformer_quant_fast_accum = transformer_quant_fast_accum,
                 _load_token = token,
             ),
             daemon = True,
@@ -430,6 +432,7 @@ class DiffusionBackend:
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         transformer_quant: Optional[str] = None,
+        transformer_quant_fast_accum: Optional[bool] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -496,6 +499,7 @@ class DiffusionBackend:
                             hf_token,
                             target,
                             transformer_quant,
+                            transformer_quant_fast_accum,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
                         logger.warning(
@@ -601,6 +605,7 @@ class DiffusionBackend:
         hf_token: Optional[str],
         target: DiffusionDeviceTarget,
         mode: Optional[str],
+        fast_accum: Optional[bool] = None,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline: load the DENSE bf16 transformer from the base
         repo (``subfolder="transformer"``), assemble the pipeline, place it on the device,
@@ -618,7 +623,9 @@ class DiffusionBackend:
             pipe_kwargs["token"] = hf_token
         pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
         pipe.to(device)
-        scheme = quantize_transformer(pipe, target, mode = mode, logger = logger)
+        scheme = quantize_transformer(
+            pipe, target, mode = mode, fast_accum = fast_accum, logger = logger
+        )
         if scheme is None:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
         return pipe, scheme

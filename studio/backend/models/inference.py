@@ -1730,6 +1730,14 @@ class DiffusionLoadRequest(BaseModel):
         "Ampere int8); an explicit scheme forces it. Needs CUDA + bf16 + room "
         "for the dense load; falls back to GGUF otherwise.",
     )
+    transformer_quant_fast_accum: Optional[bool] = Field(
+        None,
+        description = "fp8 only: FP8 matmul accumulate. null auto-detects by GPU class "
+        "(fast FP16 accumulate on consumer/workstation cards, where FP32 "
+        "accumulate is ~2x slower; precise FP32 accumulate on data-center "
+        "HBM cards, which are not nerfed). true/false force it. Negligible "
+        "quality effect (below the fp8 quant noise floor); no overflow risk.",
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
