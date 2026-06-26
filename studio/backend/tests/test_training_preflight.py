@@ -270,6 +270,54 @@ def test_unsloth_trainer_dispatches_for_mlx_and_torch(monkeypatch):
     assert trainer_mod.UnslothTrainer().__class__ is trainer_mod.UnslothTrainer
 
 
+def test_cli_mlx_trainer_activates_before_importing_trainer():
+    repo_root = Path(__file__).resolve().parents[3]
+    script = """
+import json
+import sys
+import unsloth_cli.commands.train as train_cmd
+from studio.backend.core.training import training as training_mod
+from utils.hardware import hardware as hw
+
+training_mod.platform.system = lambda: "Darwin"
+training_mod.platform.machine = lambda: "arm64"
+hw.DEVICE = None
+events = []
+
+def fake_activate(model_name, hf_token):
+    events.append({
+        "model_name": model_name,
+        "trainer_loaded": "studio.backend.core.training.trainer" in sys.modules,
+    })
+
+train_cmd._activate_mlx_transformers = fake_activate
+trainer = train_cmd._create_cli_trainer("mlx-community/Qwen3-0.6B-4bit", None)
+print(json.dumps({
+    "trainer_module": type(trainer).__module__,
+    "events": events,
+}))
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root), str(repo_root / "studio" / "backend"), env.get("PYTHONPATH", "")]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = repo_root,
+        env = env,
+        text = True,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        check = True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["trainer_module"] == "studio.backend.core.training.training"
+    assert payload["events"] == [
+        {"model_name": "mlx-community/Qwen3-0.6B-4bit", "trainer_loaded": False}
+    ]
+
+
 def test_mlx_adapter_builds_config_and_reports_completion(tmp_path, monkeypatch):
     trainer_mod = _load_trainer_module(monkeypatch, "mlx")
     captured = {}
