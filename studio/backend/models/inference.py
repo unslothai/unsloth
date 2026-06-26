@@ -1746,6 +1746,18 @@ class DiffusionLoadRequest(BaseModel):
         "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
         "checkpoint if configured, else quantises the dense transformer at load time.",
     )
+    attention_backend: Optional[
+        Literal["auto", "native", "cudnn", "flash", "flash2", "flash3", "flash4", "sage", "xformers", "aiter"]
+    ] = Field(
+        None,
+        description = "Attention kernel via the diffusers dispatcher. auto picks the best "
+        "exact backend for the device (cuDNN fused attention on NVIDIA, ~1.18x and "
+        "near-lossless, when a speed profile is active; native SDPA elsewhere and when "
+        "speed=off). native forces default SDPA; cudnn/flash/flash3/flash4 are exact "
+        "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
+        "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
+        "unavailable kernel falls back to the default.",
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -1857,4 +1869,9 @@ class DiffusionStatusResponse(BaseModel):
         None,
         description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
         "nvfp4 | mxfp8 | null (null = the GGUF transformer was loaded)",
+    )
+    attention_backend: Optional[str] = Field(
+        None,
+        description = "Attention backend engaged via the diffusers dispatcher (e.g. "
+        "_native_cudnn), or null for the default SDPA",
     )
