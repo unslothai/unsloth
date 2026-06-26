@@ -173,7 +173,19 @@ def _make_quant_config(scheme: str) -> Any:
     if scheme == TQ_INT8:
         return Int8DynamicActivationInt8WeightConfig()
     if scheme == TQ_FP8:
-        return Float8DynamicActivationFloat8WeightConfig()
+        # Lock fast (FP16) accumulate. On consumer Blackwell (e.g. RTX 50xx) the fp8
+        # tensor cores run at ~838 TFLOPS with FP16 accumulate but only ~419 with FP32,
+        # so the fast-accum path is a free ~2x there. torchao already defaults it on;
+        # set it explicitly so a future default change can't silently halve consumer
+        # throughput. (Negligible numeric effect for diffusion's short reductions.)
+        try:
+            from torchao.float8 import Float8MMConfig
+
+            return Float8DynamicActivationFloat8WeightConfig(
+                mm_config = Float8MMConfig(use_fast_accum = True)
+            )
+        except Exception:  # noqa: BLE001 — older torchao without the explicit knob
+            return Float8DynamicActivationFloat8WeightConfig()
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
         return NVFP4DynamicActivationNVFP4WeightConfig()
