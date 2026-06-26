@@ -447,8 +447,12 @@ _on_install_exit() {
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
     fi
+    [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
     exit "$_status"
 }
+# Empty so an inherited value can never reach the trap's rm; only a temp dir
+# this script creates below (Apple Silicon, spaced path) is ever removed.
+_UV_OVERRIDE_TMPDIR=""
 trap _on_install_exit EXIT
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
@@ -1427,6 +1431,25 @@ fi
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
     if [ -f "$_OVERRIDES_FILE" ]; then
+        # uv splits UV_OVERRIDE on whitespace, so a repo path with whitespace
+        # truncates it and aborts every later uv call (issue #6503). Hand uv a copy.
+        case "$_OVERRIDES_FILE" in
+            *[[:space:]]*)
+                _UV_OVERRIDE_TMPDIR=$(mktemp -d 2>/dev/null) || _UV_OVERRIDE_TMPDIR=""
+                case "$_UV_OVERRIDE_TMPDIR" in
+                    "") ;;
+                    *[[:space:]]*) rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true; _UV_OVERRIDE_TMPDIR="" ;;
+                    *)
+                        if cp "$_OVERRIDES_FILE" "$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt" 2>/dev/null; then
+                            _OVERRIDES_FILE="$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt"
+                        else
+                            rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+                            _UV_OVERRIDE_TMPDIR=""
+                        fi
+                        ;;
+                esac
+                ;;
+        esac
         export UV_OVERRIDE="$_OVERRIDES_FILE"
     fi
 fi

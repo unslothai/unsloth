@@ -277,6 +277,63 @@ def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     return hmac.new(get_or_create_identity_secret(), msg, hashlib.sha256).hexdigest()
 
 
+# Capability secret for public ``/p`` preview share links. HMAC(secret, ref)
+# turns the deterministic preview ref into an unguessable bearer capability, so a
+# guessed run/checkpoint name can't reach inference. Dedicated (not the per-user
+# JWT secret) so rotating it revokes every shared link without touching logins.
+_PREVIEW_LINK_SECRET_DB_KEY = "preview_link_secret"
+_preview_link_secret_cache: Optional[bytes] = None
+
+
+def get_or_create_preview_link_secret() -> bytes:
+    """Return the preview-link signing secret (hex 32-byte row in app_secrets), creating it once."""
+    global _preview_link_secret_cache
+    if _preview_link_secret_cache is not None:
+        return _preview_link_secret_cache
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_PREVIEW_LINK_SECRET_DB_KEY,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                (_PREVIEW_LINK_SECRET_DB_KEY, secrets.token_hex(32)),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                (_PREVIEW_LINK_SECRET_DB_KEY,),
+            ).fetchone()
+        secret = bytes.fromhex(row["value"])
+    finally:
+        conn.close()
+
+    _preview_link_secret_cache = secret
+    return secret
+
+
+def rotate_preview_link_secret() -> bytes:
+    """Rotate the preview-link secret, immediately revoking every outstanding ``/p`` share link."""
+    global _preview_link_secret_cache
+    new_secret_hex = secrets.token_hex(32)
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (_PREVIEW_LINK_SECRET_DB_KEY, new_secret_hex),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    secret = bytes.fromhex(new_secret_hex)
+    _preview_link_secret_cache = secret
+    return secret
+
+
 _API_KEY_PBKDF2_ITERATIONS = 100_000
 DESKTOP_SECRET_PREFIX = "desktop-"
 _DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
