@@ -10085,6 +10085,7 @@ async def load_diffusion_model(
             memory_mode = request.memory_mode,
             speed_mode = request.speed_mode,
             text_encoder_quant = request.text_encoder_quant,
+            transformer_quant = request.transformer_quant,
         )
         return DiffusionStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:

@@ -1721,6 +1721,15 @@ class DiffusionLoadRequest(BaseModel):
         "memory-vs-quality tradeoff (shifts fine detail), not free; "
         "pairs well with balanced mode.",
     )
+    transformer_quant: Optional[Literal["auto", "int8", "fp8", "nvfp4", "mxfp8"]] = Field(
+        None,
+        description = "Opt-in fast transformer: load the DENSE bf16 transformer instead "
+        "of the GGUF and torchao-quantise it onto the low-precision tensor "
+        "cores (faster than GGUF's bf16-rate dequant, at higher VRAM). auto "
+        "picks the best for the GPU (Blackwell nvfp4/mxfp8, Ada/Hopper fp8, "
+        "Ampere int8); an explicit scheme forces it. Needs CUDA + bf16 + room "
+        "for the dense load; falls back to GGUF otherwise.",
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):
@@ -1827,4 +1836,9 @@ class DiffusionStatusResponse(BaseModel):
     )
     text_encoder_quant: Optional[str] = Field(
         None, description = "Text-encoder quantisation engaged: fp8 | nvfp4 | null"
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
+        "nvfp4 | mxfp8 | null (null = the GGUF transformer was loaded)",
     )

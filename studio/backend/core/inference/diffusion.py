@@ -52,6 +52,11 @@ from .diffusion_speed import (
     snapshot_backend_flags,
 )
 from .diffusion_precision import quantize_text_encoders
+from .diffusion_transformer_quant import (
+    dense_transformer_supported,
+    normalize_transformer_quant,
+    quantize_transformer,
+)
 
 logger = get_logger(__name__)
 
@@ -81,6 +86,9 @@ class _LoadState:
     backend_flags_before: Optional[dict] = None
     # Text-encoder quantisation actually engaged: "fp8" | "nvfp4" | None (Phase 2B/2C).
     text_encoder_quant: Optional[str] = None
+    # Transformer quant actually engaged on the opt-in dense fast path: "int8" | "fp8"
+    # | "nvfp4" | "mxfp8" | None. None means the default GGUF transformer was loaded.
+    transformer_quant: Optional[str] = None
 
 
 @dataclass
@@ -267,6 +275,7 @@ class DiffusionBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        transformer_quant: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         fam = self.validate_load_request(
@@ -298,6 +307,7 @@ class DiffusionBackend:
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 text_encoder_quant = text_encoder_quant,
+                transformer_quant = transformer_quant,
                 _load_token = token,
             ),
             daemon = True,
@@ -419,6 +429,7 @@ class DiffusionBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        transformer_quant: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -451,26 +462,62 @@ class DiffusionBackend:
                 # checkpoints never sit in VRAM at once.
                 self._unload_locked()
 
-                # Dequantise the GGUF transformer on-device; the VAE / text-encoder /
-                # scheduler come from the base diffusers repo (GGUF is transformer-only).
                 gguf_path = self._resolve_gguf_path(repo_id, gguf_filename, hf_token)
                 transformer_cls = getattr(diffusers, fam.transformer_class)
-                transformer = transformer_cls.from_single_file(
-                    gguf_path,
-                    quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype),
-                    torch_dtype = dtype,
-                    config = base,
-                    subfolder = "transformer",
-                    # Forward the token: the config is fetched from the (possibly gated)
-                    # base repo before from_pretrained gets a chance to authenticate.
-                    token = hf_token,
+                pipeline_cls = getattr(diffusers, fam.pipeline_class)
+
+                # Decide placement up front (the weights are still on CPU, so free VRAM is
+                # the real budget) -- this also doubles as the dense-quant preflight: the
+                # dense bf16 transformer must fit resident, so the fast path is offered only
+                # when the plan is `none`.
+                plan = self._plan_memory(
+                    target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
                 )
 
-                pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
-                if hf_token:
-                    pipe_kwargs["token"] = hf_token
-                pipeline_cls = getattr(diffusers, fam.pipeline_class)
-                pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
+                # Opt-in fast path: load the DENSE bf16 transformer and torchao-quantise it
+                # (int8 / fp8 / fp4 tensor cores), which beats GGUF's bf16-rate per-matmul
+                # dequant on both speed and quality, at the cost of a higher-memory dense
+                # load. Gated on CUDA + bf16 + a resident fit; ANY failure (unsupported arch
+                # / scheme, OOM, partial quant) falls back to the GGUF build below.
+                pipe = None
+                transformer_quant_engaged = None
+                if (
+                    normalize_transformer_quant(transformer_quant) is not None
+                    and dense_transformer_supported(target)
+                    and plan.offload_policy == OFFLOAD_NONE
+                ):
+                    try:
+                        pipe, transformer_quant_engaged = self._load_dense_quant_pipeline(
+                            transformer_cls, pipeline_cls, base, device, dtype, hf_token,
+                            target, transformer_quant,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
+                        logger.warning(
+                            "diffusion.transformer_quant_fallback: %s (loading GGUF)", exc
+                        )
+                        pipe = None
+                        transformer_quant_engaged = None
+                        clear_gpu_cache()
+
+                if pipe is None:
+                    # Default: dequantise the single-file GGUF transformer on-device; the
+                    # VAE / text-encoder / scheduler come from the base diffusers repo
+                    # (GGUF is transformer-only).
+                    transformer = transformer_cls.from_single_file(
+                        gguf_path,
+                        quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = dtype),
+                        torch_dtype = dtype,
+                        config = base,
+                        subfolder = "transformer",
+                        # Forward the token: the config is fetched from the (possibly gated)
+                        # base repo before from_pretrained gets a chance to authenticate.
+                        token = hf_token,
+                    )
+
+                    pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
+                    if hf_token:
+                        pipe_kwargs["token"] = hf_token
+                    pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
 
                 # Resolve the effective speed mode: GGUF models default to the
                 # near-lossless `default` profile (compile is ~2.2x and sits below
@@ -499,18 +546,12 @@ class DiffusionBackend:
                     logger = logger,
                 )
 
-                # Decide placement from MEASURED free device memory vs the model's
-                # estimated resident size (transformer GGUF dequantised + the
-                # companion text-encoder / VAE already cached for `base`), then
-                # apply it. Computed here, after the build but before placement,
-                # because the weights are still on CPU so free VRAM is the real
-                # budget. `cpu_offload=True` stays an explicit override.
-                plan = self._plan_memory(
-                    target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
-                )
-                # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
-                # may fall back to whole-module offload, and tiling is a no-op on a
-                # pipeline with no tiling control), so status stays honest.
+                # Apply the placement planned above (from MEASURED free device memory vs
+                # the model's estimated resident size). apply_memory_plan returns the
+                # (policy, tiling) ACTUALLY engaged (it may fall back to whole-module
+                # offload, and tiling is a no-op on a pipeline with no tiling control), so
+                # status stays honest. The dense fast path already placed the pipe resident;
+                # for the `none` policy this is an idempotent re-placement.
                 effective_policy, effective_tiling = apply_memory_plan(
                     pipe, plan, device = device, logger = logger
                 )
@@ -530,6 +571,7 @@ class DiffusionBackend:
                     speed_optims = tuple(k for k, v in speed_applied.items() if v),
                     backend_flags_before = backend_flags_before,
                     text_encoder_quant = te_quant,
+                    transformer_quant = transformer_quant_engaged,
                 )
 
         logger.info(
@@ -542,6 +584,38 @@ class DiffusionBackend:
             "; ".join(plan.reasons),
         )
         return self.status()
+
+    def _load_dense_quant_pipeline(
+        self,
+        transformer_cls: Any,
+        pipeline_cls: Any,
+        base: str,
+        device: str,
+        dtype: Any,
+        hf_token: Optional[str],
+        target: DiffusionDeviceTarget,
+        mode: Optional[str],
+    ) -> tuple[Any, str]:
+        """Build the opt-in fast pipeline: load the DENSE bf16 transformer from the base
+        repo (``subfolder="transformer"``), assemble the pipeline, place it on the device,
+        and torchao-quantise the transformer in place. Returns ``(pipe, engaged_scheme)``.
+
+        Raises if the scheme is unsupported or quantisation fails, so ``load_pipeline``
+        catches it and falls back to the GGUF build. Quantisation runs ON the device (the
+        dynamic int8 / fp8 / fp4 kernels need the weights on CUDA) and BEFORE the loader
+        compiles the repeated block, so the order is quantize -> compile -> placement."""
+        transformer = transformer_cls.from_pretrained(
+            base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
+        )
+        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
+        if hf_token:
+            pipe_kwargs["token"] = hf_token
+        pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
+        pipe.to(device)
+        scheme = quantize_transformer(pipe, target, mode = mode, logger = logger)
+        if scheme is None:
+            raise RuntimeError("transformer quant unsupported for this device/scheme")
+        return pipe, scheme
 
     def _plan_memory(
         self,
@@ -751,6 +825,7 @@ class DiffusionBackend:
                 "speed_mode": None,
                 "speed_optims": [],
                 "text_encoder_quant": None,
+                "transformer_quant": None,
             }
         return {
             "loaded": True,
@@ -766,6 +841,7 @@ class DiffusionBackend:
             "speed_mode": state.speed_mode,
             "speed_optims": list(state.speed_optims),
             "text_encoder_quant": state.text_encoder_quant,
+            "transformer_quant": state.transformer_quant,
         }
 
 
