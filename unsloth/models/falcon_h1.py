@@ -681,6 +681,7 @@ def fix_prepare_inputs_for_generation(module):
 
 class Unsloth_FalconH1RMSNorm(FalconH1RMSNorm):
     """fast_rms_layernorm (compiler-disabled, fp32 eps) avoids the float64 torch.compile RMSNorm kernel that fails on Intel Arc DG2 (issue #6555)."""
+
     def forward(self, hidden_states):
         return fast_rms_layernorm(self, hidden_states, gemma = False)
 
