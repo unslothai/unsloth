@@ -996,12 +996,23 @@ def test_binary_env_drops_explicit_credential_file_pointers(
         has_usable_nvidia = False,
     )
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
-    for var in ("NETRC", "PIP_CONFIG_FILE", "DOCKER_CONFIG", "GIT_CONFIG_GLOBAL"):
+    dropped = (
+        "NETRC",
+        "PIP_CONFIG_FILE",
+        "DOCKER_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GITHUB_ENV",
+        "GITHUB_PATH",
+        "GITHUB_OUTPUT",
+        "GITHUB_STEP_SUMMARY",
+        "BASH_ENV",
+    )
+    for var in dropped:
         monkeypatch.setenv(var, "/home/realuser/secret")
 
     env = binary_env(tmp_path / "llama-server", tmp_path, host)
 
-    for var in ("NETRC", "PIP_CONFIG_FILE", "DOCKER_CONFIG", "GIT_CONFIG_GLOBAL"):
+    for var in dropped:
         assert var not in env
 
 

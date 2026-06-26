@@ -239,29 +239,42 @@ jobs:
       # GGUF (unsloth/gemma-3-270m-it-GGUF, Q4_K_M) and validates
       # llama-server /completion end to end. An install failure or a
       # non-zero binary exit is an Unsloth/Studio bug.
-      - name: Studio prebuilt llama.cpp install + GGUF inference (Mac M1)
+      # Install + download in a step that never runs the downloaded binaries, so
+      # secrets live only in this step's env and never in a run script shared with
+      # a llama.cpp launch. The (untrusted) prebuilt is exercised only in the next,
+      # secret-free step. GH_TOKEN: releases API; HF_TOKEN (withheld on PR): probe
+      # fetch + the public GGUF download.
+      - name: Studio prebuilt llama.cpp install + GGUF download (Mac M1)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -euo pipefail
           INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
           rm -rf "$INSTALL_DIR"
           # Mirror studio/setup.sh on macOS: plan against the unslothai/llama.cpp
-          # fork's latest release (no tag flags). Scope tokens to this call, not the
-          # step, so the downloaded binaries below run without secrets; the installer
-          # reads them from os.environ for the releases API and probe fetch. HF_TOKEN
-          # withheld on PRs (PR code).
-          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
-          GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
-          HF_TOKEN="${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}" \
+          # fork's latest release (no tag flags). Download only -- no llama-quantize
+          # / llama-server launch in this token-bearing step.
           python studio/install_llama_prebuilt.py \
             --install-dir "$INSTALL_DIR" \
             --published-repo unslothai/llama.cpp
+          mkdir -p /tmp/ggufs
+          bash .github/scripts/hf-download-with-retry.sh \
+            'unsloth/gemma-3-270m-it-GGUF' \
+            'gemma-3-270m-it-Q4_K_M.gguf' \
+            /tmp/ggufs
 
-          # Studio bundles only llama-server + llama-quantize from the
-          # prebuilt (not llama-cli) -- inference goes through
-          # llama-server's HTTP /completion endpoint. Validate both:
-          # llama-quantize --help proves the dynamic libs link, then
-          # spin up llama-server and POST a /completion request on a
-          # tiny published GGUF.
+      # Runs the downloaded binaries with no secrets in env or run script. Clears
+      # the GitHub Actions command files first so a tampered prebuilt cannot inject
+      # PATH/env into the later token-bearing MLX steps.
+      - name: Studio prebuilt llama.cpp GGUF inference smoke (Mac M1)
+        run: |
+          set -euo pipefail
+          unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY
+          INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
+          # Studio bundles only llama-server + llama-quantize (not llama-cli);
+          # inference goes through llama-server's HTTP /completion endpoint.
           LLAMA_SERVER="$INSTALL_DIR/build/bin/llama-server"
           LLAMA_QUANT="$INSTALL_DIR/build/bin/llama-quantize"
           [ -x "$LLAMA_SERVER" ] || { echo "::error::llama-server missing at $LLAMA_SERVER"; find "$INSTALL_DIR/build" -type f | head -40; exit 1; }
@@ -269,14 +282,6 @@ jobs:
           echo "llama-server : $LLAMA_SERVER"
           echo "llama-quantize: $LLAMA_QUANT"
           "$LLAMA_QUANT" --help >/dev/null && echo "  llama-quantize loads OK"
-
-          mkdir -p /tmp/ggufs
-          # Public GGUF; HF_TOKEN only eases the HF rate limit, scoped to this call.
-          HF_TOKEN="${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}" \
-          bash .github/scripts/hf-download-with-retry.sh \
-            'unsloth/gemma-3-270m-it-GGUF' \
-            'gemma-3-270m-it-Q4_K_M.gguf' \
-            /tmp/ggufs
 
           PORT=18080
           echo "=== starting llama-server on 127.0.0.1:$PORT ==="

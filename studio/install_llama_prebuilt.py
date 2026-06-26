@@ -5603,6 +5603,15 @@ _CREDENTIAL_FILE_POINTER_VARS = (
     "DOCKER_CONFIG",
     "GIT_CONFIG_GLOBAL",
 )
+# GitHub Actions command files / hooks: a binary that appends to these influences
+# later, secret-bearing workflow steps (PATH or env injection). Drop them.
+_CI_COMMAND_FILE_VARS = (
+    "GITHUB_ENV",
+    "GITHUB_PATH",
+    "GITHUB_OUTPUT",
+    "GITHUB_STEP_SUMMARY",
+    "BASH_ENV",
+)
 
 _isolated_runtime_home_dir: str | None = None
 
@@ -5631,7 +5640,7 @@ def secret_free_environ() -> dict[str, str]:
     # throwaway home across them (a no-op pair on POSIX).
     drive, tail = os.path.splitdrive(runtime_home)
     env["HOMEDRIVE"], env["HOMEPATH"] = drive, tail or runtime_home
-    for pointer in _CREDENTIAL_FILE_POINTER_VARS:
+    for pointer in (*_CREDENTIAL_FILE_POINTER_VARS, *_CI_COMMAND_FILE_VARS):
         env.pop(pointer, None)
     return env
 
