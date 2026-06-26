@@ -214,7 +214,7 @@ def test_tensor_split_abort_recorded_early_on_first_spawn():
     src = inspect.getsource(LlamaCppBackend.load_model)
     idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
     assert idx != -1, "load_model must record a (binary, model) tensor-split abort"
-    guard = src[max(0, idx - 400) : idx]
+    guard = src[max(0, idx - 600) : idx]
     assert "self._tensor_parallel" in guard
     assert "_is_signal_crash" in guard, "record must be gated on a hard signal crash"
     assert "_is_tensor_split_assert" in guard, "record must be confirmed by the :541 marker"
@@ -352,7 +352,7 @@ def test_tensor_split_abort_raises_early_to_layer_fallback():
     assert raise_idx < src.find("_with_flash_attn_off")
     assert raise_idx < src.find("_strip_mmproj_args(_last_spawn_cmd)")
     # gated on the :541 signature, which also drives the record just above
-    guard = src[max(0, raise_idx - 400) : raise_idx]
+    guard = src[max(0, raise_idx - 600) : raise_idx]
     assert "_is_tensor_split_assert" in guard
     rec_idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
     assert rec_idx != -1 and rec_idx < raise_idx
@@ -500,15 +500,27 @@ def test_layer_preserve_hint_replayed_on_respawn():
 
 
 def test_tensor_split_record_requires_signal_crash_and_marker():
-    """The record is gated on both a hard signal crash and the split-axis marker, so
-    a projector that SIGSEGVs independent of split mode, or an unrelated assert, is
-    not cached (Codex review on #6659)."""
+    """The record is gated on the split-axis marker plus a hard crash (POSIX signal
+    or the Windows CRT abort() exit), so a projector that SIGSEGVs independent of
+    split mode, or an unrelated assert, is not cached (Codex reviews on #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     idx = src.find("_record_tensor_split_abort(binary, model_identifier)")
     assert idx != -1
     guard = src[max(0, idx - 400) : idx]
     assert "_is_signal_crash" in guard
     assert "_is_tensor_split_assert" in guard
+    # Windows: GGML_ASSERT aborts via the CRT (exit 3), not a signal, so the marker
+    # must also accept the abort exit or the cache never fills on Windows builds.
+    assert "_is_abort_exit" in guard
+
+
+def test_is_abort_exit_recognizes_windows_crt_abort():
+    """exit code 3 (MSVC abort()) counts as a crash; signals / clean exits do not."""
+    f = LlamaCppBackend._is_abort_exit
+    assert f(3) is True
+    assert f(0) is False
+    assert f(-6) is False  # POSIX SIGABRT is handled by _is_signal_crash, not here
+    assert f(None) is False
 
 
 # ── tensor-off after a multi-GPU fallback forces a reload (route dedup) ─

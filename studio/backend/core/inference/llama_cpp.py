@@ -4417,6 +4417,12 @@ class LlamaCppBackend:
         return -returncode in (4, 6, 7, 8, 11)  # SIGILL SIGABRT SIGBUS SIGFPE SIGSEGV
 
     @staticmethod
+    def _is_abort_exit(returncode: Optional[int]) -> bool:
+        """Windows CRT abort() exit code (3): how GGML_ASSERT terminates on MSVC
+        builds, where it's neither a POSIX signal nor a 0xC0000000+ NTSTATUS."""
+        return returncode == 3
+
+    @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
         (last-wins) value is already off/absent so there is nothing to retry. FA
@@ -6037,7 +6043,11 @@ class LlamaCppBackend:
                 if not healthy and self._tensor_parallel and not self._cancel_event.is_set():
                     _ts_out = "\n".join(self._stdout_lines[-50:])
                     _ts_rc = self._process.poll() if self._process is not None else None
-                    if self._is_signal_crash(_ts_rc) and self._is_tensor_split_assert(_ts_out):
+                    # The split-axis marker is definitive, so accept a POSIX signal
+                    # crash or the Windows CRT abort() exit (3) it can also raise.
+                    if self._is_tensor_split_assert(_ts_out) and (
+                        self._is_signal_crash(_ts_rc) or self._is_abort_exit(_ts_rc)
+                    ):
                         LlamaCppBackend._record_tensor_split_abort(binary, model_identifier)
                         self._kill_process()
                         raise RuntimeError(
