@@ -6468,9 +6468,8 @@ async def _cached_local_catalog() -> list:
     loop and stall every concurrent request and in-flight inference stream. A
     lock with a double-check collapses a burst of simultaneous /v1/models calls
     into a single scan instead of one per request."""
-    # Validity is keyed on "at" (set only after a scan), not on the list being
-    # non-empty, so an empty/errored scan is still cached for the TTL instead of
-    # forcing a rescan on every poll (fresh install, no local models, scan error).
+    # Validity is keyed on "at" (set only after a scan), not on list contents, so
+    # an empty/errored scan is still cached instead of rescanning on every poll.
     now = time.monotonic()
     if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
         return _CATALOG_CACHE["models"]
@@ -6506,12 +6505,10 @@ async def _openai_catalog_objects() -> list[dict]:
     for info in await _cached_local_catalog():
         path_id = public_model_id(getattr(info, "id", None))
         cid = getattr(info, "model_id", None) or path_id
-        # Skip if already listed under its alias, or if its path matches a LOADED
-        # model. An LM Studio/Ollama row carries a model_id alias but is loaded by
-        # its path, so the loaded entry is keyed under public_model_id(path); the
-        # path_id check stops the active model being re-listed as an unloaded
-        # duplicate under its alias. Match only loaded_ids (not by_id) so two
-        # distinct unloaded models sharing a basename both still appear.
+        # An LM Studio/Ollama row exposes a model_id alias but is loaded by path,
+        # so the loaded entry is keyed under path_id; dedup against loaded_ids (not
+        # by_id) so the active model isn't re-listed under its alias, while two
+        # distinct unloaded models sharing a basename still both appear.
         if not cid or cid in by_id or (path_id and path_id in loaded_ids):
             continue
         obj = {
@@ -6553,6 +6550,12 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     """
     from core.inference.model_ids import model_id_matches
 
+    # Loaded models resolve without a catalog scan (the common case); only build
+    # the full catalog -- which may hit the filesystem -- for unloaded ids.
+    for entry in _openai_model_objects():
+        if entry["id"] == model_id:
+            return {**entry, "loaded": True}
+
     objects = await _openai_catalog_objects()
     for model in objects:
         if model["id"] == model_id:
@@ -6560,7 +6563,6 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Backward compatibility: a client may still send the legacy raw identifier
     # (e.g. an absolute .gguf path cached from an older /v1/models). Resolve it to
     # the clean object so it keeps working, without ever echoing the path back.
-    # model_id_matches accepts both the clean id and the raw path for one release.
     llama_backend = get_llama_cpp_backend()
     backend = get_inference_backend()
     for raw in (

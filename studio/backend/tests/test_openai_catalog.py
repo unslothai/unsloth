@@ -98,14 +98,15 @@ def test_path_loaded_model_not_relisted_under_alias(monkeypatch):
 
     data = asyncio.run(inf._openai_catalog_objects())
     ids = [m["id"] for m in data]
+    loaded = {m["id"]: m["loaded"] for m in data}
     # The loaded model appears exactly once, under its loaded id, marked loaded.
     assert ids.count("Qwen3-Q4") == 1
-    assert {m["id"]: m["loaded"] for m in data}["Qwen3-Q4"] is True
+    assert loaded["Qwen3-Q4"] is True
     # Its alias is NOT re-listed as an unloaded duplicate.
     assert "ollama/qwen3:q4" not in ids
     # A genuinely-distinct unloaded alias still shows.
     assert "ollama/other:tag" in ids
-    assert {m["id"]: m["loaded"] for m in data}["ollama/other:tag"] is False
+    assert loaded["ollama/other:tag"] is False
 
 
 def test_distinct_unloaded_models_sharing_a_basename_both_appear(monkeypatch):
@@ -129,6 +130,22 @@ def test_distinct_unloaded_models_sharing_a_basename_both_appear(monkeypatch):
     assert "tiny" in ids
     assert "ollama/tiny:q4" in ids  # not wrongly dropped by a basename collision
     assert len(data) == 2
+
+
+def test_retrieve_loaded_model_skips_catalog_scan(monkeypatch):
+    # Retrieving a loaded id must resolve from the loaded set alone, never paying
+    # for the filesystem scan that _cached_local_catalog drives.
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+
+    async def _boom():
+        raise AssertionError("catalog scan must not run for a loaded id")
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _boom)
+
+    model = asyncio.run(inf.openai_retrieve_model("Qwen3-Q4", current_subject = "t"))
+    assert model["id"] == "Qwen3-Q4"
+    assert model["loaded"] is True
 
 
 def test_cached_local_catalog_offloads_and_caches(monkeypatch):
