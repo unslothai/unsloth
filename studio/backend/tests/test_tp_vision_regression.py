@@ -645,6 +645,26 @@ def test_tensor_off_reload_requires_explicit_toggle():
     )
 
 
+def test_tensor_off_under_env_tensor_does_not_reload_loop(monkeypatch):
+    """With LLAMA_ARG_SPLIT_MODE=tensor still set, an explicit tensor-off request
+    can't actually drop tensor intent (a reload re-engages it and re-falls-back).
+    The guard must stay env-aware and dedupe instead of looping (Codex review #6659)."""
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+    monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
+
+    req = LoadRequest(model_path = "owner/repo", tensor_parallel = False)
+    assert "tensor_parallel" in req.model_fields_set
+    # env still forces tensor -> not a real drop -> dedupe (no reload loop).
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            req, _fallback_loaded_backend(layer_preserves_tensor_intent = True)
+        )
+        is True
+    )
+
+
 def test_layer_preserves_tensor_intent_set_only_on_preserved_downgrade():
     """load_model latches the flag from _layer_min_gpus (raised only when a tensor
     request is downgraded but kept multi-GPU), and clears it when tensor stays on."""

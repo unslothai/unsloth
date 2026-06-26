@@ -2119,23 +2119,19 @@ def _request_matches_loaded_settings(
         return False
     # A tensor->layer fallback spread this load across GPUs only to honor a tensor
     # request (preserve_multi_gpu_on_layer). Both report tensor=off, so the check
-    # above matches, but if the user now explicitly drops that intent -- via the
-    # toggle, or via any explicit extras whose effective tensor state is off (a
-    # --split-mode layer that matches the stored extras, or any non-tensor extras
-    # that clear the preserved pin) -- reload so placement re-selects (single GPU
-    # for a 1-GPU-fit model) instead of deduping to the all-GPU mask (#6659). The
-    # toggle is read from model_fields_set (explicit vs default); extras intent is
-    # _effective_tensor_parallel without env, so an env-only tensor request reads as
-    # off here, matching _tensor_parallel_matches_loaded which ignores env on a
-    # downgraded server.
+    # above matches, but if the user now explicitly drops that intent -- changing
+    # the toggle or extras to an effective tensor state of off -- reload so
+    # placement re-selects (single GPU for a 1-GPU-fit model) instead of deduping
+    # to the fallback's all-GPU mask (#6659). The effective check includes the env:
+    # if LLAMA_ARG_SPLIT_MODE=tensor still forces tensor, the request can't drop it
+    # (a reload would re-engage tensor and re-fall-back), so fall through to the
+    # env-downgrade matching below, which dedupes that case instead of looping.
     if llama_backend.layer_preserves_tensor_intent:
         _fields_set = getattr(request, "model_fields_set", set())
-        _explicit_toggle_off = "tensor_parallel" in _fields_set and not request.tensor_parallel
-        _explicit_extras_off = (
-            request.llama_extra_args is not None
-            and not _effective_tensor_parallel(request.llama_extra_args, request.tensor_parallel)
-        )
-        if _explicit_toggle_off or _explicit_extras_off:
+        _explicit_change = "tensor_parallel" in _fields_set or request.llama_extra_args is not None
+        if _explicit_change and not _effective_tensor_parallel(
+            request.llama_extra_args, request.tensor_parallel
+        ):
             return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
