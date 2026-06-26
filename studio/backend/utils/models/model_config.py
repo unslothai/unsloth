@@ -44,13 +44,15 @@ from utils.subprocess_compat import (
 logger = get_logger(__name__)
 
 
+_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
 def _env_offline() -> bool:
-    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+    """True if an HF offline env var is truthy (canonical strip+lower parse, on/true/yes/1)."""
+    return (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
+    )
 
 
 # ── Model size extraction ────────────────────────────────────
@@ -471,6 +473,7 @@ def load_model_config(
     use_auth: bool = False,
     token: Optional[str] = None,
     trust_remote_code: bool = False,
+    local_files_only: bool = False,
 ):
     """Load model config with optional authentication control.
 
@@ -478,12 +481,18 @@ def load_model_config(
     metadata lookups must never execute a model repo's ``auto_map`` Python.
     Deliberate remote-code loads pass the flag explicitly through
     ``FastLanguageModel.from_pretrained`` with the user's own consent.
+
+    ``local_files_only`` keeps the config read on the local HF cache (offline
+    export), so an offline probe never blocks on the network.
     """
     from transformers import AutoConfig
 
     if token:
         return AutoConfig.from_pretrained(
-            model_name, trust_remote_code = trust_remote_code, token = token
+            model_name,
+            trust_remote_code = trust_remote_code,
+            token = token,
+            local_files_only = local_files_only,
         )
 
     if not use_auth:
@@ -493,12 +502,14 @@ def load_model_config(
                 model_name,
                 trust_remote_code = trust_remote_code,
                 token = None,
+                local_files_only = local_files_only,
             )
 
     # Default auth (cached tokens)
     return AutoConfig.from_pretrained(
         model_name,
         trust_remote_code = trust_remote_code,
+        local_files_only = local_files_only,
     )
 
 
@@ -598,7 +609,9 @@ def _is_vlm(config) -> bool:
 
 
 def _raw_config_has_vision_config(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> Optional[bool]:
     try:
         if is_local_path(model_name):
@@ -610,6 +623,7 @@ def _raw_config_has_vision_config(
                     repo_id = model_name,
                     filename = "config.json",
                     token = hf_token,
+                    local_files_only = local_files_only,
                 )
             )
         config = json.loads(config_path.read_text())
@@ -776,27 +790,20 @@ def _token_fingerprint(token: Optional[str]) -> Optional[str]:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-# Cache vision detection per session to avoid repeated subprocess spawns.
-# Keyed by (normalized_model_name, token_fingerprint) to handle gated models.
-# Only definitive results are cached; transient failures (network, timeouts)
-# are NOT cached so they can be retried.
-_vision_detection_cache: Dict[Tuple[str, Optional[str]], bool] = {}
+# Vision detection cache keyed by (name, token, local_files_only); only definitive results cached.
+_vision_detection_cache: Dict[Tuple[str, Optional[str], bool], bool] = {}
 _vision_cache_lock = threading.Lock()
 
 
-def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
-    """
-    Detect vision-language models (VLMs) via architecture in config. Works for
-    fine-tuned models since they inherit the base architecture.
-
-    Models needing transformers 5.x are checked in a .venv_t5/ subprocess.
-    Results are cached per (model_name, token_fingerprint) for the process
-    lifetime; transient failures are not cached so they can be retried.
-
-    Args:
-        model_name: Model identifier (HF repo or local path)
-        hf_token: Optional HF token for gated/private models
-    """
+def is_vision_model(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> bool:
+    """Detect VLMs via the config architecture (works for fine-tunes); transformers-5.x
+    models are checked in a .venv_t5/ subprocess. Cached per (model_name, token,
+    local_files_only) minus transient failures; local_files_only is in the key so an
+    offline probe never shares an online entry."""
     # Local GGUF models are served by llama-server. Their multimodal
     # capability comes from a companion mmproj, not a Transformers config.
     # Do not cache this lookup: a projector may be added beside an existing
@@ -829,7 +836,10 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             exc,
         )
         resolved_name = model_name
-    cache_key = (resolved_name, _token_fingerprint(hf_token))
+    # Key on effective offline (kwarg OR env) so an offline probe can't poison a later
+    # online lookup once the env var is cleared.
+    effective_offline = bool(local_files_only or _env_offline())
+    cache_key = (resolved_name, _token_fingerprint(hf_token), effective_offline)
 
     # Lock-free fast path for cache hits. Sentinel distinguishes "key not found"
     # from "value is False" in a single atomic dict.get() call.
@@ -840,7 +850,7 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
     # Compute outside the lock so long-running detection isn't serialized across
     # models. Two concurrent calls may both run, but produce the same result.
-    result = _is_vision_model_uncached(resolved_name, hf_token)
+    result = _is_vision_model_uncached(resolved_name, hf_token, local_files_only = effective_offline)
     # Only cache definitive results; None is a transient failure, retry later.
     if result is not None:
         with _vision_cache_lock:
@@ -849,7 +859,11 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     return False
 
 
-def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
+def _is_vision_model_uncached(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> Optional[bool]:
     """Uncached vision detection; use is_vision_model() instead.
 
     Returns True/False for definitive results, or None on transient errors
@@ -858,15 +872,17 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
     # Try the raw-config reader FIRST (code-free, version-independent): it classifies
     # repo-code VLMs like DeepSeek-OCR via declarative vision_config with no remote-code
     # execution or transformers-5.x subprocess.
-    raw = _raw_config_has_vision_config(model_name, hf_token = hf_token)
+    raw = _raw_config_has_vision_config(
+        model_name, hf_token = hf_token, local_files_only = local_files_only
+    )
     if raw is not None:
         return raw
 
-    # Raw read failed transiently: fall back to AutoConfig with remote code DISABLED
-    # (in a transformers-5.x subprocess when the main process can't parse the arch).
+    # Raw read failed transiently: fall back to AutoConfig (remote code DISABLED), via a
+    # transformers-5.x subprocess if needed. Skip that subprocess offline (it probes the network).
     from utils.transformers_version import needs_transformers_5
 
-    if needs_transformers_5(model_name):
+    if not local_files_only and needs_transformers_5(model_name):
         logger.info(
             "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
@@ -874,7 +890,12 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
         return _is_vision_model_subprocess(model_name, hf_token = hf_token)
 
     try:
-        config = load_model_config(model_name, use_auth = True, token = hf_token)
+        config = load_model_config(
+            model_name,
+            use_auth = True,
+            token = hf_token,
+            local_files_only = local_files_only,
+        )
 
         if _is_vlm(config):
             model_type = getattr(config, "model_type", None)
@@ -914,9 +935,9 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 
-# Keyed by (normalized_name, token_fingerprint) like the vision cache, so an
-# unauthenticated miss (None) cannot poison a later authenticated lookup.
-_audio_detection_cache: Dict[Tuple[str, Optional[str]], Optional[str]] = {}
+# Keyed like the vision cache by (name, token, local_files_only) so an unauthenticated
+# or offline miss cannot poison a later authenticated / online lookup.
+_audio_detection_cache: Dict[Tuple[str, Optional[str], bool], Optional[str]] = {}
 
 # Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
 _AUDIO_TOKEN_PATTERNS = {
@@ -935,12 +956,20 @@ _AUDIO_TOKEN_PATTERNS = {
 }
 
 
-def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
+def detect_audio_type(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> Optional[str]:
     """Detect if a model is an audio model and return its type.
 
     Works for any model via tokenizer_config.json special tokens.
     Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
     'audio_vlm') or None.
+
+    When local_files_only is True (offline export) the remote HuggingFace fetch
+    is skipped so detection never blocks on a network read; only the local HF
+    cache is consulted.
     """
     # Normalize casing + include the token fingerprint (mirrors is_vision_model).
     try:
@@ -950,11 +979,16 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
             resolved_name = resolve_cached_repo_id_case(model_name)
     except Exception:
         resolved_name = model_name
-    cache_key = (resolved_name, _token_fingerprint(hf_token))
+    # Key on effective offline (kwarg OR env), matching where the remote fetch is skipped,
+    # so an offline negative can't poison a later online probe.
+    effective_offline = bool(local_files_only or _env_offline())
+    cache_key = (resolved_name, _token_fingerprint(hf_token), effective_offline)
     if cache_key in _audio_detection_cache:
         return _audio_detection_cache[cache_key]
 
-    result, definitive = _detect_audio_from_tokenizer(model_name, hf_token)
+    result, definitive = _detect_audio_from_tokenizer(
+        model_name, hf_token, local_files_only = effective_offline
+    )
     # Cache only definitive results; a transient read failure stays None and retries.
     if definitive:
         _audio_detection_cache[cache_key] = result
@@ -964,12 +998,15 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
 
 
 def _detect_audio_from_tokenizer(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> Tuple[Optional[str], bool]:
     """Detect audio type from tokenizer special tokens.
 
-    Checks local HF cache first, then fetches tokenizer_config.json from HF;
-    examines added_tokens_decoder for distinctive patterns.
+    Checks local HF cache first, then (unless local_files_only) fetches
+    tokenizer_config.json from HF; examines added_tokens_decoder for distinctive
+    patterns.
 
     Returns (audio_type_or_None, definitive). definitive is False only on a
     transient read failure (network/timeout/5xx) so the caller skips caching and
@@ -1009,7 +1046,11 @@ def _detect_audio_from_tokenizer(
     except Exception as e:
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
-    # 2) Fall back to HuggingFace API
+    # 2) Fall back to the HuggingFace API. This raw requests.get ignores the HF offline
+    #    flag, so gate it on local_files_only OR the env vars to skip the network offline.
+    if local_files_only or _env_offline():
+        return None, read_any
+
     try:
         import requests
         import os
