@@ -62,7 +62,9 @@ def _non_gguf_weight_siblings(siblings) -> list:
     ]
 
 
-_repo_size_cache: "OrderedDict[tuple[str, str, str], tuple[int, frozenset[str], float]]" = OrderedDict()
+_repo_size_cache: "OrderedDict[tuple[str, str, str], tuple[int, frozenset[str], float]]" = (
+    OrderedDict()
+)
 _repo_size_neg_cache: "OrderedDict[tuple[str, str, str], float]" = OrderedDict()
 _REPO_SIZE_CACHE_MAX = 256
 _REPO_SIZE_POS_TTL = 60.0
@@ -80,7 +82,10 @@ _gguf_update_check_lock = threading.Lock()
 
 
 def get_repo_snapshot_metadata_cached(
-    repo_id: str, hf_token: Optional[str] = None, *, weight_only: bool = False
+    repo_id: str,
+    hf_token: Optional[str] = None,
+    *,
+    weight_only: bool = False,
 ) -> tuple[int, frozenset[str]]:
     token_fp = hf_cache_scan.token_fingerprint(hf_token)
     cache_key = (repo_id, token_fp, "weights" if weight_only else "snapshot")
@@ -97,7 +102,6 @@ def get_repo_snapshot_metadata_cached(
             return 0, frozenset()
     try:
         from huggingface_hub import HfApi
-
         info = HfApi(token = hf_token).model_info(
             repo_id,
             files_metadata = True,
