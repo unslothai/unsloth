@@ -29,6 +29,7 @@ import {
 import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
 import { useGpuUtilization } from "@/hooks";
+import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { cn } from "@/lib/utils";
 import {
   ChartAverageIcon,
@@ -42,7 +43,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { type ReactElement, type ReactNode, useEffect, useState } from "react";
+import { type ReactElement, type ReactNode, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
 import {
@@ -359,14 +360,14 @@ function LiveGpuPanel({
   const t = useT();
   const [selectedGpu, setSelectedGpu] = useState(0);
   const gpuData = useGpuUtilization(isTrainingRunning);
-  const gpus: any[] = Array.isArray(gpuData)
-    ? gpuData
+  const gpus: GpuUtilization[] = Array.isArray(gpuData?.devices) && gpuData.devices.length > 0
+    ? gpuData.devices
     : gpuData && Object.keys(gpuData).length > 0
       ? [gpuData]
       : [];
 
   const gpuCount = gpus.length;
-  const currentGpu = gpus[selectedGpu] || gpus[0] || {};
+  const currentGpu: Partial<GpuUtilization> = gpus[selectedGpu] || gpus[0] || {};
 
   return (
     <div className="flex flex-col gap-3">
@@ -383,8 +384,8 @@ function LiveGpuPanel({
               title="Select GPU"
             >
               {gpus.map((device, index) => (
-                <option 
-                  key={index} 
+                <option
+                  key={device.index ?? index}
                   value={index}
                   className="bg-popover text-popover-foreground dark:bg-zinc-900 dark:text-zinc-100"
                 >

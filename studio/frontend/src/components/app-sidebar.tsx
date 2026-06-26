@@ -298,6 +298,15 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const trainExportDisabledHint: string | undefined = !chatOnly
+    ? undefined
+    : chatOnlyReason === "mlx_unavailable"
+      ? "Training needs MLX. Run `unsloth studio update` to enable Train and Export."
+      : chatOnlyReason === "intel_mac"
+        ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
+        : chatOnlyReason === "no_gpu"
+          ? "Training needs an NVIDIA or AMD GPU."
+          : undefined;
   // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX in the
   // background and flip chat_only false without a restart. The platform store
   // cached the initial /api/health, so re-poll while we are chat-only for the
@@ -1149,6 +1158,7 @@ export function AppSidebar() {
                     pathname === "/studio" || pathname.startsWith("/studio/")
                   }
                   disabled={chatOnly}
+                  tooltip={trainExportDisabledHint}
                   spinner={trainingInProgress}
                   onClick={() => {
                     if (chatOnly) return;
@@ -1177,6 +1187,7 @@ export function AppSidebar() {
                       label={t("shell.navigation.train")}
                       active={pathname === "/studio" || pathname.startsWith("/studio/")}
                       disabled={chatOnly}
+                      tooltip={trainExportDisabledHint}
                       spinner={trainingInProgress}
                       onClick={() => {
                         if (chatOnly) return;
@@ -1198,6 +1209,7 @@ export function AppSidebar() {
                       label={t("shell.navigation.export")}
                       active={pathname === "/export" || pathname.startsWith("/export/")}
                       disabled={chatOnly}
+                      tooltip={trainExportDisabledHint}
                       spinner={exportInProgress}
                       onClick={() => {
                         if (chatOnly) return;

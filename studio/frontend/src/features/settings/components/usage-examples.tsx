@@ -56,8 +56,10 @@ const TYPE_TABS: { id: ExampleType; label: string }[] = [
 const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
   curlTools: "settings.apiKeys.exampleCurlTools",
   pythonTools: "settings.apiKeys.examplePythonTools",
+  javascriptTools: "settings.apiKeys.exampleJavaScriptTools",
   curlAdvanced: "settings.apiKeys.exampleCurlAdvanced",
   pythonAdvanced: "settings.apiKeys.examplePythonAdvanced",
+  javascriptAdvanced: "settings.apiKeys.exampleJavaScriptAdvanced",
 };
 
 const OS_AWARE: Record<ExampleType, boolean> = {

@@ -1006,7 +1006,7 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
 
 
 @app.get("/api/system")
-async def get_system_info(current_subject: str = Depends(get_current_subject)):
+def get_system_info(current_subject: str = Depends(get_current_subject)):
     """Get system information.
 
     Auth-gated: the response (platform, Python/GPU, memory, ML packages) can
@@ -1063,9 +1063,10 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     try:
         current_process = psutil.Process(os.getpid())
+        process_used_mb = round(current_process.memory_info().rss / 1024**2)
     except Exception as e:
-        logger.debug(f"Failed to get current process: {e}")
-        current_process = None
+        logger.debug(f"Failed to get current process memory: {e}")
+        process_used_mb = 0
 
     try:
         boot_time = psutil.boot_time()
@@ -1094,15 +1095,15 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
             "logical_count": psutil.cpu_count(logical = True),
             "physical_count": psutil.cpu_count(logical = False),
             "usage_percent": psutil.cpu_percent(interval = None),
-            "frequency_mhz": round(cpu_freq.current, 2) if cpu_freq else None,
+            "frequency_mhz": round(cpu_freq.current, 2)
+            if cpu_freq and cpu_freq.current is not None
+            else None,
         },
         "memory": {
             "total_gb": memory.total / 1024**3,
             "available_gb": memory.available / 1024**3,
             "percent_used": memory.percent,
-            "process_used_mb": round(current_process.memory_info().rss / 1024**2)
-            if current_process
-            else 0,
+            "process_used_mb": process_used_mb,
         },
         "disk": {
             "total_gb": round(disk.total / 1e9, 2) if disk else 0,

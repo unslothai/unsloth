@@ -710,8 +710,39 @@ def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[floa
         return None, None
 
 
-def get_gpu_utilization() -> list[Dict[str, Any]]:
-    """Live utilization snapshot for all visible GPUs."""
+def _gpu_utilization_payload(
+    device: DeviceType,
+    devices: list[Dict[str, Any]],
+    **metadata: Any,
+) -> Dict[str, Any]:
+    """Keep the legacy primary-GPU shape and append all visible devices."""
+    backend = _backend_label(device)
+    normalized = []
+    for ordinal, raw in enumerate(devices):
+        dev = dict(raw)
+        dev.setdefault("available", True)
+        dev.setdefault("backend", backend)
+        if dev.get("visible_ordinal") is None:
+            dev["visible_ordinal"] = ordinal
+        normalized.append(dev)
+
+    normalized.sort(key = lambda dev: dev.get("visible_ordinal", dev.get("index", 0)))
+    payload: Dict[str, Any] = {
+        "available": bool(normalized),
+        "backend": backend,
+        "devices": normalized,
+    }
+    payload.update(metadata)
+    if normalized:
+        payload.update(normalized[0])
+        payload["available"] = True
+        payload["backend"] = normalized[0].get("backend", backend)
+        payload["devices"] = normalized
+    return payload
+
+
+def get_gpu_utilization() -> Dict[str, Any]:
+    """Live utilization snapshot for the primary GPU plus all visible GPUs."""
     device = get_device()
 
     if device == DeviceType.CUDA:
@@ -727,32 +758,40 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
             if IS_ROCM and numeric_ids is not None:
                 _reconcile_rocm_unified_memory(result, numeric_ids)
 
-            for dev in devices:
-                dev["available"] = True
-                dev["backend"] = _backend_label(device)
-            return devices
+            return _gpu_utilization_payload(
+                device,
+                devices,
+                backend_cuda_visible_devices = result.get("backend_cuda_visible_devices"),
+                parent_visible_gpu_ids = result.get("parent_visible_gpu_ids", []),
+                index_kind = result.get("index_kind"),
+            )
 
         # Fallback Windows ROCm
         if IS_ROCM and platform.system() == "Windows":
             _win_used, _win_total = _rocm_windows_perf_counter_vram_gb()
             if _win_used is not None and _win_total is not None:
                 _win_util = _rocm_windows_perf_counter_gpu_util_pct()
-                return [
-                    {
-                        "available": True,
-                        "backend": _backend_label(device),
-                        "gpu_utilization_pct": _win_util,
-                        "temperature_c": None,
-                        "vram_used_gb": _win_used,
-                        "vram_total_gb": _win_total,
-                        "vram_utilization_pct": round((_win_used / _win_total) * 100, 1)
-                        if _win_total > 0
-                        else None,
-                        "power_draw_w": None,
-                        "power_limit_w": None,
-                        "power_utilization_pct": None,
-                    }
-                ]
+                return _gpu_utilization_payload(
+                    device,
+                    [
+                        {
+                            "available": True,
+                            "backend": _backend_label(device),
+                            "index": 0,
+                            "visible_ordinal": 0,
+                            "gpu_utilization_pct": _win_util,
+                            "temperature_c": None,
+                            "vram_used_gb": _win_used,
+                            "vram_total_gb": _win_total,
+                            "vram_utilization_pct": round((_win_used / _win_total) * 100, 1)
+                            if _win_total > 0
+                            else None,
+                            "power_draw_w": None,
+                            "power_limit_w": None,
+                            "power_utilization_pct": None,
+                        }
+                    ],
+                )
 
         # Fallback Linux ROCm
         if IS_ROCM and platform.system() == "Linux":
@@ -761,22 +800,27 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
                 _linux_util = _rocm_linux_sysfs_gpu_busy_pct()
                 _linux_temp = _rocm_linux_sysfs_temp_c()
                 _linux_power = _rocm_linux_sysfs_power_w()
-                return [
-                    {
-                        "available": True,
-                        "backend": _backend_label(device),
-                        "gpu_utilization_pct": _linux_util,
-                        "temperature_c": _linux_temp,
-                        "vram_used_gb": _linux_used,
-                        "vram_total_gb": _linux_total,
-                        "vram_utilization_pct": round((_linux_used / _linux_total) * 100, 1)
-                        if _linux_total > 0
-                        else None,
-                        "power_draw_w": _linux_power,
-                        "power_limit_w": None,
-                        "power_utilization_pct": None,
-                    }
-                ]
+                return _gpu_utilization_payload(
+                    device,
+                    [
+                        {
+                            "available": True,
+                            "backend": _backend_label(device),
+                            "index": 0,
+                            "visible_ordinal": 0,
+                            "gpu_utilization_pct": _linux_util,
+                            "temperature_c": _linux_temp,
+                            "vram_used_gb": _linux_used,
+                            "vram_total_gb": _linux_total,
+                            "vram_utilization_pct": round((_linux_used / _linux_total) * 100, 1)
+                            if _linux_total > 0
+                            else None,
+                            "power_draw_w": _linux_power,
+                            "power_limit_w": None,
+                            "power_utilization_pct": None,
+                        }
+                    ],
+                )
 
         # Last resort: torch mem_get_info (process-local) for all visible GPUs
         _visible_spec = _get_parent_visible_gpu_spec()
@@ -809,7 +853,7 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
                         "power_utilization_pct": None,
                     }
                 )
-            return gpu_array
+            return _gpu_utilization_payload(device, gpu_array)
 
     # MLX
     if device == DeviceType.MLX:
@@ -819,10 +863,10 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
             total_bytes = psutil.virtual_memory().total
         except Exception as e:
             logger.error(f"Error getting MLX GPU utilization: {e}")
-            return [{"available": False, "backend": device.value, "error": str(e)}]
+            return {"available": False, "backend": device.value, "devices": [], "error": str(e)}
 
         if not agx:
-            return [{"available": False, "backend": device.value}]
+            return {"available": False, "backend": device.value, "devices": []}
 
         allocated_bytes = agx.get("vram_used_bytes", 0) or 0
         vram_used_gb = allocated_bytes / (1024**3)
@@ -842,41 +886,51 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
 
         from . import apple
 
-        return [
-            {
-                "available": True,
-                "backend": device.value,
-                "gpu_utilization_pct": agx.get("utilization_pct") if agx else None,
-                "temperature_c": apple.read_gpu_temperature_c(),
-                "vram_used_gb": round(vram_used_gb, 2),
-                "vram_total_gb": round(total_gb, 2),
-                "vram_utilization_pct": round((vram_used_gb / total_gb) * 100, 1)
-                if total_gb > 0
-                else None,
-                "power_draw_w": apple.read_gpu_power_w(),
-                "power_limit_w": None,
-                "power_utilization_pct": None,
-            }
-        ]
+        return _gpu_utilization_payload(
+            device,
+            [
+                {
+                    "available": True,
+                    "backend": device.value,
+                    "index": 0,
+                    "visible_ordinal": 0,
+                    "gpu_utilization_pct": agx.get("utilization_pct") if agx else None,
+                    "temperature_c": apple.read_gpu_temperature_c(),
+                    "vram_used_gb": round(vram_used_gb, 2),
+                    "vram_total_gb": round(total_gb, 2),
+                    "vram_utilization_pct": round((vram_used_gb / total_gb) * 100, 1)
+                    if total_gb > 0
+                    else None,
+                    "power_draw_w": apple.read_gpu_power_w(),
+                    "power_limit_w": None,
+                    "power_utilization_pct": None,
+                }
+            ],
+        )
 
     mem = get_gpu_memory_info()
     if device != DeviceType.CPU and mem.get("available"):
-        return [
-            {
-                "available": True,
-                "backend": _backend_label(device),
-                "gpu_utilization_pct": None,
-                "temperature_c": None,
-                "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
-                "vram_total_gb": round(mem.get("total_gb", 0), 2),
-                "vram_utilization_pct": round(mem.get("utilization_pct", 0), 1),
-                "power_draw_w": None,
-                "power_limit_w": None,
-                "power_utilization_pct": None,
-            }
-        ]
+        return _gpu_utilization_payload(
+            device,
+            [
+                {
+                    "available": True,
+                    "backend": _backend_label(device),
+                    "index": mem.get("device", 0),
+                    "visible_ordinal": 0,
+                    "gpu_utilization_pct": None,
+                    "temperature_c": None,
+                    "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
+                    "vram_total_gb": round(mem.get("total_gb", 0), 2),
+                    "vram_utilization_pct": round(mem.get("utilization_pct", 0), 1),
+                    "power_draw_w": None,
+                    "power_limit_w": None,
+                    "power_utilization_pct": None,
+                }
+            ],
+        )
 
-    return [{"available": False, "backend": _backend_label(device)}]
+    return {"available": False, "backend": _backend_label(device), "devices": []}
 
 
 def _apply_unified_memory_correction(
