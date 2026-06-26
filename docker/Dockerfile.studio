@@ -56,6 +56,11 @@ FROM ${BASE_IMAGE}
 # that pins BASE_IMAGE to a digest should pin this too (same UNSLOTH_REF as
 # the base) so the published image is reproducible against a known ref.
 ARG UNSLOTH_STUDIO_REF=main
+# unsloth-zoo ref overlaid into the Studio venv by install.sh --local. The
+# publish workflow resolves ONE zoo ref and passes it to both the base and
+# Studio builds, so the Studio backend runs the same zoo as the base image and
+# the operator-requested ref instead of always tracking main.
+ARG UNSLOTH_STUDIO_ZOO_REF=main
 ARG TARGETARCH
 
 # Services run as root in this revision (the base image is root-only by
@@ -128,6 +133,7 @@ RUN set -eux \
  && git checkout -q FETCH_HEAD \
  && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" \
     UNSLOTH_TORCH_INDEX_FAMILY="${TORCH_FAMILY}" \
+    UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
     UNSLOTH_PYTHON=3.12 \
     bash install.sh --local \
     # Fail loud if the Studio venv torch missed the pinned CUDA family (an
