@@ -43,7 +43,12 @@ def _load_seed_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     return seed_route
 
 
-def _run_upload(seed_route, filename: str, content: bytes, block_id: str = "block"):
+def _run_upload(
+    seed_route,
+    filename: str,
+    content: bytes,
+    block_id: str = "block",
+):
     return asyncio.run(
         seed_route.upload_unstructured_file(_FakeUpload(filename, content), block_id)
     )
@@ -77,7 +82,7 @@ def test_unstructured_upload_names_missing_extractor_dependency(
     monkeypatch.setattr(
         seed_route,
         "_extract_text_from_file",
-        _raise(ModuleNotFoundError(f"No module named {package!r}", name=package)),
+        _raise(ModuleNotFoundError(f"No module named {package!r}", name = package)),
     )
 
     result = _run_upload(seed_route, filename, b"%PDF-1.7")
@@ -107,7 +112,7 @@ def test_unstructured_upload_keeps_txt_path_working(monkeypatch, tmp_path):
         ImportError("cannot import internal symbol"),
         ModuleNotFoundError(
             "No module named 'missing_transitive_pkg'",
-            name="missing_transitive_pkg",
+            name = "missing_transitive_pkg",
         ),
     ],
 )
