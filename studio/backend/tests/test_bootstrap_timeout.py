@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 from auth.bootstrap_timeout import (
     DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS,
+    _format_duration,
     bootstrap_timeout_seconds,
     enforce_bootstrap_password_deadline,
     should_arm_bootstrap_timeout,
@@ -143,3 +144,42 @@ def test_deadline_swallows_shutdown_errors():
         timeout_seconds = 3600,
     )
     assert result is True
+
+
+# ── _format_duration ────────────────────────────────────────────────
+
+
+def test_format_duration_sub_minute_uses_seconds():
+    assert _format_duration(30) == "30 seconds"
+
+
+def test_format_duration_singular_second():
+    assert _format_duration(1) == "1 second"
+
+
+def test_format_duration_exact_minutes():
+    assert _format_duration(60) == "1 minute"
+    assert _format_duration(3600) == "60 minutes"
+
+
+def test_format_duration_minutes_and_seconds():
+    assert _format_duration(90) == "1 minute 30 seconds"
+
+
+def test_shutdown_message_uses_formatted_duration():
+    # The deadline message must reflect the real timeout, not a rounded
+    # "minute(s)" placeholder. Capture the warning via a fake logger.
+    logged = []
+
+    class _Logger:
+        def warning(self, msg, *args):
+            logged.append(msg)
+
+    enforce_bootstrap_password_deadline(
+        _fake_storage(requires_change = True),
+        lambda: None,
+        timeout_seconds = 3600,
+        logger = _Logger(),
+    )
+    assert any("60 minutes" in m for m in logged)
+    assert not any("minute(s)" in m for m in logged)

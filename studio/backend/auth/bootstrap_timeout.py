@@ -74,6 +74,21 @@ def should_arm_bootstrap_timeout(
     return _is_exposed_bind(host, secure)
 
 
+def _format_duration(seconds: int) -> str:
+    """Human-friendly duration for the shutdown message (seconds under a minute)."""
+
+    def _plural(n: int, unit: str) -> str:
+        return f"{n} {unit}{'' if n == 1 else 's'}"
+
+    if seconds < 60:
+        return _plural(seconds, "second")
+    minutes, rem = divmod(seconds, 60)
+    label = _plural(minutes, "minute")
+    if rem:
+        label += f" {_plural(rem, 'second')}"
+    return label
+
+
 def enforce_bootstrap_password_deadline(
     storage,
     trigger_shutdown,
@@ -93,11 +108,10 @@ def enforce_bootstrap_password_deadline(
     if not still_default:
         return False  # password changed in time -> leave Studio running
 
-    minutes = max(1, timeout_seconds // 60)
     message = (
         "\nUnsloth Studio was exposed on the network but its default admin "
-        f"password was not changed within {minutes} minute(s). Shutting down to "
-        "avoid leaving an unsecured public instance running.\n"
+        f"password was not changed within {_format_duration(timeout_seconds)}. "
+        "Shutting down to avoid leaving an unsecured public instance running.\n"
         "Next time, sign in and change the password on first login, or set "
         f"{BOOTSTRAP_TIMEOUT_ENV_VAR}=0 to disable this timeout."
     )
