@@ -427,12 +427,17 @@ function extractTextParts(m: ThreadMessage | undefined): string {
 
 async function generateTitleWithModel(payload: {
   userText: string;
+  assistantText?: string;
 }): Promise<string | null> {
   const params = useChatRuntimeStore.getState().params;
   if (!params.checkpoint) return null;
 
   const user = clip(payload.userText, 256);
-  const parts: string[] = [user];
+  const assistant = clip(payload.assistantText ?? "", 384);
+  const parts: string[] = [`User: ${user}`];
+  if (assistant) {
+    parts.push(`Assistant: ${assistant}`);
+  }
 
   function normalizeTitle(raw: string): string | null {
     let title = raw.split(/\r?\n/, 1)[0] ?? "";
@@ -468,7 +473,7 @@ async function generateTitleWithModel(payload: {
         {
           role: "system",
           content:
-            "Write 1 concise chat title for the user's message. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
+            "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.",
         },
         { role: "user", content: parts.join("\n") },
       ],
@@ -730,8 +735,17 @@ function createStudioDbAdapter(
         return streamTitle(thread.title);
       }
 
-      const firstUser = messages.find((m) => m.role === "user");
+      const firstUserIndex = messages.findIndex((m) => m.role === "user");
+      const firstUser =
+        firstUserIndex === -1 ? undefined : messages[firstUserIndex];
+      const firstAssistant =
+        firstUserIndex === -1
+          ? undefined
+          : messages
+              .slice(firstUserIndex + 1)
+              .find((m) => m.role === "assistant");
       const userText = extractTextParts(firstUser) || defaultTitle;
+      const assistantText = extractTextParts(firstAssistant);
 
       if (!autoTitle) {
         const title = fallbackTitleFromUserText(userText);
@@ -769,6 +783,7 @@ function createStudioDbAdapter(
         const title =
           (await generateTitleWithModel({
             userText,
+            assistantText,
           })) || fallbackTitleFromUserText(userText);
 
         await persistTitle(title);
