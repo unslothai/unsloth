@@ -303,7 +303,9 @@ def job_events(job_id: str):
                     # exception into a terminal {type: error} frame and the UI would
                     # drop a document whose worker is still running. Heartbeat and
                     # retry on the next poll instead.
-                    logger.warning("job_events status read failed for %s; continuing", job_id, exc_info = True)
+                    logger.warning(
+                        "job_events status read failed for %s; continuing", job_id, exc_info = True
+                    )
                     yield {"type": "heartbeat"}
                     continue
                 if row is None or row.get("status") in _TERMINAL_JOB_STATUSES:
