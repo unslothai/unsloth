@@ -138,8 +138,9 @@ class _Pipe:
     def _vae_to(self, *, memory_format):
         self.vae.mem_format = memory_format
 
-    def _compile(self, *, fullgraph, dynamic):
+    def _compile(self, **kwargs):
         self.compiled = True
+        self.compile_kwargs = kwargs
 
     def _fuse(self):
         self.fused = True
@@ -171,6 +172,9 @@ def test_speed_default_channels_last_compile_and_cudnn_benchmark(monkeypatch):
     )
     assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
     assert applied["compiled"] is True and pipe.compiled is True
+    # default compiles with dynamic=True and no autotune mode (fast cold start,
+    # resolution-robust, sidesteps the CUDA-graph crash).
+    assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": True}
     # default also autotunes the VAE convs but does NOT flip TF32 or fuse QKV.
     assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
     assert applied["tf32"] is False and applied["fused_qkv"] is False
@@ -208,6 +212,9 @@ def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     )
     assert applied["tf32"] is True and torch.backends.cuda.matmul.allow_tf32 is True
     assert applied["fused_qkv"] is True and pipe.fused is True
+    # max opts into autotuned kernels (static shapes); CUDA-graph modes are avoided.
+    assert pipe.compile_kwargs["mode"] == "max-autotune-no-cudagraphs"
+    assert pipe.compile_kwargs["dynamic"] is False
 
 
 def test_speed_max_tf32_only_on_cuda(monkeypatch):

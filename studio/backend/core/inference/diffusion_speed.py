@@ -152,9 +152,12 @@ def apply_speed_optims(
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
 
     # Near-lossless and the largest win: regional compile of the repeated denoiser
-    # block, where eligible (now incl. the GGUF transformer).
+    # block, where eligible (now incl. the GGUF transformer). `max` opts into
+    # max-autotune (longer compile, autotuned kernels).
     if compile_eligible(target, is_gguf = is_gguf, family = family):
-        applied["compiled"] = _compile_repeated_blocks(pipe, logger)
+        applied["compiled"] = _compile_repeated_blocks(
+            pipe, logger, max_autotune = mode == SPEED_MAX
+        )
 
     if mode == SPEED_MAX:
         # Near-lossless: TF32 matmul (CUDA only) trades a few mantissa bits for speed.
@@ -178,13 +181,22 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return False
 
 
-def _compile_repeated_blocks(pipe: Any, logger: Any) -> bool:
+def _compile_repeated_blocks(pipe: Any, logger: Any, *, max_autotune: bool = False) -> bool:
     transformer = getattr(pipe, "transformer", None)
     fn = getattr(transformer, "compile_repeated_blocks", None)
     if not callable(fn):
         return False
+    # default: mode="default" + dynamic=True -- fast cold start, robust to resolution
+    # changes (no recompile). max: mode="max-autotune-no-cudagraphs" + dynamic=False --
+    # Triton autotuning for a few % more on GEMM/conv-heavy models, at a much longer
+    # compile and a recompile per new resolution. The CUDA-graph modes (reduce-overhead
+    # / max-autotune) are deliberately NOT used: they crash on the regionally-compiled
+    # block because its static output buffer is overwritten across denoise steps.
+    kwargs: dict[str, Any] = {"fullgraph": True, "dynamic": not max_autotune}
+    if max_autotune:
+        kwargs["mode"] = "max-autotune-no-cudagraphs"
     try:
-        fn(fullgraph = True, dynamic = True)
+        fn(**kwargs)
         return True
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
