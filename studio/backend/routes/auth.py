@@ -83,10 +83,11 @@ _LAST_IP_PRUNE = 0.0
 # dict is saturated. Each shard is a small fixed-capacity dict ``ip -> [count,
 # window_start]``: a per-IP count (so a source is throttled, and cleared on
 # success, by its own failures -- no cross-IP collateral) with hard-bounded
-# memory and O(1) lookups. When a shard is full a one-off spray IP evicts the
-# lowest-count entry (Space-Saving) rather than growing without bound, so a
-# high-cardinality spray can't blow memory/CPU the way a per-failure deque could;
-# a persistent attacker keeps a high count and is never the one evicted.
+# memory and O(1) lookups. When a shard is full a new IP evicts the lowest-count
+# entry (and starts clean, never inheriting its count) rather than growing without
+# bound, so a high-cardinality spray can't blow memory/CPU the way a per-failure
+# deque could; a persistent attacker keeps a high count and is never the one
+# evicted.
 _LOGIN_IP_OVERFLOW_SHARDS = 256
 _LOGIN_IP_OVERFLOW_MAX = 64  # distinct IPs tracked per shard
 _LOGIN_IP_OVERFLOW: list[dict] = [dict() for _ in range(_LOGIN_IP_OVERFLOW_SHARDS)]
@@ -106,12 +107,14 @@ def _overflow_record(ip: str, now: float) -> int:
         else:
             entry[0] += 1
         return entry[0]
-    base = 0
     if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
-        victim = min(shard, key = lambda k: shard[k][0])
-        base = shard.pop(victim)[0]
-    shard[ip] = [base + 1, now]
-    return base + 1
+        # Make room by dropping the lowest-count entry, but the new source starts
+        # clean -- never inherit the evicted IP's failures, or an unrelated source
+        # could be 429'd after one attempt. Worst case under a saturated shard is
+        # that a heavy hitter briefly resets, not that a bystander is blocked.
+        del shard[min(shard, key = lambda k: shard[k][0])]
+    shard[ip] = [1, now]
+    return 1
 
 
 def _overflow_blocked(ip: str, now: float) -> int:

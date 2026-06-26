@@ -348,6 +348,37 @@ class TestBucketKeyAndBlocking:
 
         assert all(len(shard) <= 8 for shard in auth_routes._LOGIN_IP_OVERFLOW)
 
+    def test_overflow_eviction_does_not_inherit_count_onto_new_ip(
+        self, env_no_proxy, monkeypatch
+    ):
+        """Evicting a hot entry to make room must not hand its failure count to the
+        new source; one attempt from an unrelated IP must not 429 it.
+        """
+        from routes import auth as auth_routes
+
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_OVERFLOW_MAX", 2)
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
+        # Force every overflow IP into one shard so we can saturate it.
+        shard0 = auth_routes._LOGIN_IP_OVERFLOW[0]
+        monkeypatch.setattr(auth_routes, "_overflow_shard", lambda _ip: shard0)
+
+        for idx in range(10):
+            auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
+        # Fill the shard (cap 2) with two hot IPs at/over the threshold.
+        for _ in range(5):
+            auth_routes._record_login_failure(("198.51.100.1", "admin"))
+        for _ in range(5):
+            auth_routes._record_login_failure(("198.51.100.2", "admin"))
+        assert len(shard0) == 2
+
+        # A new IP evicts the lowest-count entry; it must start clean, so one
+        # failure leaves it below the threshold and unblocked.
+        new_ip = ("203.0.113.50", "admin")
+        auth_routes._record_login_failure(new_ip)
+        assert auth_routes._login_blocked(new_ip) == 0
+
     def test_successful_login_clears_overflow_throttle(self, env_no_proxy, monkeypatch):
         """A successful login resets the IP's throttle, including overflow, so a
         single later typo is not immediately blocked.
