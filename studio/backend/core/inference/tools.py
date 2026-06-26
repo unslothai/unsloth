@@ -1121,6 +1121,27 @@ def _autoinject_top_k() -> int:
     return _AUTOINJECT_DEFAULT_TOP_K
 
 
+def _thread_whole_doc_enabled(scope: dict) -> bool:
+    """Whether a thread-attached file should be injected in full rather than
+    retrieved top-K. ``rag_scope.whole_doc`` overrides the config default."""
+    override = scope.get("whole_doc")
+    if override is not None:
+        return bool(override)
+    try:
+        from core.rag import config as _rag_config
+    except Exception:  # noqa: BLE001
+        return True
+    return _rag_config.THREAD_WHOLE_DOC
+
+
+def _whole_doc_budget() -> int:
+    try:
+        from core.rag import config as _rag_config
+    except Exception:  # noqa: BLE001
+        return 6000
+    return _rag_config.WHOLE_DOC_MAX_TOKENS
+
+
 def _last_user_text(conversation: list[dict]) -> str:
     """Plain text of the most recent user turn (text parts only)."""
     for msg in reversed(conversation):
@@ -1163,35 +1184,56 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         from storage import rag_db
         if not rag_db.RAG_AVAILABLE:
             return None
-        from core.rag.tool import search_for_autoinject
+        from core.rag.tool import search_for_autoinject, whole_document_context
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
         return None
 
-    floor_override = rag_scope.get("autoinject_min_score")
-    floor = float(floor_override) if floor_override is not None else _autoinject_floor()
-    # Cap at the lean top_k, but honor a lower user setting.
-    lean_k = _autoinject_top_k()
-    sidebar_k = _opt_int(rag_scope.get("default_top_k"))
-    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
-    try:
-        found = search_for_autoinject(
-            query = query,
-            scope_kb_id = rag_scope.get("kb_id"),
-            scope_thread_id = rag_scope.get("thread_id"),
-            scope_project_id = rag_scope.get("project_id"),
-            top_k = top_k,
-            min_dense_score = floor,
-            **_scope_retrieval_kwargs(rag_scope),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("RAG auto-inject retrieval failed: %s", exc)
-        return None
-    if not found:
-        logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
-        return None
+    text: str | None = None
+    sources: list[dict] = []
 
-    text, sources = found
+    # Whole-document mode: a thread-attached file small enough to fit is injected
+    # in full so the model reads everything (summaries, cross-references, etc.).
+    # Oversized files (or no thread doc) fall through to top-K retrieval below.
+    thread_id = rag_scope.get("thread_id")
+    if thread_id and _thread_whole_doc_enabled(rag_scope):
+        try:
+            whole = whole_document_context(
+                scope_thread_id = thread_id,
+                scope_project_id = rag_scope.get("project_id"),
+                max_tokens = _whole_doc_budget(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RAG whole-document context failed: %s", exc)
+            whole = None
+        if whole is not None:
+            text, sources = whole
+            logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
+
+    if text is None:
+        floor_override = rag_scope.get("autoinject_min_score")
+        floor = float(floor_override) if floor_override is not None else _autoinject_floor()
+        # Cap at the lean top_k, but honor a lower user setting.
+        lean_k = _autoinject_top_k()
+        sidebar_k = _opt_int(rag_scope.get("default_top_k"))
+        top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+        try:
+            found = search_for_autoinject(
+                query = query,
+                scope_kb_id = rag_scope.get("kb_id"),
+                scope_thread_id = rag_scope.get("thread_id"),
+                scope_project_id = rag_scope.get("project_id"),
+                top_k = top_k,
+                min_dense_score = floor,
+                **_scope_retrieval_kwargs(rag_scope),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RAG auto-inject retrieval failed: %s", exc)
+            return None
+        if not found:
+            logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
+            return None
+        text, sources = found
     import json as _json
     import uuid as _uuid
 
@@ -1236,7 +1278,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             "content": text,
         },
     ]
-    logger.info("RAG auto-inject: %d passage(s) >= %.2f for %r", len(sources), floor, query[:80])
+    logger.info("RAG auto-inject: %d passage(s) for %r", len(sources), query[:80])
     return {"events": events, "messages": messages}
 
 

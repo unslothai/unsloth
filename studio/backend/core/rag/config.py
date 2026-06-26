@@ -17,6 +17,12 @@ TOP_K_DENSE = int(os.environ.get("RAG_TOP_K_DENSE", "30"))
 TOP_K_HYBRID = int(os.environ.get("RAG_TOP_K_HYBRID", "10"))
 RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
 
+# Whole-document context: a thread-attached file small enough to fit is injected
+# in full (every chunk, in order) instead of top-K retrieval, so the model reads
+# the entire file. Above this token budget, fall back to retrieval.
+THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"
+WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
+
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 
 # Figure captioning via the loaded vision model; off by default since each caption

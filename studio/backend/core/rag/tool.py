@@ -16,7 +16,7 @@ from xml.sax.saxutils import quoteattr
 from storage import rag_db
 
 from . import config, retrieval
-from .store import kb_scope, project_scope, thread_scope
+from .store import all_chunks_for_scope, kb_scope, project_scope, thread_scope
 
 SEARCH_KNOWLEDGE_BASE_TOOL = {
     "type": "function",
@@ -184,6 +184,57 @@ def search_for_autoinject(
         conn.close()
     text, sources = _format(rows, strong)
     return (text, sources) if sources else None
+
+
+def whole_document_context(
+    *,
+    scope_thread_id: str | None = None,
+    scope_project_id: str | None = None,
+    max_tokens: int,
+) -> tuple[str, list[dict]] | None:
+    """Render EVERY chunk of the thread's documents (in order) as the same
+    ``<chunk>`` blocks + citation source-map retrieval produces, so the model
+    reads the entire attached file rather than top-K passages.
+
+    Returns ``None`` (caller falls back to retrieval) when there are no completed
+    chunks or the total exceeds ``max_tokens``. KB scope is never whole-document:
+    a knowledge base is a corpus to search, not a single attachment.
+    """
+    scope = _resolve_scope(None, scope_thread_id, scope_project_id)
+    if scope is None:
+        return None
+    conn = rag_db.get_connection()
+    try:
+        rows = all_chunks_for_scope(conn, scope)
+    finally:
+        conn.close()
+    if not rows:
+        return None
+    total = sum(int(r["token_count"] or 0) for r in rows)
+    if max_tokens > 0 and total > max_tokens:
+        return None
+
+    blocks: list[str] = []
+    sources: list[dict] = []
+    for i, r in enumerate(rows, 1):
+        filename = r["filename"] or "unknown"
+        page = r["page_number"]
+        text = r["text"] or ""
+        src = quoteattr(filename)
+        page_attr = f" page={quoteattr(str(page))}" if page else ""
+        blocks.append(f'<chunk id="{i}" source={src}{page_attr}>\n{text}\n</chunk>')
+        sources.append(
+            {
+                "citationId": i,
+                "chunkId": r["id"],
+                "documentId": r["document_id"],
+                "filename": filename,
+                "page": page,
+                "text": text,
+                "score": None,
+            }
+        )
+    return "\n\n".join(blocks), sources
 
 
 def search_knowledge_base(
