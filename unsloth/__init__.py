@@ -90,6 +90,7 @@ if _IS_MLX:
         from unsloth_zoo.mlx.trainer import (
             MLXTrainer,
             MLXTrainingConfig,
+            _is_vlm_model,
             _normalize_mlx_optimizer_name,
         )
         from unsloth_zoo.mlx.loader import FastMLXModel
@@ -332,7 +333,7 @@ if _IS_MLX:
             "torch_compile",
         )
     )
-    _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset(("warmup_ratio",))
+    _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset(("image_size", "warmup_ratio"))
     _MLX_ALLOWED_EXTRA_ARGUMENTS = _MLX_COMPAT_EXTRA_ARGUMENTS | _MLX_IMPLEMENTED_EXTRA_ARGUMENTS
     _MLX_UNSUPPORTED_TASK_ARGUMENTS = frozenset(
         (
@@ -407,7 +408,13 @@ if _IS_MLX:
         for name in _MLX_UNSUPPORTED_TASK_ARGUMENTS:
             if hasattr(args, name):
                 value = getattr(args, name)
-                if value is not None and value is not False:
+                if (
+                    name == "completion_only_loss"
+                    and value is not None
+                    and name in _MLX_TRAINING_CONFIG_FIELDS
+                ):
+                    values[name] = value
+                elif value is not None and value is not False:
                     values[name] = value
         if _is_mlx_no_save_strategy(values.get("save_strategy", None)):
             values["save_steps"] = 0
@@ -610,7 +617,13 @@ if _IS_MLX:
                     continue
                 value = _normalize_mlx_training_value(target, value)
                 if target in _MLX_UNSUPPORTED_TASK_ARGUMENTS:
-                    if _is_meaningful_mlx_extra_value(value):
+                    if (
+                        target == "completion_only_loss"
+                        and value is not None
+                        and target in _MLX_TRAINING_CONFIG_FIELDS
+                    ):
+                        filtered_kwargs[target] = value
+                    elif _is_meaningful_mlx_extra_value(value):
                         extra_kwargs[key] = value
                     continue
                 if target in _MLX_TRAINING_CONFIG_FIELDS:
@@ -920,8 +933,14 @@ if _IS_MLX:
                     )
                     if isinstance(collator_image_size, list):
                         collator_image_size = tuple(collator_image_size)
+                    if (
+                        isinstance(collator_image_size, str)
+                        and collator_image_size.lower() == "max"
+                    ):
+                        collator_image_size = "max"
                     if "image_size" not in kwargs and (
                         isinstance(collator_image_size, int)
+                        or collator_image_size == "max"
                         or (
                             isinstance(collator_image_size, tuple)
                             and len(collator_image_size) == 2
@@ -944,6 +963,14 @@ if _IS_MLX:
                 trainer_kwargs.get("args"),
                 config_kwargs,
             )
+            if getattr(
+                trainer_kwargs["args"], "completion_only_loss", None
+            ) is True and not _is_vlm_model(trainer_kwargs.get("model")):
+                raise NotImplementedError(
+                    "Unsloth MLX: completion_only_loss=True is only supported "
+                    "for VLM training. For text SFT, call train_on_responses_only "
+                    "after constructing the trainer."
+                )
             trainer_kwargs["args"] = _apply_unsloth_trainer_mlx_defaults(
                 trainer_kwargs["args"],
                 model = trainer_kwargs.get("model"),
@@ -1007,7 +1034,23 @@ if _IS_MLX:
         from unsloth_zoo.dataset_utils import train_on_responses_only as _train_on_responses_only
         return _train_on_responses_only(*args, **kwargs)
 
+    def _safe_mlx_trl_star_exports(_trl):
+        """Return importable TRL star exports plus the MLX SFT shims."""
+        exports = list(getattr(_trl, "__all__", ()))
+        safe_exports = []
+        for name in exports:
+            try:
+                getattr(_trl, name)
+            except Exception:
+                continue
+            safe_exports.append(name)
+        for name in ("SFTConfig", "SFTTrainer"):
+            if name not in safe_exports:
+                safe_exports.append(name)
+        return safe_exports
+
     def _install_mlx_trl_sft_shim():
+        """Install MLX-backed TRL SFT shims without replacing the TRL module."""
         _trl = _sys.modules.get("trl")
         if _trl is None:
             try:
@@ -1022,7 +1065,7 @@ if _IS_MLX:
 
         _trl.SFTTrainer = UnslothTrainer
         _trl.SFTConfig = UnslothTrainingArguments
-        _trl.__all__ = ["SFTConfig", "SFTTrainer"]
+        _trl.__all__ = _safe_mlx_trl_star_exports(_trl)
         _trl.__UNSLOTH_MLX_COMPAT__ = True
 
     def _install_mlx_unsloth_trainer_shim():

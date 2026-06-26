@@ -124,6 +124,7 @@ def test_mlx_training_arguments_do_not_warn_for_implemented_or_falsey_extras():
     assert args.warmup_steps == 2
     assert args.padding_free is False
     assert args.remove_unused_columns is False
+    assert args.completion_only_loss is False
     assert caught == []
 
 
@@ -209,8 +210,9 @@ def test_mlx_training_arguments_reject_unknown_kwargs():
 
     with pytest.raises(NotImplementedError, match = "assistant_only_loss"):
         unsloth.UnslothTrainingArguments(assistant_only_loss = True)
-    with pytest.raises(NotImplementedError, match = "completion_only_loss"):
-        unsloth.UnslothTrainingArguments(completion_only_loss = True)
+
+    completion_args = unsloth.UnslothTrainingArguments(completion_only_loss = True)
+    assert completion_args.completion_only_loss is True
 
 
 def test_mlx_training_arguments_reject_unsupported_object_flags():
@@ -228,8 +230,8 @@ def test_mlx_training_arguments_reject_unsupported_object_flags():
         max_steps = 1
         completion_only_loss = True
 
-    with pytest.raises(NotImplementedError, match = "completion_only_loss"):
-        unsloth._coerce_mlx_training_args(CompletionArgsObject())
+    completion_args = unsloth._coerce_mlx_training_args(CompletionArgsObject())
+    assert completion_args.completion_only_loss is True
 
 
 def test_mlx_training_arguments_accept_output_dir_positional():
@@ -614,6 +616,26 @@ def test_mlx_trainer_preserves_explicit_processor_over_vision_collator():
     assert trainer.tokenizer is tokenizer
 
 
+def test_mlx_trainer_forwards_vision_collator_resize_max():
+    """Vision collator resize=max should stay explicit through MLX args."""
+    unsloth = _import_mlx_unsloth()
+    collator = unsloth.UnslothVisionDataCollator(
+        _DummyModel(),
+        object(),
+        resize = "max",
+    )
+
+    trainer = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = {"max_steps": 1},
+        data_collator = collator,
+    )
+
+    assert trainer.args.image_size == "max"
+
+
 def test_mlx_trainer_rejects_unsafe_unsupported_sft_kwargs():
     """Unsupported kwargs that change training semantics should fail on MLX."""
     unsloth = _import_mlx_unsloth()
@@ -658,6 +680,42 @@ def test_mlx_trainer_rejects_custom_data_collator():
             train_dataset = [],
             data_collator = object(),
         )
+
+
+def test_mlx_trainer_rejects_text_completion_only_loss():
+    """Text MLX training should not silently ignore completion_only_loss=True."""
+    unsloth = _import_mlx_unsloth()
+
+    with pytest.raises(NotImplementedError, match = "completion_only_loss=True"):
+        unsloth.UnslothTrainer(
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = [],
+            args = unsloth.UnslothTrainingArguments(
+                max_steps = 1,
+                completion_only_loss = True,
+            ),
+        )
+
+
+def test_mlx_trainer_allows_vlm_completion_only_loss():
+    """VLM MLX training supports completion_only_loss during collation."""
+    unsloth = _import_mlx_unsloth()
+
+    class VLMModel(_DummyModel):
+        _is_vlm_model = True
+
+    trainer = unsloth.UnslothTrainer(
+        model = VLMModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(
+            max_steps = 1,
+            completion_only_loss = True,
+        ),
+    )
+
+    assert trainer.args.completion_only_loss is True
 
 
 def test_mlx_trainer_accepts_trl_style_positional_args():
@@ -775,6 +833,15 @@ def test_mlx_trl_shim_preserves_existing_trl_module(monkeypatch):
     trl = types.ModuleType("trl")
     trl.__path__ = ["real-trainer-package"]
     trl.existing_marker = object()
+    trl.ExistingExport = object()
+    trl.__all__ = ["ExistingExport", "BrokenExport"]
+
+    def _raise_for_broken_export(name):
+        if name == "BrokenExport":
+            raise RuntimeError("optional dependency missing")
+        raise AttributeError(name)
+
+    trl.__getattr__ = _raise_for_broken_export
     monkeypatch.setitem(sys.modules, "trl", trl)
 
     unsloth._install_mlx_trl_sft_shim()
@@ -784,6 +851,10 @@ def test_mlx_trl_shim_preserves_existing_trl_module(monkeypatch):
     assert trl.SFTTrainer is unsloth.UnslothTrainer
     assert trl.SFTConfig is unsloth.UnslothTrainingArguments
     assert trl.__UNSLOTH_MLX_COMPAT__ is True
+    assert "ExistingExport" in trl.__all__
+    assert "BrokenExport" not in trl.__all__
+    assert "SFTTrainer" in trl.__all__
+    assert "SFTConfig" in trl.__all__
 
 
 def test_mlx_trl_shim_installs_real_trl_or_stub(monkeypatch):
