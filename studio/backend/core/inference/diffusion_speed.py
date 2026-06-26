@@ -155,9 +155,7 @@ def apply_speed_optims(
     # block, where eligible (now incl. the GGUF transformer). `max` opts into
     # max-autotune (longer compile, autotuned kernels).
     if compile_eligible(target, is_gguf = is_gguf, family = family):
-        applied["compiled"] = _compile_repeated_blocks(
-            pipe, logger, max_autotune = mode == SPEED_MAX
-        )
+        applied["compiled"] = _compile_repeated_blocks(pipe, logger, max_autotune = mode == SPEED_MAX)
 
     if mode == SPEED_MAX:
         # Near-lossless: TF32 matmul (CUDA only) trades a few mantissa bits for speed.
@@ -181,7 +179,12 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return False
 
 
-def _compile_repeated_blocks(pipe: Any, logger: Any, *, max_autotune: bool = False) -> bool:
+def _compile_repeated_blocks(
+    pipe: Any,
+    logger: Any,
+    *,
+    max_autotune: bool = False,
+) -> bool:
     transformer = getattr(pipe, "transformer", None)
     fn = getattr(transformer, "compile_repeated_blocks", None)
     if not callable(fn):

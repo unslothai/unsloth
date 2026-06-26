@@ -66,7 +66,6 @@ def resolve_prequant_source(
         return PrequantSource(kind = "path", location = override, filename = None)
     try:
         from .diffusion_families import family_prequant_repo
-
         repo_id = family_prequant_repo(fam, scheme)
     except Exception:  # noqa: BLE001 — a bad family object must not break the load
         repo_id = None
@@ -148,14 +147,10 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
         import os
-
         return source.location if os.path.isfile(source.location) else None
     if source.kind == "repo":
         from huggingface_hub import hf_hub_download
-
-        return hf_hub_download(
-            repo_id = source.location, filename = source.filename, token = hf_token
-        )
+        return hf_hub_download(repo_id = source.location, filename = source.filename, token = hf_token)
     return None
 
 

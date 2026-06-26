@@ -1007,7 +1007,9 @@ def test_transformer_quant_prequant_path_engaged(fake_runtime, tmp_path, monkeyp
     assert _FakeTransformer.last == {}
 
 
-def test_transformer_quant_prequant_load_fails_falls_back_to_dense(fake_runtime, tmp_path, monkeypatch):
+def test_transformer_quant_prequant_load_fails_falls_back_to_dense(
+    fake_runtime, tmp_path, monkeypatch
+):
     # A configured prequant source whose load returns None must fall back to the dense
     # materialise+quantise path (not straight to GGUF), preserving the fast mode.
     from core.inference import diffusion as dmod

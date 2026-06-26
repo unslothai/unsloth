@@ -651,7 +651,9 @@ class DiffusionBackend:
                     logger = logger,
                 )
                 if transformer is not None:
-                    pipe = self._assemble_pipe(pipeline_cls, base, transformer, dtype, hf_token, device)
+                    pipe = self._assemble_pipe(
+                        pipeline_cls, base, transformer, dtype, hf_token, device
+                    )
                     return pipe, scheme
 
         # 2. Fallback: materialise the dense bf16 transformer and quantise it on-device.

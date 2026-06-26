@@ -31,21 +31,29 @@ CKPT = "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research/prequant
 PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed"
 OUT = Path("/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research/prequant_verify_images")
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+logging.basicConfig(level = logging.INFO, format = "%(message)s")
 LOGGER = logging.getLogger("verify_prequant")
 
 
 def _target(dtype):
     import types
-    return types.SimpleNamespace(device="cuda", dtype=dtype)
+    return types.SimpleNamespace(device = "cuda", dtype = dtype)
 
 
 def _gen(pipe, steps, seed, res):
     import torch
-    g = torch.Generator(device="cuda").manual_seed(seed)
-    torch.cuda.synchronize(); t0 = time.time()
-    img = pipe(prompt=PROMPT, width=res, height=res, num_inference_steps=steps,
-               guidance_scale=0.0, generator=g).images[0]
+
+    g = torch.Generator(device = "cuda").manual_seed(seed)
+    torch.cuda.synchronize()
+    t0 = time.time()
+    img = pipe(
+        prompt = PROMPT,
+        width = res,
+        height = res,
+        num_inference_steps = steps,
+        guidance_scale = 0.0,
+        generator = g,
+    ).images[0]
     torch.cuda.synchronize()
     return img, time.time() - t0
 
@@ -53,7 +61,8 @@ def _gen(pipe, steps, seed, res):
 def _lpips(ref, arr):
     try:
         import lpips, torch
-        fn = lpips.LPIPS(net="alex", verbose=False).cuda().eval()
+
+        fn = lpips.LPIPS(net = "alex", verbose = False).cuda().eval()
 
         def t(x):
             return (torch.from_numpy(x).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0).cuda()
@@ -61,7 +70,7 @@ def _lpips(ref, arr):
         with torch.no_grad():
             return float(fn(t(ref), t(arr)).item())
     except Exception as exc:  # noqa: BLE001
-        print(f"  (lpips: {type(exc).__name__})", flush=True)
+        print(f"  (lpips: {type(exc).__name__})", flush = True)
         return None
 
 
@@ -72,53 +81,67 @@ def run(mode, steps, seed, res):
     from core.inference.diffusion_prequant import PrequantSource, load_prequantized_transformer
     from core.inference.diffusion_transformer_quant import quantize_transformer
 
-    OUT.mkdir(parents=True, exist_ok=True)
+    OUT.mkdir(parents = True, exist_ok = True)
     transformer_cls = diffusers.ZImageTransformer2DModel
-    torch.cuda.reset_peak_memory_stats(); torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    torch.cuda.empty_cache()
 
     if mode == "prequant":
-        source = PrequantSource(kind="path", location=CKPT, filename=None)
+        source = PrequantSource(kind = "path", location = CKPT, filename = None)
         transformer = load_prequantized_transformer(
-            transformer_cls, BASE, source, device="cuda", dtype=torch.bfloat16,
-            hf_token=None, scheme="fp8", logger=LOGGER)
+            transformer_cls,
+            BASE,
+            source,
+            device = "cuda",
+            dtype = torch.bfloat16,
+            hf_token = None,
+            scheme = "fp8",
+            logger = LOGGER,
+        )
         if transformer is None:
-            print("prequant load FAILED (returned None)", flush=True)
+            print("prequant load FAILED (returned None)", flush = True)
             return 1
-        pipe = diffusers.ZImagePipeline.from_pretrained(BASE, torch_dtype=torch.bfloat16, transformer=transformer)
+        pipe = diffusers.ZImagePipeline.from_pretrained(
+            BASE, torch_dtype = torch.bfloat16, transformer = transformer
+        )
         pipe.to("cuda")
         load_peak = torch.cuda.max_memory_allocated() / 1e9
         marker = getattr(transformer, "_unsloth_runtime_quant", None)
-        print(f"[prequant] load_gpu_peak={load_peak:.1f} GB  marker={marker}", flush=True)
+        print(f"[prequant] load_gpu_peak={load_peak:.1f} GB  marker={marker}", flush = True)
     else:  # runtime
-        transformer = transformer_cls.from_pretrained(BASE, subfolder="transformer", torch_dtype=torch.bfloat16).to("cuda")
-        pipe = diffusers.ZImagePipeline.from_pretrained(BASE, torch_dtype=torch.bfloat16, transformer=transformer)
+        transformer = transformer_cls.from_pretrained(
+            BASE, subfolder = "transformer", torch_dtype = torch.bfloat16
+        ).to("cuda")
+        pipe = diffusers.ZImagePipeline.from_pretrained(
+            BASE, torch_dtype = torch.bfloat16, transformer = transformer
+        )
         pipe.to("cuda")
-        scheme = quantize_transformer(pipe, _target(torch.bfloat16), mode="fp8", logger=LOGGER)
+        scheme = quantize_transformer(pipe, _target(torch.bfloat16), mode = "fp8", logger = LOGGER)
         load_peak = torch.cuda.max_memory_allocated() / 1e9
-        print(f"[runtime] engaged={scheme}  load_gpu_peak={load_peak:.1f} GB", flush=True)
+        print(f"[runtime] engaged={scheme}  load_gpu_peak={load_peak:.1f} GB", flush = True)
 
     img, dt = _gen(pipe, steps, seed, res)  # warmup
     img, dt = _gen(pipe, steps, seed, res)
     img.save(OUT / f"{mode}.png")
-    print(f"[{mode}] gen={dt:.3f}s saved {mode}.png", flush=True)
+    print(f"[{mode}] gen={dt:.3f}s saved {mode}.png", flush = True)
 
     ref_path = OUT / "runtime.png"
     if mode == "prequant" and ref_path.exists():
         from PIL import Image
         lp = _lpips(np.array(Image.open(ref_path).convert("RGB")), np.array(img))
-        print(f"[prequant] LPIPS_vs_runtime={lp}", flush=True)
+        print(f"[prequant] LPIPS_vs_runtime={lp}", flush = True)
     return 0
 
 
-def main(argv=None) -> int:
+def main(argv = None) -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", choices=["prequant", "runtime"], required=True)
-    p.add_argument("--steps", type=int, default=8)
-    p.add_argument("--res", type=int, default=1024)
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--mode", choices = ["prequant", "runtime"], required = True)
+    p.add_argument("--steps", type = int, default = 8)
+    p.add_argument("--res", type = int, default = 1024)
+    p.add_argument("--seed", type = int, default = 42)
     args = p.parse_args(argv)
     rc = run(args.mode, args.steps, args.seed, args.res)
-    print("VERIFY-PREQUANT-DONE", flush=True)
+    print("VERIFY-PREQUANT-DONE", flush = True)
     return rc
 
 

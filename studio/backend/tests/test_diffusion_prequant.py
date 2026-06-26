@@ -26,7 +26,7 @@ from core.inference.diffusion_prequant import (
 
 
 # ── resolve_prequant_source ──────────────────────────────────────────────────────
-def _fam(prequant_repos=()):
+def _fam(prequant_repos = ()):
     return DiffusionFamily(
         name = "z-image",
         pipeline_class = "ZImagePipeline",
@@ -82,7 +82,12 @@ class _FakeTransformer:
         cls.calls["from_pretrained"] = True
         raise AssertionError("from_pretrained must not be called on the prequant path")
 
-    def load_state_dict(self, sd, strict = True, assign = False):
+    def load_state_dict(
+        self,
+        sd,
+        strict = True,
+        assign = False,
+    ):
         _FakeTransformer.calls["load_state_dict"] = {"strict": strict, "assign": assign}
         self.assigned = sd
 
@@ -97,10 +102,19 @@ class _FakeTransformer:
         return self
 
 
-def _stub_torch_accelerate(monkeypatch, ckpt, *, load_raises=False):
+def _stub_torch_accelerate(
+    monkeypatch,
+    ckpt,
+    *,
+    load_raises = False,
+):
     torch = types.ModuleType("torch")
 
-    def _load(path, weights_only = False, map_location = None):
+    def _load(
+        path,
+        weights_only = False,
+        map_location = None,
+    ):
         if load_raises:
             raise RuntimeError("corrupt checkpoint")
         return ckpt
@@ -113,7 +127,7 @@ def _stub_torch_accelerate(monkeypatch, ckpt, *, load_raises=False):
     monkeypatch.setitem(sys.modules, "accelerate", accelerate)
 
 
-def _good_ckpt(scheme="fp8", base="Tongyi-MAI/Z-Image-Turbo"):
+def _good_ckpt(scheme = "fp8", base = "Tongyi-MAI/Z-Image-Turbo"):
     return {
         "format": PREQUANT_FORMAT,
         "metadata": {"scheme": scheme, "base_model_id": base},
@@ -121,7 +135,15 @@ def _good_ckpt(scheme="fp8", base="Tongyi-MAI/Z-Image-Turbo"):
     }
 
 
-def _load(monkeypatch, tmp_path, ckpt, *, scheme="fp8", load_raises=False, exists=True):
+def _load(
+    monkeypatch,
+    tmp_path,
+    ckpt,
+    *,
+    scheme = "fp8",
+    load_raises = False,
+    exists = True,
+):
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, ckpt, load_raises = load_raises)
     path = tmp_path / "ckpt.pt"
