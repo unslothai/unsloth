@@ -11,6 +11,7 @@ import os
 import queue
 import subprocess
 import sys
+import threading
 import time
 import types
 import unittest
@@ -259,6 +260,42 @@ def test_unsloth_trainer_dispatches_to_mlx_backend(monkeypatch):
     assert trainer.get_training_progress().status_message == "Ready to train"
     assert "core.training.trainer" in sys.modules
     assert sys.modules["core.training.trainer"] is trainer_mod
+
+
+def test_mlx_trainer_load_model_activates_before_model_detection(monkeypatch):
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
+    training_mod = importlib.import_module("core.training.training")
+    import utils.models as model_utils
+
+    order = []
+
+    def fake_activate(self, model_name, hf_token):
+        order.append(("activate", model_name, hf_token))
+
+    def fake_detect_audio_type(model_name, hf_token):
+        order.append(("detect_audio", model_name, hf_token))
+        return None
+
+    def fake_is_vision_model(model_name, hf_token = None):
+        order.append(("detect_vision", model_name, hf_token))
+        return False
+
+    monkeypatch.setattr(
+        training_mod._MLXTrainerAdapter,
+        "_activate_transformers_for_model",
+        fake_activate,
+    )
+    monkeypatch.setattr(model_utils, "detect_audio_type", fake_detect_audio_type)
+    monkeypatch.setattr(model_utils, "is_vision_model", fake_is_vision_model)
+
+    trainer = trainer_mod.UnslothTrainer()
+
+    assert trainer.load_model("mlx-community/Gemma-4-12B", hf_token = "hf_test")
+    assert order == [
+        ("activate", "mlx-community/Gemma-4-12B", "hf_test"),
+        ("detect_audio", "mlx-community/Gemma-4-12B", "hf_test"),
+        ("detect_vision", "mlx-community/Gemma-4-12B", "hf_test"),
+    ]
 
 
 def test_unsloth_trainer_dispatches_to_mlx_from_cli_namespace(monkeypatch):
@@ -523,30 +560,32 @@ def test_mlx_trainer_retries_xet_stall_over_http(monkeypatch):
     assert trainer.load_and_format_dataset("org/dataset") is not None
 
     attempts = []
+    first_proc = {}
 
     class FakeProc:
-        def __init__(self, wait_for_respawn = False):
-            self.wait_for_respawn = wait_for_respawn
+        def __init__(self, alive_until_terminated = False):
+            self.alive_until_terminated = alive_until_terminated
             self.terminated = False
+            self._terminated_event = threading.Event()
 
         def join(self, timeout = None):
-            if not self.wait_for_respawn:
+            if not self.alive_until_terminated:
                 return None
-            deadline = time.time() + 5
-            while time.time() < deadline and not trainer._needs_xet_respawn:
-                time.sleep(0.01)
+            self._terminated_event.wait(timeout = timeout or 5)
 
         def is_alive(self):
-            return True
+            return self.alive_until_terminated and not self.terminated
 
         def terminate(self):
             self.terminated = True
+            self._terminated_event.set()
 
     def fake_start_mlx_worker(config, event_queue, stop_queue):
         attempts.append(dict(config))
         if len(attempts) == 1:
             event_queue.put({"type": "stall", "message": "stalled on xet"})
-            return FakeProc(wait_for_respawn = True)
+            first_proc["proc"] = FakeProc(alive_until_terminated = True)
+            return first_proc["proc"]
         event_queue.put({"type": "complete", "status_message": "done", "output_dir": "/tmp/out"})
         return FakeProc()
 
@@ -559,8 +598,21 @@ def test_mlx_trainer_retries_xet_stall_over_http(monkeypatch):
     assert len(attempts) == 2
     assert attempts[0].get("disable_xet") is False
     assert attempts[1]["disable_xet"] is True
+    assert first_proc["proc"].terminated
     assert progress.is_completed
     assert progress.output_dir == "/tmp/out"
+
+
+def test_mlx_trainer_stop_suppresses_pending_xet_respawn(monkeypatch):
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
+
+    trainer = trainer_mod.UnslothTrainer()
+    trainer._needs_xet_respawn = True
+
+    assert trainer.stop_training(save = False)
+
+    assert trainer.should_stop is True
+    assert trainer._needs_xet_respawn is False
 
 
 def test_training_backend_error_clears_pending_xet_respawn():
@@ -574,6 +626,20 @@ def test_training_backend_error_clears_pending_xet_respawn():
 
     assert backend._needs_xet_respawn is False
     assert backend._progress.error == "load failed"
+
+
+def test_training_backend_stop_suppresses_pending_xet_respawn():
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend()
+    backend._needs_xet_respawn = True
+    backend._stop_queue = queue.Queue()
+
+    assert backend.stop_training(save = False)
+
+    assert backend._should_stop is True
+    assert backend._cancel_requested is True
+    assert backend._needs_xet_respawn is False
 
 
 def test_mlx_trainer_rejects_new_run_while_old_pump_is_alive(monkeypatch):
@@ -713,6 +779,61 @@ def test_mlx_stop_poller_exits_on_worker_complete():
     assert not stop_thread.is_alive()
     assert stop_requested[0] is False
     assert _is_stop_requested() is False
+
+
+def test_mlx_worker_cancel_before_model_setup_skips_model_load(monkeypatch):
+    from core.training import worker
+
+    mlx_pkg = types.ModuleType("mlx")
+    mx_mod = types.ModuleType("mlx.core")
+    mx_mod.metal = SimpleNamespace(is_available = lambda: False)
+    mx_mod.synchronize = lambda: None
+    mlx_pkg.core = mx_mod
+
+    loader_mod = types.ModuleType("unsloth_zoo.mlx.loader")
+    trainer_mod = types.ModuleType("unsloth_zoo.mlx.trainer")
+
+    class FakeFastMLXModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            raise AssertionError("cancelled worker should not load a model")
+
+    loader_mod.FastMLXModel = FakeFastMLXModel
+    trainer_mod.MLXTrainer = object
+    trainer_mod.MLXTrainingConfig = object
+    trainer_mod.train_on_responses_only = lambda trainer, **kwargs: trainer
+
+    monkeypatch.setitem(sys.modules, "mlx", mlx_pkg)
+    monkeypatch.setitem(sys.modules, "mlx.core", mx_mod)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader_mod)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.trainer", trainer_mod)
+    monkeypatch.setattr(
+        worker,
+        "_start_mlx_stop_poller",
+        lambda stop_queue: (
+            [False],
+            [True],
+            [None],
+            lambda: True,
+            SimpleNamespace(is_alive = lambda: False, join = lambda timeout = None: None),
+        ),
+    )
+
+    event_queue = queue.Queue()
+
+    worker._run_mlx_training(
+        event_queue,
+        queue.Queue(),
+        {"model_name": "mlx-community/Gemma-4-12B"},
+    )
+
+    events = []
+    while not event_queue.empty():
+        events.append(event_queue.get_nowait())
+
+    assert events[-1]["type"] == "complete"
+    assert events[-1]["status_message"] == "Training cancelled"
+    assert events[-1]["output_dir"] is None
 
 
 def test_cli_mlx_selector_uses_backend_aware_unsloth_trainer():

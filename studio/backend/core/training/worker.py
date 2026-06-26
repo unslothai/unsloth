@@ -1438,6 +1438,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _start_mlx_stop_poller(stop_queue)
     )
 
+    def _finish_if_stop_requested(output_dir = None, trainer = None):
+        if not _is_stop_requested():
+            return False
+        if not _stop_save[0]:
+            _send("complete", output_dir = None, status_message = "Training cancelled")
+            return True
+        if trainer is not None and output_dir:
+            _send("status", status_message = "Saving stopped model...")
+            mx.synchronize()
+            trainer.save_model(output_dir)
+            _send("complete", output_dir = output_dir, status_message = "Training stopped")
+            return True
+        _send("complete", output_dir = None, status_message = "Training stopped")
+        return True
+
     _send("status", status_message = "Loading MLX libraries...")
 
     import mlx.core as mx
@@ -1456,6 +1471,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             "install.sh on Apple Silicon."
         ) from e
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
+
+    if _finish_if_stop_requested():
+        return
 
     if mx.metal.is_available():
         info = mx.device_info()
@@ -1486,6 +1504,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
     lr_scheduler_type = _normalize_mlx_studio_scheduler(config.get("lr_scheduler_type", "linear"))
+
+    if _finish_if_stop_requested():
+        return
 
     # ── 1. Load model ──
     # Force text-only for non-image datasets even on vision-capable models
@@ -1539,6 +1560,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             return
 
+    if _finish_if_stop_requested():
+        return
+
     # Consent gate (MLX): the CUDA path gates in run_training_process, but MLX returns
     # before that, so scan auto_map code here before FastMLXModel runs it. Block
     # CRITICAL/HIGH unless pinned-approved; for a LoRA, gate the base whose code runs.
@@ -1580,6 +1604,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     from utils.hf_xet_fallback import start_watchdog
 
+    if _finish_if_stop_requested():
+        return
+
     _send("model_load_started")
     _load_watchdog_stop = start_watchdog(
         repo_ids = [model_name],
@@ -1603,6 +1630,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
     vision_image_size = config.get("vision_image_size")
+
+    if _finish_if_stop_requested():
+        return
+
     # DeepSeek OCR uses a coupled preset tuple; skip resize like the Torch path.
     _model_name_lower = str(config.get("model_name", "")).lower()
     _is_deepseek_ocr = "deepseek" in _model_name_lower and "ocr" in _model_name_lower
@@ -1667,6 +1698,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             peft_kwargs["finetune_vision_layers"] = finetune_vision
         model = FastMLXModel.get_peft_model(model, **peft_kwargs)
 
+    if _finish_if_stop_requested():
+        return
+
     # ── 3. Load dataset ──
     _send("status", status_message = "Loading dataset...")
     hf_dataset = config.get("hf_dataset", "")
@@ -1730,6 +1764,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         raise ValueError("No dataset specified")
 
+    if _finish_if_stop_requested():
+        return
+
     # Eval dataset (separate split or local file)
     eval_dataset = None
     if eval_split and hf_dataset:
@@ -1743,6 +1780,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             eval_dataset = None
     elif config.get("local_eval_datasets"):
         eval_dataset = _load_local(config["local_eval_datasets"])
+
+    if _finish_if_stop_requested():
+        return
 
     # ── 3b. Format dataset (VLM or text) ──
     # Reuse the GPU format pipeline for VLM (auto-detects OCR/caption/llava/
@@ -1829,6 +1869,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
+    if _finish_if_stop_requested():
+        return
+
     # ── 4. Resolve training steps ──
     max_steps = config.get("max_steps", 0) or 0
     num_epochs = config.get("num_epochs", 3)
@@ -1858,6 +1901,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     output_dir = _resolve_mlx_output_dir(config, model_name)
     ensure_dir(Path(output_dir))
+
+    if _finish_if_stop_requested():
+        return
 
     # ── 6. Create trainer ──
     # Studio sometimes sends fraction-of-total-steps.
@@ -1938,6 +1984,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if _stop_requested[0]:
         trainer.stop_requested = True
 
+    if _finish_if_stop_requested(output_dir, trainer):
+        return
+
     # Tell the parent eval is configured so the frontend shows the eval chart
     if eval_dataset is not None and eval_steps_val > 0:
         _send("eval_configured")
@@ -1966,6 +2015,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
         except Exception as e:
             _send("status", status_message = f"train_on_completions failed: {e}")
+
+    if _finish_if_stop_requested(output_dir, trainer):
+        return
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
@@ -2006,8 +2058,24 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 status_message = "tensorboard unavailable (install tensorboardX)",
             )
 
+    def _close_tracking_loggers():
+        if tb_writer is not None:
+            try:
+                tb_writer.close()
+            except Exception:
+                pass
+        if wandb_run is not None:
+            try:
+                wandb_run.finish()
+            except Exception:
+                pass
+
     # ── 9. Real-time progress callback ──
     _send("status", status_message = f"Training {model_name}...")
+
+    if _finish_if_stop_requested(output_dir, trainer):
+        _close_tracking_loggers()
+        return
 
     def _on_step(
         step,
@@ -2110,16 +2178,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model(output_dir)
         _send("complete", output_dir = output_dir, status_message = "Training completed")
 
-    if tb_writer is not None:
-        try:
-            tb_writer.close()
-        except Exception:
-            pass
-    if wandb_run is not None:
-        try:
-            wandb_run.finish()
-        except Exception:
-            pass
+    _close_tracking_loggers()
 
 
 def _is_current_process_apple_silicon() -> bool:

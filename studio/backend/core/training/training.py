@@ -649,6 +649,8 @@ class _MLXTrainerAdapter:
                 self._needs_xet_respawn = False
                 current_config = {**current_config, "disable_xet": True}
                 continue
+            if self.should_stop:
+                self._needs_xet_respawn = False
             return
 
     def _run_mlx_worker(
@@ -751,6 +753,12 @@ class _MLXTrainerAdapter:
             self.is_training = False
             return
         if etype == "stall":
+            if self.should_stop:
+                self._needs_xet_respawn = False
+                proc = self._worker_process
+                if proc is not None and proc.is_alive():
+                    proc.terminate()
+                return
             if not self._xet_fallback_used:
                 self._xet_fallback_used = True
                 self._needs_xet_respawn = True
@@ -778,6 +786,7 @@ class _MLXTrainerAdapter:
     def stop_training(self, save: bool = True):
         self.should_stop = True
         self.save_on_stop = bool(save)
+        self._needs_xet_respawn = False
         if self._stop_queue is not None:
             self._stop_queue.put({"type": "stop", "save": save})
         proc = self._worker_process
@@ -1031,6 +1040,7 @@ class TrainingBackend:
         if not save:
             self._cancel_requested = True
         with self._lock:
+            self._needs_xet_respawn = False
             if self._stop_queue is not None:
                 try:
                     self._stop_queue.put({"type": "stop", "save": save})
@@ -1045,6 +1055,7 @@ class TrainingBackend:
     def force_terminate(self) -> None:
         """Force-kill the training subprocess so state can be reset immediately."""
         with self._lock:
+            self._needs_xet_respawn = False
             if self._proc is not None and self._proc.is_alive():
                 logger.info("Force-terminating training subprocess (pid=%s)", self._proc.pid)
                 self._proc.terminate()
@@ -1080,7 +1091,8 @@ class TrainingBackend:
         """
         msg = event.get("message", "Download stalled")
         with self._lock:
-            recover = self._in_model_load and not self._xet_fallback_used
+            stopping = self._should_stop
+            recover = self._in_model_load and not self._xet_fallback_used and not stopping
             proc = self._proc
             if recover:
                 self._xet_fallback_used = True
@@ -1088,19 +1100,25 @@ class TrainingBackend:
                 self._progress.status_message = (
                     "Model download stalled on Xet; retrying over HTTP..."
                 )
+            elif stopping:
+                self._needs_xet_respawn = False
             else:
                 self._progress.error = self._progress.error or (
                     "Model download stalled even over HTTP -- check your network connection"
                 )
         if recover:
             logger.warning("Training model-load stalled on Xet; respawning over HTTP: %s", msg)
+        elif stopping:
+            logger.info(
+                "Training model-load stalled after stop request; terminating worker: %s", msg
+            )
         else:
             logger.error("Training download stalled with no further fallback: %s", msg)
         # Terminate either way so the pump loop proceeds (respawn or finalize).
         if proc is not None and proc.is_alive():
             proc.terminate()
 
-    def _respawn_worker_disable_xet(self) -> None:
+    def _respawn_worker_disable_xet(self) -> bool:
         """Respawn the worker once with HF_HUB_DISABLE_XET=1 after a model-load
         stall. Runs on the exiting pump thread, reaps the terminated worker, and
         starts a fresh worker + pump. DB/progress run-state is preserved so the
@@ -1109,15 +1127,23 @@ class TrainingBackend:
         config = self._last_full_config
         if config is None:
             logger.error("Cannot respawn training worker: no stored config")
-            return
+            return False
 
         with self._lock:
             old_proc = self._proc
+            if self._should_stop:
+                self._needs_xet_respawn = False
+                return False
         if old_proc is not None:
             old_proc.join(timeout = 5.0)
             if old_proc.is_alive():
                 old_proc.kill()
                 old_proc.join(timeout = 2.0)
+
+        with self._lock:
+            if self._should_stop:
+                self._needs_xet_respawn = False
+                return False
 
         config = {**config, "disable_xet": True}
         self._last_full_config = config
@@ -1156,19 +1182,33 @@ class TrainingBackend:
                 status = "error",
                 error_message = "Failed to recover stalled model download",
             )
-            return
+            return True
 
         logger.info("Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid)
         new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+        cancel_new_proc = False
         with self._lock:
-            self._in_model_load = False
-            self._event_queue = event_queue
-            self._stop_queue = stop_queue
-            self._proc = new_proc
-            self._pump_thread = new_pump
-            # Start under the lock so _ensure_pump_alive can never observe the
-            # new pump as a not-yet-started (dead) thread and spawn a duplicate.
-            new_pump.start()
+            if self._should_stop:
+                self._needs_xet_respawn = False
+                cancel_new_proc = True
+            else:
+                self._in_model_load = False
+                self._event_queue = event_queue
+                self._stop_queue = stop_queue
+                self._proc = new_proc
+                self._pump_thread = new_pump
+                # Start under the lock so _ensure_pump_alive can never observe the
+                # new pump as a not-yet-started (dead) thread and spawn a duplicate.
+                new_pump.start()
+        if cancel_new_proc:
+            if new_proc.is_alive():
+                new_proc.terminate()
+            new_proc.join(timeout = 5.0)
+            if new_proc.is_alive():
+                new_proc.kill()
+                new_proc.join(timeout = 2.0)
+            return False
+        return True
 
     def _ensure_pump_alive(self) -> bool:
         """Restart the event pump if it crashed, even after the worker exited.
@@ -1358,10 +1398,12 @@ class TrainingBackend:
                 # Model-load stall: respawn over HTTP instead of finalizing as failure.
                 # Starts a fresh pump on this thread (no self-join); it takes over
                 # _pump_running, so this exit leaves the flag set.
-                if self._needs_xet_respawn:
+                if self._needs_xet_respawn and not self._should_stop:
                     self._needs_xet_respawn = False
-                    self._respawn_worker_disable_xet()
-                    return
+                    if self._respawn_worker_disable_xet():
+                        return
+                elif self._needs_xet_respawn:
+                    self._needs_xet_respawn = False
 
                 # Mark done if no explicit complete/error was received.
                 with self._lock:
