@@ -174,10 +174,22 @@ def test_connect_claude_no_launch(fake_studio):
     # Attribution header is suppressed for the session via env + --settings, never
     # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
+    # Auto-compact window is sized to the loaded model's real context length so the
+    # session compacts before it overflows the local server's (much smaller) window.
+    _assert_env_set(result.output, "CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(MODEL["context_length"]))
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
     # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
     assert "--settings" in result.output
     assert ".claude/settings.json" not in result.output
+
+
+def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):
+    # A model that doesn't report a context length -> leave Claude's default window
+    # rather than guessing one.
+    monkeypatch.setattr(start, "_resolve_model", lambda *a, **k: {"id": "local-model"})
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in result.output
 
 
 def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypatch):

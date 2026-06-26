@@ -726,6 +726,15 @@ def claude(
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
     }
+    # Claude Code auto-compacts against its native (~600k token) window; a local
+    # model's context is usually far smaller, so size the window to the loaded
+    # model's real context length. Otherwise the conversation overflows the
+    # server's window (silent truncation) long before Claude decides to compact.
+    # codex/openclaw get the same value through their config (model_context_window
+    # / contextWindow); Claude has no config file, so it rides on the env var.
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if window:
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
     command = ["claude", "--model", model_id, *_claude_flags(), *ctx.args]
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"
