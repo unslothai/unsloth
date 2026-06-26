@@ -21,6 +21,7 @@ def _source_until(src: str, anchor: str, end_anchor: str) -> str:
 
 
 def _balanced_block(src: str, anchor: str) -> str:
+    # Brace-counting only; assumes no unbalanced braces in strings, regexes, or comments.
     start = src.find(anchor)
     assert start != -1, f"anchor {anchor!r} not found"
     body_start = src.find("{", start)
@@ -73,8 +74,7 @@ def test_generate_title_passes_first_assistant_reply_after_first_user():
     )
 
     assert 'const firstUserIndex = messages.findIndex((m) => m.role === "user");' in block
-    assert ".slice(firstUserIndex + 1)" in block
-    assert '.find((m) => m.role === "assistant")' in block
+    assert '.find((m, i) => m.role === "assistant" && i > firstUserIndex)' in block
     assert "const assistantText = extractTextParts(firstAssistant);" in block
     assert "generateTitleWithModel({" in block
     assert "userText," in block

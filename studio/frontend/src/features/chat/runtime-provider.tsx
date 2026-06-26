@@ -445,18 +445,13 @@ async function generateTitleWithModel(payload: {
     title = title.replace(/[^\x20-\x7E]+/g, " ");
     title = title.replace(/["'`]+/g, "");
 
-    // Model echo fail-safe. Check before punctuation stripping erases ":".
-    if (/^\s*(user|assistant)\s*:/i.test(title)) {
+    // Echo fail-safe: reject leading role labels before punctuation strips the ":".
+    if (/^\s*(user|assistant|base|lora)\s*:/i.test(title)) {
       return null;
     }
 
     title = title.replace(/[.!?:;,]+/g, " ");
     title = title.replace(/\s+/g, " ").trim();
-
-    // Model echo fail-safe.
-    if (/\b(user|base|lora|assistant)\s*:/i.test(title)) {
-      return null;
-    }
 
     const words = title.split(" ").filter(Boolean).slice(0, 6);
     const joined = words.join(" ").trim();
@@ -747,9 +742,7 @@ function createStudioDbAdapter(
       const firstAssistant =
         firstUserIndex === -1
           ? undefined
-          : messages
-              .slice(firstUserIndex + 1)
-              .find((m) => m.role === "assistant");
+          : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
       const userText = extractTextParts(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
 
