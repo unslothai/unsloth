@@ -186,6 +186,30 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertEqual(result, {"available": False, "backend": "cpu", "devices": []})
 
+    def test_gpu_utilization_mlx_stays_available_without_agx_stats(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.MLX),
+            patch("utils.hardware.hardware._read_apple_gpu_stats", return_value = {}),
+            patch(
+                "psutil.virtual_memory",
+                return_value = SimpleNamespace(total = 64 * 1024**3),
+            ),
+            patch(
+                "core.training.get_training_backend",
+                return_value = SimpleNamespace(_progress = None),
+            ),
+            patch("utils.hardware.apple.read_gpu_temperature_c", return_value = None),
+            patch("utils.hardware.apple.read_gpu_power_w", return_value = None),
+        ):
+            result = get_gpu_utilization()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["backend"], "mlx")
+        self.assertIsNone(result["gpu_utilization_pct"])
+        self.assertEqual(result["vram_used_gb"], 0)
+        self.assertEqual(result["vram_total_gb"], 64.0)
+        self.assertEqual(len(result["devices"]), 1)
+
     def test_gpu_utilization_xpu_uses_visible_devices(self):
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU),

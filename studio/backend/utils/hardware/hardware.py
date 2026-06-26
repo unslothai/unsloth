@@ -872,9 +872,6 @@ def get_gpu_utilization() -> Dict[str, Any]:
             logger.error(f"Error getting MLX GPU utilization: {e}")
             return {"available": False, "backend": device.value, "devices": [], "error": str(e)}
 
-        if not agx:
-            return {"available": False, "backend": device.value, "devices": []}
-
         allocated_bytes = agx.get("vram_used_bytes", 0) or 0
         vram_used_gb = allocated_bytes / (1024**3)
         total_gb = total_bytes / (1024**3)
