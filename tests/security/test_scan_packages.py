@@ -506,6 +506,24 @@ def test_extract_evidence_overflow_digest_is_line_shift_stable():
     assert sha(e_a) != sha(e_chg)  # a real change in the overflow region reopens
 
 
+def test_extract_evidence_overflow_is_streamed_and_bounded():
+    # Past the display cap the evidence streams overflow spans into one digest
+    # instead of materializing a rendered span per match, so a file with far more
+    # matches than the cap yields a bounded string (at most cap spans plus the
+    # "(+N more)" digest line) while N counts every overflow match and a change to
+    # an over-cap match still reopens.
+    n = sp._MAX_EVIDENCE_SPANS
+    src = "\n".join(f"requests.get('http://a/p{i}')" for i in range(n + 500))
+    ev = sp._extract_evidence(src, sp.RE_NETWORK)
+    assert ev.count(" sha256:") == 1  # only the overflow digest, no per-span digests
+    assert "(+500 more)" in ev  # every match past the cap is counted
+    # bounded: exactly cap rendered spans plus the single "(+N more)" marker
+    assert len(ev.split(" | ")) == n + 1
+    sha = lambda e: re.search(r"more\) sha256:([0-9a-f]+)", e).group(1)
+    chg = sp._extract_evidence(src.replace(f"a/p{n + 200}'", "a/pEVIL'"), sp.RE_NETWORK)
+    assert sha(ev) != sha(chg)  # an over-cap payload change reopens
+
+
 def test_extract_evidence_fallback_line_numbers_are_correct():
     # The DOTALL fallback maps match offsets to line numbers via precomputed
     # newline offsets (bisect, not a quadratic content.count per match); guard that

