@@ -1095,7 +1095,10 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
     if port and port > 0:
-        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        _direct_host = _resolve_external_ip() if host in ("0.0.0.0", "::") else host
+        # Bracket IPv6 literals so the URL is valid (http://[2405:...]:port).
+        if ":" in _direct_host and not _direct_host.startswith("["):
+            _direct_host = f"[{_direct_host}]"
         app.state.server_url = f"http://{_direct_host}:{port}"
     else:
         app.state.server_url = None
@@ -1195,6 +1198,43 @@ def run_server(
         )
         _graceful_shutdown(_server)
         sys.exit(1)
+
+    # Time-box a freshly-exposed web UI: if nobody changes the seeded admin
+    # password within the deadline (default 1h), shut down rather than leave an
+    # unsecured public instance running. No-op for loopback, --api-only, Colab,
+    # an already-changed password, or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0.
+    try:
+        from auth import storage as _auth_storage
+        from auth.bootstrap_timeout import (
+            arm_bootstrap_timeout,
+            bootstrap_timeout_seconds,
+            should_arm_bootstrap_timeout,
+        )
+
+        _bootstrap_timeout = bootstrap_timeout_seconds()
+        if should_arm_bootstrap_timeout(
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            frontend_served = bool(frontend_path) and not api_only,
+            is_colab = _IS_COLAB,
+            requires_change = _auth_storage.requires_password_change(
+                _auth_storage.DEFAULT_ADMIN_USERNAME
+            ),
+            timeout_seconds = _bootstrap_timeout,
+        ):
+            arm_bootstrap_timeout(
+                _auth_storage,
+                _trigger_shutdown,
+                timeout_seconds = _bootstrap_timeout,
+                logger = logger,
+            )
+            logger.info(
+                "Studio will shut down in %ds unless the default admin password is changed.",
+                _bootstrap_timeout,
+            )
+    except Exception as e:  # best-effort: never block startup on the timeout
+        logger.warning("Bootstrap timeout not armed: %s", e)
 
     if not silent:
         _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)

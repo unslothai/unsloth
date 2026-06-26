@@ -44,7 +44,12 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
+import {
+  shouldUseCustomWindowTitlebar,
+  shouldUseNativeMacWindowTitlebar,
+} from "@/components/tauri/window-titlebar";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
@@ -126,7 +131,7 @@ import {
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
-import { useEffect, useState, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
@@ -272,6 +277,8 @@ function devForceUpdateCard(): boolean {
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
+  const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
+  const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -298,6 +305,9 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  // When Train/Export are greyed out (chat-only host), explain why on hover
+  // instead of disabling them silently. mlx_unavailable is the common macOS case
+  // after a reinstall/update dropped MLX and is recoverable via `unsloth studio update`.
   const trainExportDisabledHint: string | undefined = !chatOnly
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
@@ -307,6 +317,7 @@ export function AppSidebar() {
         : chatOnlyReason === "no_gpu"
           ? "Training needs an NVIDIA or AMD GPU."
           : undefined;
+
   // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX in the
   // background and flip chat_only false without a restart. The platform store
   // cached the initial /api/health, so re-poll while we are chat-only for the
@@ -403,9 +414,9 @@ export function AppSidebar() {
   });
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
-    (search.compare as string | undefined) ??
-    storeThreadId ??
-    undefined
+      (search.compare as string | undefined) ??
+      storeThreadId ??
+      undefined
     : undefined;
 
   // Training runs: surfaced as sidebar "Recents" on Train, Recipes, and Export,
@@ -450,8 +461,13 @@ export function AppSidebar() {
     chatOpen,
     trainOpen,
     runsOpen,
+    pinnedOpen,
     isStudioRoute,
   ]);
+
+  const chatDisabled = trainingInProgress;
+  const showSidebarBrand = !usesCustomTitlebar;
+  const showCompactMacBrand = showSidebarBrand && usesNativeMacTitlebar;
 
   function chatSearchForProject(projectId: string | null) {
     if (projectId) {
@@ -567,9 +583,9 @@ export function AppSidebar() {
       ? renameTrimmed.length > 0 && renameTrimmed !== renamingTarget.current
       : renamingTarget.kind === "project"
         ? renameTrimmed.length > 0 && renameTrimmed !== renamingTarget.current
-        : renameTrimmed.length > 0
-          ? renameTrimmed !== renamingTarget.current
-          : renamingTarget.run.display_name != null);
+      : renameTrimmed.length > 0
+        ? renameTrimmed !== renamingTarget.current
+        : renamingTarget.run.display_name != null);
 
   function openRenameChat(item: SidebarItem) {
     setRenameDraft(item.title);
@@ -763,10 +779,10 @@ export function AppSidebar() {
         ? "group-hover/project-chat-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-6"
         : isPinned
           ? // Pinned rows show an extra unpin button on hover, so reserve more room
-          // (pr-8 when the menu is open keeps the unpin button clear of the title).
-          "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
+            // (pr-8 when the menu is open keeps the unpin button clear of the title).
+            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
           : // Hover room for the kebab only; title keeps one more character.
-          "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6",
+            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6",
     );
 
     const isRenamingThis =
@@ -809,13 +825,13 @@ export function AppSidebar() {
               search:
                 item.type === "single"
                   ? {
-                    thread: item.id,
-                    ...(item.projectId ? { project: item.projectId } : {}),
-                  }
+                      thread: item.id,
+                      ...(item.projectId ? { project: item.projectId } : {}),
+                    }
                   : {
-                    compare: item.id,
-                    ...(item.projectId ? { project: item.projectId } : {}),
-                  },
+                      compare: item.id,
+                      ...(item.projectId ? { project: item.projectId } : {}),
+                    },
             });
             closeMobileIfOpen();
           }}
@@ -973,554 +989,611 @@ export function AppSidebar() {
 
   return (
     <>
-      <Sidebar
-        collapsible="icon"
-        variant="sidebar"
-        className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
+    <Sidebar
+      collapsible="icon"
+      variant="sidebar"
+      className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
+    >
+      <SidebarHeader
+        className={cn(
+          "relative",
+          showSidebarBrand
+            ? showCompactMacBrand
+              ? "h-[var(--studio-chat-header-height,48px)] pl-[calc(var(--studio-mac-traffic-light-inset,78px)+6px)] pr-2 pt-[var(--studio-chat-header-padding-top,9px)] pb-0 group-data-[collapsible=icon]:h-[calc(var(--studio-mac-titlebar-height,34px)+var(--studio-chat-control-height,33px)+8px)] group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)]"
+              : "pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0"
+            : "h-[var(--studio-custom-titlebar-height,34px)] shrink-0 p-0",
+        )}
       >
-        <SidebarHeader className="pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0">
-          {/* Expanded: compact logo + close toggle */}
-          <div className="flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden">
-            <Link
-              to="/chat"
-              onClick={(event) => {
-                event.preventDefault();
+        {showSidebarBrand && (
+          <>
+            {usesNativeMacTitlebar && (
+              <div
+                data-tauri-drag-region
+                aria-hidden="true"
+                className="absolute inset-x-0 top-0 z-0 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+              />
+            )}
+            <div
+              className={cn(
+                "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
+                showCompactMacBrand &&
+                  "h-[var(--studio-chat-control-height,33px)] justify-end gap-2",
+                !showCompactMacBrand && "justify-between",
+              )}
+            >
+              {!showCompactMacBrand && (
+                <Link
+                  to="/chat"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (chatDisabled) return;
+                    openNewChat(null);
+                  }}
+                  className={cn(
+                    "flex items-center gap-[6px] select-none transition-opacity",
+                    chatDisabled && "pointer-events-none opacity-50",
+                  )}
+                  aria-label={t("shell.aria.home")}
+                  aria-disabled={chatDisabled}
+                  tabIndex={chatDisabled ? -1 : undefined}
+                >
+                  <img
+                    src="/circle-logo-small.png"
+                    alt="Unsloth"
+                    className="h-[34px] w-[34px] rounded-full object-cover"
+                  />
+                  <span className="font-heading text-[21px] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
+                    unsloth
+                  </span>
+                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                    {t("shell.beta")}
+                  </span>
+                </Link>
+              )}
+              {!isMobile && (
+                <Tooltip>
+                  <TooltipPrimitive.Trigger asChild>
+                    <button
+                      type="button"
+                      onClick={togglePinned}
+                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={t("shell.aria.closeSidebar")}
+                    >
+                      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                    </button>
+                  </TooltipPrimitive.Trigger>
+                  <TooltipContent
+                    side="bottom"
+                    sideOffset={6}
+                    className="tooltip-compact"
+                  >
+                    {t("shell.aria.closeSidebar")}
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </div>
+            {!isMobile && (
+              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
+                <Tooltip>
+                  <TooltipPrimitive.Trigger asChild>
+                    <button
+                      type="button"
+                      onClick={togglePinned}
+                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={t("shell.aria.openSidebar")}
+                    >
+                      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                    </button>
+                  </TooltipPrimitive.Trigger>
+                  <TooltipContent
+                    side="right"
+                    sideOffset={8}
+                    className="tooltip-compact"
+                  >
+                    {t("shell.aria.openSidebar")}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            )}
+          </>
+        )}
+      </SidebarHeader>
+
+      {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
+      <SidebarGroup
+        className={cn(
+          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pb-px shrink-0",
+          showCompactMacBrand ? "pt-0" : "pt-[9px]",
+        )}
+      >
+        <SidebarGroupContent>
+          <SidebarMenu>
+            <NavItem
+              icon={PencilEdit02Icon}
+              label={
+                showReturnToChat
+                  ? t("shell.navigation.returnToChat")
+                  : t("shell.navigation.newChat")
+              }
+              active={
+                isChatRoute &&
+                !search.thread &&
+                !search.compare &&
+                !search.project
+              }
+              onClick={() => {
+                if (showReturnToChat) {
+                  // Prefer the running thread so we return to the live generation,
+                  // not the empty new chat that became active after New Chat.
+                  if (runningThreadId && runningThreadId !== storeThreadId) {
+                    navigate({ to: "/chat", search: { thread: runningThreadId } });
+                  } else {
+                    navigate({ to: "/chat" });
+                  }
+                  closeMobileIfOpen();
+                  return;
+                }
                 openNewChat(null);
               }}
-              className="flex items-center gap-[6px] select-none"
-              aria-label={t("shell.aria.home")}
-            >
-              <img
-                src="/circle-logo-small.png"
-                alt="Unsloth"
-                className="h-[34px] w-[34px] rounded-full object-cover"
-              />
-              <span className="font-heading text-[21px] font-semibold tracking-[0em] dark:tracking-[0.02em] leading-none text-black dark:text-white">
-                unsloth
-              </span>
-              <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
-                {t("shell.beta")}
-              </span>
-            </Link>
-            {!isMobile && (
-              <Tooltip>
-                <TooltipPrimitive.Trigger asChild>
-                  <button
-                    type="button"
-                    onClick={togglePinned}
-                    className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label={t("shell.aria.closeSidebar")}
-                  >
-                    <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
-                  </button>
-                </TooltipPrimitive.Trigger>
-                <TooltipContent
-                  side="bottom"
-                  sideOffset={6}
-                  className="tooltip-compact"
-                >
-                  {t("shell.aria.closeSidebar")}
-                </TooltipContent>
-              </Tooltip>
-            )}
-          </div>
+            />
+            <NavItem
+              icon={Search01Icon}
+              label={t("shell.navigation.search")}
+              active={false}
+              onClick={() => {
+                useChatSearchStore.getState().open();
+                closeMobileIfOpen();
+              }}
+            />
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
 
-          {/* Collapsed: panel icon doubles as expand trigger */}
-          {!isMobile && (
-            <div className="hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
-              <Tooltip>
-                <TooltipPrimitive.Trigger asChild>
-                  <button
-                    type="button"
-                    onClick={togglePinned}
-                    className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label={t("shell.aria.openSidebar")}
-                  >
-                    <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
-                  </button>
-                </TooltipPrimitive.Trigger>
-                <TooltipContent
-                  side="right"
-                  sideOffset={8}
-                  className="tooltip-compact"
-                >
-                  {t("shell.aria.openSidebar")}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          )}
-        </SidebarHeader>
-
-        {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
-        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pt-[9px] pb-px shrink-0">
+      <SidebarContent
+        ref={scrollRef}
+        onScroll={(e) => syncScrollState(e.currentTarget)}
+        // Collapsible groups animate their height; re-measure the fade once the
+        // open/close animation settles, not on the (still-animating) state flip.
+        onAnimationEnd={(e) => {
+          if (
+            e.animationName === "collapsible-down" ||
+            e.animationName === "collapsible-up"
+          ) {
+            syncScrollState(e.currentTarget);
+          }
+        }}
+        className={cn(
+          // pb-2 keeps the last row's rounded highlight clear of the
+          // overflow clip edge so its bottom corners aren't shaved off.
+          "sidebar-scroll-fade gap-0 overflow-y-auto overscroll-contain min-h-0 pb-2",
+          scrolled && "is-scrolled",
+        )}
+      >
+        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 py-0 shrink-0">
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
-                icon={PencilEdit02Icon}
-                label={
-                  showReturnToChat
-                    ? t("shell.navigation.returnToChat")
-                    : t("shell.navigation.newChat")
-                }
+                icon={Folder01Icon}
+                label="Projects"
                 active={
-                  isChatRoute &&
-                  !search.thread &&
-                  !search.compare &&
-                  !search.project
+                  pathname === "/projects" || pathname.startsWith("/projects/")
                 }
                 onClick={() => {
-                  if (showReturnToChat) {
-                    // Prefer the running thread so we return to the live generation,
-                    // not the empty new chat that became active after New Chat.
-                    if (runningThreadId && runningThreadId !== storeThreadId) {
-                      navigate({ to: "/chat", search: { thread: runningThreadId } });
-                    } else {
-                      navigate({ to: "/chat" });
-                    }
-                    closeMobileIfOpen();
-                    return;
-                  }
-                  openNewChat(null);
-                }}
-              />
-              <NavItem
-                icon={Search01Icon}
-                label={t("shell.navigation.search")}
-                active={false}
-                onClick={() => {
-                  useChatSearchStore.getState().open();
+                  navigate({ to: "/projects" });
                   closeMobileIfOpen();
                 }}
+                className="group/projects-item relative"
+              >
+                <button
+                  type="button"
+                  aria-label="New project"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setProjectCreateMoveTarget(null);
+                    setProjectNameDraft("");
+                    setCreatingProject(true);
+                  }}
+                  className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+                >
+                  <span className="sidebar-row-action-glyph">
+                    <HugeiconsIcon
+                      icon={PlusSignIcon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </span>
+                </button>
+              </NavItem>
+              <NavItem
+                icon={DashboardCircleIcon}
+                label={t("shell.navigation.hub")}
+                active={pathname === "/hub" || pathname.startsWith("/hub/")}
+                onClick={() => {
+                  navigate({ to: "/hub" });
+                  closeMobileIfOpen();
+                }}
+              />
+              {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
+              <NavItem
+                icon={TestTubeOutlineIcon}
+                label={t("shell.navigation.train")}
+                active={
+                  pathname === "/studio" || pathname.startsWith("/studio/")
+                }
+                disabled={chatOnly}
+                tooltip={trainExportDisabledHint}
+                spinner={trainingInProgress}
+                onClick={() => {
+                  if (chatOnly) return;
+                  navigate({ to: "/studio" });
+                  closeMobileIfOpen();
+                }}
+                className="hidden group-data-[collapsible=icon]:block"
               />
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarContent
-          ref={scrollRef}
-          onScroll={(e) => syncScrollState(e.currentTarget)}
-          className={cn(
-            // pb-2 keeps the last row's rounded highlight clear of the
-            // overflow clip edge so its bottom corners aren't shaved off.
-            "sidebar-scroll-fade gap-0 overflow-y-auto overscroll-contain min-h-0 pb-2",
-            scrolled && "is-scrolled",
-          )}
-        >
-          <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 py-0 shrink-0">
-            <SidebarGroupContent>
-              <SidebarMenu>
-                <NavItem
-                  icon={Folder01Icon}
-                  label="Projects"
-                  active={
-                    pathname === "/projects" || pathname.startsWith("/projects/")
-                  }
-                  onClick={() => {
-                    navigate({ to: "/projects" });
-                    closeMobileIfOpen();
-                  }}
-                  className="group/projects-item relative"
-                >
-                  <button
-                    type="button"
-                    aria-label="New project"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setProjectCreateMoveTarget(null);
-                      setProjectNameDraft("");
-                      setCreatingProject(true);
+        <Collapsible open={trainOpen} onOpenChange={setTrainOpen} asChild>
+          <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:hidden px-0 py-0">
+            <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                {t("shell.navigation.train")}
+                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              </CollapsibleTrigger>
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+              <SidebarGroupContent className="pl-1.5 pr-2">
+                <SidebarMenu>
+                  <NavItem
+                    icon={TestTubeOutlineIcon}
+                    label={t("shell.navigation.train")}
+                    active={pathname === "/studio" || pathname.startsWith("/studio/")}
+                    disabled={chatOnly}
+                    tooltip={trainExportDisabledHint}
+                    spinner={trainingInProgress}
+                    onClick={() => {
+                      if (chatOnly) return;
+                      navigate({ to: "/studio" });
+                      closeMobileIfOpen();
                     }}
-                    className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
-                  >
-                    <span className="sidebar-row-action-glyph">
-                      <HugeiconsIcon
-                        icon={PlusSignIcon}
-                        strokeWidth={1.75}
-                        className="size-4"
-                      />
-                    </span>
-                  </button>
-                </NavItem>
-                <NavItem
-                  icon={DashboardCircleIcon}
-                  label={t("shell.navigation.hub")}
-                  active={pathname === "/hub" || pathname.startsWith("/hub/")}
-                  onClick={() => {
-                    navigate({ to: "/hub" });
-                    closeMobileIfOpen();
-                  }}
-                />
-                {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
-                <NavItem
-                  icon={TestTubeOutlineIcon}
-                  label={t("shell.navigation.train")}
-                  active={
-                    pathname === "/studio" || pathname.startsWith("/studio/")
-                  }
-                  disabled={chatOnly}
-                  tooltip={trainExportDisabledHint}
-                  spinner={trainingInProgress}
-                  onClick={() => {
-                    if (chatOnly) return;
-                    navigate({ to: "/studio" });
-                    closeMobileIfOpen();
-                  }}
-                  className="hidden group-data-[collapsible=icon]:block"
-                />
-              </SidebarMenu>
-            </SidebarGroupContent>
+                  />
+                  <NavItem
+                    icon={ChefHatIcon}
+                    label={t("shell.navigation.recipes")}
+                    active={isRecipesRoute}
+                    onClick={() => {
+                      navigate({ to: "/data-recipes" });
+                      closeMobileIfOpen();
+                    }}
+                  />
+                  <NavItem
+                    icon={DownloadSquare01Icon}
+                    label={t("shell.navigation.export")}
+                    active={pathname === "/export" || pathname.startsWith("/export/")}
+                    disabled={chatOnly}
+                    tooltip={trainExportDisabledHint}
+                    spinner={exportInProgress}
+                    onClick={() => {
+                      if (chatOnly) return;
+                      navigate({ to: "/export" });
+                      closeMobileIfOpen();
+                    }}
+                  />
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </CollapsibleContent>
           </SidebarGroup>
+        </Collapsible>
 
-          <Collapsible open={trainOpen} onOpenChange={setTrainOpen} asChild>
-            <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:hidden px-0 py-0">
+        {/* Pinned chats: own section above Recents */}
+        {!isStudioRoute && !showTrainingRecents && pinnedChatItems.length > 0 && (
+          <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
                 <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                  {t("shell.navigation.train")}
+                  Pinned
                   <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
                 <SidebarGroupContent className="pl-1.5 pr-2">
                   <SidebarMenu>
-                    <NavItem
-                      icon={TestTubeOutlineIcon}
-                      label={t("shell.navigation.train")}
-                      active={pathname === "/studio" || pathname.startsWith("/studio/")}
-                      disabled={chatOnly}
-                      tooltip={trainExportDisabledHint}
-                      spinner={trainingInProgress}
-                      onClick={() => {
-                        if (chatOnly) return;
-                        navigate({ to: "/studio" });
-                        closeMobileIfOpen();
-                      }}
-                    />
-                    <NavItem
-                      icon={ChefHatIcon}
-                      label={t("shell.navigation.recipes")}
-                      active={isRecipesRoute}
-                      onClick={() => {
-                        navigate({ to: "/data-recipes" });
-                        closeMobileIfOpen();
-                      }}
-                    />
-                    <NavItem
-                      icon={DownloadSquare01Icon}
-                      label={t("shell.navigation.export")}
-                      active={pathname === "/export" || pathname.startsWith("/export/")}
-                      disabled={chatOnly}
-                      tooltip={trainExportDisabledHint}
-                      spinner={exportInProgress}
-                      onClick={() => {
-                        if (chatOnly) return;
-                        navigate({ to: "/export" });
-                        closeMobileIfOpen();
-                      }}
-                    />
+                    {pinnedChatItems.map((item) =>
+                      renderChatSidebarItem(item, "recent"),
+                    )}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </CollapsibleContent>
             </SidebarGroup>
           </Collapsible>
+        )}
 
-          {/* Pinned chats: own section above Recents */}
-          {!isStudioRoute && !showTrainingRecents && pinnedChatItems.length > 0 && (
-            <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
-              <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                  <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                    Pinned
-                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-                  </CollapsibleTrigger>
-                </SidebarGroupLabel>
-                <CollapsibleContent>
-                  <SidebarGroupContent className="pl-1.5 pr-2">
-                    <SidebarMenu>
-                      {pinnedChatItems.map((item) =>
-                        renderChatSidebarItem(item, "recent"),
-                      )}
-                    </SidebarMenu>
-                  </SidebarGroupContent>
-                </CollapsibleContent>
-              </SidebarGroup>
-            </Collapsible>
-          )}
+        {!isStudioRoute && !showTrainingRecents && (
+          <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                  {t("shell.navigation.recents")}
+                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                </CollapsibleTrigger>
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent className="pl-1.5 pr-2">
+                  <SidebarMenu>
+                    {recentChatItems.map((item) =>
+                      renderChatSidebarItem(item, "recent"),
+                    )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
+        )}
 
-          {!isStudioRoute && !showTrainingRecents && (
-            <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
-              <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                  <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                    {t("shell.navigation.recents")}
-                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-                  </CollapsibleTrigger>
-                </SidebarGroupLabel>
-                <CollapsibleContent>
-                  <SidebarGroupContent className="pl-1.5 pr-2">
-                    <SidebarMenu>
-                      {recentChatItems.map((item) =>
-                        renderChatSidebarItem(item, "recent"),
-                      )}
-                    </SidebarMenu>
-                  </SidebarGroupContent>
-                </CollapsibleContent>
-              </SidebarGroup>
-            </Collapsible>
-          )}
-
-          {showTrainingRecents && (
-            <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
-              <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                  <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                    {t("shell.navigation.recents")}
-                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-                  </CollapsibleTrigger>
-                </SidebarGroupLabel>
-                <CollapsibleContent>
-                  <SidebarGroupContent className="pl-1.5 pr-2">
-                    <SidebarMenu>
-                      {runItems.map((run) => {
-                        // Explicit selection wins. Otherwise highlight the active
-                        // job only while the "Current Run" tab is the view, keeping
-                        // the Configure tab unhighlighted even though activeJobId
-                        // stays pinned to the last job.
-                        const isActiveRun =
-                          selectedHistoryRunId != null
-                            ? run.id === selectedHistoryRunId
-                            : currentRunViewActive && run.id === activeJobId;
-                        return (
-                          <SidebarMenuItem
-                            key={run.id}
-                            className="group/run-item relative"
-                          >
-                            <SidebarMenuButton
-                              isActive={isActiveRun}
-                              className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
-                              onClick={() => {
-                                setSelectedHistoryRunId(run.id);
-                                // From Recipes/Export, jump to Train so the run's
-                                // history opens (studio reacts to selectedHistoryRunId).
-                                if (!isStudioRoute) navigate({ to: "/studio" });
-                                closeMobileIfOpen();
-                              }}
+        {showTrainingRecents && (
+          <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
+          <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+            <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+              <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                {t("shell.navigation.recents")}
+                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              </CollapsibleTrigger>
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+              <SidebarGroupContent className="pl-1.5 pr-2">
+                <SidebarMenu>
+                  {runItems.map((run) => {
+                    // Explicit selection wins. Otherwise highlight the active
+                    // job only while the "Current Run" tab is the view, keeping
+                    // the Configure tab unhighlighted even though activeJobId
+                    // stays pinned to the last job.
+                    const isActiveRun =
+                      selectedHistoryRunId != null
+                        ? run.id === selectedHistoryRunId
+                        : currentRunViewActive && run.id === activeJobId;
+                    return (
+                      <SidebarMenuItem
+                        key={run.id}
+                        className="group/run-item relative"
+                      >
+                        <SidebarMenuButton
+                          isActive={isActiveRun}
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
+                          onClick={() => {
+                            setSelectedHistoryRunId(run.id);
+                            // From Recipes/Export, jump to Train so the run's
+                            // history opens (studio reacts to selectedHistoryRunId).
+                            if (!isStudioRoute) navigate({ to: "/studio" });
+                            closeMobileIfOpen();
+                          }}
+                        >
+                          <div className="flex w-full items-center gap-[8.5px]">
+                            <span
+                              className={cn(
+                                "size-1.5 shrink-0 rounded-full",
+                                runStatusDotClass(run.status),
+                              )}
+                              aria-hidden
+                            />
+                            <span className="truncate">
+                              {run.display_name ?? run.model_name}
+                            </span>
+                            <span className="ml-auto mr-0.5 shrink-0 text-[10px] text-muted-foreground">
+                              {formatRelativeShort(run.started_at)}
+                            </span>
+                          </div>
+                          <span className="w-full truncate pl-3.5 text-xs text-muted-foreground">
+                            {run.dataset_name}
+                          </span>
+                        </SidebarMenuButton>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={(e) => e.stopPropagation()}
+                              aria-label={t("shell.aria.runOptions")}
+                              className="sidebar-row-action group-hover/run-item:opacity-100 group-hover/run-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                             >
-                              <div className="flex w-full items-center gap-[8.5px]">
-                                <span
-                                  className={cn(
-                                    "size-1.5 shrink-0 rounded-full",
-                                    runStatusDotClass(run.status),
-                                  )}
-                                  aria-hidden
-                                />
-                                <span className="truncate">
-                                  {run.display_name ?? run.model_name}
-                                </span>
-                                <span className="ml-auto mr-0.5 shrink-0 text-[10px] text-muted-foreground">
-                                  {formatRelativeShort(run.started_at)}
-                                </span>
-                              </div>
-                              <span className="w-full truncate pl-3.5 text-xs text-muted-foreground">
-                                {run.dataset_name}
+                              <span className="sidebar-row-action-glyph">
+                                <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
                               </span>
-                            </SidebarMenuButton>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <button
-                                  type="button"
-                                  onClick={(e) => e.stopPropagation()}
-                                  aria-label={t("shell.aria.runOptions")}
-                                  className="sidebar-row-action group-hover/run-item:opacity-100 group-hover/run-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-                                >
-                                  <span className="sidebar-row-action-glyph">
-                                    <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
-                                  </span>
-                                </button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent
-                                side="bottom"
-                                align="end"
-                                sideOffset={0}
-                                className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
-                              >
-                                <DropdownMenuItem onSelect={() => openRenameRun(run)}>
-                                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                                  <span>{t("common.rename")}</span>
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  variant="destructive"
-                                  disabled={run.status === "running"}
-                                  onSelect={() =>
-                                    setConfirmingDelete({ kind: "run", run })
-                                  }
-                                >
-                                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                                  <span>{t("common.delete")}</span>
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </SidebarMenuItem>
-                        );
-                      })}
-                    </SidebarMenu>
-                  </SidebarGroupContent>
-                </CollapsibleContent>
-              </SidebarGroup>
-            </Collapsible>
-          )}
-        </SidebarContent>
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            side="bottom"
+                            align="end"
+                            sideOffset={0}
+                            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
+                          >
+                            <DropdownMenuItem onSelect={() => openRenameRun(run)}>
+                              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                              <span>{t("common.rename")}</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              variant="destructive"
+                              disabled={run.status === "running"}
+                              onSelect={() =>
+                                setConfirmingDelete({ kind: "run", run })
+                              }
+                            >
+                              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                              <span>{t("common.delete")}</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </SidebarMenuItem>
+                    );
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+          </Collapsible>
+        )}
+      </SidebarContent>
 
-        <SidebarFooter className="relative pt-3 pb-4 group-data-[collapsible=icon]:px-0">
-          {/* Fade above the profile box, shown only when there's more list below
+      <SidebarFooter
+        className={cn(
+          "relative pb-3 group-data-[collapsible=icon]:px-0",
+          // Tighter top with the update card so the fade hugs it; fuller top
+          // for the profile on its own.
+          showUpdateCard ? "pt-1.5" : "pt-2.5",
+        )}
+      >
+        {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
             shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
-          <div
-            aria-hidden="true"
-            className={cn(
-              "pointer-events-none absolute left-0 right-2 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
-              canScrollDown ? "opacity-100" : "opacity-0",
-            )}
-          />
-
-          <SidebarMenu className="gap-3 group-data-[collapsible=icon]:gap-2.5">
-            {/* Update affordance — shows only when a newer version is available. */}
-            {showUpdateCard && (
-              <SidebarMenuItem>
-                <button
-                  type="button"
-                  aria-label={t("shell.updateAvailable")}
-                  onClick={() => {
-                    useSettingsDialogStore
-                      .getState()
-                      .openDialog("about", { scrollTarget: "about-updates" });
-                    closeMobileIfOpen();
-                  }}
-                  className="flex h-[44px] w-full items-center gap-[9px] rounded-[14px] border border-border/60 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
+        <div
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
+            // Shorter fade when the update card sits above the profile so the
+            // list reads closer to it.
+            showUpdateCard ? "h-3" : "h-10",
+            canScrollDown ? "opacity-100" : "opacity-0",
+          )}
+        />
+        <SidebarMenu className="gap-3 group-data-[collapsible=icon]:gap-2.5">
+          {/* Update affordance — shows only when a newer version is available. */}
+          {showUpdateCard && (
+            <SidebarMenuItem>
+              <button
+                type="button"
+                aria-label={t("shell.updateAvailable")}
+                onClick={() => {
+                  useSettingsDialogStore
+                    .getState()
+                    .openDialog("about", { scrollTarget: "about-updates" });
+                  closeMobileIfOpen();
+                }}
+                className="flex h-[44px] w-full items-center gap-[9px] rounded-[14px] border border-border/60 bg-transparent px-2 py-[3px] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
+              >
+                <span
+                  aria-hidden="true"
+                  className="flex size-[32px] shrink-0 items-center justify-center group-data-[collapsible=icon]:size-full"
                 >
-                  <span
-                    aria-hidden="true"
-                    className="flex size-[32px] shrink-0 items-center justify-center group-data-[collapsible=icon]:size-full"
-                  >
-                    <HugeiconsIcon
-                      icon={BadgeInfoIcon}
-                      strokeWidth={1.75}
-                      className="size-[21px] text-nav-fg"
-                    />
+                  <HugeiconsIcon
+                    icon={BadgeInfoIcon}
+                    strokeWidth={1.75}
+                    className="size-[21px] text-nav-fg"
+                  />
+                </span>
+                <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
+                  <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
+                    {t("shell.updateAvailable")}
                   </span>
-                  <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
-                    <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
-                      {t("shell.updateAvailable")}
+                  {updateVersion && (
+                    <span className="truncate text-[11.5px] text-muted-foreground">
+                      v{updateVersion}
                     </span>
-                    {updateVersion && (
-                      <span className="truncate text-[11.5px] text-muted-foreground">
-                        v{updateVersion}
-                      </span>
-                    )}
+                  )}
+                </div>
+                <span
+                  aria-hidden="true"
+                  className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+                >
+                  <HugeiconsIcon
+                    icon={ArrowRight02Icon}
+                    className="size-[17px]"
+                    strokeWidth={1.75}
+                  />
+                </span>
+              </button>
+            </SidebarMenuItem>
+          )}
+          <SidebarMenuItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton
+                  size="lg"
+                  aria-label={t("shell.accountMenu", { name: displayTitle })}
+                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] px-2 py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
+                >
+                  <div className="flex shrink-0 items-center">
+                    <UserAvatar
+                      name={displayTitle}
+                      imageUrl={avatarDataUrl}
+                      size="sm"
+                      className="!size-[32px] group-data-[collapsible=icon]:!rounded-full"
+                    />
                   </div>
+                  <div className="flex flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
+                    <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
+                    <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
+                  </div>
+                  {/* settings cog (replaces the up/down chevron) */}
                   <span
                     aria-hidden="true"
                     className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
                   >
                     <HugeiconsIcon
-                      icon={ArrowRight02Icon}
-                      className="size-[17px]"
-                      strokeWidth={1.75}
+                      icon={Settings02Icon}
+                      strokeWidth={1.5}
+                      className="!size-[18px]"
                     />
                   </span>
-                </button>
-              </SidebarMenuItem>
-            )}
-            <SidebarMenuItem>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <SidebarMenuButton
-                    size="lg"
-                    aria-label={t("shell.accountMenu", { name: displayTitle })}
-                    className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] px-2 py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
-                  >
-                    <div className="flex shrink-0 items-center">
-                      <UserAvatar
-                        name={displayTitle}
-                        imageUrl={avatarDataUrl}
-                        size="sm"
-                        className="!size-[32px] group-data-[collapsible=icon]:!rounded-full"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
-                      <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
-                      <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
-                    </div>
-                    {/* settings cog (replaces the up/down chevron) */}
-                    <span
-                      aria-hidden="true"
-                      className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
-                    >
-                      <HugeiconsIcon
-                        icon={Settings02Icon}
-                        strokeWidth={1.5}
-                        className="!size-[18px]"
-                      />
-                    </span>
-                  </SidebarMenuButton>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  side="top"
-                  align="center"
-                  sideOffset={8}
-                  className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-2.5 py-2.5 font-heading rounded-[20px] border-0"
-                >
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem
-                      onSelect={() => useSettingsDialogStore.getState().openDialog()}
-                    >
-                      <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>{t("shell.navigation.settings")}</span>
-                      <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
-                    >
-                      <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
-                      <span>{t("shell.navigation.api")}</span>
-                      <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
-                        {t("common.new")}
-                      </span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      ref={anchorRef as React.Ref<HTMLDivElement>}
-                      onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
-                    >
-                      {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
-                      <span>
-                        {isDark
-                          ? t("shell.navigation.lightMode")
-                          : t("shell.navigation.darkMode")}
-                      </span>
-                    </DropdownMenuItem>
-                    {getTourId(pathname) && (
-                      <DropdownMenuItem
-                        onSelect={() => {
-                          const tourId = getTourId(pathname);
-                          if (!tourId) return;
-                          window.dispatchEvent(
-                            new CustomEvent(TOUR_OPEN_EVENT, {
-                              detail: { id: tourId },
-                            }),
-                          );
-                        }}
-                      >
-                        <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
-                        <span>{t("shell.navigation.guidedTour")}</span>
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="top"
+                align="center"
+                sideOffset={8}
+                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-2.5 py-2.5 font-heading rounded-[20px] border-0"
+              >
+                <DropdownMenuGroup>
                   <DropdownMenuItem
-                    onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+                    onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
-                    <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("common.help")}</span>
+                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.navigation.settings")}</span>
+                    <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
+                  >
+                    <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
+                    <span>{t("shell.navigation.api")}</span>
+                    <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                      {t("common.new")}
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    ref={anchorRef as React.Ref<HTMLDivElement>}
+                    onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
+                  >
+                    {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                    <span>
+                      {isDark
+                        ? t("shell.navigation.lightMode")
+                        : t("shell.navigation.darkMode")}
+                    </span>
+                  </DropdownMenuItem>
+                  {getTourId(pathname) && (
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        const tourId = getTourId(pathname);
+                        if (!tourId) return;
+                        window.dispatchEvent(
+                          new CustomEvent(TOUR_OPEN_EVENT, {
+                            detail: { id: tourId },
+                          }),
+                        );
+                      }}
+                    >
+                      <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
+                      <span>{t("shell.navigation.guidedTour")}</span>
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuItem
+                  onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
+                >
+                  <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("common.help")}</span>
+                </DropdownMenuItem>
+                {!isTauri && (
                   <DropdownMenuItem
                     onSelect={async () => {
                       // Best-effort server revocation; ignore network errors so
@@ -1536,218 +1609,223 @@ export function AppSidebar() {
                     <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.navigation.logOut")}</span>
                   </DropdownMenuItem>
+                )}
+                {!isTauri && (
                   <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
                     <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("common.shutdown")}</span>
                   </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarFooter>
-      </Sidebar>
-      <ChatSearchDialog />
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
+    </Sidebar>
+    <ChatSearchDialog />
+    {!isTauri && (
       <ShutdownDialog
         open={shutdownOpen}
         onOpenChange={setShutdownOpen}
         onAfterShutdown={removeTrainingUnloadGuard}
       />
-      <Dialog
-        open={confirmingDelete !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setConfirmingDelete(null);
-            setDeleteProjectFiles(false);
-          }
-        }}
-      >
-        <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {confirmingDelete?.kind === "run"
-                ? t("shell.dialog.deleteRun.title")
-                : confirmingDelete?.kind === "project"
-                  ? "Delete project"
-                  : t("shell.dialog.deleteChat.title")}
-            </DialogTitle>
-            <DialogDescription>
-              {confirmingDelete?.kind === "run" ? (
-                renderEmphasizedTranslation(
-                  t,
-                  "shell.dialog.deleteRun.description",
-                  confirmingDelete.run.display_name ??
+    )}
+    <Dialog
+      open={confirmingDelete !== null}
+      onOpenChange={(open) => {
+        if (!open) {
+          setConfirmingDelete(null);
+          setDeleteProjectFiles(false);
+        }
+      }}
+    >
+      <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {confirmingDelete?.kind === "run"
+              ? t("shell.dialog.deleteRun.title")
+              : confirmingDelete?.kind === "project"
+                ? "Delete project"
+                : t("shell.dialog.deleteChat.title")}
+          </DialogTitle>
+          <DialogDescription>
+            {confirmingDelete?.kind === "run" ? (
+              renderEmphasizedTranslation(
+                t,
+                "shell.dialog.deleteRun.description",
+                confirmingDelete.run.display_name ??
                   confirmingDelete.run.model_name,
-                )
-              ) : confirmingDelete?.kind === "chat" ? (
-                renderEmphasizedTranslation(
-                  t,
-                  "shell.dialog.deleteChat.description",
-                  confirmingDelete.item.title,
-                )
-              ) : confirmingDelete?.kind === "project" ? (
-                <>
-                  Delete{" "}
-                  <span className="font-medium text-foreground">
-                    &quot;{confirmingDelete.project.name}&quot;
-                  </span>
-                  ? Its chats will be permanently deleted.
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-          {confirmingDelete?.kind === "project" ? (
-            <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
-              <label htmlFor="delete-project-files" className="min-w-0 space-y-1">
-                <span className="block text-sm font-medium text-foreground">
-                  Delete files and sandbox folder
+              )
+            ) : confirmingDelete?.kind === "chat" ? (
+              renderEmphasizedTranslation(
+                t,
+                "shell.dialog.deleteChat.description",
+                confirmingDelete.item.title,
+              )
+            ) : confirmingDelete?.kind === "project" ? (
+              <>
+                Delete{" "}
+                <span className="font-medium text-foreground">
+                  &quot;{confirmingDelete.project.name}&quot;
                 </span>
-                <span className="block break-words text-xs leading-5 text-muted-foreground">
-                  {confirmingDelete.project.rootPath
-                    ? confirmingDelete.project.rootPath
-                    : "The project workspace folder will be removed from disk."}
-                </span>
-              </label>
-              <Switch
-                id="delete-project-files"
-                checked={deleteProjectFiles}
-                onCheckedChange={setDeleteProjectFiles}
-                aria-label="Delete project files and sandbox folder"
-              />
-            </div>
-          ) : null}
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setConfirmingDelete(null)}
-            >
-              {t("common.cancel")}
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={() => void commitDelete()}
-            >
-              {confirmingDelete?.kind === "project" && deleteProjectFiles
-                ? "Delete all"
-                : t("common.delete")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={renamingTarget !== null && renamingTarget.kind !== "chat"}
-        onOpenChange={(open) => {
-          if (!open) setRenamingTarget(null);
-        }}
-      >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {renamingTarget?.kind === "run"
-                ? t("shell.dialog.renameRun.title")
-                : renamingTarget?.kind === "project"
-                  ? "Rename project"
-                  : t("shell.dialog.renameChat.title")}
-            </DialogTitle>
-          </DialogHeader>
-          <Input
-            value={renameDraft}
-            onChange={(event) => setRenameDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void commitRename();
-              }
-            }}
-            autoFocus
-            maxLength={120}
-            placeholder={
-              renamingTarget?.kind === "run"
-                ? t("shell.dialog.renameRun.placeholder")
-                : renamingTarget?.kind === "project"
-                  ? "Project name"
-                  : t("shell.dialog.renameChat.placeholder")
+                ? Its chats will be permanently deleted.
+              </>
+            ) : null}
+          </DialogDescription>
+        </DialogHeader>
+        {confirmingDelete?.kind === "project" ? (
+          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
+            <label htmlFor="delete-project-files" className="min-w-0 space-y-1">
+              <span className="block text-sm font-medium text-foreground">
+                Delete files and sandbox folder
+              </span>
+              <span className="block break-words text-xs leading-5 text-muted-foreground">
+                {confirmingDelete.project.rootPath
+                  ? confirmingDelete.project.rootPath
+                  : "The project workspace folder will be removed from disk."}
+              </span>
+            </label>
+            <Switch
+              id="delete-project-files"
+              checked={deleteProjectFiles}
+              onCheckedChange={setDeleteProjectFiles}
+              aria-label="Delete project files and sandbox folder"
+            />
+          </div>
+        ) : null}
+        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setConfirmingDelete(null)}
+          >
+            {t("common.cancel")}
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={() => void commitDelete()}
+          >
+            {confirmingDelete?.kind === "project" && deleteProjectFiles
+              ? "Delete all"
+              : t("common.delete")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog
+      open={renamingTarget !== null && renamingTarget.kind !== "chat"}
+      onOpenChange={(open) => {
+        if (!open) setRenamingTarget(null);
+      }}
+    >
+      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {renamingTarget?.kind === "run"
+              ? t("shell.dialog.renameRun.title")
+              : renamingTarget?.kind === "project"
+                ? "Rename project"
+                : t("shell.dialog.renameChat.title")}
+          </DialogTitle>
+        </DialogHeader>
+        <Input
+          value={renameDraft}
+          onChange={(event) => setRenameDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void commitRename();
             }
-            aria-label={
-              renamingTarget?.kind === "run"
-                ? t("shell.dialog.renameRun.placeholder")
-                : renamingTarget?.kind === "project"
-                  ? "Project name"
-                  : t("shell.dialog.renameChat.placeholder")
-            }
-            className="focus-visible:border-input focus-visible:ring-0"
-          />
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setRenamingTarget(null)}
-            >
-              {t("common.cancel")}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void commitRename()}
-              disabled={!renameDirty}
-            >
-              {t("common.save")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={creatingProject}
-        onOpenChange={(open) => {
-          setCreatingProject(open);
-          if (!open) {
-            setProjectNameDraft("");
-            setProjectCreateMoveTarget(null);
+          }}
+          autoFocus
+          maxLength={120}
+          placeholder={
+            renamingTarget?.kind === "run"
+              ? t("shell.dialog.renameRun.placeholder")
+              : renamingTarget?.kind === "project"
+                ? "Project name"
+                : t("shell.dialog.renameChat.placeholder")
           }
-        }}
-      >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {projectCreateMoveTarget ? "Move to new project" : "New project"}
-            </DialogTitle>
-          </DialogHeader>
-          <Input
-            value={projectNameDraft}
-            onChange={(event) => setProjectNameDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void commitCreateProject();
-              }
+          aria-label={
+            renamingTarget?.kind === "run"
+              ? t("shell.dialog.renameRun.placeholder")
+              : renamingTarget?.kind === "project"
+                ? "Project name"
+                : t("shell.dialog.renameChat.placeholder")
+          }
+          className="focus-visible:border-input focus-visible:ring-0"
+        />
+        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setRenamingTarget(null)}
+          >
+            {t("common.cancel")}
+          </Button>
+          <Button
+            type="button"
+            onClick={() => void commitRename()}
+            disabled={!renameDirty}
+          >
+            {t("common.save")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog
+      open={creatingProject}
+      onOpenChange={(open) => {
+        setCreatingProject(open);
+        if (!open) {
+          setProjectNameDraft("");
+          setProjectCreateMoveTarget(null);
+        }
+      }}
+    >
+      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {projectCreateMoveTarget ? "Move to new project" : "New project"}
+          </DialogTitle>
+        </DialogHeader>
+        <Input
+          value={projectNameDraft}
+          onChange={(event) => setProjectNameDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void commitCreateProject();
+            }
+          }}
+          autoFocus
+          maxLength={120}
+          placeholder="Project name"
+          aria-label="Project name"
+          className="focus-visible:border-input focus-visible:ring-0"
+        />
+        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setCreatingProject(false);
+              setProjectCreateMoveTarget(null);
             }}
-            autoFocus
-            maxLength={120}
-            placeholder="Project name"
-            aria-label="Project name"
-            className="focus-visible:border-input focus-visible:ring-0"
-          />
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setCreatingProject(false);
-                setProjectCreateMoveTarget(null);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void commitCreateProject()}
-              disabled={!projectNameDraft.trim()}
-            >
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={() => void commitCreateProject()}
+            disabled={!projectNameDraft.trim()}
+          >
+            Create
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     </>
   );
 }

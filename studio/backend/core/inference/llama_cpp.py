@@ -3147,9 +3147,10 @@ class LlamaCppBackend:
                         except (ValueError, OSError):
                             # Log file closed under us; tee silently.
                             pass
-        except (ValueError, OSError):
-            # Pipe closed -- process terminating.
-            pass
+        except Exception:
+            # Never let the drain thread die: a full stdout pipe can deadlock
+            # llama-server (Windows). Pipe-closed on exit is the common case.
+            logger.debug("llama-server stdout drain stopped", exc_info = True)
 
     # GGUF KV type sizes for fast skipping
     _GGUF_TYPE_SIZE = {
@@ -7881,13 +7882,18 @@ class LlamaCppBackend:
                     _mt["predicted_per_second"] = _mt["predicted_n"] / (
                         _mt["predicted_ms"] / 1000.0
                     )
+            _usage = {
+                "prompt_tokens": _fp,
+                "completion_tokens": _tc,
+                "total_tokens": _fp + _tc,
+            }
+            # Preserve KV-cache hit details (cached_tokens) so the tool path
+            # reports them like the standard non-tool path does, not always 0.
+            if _fu.get("prompt_tokens_details"):
+                _usage["prompt_tokens_details"] = _fu["prompt_tokens_details"]
             return {
                 "type": "metadata",
-                "usage": {
-                    "prompt_tokens": _fp,
-                    "completion_tokens": _tc,
-                    "total_tokens": _fp + _tc,
-                },
+                "usage": _usage,
                 "timings": _mt,
                 "finish_reason": finish_reason,
             }

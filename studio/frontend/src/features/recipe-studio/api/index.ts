@@ -400,28 +400,37 @@ export async function streamRecipeJobEvents(options: {
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    let separatorIndex = buffer.search(/\r?\n\r?\n/);
-    while (separatorIndex >= 0) {
-      const rawEvent = buffer.slice(0, separatorIndex);
-      const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-      buffer = buffer.slice(separatorIndex + separatorLength);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
+        buffer = buffer.slice(separatorIndex + separatorLength);
 
-      if (rawEvent.startsWith("retry:")) {
+        if (rawEvent.startsWith("retry:")) {
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+
+        const parsed = parseJobEvent(rawEvent);
+        if (parsed) {
+          options.onEvent(parsed);
+        }
         separatorIndex = buffer.search(/\r?\n\r?\n/);
-        continue;
       }
-
-      const parsed = parseJobEvent(rawEvent);
-      if (parsed) {
-        options.onEvent(parsed);
-      }
-      separatorIndex = buffer.search(/\r?\n\r?\n/);
+    }
+  } finally {
+    // Release the stream lock now instead of leaking the reader until GC.
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
     }
   }
 }
