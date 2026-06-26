@@ -495,10 +495,12 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
             )
         )
 
-    # Catch-all: any import line in .pth if nothing else triggered. Record all
-    # lines (not the first five) so an appended/swapped import reopens the key.
+    # Catch-all: any import line in .pth if nothing else triggered. Bind every
+    # line through a digest so an appended/swapped import reopens the key, but cap
+    # the displayed text so a large .pth of benign-looking imports cannot dump up
+    # to the archive member cap into the logs or baseline JSON.
     if not findings and import_lines:
-        evidence = "\n".join(import_lines)
+        evidence = _cap_line("\n".join(import_lines))
         findings.append(
             Finding(
                 HIGH,
@@ -1193,6 +1195,9 @@ def _logical_line_end(lines: list[str], start: int) -> int:
         ln = _RE_STR_LITERAL.sub("", lines[j - 1])
         depth += ln.count("(") + ln.count("[") + ln.count("{")
         depth -= ln.count(")") + ln.count("]") + ln.count("}")
+        if ln.rstrip().endswith("\\"):
+            continue  # explicit backslash continuation: the call (e.g. its `(` and
+            # URL/body) is on the next physical line, so do not close here
         if depth <= 0:
             return j
     return limit
@@ -1349,21 +1354,27 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                 _extract_evidence(content, RE_WORKFLOW_INJECT),
             )
         )
-    if is_large and not findings:
-        # Digest the bundle so the baseline key pins its content: a future
-        # bundle in the same size bucket but with changed code reopens instead
-        # of riding an empty-evidence allowlist entry.
+    if is_large:
+        # Pin the whole bundle's content via a digest. Standalone HIGH when nothing
+        # else fired; otherwise append it to every finding's evidence, so a large
+        # bundle keyed only on an unchanged signature line (e.g. a single _0x...
+        # hex-var match) still reopens when payload code elsewhere in the bundle
+        # changes instead of riding the matched-line evidence.
         digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
-        findings.append(
-            Finding(
-                HIGH,
-                package,
-                filename,
-                f"Python wheel ships large ({len(content) // 1024} KB) JS bundle "
-                "(uncommon; manually review)",
-                f"sha256: {digest}",
+        if findings:
+            for f in findings:
+                f.evidence = f"{f.evidence} bundle-sha256:{digest}"
+        else:
+            findings.append(
+                Finding(
+                    HIGH,
+                    package,
+                    filename,
+                    f"Python wheel ships large ({len(content) // 1024} KB) JS bundle "
+                    "(uncommon; manually review)",
+                    f"sha256: {digest}",
+                )
             )
-        )
     return findings
 
 

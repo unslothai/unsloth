@@ -605,6 +605,17 @@ def test_outbound_host_multiple_contexts_all_bind():
     assert snp._finding_key(_host_finding(base)) != snp._finding_key(_host_finding(base + extra))
 
 
+def test_outbound_host_config_opener_after_unmatched_closer_binds():
+    # A leading unmatched `}` from a preceding block (its opener outside the
+    # backward window) must not drive depth negative and mask the host-config
+    # opener that follows; the object should still bind so a changed path reopens.
+    pre = "callback(arg);\n});\n"  # stray closer; the matching opener is out of view
+    obj = pre + "const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nrun(opts);\n"
+    assert snp._finding_key(_host_finding(obj % "/old")) != snp._finding_key(
+        _host_finding(obj % "/evil")
+    )
+
+
 def test_outbound_host_config_reindent_is_stable():
     # A formatter-only reindent of the bound continuation lines must NOT change
     # the key (whitespace is normalized before the logical-line digest).

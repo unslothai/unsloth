@@ -937,7 +937,12 @@ def _logical_line_text(text: str, line_start: int) -> str:
     for j in range(max(0, idx - _MAX_CONT_LINES), idx):
         depth += _bracket_depth(lines[j])
         if depth <= 0:
-            start = idx  # any bracket already closed before the match
+            # The window can start mid-block, so a leading unmatched `}` (its opener
+            # outside the window) would drive depth negative and mask a real opener
+            # that follows; clamp at 0 so the next `{`/`(` still registers as the
+            # enclosing opener instead of being cancelled by the stray closer.
+            depth = 0
+            start = idx  # everything opened so far in the window has closed
         elif start == idx:
             start = j  # first still-open opener
 
