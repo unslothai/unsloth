@@ -1599,7 +1599,7 @@ _TOOL_XML_RE = _re.compile(
 
 def _strip_tool_xml(text: str) -> str:
     """Combine the Mistral balanced-brace helper with ``_TOOL_XML_RE``."""
-    from studio.backend.core.inference.tool_call_parser import (
+    from core.inference.tool_call_parser import (
         _strip_mistral_closed_calls,
     )
     return _TOOL_XML_RE.sub("", _strip_mistral_closed_calls(text))

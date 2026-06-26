@@ -154,6 +154,37 @@ class TestGemmaNativeStyle:
         }
 
 
+class TestLlama3PythonTagStrict:
+    def test_closed_dot_call_is_accepted(self):
+        text = '<|python_tag|>get_weather.call(location="Tokyo")'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "get_weather"
+        assert json.loads(calls[0]["function"]["arguments"]) == {"location": "Tokyo"}
+
+    def test_truncated_dot_call_is_rejected(self):
+        # No closing paren (depth > 0 at EOF): truncated, reject in strict mode.
+        text = '<|python_tag|>get_weather.call(location="Tokyo"'
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        # Auto-Heal still recovers it.
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
+
+
+class TestMistralArrayStrict:
+    def test_closed_array_is_accepted(self):
+        text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"}}]'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "web_search"
+
+    def test_unclosed_array_is_rejected(self):
+        # Missing the closing ]; strict mode must not heal it.
+        text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"}}'
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        # Auto-Heal still recovers the object by hand.
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
+
+
 class TestHealingPathUnaffected:
     def test_auto_heal_still_repairs_unclosed_function(self):
         text = "<function=web_search><parameter=query>cats"

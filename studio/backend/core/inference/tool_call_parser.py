@@ -500,6 +500,10 @@ def _parse_llama3_python_tag(
                     if depth == 0:
                         break
             i += 1
+        # Truncated ``.call(...)`` with no closing paren (depth > 0 at EOF):
+        # reject in strict mode (Auto-Heal off) instead of executing a partial.
+        if not allow_incomplete and depth > 0:
+            continue
         body = content[m.end() : i]
         args: dict[str, Any] = {}
         for kv in _LLAMA3_KV_RE.finditer(body):
@@ -693,7 +697,9 @@ def _parse_mistral_tool_calls(
         return out
 
     if content[k] == "[":
-        return _parse_mistral_array(content, k, id_offset)
+        return _parse_mistral_array(
+            content, k, id_offset, allow_incomplete = allow_incomplete
+        )
 
     if content[k] == "{":
         # Pre-v11 single ``{"name":...}``; fall through if it doesn't
@@ -752,7 +758,12 @@ def _parse_mistral_tool_calls(
     return out
 
 
-def _parse_mistral_array(content: str, start: int, id_offset: int) -> list[dict]:
+def _parse_mistral_array(
+    content: str,
+    start: int,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """Pre-v11 ``[TOOL_CALLS] [{...}, ...]`` array form."""
     out: list[dict] = []
     j = start
@@ -778,6 +789,10 @@ def _parse_mistral_array(content: str, start: int, id_offset: int) -> list[dict]
                 if depth == 0:
                     break
         j += 1
+    # An unclosed array (no matching ]) is a truncated call. In strict mode
+    # (Auto-Heal off) reject it instead of recovering objects by hand below.
+    if not allow_incomplete and depth != 0:
+        return out
     body = content[start : j + 1] if depth == 0 else content[start:]
 
     try:
@@ -788,7 +803,8 @@ def _parse_mistral_array(content: str, start: int, id_offset: int) -> list[dict]
                     _consume_mistral_call(json.dumps(obj), out, id_offset)
         return out
     except (json.JSONDecodeError, ValueError):
-        pass
+        if not allow_incomplete:
+            return out
 
     # Healing path for unclosed arrays: walk objects by hand.
     for m in re.finditer(r"\{", body):
@@ -836,6 +852,9 @@ def _parse_gemma_tool_calls(
         name = m.group(1)
         body_start = m.end() - 1
         end_marker = content.find(_GEMMA_TC_END, body_start)
+        # No closing <tool_call|> tag: truncated call, reject in strict mode.
+        if not allow_incomplete and end_marker < 0:
+            continue
         scan_end = end_marker if end_marker >= 0 else len(content)
         end = _gemma_balanced_brace_end(content, body_start, scan_end)
         if end is None:
