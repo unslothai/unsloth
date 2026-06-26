@@ -167,7 +167,7 @@ export const ja = {
         action: "設定をリセット",
         confirmTitle: "すべてのローカル設定をリセットしますか？",
         confirmDescription: "ローカル限定の設定を消去し、Unsloth を再読み込みします。チャット、APIアクセス、DBに保存された設定は保持されます。",
-        confirmAction: "Reset and reload",
+        confirmAction: "リセットして再読み込み",
       },
     },
     profile: {
