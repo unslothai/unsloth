@@ -55,3 +55,17 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
     if name.lower().endswith(_GGUF_SUFFIX):
         name = name[: -len(_GGUF_SUFFIX)]
     return name or identifier
+
+
+def model_id_matches(requested: Optional[str], internal: Optional[str]) -> bool:
+    """Whether a client-supplied *requested* id refers to *internal*.
+
+    Accepts the clean public id (preferred) and, for backward compatibility, the
+    raw internal identifier (e.g. a legacy absolute path a client cached from an
+    older ``/v1/models`` response).
+    """
+    if requested is None or internal is None:
+        return False
+    if requested == internal:
+        return True
+    return public_model_id(internal) == requested
