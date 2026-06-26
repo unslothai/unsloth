@@ -5204,7 +5204,9 @@ def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
 
 
 def linux_runtime_dirs(binary_path: Path) -> list[str]:
-    missing = linux_missing_libraries(binary_path)
+    # ldd may execute the binary (see ldd(1) Security), so probe the untrusted
+    # prebuilt with a secret-free env rather than the inherited os.environ.
+    missing = linux_missing_libraries(binary_path, env = secret_free_environ())
     if not missing:
         return []
     return linux_runtime_dirs_for_required_libraries(missing)
@@ -5553,8 +5555,9 @@ _SECRET_ENV_URL_NAMES = frozenset(
         "UV_EXTRA_INDEX_URL",
     }
 )
-# Also catch URL userinfo creds (scheme://user:secret@host) in any other value.
-_URL_USERINFO_CREDENTIAL_RE = re.compile(r"://[^/@\s]+:[^/@\s]+@")
+# Also catch URL userinfo creds in any other value: any authority before the host
+# (scheme://user:secret@host AND token-only scheme://ghp_token@host).
+_URL_USERINFO_CREDENTIAL_RE = re.compile(r"://[^/@\s]+@")
 
 
 def is_secret_env_name(name: str) -> bool:
@@ -5591,6 +5594,15 @@ _RUNTIME_HOME_POINTER_VARS = (
     "HUGGINGFACE_HUB_CACHE",
     "HF_HUB_CACHE",
 )
+# Explicit pointers to credential / config files that live outside HOME, so the
+# redirect above does not cover them. Drop them and let lookups fall back into the
+# empty home.
+_CREDENTIAL_FILE_POINTER_VARS = (
+    "NETRC",
+    "PIP_CONFIG_FILE",
+    "DOCKER_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+)
 
 _isolated_runtime_home_dir: str | None = None
 
@@ -5607,6 +5619,23 @@ def isolated_runtime_home() -> str:
     return _isolated_runtime_home_dir
 
 
+def secret_free_environ() -> dict[str, str]:
+    # os.environ with secrets stripped and every home / credential-file pointer
+    # neutralised. Used for the binary env and for any probe (e.g. ldd) that runs
+    # the untrusted binary.
+    env = strip_secret_env(os.environ.copy())
+    runtime_home = isolated_runtime_home()
+    for pointer in _RUNTIME_HOME_POINTER_VARS:
+        env[pointer] = runtime_home
+    # Windows reconstructs the profile from %HOMEDRIVE%%HOMEPATH%, so split the
+    # throwaway home across them (a no-op pair on POSIX).
+    drive, tail = os.path.splitdrive(runtime_home)
+    env["HOMEDRIVE"], env["HOMEPATH"] = drive, tail or runtime_home
+    for pointer in _CREDENTIAL_FILE_POINTER_VARS:
+        env.pop(pointer, None)
+    return env
+
+
 def binary_env(
     binary_path: Path,
     install_dir: Path,
@@ -5614,10 +5643,7 @@ def binary_env(
     *,
     runtime_line: str | None = None,
 ) -> dict[str, str]:
-    env = strip_secret_env(os.environ.copy())
-    runtime_home = isolated_runtime_home()
-    for pointer in _RUNTIME_HOME_POINTER_VARS:
-        env[pointer] = runtime_home
+    env = secret_free_environ()
     if host.is_windows:
         path_dirs = [
             str(binary_path.parent),

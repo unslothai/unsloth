@@ -963,6 +963,67 @@ def test_binary_env_redirects_home_away_from_real_credential_stores(
     assert env["HOME"] == isolated_runtime_home()
     assert os.path.isdir(env["HOME"])
     assert os.listdir(env["HOME"]) == []
+    # Windows reconstructs the profile from HOMEDRIVE + HOMEPATH.
+    assert env["HOMEDRIVE"] + env["HOMEPATH"] == env["HOME"]
+
+
+def test_strip_secret_env_drops_token_only_url_userinfo():
+    raw = {
+        "GENERIC_REPO": "https://ghp_tokenonly@github.com/org/repo",
+        "GENERIC_OK": "https://example.com:8080/v1",
+    }
+    cleaned = strip_secret_env(raw)
+    assert "GENERIC_REPO" not in cleaned
+    assert cleaned["GENERIC_OK"] == raw["GENERIC_OK"]
+
+
+def test_binary_env_drops_explicit_credential_file_pointers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+    for var in ("NETRC", "PIP_CONFIG_FILE", "DOCKER_CONFIG", "GIT_CONFIG_GLOBAL"):
+        monkeypatch.setenv(var, "/home/realuser/secret")
+
+    env = binary_env(tmp_path / "llama-server", tmp_path, host)
+
+    for var in ("NETRC", "PIP_CONFIG_FILE", "DOCKER_CONFIG", "GIT_CONFIG_GLOBAL"):
+        assert var not in env
+
+
+def test_linux_runtime_dirs_probes_with_secret_free_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, object] = {}
+
+    def fake_missing(binary_path, *, env = None):
+        captured["env"] = env
+        return []
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_missing_libraries", fake_missing)
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh_secret")
+
+    INSTALL_LLAMA_PREBUILT.linux_runtime_dirs(Path("/fake/llama-server"))
+
+    probe_env = captured["env"]
+    assert probe_env is not None
+    assert "HF_TOKEN" not in probe_env
+    assert "GITHUB_TOKEN" not in probe_env
 
 
 def test_install_prebuilt_falls_back_to_older_release_plan(
