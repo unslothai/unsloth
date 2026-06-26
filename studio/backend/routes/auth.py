@@ -253,14 +253,15 @@ def _login_blocked(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        ip_blocked = _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS)
-        if (
-            ip_blocked == 0
-            and ip not in _LOGIN_IP_BUCKETS
-            and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS
-        ):
-            # No own bucket while the dict is saturated: throttle via the IP's shard.
-            ip_blocked = _blocked_for(_overflow_shard(ip), now, _LOGIN_IP_MAX_FAILS)
+        # Honor the IP's overflow shard regardless of current dict capacity: a
+        # source counted there during saturation must stay throttled until those
+        # failures age out, even if a bucket later frees up -- otherwise a fresh
+        # bucket would reset it. Shards are empty outside saturation, so this is a
+        # no-op in the common case.
+        ip_blocked = max(
+            _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS),
+            _blocked_for(_overflow_shard(ip), now, _LOGIN_IP_MAX_FAILS),
+        )
         return max(_blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS), ip_blocked)
 
 

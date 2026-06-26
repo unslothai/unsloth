@@ -300,6 +300,35 @@ class TestBucketKeyAndBlocking:
         )
         assert auth_routes._login_blocked((victim_ip, "admin")) == 0
 
+    def test_overflow_throttle_survives_capacity_freeing(self, env_no_proxy, monkeypatch):
+        """A source throttled via overflow must stay throttled even if a bucket
+        frees up before the window expires; otherwise a fresh bucket resets it.
+        """
+        from routes import auth as auth_routes
+
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_BUCKETS", 10)
+        monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
+        # Neutralize account-bucket blocking so this isolates the per-IP path.
+        monkeypatch.setattr(auth_routes, "_LOGIN_MAX_FAILS", 100)
+
+        # Saturate the dict, then drive a source's overflow shard hot.
+        for idx in range(10):
+            auth_routes._record_login_failure((f"10.0.0.{idx}", "admin"))
+        attacker = ("198.51.100.7", "admin")
+        for _ in range(5):
+            auth_routes._record_login_failure(attacker)
+        assert auth_routes._login_blocked(attacker) > 0
+
+        # A successful login from another IP frees a bucket slot.
+        auth_routes._clear_login_bucket(("10.0.0.0", "admin"))
+        assert len(auth_routes._LOGIN_IP_BUCKETS) < auth_routes._LOGIN_MAX_BUCKETS
+
+        # Still throttled (overflow shard still hot), and a new failure that now
+        # gets a fresh per-IP bucket must not reset the throttle.
+        assert auth_routes._login_blocked(attacker) > 0
+        auth_routes._record_login_failure(attacker)
+        assert auth_routes._login_blocked(attacker) > 0
+
 
 # ---------- /login 429 body ----------
 
