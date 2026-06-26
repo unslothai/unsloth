@@ -2114,3 +2114,69 @@ def test_responses_validates_tools_before_auto_switch():
     assert src.index("each function tool must have a 'name'") < src.index(
         "_maybe_auto_switch_model"
     )
+
+
+# ── codex review (round 3): process-wide swap gate across event loops ──
+
+
+def test_swap_acquires_process_gate_before_load():
+    # Lock in the structure: the process-wide gate is acquired before the load and
+    # always released, so a cross-loop swap can't reach _load_model_impl unguarded.
+    import inspect
+
+    src = inspect.getsource(inference_route._maybe_auto_switch_model)
+    assert src.index("_acquire_swap_gate") < src.index("_load_model_impl")
+    assert "_auto_switch_process_lock.release()" in src
+
+
+def test_auto_switch_serializes_across_event_loops(monkeypatch):
+    # Codex P2: the per-loop asyncio lock can't serialize two swaps on different
+    # event loops in one process. The process-wide gate must, so the two slow loads
+    # never overlap on the single model slot.
+    import threading
+
+    backend = _FakeBackend("org/A-GGUF")
+    state = {"cur": 0, "max": 0}
+    loaded: list = []
+    slock = threading.Lock()
+
+    async def _slow_load(
+        request,
+        fastapi_request,
+        current_subject = None,
+    ):
+        with slock:
+            state["cur"] += 1
+            state["max"] = max(state["max"], state["cur"])
+        await asyncio.sleep(0.1)  # widen the window so an unguarded race would overlap
+        with slock:
+            state["cur"] -= 1
+            loaded.append(request.model_path)
+        backend.model_identifier = request.model_path
+        backend.is_loaded = True
+        backend._openai_advertised_id = None
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda m: (m, "Q8_0", m))
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_auto_switch_request_waiters", {})
+
+    barrier = threading.Barrier(2)
+
+    def _run(model):
+        barrier.wait()  # release both threads together so they truly race
+        asyncio.run(inference_route._maybe_auto_switch_model(model, object(), "t"))
+
+    threads = [
+        threading.Thread(target = _run, args = ("org/B-GGUF",)),
+        threading.Thread(target = _run, args = ("org/C-GGUF",)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert state["max"] == 1  # the gate serialized the two cross-loop swaps
+    assert sorted(loaded) == ["org/B-GGUF", "org/C-GGUF"]  # both still swapped

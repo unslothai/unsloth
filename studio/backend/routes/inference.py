@@ -2247,6 +2247,20 @@ def _auto_switch_lock() -> asyncio.Lock:
         return lock
 
 
+# Process-wide gate so a swap on another event loop in this process can't race
+# this one for the single model slot: the asyncio lock above is per loop, but the
+# backend slot and _load_model_impl are process-wide. threading.Lock so it serializes
+# across loops/threads; released from the loop thread (Lock allows cross-thread release).
+_auto_switch_process_lock = threading.Lock()
+
+
+async def _acquire_swap_gate() -> None:
+    # Non-blocking first for the common single-loop case; only wait off the loop
+    # (so it isn't blocked) when another loop actually holds the gate.
+    if not _auto_switch_process_lock.acquire(blocking = False):
+        await asyncio.to_thread(_auto_switch_process_lock.acquire)
+
+
 # Counts in-flight auto-switch requests per (target, variant). The busy guard
 # subtracts same-target waiters so concurrent requests for one model load once
 # instead of each 409-ing the other.
@@ -2449,54 +2463,60 @@ async def _maybe_auto_switch_model(
         _note_switch_waiter(key, 1)
         try:
             async with _auto_switch_lock():
-                # Hold the keep-warm gate across the swap so no new inference can
-                # start on the model while it is being torn down and replaced.
-                async with inference_lifecycle_gate():
-                    if _already_serving():
-                        return
-                    # Single slot: refuse a cross-model swap while another inference
-                    # request is active rather than killing its response. Requests
-                    # heading to this same target (by resolved id or raw name) are
-                    # excluded, so concurrent requests for one model load once. A
-                    # pending request is still in the middleware, not generating, so
-                    # it is not counted here.
-                    same_others = max(
-                        _same_target_waiters(key) - 1, _same_request_waiters(request_key) - 1, 0
-                    )
-                    others = other_inference_request_count(
-                        current_request_counted = True, include_pending = False
-                    )
-                    # Not gated on the GGUF being loaded: _load_model_impl also
-                    # tears down an active Unsloth backend before loading a GGUF,
-                    # so refuse whenever any other inference request is in flight.
-                    if others > same_others:
-                        raise HTTPException(
-                            status_code = 409,
-                            detail = openai_error_body(
-                                "Cannot switch models while another inference request is in progress.",
-                                status = 409,
-                                code = "model_switch_busy",
-                                param = "model",
-                            ),
+                # The asyncio lock is per loop; add a process-wide gate so a swap on
+                # another loop in this process can't race the single slot.
+                await _acquire_swap_gate()
+                try:
+                    # Hold the keep-warm gate across the swap so no new inference can
+                    # start on the model while it is being torn down and replaced.
+                    async with inference_lifecycle_gate():
+                        if _already_serving():
+                            return
+                        # Single slot: refuse a cross-model swap while another inference
+                        # request is active rather than killing its response. Requests
+                        # heading to this same target (by resolved id or raw name) are
+                        # excluded, so concurrent requests for one model load once. A
+                        # pending request is still in the middleware, not generating, so
+                        # it is not counted here.
+                        same_others = max(
+                            _same_target_waiters(key) - 1, _same_request_waiters(request_key) - 1, 0
                         )
-                    # Apply this model's saved launch flags so the swap honors the config.
-                    override = get_model_override(override_id)
-                    load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-                    if override.get("llama_extra_args") is not None:
-                        load_kwargs["llama_extra_args"] = override["llama_extra_args"]
-                    if override.get("max_seq_length") is not None:
-                        load_kwargs["max_seq_length"] = override["max_seq_length"]
-                    # Reuse the load impl so its dedup, tensor fallback, and threading
-                    # apply. Call the impl directly: we already hold the lifecycle gate
-                    # the /load route would otherwise take, so the route would deadlock.
-                    await _load_model_impl(
-                        LoadRequest(**load_kwargs),
-                        fastapi_request,
-                        current_subject,
-                    )
-                    # Advertise the repo id (not the concrete load path) as the loaded
-                    # model's public id and override key for /v1/models and idle stash.
-                    get_llama_cpp_backend()._openai_advertised_id = override_id
+                        others = other_inference_request_count(
+                            current_request_counted = True, include_pending = False
+                        )
+                        # Not gated on the GGUF being loaded: _load_model_impl also
+                        # tears down an active Unsloth backend before loading a GGUF,
+                        # so refuse whenever any other inference request is in flight.
+                        if others > same_others:
+                            raise HTTPException(
+                                status_code = 409,
+                                detail = openai_error_body(
+                                    "Cannot switch models while another inference request is in progress.",
+                                    status = 409,
+                                    code = "model_switch_busy",
+                                    param = "model",
+                                ),
+                            )
+                        # Apply this model's saved launch flags so the swap honors the config.
+                        override = get_model_override(override_id)
+                        load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                        if override.get("llama_extra_args") is not None:
+                            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+                        if override.get("max_seq_length") is not None:
+                            load_kwargs["max_seq_length"] = override["max_seq_length"]
+                        # Reuse the load impl so its dedup, tensor fallback, and threading
+                        # apply. Call the impl directly: we already hold the lifecycle gate
+                        # the /load route would otherwise take, so the route would deadlock.
+                        await _load_model_impl(
+                            LoadRequest(**load_kwargs),
+                            fastapi_request,
+                            current_subject,
+                        )
+                        # Advertise the repo id (not the concrete load path) as the loaded
+                        # model's public id and override key for /v1/models and idle stash.
+                        get_llama_cpp_backend()._openai_advertised_id = override_id
+                finally:
+                    _auto_switch_process_lock.release()
         finally:
             _note_switch_waiter(key, -1)
     finally:
