@@ -212,17 +212,6 @@ def resolve_model_config(model: str, *, hf_token: Optional[str]):
     return model_config
 
 
-def _llama_args_with_flash_attn(
-    llama_extra_args: Optional[List[str]], flash_attn: Optional[bool]
-) -> Optional[List[str]]:
-    args = list(llama_extra_args or [])
-    if flash_attn is True:
-        args.extend(["--flash-attn", "on"])
-    elif flash_attn is False:
-        args.extend(["--flash-attn", "off"])
-    return args or None
-
-
 def _validate_llama_extra_args_or_exit(llama_extra_args: Optional[List[str]]) -> list[str]:
     from core.inference.llama_server_args import validate_extra_args
     try:
@@ -238,7 +227,6 @@ def _load_gguf_backend(
     hf_token,
     max_seq_length,
     tensor_parallel: bool = False,
-    flash_attn: Optional[bool] = None,
     llama_extra_args: Optional[List[str]] = None,
 ):
     ensure_studio_backend_path()
@@ -246,9 +234,7 @@ def _load_gguf_backend(
     from core.inference.tensor_fallback import load_with_tensor_fallback
 
     llama_backend = LlamaCppBackend()
-    extra_args = _validate_llama_extra_args_or_exit(
-        _llama_args_with_flash_attn(llama_extra_args, flash_attn)
-    )
+    extra_args = _validate_llama_extra_args_or_exit(llama_extra_args)
     common = dict(
         hf_variant = model_config.gguf_variant,
         model_identifier = model_config.identifier,
@@ -298,7 +284,6 @@ def load_chat_backend(
     max_seq_length: int,
     load_in_4bit: bool,
     tensor_parallel: bool = False,
-    flash_attn: Optional[bool] = None,
     llama_extra_args: Optional[List[str]] = None,
     model_config = None,
     fresh_backend: bool = False,
@@ -319,7 +304,6 @@ def load_chat_backend(
             hf_token = hf_token,
             max_seq_length = max_seq_length,
             tensor_parallel = tensor_parallel,
-            flash_attn = flash_attn,
             llama_extra_args = llama_extra_args,
         )
 
@@ -517,7 +501,6 @@ class HttpChatBackend:
         max_seq_length,
         load_in_4bit,
         tensor_parallel: bool = False,
-        flash_attn: Optional[bool] = None,
         llama_extra_args: Optional[List[str]] = None,
     ) -> None:
         typer.echo(f"Loading {model} on the Studio server", err = True)
@@ -528,9 +511,8 @@ class HttpChatBackend:
             "load_in_4bit": load_in_4bit,
             "tensor_parallel": tensor_parallel,
         }
-        extra_args = _llama_args_with_flash_attn(llama_extra_args, flash_attn)
-        if extra_args:
-            payload["llama_extra_args"] = extra_args
+        if llama_extra_args:
+            payload["llama_extra_args"] = llama_extra_args
         try:
             self._request(
                 "POST",
@@ -622,7 +604,6 @@ def connect_studio_server(
     max_seq_length,
     load_in_4bit,
     tensor_parallel: bool = False,
-    flash_attn: Optional[bool] = None,
     llama_extra_args: Optional[List[str]] = None,
 ):
     """Backend on a running Studio server, or None (caller loads locally)."""
@@ -667,7 +648,6 @@ def connect_studio_server(
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
         tensor_parallel = tensor_parallel,
-        flash_attn = flash_attn,
         llama_extra_args = llama_extra_args,
     )
     return backend

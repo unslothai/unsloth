@@ -39,11 +39,6 @@ def inference(
             "of by layer. Ignored for non-GGUF models."
         ),
     ),
-    flash_attn: Optional[bool] = typer.Option(
-        None,
-        "--flash-attn/--no-flash-attn",
-        help = "Enable or disable llama-server flash attention for GGUF models.",
-    ),
     llama_extra_args: Optional[List[str]] = typer.Option(
         None,
         "--llama-extra-arg",
@@ -81,7 +76,6 @@ def inference(
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
         tensor_parallel = tensor_parallel,
-        flash_attn = flash_attn,
         llama_extra_args = llama_extra_args,
     )
     chat_backend = None if no_server else connect_studio_server(model, **load_opts)

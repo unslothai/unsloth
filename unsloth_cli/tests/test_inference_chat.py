@@ -97,10 +97,6 @@ def test_inference_exposes_gguf_runtime_options():
     tensor = _option(inference, "tensor_parallel")
     assert "--tensor-parallel/--no-tensor-parallel" in (getattr(tensor, "param_decls", None) or [])
 
-    flash = _option(inference, "flash_attn")
-    assert getattr(flash, "default", None) is None
-    assert "--flash-attn/--no-flash-attn" in (getattr(flash, "param_decls", None) or [])
-
     extra = _option(inference, "llama_extra_args")
     assert "--llama-extra-arg" in (getattr(extra, "param_decls", None) or [])
 
@@ -120,10 +116,6 @@ def test_chat_command_is_registered_with_options():
 
     tensor = _option(chatmod.chat, "tensor_parallel")
     assert "--tensor-parallel/--no-tensor-parallel" in (getattr(tensor, "param_decls", None) or [])
-
-    flash = _option(chatmod.chat, "flash_attn")
-    assert getattr(flash, "default", None) is None
-    assert "--flash-attn/--no-flash-attn" in (getattr(flash, "param_decls", None) or [])
 
     extra = _option(chatmod.chat, "llama_extra_args")
     assert "--llama-extra-arg" in (getattr(extra, "param_decls", None) or [])
@@ -383,7 +375,6 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
         max_seq_length = 8192,
         load_in_4bit = False,
         tensor_parallel = True,
-        flash_attn = True,
         llama_extra_args = ["--top-k", "20"],
     )
 
@@ -397,7 +388,7 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
                 "max_seq_length": 8192,
                 "load_in_4bit": False,
                 "tensor_parallel": True,
-                "llama_extra_args": ["--top-k", "20", "--flash-attn", "on"],
+                "llama_extra_args": ["--top-k", "20"],
             },
             None,
         )
@@ -479,7 +470,6 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
         hf_token = "hf_x",
         max_seq_length = 8192,
         tensor_parallel = True,
-        flash_attn = False,
         llama_extra_args = ["--top-k", "20"],
     )
 
@@ -493,7 +483,7 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
             "is_vision": False,
             "n_ctx": 8192,
             "tensor_parallel": True,
-            "extra_args": ["--top-k", "20", "--flash-attn", "off"],
+            "extra_args": ["--top-k", "20"],
         }
     ]
 
@@ -659,7 +649,6 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
         [
             "fake-model",
             "--tensor-parallel",
-            "--flash-attn",
             "--llama-extra-arg=--top-k",
             "--llama-extra-arg",
             "20",
@@ -676,7 +665,6 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
                 "max_seq_length": 4096,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
-                "flash_attn": True,
                 "llama_extra_args": ["--top-k", "20"],
             },
         )
@@ -709,7 +697,6 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             "fake-model",
             "hello",
             "--tensor-parallel",
-            "--flash-attn",
             "--llama-extra-arg=--top-k",
             "--llama-extra-arg",
             "20",
@@ -725,7 +712,6 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
                 "max_seq_length": 2048,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
-                "flash_attn": True,
                 "llama_extra_args": ["--top-k", "20"],
             },
         )
