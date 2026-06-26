@@ -603,6 +603,9 @@ class TrainingRunSummary(BaseModel):
     resumed_later: bool = False
     has_preview_model: bool = False
     preview_ref: Optional[str] = None
+    # HMAC capability token for the `/p/{preview_ref}` share link; None when not
+    # previewable. The frontend appends it as `?k=` so a guessed ref can't be used.
+    preview_sig: Optional[str] = None
 
 
 class TrainingRunUpdateRequest(BaseModel):
