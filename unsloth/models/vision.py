@@ -1440,16 +1440,14 @@ class FastBaseModel:
         while hasattr(m, "model"):
             m.max_seq_length = max_seq_length
             m._saved_temp_tokenizer = tokenizer
-            # Also set is_loaded_in_8bit to disable incorrect DDP
-            m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         m.max_seq_length = max_seq_length
         # Save to modules as well
         for module in model.modules():
             module.max_seq_length = max_seq_length
         m._saved_temp_tokenizer = tokenizer
-        # Also set is_loaded_in_8bit to disable incorrect DDP
-        m.is_loaded_in_8bit = True if not full_finetuning else False
+        # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
+        _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 
         # Patch generate
         if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0" and hasattr(
@@ -1826,14 +1824,12 @@ class FastBaseModel:
             if hasattr(m, "_saved_temp_tokenizer"):
                 if hasattr(m._saved_temp_tokenizer, "tokenizer"):
                     m._saved_temp_tokenizer.tokenizer.padding_side = "left"
-            # Also set is_loaded_in_8bit to disable incorrect DDP
-            m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         if hasattr(m, "_saved_temp_tokenizer"):
             if hasattr(m._saved_temp_tokenizer, "tokenizer"):
                 m._saved_temp_tokenizer.tokenizer.padding_side = "left"
-        # Also set is_loaded_in_8bit to disable incorrect DDP
-        m.is_loaded_in_8bit = True if not full_finetuning else False
+        # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
+        _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 
         # Clear deleted GPU items
         for _ in range(3):
