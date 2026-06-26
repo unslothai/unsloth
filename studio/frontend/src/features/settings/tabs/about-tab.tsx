@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
+import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
@@ -16,7 +17,7 @@ import {
   NewReleasesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -24,6 +25,7 @@ import {
   type UpdateInstallSource,
   UpdateStudioInstructions,
 } from "../components/update-studio-instructions";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 type ApiObject = Record<string, unknown>;
 
@@ -74,6 +76,12 @@ export function AboutTab() {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
+  const hw = useHardwareInfo();
+  const updateSectionRef = useRef<HTMLDivElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
   const [shutdownOpen, setShutdownOpen] = useState(false);
   const [installSource, setInstallSource] = useState<
     UpdateInstallSource | "loading"
@@ -93,6 +101,20 @@ export function AboutTab() {
     };
   }, []);
 
+  useEffect(() => {
+    if (scrollTarget !== "about-updates") {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      updateSectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+      consumeScrollTarget("about-updates");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
+
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
@@ -104,17 +126,56 @@ export function AboutTab() {
         </p>
       </header>
 
-      <StudioVersionSection />
+      {/* llama.cpp row lives in the shared version section so it sits with the
+          Unsloth/Package rows; the prop keeps it About-only (General passes none). */}
+      <StudioVersionSection llamaCppVersion={hw.llamaCpp} />
 
-      <SettingsSection title={t("settings.about.updates")}>
-        <div className="py-2">
-          <UpdateStudioInstructions
-            defaultShell={defaultShell}
-            installSource={isTauri ? null : installSource}
-            showTitle={false}
-          />
-        </div>
-      </SettingsSection>
+      <div ref={updateSectionRef} className="scroll-mt-5">
+        <SettingsSection title={t("settings.about.updates")}>
+          <div className="py-2">
+            <UpdateStudioInstructions
+              defaultShell={defaultShell}
+              installSource={isTauri ? null : installSource}
+              showTitle={false}
+            />
+          </div>
+        </SettingsSection>
+      </div>
+
+      {hw.gpus.length > 0 || hw.cuda || hw.rocm ? (
+        <SettingsSection title={t("settings.about.hardware")}>
+          {hw.gpus.map((gpu, i) => (
+            <SettingsRow
+              // Index key: device order from the backend is stable per request.
+              // biome-ignore lint/suspicious/noArrayIndexKey: The hardware API does not expose a stable device id.
+              key={i}
+              label={
+                hw.gpus.length > 1
+                  ? `${t("settings.about.gpu")} ${i}`
+                  : t("settings.about.gpu")
+              }
+            >
+              <code className="font-mono text-xs text-muted-foreground">
+                {gpu.name ?? "—"}
+                {gpu.vramTotalGb != null
+                  ? ` · ${Math.round(gpu.vramTotalGb)} GB`
+                  : ""}
+              </code>
+            </SettingsRow>
+          ))}
+          {hw.cuda || hw.rocm ? (
+            <SettingsRow
+              label={
+                hw.cuda ? t("settings.about.cuda") : t("settings.about.rocm")
+              }
+            >
+              <code className="font-mono text-xs text-muted-foreground">
+                {hw.cuda ?? hw.rocm}
+              </code>
+            </SettingsRow>
+          ) : null}
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title={t("settings.about.help")}>
         <SettingsRow label={t("settings.about.documentation")}>
@@ -189,29 +250,33 @@ export function AboutTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.about.dangerZone")}>
-        <SettingsRow
-          destructive={true}
-          label={t("settings.about.shutDownStudio")}
-          description={t("settings.about.shutDownStudioDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShutdownOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+      {!isTauri && (
+        <SettingsSection title={t("settings.about.dangerZone")}>
+          <SettingsRow
+            destructive={true}
+            label={t("settings.about.shutDownStudio")}
+            description={t("settings.about.shutDownStudioDescription")}
           >
-            <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1.5" />
-            {t("settings.about.shutDown")}
-          </Button>
-        </SettingsRow>
-      </SettingsSection>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShutdownOpen(true)}
+              className="text-destructive hover:text-destructive hover:border-destructive/60"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1.5" />
+              {t("settings.about.shutDown")}
+            </Button>
+          </SettingsRow>
+        </SettingsSection>
+      )}
 
-      <ShutdownDialog
-        open={shutdownOpen}
-        onOpenChange={setShutdownOpen}
-        onAfterShutdown={removeTrainingUnloadGuard}
-      />
+      {!isTauri && (
+        <ShutdownDialog
+          open={shutdownOpen}
+          onOpenChange={setShutdownOpen}
+          onAfterShutdown={removeTrainingUnloadGuard}
+        />
+      )}
     </div>
   );
 }

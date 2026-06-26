@@ -70,12 +70,34 @@ def test_status_response_exposes_source_build():
         "installed_at_utc": None,
         "age_days": None,
         "source_build": True,
-        "job": {"state": "idle"},
+        "job": {"state": "idle", "reload_required": False},
     }
     model = rl.LlamaUpdateStatusResponse(**payload)
     assert model.model_dump()["source_build"] is True
+    assert model.model_dump()["job"]["reload_required"] is False
     # Extra/unknown keys must not crash the response model.
     rl.LlamaUpdateStatusResponse(**{**payload, "unexpected": 1})
+
+
+def test_status_response_exposes_update_size_bytes():
+    payload = {
+        "supported": True,
+        "update_available": True,
+        "stale": False,
+        "installed_tag": "b9493",
+        "latest_tag": "b9518",
+        "published_repo": "unslothai/llama.cpp",
+        "installed_at_utc": None,
+        "age_days": None,
+        "source_build": False,
+        "update_size_bytes": 123_456_789,
+        "job": {"state": "idle"},
+    }
+    model = rl.LlamaUpdateStatusResponse(**payload)
+    assert model.model_dump()["update_size_bytes"] == 123_456_789
+    # Omitted -> defaults to None (the offline / no-matching-asset case).
+    without = {k: v for k, v in payload.items() if k != "update_size_bytes"}
+    assert rl.LlamaUpdateStatusResponse(**without).model_dump()["update_size_bytes"] is None
 
 
 def test_status_handler_runs_off_event_loop(monkeypatch):

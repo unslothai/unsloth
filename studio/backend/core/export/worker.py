@@ -159,7 +159,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
     t_err.start()
 
 
-def _activate_transformers_version(model_name: str) -> None:
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on sys.path for utils imports.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -168,7 +168,7 @@ def _activate_transformers_version(model_name: str) -> None:
 
     from utils.transformers_version import activate_transformers_for_subprocess
 
-    activate_transformers_for_subprocess(model_name)
+    activate_transformers_for_subprocess(model_name, hf_token)
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
@@ -188,16 +188,98 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
 
     # Auto-enable trust_remote_code for NemotronH/Nano models.
     if not trust_remote_code:
+        from utils.security.trusted_org import is_trusted_org_repo
+
         _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
         _cp_lower = checkpoint_path.lower()
-        if any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
-            _cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/")
+        if (
+            any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS)
+            and (_cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/"))
+            # Genuine first-party Hub repo only (not a local/spoof name starting
+            # with "unsloth/"); authenticated so private repos resolve.
+            and is_trusted_org_repo(checkpoint_path, hf_token = cmd.get("hf_token"))
         ):
             trust_remote_code = True
             logger.info(
                 "Auto-enabled trust_remote_code for Nemotron model: %s",
                 checkpoint_path,
             )
+
+    # Malware gate: a poisoned pickle deserializes on load even with
+    # trust_remote_code False, so check HF's security scan (metadata-only) every
+    # load. Local checkpoints have no Hub scan and are skipped in the helper; a
+    # LoRA merges its base weights, so gate that repo too.
+    from utils.security import evaluate_file_security, security_load_subdirs
+
+    malware_targets = [checkpoint_path]
+    try:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
+        _base = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
+        if _base:
+            malware_targets.append(_base)
+    except Exception as exc:
+        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+    _hf_token = cmd.get("hf_token")
+    for target in dict.fromkeys(malware_targets):
+        _fs = evaluate_file_security(
+            target, hf_token = _hf_token, load_subdirs = security_load_subdirs(target, _hf_token)
+        )
+        if _fs.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": _fs.reason,
+                    "error_kind": "malware_blocked",
+                    "security": _fs.response_payload(),
+                    "ts": time.time(),
+                },
+            )
+            return
+
+    # Consent gate: scan auto_map code before it runs; block CRITICAL/HIGH unless
+    # pinned-approved. A LoRA merges its base model, whose code runs, so gate it too.
+    if trust_remote_code:
+        from utils.security import evaluate_remote_code_consent_for_targets
+
+        consent_targets = [checkpoint_path]
+        try:
+            from utils.models.model_config import get_base_model_from_lora_identifier
+
+            # Resolve a local or remote adapter's base so its base repo is gated too.
+            base_model = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
+            if base_model:
+                consent_targets.append(base_model)
+        except Exception as exc:
+            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
+        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
+        _rc = evaluate_remote_code_consent_for_targets(
+            consent_targets,
+            hf_token = cmd.get("hf_token"),
+            trust_remote_code = True,
+            approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
+            subject = cmd.get("subject"),
+        )
+        if _rc.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": (
+                        f"Checkpoint '{_rc.model_name}' ships custom code flagged as "
+                        f"{_rc.max_severity} by the security scan. Review and "
+                        f"approve it to proceed."
+                    ),
+                    "error_kind": "remote_code_blocked",
+                    "remote_code": _rc.response_payload(),
+                    "ts": time.time(),
+                },
+            )
+            return
 
     try:
         _send_response(
@@ -214,6 +296,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
+            hf_token = cmd.get("hf_token"),
         )
 
         _send_response(
@@ -377,7 +460,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
-        _activate_transformers_version(checkpoint_path)
+        _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
     except Exception as exc:
         _send_response(
             resp_queue,
@@ -423,6 +506,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         backend_path = str(Path(__file__).resolve().parent.parent.parent)
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
+
+        # Recover from any namespace-package shadow before importing Unsloth.
+        from core.import_guards import ensure_real_packages
+
+        ensure_real_packages("unsloth_zoo", "unsloth")
 
         from core.export.export import ExportBackend
 

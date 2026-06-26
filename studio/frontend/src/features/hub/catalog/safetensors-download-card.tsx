@@ -244,7 +244,7 @@ export function SafetensorsDownloadCard({
           <div
             className={cn(
               "group/pair flex h-9 shrink-0 items-stretch gap-1.5",
-              // Run + Train pair hidden until Hub->chat/train pickers ship.
+              // Run+Train pair hidden until Hub→chat / Hub→train pickers ship.
               !HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && "hidden",
             )}
           >

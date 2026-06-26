@@ -7,6 +7,7 @@ import {
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
+import { BulbIcon } from "@/lib/bulb-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -47,6 +48,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -59,9 +61,12 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
+import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
+import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -148,20 +153,6 @@ const MicIcon: FC<{ className?: string }> = ({ className }) => (
     aria-hidden={true}
   >
     <path d="M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V232a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z" />
-  </svg>
-);
-
-const BulbIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="-10.24 -10.24 1044.48 1044.48"
-    fill="currentColor"
-    stroke="currentColor"
-    strokeWidth={16.384}
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M511.984 0c-198.032 0-353.12 161.104-353.12 359.136 0 149.2 73.28 220.256 131.185 272.128 37.28 33.424 62.368 53.552 62.368 78.352v54.255c0 1.392.193 2.752.368 4.128h-.72v92.624c.016 97.712 63.2 163.376 161.072 163.376 94.464 0 158.944-65.664 158.944-163.376V768h-.928c.176-1.376.416-2.736.416-4.128v-54.255c0-37.76 28.032-60.592 70.528-97.696 57.504-50.208 123.023-112.688 123.023-252.784C865.136 161.104 710.016 0 511.983 0zm-1.215 960c-59.904 0-94.689-37.152-94.689-99.376l-.463-42.672C438.64 825.824 470 832 512 832c41.424 0 72.848-6.624 96.08-14.768v43.392c0 63.152-35.247 99.376-97.312 99.376zm189.248-396.288c-43.472 37.968-92.433 77.216-92.433 145.904v40.432c-15.183 8.48-43.183 18.56-96.127 18.56-55.569 0-81.92-9.856-95.024-17.473V709.6c0-54.608-42.688-89.297-83.68-126.017-54.32-48.672-109.873-103.84-109.873-224.464-.015-162.72 126.385-295.12 289.104-295.12 162.752 0 289.152 132.4 289.152 295.137 0 111.024-48.463 158.576-101.12 204.576z" />
   </svg>
 );
 
@@ -481,6 +472,7 @@ export function SharedComposer({
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const lastModelLoadError = useChatRuntimeStore((s) => s.lastModelLoadError);
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
@@ -533,6 +525,10 @@ export function SharedComposer({
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
   );
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const setBypassPermissions = useChatRuntimeStore(
+    (s) => s.setBypassPermissions,
+  );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
@@ -558,6 +554,7 @@ export function SharedComposer({
     externalModelLabel: externalSelection?.modelId ?? null,
     loadedIsMultimodal,
     modelLoaded,
+    loadError: lastModelLoadError,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
   // Attach-time gate. Compare mode defers to send: the catalog can lag a
@@ -610,7 +607,17 @@ export function SharedComposer({
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
-  const isEffort = effectiveReasoningStyle === "reasoning_effort";
+  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort
+  // dropdown; it just also carries an Off row via supportsReasoningOff.
+  const isEffort =
+    effectiveReasoningStyle === "reasoning_effort" ||
+    effectiveReasoningStyle === "enable_thinking_effort";
+  // GLM-5.2's effort menu (Off, high, max) has short rows, so it can sit a
+  // touch skinnier. Skip the narrower floor when a Preserve thinking row is
+  // present, since that longer label needs the wider width to stay one line.
+  const narrowEffortMenu =
+    effectiveReasoningStyle === "enable_thinking_effort" &&
+    !supportsPreserveThinking;
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
@@ -741,7 +748,7 @@ export function SharedComposer({
       queueIndexRef.current = 0;
       setQueueProgress({ current: 0, total: 0 });
       toast.error("Prompt queue stopped", {
-        description: "A compare step failed — remaining prompts were not sent.",
+        description: "A compare step failed; remaining prompts were not sent.",
       });
       return;
     }
@@ -927,24 +934,43 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
+        let loadTrustRemoteCode = trustRemoteCode;
+        let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
-        if (!isAlreadyActive) {
-          const validation = await validateModel({
-            model_path: sel.id,
-            hf_token: currentStore.hfToken || null,
-            max_seq_length: maxSeqLength,
-            load_in_4bit: true,
-            is_lora: sel.isLora,
-            gguf_variant: sel.ggufVariant ?? null,
-            trust_remote_code: trustRemoteCode,
-            chat_template_override: effectiveChatTemplateOverride,
+        // Already loaded (gate passed at first load): skip a redundant reload that would
+        // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
+        if (isAlreadyActive) {
+          return "ready";
+        }
+        const validation = await validateModel({
+          model_path: sel.id,
+          hf_token: currentStore.hfToken || null,
+          max_seq_length: maxSeqLength,
+          load_in_4bit: true,
+          is_lora: sel.isLora,
+          gguf_variant: sel.ggufVariant ?? null,
+          trust_remote_code: loadTrustRemoteCode,
+          chat_template_override: effectiveChatTemplateOverride,
+        });
+        if (
+          validation.requires_trust_remote_code ||
+          validation.requires_security_review
+        ) {
+          const approved = await confirmRemoteCodeIfNeeded({
+            modelName: sel.id,
+            hfToken: currentStore.hfToken || null,
+            requiresTrustRemoteCode: true,
+            onApprove: (fp) => {
+              loadTrustRemoteCode = true;
+              approvedRemoteCodeFingerprint = fp;
+            },
           });
-          if (validation.requires_trust_remote_code && !trustRemoteCode) {
+          if (!approved) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
+              `${modelDisplayName(sel.id)} needs custom code approval to load.`,
             );
           }
         }
@@ -955,7 +981,8 @@ export function SharedComposer({
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: trustRemoteCode,
+          trust_remote_code: loadTrustRemoteCode,
+          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
@@ -974,7 +1001,7 @@ export function SharedComposer({
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
-          reasoningStyle: resp.reasoning_style ?? "enable_thinking",
+          ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
           tensorParallel: resp.tensor_parallel ?? false,
@@ -1108,6 +1135,20 @@ export function SharedComposer({
       refreshStuckImeTimer();
       return;
     }
+    // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx.
+    // On macOS, switching input methods without composing can leave composingRef
+    // pinned; clear it immediately on the first non-IME keystroke.
+    if (composingRef.current) {
+      // Candidate-confirming Enter can arrive as non-composing; keep it gated.
+      if (e.key === "Enter") {
+        if (!e.shiftKey) {
+          e.preventDefault();
+        }
+        refreshStuckImeTimer();
+        return;
+      }
+      setCompositionState(false);
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) {
@@ -1240,6 +1281,7 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ),
+    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -1390,6 +1432,12 @@ export function SharedComposer({
           setText(e.currentTarget.value);
         }}
         onKeyDown={onKeyDown}
+        onBlur={() => {
+          // Mac: switching input methods can fire compositionstart without a
+          // matching compositionend, leaving composingRef pinned. The OS always
+          // commits or cancels composition before the element loses focus.
+          setCompositionState(false);
+        }}
         placeholder="Send to both models..."
         className="composer-input"
         rows={1}
@@ -1546,7 +1594,7 @@ export function SharedComposer({
                     <MoreHorizontalIcon className="size-4" />
                     More
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
                     {overflowPlusItems.map((id) => (
                       <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                     ))}
@@ -1569,6 +1617,29 @@ export function SharedComposer({
             </PillGlyph>
             <span>Compare</span>
           </button>
+          {/* Bypass sits immediately after Compare and ahead of every other
+              tool pill (Search, Code, ...) so the active danger state reads
+              first; only Compare outranks it. */}
+          {bypassPermissions && (
+            <button
+              type="button"
+              onClick={() => setBypassPermissions(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              data-variant="danger"
+              aria-label="Disable Bypass permissions"
+              title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
+            >
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={ShieldBanIcon}
+                  strokeWidth={2}
+                  className="size-[15px]"
+                />
+              </PillGlyph>
+              <span>Bypass permissions</span>
+            </button>
+          )}
           <button
             type="button"
             disabled={searchDisabled}
@@ -1720,7 +1791,10 @@ export function SharedComposer({
                 <DropdownMenuContent
                   side="top"
                   align="end"
-                  className="unsloth-plus-menu min-w-44"
+                  className={cn(
+                    "unsloth-plus-menu",
+                    narrowEffortMenu ? "min-w-40" : "min-w-44",
+                  )}
                 >
                   {isEffort ? (
                     <>

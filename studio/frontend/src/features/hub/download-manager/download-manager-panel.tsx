@@ -9,9 +9,9 @@ import {
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Alert02Icon,
+  ArrowDown01Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Download01Icon,
@@ -106,7 +106,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
     job.state === "cancelled" ||
     job.state === "error";
   return (
-    <li className="flex flex-col gap-1.5 px-3 py-2.5">
+    <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
           {job.repoId}
@@ -138,8 +138,8 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
                   : downloadManager.dismiss(job.key)
               }
               className={cn(
-                "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-muted-foreground transition-colors",
-                "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.1]",
+                "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
+                "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.06]",
               )}
             >
               <HugeiconsIcon
@@ -173,7 +173,9 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
   );
 }
 
-export function DownloadManagerPanel() {
+export function DownloadManagerPanel({
+  positioned = true,
+}: { positioned?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
   const [collapsed, setCollapsed] = useState(false);
@@ -195,7 +197,14 @@ export function DownloadManagerPanel() {
       : "Downloads";
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-50">
+    <div
+      className={cn(
+        // Standalone: anchor bottom-right. In a shared stack (positioned=false)
+        // flow as a right-aligned row so overlays stack instead of overlapping.
+        "pointer-events-none",
+        positioned ? "fixed bottom-4 right-4 z-50" : "flex justify-end",
+      )}
+    >
       {collapsed ? (
         <Tooltip>
           <TooltipTrigger asChild={true}>
@@ -220,13 +229,8 @@ export function DownloadManagerPanel() {
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="hub-download-panel pointer-events-auto w-[min(360px,calc(100vw-2rem))] overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-foreground/[0.07] px-3 py-2">
-            <HugeiconsIcon
-              icon={Download01Icon}
-              strokeWidth={1.75}
-              className="size-4 shrink-0 text-muted-foreground"
-            />
+        <div className="hub-download-panel pointer-events-auto w-[min(400px,calc(100vw-2rem))] overflow-hidden">
+          <div className="flex items-center gap-2 border-b border-foreground/[0.07] py-2 pl-4 pr-3">
             <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground">
               {headerLabel}
             </span>
@@ -234,10 +238,10 @@ export function DownloadManagerPanel() {
               type="button"
               aria-label="Collapse downloads"
               onClick={() => setCollapsed(true)}
-              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]"
+              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.06]"
             >
               <HugeiconsIcon
-                icon={ChevronDownStandardIcon}
+                icon={ArrowDown01Icon}
                 strokeWidth={1.75}
                 className="size-3.5"
               />

@@ -40,6 +40,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from core.inference.api_monitor import ApiMonitor
 from models.inference import (
     ChatMessage,
     ResponsesFunctionCallInputItem,
@@ -58,8 +59,10 @@ from models.inference import (
     ResponsesUsage,
 )
 from routes.inference import (
+    _SameTaskStreamingResponse,
     _build_chat_request,
     _chat_tool_calls_to_responses_output,
+    _extract_responses_reasoning,
     _normalise_responses_input,
     _responses_tool_output_content,
     _responses_non_streaming,
@@ -781,6 +784,138 @@ class TestResponsesNonStreamingAdapter:
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
 
+    def test_unclosed_think_block_extracts_as_reasoning(self):
+        reasoning, visible = _extract_responses_reasoning(
+            "<think>partial plan",
+            parse_think_markers = True,
+        )
+
+        assert reasoning == "partial plan"
+        assert visible == ""
+
+    def test_monitor_records_translated_visible_text(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [{"message": {"content": "<think>plan</think>answer"}}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                }
+            )
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            response = await _responses_non_streaming(payload, messages, request)
+            return json.loads(response.body.decode())
+
+        body = asyncio.run(run())
+
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == "answer"
+        assert entry["prompt_tokens"] == 2
+        assert entry["completion_tokens"] == 3
+        assert request.state.skip_api_monitor is False
+
+    def test_monitor_records_tool_only_reply(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "lookup",
+                                            "arguments": '{"query":"weather"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                }
+            )
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        payload = ResponsesRequest(
+            input = "hi",
+            tools = [{"type": "function", "name": "lookup"}],
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            response = await _responses_non_streaming(payload, messages, request)
+            return json.loads(response.body.decode())
+
+        body = asyncio.run(run())
+
+        assert body["output"][0]["type"] == "function_call"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
+        assert request.state.skip_api_monitor is False
+
+    def test_cancelled_chat_completion_finalizes_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            raise asyncio.CancelledError()
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        payload = ResponsesRequest(input = "hi")
+        messages = [ChatMessage(role = "user", content = "hi")]
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            with pytest.raises(asyncio.CancelledError):
+                await _responses_non_streaming(payload, messages, request)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+        assert request.state.skip_api_monitor is False
+
     def test_literal_think_tags_remain_visible_without_reasoning_request(self, monkeypatch):
         body = self._run_with_message(monkeypatch, {"content": "show <think>x</think> tags"})
 
@@ -802,6 +937,38 @@ class TestResponsesNonStreamingAdapter:
 
         assert [item["type"] for item in body["output"]] == ["message"]
         assert body["output"][0]["content"][0]["text"] == "show <think>x</think> tags"
+
+    def test_reasoning_capable_gguf_parses_think_tags_by_default(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>answer"},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
+
+    def test_reasoning_capable_gguf_sanitizes_think_tags_when_disabled(self, monkeypatch):
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>leaked</think>answer"},
+            payload = payload,
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "leaked"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
 
     def test_structured_reasoning_content_extracts_text_parts(self, monkeypatch):
         body = self._run_with_message(
@@ -825,7 +992,7 @@ class TestResponsesNonStreamingAdapter:
         assert [item["type"] for item in body["output"]] == ["message"]
         assert body["output"][0]["content"][0]["text"] == "33"
 
-    def test_reasoning_only_is_also_visible_message_text(self, monkeypatch):
+    def test_reasoning_only_stays_out_of_visible_message_text(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
         body = self._run_with_message(
             monkeypatch,
@@ -833,9 +1000,8 @@ class TestResponsesNonStreamingAdapter:
             payload = payload,
         )
 
-        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert [item["type"] for item in body["output"]] == ["reasoning"]
         assert body["output"][0]["content"][0]["text"] == "plan"
-        assert body["output"][1]["content"][0]["text"] == "plan"
 
 
 # =====================================================================
@@ -909,6 +1075,36 @@ class TestResponsesStreamAdapter:
             ),
         )
 
+    def test_stream_response_avoids_legacy_receive_watcher(self, monkeypatch):
+        self._install_stream_mock(
+            monkeypatch,
+            [{"choices": [{"delta": {"content": "33"}}]}],
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            assert isinstance(response, _SameTaskStreamingResponse)
+
+            sent = []
+
+            async def receive():
+                raise AssertionError("Responses streams poll disconnects in the generator")
+
+            async def send(message):
+                sent.append(message)
+
+            await response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
+            return sent
+
+        sent = asyncio.run(run())
+
+        assert sent[0]["type"] == "http.response.start"
+        body = b"".join(message.get("body", b"") for message in sent).decode()
+        assert "response.output_text.delta" in body
+        assert '"delta":"33"' in body.replace(" ", "")
+
     def test_split_think_markers_stream_as_reasoning_and_visible_text(self, monkeypatch):
         chunks = [
             {"choices": [{"delta": {"content": "<thi"}}]},
@@ -939,10 +1135,280 @@ class TestResponsesStreamAdapter:
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
         assert completed["response"]["output"][1]["content"][0]["text"] == "33"
 
-    def test_literal_think_tags_stream_as_visible_text_without_reasoning_request(self, monkeypatch):
+    def test_usage_only_chunk_updates_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
         chunks = [
-            {"choices": [{"delta": {"content": "show <thi"}}]},
-            {"choices": [{"delta": {"content": "nk>x</think> tags"}}]},
+            {"choices": [{"delta": {"content": "33"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == "33"
+        assert entry["prompt_tokens"] == 2
+        assert entry["completion_tokens"] == 3
+        assert entry["total_tokens"] == 5
+        assert entry["context_length"] == 4096
+
+    def test_function_call_chunk_updates_monitor_reply(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"query":"weather"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "response.output_item.done")[-1]["item"]["name"] == "lookup"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
+
+    def test_preheader_cancel_finalizes_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        self._install_stream_mock(monkeypatch, [])
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+
+        async def fake_send(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+
+    def test_stream_task_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_send(*_args, **_kwargs):
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
+                await asyncio.sleep(3600)
+
+            self._install_stream_mock(monkeypatch, [])
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+            monitor_id = monitor.start(
+                endpoint = "/v1/responses",
+                method = "POST",
+                model = "m",
+                prompt = "hi",
+            )
+            payload = ResponsesRequest(input = "hi", stream = True)
+            messages = [ChatMessage(role = "user", content = "hi")]
+
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            iterator = response.body_iterator
+            first = ""
+            for _ in range(8):
+                first = await anext(iterator)
+                if "hello" in first:
+                    break
+            else:
+                pytest.fail("stream did not emit text delta")
+
+            pending = asyncio.create_task(anext(iterator))
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert entry["reply"] == "hello"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_final_visible_text_updates_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        class FakeExtractor:
+            def __init__(self, **_kwargs):
+                pass
+
+            def feed(
+                self,
+                _content,
+                _reasoning_content = None,
+            ):
+                return "", ""
+
+            def finish(self):
+                return "", "tail"
+
+        self._install_stream_mock(monkeypatch, [{"choices": [{"delta": {"content": "<tai"}}]}])
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "response.output_text.delta")[-1]["delta"] == "tail"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == "tail"
+
+    def test_reasoning_only_stream_does_not_update_visible_monitor_reply(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        class FakeExtractor:
+            def __init__(self, **_kwargs):
+                pass
+
+            def feed(
+                self,
+                _content,
+                _reasoning_content = None,
+            ):
+                return "", ""
+
+            def finish(self):
+                return "plan", ""
+
+        self._install_stream_mock(monkeypatch, [{"choices": [{"delta": {"content": "<think>"}}]}])
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "response.output_text.delta") == []
+        assert self._payloads(lines, "response.reasoning_text.delta")[-1]["delta"] == "plan"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == ""
+
+    def test_reasoning_capable_gguf_stream_parses_think_tags_by_default(self, monkeypatch):
+        chunks = [
+            {"choices": [{"delta": {"content": "<thi"}}]},
+            {"choices": [{"delta": {"content": "nk>plan</think>answer"}}]},
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
@@ -957,13 +1423,15 @@ class TestResponsesStreamAdapter:
 
         reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
         text_deltas = self._payloads(lines, "response.output_text.delta")
-        assert reasoning_deltas == []
-        assert "".join(event["delta"] for event in text_deltas) == "show <think>x</think> tags"
+        assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
+        assert "".join(event["delta"] for event in text_deltas) == "answer"
         completed = self._payloads(lines, "response.completed")[0]
-        assert [item["type"] for item in completed["response"]["output"]] == ["message"]
-        assert completed["response"]["output"][0]["content"][0]["text"] == (
-            "show <think>x</think> tags"
-        )
+        assert [item["type"] for item in completed["response"]["output"]] == [
+            "reasoning",
+            "message",
+        ]
+        assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
+        assert completed["response"]["output"][1]["content"][0]["text"] == "answer"
 
     def test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible(self, monkeypatch):
         chunks = [
@@ -991,7 +1459,7 @@ class TestResponsesStreamAdapter:
             "show <think>x</think> tags"
         )
 
-    def test_reasoning_only_streams_as_visible_message_text(self, monkeypatch):
+    def test_reasoning_only_stream_stays_out_of_visible_message_text(self, monkeypatch):
         chunks = [
             {"choices": [{"delta": {"content": "<think>plan</think>"}}]},
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
@@ -1009,14 +1477,34 @@ class TestResponsesStreamAdapter:
         reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
         text_deltas = self._payloads(lines, "response.output_text.delta")
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
-        assert "".join(event["delta"] for event in text_deltas) == "plan"
+        assert text_deltas == []
         completed = self._payloads(lines, "response.completed")[0]
-        assert [item["type"] for item in completed["response"]["output"]] == [
-            "reasoning",
-            "message",
-        ]
+        assert [item["type"] for item in completed["response"]["output"]] == ["reasoning"]
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
-        assert completed["response"]["output"][1]["content"][0]["text"] == "plan"
+
+    def test_unclosed_think_stream_stays_out_of_visible_message_text(self, monkeypatch):
+        chunks = [
+            {"choices": [{"delta": {"content": "<thi"}}]},
+            {"choices": [{"delta": {"content": "nk>plan"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
+        text_deltas = self._payloads(lines, "response.output_text.delta")
+        assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
+        assert text_deltas == []
+        completed = self._payloads(lines, "response.completed")[0]
+        assert [item["type"] for item in completed["response"]["output"]] == ["reasoning"]
+        assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
 
     def test_structured_reasoning_content_streams_as_reasoning(self, monkeypatch):
         chunks = [

@@ -316,6 +316,196 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     return env
 
 
+# Credential env vars dropped even in bypass mode so tool code cannot read the
+# operator's keys. Over-strips on purpose (a benign var is harmless to lose).
+_BYPASS_ENV_SECRET_NAMES = frozenset(
+    {
+        "HF_TOKEN",
+        "HF_HUB_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+        "WANDB_API_KEY",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GROQ_API_KEY",
+        "OPENROUTER_API_KEY",
+        "REPLICATE_API_TOKEN",
+        "COHERE_API_KEY",
+        "MISTRAL_API_KEY",
+        "NGC_API_KEY",
+        "KAGGLE_KEY",
+        "MYSQL_PWD",  # exact name: markers use PASSWD, not PWD (PWD is the cwd var)
+        "LD_PRELOAD",
+        # Auth brokers / capability handles: not secrets by value, but they
+        # hand the child the operator's live agent (ssh/gpg), kube config, or
+        # docker daemon. Names are listed because there is no value signal to
+        # key off. URL config vars (HTTP_PROXY, PIP_INDEX_URL, DATABASE_URL,
+        # ...) are intentionally NOT name-listed: a benign proxy/index without
+        # credentials must keep working in bypass mode, while a credentialed
+        # value is dropped by _is_secret_env_value() regardless of its name.
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "GPG_AGENT_INFO",
+        "GNUPGHOME",
+        "KUBECONFIG",
+        "DOCKER_HOST",
+    }
+)
+_BYPASS_ENV_SECRET_PREFIXES = ("AWS_", "AZURE_", "GOOGLE_", "GCP_", "GCLOUD_", "DYLD_")
+_BYPASS_ENV_SECRET_MARKERS = (
+    "TOKEN",
+    "API_KEY",
+    "APIKEY",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "PRIVATE_KEY",
+    "AUTH",  # e.g. NPM_CONFIG__AUTH (npm _auth), REDISCLI_AUTH
+    # Azure App Service connection strings: SQLCONNSTR_/CUSTOMCONNSTR_/... and
+    # WEBSITE_CONTENTAZUREFILECONNECTIONSTRING carry DB/storage credentials.
+    "CONNSTR",
+    "CONNECTIONSTRING",
+)
+# Non-secret hardening flags that match a secret prefix/marker but must be KEPT
+# so bypass mode does not silently undo an operator's opt-out. AWS_EC2_METADATA_
+# DISABLED tells the AWS SDK/CLI not to pull instance-role creds from IMDS;
+# dropping it would re-open that path for a bypassed tool.
+_BYPASS_ENV_KEEP_NAMES = frozenset(
+    {
+        "AWS_EC2_METADATA_DISABLED",
+        "AWS_EC2_METADATA_V1_DISABLED",
+    }
+)
+# Matches a URL that embeds userinfo before the host, covering both
+# "scheme://user:pass@host" and token-only "scheme://token@host" (and
+# percent-encoded variants). The userinfo must precede the first '/', so an '@'
+# in a path or query does not false-positive. Used to scrub credential-bearing
+# URL values regardless of the variable's name.
+_URL_USERINFO_RE = re.compile(r"://[^/\s@]+@")
+# Connection-string credential fields (ADO.NET / Azure storage / Service Bus):
+# "...;Password=...", "...;AccountKey=...", "...;SharedAccessKey=...". Catches
+# credential-bearing values whose names dodge the name classifier. "accesskey"
+# also covers Shared/Secret AccessKey via substring; the Name fields (e.g.
+# SharedAccessKeyName=) do not match since "=" must follow the keyword.
+_SECRET_VALUE_RE = re.compile(r"(?i)(?:password|pwd|accountkey|accesskey)\s*=\s*[^\s;]")
+
+# Names that hold no secret value but point SDKs at the operator's real
+# home/cache/config (cached tokens, cred files), defeating the HOME repoint.
+# Startup always sets HF_HOME (-> $HF_HOME/token), so this is the live leak.
+# Dropped in bypass mode so tools fall back to the empty repointed HOME.
+_BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
+    {
+        # HF cache roots (token lives under $HF_HOME/token)
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_XET_CACHE",
+        "TRANSFORMERS_CACHE",
+        "HF_DATASETS_CACHE",
+        "HF_ASSETS_CACHE",
+        # XDG base dirs (resolved before $HOME)
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        # explicit cred/config file pointers honoured before $HOME
+        "NETRC",
+        "PGPASSFILE",
+        "BOTO_CONFIG",
+        "PIP_CONFIG_FILE",
+        "CLOUDSDK_CONFIG",
+        "KAGGLE_CONFIG_DIR",
+        "DOCKER_CONFIG",
+        "WANDB_DIR",
+        "WANDB_CONFIG_DIR",
+        "WANDB_CACHE_DIR",
+        # package-manager / git / cloud config pointers to real cred files
+        "NPM_CONFIG_USERCONFIG",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "YARN_RC_FILENAME",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "CARGO_HOME",
+        "RCLONE_CONFIG",
+        # auth-helper scripts that hand creds to git/ssh
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        # shell startup hook: bash -c sources $BASH_ENV (can re-export secrets)
+        "BASH_ENV",
+        # Windows: HOMEDRIVE+HOMEPATH compose a home that bypasses HOME
+        "HOMEDRIVE",
+        "HOMEPATH",
+    }
+)
+# Windows profile dirs SDKs read creds under; repointed (not dropped) since
+# callers expect them present.
+_BYPASS_ENV_WINDOWS_PROFILE_VARS = ("USERPROFILE", "APPDATA", "LOCALAPPDATA")
+
+
+def _is_secret_env_name(name: str) -> bool:
+    """True if an env var name looks like it carries a credential."""
+    upper = name.upper()
+    if upper in _BYPASS_ENV_KEEP_NAMES:
+        return False  # non-secret hardening flag; keep it
+    if upper in _BYPASS_ENV_SECRET_NAMES:
+        return True
+    if any(upper.startswith(p) for p in _BYPASS_ENV_SECRET_PREFIXES):
+        return True
+    return any(marker in upper for marker in _BYPASS_ENV_SECRET_MARKERS)
+
+
+def _is_cred_location_env_name(name: str) -> bool:
+    """True for vars that point SDKs at the real home/cache/config (cached creds)."""
+    return name.upper() in _BYPASS_ENV_CRED_LOCATION_NAMES
+
+
+def _is_secret_env_value(value: str) -> bool:
+    """True if a value embeds credentials regardless of its name.
+
+    Catches URL userinfo (``scheme://user:token@host`` in DATABASE_URL /
+    PIP_INDEX_URL / HTTP_PROXY) and connection-string credential fields
+    (``...;Password=...`` / ``...;AccountKey=...``) whose names dodge the name
+    classifier.
+    """
+    if not value:
+        return False
+    return _URL_USERINFO_RE.search(value) is not None or _SECRET_VALUE_RE.search(value) is not None
+
+
+def _build_bypass_env(workdir: str) -> dict[str, str]:
+    """Env for bypass exec: full host env (unrestricted) minus credential vars,
+    with HOME/TMPDIR repointed at the workdir so SDKs cannot read cached creds.
+
+    Note: stripping the child env is necessary but not sufficient on its own -
+    a same-UID child can still read the parent's environment via procfs, so
+    callers also harden the parent (see _harden_parent_against_proc_env_leak).
+    """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not _is_secret_env_name(k)
+        and not _is_secret_env_value(v)
+        and not _is_cred_location_env_name(k)
+    }
+    env["HOME"] = workdir
+    env["TMPDIR"] = workdir
+    # Windows tempfile / SDKs honour TEMP/TMP, not TMPDIR; repoint all three so
+    # the bypassed tool writes under the per-session sandbox dir on every OS.
+    env["TEMP"] = workdir
+    env["TMP"] = workdir
+    # Windows SDKs read creds under the profile dirs, not $HOME; repoint set
+    # ones to the workdir (HOMEDRIVE/HOMEPATH are dropped above).
+    for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
+        if var in os.environ:
+            env[var] = workdir
+    return env
+
+
 def _sandbox_preexec():
     """Best-effort sandbox setup for sandboxed subprocesses (modules are
     resolved at import time so the forked child runs no imports)."""
@@ -375,6 +565,65 @@ def _sandbox_preexec():
             _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
+
+
+def _bypass_preexec():
+    """Minimal pre-exec for bypass exec: os.setsid() only.
+
+    Required, not a restriction: _kill_process_tree does killpg(getpgid(child)),
+    so without a new session a timeout/cancel would kill the Studio server too.
+    """
+    try:
+        os.setsid()
+    except OSError:
+        pass
+
+
+# Hardening the Studio parent is done once (PR_SET_DUMPABLE is process-global
+# and sticky); guarded so repeated bypass calls do not re-issue the prctl.
+_parent_proc_hardened = False
+
+
+def _harden_parent_against_proc_env_leak() -> bool:
+    """Make the Studio process's /proc/<pid>/environ unreadable to its children.
+
+    Stripping the child env is not enough on Linux: a bypassed same-UID child
+    runs unsandboxed and can read /proc/<getppid()>/environ to recover the
+    tool-executing process's *unfiltered* secrets (HF_TOKEN, cloud keys, ...).
+    Clearing the dumpable flag (PR_SET_DUMPABLE=0) reparents this process's
+    /proc entries to root, so a same-UID child can no longer read its environ.
+
+    Returns True when the process is hardened or hardening is unnecessary (no
+    /proc leak off Linux), and False when it is needed but could not be applied
+    (e.g. prctl denied by a seccomp policy). Callers must fail closed - refuse
+    the unsandboxed exec - when this returns False, rather than running with the
+    parent environ still readable.
+
+    Scope: this closes the direct parent read (the demonstrated leak). It is a
+    mitigation, not a full boundary - a bypassed tool is unsandboxed by design,
+    so it can still walk /proc to a same-UID *ancestor* (e.g. the launching
+    shell) or read on-disk credentials by absolute path. Complete isolation
+    needs a separate uid / PID+mount namespace, which is out of scope here; the
+    UI already warns the mode is dangerous. Applied lazily on first bypass exec
+    so non-bypass operation is unchanged.
+    """
+    global _parent_proc_hardened
+    if _parent_proc_hardened:
+        return True
+    if sys.platform != "linux":
+        return True  # no /proc/<pid>/environ same-UID leak to close
+    if _libc is None:
+        return False  # on Linux but cannot issue prctl -> cannot harden
+    try:
+        # prctl(PR_SET_DUMPABLE=4, SUID_DUMP_DISABLE=0). ctypes returns the
+        # syscall result (-1 on failure) and does NOT raise, so check it.
+        ret = _libc.prctl(4, 0, 0, 0, 0)
+    except (OSError, AttributeError):
+        return False
+    if ret != 0:
+        return False
+    _parent_proc_hardened = True
+    return True
 
 
 def _get_shell_cmd(command: str) -> list[str]:
@@ -524,10 +773,10 @@ RENDER_HTML_TOOL = {
     "function": {
         "name": "render_html",
         "description": (
-            "Render a self-contained HTML/CSS/JavaScript artifact for the user. "
+            "Render a self-contained HTML/CSS/JavaScript canvas for the user. "
             "Call this at most once per assistant response unless the user "
             "explicitly asks for changes in that response. Future user requests "
-            "for new artifacts may call render_html once. Put the entire document "
+            "for new canvases may call render_html once. Put the entire document "
             "in code, including any CSS in <style> tags and JavaScript in <script> tags."
         ),
         "parameters": {
@@ -539,7 +788,7 @@ RENDER_HTML_TOOL = {
                 },
                 "title": {
                     "type": "string",
-                    "description": "Short display title for the artifact.",
+                    "description": "Short display title for the canvas.",
                 },
             },
             "required": ["code"],
@@ -705,14 +954,14 @@ def _render_html_result(arguments: dict) -> str:
     if isinstance(title, str) and title.strip():
         safe_title = title.strip()[:120]
         return (
-            f"Rendered HTML artifact: {safe_title}. Do not call render_html "
+            f"Rendered HTML canvas: {safe_title}. Do not call render_html "
             "again in this response unless the user asks for changes. For a later "
-            "user request for a new artifact, call render_html once."
+            "user request for a new canvas, call render_html once."
         )
     return (
-        "Rendered HTML artifact. Do not call render_html again in this response "
+        "Rendered HTML canvas. Do not call render_html again in this response "
         "unless the user asks for changes. For a later user request for a new "
-        "artifact, call render_html once."
+        "canvas, call render_html once."
     )
 
 
@@ -723,6 +972,7 @@ def execute_tool(
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
     rag_scope: dict | None = None,
+    disable_sandbox: bool = False,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -730,6 +980,9 @@ def execute_tool(
     ``session_id``: optional ID for per-conversation sandbox isolation.
     ``rag_scope``: hidden per-request RAG context the model never sees; consumed
     by ``search_knowledge_base``.
+    ``disable_sandbox``: Bypass Permissions; run python/terminal without the
+    safety checks, blocklist, or resource caps (secrets still stripped). Only
+    affects local code tools; web_search / MCP are unchanged.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
@@ -765,9 +1018,21 @@ def execute_tool(
             timeout = effective_timeout,
         )
     if name == "python":
-        return _python_exec(arguments.get("code", ""), cancel_event, effective_timeout, session_id)
+        return _python_exec(
+            arguments.get("code", ""),
+            cancel_event,
+            effective_timeout,
+            session_id,
+            disable_sandbox = disable_sandbox,
+        )
     if name == "terminal":
-        return _bash_exec(arguments.get("command", ""), cancel_event, effective_timeout, session_id)
+        return _bash_exec(
+            arguments.get("command", ""),
+            cancel_event,
+            effective_timeout,
+            session_id,
+            disable_sandbox = disable_sandbox,
+        )
     return f"Unknown tool: {name}"
 
 
@@ -2242,15 +2507,28 @@ def _python_exec(
     cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
+    disable_sandbox: bool = False,
 ) -> str:
-    """Execute Python code in a subprocess sandbox."""
+    """Execute Python code in a subprocess sandbox.
+
+    disable_sandbox (Bypass Permissions): skip the safety analysis and rlimit
+    pre-exec, and use the host env minus secrets.
+    """
     if not code or not code.strip():
         return "No code provided."
 
-    # Validate imports and code safety
-    error = _check_code_safety(code)
-    if error:
-        return error
+    # Validate imports and code safety (skipped when the sandbox is disabled)
+    if not disable_sandbox:
+        error = _check_code_safety(code)
+        if error:
+            return error
+    elif not _harden_parent_against_proc_env_leak():
+        # Close the /proc/<parent>/environ secret-recovery path first; if it
+        # cannot be applied, fail closed rather than leak the parent environ.
+        return (
+            "Execution error: could not harden the Studio process against "
+            "/proc environment reads; refusing bypass execution."
+        )
 
     tmp_path = None
     workdir = _get_workdir(session_id)
@@ -2267,19 +2545,29 @@ def _python_exec(
                         pass
     try:
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
-        with os.fdopen(fd, "w") as f:
+        # utf-8 so non-ASCII in model-written code survives the OS default codec
+        # (Windows cp1252 would otherwise raise UnicodeEncodeError).
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
-        safe_env = _build_safe_env(workdir)
+        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        if disable_sandbox:
+            # Match the sandboxed Python path without changing bypass shell I/O.
+            safe_env = dict(safe_env)
+            safe_env["PYTHONIOENCODING"] = "utf-8"
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING);
+            # replace so non-ASCII output never crashes the read on Windows.
+            encoding = "utf-8",
+            errors = "replace",
             cwd = workdir,
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _sandbox_preexec
+            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
@@ -2346,19 +2634,32 @@ def _bash_exec(
     cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
+    disable_sandbox: bool = False,
 ) -> str:
-    """Execute a bash command in a subprocess sandbox."""
+    """Execute a bash command in a subprocess sandbox.
+
+    disable_sandbox (Bypass Permissions): skip the command blocklist and rlimit
+    pre-exec, and use the host env minus secrets.
+    """
     if not command or not command.strip():
         return "No command provided."
 
-    # Block dangerous commands (shlex + regex based)
-    blocked = _find_blocked_commands(command)
-    if blocked:
-        return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+    # Block dangerous commands (skipped when the sandbox is disabled)
+    if not disable_sandbox:
+        blocked = _find_blocked_commands(command)
+        if blocked:
+            return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+    elif not _harden_parent_against_proc_env_leak():
+        # Close the /proc/<parent>/environ secret-recovery path first; if it
+        # cannot be applied, fail closed rather than leak the parent environ.
+        return (
+            "Execution error: could not harden the Studio process against "
+            "/proc environment reads; refusing bypass execution."
+        )
 
     try:
         workdir = _get_workdir(session_id)
-        safe_env = _build_safe_env(workdir)
+        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2367,7 +2668,7 @@ def _bash_exec(
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _sandbox_preexec
+            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 

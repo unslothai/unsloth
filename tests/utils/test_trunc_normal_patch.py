@@ -57,7 +57,7 @@ def test_trunc_normal_patch_accepts_positional_generator():
     old_patched = _getattr_or_missing(init_mod, "_unsloth_trunc_normal_patched")
     old_original = _getattr_or_missing(init_mod, "_unsloth_trunc_normal_original")
     try:
-        # Normalize to an unpatched baseline before applying the patch.
+        # Reset to an unpatched baseline before applying the patch.
         if old_original is not _MISSING:
             init_mod.trunc_normal_ = old_original
         if hasattr(init_mod, "_unsloth_trunc_normal_patched"):

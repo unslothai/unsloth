@@ -13,12 +13,10 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
-import structlog
 from loggers import get_logger
 import os
 import queue as _queue
 import sys
-import threading
 import time
 import traceback
 from io import BytesIO
@@ -28,17 +26,23 @@ from typing import Any
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
 
+# studio/backend root, prepended to sys.path so the spawned subprocess can
+# import the utils/core packages.
+_BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 
-def _activate_transformers_version(model_name: str) -> None:
+
+def _ensure_backend_on_path() -> None:
+    if _BACKEND_PATH not in sys.path:
+        sys.path.insert(0, _BACKEND_PATH)
+
+
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
-    # Ensure backend is on path for utils imports.
-    backend_path = str(Path(__file__).resolve().parent.parent.parent)
-    if backend_path not in sys.path:
-        sys.path.insert(0, backend_path)
+    _ensure_backend_on_path()
 
     from utils.transformers_version import activate_transformers_for_subprocess
 
-    activate_transformers_for_subprocess(model_name)
+    activate_transformers_for_subprocess(model_name, hf_token)
 
 
 def _decode_image(image_base64: str):
@@ -63,11 +67,17 @@ def _resize_image(img, max_size: int = 800):
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
-    """Send a response to the parent process."""
+    """Send a response to the parent process; stamps ``ts`` if absent."""
+    response.setdefault("ts", time.time())
     try:
         resp_queue.put(response)
     except (OSError, ValueError) as exc:
         logger.error("Failed to send response: %s", exc)
+
+
+def _clean_token(value: str | None) -> str | None:
+    """Normalize an HF token: blank or whitespace-only becomes None."""
+    return value if value and value.strip() else None
 
 
 def _build_model_config(config: dict):
@@ -75,148 +85,187 @@ def _build_model_config(config: dict):
     from utils.models import ModelConfig
 
     model_name = config["model_name"]
-    hf_token = config.get("hf_token")
-    hf_token = hf_token if hf_token and hf_token.strip() else None
-    gguf_variant = config.get("gguf_variant")
-
     mc = ModelConfig.from_identifier(
         model_id = model_name,
-        hf_token = hf_token,
-        gguf_variant = gguf_variant,
+        hf_token = _clean_token(config.get("hf_token")),
+        gguf_variant = config.get("gguf_variant"),
     )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
     return mc
 
 
-def _get_hf_download_state(model_names: list[str] | None = None) -> tuple[int, bool] | None:
-    """Return (total_bytes, has_incomplete) for the HF Hub cache, or None on error.
+_NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
 
-    With *model_names*, only those models' ``blobs/`` dirs are checked (faster);
-    accepts multiple names so LoRA loads can watch adapter + base repos at once.
-    *has_incomplete* is True when any ``*.incomplete`` files exist (download
-    active). None means state could not be determined, so callers skip stall logic.
+
+def _needs_nemotron_trust(model_name: str, hf_token: str | None = None) -> bool:
+    """Whether *model_name* is a NemotronH/Nano model that needs trust_remote_code.
+
+    NemotronH/Nano have config-parsing bugs that require it. Must NOT match
+    Llama-Nemotron (standard Llama arch), so also require the unsloth/ or nvidia/
+    namespace, and a genuine first-party Hub repo (not a local path or a spoof
+    name starting with "unsloth/"). The repo check is authenticated so private
+    first-party repos still resolve, and runs only after the cheap checks pass.
+    """
+    mn = model_name.lower()
+    if not (
+        any(sub in mn for sub in _NEMOTRON_TRUST_SUBSTRINGS)
+        and (mn.startswith("unsloth/") or mn.startswith("nvidia/"))
+    ):
+        return False
+
+    from utils.security.trusted_org import is_trusted_org_repo
+
+    return is_trusted_org_repo(model_name, hf_token = hf_token)
+
+
+def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
+    """Reconcile load_in_4bit with a LoRA adapter's recorded training method.
+
+    lora -> base is full precision (4bit off); qlora -> base is quantized (4bit
+    on); unknown method -> force off only when the base is not a -bnb-4bit repo.
+    A missing or unreadable adapter_config.json leaves the value unchanged.
+    """
+    if not (mc.is_lora and mc.path):
+        return load_in_4bit
+
+    adapter_cfg_path = Path(mc.path) / "adapter_config.json"
+    if not adapter_cfg_path.exists():
+        return load_in_4bit
+
+    import json
+
+    try:
+        with open(adapter_cfg_path) as f:
+            adapter_cfg = json.load(f)
+        training_method = adapter_cfg.get("unsloth_training_method")
+        if training_method == "lora" and load_in_4bit:
+            logger.info("adapter_config.json says lora — setting load_in_4bit=False")
+            return False
+        if training_method == "qlora" and not load_in_4bit:
+            logger.info("adapter_config.json says qlora — setting load_in_4bit=True")
+            return True
+        if (
+            not training_method
+            and mc.base_model
+            and "-bnb-4bit" not in mc.base_model.lower()
+            and load_in_4bit
+        ):
+            logger.info(
+                "No training method, base model has no -bnb-4bit — setting load_in_4bit=False"
+            )
+            return False
+    except Exception as e:
+        logger.warning("Could not read adapter_config.json: %s", e)
+    return load_in_4bit
+
+
+def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
+    """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
+    non-SSM models, idempotent. Returns True on success; on a fatal mamba-ssm failure sends a
+    'loaded' failure response and returns False. Call BEFORE importing transformers, which
+    snapshots its optional-backend gates at import (a later install may not be picked up).
     """
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
+        from utils.ssm_runtime import ensure_ssm_runtime
+    except Exception as exc:
+        logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
+        return True
 
-        cache = Path(HF_HUB_CACHE)
-        if not cache.exists():
-            return (0, False)
-
-        total = 0
-        has_incomplete = False
-        blobs_dirs: list[Path] = []
-
-        if model_names:
-            from utils.paths import resolve_cached_repo_id_case
-            for name in model_names:
-                if not name:
-                    continue
-                # Skip local filesystem paths -- HF IDs (org/model) never start
-                # with / . ~ or contain backslashes.
-                if name.startswith(("/", ".", "~")) or "\\" in name:
-                    continue
-                name = resolve_cached_repo_id_case(name)
-                # HF cache dir format: models--org--name (slashes -> --).
-                cache_dir_name = "models--" + name.replace("/", "--")
-                blobs_dir = cache / cache_dir_name / "blobs"
-                if blobs_dir.exists():
-                    blobs_dirs.append(blobs_dir)
-        else:
-            blobs_dirs = list(cache.glob("models--*/blobs"))
-
-        for bdir in blobs_dirs:
-            for f in bdir.iterdir():
-                try:
-                    if f.is_file():
-                        total += f.stat().st_size
-                        if f.name.endswith(".incomplete"):
-                            has_incomplete = True
-                except OSError:
-                    pass
-
-        return (total, has_incomplete)
-    except Exception as e:
-        logger.debug("Failed to determine HF download state: %s", e)
-        return None
+    _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
+    try:
+        for ssm_target in dict.fromkeys(t for t in targets if t):
+            ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
+        return True
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "loaded",
+                "success": False,
+                "message": (
+                    f"This model needs SSM kernel libraries (causal-conv1d / "
+                    f"mamba-ssm) that could not be installed: {exc}"
+                ),
+                "error_kind": "ssm_runtime_install_failed",
+            },
+        )
+        return False
 
 
-def _start_heartbeat(
+def _run_security_gates(
+    targets: list,
+    *,
+    trust_remote_code: bool,
+    hf_token: str | None,
+    approved_fingerprint: str | None,
     resp_queue: Any,
-    interval: float = 30.0,
-    stall_timeout: float = 180.0,
-    xet_disabled: bool = False,
-    model_names: list[str] | None = None,
-) -> threading.Event:
-    """Start a daemon thread that sends periodic status heartbeats.
+    compute_subdirs: bool = True,
+    subject: str | None = None,
+) -> bool:
+    """Malware + (when trust_remote_code) remote-code consent gates over *targets*
+    (model + base). Sends the matching 'loaded' failure and returns False if blocked; True
+    when every target is clear.
 
-    A stall is reported only when ``*.incomplete`` files are present (download
-    active) AND cache size hasn't changed for *stall_timeout* seconds. When the
-    download finishes the timer resets, so post-download init (quantization, GPU
-    weight load) isn't misclassified as a stall. Returns a stop event.
+    ``compute_subdirs=False`` keeps the gate transformers-free (``security_load_subdirs``
+    imports ``model_config`` -> ``transformers``, which would snapshot optional-backend
+    availability before the SSM kernels are installed): used for the pre-import preflight,
+    where ``_handle_load`` re-runs the authoritative gate with full subdir scoping.
     """
-    stop = threading.Event()
-    transport = "https" if xet_disabled else "xet"
+    targets = list(dict.fromkeys(t for t in targets if t))
 
-    def _beat():
-        state = _get_hf_download_state(model_names)
-        last_size = state[0] if state is not None else 0
-        last_change = time.monotonic()
+    # A poisoned pickle deserializes during from_pretrained even with trust_remote_code
+    # False, so check HF's security scan every load (for a LoRA, the base deserializes).
+    from utils.security import evaluate_file_security
 
-        while not stop.wait(interval):
-            state = _get_hf_download_state(model_names)
-            now = time.monotonic()
+    if compute_subdirs:
+        from utils.security import security_load_subdirs
 
-            # Skip stall logic if we cannot measure the cache.
-            if state is None:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "status",
-                        "message": f"Loading model ({transport} transport)...",
-                        "ts": time.time(),
-                    },
-                )
-                continue
-
-            current_size, has_incomplete = state
-
-            if current_size != last_size:
-                last_size = current_size
-                last_change = now
-
-            # Only fire stall while .incomplete files confirm an active download;
-            # reset the timer otherwise so model init isn't counted as a stall.
-            if not has_incomplete:
-                last_change = now
-            elif now - last_change >= stall_timeout:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "stall",
-                        "message": (
-                            f"Download appears stalled ({transport} transport) "
-                            f"-- no progress for {int(now - last_change)}s"
-                        ),
-                        "ts": time.time(),
-                    },
-                )
-                # fire once -- the orchestrator will kill us
-                return
-
+    for target in targets:
+        _subdirs = security_load_subdirs(target, hf_token) if compute_subdirs else ()
+        _fs = evaluate_file_security(target, hf_token = hf_token, load_subdirs = _subdirs)
+        if _fs.blocked:
             _send_response(
                 resp_queue,
                 {
-                    "type": "status",
-                    "message": f"Loading model ({transport} transport)...",
-                    "ts": time.time(),
+                    "type": "loaded",
+                    "success": False,
+                    "message": _fs.reason,
+                    "error_kind": "malware_blocked",
+                    "security": _fs.response_payload(),
                 },
             )
+            return False
 
-    t = threading.Thread(target = _beat, daemon = True)
-    t.start()
-    return stop
+    # Scan auto_map code before it runs; block CRITICAL/HIGH unless pinned-approved. Adapter
+    # and base are scanned as one unit, pinned by a single fingerprint.
+    if trust_remote_code:
+        from utils.security import evaluate_remote_code_consent_for_targets
+        _rc = evaluate_remote_code_consent_for_targets(
+            targets,
+            hf_token = hf_token,
+            trust_remote_code = True,
+            approved_fingerprint = approved_fingerprint,
+            subject = subject,
+        )
+        if _rc.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": (
+                        f"Model '{_rc.model_name}' ships custom code flagged as "
+                        f"{_rc.max_severity} by the security scan. Review "
+                        f"and approve it to proceed."
+                    ),
+                    "error_kind": "remote_code_blocked",
+                    "remote_code": _rc.response_payload(),
+                },
+            )
+            return False
+
+    return True
 
 
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
@@ -224,70 +273,60 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     try:
         mc = _build_model_config(config)
 
-        hf_token = config.get("hf_token")
-        hf_token = hf_token if hf_token and hf_token.strip() else None
+        hf_token = _clean_token(config.get("hf_token"))
+        load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
 
-        # Auto-detect quantization for LoRA adapters.
-        load_in_4bit = config.get("load_in_4bit", True)
-        if mc.is_lora and mc.path:
-            import json
-            from pathlib import Path
-
-            adapter_cfg_path = Path(mc.path) / "adapter_config.json"
-            if adapter_cfg_path.exists():
-                try:
-                    with open(adapter_cfg_path) as f:
-                        adapter_cfg = json.load(f)
-                    training_method = adapter_cfg.get("unsloth_training_method")
-                    if training_method == "lora" and load_in_4bit:
-                        logger.info("adapter_config.json says lora — setting load_in_4bit=False")
-                        load_in_4bit = False
-                    elif training_method == "qlora" and not load_in_4bit:
-                        logger.info("adapter_config.json says qlora — setting load_in_4bit=True")
-                        load_in_4bit = True
-                    elif not training_method:
-                        if (
-                            mc.base_model
-                            and "-bnb-4bit" not in mc.base_model.lower()
-                            and load_in_4bit
-                        ):
-                            logger.info(
-                                "No training method, base model has no -bnb-4bit — setting load_in_4bit=False"
-                            )
-                            load_in_4bit = False
-                except Exception as e:
-                    logger.warning("Could not read adapter_config.json: %s", e)
-
-        # Auto-enable trust_remote_code only for NemotronH/Nano (config parsing
-        # bugs require it). Must NOT match Llama-Nemotron (standard Llama arch).
-        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
         trust_remote_code = config.get("trust_remote_code", False)
-        if not trust_remote_code:
-            model_name = config["model_name"]
-            _mn_lower = model_name.lower()
-            if any(sub in _mn_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
-                _mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/")
-            ):
-                trust_remote_code = True
-                logger.info(
-                    "Auto-enabled trust_remote_code for Nemotron model: %s",
-                    model_name,
-                )
+        if not trust_remote_code and _needs_nemotron_trust(config["model_name"], hf_token = hf_token):
+            trust_remote_code = True
+            logger.info(
+                "Auto-enabled trust_remote_code for Nemotron model: %s", config["model_name"]
+            )
 
-        # Heartbeat every 30s so the orchestrator knows we're alive during slow loads.
-        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1"
+        # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
+        # the SSM install so a blocked model never triggers a native kernel build.
+        targets = [config["model_name"]]
+        if mc.is_lora and getattr(mc, "base_model", None):
+            targets.append(str(mc.base_model))
+        if not _run_security_gates(
+            targets,
+            trust_remote_code = trust_remote_code,
+            hf_token = hf_token,
+            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            resp_queue = resp_queue,
+            subject = config.get("subject"),
+        ):
+            return
 
-        # Watch model + base repos (base download is the LoRA bottleneck).
+        # Install SSM/Mamba kernels: a no-op for the initial load (pre-installed before import)
+        # but still needed for a LoRA's base (resolved only now via mc) and in-process loads.
+        # Skip on MLX (no macOS wheel). Probe the base, not the adapter id / local path.
+        if getattr(backend, "device", None) != "mlx":
+            from utils.ssm_runtime import ssm_probe_identifier
+
+            _ssm_base = (
+                str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
+            )
+            ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue):
+                return
+
+        # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
+        # loads; a no-progress Xet download is reported as a stall so the parent
+        # can respawn over HTTP. Watch model + base repos (base is the LoRA
+        # download bottleneck).
+        from utils.hf_xet_fallback import start_watchdog
+
         watch_repos = [mc.identifier]
         base = getattr(mc, "base_model", None)
         if base and str(base) != mc.identifier:
             watch_repos.append(str(base))
 
-        heartbeat_stop = _start_heartbeat(
-            resp_queue,
-            interval = 30.0,
-            xet_disabled = xet_disabled,
-            model_names = watch_repos,
+        heartbeat_stop = start_watchdog(
+            repo_ids = watch_repos,
+            on_stall = lambda msg: _send_response(resp_queue, {"type": "stall", "message": msg}),
+            on_heartbeat = lambda msg: _send_response(resp_queue, {"type": "status", "message": msg}),
+            xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
         try:
             success = backend.load_model(
@@ -302,7 +341,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             heartbeat_stop.set()
 
         if success:
-            # Build model_info for the parent to mirror.
             model_info = {
                 "identifier": mc.identifier,
                 "display_name": mc.display_name,
@@ -315,13 +353,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
             }
+            _bm = getattr(backend, "models", {}) or {}
+            _entry = (
+                _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
+            )
             try:
-                _bm = getattr(backend, "models", {}) or {}
-                _entry = (
-                    _bm.get(mc.identifier)
-                    or _bm.get(getattr(backend, "active_model_name", None))
-                    or {}
-                )
                 _context_length = _entry.get("context_length")
                 if _context_length is not None:
                     model_info["context_length"] = int(_context_length)
@@ -329,12 +365,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 logger.warning("context_length forward failed: %s", _ctx_exc)
             # Forward chat_template_info so the parent can classify capabilities.
             try:
-                _bm = getattr(backend, "models", {}) or {}
-                _entry = (
-                    _bm.get(mc.identifier)
-                    or _bm.get(getattr(backend, "active_model_name", None))
-                    or {}
-                )
                 _tpl_info = _entry.get("chat_template_info")
                 if isinstance(_tpl_info, dict):
                     model_info["chat_template_info"] = {
@@ -352,7 +382,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     "type": "loaded",
                     "success": True,
                     "model_info": model_info,
-                    "ts": time.time(),
                 },
             )
         else:
@@ -362,7 +391,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     "type": "loaded",
                     "success": False,
                     "error": "Failed to load model",
-                    "ts": time.time(),
                 },
             )
 
@@ -374,7 +402,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "success": False,
                 "error": str(exc),
                 "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
             },
         )
 
@@ -440,7 +467,6 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
                     "type": "token",
                     "request_id": request_id,
                     "text": cumulative_text,
-                    "ts": time.time(),
                 },
             )
 
@@ -451,7 +477,6 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
                 "request_id": request_id,
                 # usage/timings from the MLX backend (None elsewhere).
                 "stats": getattr(backend, "last_generation_stats", None),
-                "ts": time.time(),
             },
         )
         logger.info("Finished text generation for request_id=%s", request_id)
@@ -465,7 +490,6 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
                 "request_id": request_id,
                 "error": str(exc),
                 "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
             },
         )
 
@@ -494,7 +518,6 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
                 "request_id": request_id,
                 "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
                 "sample_rate": sample_rate,
-                "ts": time.time(),
             },
         )
         logger.info("Finished audio generation for request_id=%s", request_id)
@@ -508,7 +531,6 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
                 "request_id": request_id,
                 "error": str(exc),
                 "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
             },
         )
 
@@ -557,7 +579,6 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                     "type": "token",
                     "request_id": request_id,
                     "text": text_chunk,
-                    "ts": time.time(),
                 },
             )
 
@@ -566,7 +587,6 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
             {
                 "type": "gen_done",
                 "request_id": request_id,
-                "ts": time.time(),
             },
         )
         logger.info("Finished audio input generation for request_id=%s", request_id)
@@ -580,7 +600,6 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 "request_id": request_id,
                 "error": str(exc),
                 "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
             },
         )
 
@@ -599,7 +618,6 @@ def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
             {
                 "type": "unloaded",
                 "model_name": model_name,
-                "ts": time.time(),
             },
         )
     except Exception as exc:
@@ -610,7 +628,6 @@ def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
                 "type": "unloaded",
                 "model_name": model_name,
                 "error": str(exc),
-                "ts": time.time(),
             },
         )
 
@@ -647,25 +664,30 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
     model_name = config["model_name"]
 
     # ── 0. MLX fast-path — skip torch/transformers ──
-    backend_path = str(Path(__file__).resolve().parent.parent.parent)
-    if backend_path not in sys.path:
-        sys.path.insert(0, backend_path)
+    _ensure_backend_on_path()
 
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
     if _hw.DEVICE == _hw.DeviceType.MLX:
+        # Non-fatal: fall through with the installed version, but log the cause
+        # instead of swallowing it (issue #6103).
         try:
-            _activate_transformers_version(model_name)
-        except Exception:
-            pass
+            _activate_transformers_version(model_name, config.get("hf_token") or None)
+        except Exception as exc:
+            logger.warning(
+                "Failed to activate transformers version for '%s' (MLX inference); "
+                "inference may fail if this model requires a specific version. Error: %s",
+                model_name,
+                exc,
+            )
         try:
             from core.inference.mlx_inference import MLXInferenceBackend
 
             backend = MLXInferenceBackend()
             _send_response(
                 resp_queue,
-                {"type": "status", "message": "Loading model...", "ts": time.time()},
+                {"type": "status", "message": "Loading model..."},
             )
             _handle_load(backend, config, resp_queue)
         except Exception as exc:
@@ -675,7 +697,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                     "type": "error",
                     "error": f"MLX inference init failed: {exc}",
                     "stack": traceback.format_exc(limit = 20),
-                    "ts": time.time(),
                 },
             )
             return
@@ -707,7 +728,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 elif cmd_type == "reset":
                     cancel_event.set()
                     backend.reset_generation_state()
-                    _send_response(resp_queue, {"type": "reset_ack", "ts": time.time()})
+                    _send_response(resp_queue, {"type": "reset_ack"})
                 elif cmd_type == "status":
                     _send_response(
                         resp_queue,
@@ -719,7 +740,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                                 for k, v in backend.models.items()
                             },
                             "loading": list(backend.loading_models),
-                            "ts": time.time(),
                         },
                     )
                 elif cmd_type == "shutdown":
@@ -733,14 +753,37 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                         "request_id": cmd.get("request_id"),
                         "error": str(exc),
                         "stack": traceback.format_exc(limit = 20),
-                        "ts": time.time(),
                     },
                 )
         return
 
-    # ── 1. Activate transformers version BEFORE any ML imports ──
+    # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
+    # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
+    # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
+    import json as _json
+
+    _ensure_backend_on_path()
+    from utils.transformers_version import _remote_lora_base, _resolve_base_model
+
+    _hf_token = _clean_token(config.get("hf_token"))
+    _lora_base = None
+    _local_adapter_cfg = Path(model_name) / "adapter_config.json"
+    if _local_adapter_cfg.is_file():
+        try:
+            _lora_base = (
+                _json.loads(_local_adapter_cfg.read_text()).get("base_model_name_or_path") or None
+            )
+        except Exception:
+            _lora_base = None
+    if not _lora_base:
+        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
+    # Base for tier activation + the SSM-kernel heuristic: the LoRA base if any, else a full
+    # fine-tune's recorded base from config.json (its name reveals the SSM/sidecar arch).
+    _base = _lora_base or _resolve_base_model(model_name)
+
+    # ── 1. Activate transformers version (on the resolved base) BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name)
+        _activate_transformers_version(_base, _hf_token)
     except Exception as exc:
         _send_response(
             resp_queue,
@@ -748,7 +791,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 "type": "error",
                 "error": f"Failed to activate transformers version: {exc}",
                 "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
             },
         )
         return
@@ -765,6 +807,36 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
+    # ── 1c. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
+    # transformers snapshots its optional-backend gates at import, so a hybrid model's kernels
+    # must be installed before the import below ("mamba-ssm is required" otherwise). The gates
+    # are metadata-only, so run them first and refuse a blocked model before any native build.
+    # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
+    # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
+    _gate_targets = [model_name]
+    if _lora_base:
+        _gate_targets.append(_lora_base)
+    _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
+        model_name, hf_token = _hf_token
+    )
+    if not _run_security_gates(
+        _gate_targets,
+        trust_remote_code = _trust_remote_code,
+        hf_token = _hf_token,
+        approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        resp_queue = resp_queue,
+        compute_subdirs = False,  # stay transformers-free until the SSM kernels are installed
+        subject = config.get("subject"),
+    ):
+        return
+    # Probe the resolved base for SSM kernels, not the adapter id / local checkpoint path
+    # (arbitrary names must not match the SSM substrings).
+    from utils.ssm_runtime import ssm_probe_identifier
+
+    _ssm_targets = [ssm_probe_identifier(model_name, _base)]
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
+        return
+
     # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
         _send_response(
@@ -772,13 +844,15 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             {
                 "type": "status",
                 "message": "Importing Unsloth...",
-                "ts": time.time(),
             },
         )
 
-        backend_path = str(Path(__file__).resolve().parent.parent.parent)
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
+        _ensure_backend_on_path()
+
+        # Recover from any namespace-package shadow before importing Unsloth.
+        from core.import_guards import ensure_real_packages
+
+        ensure_real_packages("unsloth_zoo", "unsloth")
 
         from core.inference.inference import InferenceBackend
 
@@ -793,7 +867,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 "type": "error",
                 "error": f"Failed to import ML libraries: {exc}",
                 "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
             },
         )
         return
@@ -807,7 +880,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             {
                 "type": "status",
                 "message": "Loading model...",
-                "ts": time.time(),
             },
         )
 
@@ -820,7 +892,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 "type": "error",
                 "error": f"Failed to initialize inference backend: {exc}",
                 "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
             },
         )
         return
@@ -851,7 +922,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "load":
-                # Unload the current model before loading the new one.
                 if backend.active_model_name:
                     backend.unload_model(backend.active_model_name)
                 _handle_load(backend, cmd, resp_queue)
@@ -879,7 +949,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                     resp_queue,
                     {
                         "type": "reset_ack",
-                        "ts": time.time(),
                     },
                 )
 
@@ -898,22 +967,20 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                             for name, info in backend.models.items()
                         },
                         "loading": list(backend.loading_models),
-                        "ts": time.time(),
                     },
                 )
 
             elif cmd_type == "shutdown":
                 logger.info("Shutdown command received, exiting")
-                for model_name in list(backend.models.keys()):
+                for name in list(backend.models.keys()):
                     try:
-                        backend.unload_model(model_name)
+                        backend.unload_model(name)
                     except Exception:
                         pass
                 _send_response(
                     resp_queue,
                     {
                         "type": "shutdown_ack",
-                        "ts": time.time(),
                     },
                 )
                 return
@@ -925,7 +992,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                     {
                         "type": "error",
                         "error": f"Unknown command type: {cmd_type}",
-                        "ts": time.time(),
                     },
                 )
 
@@ -937,6 +1003,5 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                     "type": "error",
                     "error": f"Command '{cmd_type}' failed: {exc}",
                     "stack": traceback.format_exc(limit = 20),
-                    "ts": time.time(),
                 },
             )

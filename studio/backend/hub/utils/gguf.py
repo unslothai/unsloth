@@ -109,6 +109,33 @@ def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
+_BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+
+
+def is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
+    normalized = path.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0].lower()
+    quant_key = quant.strip().lower()
+    quant_index = stem.find(quant_key) if quant_key else -1
+    parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
+    quant_in_parent_only = (
+        bool(parent)
+        and quant_index < 0
+        and (
+            (quant_key and quant_key in parent)
+            or (not quant_key and _GGUF_QUANT_RE.search(parent) is not None)
+        )
+    )
+    for match in _BIG_ENDIAN_GGUF_FILENAME_RE.finditer(stem):
+        if quant_index >= 0 and quant_index < match.start():
+            return True
+        tail = stem[match.end() :].lstrip("._-")
+        if not tail or _GGUF_QUANT_RE.search(tail) is None:
+            return not quant_in_parent_only
+    return False
+
+
 # Cap recursive walks so a huge or system path cannot run unbounded.
 _MAX_LOCAL_SCAN_ENTRIES = 100_000
 
@@ -143,7 +170,10 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
     gguf_files = [
         name
         for name in filenames
-        if is_gguf_filename(name) and not is_mmproj_filename(name) and not is_mtp_drafter_path(name)
+        if is_gguf_filename(name)
+        and not is_mmproj_filename(name)
+        and not is_mtp_drafter_path(name)
+        and not is_big_endian_gguf_path(name, extract_quant_label(name))
     ]
     if not gguf_files:
         return None
@@ -246,6 +276,33 @@ def iter_hf_cache_snapshots(repo_id: str):
     yield from snapshots
 
 
+def list_empty_gguf_variant_dirs(repo_id: str) -> set[str]:
+    """Quant labels present only as an EMPTY snapshot ``<quant>/`` folder (an
+    interrupted split download); a quant with shards in any snapshot is excluded."""
+    empty: dict[str, str] = {}
+    nonempty: set[str] = set()
+    for snapshot in iter_hf_cache_snapshots(repo_id):
+        try:
+            entries = list(snapshot.iterdir())
+        except OSError:
+            continue
+        for sub in entries:
+            try:
+                if sub.is_symlink() or not sub.is_dir():
+                    continue
+                quant = extract_quant_token(sub.name)
+                if not quant:
+                    continue
+                has_child = any(sub.iterdir())
+            except OSError:
+                continue
+            if has_child:
+                nonempty.add(quant.lower())
+            else:
+                empty.setdefault(quant.lower(), quant)
+    return {label for key, label in empty.items() if key not in nonempty}
+
+
 def list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     for snapshot in iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snapshot))
@@ -323,6 +380,20 @@ def list_partial_gguf_variants_from_state(
     return variants, has_vision
 
 
+def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Optional[str]:
+    """Absolute path to the (shard-1) GGUF file for ``repo_id`` + ``gguf_variant``
+    if it is already downloaded in the HF cache, else ``None``. Read-only — never
+    triggers a download. Lets callers read header metadata before a load."""
+    for snapshot in iter_hf_cache_snapshots(repo_id):
+        variants, _ = list_local_gguf_variants(str(snapshot))
+        for variant in variants:
+            if gguf_variant is None or variant.quant == gguf_variant:
+                candidate = snapshot / variant.filename
+                if candidate.is_file():
+                    return str(candidate)
+    return None
+
+
 def list_gguf_variants(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
@@ -372,6 +443,8 @@ def list_gguf_variants(
             has_vision = True
             continue
         quant = extract_quant_label(filename)
+        if is_big_endian_gguf_path(filename, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
         quant_first_file.setdefault(quant, filename)
 
@@ -424,6 +497,8 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         if is_mtp_drafter_path(rel):
             continue
         quant = extract_quant_label(rel)
+        if is_big_endian_gguf_path(rel, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         quant_first_file.setdefault(quant, rel)
 

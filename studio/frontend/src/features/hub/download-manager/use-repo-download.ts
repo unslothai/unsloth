@@ -52,8 +52,8 @@ export interface RepoDownloadConfig {
 
 /**
  * Binds a single download surface (one repo, optionally per GGUF variant) to the
- * global download manager. Job state and polling live in the store, so a download
- * keeps running and stays visible after the card unmounts.
+ * global download manager. Job state and polling live in the store, so a
+ * download keeps running and stays visible after the card unmounts.
  */
 export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   const {
@@ -120,8 +120,10 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   );
 
   const requestStartDownload = useCallback(
-    (variant: string | null, expectedBytes: number) => {
-      return downloadManager.requestStart({
+    async (variant: string | null, expectedBytes: number) => {
+      // This surface renders the conflict resolver (transportConflict), so the
+      // start outcome is handled by the card UI; the awaited result is ignored.
+      await downloadManager.requestStart({
         kind,
         repoId,
         variant,
