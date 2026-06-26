@@ -58,46 +58,35 @@ def _env_offline() -> bool:
 
 
 def hf_endpoint_unreachable(timeout: int = 3) -> bool:
-    """Bounded TCP reachability probe to the HF endpoint (or the configured proxy egress).
-    DNS + connect run in a daemon thread joined with a deadline, so a resolver blackhole
-    cannot block past ~timeout+1s. True if unreachable. No ML imports, so it is safe to call
-    before transformers version activation. Mirrors the probe in export._hf_offline."""
-    import socket
+    """Bounded reachability probe to the HF endpoint. A HEAD request runs in a daemon thread
+    joined with a deadline, so a resolver blackhole cannot block past ~timeout+1s. True if
+    unreachable. urllib natively honors *_PROXY / NO_PROXY, so this verifies real egress
+    (the proxy can reach HF), not just that the proxy is up. No ML imports, so it is safe to
+    call before transformers version activation. Mirrors the probe in export._hf_offline."""
+    import ssl
     import threading
-    from urllib.parse import urlparse
-    from urllib.request import getproxies, proxy_bypass
+    import urllib.error
+    import urllib.request
 
     endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
-    ep = urlparse(endpoint if "://" in endpoint else "https://" + endpoint)
-    hf_host = ep.hostname or "huggingface.co"
-    hf_port = ep.port or (80 if ep.scheme == "http" else 443)
-
-    target_host, target_port = hf_host, hf_port
-    try:
-        proxies = getproxies()  # reads *_PROXY env (and system proxy on Win/macOS)
-        try:
-            bypass = bool(proxy_bypass(hf_host))
-        except Exception:
-            bypass = False
-        proxy_url = (
-            proxies.get(ep.scheme)
-            or proxies.get("https")
-            or proxies.get("http")
-            or proxies.get("all")
-        )
-        if proxy_url and not bypass:
-            pp = urlparse(proxy_url if "://" in proxy_url else "http://" + proxy_url)
-            if pp.hostname:
-                target_host = pp.hostname
-                target_port = pp.port or (443 if pp.scheme == "https" else 80)
-    except Exception:
-        target_host, target_port = hf_host, hf_port
+    if "://" not in endpoint:
+        endpoint = "https://" + endpoint
 
     result = {"online": False}
 
     def _probe():
         try:
-            socket.create_connection((target_host, target_port), timeout = timeout).close()
+            req = urllib.request.Request(endpoint, method = "HEAD")
+            with urllib.request.urlopen(req, timeout = timeout):
+                result["online"] = True
+        except urllib.error.HTTPError as exc:
+            # The server/proxy answered: reachable unless it is a gateway error.
+            result["online"] = exc.code not in (502, 503, 504)
+        except urllib.error.URLError as exc:
+            # A TLS/cert failure means we DID reach the server; treat as reachable so the real
+            # load surfaces it (consistent with _is_offline_related_error not retrying TLS).
+            result["online"] = isinstance(exc.reason, ssl.SSLError)
+        except ssl.SSLError:
             result["online"] = True
         except Exception:
             result["online"] = False
@@ -204,6 +193,8 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 
 # Caches keyed on (model_name, token-hash) so authed/unauthed reads stay separate (a
 # gated/private repo's unauthenticated miss must not poison a later authenticated lookup).
+# Offline negatives are NOT written (see the _env_offline branches) so they cannot poison a
+# later online read in this persistent worker.
 _tokenizer_class_cache: dict[tuple[str, str | None], bool] = {}
 _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
@@ -578,9 +569,9 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     if _safe_is_dir(local_path):
         return False
 
-    # Offline: skip the 10s urllib fetch (fail-open to lower tier).
+    # Offline: skip the 10s urllib fetch (fail-open to lower tier). Do NOT cache this
+    # assumed negative, so a later online read of the same id re-fetches the real value.
     if _env_offline():
-        _tokenizer_class_cache[cache_key] = False
         return False
 
     # --- Fall back to fetching from HuggingFace ----------------------------
@@ -686,9 +677,11 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         return None
 
     if _env_offline():
-        # No network: a previously downloaded repo can still tier from the hub cache.
+        # No network: a previously downloaded repo can still tier from the hub cache. Cache a
+        # real hit, but never the miss (None) so a later online read still fetches the config.
         cfg = _config_json_from_hf_cache(model_name)
-        _config_json_cache[cache_key] = cfg
+        if cfg is not None:
+            _config_json_cache[cache_key] = cfg
         return cfg
 
     import urllib.error

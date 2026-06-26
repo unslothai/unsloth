@@ -177,8 +177,14 @@ def _offline_window_if_unreachable(step = "loading"):
     """Force HF offline for a network-touching step (transformers version activation, or the
     load preflights that hit the Hub) when the endpoint is unreachable, then restore the prior
     env. Keeps a no-network export from hanging on Hub calls that run before load_checkpoint's
-    own probe, while letting this persistent worker re-decide per operation once back online."""
+    own probe, while letting this persistent worker re-decide per operation once back online.
+
+    Post-ML-import (the load preflights), huggingface_hub has already read its in-process
+    offline constant and cached sessions, so env alone is too late: defer to the loader's
+    _force_hf_offline (env + in-process flags + session reset). Pre-import (activation),
+    huggingface_hub is not loaded yet, so setting the env vars suffices for its urllib probes."""
     saved: dict[str, str | None] = {}
+    force_ctx = None
     try:
         from utils.transformers_version import _env_offline, hf_endpoint_unreachable
         probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
@@ -189,14 +195,27 @@ def _offline_window_if_unreachable(step = "loading"):
         )
         if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
             logger.warning("Hugging Face endpoint unreachable; %s offline", step)
-            for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
-                saved[k] = os.environ.get(k)
-                os.environ[k] = "1"
+            if "huggingface_hub" in sys.modules:
+                try:
+                    from unsloth.models.loader_utils import _force_hf_offline
+                    force_ctx = _force_hf_offline()
+                    force_ctx.__enter__()  # sets env + in-process flags + resets sessions
+                except Exception:
+                    force_ctx = None
+            if force_ctx is None:
+                for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+                    saved[k] = os.environ.get(k)
+                    os.environ[k] = "1"
     except Exception:
         pass
     try:
         yield
     finally:
+        if force_ctx is not None:
+            try:
+                force_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)
