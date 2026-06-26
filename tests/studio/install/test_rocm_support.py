@@ -701,7 +701,9 @@ class TestEnsureRocmTorch:
             with patch("os.path.isdir", return_value = True):
                 with patch("subprocess.run", return_value = mock_probe):
                     # Would raise if the Strix block ran (it is skipped on an explicit pin).
-                    with patch.object(stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError):
+                    with patch.object(
+                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                    ):
                         _ensure_rocm_torch()
         assert mock_pip.call_count == 1
         torch_call = str(mock_pip.call_args_list[0])
