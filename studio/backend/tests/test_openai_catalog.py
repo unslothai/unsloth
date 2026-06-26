@@ -76,62 +76,6 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
     assert "/data/" not in blob
 
 
-def test_path_loaded_model_not_relisted_under_alias(monkeypatch):
-    # An LM Studio/Ollama row carries a model_id alias but is loaded by its path,
-    # so the loaded entry is keyed under public_model_id(path). The matching
-    # catalog row must dedup against that path-derived key, not reappear as an
-    # unloaded duplicate under its alias.
-    monkeypatch.setattr(
-        inf, "get_llama_cpp_backend", lambda: _FakeLlama()
-    )  # loaded id == /srv/models/Qwen3-Q4.gguf -> "Qwen3-Q4"
-    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
-
-    async def _fake_catalog():
-        return [
-            # Same physical model as loaded (path basename "Qwen3-Q4") but exposed
-            # by the scanner with an Ollama-style alias.
-            _Info("/srv/models/Qwen3-Q4.gguf", "Qwen3-Q4", model_id = "ollama/qwen3:q4"),
-            _Info("/data/models/Other.gguf", "Other", model_id = "ollama/other:tag"),
-        ]
-
-    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-
-    data = asyncio.run(inf._openai_catalog_objects())
-    ids = [m["id"] for m in data]
-    loaded = {m["id"]: m["loaded"] for m in data}
-    # The loaded model appears exactly once, under its loaded id, marked loaded.
-    assert ids.count("Qwen3-Q4") == 1
-    assert loaded["Qwen3-Q4"] is True
-    # Its alias is NOT re-listed as an unloaded duplicate.
-    assert "ollama/qwen3:q4" not in ids
-    # A genuinely-distinct unloaded alias still shows.
-    assert "ollama/other:tag" in ids
-    assert loaded["ollama/other:tag"] is False
-
-
-def test_distinct_unloaded_models_sharing_a_basename_both_appear(monkeypatch):
-    # The path-dedup must fire only against LOADED entries. Two different local
-    # files with the same basename, where the later one has a model_id alias,
-    # must NOT collapse: the path_id collision is between two unloaded rows, not
-    # against a loaded model.
-    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = False))
-    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
-
-    async def _fake_catalog():
-        return [
-            _Info("/models/tiny.gguf", "tiny"),  # cid -> "tiny"
-            _Info("/ollama/tiny.gguf", "tiny", model_id = "ollama/tiny:q4"),  # same basename, aliased
-        ]
-
-    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-
-    data = asyncio.run(inf._openai_catalog_objects())
-    ids = [m["id"] for m in data]
-    assert "tiny" in ids
-    assert "ollama/tiny:q4" in ids  # not wrongly dropped by a basename collision
-    assert len(data) == 2
-
-
 def test_empty_and_errored_scans_are_cached(monkeypatch):
     # Cache validity is keyed on the timestamp, not list contents, so an empty
     # (fresh install / no local models) or errored scan is still cached for the

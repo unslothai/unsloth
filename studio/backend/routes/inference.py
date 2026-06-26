@@ -6501,17 +6501,11 @@ async def _openai_catalog_objects() -> list[dict]:
     by_id: dict[str, dict] = {}
     for entry in _openai_model_objects():
         by_id[entry["id"]] = {**entry, "loaded": True}
-    loaded_ids = set(by_id)  # keys of the loaded entries only
 
     # Locally available (downloaded/cached) models that are not already loaded.
     for info in await _cached_local_catalog():
-        path_id = public_model_id(getattr(info, "id", None))
-        cid = getattr(info, "model_id", None) or path_id
-        # An LM Studio/Ollama row exposes a model_id alias but is loaded by path,
-        # so the loaded entry is keyed under path_id; dedup against loaded_ids (not
-        # by_id) so the active model isn't re-listed under its alias, while two
-        # distinct unloaded models sharing a basename still both appear.
-        if not cid or cid in by_id or (path_id and path_id in loaded_ids):
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        if not cid or cid in by_id:
             continue
         obj = {
             "id": cid,
