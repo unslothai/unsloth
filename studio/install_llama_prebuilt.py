@@ -5581,8 +5581,7 @@ def strip_secret_env(env: dict[str, str]) -> dict[str, str]:
     return {
         key: value
         for key, value in env.items()
-        if not is_secret_env_name(key)
-        and not _URL_USERINFO_CREDENTIAL_RE.search(value or "")
+        if not is_secret_env_name(key) and not _URL_USERINFO_CREDENTIAL_RE.search(value or "")
     }
 
 
