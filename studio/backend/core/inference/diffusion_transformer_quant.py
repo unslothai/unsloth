@@ -55,6 +55,11 @@ DEFAULT_MIN_LINEAR_FEATURES = 512
 # (0.81x end-to-end on Z-Image 1024px) AND notably less accurate (LPIPS 0.166 vs fp8's
 # 0.044), because FP4's per-forward quant overhead is not amortised and the format is
 # coarser. So nvfp4 is kept as an explicit opt-in, never the auto pick for diffusion.
+#
+# This order is the DATA-CENTER preference. On a consumer / workstation GPU it is reordered
+# to put int8 first (see ``_prefer_consumer_scheme``): consumer cards halve fp8/fp16 FP32-
+# accumulate throughput, while int8 runs full-rate (int32 accumulate is not nerfed), so int8
+# is as fast or faster than fp8 on every consumer NVIDIA / AMD / Intel part.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+
     ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
@@ -168,11 +173,22 @@ def select_transformer_quant_scheme(target: Any, requested: Optional[str]) -> Op
         return None
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            for scheme in schemes:
+            for scheme in _prefer_consumer_scheme(schemes, device):
                 if _scheme_supported(scheme, device):
                     return scheme
             return None
     return None
+
+
+def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
+    """Reorder an arch tier's schemes for the GPU class. On a consumer / workstation card
+    move int8 to the front: consumer parts halve fp8/fp16 FP32-accumulate throughput, while
+    int8 runs at full rate (int32 accumulate is not nerfed), so int8 is as fast or faster
+    than fp8 on every consumer NVIDIA / AMD / Intel GPU (and the only path on pre-Ada
+    consumer without fp8 tensor cores). Data-center HBM parts keep fp8 first."""
+    if TQ_INT8 in schemes and schemes[0] != TQ_INT8 and _is_consumer_gpu(device):
+        return (TQ_INT8,) + tuple(s for s in schemes if s != TQ_INT8)
+    return schemes
 
 
 def _capability() -> Optional[tuple[int, int]]:

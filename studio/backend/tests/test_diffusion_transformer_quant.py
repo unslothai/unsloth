@@ -39,6 +39,7 @@ def _stub_torch(
     cc = (10, 0),
     with_fp8 = True,
     cuda_available = True,
+    device_name = "NVIDIA B200",
 ):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
@@ -48,6 +49,9 @@ def _stub_torch(
     torch.cuda = types.SimpleNamespace(
         is_available = lambda: cuda_available,
         get_device_capability = lambda *a: cc,
+        # data-center name by default so the ladder tests get the data-center order;
+        # consumer tests pass a GeForce name (or monkeypatch _is_consumer_gpu).
+        get_device_name = lambda *a: device_name,
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
@@ -104,11 +108,37 @@ def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
 
 
+def test_auto_consumer_blackwell_prefers_int8(monkeypatch):
+    # Consumer Blackwell (RTX 50xx): fp8 FP32-accumulate is throughput-halved while int8 is
+    # full-rate, so auto prefers int8 even though fp8 is available (the data-center default).
+    _stub_torch(monkeypatch, cc = (12, 0), device_name = "NVIDIA GeForce RTX 5090")
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
+    # int8 unavailable -> falls back to the rest of the tier (fp8 next).
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8})
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
+
+
+def test_auto_consumer_ada_prefers_int8(monkeypatch):
+    # Consumer Ada (RTX 4090): int8 runs ~2x fp8's nerfed FP32-accumulate rate.
+    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA GeForce RTX 4090")
+    _allow(monkeypatch, {TQ_FP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
+
+
+def test_auto_workstation_unknown_prefers_int8(monkeypatch):
+    # Unknown / workstation name -> treated as consumer (the safe default) -> int8 first.
+    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA RTX 6000 Ada Generation")
+    _allow(monkeypatch, {TQ_FP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
+
+
 def test_auto_ada_hopper_prefers_fp8(monkeypatch):
-    _stub_torch(monkeypatch, cc = (8, 9))
+    # Data-center Ada (L40S) / Hopper (H100): not nerfed -> fp8 first.
+    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA L40S")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
-    _stub_torch(monkeypatch, cc = (9, 0))  # Hopper
+    _stub_torch(monkeypatch, cc = (9, 0), device_name = "NVIDIA H100 80GB HBM3")  # Hopper
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
 
 
