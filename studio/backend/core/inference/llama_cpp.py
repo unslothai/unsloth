@@ -5321,9 +5321,7 @@ class LlamaCppBackend:
                                             + kv
                                             + _mtp_bytes(effective_ctx)
                                         ) / (1024 * 1024)
-                                        if footprint_mib <= _pool_budget_mib(
-                                            subset, _fit_fraction
-                                        ):
+                                        if footprint_mib <= _pool_budget_mib(subset, _fit_fraction):
                                             gpu_indices = sorted(idx for idx, _ in subset)
                                             use_fit = False
                                             break
