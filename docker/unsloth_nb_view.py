@@ -155,8 +155,14 @@ def build_view(
             target = os.path.join(nb_dir, fname)
             rel = os.path.relpath(target, folder)  # ../../unsloth-notebooks/nb/<file>
             try:
-                if os.path.islink(link) or os.path.exists(link):
-                    os.remove(link)
+                if os.path.islink(link):
+                    os.remove(link)          # replace our own stale symlink
+                elif os.path.exists(link):
+                    # a real user file/dir already occupies this name -- never
+                    # clobber it; leave it and skip linking this notebook.
+                    print(f"[unsloth-nb] view: keep user file, skip link {fname}",
+                          file = sys.stderr)
+                    continue
                 os.symlink(rel, link)
                 n_links += 1
             except OSError as e:

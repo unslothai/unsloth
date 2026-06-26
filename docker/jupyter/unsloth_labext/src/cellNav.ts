@@ -41,12 +41,35 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
       if (!panel.node.contains(event.target as Node)) {
         return;
       }
+      // Never hijack arrows that belong to an interactive output (an ipywidgets
+      // slider / dropdown / text box created by a cell) or a plain form control;
+      // only the cell editor and the notebook's own command-mode cell nav.
+      const targetEl = event.target as HTMLElement | null;
+      if (targetEl) {
+        if (targetEl.closest('.jp-OutputArea')) {
+          return;
+        }
+        const tag = targetEl.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+          return;
+        }
+      }
       const notebook = panel.content;
       const direction = event.key === 'ArrowDown' ? 1 : -1;
       const editing = notebook.mode === 'edit';
       if (editing) {
         const editor = notebook.activeCell?.editor;
         if (!editor) {
+          return;
+        }
+        // While a completion / autocomplete popup is open, the arrows belong to
+        // it (moving through the suggestions) -- do not take over even at a cell
+        // boundary, which is common in one-line setup cells.
+        if (
+          document.querySelector(
+            '.jp-Completer:not(.lm-mod-hidden), .cm-tooltip-autocomplete'
+          )
+        ) {
           return;
         }
         const line = editor.getCursorPosition().line;

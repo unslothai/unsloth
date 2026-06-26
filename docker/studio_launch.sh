@@ -65,12 +65,16 @@ c.PasswordIdentityProvider.hashed_password = "${HASH}"
 EOF
     # Land straight in the categorized notebook view, but only when it is enabled
     # AND lives under root_dir (so it is expressible as a /lab/tree path). Mirror
-    # unsloth_sync_notebooks.sh's UNSLOTH_NOTEBOOKS_VIEW_DIR / UNSLOTH_SKIP_NOTEBOOK_VIEW
-    # so a relocated or disabled view never points JupyterLab at a missing dir;
-    # in those cases JupyterLab just opens on its default (/lab) over /workspace.
+    # unsloth_sync_notebooks.sh's gating -- UNSLOTH_NOTEBOOKS_VIEW_DIR plus both
+    # UNSLOTH_SKIP_NOTEBOOK_VIEW (no view built) and UNSLOTH_SKIP_NOTEBOOK_SYNC
+    # (entrypoint skips sync entirely, so nothing under the view dir exists) -- so
+    # a relocated, disabled, or unsynced view never points JupyterLab at a missing
+    # dir; in those cases JupyterLab just opens on its default (/lab) over /workspace.
     _root_dir="/workspace"
     _view_dir="${UNSLOTH_NOTEBOOKS_VIEW_DIR:-/workspace/Unsloth Notebooks}"
-    if [[ "${UNSLOTH_SKIP_NOTEBOOK_VIEW:-0}" != "1" && "${_view_dir}" == "${_root_dir}/"* ]]; then
+    if [[ "${UNSLOTH_SKIP_NOTEBOOK_VIEW:-0}" != "1" \
+          && "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" != "1" \
+          && "${_view_dir}" == "${_root_dir}/"* ]]; then
         _view_rel="${_view_dir#${_root_dir}/}"
         # default_url must be set on BOTH ServerApp and LabApp -- the lab
         # extension app otherwise overrides ServerApp's value back to /lab.

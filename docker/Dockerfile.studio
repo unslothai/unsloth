@@ -220,12 +220,15 @@ RUN JS="$(/opt/unsloth-venv/bin/python -c 'import os, jupyter_server; print(os.p
  && cp /tmp/unsloth-branding/logo.png "${JS}/static/logo/logo.png" \
  && cp /tmp/unsloth-branding/login.html "${JS}/templates/login.html" \
     # Copy the curated Studio sloth stickers the login page rotates through into
-    # jupyter_server's static dir (sloth/NN.png). Fail-soft: if the Studio
-    # public folder ever moves, login.html's onerror falls back to the logo.
- && /opt/unsloth-venv/bin/python /tmp/unsloth-branding/install_sloth_stickers.py \
+    # jupyter_server's static dir (sloth/NN.png). Fail-soft -- but scoped to ONLY
+    # the sticker step via the { ...; } group so a failure in a REQUIRED branding
+    # step above (JS resolve, favicon/logo/login copy) still fails the build
+    # instead of being swallowed by this fallback. If the Studio public folder
+    # ever moves, login.html's onerror falls back to the logo.
+ && { /opt/unsloth-venv/bin/python /tmp/unsloth-branding/install_sloth_stickers.py \
         --src "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/public/Sloth emojis" \
         --dest "${JS}/static/sloth" \
-    || echo ">> sloth stickers not installed (login falls back to the Unsloth logo)" \
+      || echo ">> sloth stickers not installed (login falls back to the Unsloth logo)"; } \
  && rm -rf /tmp/unsloth-branding \
  && /opt/unsloth-venv/bin/jupyter labextension disable @jupyterlab/application-extension:logo \
  && /opt/unsloth-venv/bin/jupyter labextension lock @jupyterlab/application-extension:logo

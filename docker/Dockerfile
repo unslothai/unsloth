@@ -303,11 +303,16 @@ RUN ${VENV}/bin/uv pip install \
         "omegaconf==2.3.1" "einx==0.4.3" "librosa==0.11.0" "ftfy==6.3.1" \
  && ${VENV}/bin/python -c "import torch, numpy, numba; from packaging.version import Version; assert torch.__version__.startswith('2.10.0'), torch.__version__; assert Version(numpy.__version__) >= Version('2.3'), numpy.__version__; assert Version(numba.__version__) >= Version('0.65'), numba.__version__; print('notebook-deps pins OK:', torch.__version__, numpy.__version__, numba.__version__)"
 
-# decord (ERNIE-VL video decode) publishes wheels only for x86_64 / win_amd64,
-# so install it on its own and fail-soft: amd64 gets it; on arm64 the ERNIE-VL
-# video path is skipped rather than breaking the whole image build.
-RUN ${VENV}/bin/uv pip install --python ${VENV}/bin/python "decord==0.6.0" \
- || echo ">> decord skipped (no matching wheel for ${TARGETARCH:-amd64}); ERNIE-VL video decode unavailable"
+# decord (ERNIE-VL video decode) publishes wheels only for x86_64 / win_amd64.
+# Install it on its own: HARD on amd64 (a missing/incompatible wheel is a real
+# regression there and must fail the build), fail-soft on arm64/other (no wheel
+# exists, so drop the ERNIE-VL video path rather than break the image build).
+RUN if [ "${TARGETARCH:-amd64}" = "amd64" ]; then \
+        ${VENV}/bin/uv pip install --python ${VENV}/bin/python "decord==0.6.0"; \
+    else \
+        ${VENV}/bin/uv pip install --python ${VENV}/bin/python "decord==0.6.0" \
+        || echo ">> decord skipped (no matching wheel for ${TARGETARCH:-}); ERNIE-VL video decode unavailable"; \
+    fi
 
 # Audio decode out of the box: the TTS/STT notebooks feed datasets' Audio
 # features, which decode through torchcodec. Three traps, all defended:

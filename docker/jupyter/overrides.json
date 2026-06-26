@@ -35,7 +35,6 @@
   },
   "@jupyterlab/apputils-extension:notification": {
     "fetchNews": "false",
-    "checkForUpdates": false,
-    "doNotDisturbMode": true
+    "checkForUpdates": false
   }
 }
