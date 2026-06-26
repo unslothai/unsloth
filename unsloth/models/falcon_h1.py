@@ -694,8 +694,9 @@ class Unsloth_FalconH1RMSNorm(FalconH1RMSNorm):
     Unsloth's fast_rms_layernorm is @torch.compiler.disable and handles the
     epsilon as an explicit tl.float32 scalar, bypassing the compiler entirely.
     """
+
     def forward(self, hidden_states):
-        return fast_rms_layernorm(self, hidden_states, gemma=False)
+        return fast_rms_layernorm(self, hidden_states, gemma = False)
 
 
 def patch_falcon_h1_rms_layernorm():
