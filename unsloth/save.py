@@ -480,7 +480,10 @@ def _is_gpt_oss(model):
     if config is None:
         return False
     architectures = getattr(config, "architectures", None) or ()
-    return "GptOssForCausalLM" in architectures or getattr(config, "model_type", None) in ("gpt-oss", "gpt_oss")
+    return "GptOssForCausalLM" in architectures or getattr(config, "model_type", None) in (
+        "gpt-oss",
+        "gpt_oss",
+    )
 
 
 def _qwen3_5_vlm_state_dict_for_save(state_dict):
