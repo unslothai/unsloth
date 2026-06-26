@@ -2129,6 +2129,138 @@ def test_swap_acquires_process_gate_before_load():
     assert "_auto_switch_process_lock.release()" in src
 
 
+# ── codex review (round 4): validate modality + tool-confirmation before switch ──
+
+
+def _chat_request(**kw):
+    from models.inference import ChatCompletionRequest, ChatMessage
+    kw.setdefault("messages", [ChatMessage(role = "user", content = "hi")])
+    return ChatCompletionRequest(**kw)
+
+
+def test_chat_confirm_without_stream_rejected_before_switch(monkeypatch):
+    # Codex P2: confirm_tool_calls=true + stream=false + local tools is an invalid
+    # shape; it must 400 before the switch hook so it can't evict the resident model.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("org/B-GGUF", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    payload = _chat_request(
+        model = "org/B-GGUF", enable_tools = True, confirm_tool_calls = True, stream = False
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
+def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
+    # bypass_permissions suppresses the confirm gate, so the pre-check must not fire;
+    # the request should reach the switch hook (stubbed here to a sentinel).
+    class _Reached(Exception):
+        pass
+
+    async def _boom(*a, **k):
+        raise _Reached()
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        enable_tools = True,
+        confirm_tool_calls = True,
+        stream = False,
+        bypass_permissions = True,
+    )
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+
+
+def test_require_vision_rejects_text_target_before_switch(monkeypatch):
+    # Codex P2: an image request naming a different text-only GGUF must 400 before
+    # the swap, so the resident vision model is not evicted for a rejected request.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: False)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF", object(), "t", require_vision = True
+            )
+        )
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # rejected before the load
+
+
+def test_require_vision_allows_vision_target(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/B.gguf", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: True)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
+    )
+    assert len(rec.calls) == 1  # vision target still switches
+
+
+def test_require_vision_ignores_reload_stash(monkeypatch):
+    # The reload-stash path restores the model the request was already using; the
+    # modality check applies only to an explicit resolver target, not a restore.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(
+        inference_route, "_target_is_vision", lambda _p: False
+    )  # would reject if used
+    asyncio.run(
+        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
+    )
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "/cache/snap/A"  # restored despite require_vision
+
+
+def test_chat_validates_confirm_and_modality_before_switch():
+    # Lock the order at the source: confirm-shape rejection precedes the hook, and
+    # the hook rejects a non-vision target before the load.
+    import inspect
+
+    src = inspect.getsource(inference_route.openai_chat_completions)
+    assert src.index("confirm_tool_calls requires stream=true") < src.index(
+        "_maybe_auto_switch_model"
+    )
+    assert "require_vision" in src
+    hook = inspect.getsource(inference_route._maybe_auto_switch_model)
+    assert hook.index("require_vision") < hook.index("_load_model_impl")
+    assert "does not support vision" in hook
+
+
 def test_auto_switch_serializes_across_event_loops(monkeypatch):
     # Codex P2: the per-loop asyncio lock can't serialize two swaps on different
     # event loops in one process. The process-wide gate must, so the two slow loads

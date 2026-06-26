@@ -2340,6 +2340,28 @@ def _switch_model_for_payload(payload) -> str:
     return payload.model if "model" in payload.model_fields_set else _RELOAD_ONLY_MODEL
 
 
+def _target_is_vision(load_path: str) -> bool:
+    # A local GGUF's vision capability is its companion mmproj, a filesystem check
+    # (no model load). Matches the loaded backend's is_vision, so rejecting a swap
+    # here can't differ from the post-load guard. Thread the ambient HF token so the
+    # probe keeps the capability-probe invariant (the resolver only yields local
+    # paths, where the token is unused, but the rule requires it regardless).
+    from utils.models.model_config import is_vision_model
+    try:
+        return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
+    except Exception:
+        return True  # detection failure: don't block the swap, let the load decide
+
+
+def _request_has_image(payload) -> bool:
+    if getattr(payload, "image_base64", None):
+        return True
+    return any(
+        isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
+        for m in payload.messages
+    )
+
+
 def disable_openai_auto_switch_for_request(scope) -> None:
     """Opt a request out of OpenAI auto-switch. The public preview route uses this:
     it always serves its pinned checkpoint, so a caller-supplied model must never
@@ -2360,13 +2382,19 @@ def _automatic_model_load_may_run() -> bool:
 
 
 async def _maybe_auto_switch_model(
-    requested_model: Optional[str], fastapi_request: Request, current_subject: str
+    requested_model: Optional[str],
+    fastapi_request: Request,
+    current_subject: str,
+    *,
+    require_vision: bool = False,
 ) -> None:
     """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
 
     No-op unless enabled and ``requested_model`` resolves to a downloaded local
     model different from the loaded one. Unknown names fall through (drop-in
-    compat) and no remote download is triggered.
+    compat) and no remote download is triggered. ``require_vision`` rejects a swap
+    to a text-only target before it runs, so an image request can't evict the
+    resident vision model only to 400 afterwards.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -2463,6 +2491,21 @@ async def _maybe_auto_switch_model(
 
         if _already_serving():
             return
+        # An image request naming a different text-only GGUF would load it here and
+        # only 400 below, evicting the working model. Reject before the swap. Only
+        # the resolver branch (an explicit new target); the reload-stash path just
+        # restores the model the request was already using. Vision capability comes
+        # from a companion mmproj, so it is knowable without loading.
+        if require_vision and resolved is not None and not _target_is_vision(target_id):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "Image provided but the requested model does not support vision.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "model",
+                ),
+            )
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         try:
@@ -5130,14 +5173,46 @@ async def openai_chat_completions(
     # not just auto-switch, since a standalone idle TTL can also reload here.
     # Parse once and reuse below.
     _pre_parsed = None
+    _needs_vision = False
     if _automatic_model_load_may_run():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
             raise HTTPException(
                 status_code = 400, detail = "At least one non-system message is required."
             )
+        # Reject confirm-without-stream local tool requests before the switch: the
+        # local tool path requires stream=true for the confirm gate, so this shape
+        # is invalid and must not evict the resident model first. Mirror that path's
+        # bypass_permissions exemption and its local-tool intent signal.
+        if (
+            payload.confirm_tool_calls
+            and not payload.bypass_permissions
+            and not payload.stream
+            and (
+                payload.enable_tools is True
+                or bool(payload.enabled_tools)
+                or bool(payload.tools)
+                or bool(payload.openai_code_exec_container_id)
+                or bool(payload.anthropic_code_exec_container_id)
+            )
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "confirm_tool_calls requires stream=true for local tool execution.",
+                    status = 400,
+                    code = "invalid_request_error",
+                    param = "confirm_tool_calls",
+                ),
+            )
+        _needs_vision = bool(_pre_parsed[2]) or _request_has_image(payload)
 
-    await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
+    await _maybe_auto_switch_model(
+        _switch_model_for_payload(payload),
+        request,
+        current_subject,
+        require_vision = _needs_vision,
+    )
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
