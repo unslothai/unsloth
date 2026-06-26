@@ -17,6 +17,7 @@ Launched as a subprocess by file path (not `python -m`) so the Unsloth package, 
 transformers attention, is not imported here; llm-compressor needs an unpatched forward for
 calibration (e.g. NVFP4). Reads a merged 16bit checkpoint, writes a compressed-tensors one.
 """
+
 import argparse
 import glob
 import json
@@ -26,6 +27,7 @@ import sys
 
 def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_length):
     from datasets import DatasetDict, load_dataset, load_from_disk
+
     _tok = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
 
     if kind == "none":
@@ -33,13 +35,13 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
             f"Unsloth: NVFP4 needs calibration data. Defaulting to {num_samples} samples of "
             "HuggingFaceH4/ultrachat_200k. For best accuracy pass your own training data via "
             "`calibration_dataset=...`.",
-            flush=True,
+            flush = True,
         )
-        ds = load_dataset("HuggingFaceH4/ultrachat_200k", split=f"train_sft[:{num_samples}]")
-        ds = ds.shuffle(seed=42)
+        ds = load_dataset("HuggingFaceH4/ultrachat_200k", split = f"train_sft[:{num_samples}]")
+        ds = ds.shuffle(seed = 42)
     elif kind == "hfid":
-        ds = load_dataset(value, split=f"train[:{num_samples}]")
-        ds = ds.shuffle(seed=42)
+        ds = load_dataset(value, split = f"train[:{num_samples}]")
+        ds = ds.shuffle(seed = 42)
     elif kind == "disk":
         ds = load_from_disk(value)
         if isinstance(ds, DatasetDict):
@@ -53,7 +55,7 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
                     "pass a single split, e.g. calibration_dataset=dataset['train']."
                 )
         if num_samples and len(ds) > num_samples:
-            ds = ds.shuffle(seed=42).select(range(num_samples))
+            ds = ds.shuffle(seed = 42).select(range(num_samples))
     else:
         raise ValueError(f"Unknown calibration-dataset-kind: {kind}")
 
@@ -61,8 +63,10 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
     if "input_ids" in cols:
         return ds
     if "messages" in cols:
+
         def _prep(ex):
-            return {"text": _tok.apply_chat_template(ex["messages"], tokenize=False)}
+            return {"text": _tok.apply_chat_template(ex["messages"], tokenize = False)}
+
         ds = ds.map(_prep)
     elif "text" not in cols:
         raise RuntimeError(
@@ -72,39 +76,50 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
 
     def _tokenize(sample):
         return _tok(
-            sample["text"], padding=False, max_length=max_seq_length,
-            truncation=True, add_special_tokens=False,
+            sample["text"],
+            padding = False,
+            max_length = max_seq_length,
+            truncation = True,
+            add_special_tokens = False,
         )
-    return ds.map(_tokenize, remove_columns=ds.column_names)
+
+    return ds.map(_tokenize, remove_columns = ds.column_names)
 
 
 def _from_pretrained(auto_model, model_path, trust_remote_code):
     import torch
+
     # transformers renamed torch_dtype -> dtype; support both.
     try:
         return auto_model.from_pretrained(
-            model_path, device_map="auto", low_cpu_mem_usage=True,
-            trust_remote_code=trust_remote_code, dtype=torch.bfloat16,
+            model_path,
+            device_map = "auto",
+            low_cpu_mem_usage = True,
+            trust_remote_code = trust_remote_code,
+            dtype = torch.bfloat16,
         )
     except TypeError:
         return auto_model.from_pretrained(
-            model_path, device_map="auto", low_cpu_mem_usage=True,
-            trust_remote_code=trust_remote_code, torch_dtype=torch.bfloat16,
+            model_path,
+            device_map = "auto",
+            low_cpu_mem_usage = True,
+            trust_remote_code = trust_remote_code,
+            torch_dtype = torch.bfloat16,
         )
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, help="merged 16bit HF checkpoint dir")
-    ap.add_argument("--scheme", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--needs-calibration", action="store_true")
-    ap.add_argument("--calibration-dataset-kind", default="none", choices=["none", "hfid", "disk"])
-    ap.add_argument("--calibration-dataset", default="")
-    ap.add_argument("--num-calibration-samples", type=int, default=512)
-    ap.add_argument("--max-seq-length", type=int, default=2048)
-    ap.add_argument("--is-vlm", action="store_true")
-    ap.add_argument("--trust-remote-code", action="store_true")
+    ap.add_argument("--model", required = True, help = "merged 16bit HF checkpoint dir")
+    ap.add_argument("--scheme", required = True)
+    ap.add_argument("--out", required = True)
+    ap.add_argument("--needs-calibration", action = "store_true")
+    ap.add_argument("--calibration-dataset-kind", default = "none", choices = ["none", "hfid", "disk"])
+    ap.add_argument("--calibration-dataset", default = "")
+    ap.add_argument("--num-calibration-samples", type = int, default = 512)
+    ap.add_argument("--max-seq-length", type = int, default = 2048)
+    ap.add_argument("--is-vlm", action = "store_true")
+    ap.add_argument("--trust-remote-code", action = "store_true")
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -131,37 +146,45 @@ def main():
 
     model = _from_pretrained(auto_model, args.model, args.trust_remote_code)
     model.eval()
-    tokenizer = auto_proc.from_pretrained(args.model, trust_remote_code=args.trust_remote_code)
+    tokenizer = auto_proc.from_pretrained(args.model, trust_remote_code = args.trust_remote_code)
 
-    recipe = QuantizationModifier(targets="Linear", scheme=args.scheme, ignore=["lm_head"])
+    recipe = QuantizationModifier(targets = "Linear", scheme = args.scheme, ignore = ["lm_head"])
     if args.needs_calibration:
         ds = _build_calibration_dataset(
-            tokenizer, args.calibration_dataset_kind, args.calibration_dataset,
-            args.num_calibration_samples, args.max_seq_length,
+            tokenizer,
+            args.calibration_dataset_kind,
+            args.calibration_dataset,
+            args.num_calibration_samples,
+            args.max_seq_length,
         )
         # "basic" pipeline runs a normal forward (no AST tracing / sequential splitting).
         oneshot(
-            model=model, dataset=ds, recipe=recipe,
-            max_seq_length=args.max_seq_length,
-            num_calibration_samples=args.num_calibration_samples,
-            pipeline="basic",
+            model = model,
+            dataset = ds,
+            recipe = recipe,
+            max_seq_length = args.max_seq_length,
+            num_calibration_samples = args.num_calibration_samples,
+            pipeline = "basic",
         )
     else:
-        oneshot(model=model, recipe=recipe)
+        oneshot(model = model, recipe = recipe)
 
-    os.makedirs(args.out, exist_ok=True)
-    model.save_pretrained(args.out, save_compressed=True)
+    os.makedirs(args.out, exist_ok = True)
+    model.save_pretrained(args.out, save_compressed = True)
     tokenizer.save_pretrained(args.out)
 
     cfg_path = os.path.join(args.out, "config.json")
     cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
     if "quantization_config" not in cfg:
-        print(f"Unsloth: ERROR - no quantization_config written to {cfg_path}", flush=True)
+        print(f"Unsloth: ERROR - no quantization_config written to {cfg_path}", flush = True)
         sys.exit(2)
     shards = glob.glob(os.path.join(args.out, "*.safetensors"))
     qfmt = cfg["quantization_config"].get("format")
-    print(f"[compressed-quantize] OK scheme={args.scheme} format={qfmt} "
-          f"shards={len(shards)} -> {args.out}", flush=True)
+    print(
+        f"[compressed-quantize] OK scheme={args.scheme} format={qfmt} "
+        f"shards={len(shards)} -> {args.out}",
+        flush = True,
+    )
 
 
 if __name__ == "__main__":

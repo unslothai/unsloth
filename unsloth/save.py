@@ -152,16 +152,16 @@ CURL_FLAG = "-DLLAMA_CURL=ON" if has_curl() else "-DLLAMA_CURL=OFF"
 # FP8/FP4 compressed export via llm-compressor (for vLLM).
 # save_method alias -> (llm-compressor scheme, needs_calibration, output dir suffix).
 COMPRESSED_EXPORT_SCHEMES = {
-    "fp8"        : ("FP8_DYNAMIC", False, "fp8"),
+    "fp8": ("FP8_DYNAMIC", False, "fp8"),
     "fp8_dynamic": ("FP8_DYNAMIC", False, "fp8"),
     "dynamic_fp8": ("FP8_DYNAMIC", False, "fp8"),
-    "w8a8_fp8"   : ("FP8_DYNAMIC", False, "fp8"),
-    "mxfp8"      : ("MXFP8",       False, "mxfp8"),
-    "w8a8_mxfp8" : ("MXFP8",       False, "mxfp8"),
-    "mxfp4"      : ("MXFP4",       False, "mxfp4"),
-    "w4a4_mxfp4" : ("MXFP4",       False, "mxfp4"),
-    "nvfp4"      : ("NVFP4",       True,  "nvfp4"),
-    "w4a4_nvfp4" : ("NVFP4",       True,  "nvfp4"),
+    "w8a8_fp8": ("FP8_DYNAMIC", False, "fp8"),
+    "mxfp8": ("MXFP8", False, "mxfp8"),
+    "w8a8_mxfp8": ("MXFP8", False, "mxfp8"),
+    "mxfp4": ("MXFP4", False, "mxfp4"),
+    "w4a4_mxfp4": ("MXFP4", False, "mxfp4"),
+    "nvfp4": ("NVFP4", True, "nvfp4"),
+    "w4a4_nvfp4": ("NVFP4", True, "nvfp4"),
 }
 
 
@@ -190,8 +190,10 @@ def _normalize_compressed_method(save_method):
 def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
-    print("\nCompressed-tensors FP8/FP4 export "
-          "(save_pretrained_merged(..., save_method=...), for vLLM):")
+    print(
+        "\nCompressed-tensors FP8/FP4 export "
+        "(save_pretrained_merged(..., save_method=...), for vLLM):"
+    )
     seen = set()
     for key, (scheme, needs_calib, _suffix) in COMPRESSED_EXPORT_SCHEMES.items():
         if scheme in seen:
@@ -1294,6 +1296,7 @@ def install_llm_compressor():
     )
     import importlib
     import tempfile
+
     constraints = ""
     try:
         import torch as _torch
@@ -1324,8 +1327,10 @@ def install_llm_compressor():
         )
     finally:
         if cpath is not None:
-            try: os.remove(cpath)
-            except Exception: pass
+            try:
+                os.remove(cpath)
+            except Exception:
+                pass
 
     importlib.invalidate_caches()
     try:
@@ -3634,6 +3639,7 @@ def _scheme_is_available(scheme):
     """True if `scheme` is a known preset in the installed compressed_tensors."""
     try:
         from compressed_tensors.quantization import quant_scheme as _qs
+
         presets = getattr(_qs, "PRESET_SCHEMES", None)
         if presets is None:
             return True
@@ -3647,8 +3653,10 @@ def _print_compressed_hw_note(scheme, out_dir):
     if scheme == "FP8_DYNAMIC":
         hw = "NVIDIA GPUs with compute capability >= 8.9 (Ada / Hopper) or newer"
     else:
-        hw = ("NVIDIA Blackwell (SM100+) for full activation quantization "
-              "(older GPUs fall back to weight-only in vLLM)")
+        hw = (
+            "NVIDIA Blackwell (SM100+) for full activation quantization "
+            "(older GPUs fall back to weight-only in vLLM)"
+        )
     print(
         f"Unsloth: Saved {scheme} compressed checkpoint to '{out_dir}'.\n"
         f"Unsloth: Load it with vLLM for accelerated inference. Hardware for full speed: {hw}."
@@ -3690,14 +3698,16 @@ def _unsloth_save_compressed_tensors(
     if is_peft:
         print(f"Unsloth: Merging LoRA weights to 16bit before {scheme} quantization...")
         merge_args = dict(merge_kwargs)
-        merge_args.update(dict(
-            model = model,
-            tokenizer = tokenizer,
-            save_directory = save_directory,
-            save_method = "merged_16bit",
-            push_to_hub = False,
-            token = token,
-        ))
+        merge_args.update(
+            dict(
+                model = model,
+                tokenizer = tokenizer,
+                save_directory = save_directory,
+                save_method = "merged_16bit",
+                push_to_hub = False,
+                token = token,
+            )
+        )
         unsloth_generic_save(**merge_args)
     else:
         print(f"Unsloth: Saving base model to 16bit before {scheme} quantization...")
@@ -3741,7 +3751,9 @@ def _unsloth_save_compressed_tensors(
             "Unsloth: FP8/FP4 compressed export for vision / multimodal models is experimental; "
             "vision-tower layers may be affected."
         )
-    trust_remote_code = bool(getattr(model.config, "auto_map", None)) if hasattr(model, "config") else False
+    trust_remote_code = (
+        bool(getattr(model.config, "auto_map", None)) if hasattr(model, "config") else False
+    )
 
     # 4) Marshal the calibration dataset for the subprocess: None -> ultrachat default; a
     #    str/PathLike is a local save_to_disk dir if it exists else a Hub id; a Dataset -> temp dir.
@@ -3753,6 +3765,7 @@ def _unsloth_save_compressed_tensors(
             calib_kind = "disk" if os.path.isdir(calib_value) else "hfid"
         elif hasattr(calibration_dataset, "save_to_disk"):
             import tempfile
+
             parent = os.path.dirname(os.path.abspath(save_directory)) or None
             calib_tmp = tempfile.mkdtemp(prefix = "unsloth-calib-", dir = parent)
             shutil.rmtree(calib_tmp, ignore_errors = True)  # save_to_disk wants a fresh path
@@ -3774,21 +3787,34 @@ def _unsloth_save_compressed_tensors(
     out_dir = save_directory + "-" + suffix
     runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_compressed_quantize.py")
     cmd = [
-        sys.executable, runner,
-        "--model", str(save_directory),
-        "--scheme", scheme,
-        "--out", out_dir,
-        "--calibration-dataset-kind", calib_kind,
-        "--num-calibration-samples", str(num_calibration_samples),
-        "--max-seq-length", str(max_seq_length),
+        sys.executable,
+        runner,
+        "--model",
+        str(save_directory),
+        "--scheme",
+        scheme,
+        "--out",
+        out_dir,
+        "--calibration-dataset-kind",
+        calib_kind,
+        "--num-calibration-samples",
+        str(num_calibration_samples),
+        "--max-seq-length",
+        str(max_seq_length),
     ]
-    if needs_calibration:    cmd.append("--needs-calibration")
-    if calib_value:          cmd += ["--calibration-dataset", calib_value]
-    if is_vlm:               cmd.append("--is-vlm")
-    if trust_remote_code:    cmd.append("--trust-remote-code")
+    if needs_calibration:
+        cmd.append("--needs-calibration")
+    if calib_value:
+        cmd += ["--calibration-dataset", calib_value]
+    if is_vlm:
+        cmd.append("--is-vlm")
+    if trust_remote_code:
+        cmd.append("--trust-remote-code")
 
-    print(f"Unsloth: Quantizing the merged model to {scheme} with llm-compressor "
-          "(in a separate process)...")
+    print(
+        f"Unsloth: Quantizing the merged model to {scheme} with llm-compressor "
+        "(in a separate process)..."
+    )
     try:
         subprocess.check_call(cmd)
     except subprocess.CalledProcessError as e:
@@ -3798,8 +3824,10 @@ def _unsloth_save_compressed_tensors(
         )
     finally:
         if calib_tmp is not None and os.path.isdir(calib_tmp):
-            try: shutil.rmtree(calib_tmp)
-            except Exception: pass
+            try:
+                shutil.rmtree(calib_tmp)
+            except Exception:
+                pass
 
     # 6) Validate the artifact.
     cfg_path = os.path.join(out_dir, "config.json")
@@ -3813,13 +3841,18 @@ def _unsloth_save_compressed_tensors(
     if push_to_hub:
         print(f"Unsloth: Uploading {scheme} checkpoint to '{save_directory}' ...")
         from huggingface_hub import HfApi
+
         api = HfApi(token = token)
         api.create_repo(
-            repo_id = save_directory, repo_type = "model",
-            private = merge_kwargs.get("private", None), exist_ok = True,
+            repo_id = save_directory,
+            repo_type = "model",
+            private = merge_kwargs.get("private", None),
+            exist_ok = True,
         )
         api.upload_folder(
-            folder_path = out_dir, repo_id = save_directory, repo_type = "model",
+            folder_path = out_dir,
+            repo_id = save_directory,
+            repo_type = "model",
             commit_message = merge_kwargs.get("commit_message", None),
             commit_description = merge_kwargs.get("commit_description", None),
             create_pr = merge_kwargs.get("create_pr", False),
