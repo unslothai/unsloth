@@ -285,17 +285,34 @@ RUN set -eux \
 #   omegaconf  TTS families + both NeMo-Gym RL notebooks' config objects
 #   einx  TTS codec tensor-rearrange (Llasa / Oute / Spark TTS)
 #   librosa  Whisper audio feature extraction (pairs with soundfile + torchcodec)
-#   decord  ERNIE-VL vision notebook video decode
 #   ftfy  Oute TTS text normalisation
+# decord (ERNIE-VL video decode) is installed separately below: it ships no
+# aarch64 wheel, so a hard install here would break the arm64 build.
 # librosa pulls numba/soxr/audioread; numba is already pinned >=0.65 (numpy 2.4
 # compatible) by the vLLM pass, so the resolve must NOT move torch/numpy/numba --
 # the assertion below fails the build loudly if it did.
+# Pinned (==) to the resolved, tested versions for reproducible rebuilds -- the
+# same convention as the cu128 core (torch/torchvision/torchaudio). Bump these
+# deliberately, not silently on the next build. Transitive deps of these are
+# captured by the full venv lockfile (docker/freeze.sh -> requirements.lock.txt).
 RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
-        jupyterlab notebook ipywidgets matplotlib \
-        soundfile evaluate jiwer tensorboard langid easydict protobuf \
-        omegaconf einx librosa decord ftfy \
+        "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
+        "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
+        "langid==1.1.6" "easydict==1.13" "protobuf==6.33.6" \
+        "omegaconf==2.3.1" "einx==0.4.3" "librosa==0.11.0" "ftfy==6.3.1" \
  && ${VENV}/bin/python -c "import torch, numpy, numba; from packaging.version import Version; assert torch.__version__.startswith('2.10.0'), torch.__version__; assert Version(numpy.__version__) >= Version('2.3'), numpy.__version__; assert Version(numba.__version__) >= Version('0.65'), numba.__version__; print('notebook-deps pins OK:', torch.__version__, numpy.__version__, numba.__version__)"
+
+# decord (ERNIE-VL video decode) publishes wheels only for x86_64 / win_amd64.
+# Install it on its own: HARD on amd64 (a missing/incompatible wheel is a real
+# regression there and must fail the build), fail-soft on arm64/other (no wheel
+# exists, so drop the ERNIE-VL video path rather than break the image build).
+RUN if [ "${TARGETARCH:-amd64}" = "amd64" ]; then \
+        ${VENV}/bin/uv pip install --python ${VENV}/bin/python "decord==0.6.0"; \
+    else \
+        ${VENV}/bin/uv pip install --python ${VENV}/bin/python "decord==0.6.0" \
+        || echo ">> decord skipped (no matching wheel for ${TARGETARCH:-}); ERNIE-VL video decode unavailable"; \
+    fi
 
 # Audio decode out of the box: the TTS/STT notebooks feed datasets' Audio
 # features, which decode through torchcodec. Three traps, all defended:

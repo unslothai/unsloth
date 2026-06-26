@@ -232,6 +232,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The base image must NEVER claim :latest. metadata-action defaults to
+          # flavor latest=auto, which would tag :latest on a v* (semver) tag push
+          # and collide with the Studio image that legitimately owns :latest.
+          flavor: latest=false
           tags: |
             # The lean training image publishes under the base- prefix; the
             # full Studio image (build-studio/merge-studio below) owns
@@ -437,6 +441,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Keep the base image off :latest here too (this recomputes the same
+          # tag list the merge step pushed, so the smoke test pulls the right ref).
+          flavor: latest=false
           tags: |
             type=raw,value=base,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
             type=ref,event=tag,prefix=base-
