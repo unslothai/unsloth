@@ -1062,7 +1062,8 @@ with sync_playwright() as p:
             shoot("15d-recent-clicked")
             info(f"OK clicked recent entry: {t[:60]!r}")
             # The landed thread must include at least one of our prompts.
-            turns_text = page.evaluate(
+            turns_text = robust_evaluate(
+                page,
                 """() => {
                 const els = document.querySelectorAll(
                     '[data-role="user"], [data-role="assistant"]'
@@ -1070,7 +1071,6 @@ with sync_playwright() as p:
                 return Array.from(els).map(e => (e.innerText || '')
                     .toLowerCase()).join(' ');
             }""",
-                None,
             )
             clicked_recent = True
             if any(k in turns_text for k in PROMPT_KEYWORDS):
