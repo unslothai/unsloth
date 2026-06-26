@@ -9,6 +9,8 @@ the _already_in_target_state mirror that prevents needless reloads.
 
 from __future__ import annotations
 
+import inspect
+import os
 import struct
 import sys
 import types as _types
@@ -52,11 +54,15 @@ import pytest
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _GPU_OFFLOAD_OVERRIDE_FLAGS,
+    _THREAD_OVERRIDE_FLAGS,
     _backfill_usage_from_timings,
     _build_ngram_mod_flags,
     _canonicalize_spec_mode,
+    _extra_args_set_any_flag,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
+    _mla_mtp_auto_enabled,
 )
 
 
@@ -77,9 +83,7 @@ def _enc_kv_string(key: str, value: str) -> bytes:
 
 
 def _enc_kv_uint32(key: str, value: int) -> bytes:
-    return (
-        _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
-    )
+    return _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
 
 
 def _write_minimal_gguf(
@@ -189,9 +193,9 @@ def _mtp_backend(**overrides):
     backend._requested_n_ctx = 8192
     backend._cache_type_kv = None
     backend._speculative_type = "draft-mtp"
-    # Default fixture simulates Auto having auto-promoted to draft-mtp.
-    # Individual tests override _requested_spec_mode when they want a
-    # forced mode or the user---spec-type-extra-args path.
+    # Fixture simulates Auto having auto-promoted to draft-mtp. Tests
+    # override _requested_spec_mode for a forced mode or the
+    # user---spec-type-extra-args path.
     backend._requested_spec_mode = "auto"
     backend._chat_template_override = None
     backend._is_vision = False
@@ -241,11 +245,10 @@ def test_already_in_target_state_matches_when_request_uses_default_for_mtp_model
 
 
 def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_model():
-    # Under the requested-mode round-trip model, Auto requested against an
-    # Auto-recorded backend matches regardless of model name. The underlying
-    # resolved emission (--spec-default vs draft-mtp) is handled by the
-    # backend's own load path and reflected in _speculative_type; the
-    # short-circuit comparison only cares whether the *intent* changed.
+    # In the requested-mode round-trip model, Auto-vs-Auto matches regardless
+    # of model name. The resolved emission (--spec-default vs draft-mtp) is
+    # handled by the load path and reflected in _speculative_type; the
+    # short-circuit only cares whether the *intent* changed.
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.6-27B-GGUF",
         _speculative_type = "default",
@@ -316,6 +319,46 @@ def test_extra_args_set_spec_type_detects_user_override(extra_args):
 )
 def test_extra_args_set_spec_type_passes_on_non_spec_type_args(extra_args):
     assert _extra_args_set_spec_type(extra_args) is False
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["-ngl", "12"],
+        ["--gpu-layers", "12"],
+        ["--n-gpu-layers=12"],
+        ["-fit", "off"],
+        ["--fit=off"],
+    ],
+)
+def test_extra_args_detect_gpu_offload_overrides(extra_args):
+    assert _extra_args_set_any_flag(extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS) is True
+
+
+@pytest.mark.parametrize("extra_args", [["-t", "8"], ["--threads=8"]])
+def test_extra_args_detect_thread_overrides(extra_args):
+    assert _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS) is True
+
+
+def test_windows_full_offload_flags_use_current_llama_server_args():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    stale_checkpoint_flag = "--checkpoint-" + "every-n-tokens"
+    assert '"--cache-ram"' in src
+    assert '"--ctx-checkpoints"' in src
+    assert '"--no-cache-prompt"' in src
+    assert stale_checkpoint_flag not in src
+
+
+def test_load_model_sets_threads_once():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert src.count('cmd.extend(["--threads", str(') == 1
+
+
+def test_llama_cpp_annotations_stay_python39_safe():
+    src = inspect.getsource(LlamaCppBackend.generate_chat_completion)
+    helper_src = inspect.getsource(_extra_args_set_any_flag)
+    assert "Generator[str | dict" not in src
+    assert "set[str] | frozenset[str]" not in helper_src
 
 
 def test_already_in_target_state_user_spec_type_override_matches_clean_backend():
@@ -405,11 +448,9 @@ def test_already_in_target_state_vision_mtp_default_matches():
 
 
 def test_already_in_target_state_vision_off_matches_vision_backend():
-    # Vision loads silently drop speculative decoding at the route level
-    # (_request_matches_loaded_settings overrides req to "off"). At the
-    # llama_cpp.py level, _already_in_target_state compares canonical
-    # requested modes; a vision backend recorded with _requested_spec_mode
-    # = "off" matches a req of "off" or None+vision.
+    # Vision loads drop speculative decoding at the route level (req -> "off").
+    # _already_in_target_state compares canonical requested modes; a vision
+    # backend with _requested_spec_mode="off" matches req "off" or None+vision.
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
         _is_vision = True,
@@ -497,7 +538,7 @@ def test_unload_resets_nextn_predict_layers():
 
 def _make_fake_llama_server(path: Path, help_text: str) -> Path:
     """Bash stub that prints `help_text` on --help."""
-    path.write_text("#!/usr/bin/env bash\n" f"cat <<'EOF'\n{help_text}\nEOF\n")
+    path.write_text(f"#!/usr/bin/env bash\ncat <<'EOF'\n{help_text}\nEOF\n")
     path.chmod(0o755)
     return path
 
@@ -528,12 +569,43 @@ def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
 
 
 @_NEEDS_BASH
+def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,mtp,ngram-simple\n",
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.child_env_without_native_path_secret",
+        lambda: {"LD_LIBRARY_PATH": "/already-there"},
+    )
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return _types.SimpleNamespace(stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "")
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
+
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+
+    assert caps["found"] is True
+    assert caps["supports_mtp"] is True
+    assert captured["cmd"] == [str(fake), "--help"]
+    assert captured["env"] is not None
+    ld_dirs = captured["env"]["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(fake.parent) in ld_dirs
+    assert "/already-there" in ld_dirs
+
+
+@_NEEDS_BASH
 def test_probe_server_capabilities_detects_renamed_mtp(tmp_path):
     # Renamed upstream: draft-mtp -> mtp.
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
-        "--spec-type [none|mtp|ngram-cache|ngram-simple|ngram-map-k|"
-        "ngram-map-k4v|ngram-mod]",
+        "--spec-type [none|mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]",
     )
     _clear_caps_cache()
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
@@ -560,6 +632,9 @@ def test_probe_server_capabilities_handles_missing_binary():
     caps = LlamaCppBackend.probe_server_capabilities("/no/such/llama-server")
     assert caps["found"] is False
     assert caps["supports_mtp"] is False
+    assert caps["supports_cache_ram"] is False
+    assert caps["supports_ctx_checkpoints"] is False
+    assert caps["supports_no_cache_prompt"] is False
 
 
 # ngram-mod flag flavor detection (new vs legacy llama-server).
@@ -594,6 +669,12 @@ _LEGACY_HELP = """\
 --spec-type none,ngram-mod,ngram-simple                                        comma-separated list of types of speculative decoding to use
 """
 
+_CACHE_FLAGS_HELP = """\
+--cache-ram N                           store prompt cache in RAM (default: 0)
+--ctx-checkpoints N                     number of context checkpoints (default: 0)
+--no-cache-prompt                       do not reuse prompt cache
+"""
+
 
 @_NEEDS_BASH
 def test_probe_detects_post_rename_ngram_mod_flavor(tmp_path):
@@ -619,9 +700,8 @@ def test_probe_detects_legacy_ngram_mod_flavor(tmp_path):
 
 @_NEEDS_BASH
 def test_probe_ignores_removal_stub_descriptions(tmp_path):
-    # Post-rename binary: legacy flags are present but with
-    # "argument has been removed" descriptions; must not be detected
-    # as legacy.
+    # Post-rename binary: legacy flags present but with "argument has been
+    # removed" descriptions; must not be detected as legacy.
     fake = _make_fake_llama_server(tmp_path / "llama-server", _POST_RENAME_HELP)
     _clear_caps_cache()
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
@@ -641,6 +721,26 @@ def test_probe_no_ngram_mod_on_minimal_binary(tmp_path):
     assert caps["supports_ngram_mod"] is False
 
 
+@_NEEDS_BASH
+def test_probe_detects_windows_cache_flags(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", _CACHE_FLAGS_HELP)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_cache_ram"] is True
+    assert caps["supports_ctx_checkpoints"] is True
+    assert caps["supports_no_cache_prompt"] is True
+
+
+@_NEEDS_BASH
+def test_probe_reports_windows_cache_flags_absent_for_older_binary(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", "--threads N\n")
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_cache_ram"] is False
+    assert caps["supports_ctx_checkpoints"] is False
+    assert caps["supports_no_cache_prompt"] is False
+
+
 def test_build_ngram_mod_flags_new():
     flags = _build_ngram_mod_flags({"ngram_mod_flavor": "new"})
     assert flags == [
@@ -655,14 +755,7 @@ def test_build_ngram_mod_flags_new():
 
 def test_build_ngram_mod_flags_legacy():
     flags = _build_ngram_mod_flags({"ngram_mod_flavor": "legacy"})
-    assert flags == [
-        "--spec-ngram-size-n",
-        "24",
-        "--draft-min",
-        "48",
-        "--draft-max",
-        "64",
-    ]
+    assert flags == ["--spec-ngram-size-n", "24", "--draft-min", "48", "--draft-max", "64"]
 
 
 def test_build_ngram_mod_flags_empty_when_unsupported():
@@ -672,9 +765,7 @@ def test_build_ngram_mod_flags_empty_when_unsupported():
 
 
 def test_build_ngram_mod_flags_respects_custom_values():
-    flags = _build_ngram_mod_flags(
-        {"ngram_mod_flavor": "new"}, n_match = 16, n_min = 24, n_max = 32
-    )
+    flags = _build_ngram_mod_flags({"ngram_mod_flavor": "new"}, n_match = 16, n_min = 24, n_max = 32)
     assert flags == [
         "--spec-ngram-mod-n-match",
         "16",
@@ -796,16 +887,15 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
     )
 
 
-# Sub-3B MTP gate -- tiny dense models regress with the MTP draft
-# head, so load_model falls back to ngram-mod (when the binary supports
-# it) instead of draft-mtp. The reload-skip mirror must follow the
-# same fallback so a sub-3B reload-with-default does not bounce a
-# correctly-configured ngram-mod / off backend.
+# Sub-3B MTP gate -- tiny dense models regress with the MTP draft head, so
+# load_model falls back to ngram-mod (when the binary supports it) instead of
+# draft-mtp. The reload-skip mirror must follow the same fallback so a sub-3B
+# reload-with-default doesn't bounce a correctly-configured ngram-mod/off backend.
 
 
 def _patch_probe(monkeypatch, ngram_supported):
-    """Force probe_server_capabilities to a deterministic result so
-    tests don't depend on whatever llama-server happens to be on PATH."""
+    """Force probe_server_capabilities to a deterministic result so tests
+    don't depend on whatever llama-server is on PATH."""
     fake = {
         "found": True,
         "mtp_token": "draft-mtp",
@@ -826,11 +916,9 @@ def _patch_probe(monkeypatch, ngram_supported):
     )
 
 
-def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(
-    monkeypatch,
-):
-    # 0.8B MTP request -- load_model would have promoted to ngram-mod
-    # (no MTP head); reload check must match a ngram-mod backend.
+def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(monkeypatch):
+    # 0.8B MTP request -- load_model would have promoted to ngram-mod (no MTP
+    # head); reload check must match a ngram-mod backend.
     _patch_probe(monkeypatch, ngram_supported = True)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
@@ -902,8 +990,8 @@ def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
 
 
 def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypatch):
-    # 2.0B is below the 3B threshold -> ngram-mod fallback, not
-    # draft-mtp. Clean-bench shows 2B regresses with draft-mtp.
+    # 2.0B is below the 3B threshold -> ngram-mod fallback, not draft-mtp.
+    # Clean-bench shows 2B regresses with draft-mtp.
     _patch_probe(monkeypatch, ngram_supported = True)
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
@@ -1011,7 +1099,12 @@ def test_canonicalize_spec_mode(value, expected):
 # ── _build_speculative_flags resolver matrix ──────────────────────
 
 
-def _resolver_backend(monkeypatch, *, ngram_supported = True, mtp_token = "draft-mtp"):
+def _resolver_backend(
+    monkeypatch,
+    *,
+    ngram_supported = True,
+    mtp_token = "draft-mtp",
+):
     """Backend with a deterministic probe so the resolver is hermetic."""
     fake = {
         "found": True,
@@ -1032,9 +1125,9 @@ def _resolver_backend(monkeypatch, *, ngram_supported = True, mtp_token = "draft
 
 
 def _flags_dict(flags):
-    """Parse the spec-flag list into a small {flag: value} dict; collapses
-    repeated flags by keeping the last (only --spec-type can repeat and
-    never does in our resolver)."""
+    """Parse the spec-flag list into a {flag: value} dict; collapses repeated
+    flags by keeping the last (only --spec-type can repeat, and never does
+    in our resolver)."""
     out = {}
     i = 0
     while i < len(flags):
@@ -1070,8 +1163,8 @@ _SUB_3B_MTP_MODEL = "unsloth/Qwen3.5-0.8B-MTP-GGUF"
         ("mtp", False, _MTP_MODEL, "draft-mtp", "3", False),
         # ── mtp forced on sub-3B: engage anyway ──
         ("mtp", True, _SUB_3B_MTP_MODEL, "draft-mtp", "2", False),
-        # ── mtp forced on non-MTP: engage anyway ──
-        ("mtp", True, _NON_MTP_MODEL, "draft-mtp", "2", False),
+        # ── mtp forced on non-MTP: default back (no head/drafter) ──
+        ("mtp", True, _NON_MTP_MODEL, None, None, False),
         # ── ngram forced: ngram-mod alone on BOTH platforms ──
         ("ngram", True, _MTP_MODEL, "ngram-mod", None, True),
         ("ngram", False, _MTP_MODEL, "ngram-mod", None, True),
@@ -1080,6 +1173,8 @@ _SUB_3B_MTP_MODEL = "unsloth/Qwen3.5-0.8B-MTP-GGUF"
         ("mtp+ngram", True, _MTP_MODEL, "ngram-mod,draft-mtp", "2", True),
         ("mtp+ngram", False, _MTP_MODEL, "ngram-mod,draft-mtp", "3", True),
         ("mtp+ngram", True, _SUB_3B_MTP_MODEL, "ngram-mod,draft-mtp", "2", True),
+        # ── mtp+ngram forced on non-MTP: keep ngram, drop draft-mtp ──
+        ("mtp+ngram", True, _NON_MTP_MODEL, "ngram-mod", None, True),
         # ── off: nothing emitted ──
         ("off", True, _MTP_MODEL, None, None, False),
         ("off", False, _MTP_MODEL, None, None, False),
@@ -1093,13 +1188,7 @@ _SUB_3B_MTP_MODEL = "unsloth/Qwen3.5-0.8B-MTP-GGUF"
     ],
 )
 def test_build_speculative_flags_matrix(
-    monkeypatch,
-    requested,
-    gpus,
-    model,
-    expect_spec_type,
-    expect_n_max,
-    expect_ngram_knobs,
+    monkeypatch, requested, gpus, model, expect_spec_type, expect_n_max, expect_ngram_knobs
 ):
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
@@ -1140,8 +1229,8 @@ def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
         gpus = True,
         binary = "/fake/llama-server",
     )
-    # No flags emitted by the resolver -- the user's extra_args carries
-    # the --spec-type, and the resolver records requested_spec_mode = None.
+    # Resolver emits nothing -- the user's extra_args carries the --spec-type,
+    # and the resolver records requested_spec_mode = None.
     assert flags == []
     assert backend.requested_spec_mode is None
     assert backend.speculative_type is None
@@ -1180,9 +1269,10 @@ def test_build_speculative_flags_user_draft_n_max_override(monkeypatch):
     assert backend.spec_draft_n_max == 5
 
 
-def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
-    # Outdated llama-server with no MTP support: forced MTP must degrade
-    # to spec-off (warned) rather than emit a bad --spec-type.
+def test_build_speculative_flags_mtp_token_missing_emits_spec_default(monkeypatch):
+    # Outdated llama-server with no MTP support: forced MTP must degrade (warned)
+    # and emit --spec-default so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp (CLI
+    # wins over env) can't make the child attempt MTP the gate budgeted off.
     backend = _resolver_backend(monkeypatch, mtp_token = None)
     flags = backend._build_speculative_flags(
         speculative_type = "mtp",
@@ -1194,7 +1284,687 @@ def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
         binary = "/fake/llama-server",
     )
     assert "--spec-type" not in flags
-    # _speculative_type stays None (resolved emission was none), but
-    # _requested_spec_mode still reflects the user's choice.
+    assert "--spec-default" in flags
+    # Degraded to non-speculative; the user's choice is still reflected.
+    assert backend.speculative_type == "default"
     assert backend.requested_spec_mode == "mtp"
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+def test_forced_mtp_on_non_mtp_model_defaults_back(monkeypatch):
+    # Forcing MTP on a model with no head/drafter must NOT emit draft-mtp:
+    # llama-server aborts on it ("failed to measure MTP context memory")
+    # rather than no-op'ing. Default back to --spec-default instead.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-type" not in flags
+    assert "--spec-default" in flags
+    assert backend.speculative_type == "default"
+    assert backend.requested_spec_mode == "mtp"
+
+
+def test_forced_mtp_ngram_on_non_mtp_model_keeps_ngram(monkeypatch):
+    # mtp+ngram on a non-MTP model drops the doomed draft-mtp chain but keeps
+    # the ngram half, which needs no head.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp+ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.requested_spec_mode == "mtp+ngram"
+
+
+# ── Auto drops embedded MTP for MLA models (GLM-5.2 et al.) ───────────
+#
+# llama.cpp's MLA/DSA MTP path runs ~2x slower than no speculation (GLM-5.2
+# bench), so Auto downgrades it to ngram-mod (or spec-off). The clean
+# metadata separator from non-MLA MTP (Qwen, kept on draft-mtp) is
+# self._kv_lora_rank. Forced mtp / mtp+ngram and separate drafters (Gemma)
+# stay on draft-mtp; UNSLOTH_MLA_MTP_ENABLED=1 re-enables Auto promotion.
+
+# GLM-5.2's repo name has no "MTP" marker, so its MTP signal is metadata-only
+# (nextn_predict_layers) -- exactly the embedded-MLA case we gate.
+_GLM_MLA_MODEL = "unsloth/GLM-5.2-GGUF"
+
+
+def _mla_resolver_backend(
+    monkeypatch,
+    *,
+    ngram_supported = True,
+    kv_lora_rank = 512,
+    nextn = 1,
+):
+    """Resolver backend posing as an embedded-MTP MLA model (kv_lora_rank set)."""
+    backend = _resolver_backend(monkeypatch, ngram_supported = ngram_supported)
+    backend._nextn_predict_layers = nextn
+    backend._kv_lora_rank = kv_lora_rank
+    return backend
+
+
+@pytest.mark.parametrize("gpus", [True, False])
+def test_auto_mla_embedded_mtp_falls_back_to_ngram(monkeypatch, gpus):
+    # Auto + MLA embedded MTP + ngram supported -> ngram-mod on BOTH platforms
+    # (the CPU chain ngram-mod,draft-mtp is dropped: no draft-mtp for MLA).
+    backend = _mla_resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM_MLA_MODEL,
+        model_path = None,
+        gpus = gpus,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert "--spec-draft-n-max" not in parsed
+    assert "--spec-ngram-mod-n-match" in parsed
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.requested_spec_mode == "auto"
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
+    assert backend.spec_draft_n_max is None
+
+
+def test_auto_mla_embedded_mtp_no_ngram_disables_spec(monkeypatch):
+    # Auto + MLA embedded MTP + no ngram-mod support -> emit nothing (spec-off),
+    # mirroring the sub-3B no-ngram path. Still flagged as a policy downgrade.
+    backend = _mla_resolver_backend(monkeypatch, ngram_supported = False)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM_MLA_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-type" not in flags
     assert backend.speculative_type is None
+    assert backend.requested_spec_mode == "auto"
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
+
+
+def test_auto_non_mla_embedded_mtp_keeps_draft_mtp(monkeypatch):
+    # Auto + embedded MTP + NON-MLA (kv_lora_rank None, e.g. Qwen) -> unchanged:
+    # still draft-mtp at the platform default. No policy downgrade.
+    backend = _mla_resolver_backend(monkeypatch, kv_lora_rank = None)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert parsed.get("--spec-draft-n-max") == "2"
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_mla_separate_drafter_keeps_mtp(monkeypatch):
+    # Auto + MLA + a separate drafter (mtp_draft_path) -> the drafter exemption
+    # wins over the MLA gate: still draft-mtp (Gemma-style external drafter is
+    # not the slow embedded MLA/DSA path).
+    backend = _mla_resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM_MLA_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = "/fake/mtp-draft.gguf",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_non_mtp_mla_model_unaffected(monkeypatch):
+    # Auto + MLA but NO embedded MTP head (kv_lora_rank set, nextn None, e.g.
+    # GLM-4.7-Flash) -> non-MTP default; no accidental ngram drop.
+    backend = _mla_resolver_backend(monkeypatch, nextn = None)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/GLM-4.7-Flash-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-default" in flags
+    assert "ngram-mod" not in flags
+    assert backend.speculative_type == "default"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize(
+    "mode, expect_spec_type, expect_n_max",
+    [
+        ("mtp", "draft-mtp", "2"),
+        ("mtp+ngram", "ngram-mod,draft-mtp", "2"),
+    ],
+)
+def test_forced_mtp_on_mla_still_engages(monkeypatch, mode, expect_spec_type, expect_n_max):
+    # Explicit override engages the deliberately-slower MTP route on MLA models,
+    # regardless of the Auto gate. No policy downgrade reason.
+    backend = _mla_resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM_MLA_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == expect_spec_type
+    assert parsed.get("--spec-draft-n-max") == expect_n_max
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.requested_spec_mode == mode
+    assert backend.spec_fallback_reason is None
+
+
+def test_env_flag_reenables_auto_mla_mtp(monkeypatch):
+    # UNSLOTH_MLA_MTP_ENABLED=1 -> Auto promotes MLA embedded MTP to draft-mtp
+    # again (the forward hook for when llama.cpp optimizes the path).
+    monkeypatch.setenv("UNSLOTH_MLA_MTP_ENABLED", "1")
+    backend = _mla_resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM_MLA_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "TRUE", "On"])
+def test_mla_mtp_auto_enabled_truthy_values(monkeypatch, value):
+    monkeypatch.setenv("UNSLOTH_MLA_MTP_ENABLED", value)
+    assert _mla_mtp_auto_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "  ", "bogus"])
+def test_mla_mtp_auto_disabled_default_and_falsy(monkeypatch, value):
+    monkeypatch.setenv("UNSLOTH_MLA_MTP_ENABLED", value)
+    assert _mla_mtp_auto_enabled() is False
+
+
+def test_mla_mtp_auto_disabled_when_unset(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_MLA_MTP_ENABLED", raising = False)
+    assert _mla_mtp_auto_enabled() is False
+
+
+def test_read_gguf_metadata_captures_kv_lora_rank(tmp_path):
+    # GLM-5.2-style header: MLA (kv_lora_rank) + embedded MTP (nextn) populate
+    # both fields, so the Auto gate sees an MLA embedded-MTP model.
+    gguf = _write_minimal_gguf(
+        tmp_path / "model.gguf",
+        arch = "glm-dsa",
+        nextn = 1,
+        extra_uint32 = {
+            "glm-dsa.block_count": 4,
+            "glm-dsa.attention.kv_lora_rank": 512,
+        },
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(gguf))
+    assert backend._nextn_predict_layers == 1
+    assert backend._kv_lora_rank == 512
+
+
+def test_read_gguf_metadata_qwen_mtp_has_no_kv_lora_rank(tmp_path):
+    # Qwen MTP header: embedded MTP but non-MLA, so kv_lora_rank stays None and
+    # Auto keeps it on draft-mtp.
+    gguf = _write_minimal_gguf(
+        tmp_path / "model.gguf",
+        arch = "qwen35moe",
+        nextn = 1,
+        extra_uint32 = {"qwen35moe.block_count": 4},
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(gguf))
+    assert backend._nextn_predict_layers == 1
+    assert backend._kv_lora_rank is None
+
+
+def test_reload_skip_auto_mla_ngram_is_idempotent():
+    # A GLM model resolved to ngram-mod under Auto must not churn: a duplicate
+    # Auto /load at the same settings is already-satisfied.
+    backend = _mtp_backend(
+        _model_identifier = _GLM_MLA_MODEL,
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = _GLM_MLA_MODEL,
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+def test_reload_forced_mtp_bounces_auto_mla():
+    # Overriding Auto (ngram-mod) with a forced mtp request must reload (to the
+    # slower draft-mtp route), not dedup against the running ngram-mod server.
+    backend = _mtp_backend(
+        _model_identifier = _GLM_MLA_MODEL,
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = _GLM_MLA_MODEL,
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "mtp",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+# ── Full named-repo resolver matrix (the shipping Studio families) ─────
+#
+# Locks auto / off / forced-mtp routing for every Qwen3.5 (MTP + plain) and
+# gemma-4 (regular + QAT) GGUF repo, including the giant MoEs that stay
+# resolver-only (122B-A10B / 397B-A17B). Expectations are derived from the
+# same signals load_model uses -- _extract_model_size_b (active>effective>
+# total, so E2B->2, A3B->3, A10B->10, A17B->17), _is_mtp_model_name, and the
+# separate-drafter flag -- so each row mirrors what the loader emits on a
+# B200 (GPU default, n=2). gemma carries no -MTP marker; its MTP comes from
+# the root mtp-*.gguf drafter, modelled here by passing mtp_draft_path.
+#
+# auto_spec: "draft-mtp" = head/drafter engaged (>=3B MTP, or any size with a
+# separate drafter); "ngram-mod" = embedded sub-3B drop (zero-VRAM); None =
+# non-MTP -> llama-server --spec-default.
+
+_GEMMA_DRAFTER = "/snap/mtp-gemma-4-it.gguf"  # stand-in separate drafter
+
+_REAL_REPO_MATRIX = [
+    # repo, drafter, auto_spec, auto_ngram_knobs
+    ("unsloth/Qwen3.5-0.8B-MTP-GGUF", None, "ngram-mod", True),
+    ("unsloth/Qwen3.5-2B-MTP-GGUF", None, "ngram-mod", True),
+    ("unsloth/Qwen3.5-4B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-9B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-27B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-35B-A3B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-122B-A10B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-397B-A17B-MTP-GGUF", None, "draft-mtp", False),
+    ("unsloth/Qwen3.5-0.8B-GGUF", None, None, False),
+    ("unsloth/Qwen3.5-2B-GGUF", None, None, False),
+    ("unsloth/Qwen3.5-4B-GGUF", None, None, False),
+    ("unsloth/Qwen3.5-9B-GGUF", None, None, False),
+    # E2B is 2B but ships a separate drafter -> exempt from the sub-3B drop.
+    ("unsloth/gemma-4-E2B-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-E4B-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-12b-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-26B-A4B-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-31B-it-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-E2B-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-E4B-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-12b-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-26B-A4B-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+    ("unsloth/gemma-4-31B-it-qat-GGUF", _GEMMA_DRAFTER, "draft-mtp", False),
+]
+
+
+def _resolve_real(monkeypatch, repo, drafter, mode):
+    backend = _resolver_backend(monkeypatch)
+    if "qwen" in repo.lower() and "-mtp" in repo.lower():
+        backend._nextn_predict_layers = 1
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = repo,
+        model_path = None,
+        gpus = True,  # B200 default
+        binary = "/fake/llama-server",
+        mtp_draft_path = drafter,
+    )
+    return backend, flags, _flags_dict(flags)
+
+
+@pytest.mark.parametrize(
+    "repo, drafter, auto_spec, auto_ngram_knobs",
+    _REAL_REPO_MATRIX,
+    ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
+)
+def test_real_repo_auto_routing(monkeypatch, repo, drafter, auto_spec, auto_ngram_knobs):
+    # Auto is the default mode the dropdown ships with.
+    backend, flags, parsed = _resolve_real(monkeypatch, repo, drafter, "auto")
+    if auto_spec is None:
+        # Non-MTP: no draft-mtp, hand off to llama-server's own default.
+        assert "--spec-type" not in parsed
+        assert "--spec-default" in flags
+        assert backend.speculative_type == "default"
+    elif auto_spec == "draft-mtp":
+        assert parsed.get("--spec-type") == "draft-mtp"
+        assert parsed.get("--spec-draft-n-max") == "2"
+        assert backend.speculative_type == "draft-mtp"
+        # gemma ships a separate drafter; Qwen bakes the head into the GGUF.
+        assert (
+            (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
+        )
+    else:  # ngram-mod (sub-3B MTP drop)
+        assert parsed.get("--spec-type") == "ngram-mod"
+        assert "--model-draft" not in parsed  # draft head dropped
+        assert backend.speculative_type == "ngram-mod"
+    if auto_ngram_knobs:
+        assert "--spec-ngram-mod-n-match" in parsed
+    assert backend.requested_spec_mode == "auto"
+
+
+@pytest.mark.parametrize(
+    "repo, drafter",
+    [(r[0], r[1]) for r in _REAL_REPO_MATRIX],
+    ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
+)
+def test_real_repo_off_emits_nothing(monkeypatch, repo, drafter):
+    # Off must suppress speculative decoding for every family.
+    backend, flags, _ = _resolve_real(monkeypatch, repo, drafter, "off")
+    assert flags == []
+    assert backend.speculative_type is None
+    assert backend.requested_spec_mode == "off"
+
+
+@pytest.mark.parametrize(
+    "repo, drafter",
+    [(r[0], r[1]) for r in _REAL_REPO_MATRIX],
+    ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
+)
+def test_real_repo_forced_mtp_never_aborts(monkeypatch, repo, drafter):
+    # Forcing MTP on the dropdown: real MTP models (name marker or separate
+    # drafter) engage draft-mtp even below 3B; non-MTP models default back to
+    # --spec-default instead of emitting a draft-mtp llama-server will abort on.
+    backend, flags, parsed = _resolve_real(monkeypatch, repo, drafter, "mtp")
+    is_real_mtp = _is_mtp_model_name(repo) or bool(drafter)
+    if is_real_mtp:
+        assert parsed.get("--spec-type") == "draft-mtp"
+        assert backend.speculative_type == "draft-mtp"
+        assert (
+            (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
+        )
+    else:
+        assert "--spec-type" not in parsed
+        assert "--spec-default" in flags
+        assert backend.speculative_type == "default"
+    assert backend.requested_spec_mode == "mtp"
+
+
+# ── Sub-3B separate-drafter exemption (Gemma) ─────────────────────────
+#
+# The sub-3B MTP drop is an embedded-head cost (Qwen). A separate drafter
+# (Gemma's root mtp-*.gguf) is a cheap standalone model that wins below 3B
+# (B200 Q4_K_XL: gemma-4-E2B draft-mtp n=2 = 1.21x vs OFF), so it is exempt.
+
+
+def test_sub3b_gemma_separate_drafter_engages_mtp(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-E2B-it-GGUF",  # 2B
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = "/snap/mtp-gemma-4-E2B-it.gguf",  # separate drafter
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert parsed.get("--model-draft") == "/snap/mtp-gemma-4-E2B-it.gguf"
+    assert "--spec-ngram-mod-n-match" not in parsed
+    assert backend.speculative_type == "draft-mtp"
+
+
+def test_sub3b_qwen_embedded_head_still_drops_to_ngram(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",  # 2B, embedded head
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,  # no separate drafter
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert "--model-draft" not in parsed
+    assert backend.speculative_type == "ngram-mod"
+
+
+def test_auto_mode_drops_mtp_exempts_separate_drafter():
+    from core.inference.llama_cpp import _auto_mode_drops_mtp
+
+    assert _auto_mode_drops_mtp("auto", 2.0) is True
+    assert _auto_mode_drops_mtp("auto", 2.0, has_separate_drafter = True) is False
+    assert _auto_mode_drops_mtp("auto", 4.0) is False
+    assert _auto_mode_drops_mtp("mtp", 2.0) is False  # forced engages regardless
+
+
+# ── spec_fallback_reason (drives the "update llama.cpp" UI hint) ───────
+
+
+def test_spec_fallback_reason_set_when_binary_lacks_mtp(monkeypatch):
+    # Outdated llama-server with no mtp token: a forced MTP request can't emit
+    # draft-mtp, so record the reason for the UI update affordance.
+    backend = _resolver_backend(monkeypatch, mtp_token = None)
+    backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+def test_spec_fallback_reason_none_when_mtp_engages(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+def test_spec_fallback_reason_reset_on_off(monkeypatch):
+    # A subsequent off load must clear a stale reason.
+    backend = _resolver_backend(monkeypatch, mtp_token = None)
+    backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+    backend._build_speculative_flags(
+        speculative_type = "off",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason is None
+
+
+def test_is_gemma_mtp_family():
+    from core.inference.llama_cpp import _is_gemma_mtp_family
+
+    assert _is_gemma_mtp_family("unsloth/gemma-4-E4B-it-GGUF") is True
+    assert _is_gemma_mtp_family("unsloth/gemma-4-12b-it-GGUF") is True
+    # gemma-3n ships no separate drafter, so it is not a drafter family.
+    assert _is_gemma_mtp_family("unsloth/gemma-3n-E2B-it-GGUF") is False
+    assert _is_gemma_mtp_family("unsloth/Qwen3.5-35B-A3B-MTP-GGUF") is False
+    assert _is_gemma_mtp_family("unsloth/llama-3-8b") is False
+
+
+def test_gemma_3n_without_drafter_is_not_mtp(monkeypatch):
+    # gemma-3n ships no drafter; it must take the normal non-MTP path, not
+    # drafter_not_found (which would make every reload retry a missing drafter).
+    backend = _resolver_backend(monkeypatch)
+    backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-3n-E4B-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,
+    )
+    assert backend.spec_fallback_reason is None
+
+
+def test_spec_fallback_reason_drafter_not_found(monkeypatch):
+    # Drafterless Gemma should fall back to ngram-mod + drafter_not_found.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,  # Drafter download failed
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_is_gemma_mtp_name_none_safe():
+    # model_identifier=None (local load) must not raise; recognise via filename.
+    from core.inference.llama_cpp import _is_gemma_mtp_family, _is_gemma_mtp_name
+
+    assert _is_gemma_mtp_family(None) is False
+    assert _is_gemma_mtp_name(None, "/models/gemma-4-E4B-it-Q4_K_M.gguf") is True
+    assert _is_gemma_mtp_name("unsloth/Qwen3.5-4B-MTP-GGUF", None) is False
+
+
+@pytest.mark.parametrize("mode", ["mtp", "mtp+ngram"])
+def test_forced_mtp_gemma_without_drafter_falls_back(monkeypatch, mode):
+    # Forced MTP on a drafterless Gemma must fall back, not emit draft-mtp.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert "--model-draft" not in parsed
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_local_gemma_gguf_without_identifier_falls_back(monkeypatch):
+    # Local Gemma GGUF (family only in filename) must not crash; falls back.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = None,
+        model_path = "/models/gemma-4-E4B-it-Q4_K_M.gguf",
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def _drafter_not_found_kwargs():
+    return dict(
+        model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gguf_path = None,  # HF load: drafter resolves inside load_model
+    )
+
+
+def test_already_in_target_state_retries_after_hf_drafter_not_found():
+    # Recoverable drafter_not_found must not dedupe; reload re-attempts download.
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        _speculative_type = "ngram-mod",
+        _spec_fallback_reason = "drafter_not_found",
+        _mtp_draft_path = None,
+        _gguf_path = None,
+    )
+    assert backend._already_in_target_state(**_drafter_not_found_kwargs()) is False
+    # Sanity: with no fallback reason the same request still dedupes (matches).
+    ok = _mtp_backend(_model_identifier = "unsloth/gemma-4-E4B-it-GGUF", _gguf_path = None)
+    assert ok._already_in_target_state(**_drafter_not_found_kwargs()) is True

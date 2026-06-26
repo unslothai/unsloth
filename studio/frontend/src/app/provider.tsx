@@ -6,18 +6,29 @@ import { UpdateBanner } from "@/components/tauri/update-banner";
 import { UpdateScreen } from "@/components/tauri/update-screen";
 import {
   WindowTitlebar,
+  shouldUseNativeMacWindowTitlebar,
   shouldUseCustomWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
+import { LlamaUpdateBanner } from "@/components/llama-update-banner";
+import { DownloadManagerPanel } from "@/features/hub/download-manager";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
+import { fetchDeviceType } from "@/config/env";
 import { useRouterState } from "@tanstack/react-router";
 import { ThemeProvider } from "next-themes";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 
 interface AppProviderProps {
   children: ReactNode;
@@ -28,16 +39,41 @@ type WindowLayoutGuard = () => boolean;
 
 const MIN_WINDOW_WIDTH = 900;
 const MIN_WINDOW_HEIGHT = 600;
+const SETUP_WINDOW_WIDTH = 760;
+const SETUP_WINDOW_HEIGHT = 560;
 
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
+  await win.setResizable(false);
+  if (!isCurrent()) return;
+  await win.setSize(new LogicalSize(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT));
   if (!isCurrent()) return;
   await win.center();
   if (!isCurrent()) return;
   await win.show();
+}
+
+async function enforceMinimumWindowSize(
+  win: Awaited<ReturnType<typeof import("@tauri-apps/api/window")["getCurrentWindow"]>>,
+  LogicalSize: typeof import("@tauri-apps/api/window")["LogicalSize"],
+  isCurrent: WindowLayoutGuard,
+): Promise<void> {
+  const [innerSize, scaleFactor] = await Promise.all([
+    win.innerSize(),
+    win.scaleFactor(),
+  ]);
+  if (!isCurrent()) return;
+
+  const logicalWidth = Math.round(innerSize.width / scaleFactor);
+  const logicalHeight = Math.round(innerSize.height / scaleFactor);
+  const nextWidth = Math.max(logicalWidth, MIN_WINDOW_WIDTH);
+  const nextHeight = Math.max(logicalHeight, MIN_WINDOW_HEIGHT);
+  if (nextWidth !== logicalWidth || nextHeight !== logicalHeight) {
+    await win.setSize(new LogicalSize(nextWidth, nextHeight));
+  }
 }
 
 async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void> {
@@ -48,11 +84,10 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
 
   const win = getCurrentWindow();
   // Decide first-launch vs restore from the on-disk state file BEFORE touching the
-  // window. Probing the window itself after restoreStateCurrent is unreliable:
-  // on GTK, set_size against a hidden window is deferred until show(), so
-  // innerSize() reads a stale value and any baseline fallback would overwrite the
-  // queued restore. On macOS the same probe works, hence the inconsistency
-  // between previous iterations of this code.
+  // window. Probing the window after restoreStateCurrent is unreliable: on GTK,
+  // set_size on a hidden window is deferred until show(), so innerSize() reads a
+  // stale value and a baseline fallback would overwrite the queued restore. On
+  // macOS the same probe works, hence the inconsistency between prior iterations.
   const hasSavedState = await invoke<boolean>("has_saved_window_state");
   if (!isCurrent()) return;
 
@@ -60,9 +95,8 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   if (!isCurrent()) return;
 
   if (hasSavedState) {
-    // Subsequent launch: the plugin handles size, position, and maximized,
-    // with built-in off-screen protection (monitor-intersection check) for
-    // positions saved on a now-disconnected display.
+    // Subsequent launch: plugin restores size/position/maximized, with built-in
+    // off-screen protection for positions saved on a now-disconnected display.
     await restoreStateCurrent(
       StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
     );
@@ -87,9 +121,11 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   if (!isCurrent()) return;
   await win.show();
   if (!isCurrent()) return;
-  // Apply constraints after restore/show. Setting constraints before plugin restore
-  // can emit a Resized event and overwrite the plugin's cached saved size.
+  // Apply constraints after restore/show: doing so before plugin restore can emit
+  // a Resized event and overwrite the plugin's cached saved size.
   await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
+  if (!isCurrent()) return;
+  await enforceMinimumWindowSize(win, LogicalSize, isCurrent);
 }
 
 async function showWindowFallback(): Promise<void> {
@@ -122,7 +158,13 @@ function getTauriWindowMode(
   }
 }
 
-function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
+function TauriUpdateLayer({
+  isExternalServer,
+  children,
+}: {
+  isExternalServer: boolean;
+  children?: ReactNode;
+}) {
   const update = useTauriUpdate(isExternalServer);
   const isUpdating =
     update.status === "updating-backend" ||
@@ -145,18 +187,22 @@ function TauriUpdateLayer({ isExternalServer }: { isExternalServer: boolean }) {
   }
 
   return (
-    <UpdateBanner
-      status={update.status}
-      info={update.info}
-      dismissed={update.dismissed}
-      lastFailure={update.lastFailure}
-      isExternalServer={isExternalServer}
-      updatePolicyMode={update.updatePolicyMode}
-      manualReleaseUrl={update.manualReleaseUrl}
-      onInstall={update.installUpdate}
-      onDismiss={update.dismiss}
-      onCopyDiagnostics={update.copyDiagnostics}
-    />
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+      <UpdateBanner
+        status={update.status}
+        info={update.info}
+        dismissed={update.dismissed}
+        lastFailure={update.lastFailure}
+        isExternalServer={isExternalServer}
+        updatePolicyMode={update.updatePolicyMode}
+        manualReleaseUrl={update.manualReleaseUrl}
+        positioned={false}
+        onInstall={update.installUpdate}
+        onDismiss={update.dismiss}
+        onCopyDiagnostics={update.copyDiagnostics}
+      />
+      {children}
+    </div>
   );
 }
 
@@ -173,6 +219,35 @@ const WEB_UPDATE_HIDDEN_ROUTES = new Set([
   "/change-password",
   "/signup",
 ]);
+
+const MAC_NATIVE_CHROME_STYLE = {
+  "--studio-titlebar-height": "0px",
+  "--studio-mac-titlebar-height": "34px",
+  "--studio-mac-traffic-light-inset": "78px",
+  "--studio-startup-top-inset": "58px",
+  "--studio-content-top-inset": "0px",
+  "--studio-non-chat-content-top-inset": "34px",
+  "--studio-hidden-route-top-inset": "34px",
+  "--studio-chat-header-height": "44px",
+  "--studio-chat-header-padding-top": "8px",
+  "--studio-chat-control-height": "33px",
+  "--studio-chat-header-right-inset": "0px",
+} as CSSProperties;
+
+const CUSTOM_CHROME_STYLE = {
+  "--studio-titlebar-height": "0px",
+  "--studio-custom-titlebar-height": "34px",
+  "--studio-sidebar-expanded-width": "17.5rem",
+  "--studio-sidebar-collapsed-width": "3rem",
+  "--studio-startup-top-inset": "42px",
+  "--studio-content-top-inset": "34px",
+  "--studio-hidden-route-top-inset": "34px",
+  "--studio-chat-header-height": "48px",
+  "--studio-chat-header-padding-top": "9px",
+  "--studio-chat-control-height": "33px",
+  "--studio-chat-header-right-inset": "0px",
+  "--studio-window-control-inset": "112px",
+} as CSSProperties;
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -253,11 +328,28 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return () => { disposed = true; };
   }, [status, desktopAuthRetry]);
 
+  useEffect(() => {
+    if (!isTauri || status !== "running" || !desktopAuthReady) return;
+    void fetchDeviceType({ force: true }).catch(() => undefined);
+  }, [status, desktopAuthReady]);
+
   if (!isTauri) {
     return (
       <>
         {children}
-        <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
+        {/* One bottom-right stack so overlays never overlap; they stack with a
+            gap, download panel anchored at the corner with banners above. */}
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+          <WebUpdateBanner
+            positioned={false}
+            enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
+          />
+          <LlamaUpdateBanner
+            positioned={false}
+            enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
+          />
+          <DownloadManagerPanel positioned={false} />
+        </div>
       </>
     );
   }
@@ -268,10 +360,19 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     status === "running" && !desktopAuthReady
       ? "Signing in to desktop session..."
       : progressDetail;
+  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
+  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
+  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   const content = showApp ? (
     <>
-      <TauriUpdateLayer isExternalServer={isExternalServer} />
+      <TauriUpdateLayer isExternalServer={isExternalServer}>
+        <LlamaUpdateBanner
+          positioned={false}
+          enabled={!hidesTitlebarSidebar}
+        />
+        <DownloadManagerPanel positioned={false} />
+      </TauriUpdateLayer>
       <NativeIntentDrain />
       {children}
     </>
@@ -292,15 +393,46 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     />
   );
 
-  if (!shouldUseCustomWindowTitlebar()) return content;
+  if (!usesCustomTitlebar) {
+    // macOS desktop uses the native titlebar and returns here before the
+    // custom-titlebar branch, so mount the updater banner on this path too.
+    if (usesNativeMacTitlebar) {
+      return (
+        <div
+          className={
+            hidesTitlebarSidebar
+              ? "relative h-dvh min-h-0 overflow-x-hidden overflow-y-auto bg-background"
+              : "relative h-dvh min-h-0 overflow-hidden bg-background"
+          }
+          style={MAC_NATIVE_CHROME_STYLE}
+        >
+          {(!showApp || hidesTitlebarSidebar) ? (
+            <div
+              data-tauri-drag-region
+              aria-hidden="true"
+              className="pointer-events-auto fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+            />
+          ) : null}
+          {content}
+        </div>
+      );
+    }
+
+    return (
+      <>{content}</>
+    );
+  }
 
   const showSidebarSurface =
-    showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
+    showApp && !hidesTitlebarSidebar;
 
   return (
-    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background [--studio-titlebar-height:34px]">
+    <div
+      className="relative h-dvh min-h-0 overflow-hidden bg-background"
+      style={CUSTOM_CHROME_STYLE}
+    >
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="h-full min-h-0 overflow-hidden">
         {content}
       </div>
     </div>
@@ -309,18 +441,20 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
 export function AppProvider({ children }: AppProviderProps) {
   return (
-    <ThemeProvider attribute="class" defaultTheme="light">
-      <TauriWrapper>
-        {children}
-      </TauriWrapper>
-      <Toaster
-        position="top-right"
-        visibleToasts={2}
-        expand={true}
-        closeButton={true}
-        // Clear the chat header buttons on the right.
-        offset={{ top: 12, right: 64 }}
-      />
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+      <TooltipProvider>
+        <TauriWrapper>
+          {children}
+        </TauriWrapper>
+        <Toaster
+          position="top-right"
+          visibleToasts={2}
+          expand={true}
+          closeButton={true}
+          // Clear the chat header buttons on the right.
+          offset={{ top: 12, right: 64 }}
+        />
+      </TooltipProvider>
     </ThemeProvider>
   );
 }

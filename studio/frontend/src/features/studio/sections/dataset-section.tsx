@@ -3,6 +3,7 @@
 
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
@@ -27,17 +28,15 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  useDebouncedValue,
-  useHfDatasetSearch,
-  useHfTokenValidation,
-  useInfiniteScroll,
-} from "@/hooks";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useHubDatasetSearch } from "@/features/hub/hooks/use-hub-dataset-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import {
   HfDatasetSubsetSplitSelectors,
   listLocalDatasets,
@@ -46,6 +45,9 @@ import {
   useTrainingConfigStore,
   type LocalDatasetInfo,
 } from "@/features/training";
+// Imported directly from the store module rather than the "@/features/training"
+// barrel to avoid an import cycle (the barrel re-exports this section's siblings).
+import { hasSeparateStreamingEvalSplit } from "@/features/training/stores/training-config-store";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown01Icon,
@@ -78,6 +80,8 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 import { translate, useT } from "@/i18n";
+import { S3ConfigForm } from "./s3-config-form";
+import { usePlatformStore } from "@/config/env";
 
 const TRAINING_UPLOAD_EXTENSIONS = [
   ".csv",
@@ -154,6 +158,7 @@ export function DatasetSection() {
     datasetSource,
     selectHfDataset,
     selectLocalDataset,
+    selectS3Source,
     datasetFormat,
     setDatasetFormat,
     datasetSubset,
@@ -162,6 +167,16 @@ export function DatasetSection() {
     setDatasetSplit,
     datasetEvalSplit,
     setDatasetEvalSplit,
+    datasetStreaming,
+    setDatasetStreaming,
+    trainOnCompletions,
+    maxSteps,
+    evalSteps,
+    isVisionModel,
+    isAudioModel,
+    isEmbeddingModel,
+    isDatasetImage,
+    isDatasetAudio,
     uploadedFile,
     uploadedEvalFile,
     setUploadedEvalFile,
@@ -177,6 +192,7 @@ export function DatasetSection() {
       datasetSource: s.datasetSource,
       selectHfDataset: s.selectHfDataset,
       selectLocalDataset: s.selectLocalDataset,
+      selectS3Source: s.selectS3Source,
       datasetFormat: s.datasetFormat,
       setDatasetFormat: s.setDatasetFormat,
       datasetSubset: s.datasetSubset,
@@ -185,6 +201,16 @@ export function DatasetSection() {
       setDatasetSplit: s.setDatasetSplit,
       datasetEvalSplit: s.datasetEvalSplit,
       setDatasetEvalSplit: s.setDatasetEvalSplit,
+      datasetStreaming: s.datasetStreaming,
+      setDatasetStreaming: s.setDatasetStreaming,
+      trainOnCompletions: s.trainOnCompletions,
+      maxSteps: s.maxSteps,
+      evalSteps: s.evalSteps,
+      isVisionModel: s.isVisionModel,
+      isAudioModel: s.isAudioModel,
+      isEmbeddingModel: s.isEmbeddingModel,
+      isDatasetImage: s.isDatasetImage,
+      isDatasetAudio: s.isDatasetAudio,
       uploadedFile: s.uploadedFile,
       uploadedEvalFile: s.uploadedEvalFile,
       setUploadedEvalFile: s.setUploadedEvalFile,
@@ -196,6 +222,57 @@ export function DatasetSection() {
       setDatasetSliceEnd: s.setDatasetSliceEnd,
     })),
   );
+
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+
+  // Streaming is only supported for Hugging Face text datasets. Rather than
+  // hiding the toggle when a constraint isn't met, keep it visible but disabled
+  // and list the exact unmet requirement(s) in its tooltip — a control that
+  // silently disappears is confusing. Downstream preprocessing
+  // (convert_to_vlm_format, audio collators) needs random access and would
+  // crash on an IterableDataset, hence the constraints below.
+  const streamingBlockers: string[] = [];
+  if (datasetSource !== "huggingface")
+    streamingBlockers.push(
+      "Use a Hugging Face dataset (not a local upload or S3 source).",
+    );
+  if (maxSteps <= 0)
+    streamingBlockers.push(
+      "Set Max Steps > 0 — streaming datasets have no known length.",
+    );
+  if (trainOnCompletions)
+    streamingBlockers.push('Turn off "Assistant completions only".');
+  if (!hasSeparateStreamingEvalSplit({ evalSteps, datasetSplit, datasetEvalSplit }))
+    streamingBlockers.push(
+      "Pick a separate eval split — evaluation is on but no distinct eval split is set.",
+    );
+  if (isVisionModel)
+    streamingBlockers.push("Vision models don't support streaming.");
+  if (isAudioModel)
+    streamingBlockers.push("Audio models don't support streaming.");
+  if (isEmbeddingModel)
+    streamingBlockers.push(
+      "Embedding models don't support streaming (training needs the full dataset).",
+    );
+  if (isDatasetImage)
+    streamingBlockers.push("This dataset looks like images, which can't stream.");
+  if (isDatasetAudio)
+    streamingBlockers.push("This dataset looks like audio, which can't stream.");
+  if (platformDeviceType === "mac")
+    streamingBlockers.push(
+      "Streaming isn't supported on Apple Silicon (MLX) yet.",
+    );
+
+  const isStreamingSupported = streamingBlockers.length === 0;
+
+  // If streaming was previously enabled but the config became incompatible
+  // (model switched to vision, dataset detected as image, etc.), clear it so
+  // the backend never receives a stale flag.
+  useEffect(() => {
+    if (datasetStreaming && !isStreamingSupported) {
+      setDatasetStreaming(false);
+    }
+  }, [datasetStreaming, isStreamingSupported, setDatasetStreaming]);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -292,14 +369,20 @@ export function DatasetSection() {
   }
 
   const effectiveModelType = modelType ?? "text";
+  const isMultimodalModel =
+    effectiveModelType === "vision" ||
+    effectiveModelType === "audio" ||
+    isVisionModel ||
+    isAudioModel;
 
   const {
     results: hfResults,
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
+  } = useHubDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
     modelType: effectiveModelType,
     accessToken: hfToken || undefined,
     enabled: pickerTab === "huggingface",
@@ -373,6 +456,12 @@ export function DatasetSection() {
     selectLocalDataset,
   ]);
 
+  useEffect(() => {
+    if (datasetSource === "s3" && isMultimodalModel) {
+      selectHfDataset(dataset);
+    }
+  }, [dataset, datasetSource, isMultimodalModel, selectHfDataset]);
+
   const activeSourceTab = datasetSource === "upload" ? "local" : "huggingface";
   const comboboxItems =
     pickerTab === "huggingface" ? hfResultIds : localResultIds;
@@ -402,10 +491,12 @@ export function DatasetSection() {
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const evalFileInputRef = useRef<HTMLInputElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMore,
-    hfResults.length,
-  );
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
+    enabled: pickerTab === "huggingface",
+    isFetching: isLoading || isLoadingMore,
+    resultCount: hfResults.length,
+    resetKey: debouncedQuery,
+  });
 
   const [isUploading, setIsUploading] = useState(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
@@ -572,6 +663,71 @@ export function DatasetSection() {
         }`}
       >
         <div className="flex min-w-0 flex-col gap-4">
+          {(() => {
+            // Hub-style sliding-pill segmented control, matching the Hub tabs
+            // via the shared .hub-tab-toggle / .hub-tab-toggle-pill classes.
+            const sourceTabs: {
+              value: "huggingface" | "upload" | "s3";
+              label: string;
+            }[] = [
+              { value: "huggingface", label: "Hugging Face" },
+              { value: "upload", label: t("studio.dataset.localTab") },
+              ...(!isMultimodalModel
+                ? [{ value: "s3" as const, label: "Amazon S3" }]
+                : []),
+            ];
+            const activeIndex = Math.max(
+              0,
+              sourceTabs.findIndex((item) => item.value === datasetSource),
+            );
+            return (
+              <div
+                role="radiogroup"
+                aria-label="Dataset source"
+                className="hub-tab-toggle relative inline-flex h-9 w-full items-center rounded-full"
+              >
+                <span
+                  aria-hidden="true"
+                  className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
+                  style={{
+                    width: `${100 / sourceTabs.length}%`,
+                    transform: `translateX(${activeIndex * 100}%)`,
+                  }}
+                />
+                {sourceTabs.map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={datasetSource === item.value}
+                    onClick={() => {
+                      if (item.value === datasetSource) return;
+                      if (item.value === "huggingface") {
+                        selectHfDataset(dataset);
+                      } else if (item.value === "upload") {
+                        selectLocalDataset(uploadedFile);
+                      } else if (item.value === "s3") {
+                        if (isMultimodalModel) return;
+                        selectS3Source();
+                      }
+                    }}
+                    className={cn(
+                      "relative z-10 inline-flex h-9 flex-1 cursor-pointer items-center justify-center rounded-full px-3 text-[12.5px] font-medium transition-colors",
+                      datasetSource === item.value
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
+
+          {datasetSource === "s3" && <S3ConfigForm />}
+
+          {datasetSource !== "s3" && (
           <div className="flex min-w-0 flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.dataset.chooseDataset")}
@@ -842,8 +998,10 @@ export function DatasetSection() {
               </p>
             )}
           </div>
+          )}
 
-          {isHfDatasetSelected ? (
+          {datasetSource !== "s3" &&
+            (isHfDatasetSelected ? (
             <HfDatasetSubsetSplitSelectors
               variant="studio"
               enabled={true}
@@ -918,7 +1076,7 @@ export function DatasetSection() {
                 </div>
               </div>
             </div>
-          ) : null}
+          ) : null)}
 
           {datasetSource === "upload" && uploadedFile && (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
@@ -1030,6 +1188,56 @@ export function DatasetSection() {
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="datasetStreaming"
+                    checked={datasetStreaming}
+                    disabled={!isStreamingSupported}
+                    onCheckedChange={(v) => setDatasetStreaming(!!v)}
+                  />
+                  <label
+                    htmlFor="datasetStreaming"
+                    className={`text-xs text-muted-foreground ${
+                      isStreamingSupported
+                        ? "cursor-pointer"
+                        : "cursor-not-allowed opacity-60"
+                    }`}
+                  >
+                    Enable streaming
+                  </label>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {isStreamingSupported ? (
+                        <span>
+                          Stream Hugging Face text datasets instead of
+                          downloading them.
+                        </span>
+                      ) : (
+                        <div className="max-w-xs">
+                          <p className="font-medium">
+                            Streaming unavailable. To enable:
+                          </p>
+                          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                            {streamingBlockers.map((reason) => (
+                              <li key={reason}>{reason}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">
                     <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -1102,111 +1310,115 @@ export function DatasetSection() {
             </CollapsibleContent>
           </Collapsible>
 
-          <div className="flex flex-col gap-3">
-            {selectedDatasetName ? (
-              <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
-                <div className="rounded-md bg-indigo-500/10 p-1.5">
-                  <HugeiconsIcon
-                    icon={FileAttachmentIcon}
-                    className="size-4 text-indigo-500"
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-mono text-sm font-medium truncate">
-                    {datasetSource === "upload"
-                      ? (selectedLocalDataset?.label ??
-                        deriveLocalDatasetName(selectedDatasetName))
-                      : selectedDatasetName}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {datasetSource === "upload" ? (
-                      uploadedFile ? (
-                        <>
-                          {t("studio.dataset.localDataset")}
-                          {selectedLocalRows != null
-                            ? t("studio.dataset.localDatasetRows", {
-                                count: selectedLocalRows.toLocaleString(),
-                              })
-                            : ""}
-                        </>
+          {datasetSource !== "s3" && (
+            <div className="flex flex-col gap-3">
+              {selectedDatasetName ? (
+                <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
+                  <div className="rounded-md bg-indigo-500/10 p-1.5">
+                    <HugeiconsIcon
+                      icon={FileAttachmentIcon}
+                      className="size-4 text-indigo-500"
+                    />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono text-sm font-medium truncate">
+                      {datasetSource === "upload"
+                        ? (selectedLocalDataset?.label ??
+                          deriveLocalDatasetName(selectedDatasetName))
+                        : selectedDatasetName}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {datasetSource === "upload" ? (
+                        uploadedFile ? (
+                          <>
+                            {t("studio.dataset.localDataset")}
+                            {selectedLocalRows != null
+                              ? t("studio.dataset.localDatasetRows", {
+                                  count: selectedLocalRows.toLocaleString(),
+                                })
+                              : ""}
+                          </>
+                        ) : (
+                          t("studio.dataset.localDataset")
+                        )
                       ) : (
-                        t("studio.dataset.localDataset")
-                      )
-                    ) : (
-                      <>
-                        {t("studio.dataset.huggingFaceDataset")}
-                        {datasetSubset && ` / ${datasetSubset}`}
-                        {datasetSplit && ` / ${datasetSplit}`}
-                      </>
-                    )}
-                  </p>
+                        <>
+                          {t("studio.dataset.huggingFaceDataset")}
+                          {datasetSubset && ` / ${datasetSubset}`}
+                          {datasetSplit && ` / ${datasetSplit}`}
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-xs"
+                    onClick={() => clearSelectionForTab(activeSourceTab)}
+                  >
+                    {t("studio.dataset.clear")}
+                  </Button>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="shrink-0 text-xs"
-                  onClick={() => clearSelectionForTab(activeSourceTab)}
+              ) : (
+                <button
+                  type="button"
+                  className={`flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed px-3.5 py-3 text-left transition-colors ${
+                    isDatasetDragOver
+                      ? "border-indigo-500/70 bg-indigo-500/10"
+                      : "border-border bg-muted/20 hover:border-indigo-500/50 hover:bg-indigo-500/5"
+                  }`}
+                  disabled={isUploading}
+                  onClick={handleUploadButtonClick}
+                  onDrop={handleDatasetDrop}
+                  onDragOver={handleDatasetDragOver}
+                  onDragLeave={handleDatasetDragLeave}
                 >
-                  {t("studio.dataset.clear")}
+                  <HugeiconsIcon
+                    icon={CloudUploadIcon}
+                    className="pointer-events-none size-4 shrink-0 text-indigo-500"
+                  />
+                  <span className="pointer-events-none min-w-0">
+                    <span className="block text-xs font-medium text-foreground">
+                      {t("studio.dataset.dropFileOrClick")}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                      {TRAINING_DATASET_UPLOAD_LABEL} · up to{" "}
+                      {uploadLimitLabel}; {DOCUMENT_REDIRECT_LABEL}
+                    </span>
+                  </span>
+                </button>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="cursor-pointer gap-1.5"
+                  disabled={isUploading}
+                  onClick={handleUploadButtonClick}
+                >
+                  {isUploading ? (
+                    <Spinner className="size-3.5" />
+                  ) : (
+                    <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                  )}
+                  {isUploading
+                    ? t("studio.dataset.uploading")
+                    : t("studio.dataset.upload")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="cursor-pointer gap-1.5"
+                  disabled={!selectedDatasetName}
+                  onClick={() => openPreview()}
+                >
+                  <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
+                  {t("studio.dataset.viewDataset")}
                 </Button>
               </div>
-            ) : (
-              <button
-                type="button"
-                className={`flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed px-3.5 py-3 text-left transition-colors ${
-                  isDatasetDragOver
-                    ? "border-indigo-500/70 bg-indigo-500/10"
-                    : "border-border bg-muted/20 hover:border-indigo-500/50 hover:bg-indigo-500/5"
-                }`}
-                disabled={isUploading}
-                onClick={handleUploadButtonClick}
-                onDrop={handleDatasetDrop}
-                onDragOver={handleDatasetDragOver}
-                onDragLeave={handleDatasetDragLeave}
-              >
-                <HugeiconsIcon
-                  icon={CloudUploadIcon}
-                  className="pointer-events-none size-4 shrink-0 text-indigo-500"
-                />
-                <span className="pointer-events-none min-w-0">
-                  <span className="block text-xs font-medium text-foreground">
-                    {t("studio.dataset.dropFileOrClick")}
-                  </span>
-                  <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                    {TRAINING_DATASET_UPLOAD_LABEL} · up to{" "}
-                    {uploadLimitLabel}; {DOCUMENT_REDIRECT_LABEL}
-                  </span>
-                </span>
-              </button>
-            )}
-
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="cursor-pointer gap-1.5"
-                disabled={isUploading}
-                onClick={handleUploadButtonClick}
-              >
-                {isUploading ? (
-                  <Spinner className="size-3.5" />
-                ) : (
-                  <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-                )}
-                {isUploading ? t("studio.dataset.uploading") : t("studio.dataset.upload")}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="cursor-pointer gap-1.5"
-                disabled={!selectedDatasetName}
-                onClick={() => openPreview()}
-              >
-                <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
-                {t("studio.dataset.viewDataset")}
-              </Button>
             </div>
-          </div>
+          )}
           <input
             ref={fileInputRef}
             type="file"

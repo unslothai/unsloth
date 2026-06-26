@@ -29,7 +29,6 @@ def _load_run_command():
     """Import `studio` without triggering server start; backend imports
     are lazy inside run()."""
     from unsloth_cli.commands import studio as _studio
-
     return _studio
 
 
@@ -52,6 +51,18 @@ def test_parallel_option_is_registered():
         assert required in flags, f"flag {required!r} missing from --parallel option"
 
 
+def test_context_length_alias_is_registered():
+    """`--context-length` is an operator-facing alias for --max-seq-length."""
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.run)
+    opt = sig.parameters["max_seq_length"].default
+    flags = set(getattr(opt, "param_decls", None) or [])
+    assert "--max-seq-length" in flags
+    assert "--context-length" in flags
+
+
 def test_parallel_default_is_four():
     """Default must stay at 4 so plain `unsloth studio run` is unchanged."""
     studio_mod = _load_run_command()
@@ -60,9 +71,7 @@ def test_parallel_default_is_four():
     sig = inspect.signature(studio_mod.run)
     opt = sig.parameters["parallel"].default
     default = getattr(opt, "default", None)
-    assert (
-        default == 4
-    ), f"default changed to {default}; would silently alter existing deployments"
+    assert default == 4, f"default changed to {default}; would silently alter existing deployments"
 
 
 def test_parallel_range_guards_are_set():
@@ -179,7 +188,12 @@ def _install_reexec_capture(monkeypatch, *, platform):
     return captured
 
 
-def _invoke_run(monkeypatch, args, *, platform = "linux"):
+def _invoke_run(
+    monkeypatch,
+    args,
+    *,
+    platform = "linux",
+):
     import typer as _typer
 
     studio_mod = _load_run_command()
@@ -224,9 +238,7 @@ def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""
-    result, captured = _invoke_run(
-        monkeypatch, _BASE + ["--parallel", "12"], platform = platform
-    )
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--parallel", "12"], platform = platform)
     assert len(captured) == 1
     expected_kind = "popen" if platform == "win32" else "execvp"
     assert (
@@ -249,6 +261,15 @@ def test_reexec_np_is_first_class_alias(monkeypatch):
     assert _value_after(argv, "--port") == "8888", argv
 
 
+def test_reexec_forwards_context_length_alias(monkeypatch):
+    """Alias should normalize to the existing child --max-seq-length flag."""
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--context-length", "8192"])
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--max-seq-length") == "8192", argv
+    assert "--context-length" not in argv, argv
+
+
 def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
@@ -262,6 +283,22 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     assert _value_after(argv, "--temp") == "0.7", argv
 
 
+def test_context_length_banner_line_formats_ints():
+    studio_mod = _load_run_command()
+    assert studio_mod._format_context_length_line({"context_length": 4096}) == (
+        "  Context length: 4096 tokens"
+    )
+    assert studio_mod._format_context_length_line({"context_length": "8192"}) == (
+        "  Context length: 8192 tokens"
+    )
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, True, ""])
+def test_context_length_banner_line_omits_unknown_values(value):
+    studio_mod = _load_run_command()
+    assert studio_mod._format_context_length_line({"context_length": value}) is None
+
+
 @pytest.mark.parametrize(
     "user_flag,expected_in_child",
     [
@@ -270,9 +307,7 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
         (None, "--load-in-4bit"),  # default True
     ],
 )
-def test_reexec_forwards_load_in_4bit_in_both_directions(
-    monkeypatch, user_flag, expected_in_child
-):
+def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag, expected_in_child):
     """Re-exec must emit the chosen polarity (or the typer default),
     so a future default flip on one layer can't silently invert
     behaviour for users who never typed the flag."""
@@ -281,16 +316,10 @@ def test_reexec_forwards_load_in_4bit_in_both_directions(
     assert len(captured) == 1
     argv = captured[0]["argv"]
     other_polarity = (
-        "--no-load-in-4bit"
-        if expected_in_child == "--load-in-4bit"
-        else "--load-in-4bit"
+        "--no-load-in-4bit" if expected_in_child == "--load-in-4bit" else "--load-in-4bit"
     )
-    assert (
-        expected_in_child in argv
-    ), f"expected {expected_in_child} in child argv; got {argv}"
-    assert (
-        other_polarity not in argv
-    ), f"unexpected {other_polarity} in child argv; got {argv}"
+    assert expected_in_child in argv, f"expected {expected_in_child} in child argv; got {argv}"
+    assert other_polarity not in argv, f"unexpected {other_polarity} in child argv; got {argv}"
 
 
 # Runtime check: fake sys.prefix into the studio venv to bypass
@@ -306,7 +335,6 @@ class _RunServerCaptured(SystemExit):
 
 def _types_module(name):
     import types as _types
-
     return _types.ModuleType(name)
 
 
@@ -333,6 +361,29 @@ def test_studio_default_rejects_parallel_when_subcommand_invoked():
     ), f"error message must show the corrected invocation; got: {combined}"
 
 
+def test_studio_default_rejects_api_only_when_subcommand_invoked():
+    """`unsloth studio --api-only run ...` would silently serve the UI (the
+    parent's --api-only never reaches run). The callback rejects with exit 2
+    and points at the subcommand flag."""
+    studio_mod = _load_run_command()
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["studio", "--api-only", "run", "--model", "X"])
+    assert result.exit_code == 2, (
+        f"expected exit 2 when --api-only is on studio group with a "
+        f"subcommand invoked; got {result.exit_code}; output={result.output!r}"
+    )
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--api-only" in combined, combined
+    assert (
+        "run --api-only" in combined
+    ), f"error message must show the corrected invocation; got: {combined}"
+
+
 def test_studio_default_default_parallel_with_subcommand_does_not_error():
     """Omitting --parallel on the group must still let subcommands
     run; the group's default 1 is benign."""
@@ -354,10 +405,9 @@ def test_studio_default_exposes_parallel_option():
     import inspect
 
     sig = inspect.signature(studio_mod.studio_default)
-    assert "parallel" in sig.parameters, (
-        "studio_default missing `parallel`; API-only path can't set "
-        "llama_parallel_slots"
-    )
+    assert (
+        "parallel" in sig.parameters
+    ), "studio_default missing `parallel`; API-only path can't set llama_parallel_slots"
     opt = sig.parameters["parallel"].default
     decls = set(getattr(opt, "param_decls", []) or [])
     assert "--parallel" in decls
@@ -399,6 +449,10 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+    # run() loads the backend via _load_run_module() (by file path), which
+    # ignores a sys.modules mock with no matching __file__; inject it as the
+    # cached run module so the stubbed run_server is used.
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
 
     import typer as _typer
 
@@ -414,3 +468,81 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
     assert (
         captured.get("llama_parallel_slots") == value
     ), f"run_server got llama_parallel_slots={captured.get('llama_parallel_slots')!r}, expected {value}"
+
+
+# --api-only: serve API only (no UI). Both re-exec and in-venv paths must carry it.
+
+
+def test_api_only_option_is_registered():
+    studio_mod = _load_run_command()
+    import inspect
+
+    opt = inspect.signature(studio_mod.run).parameters["api_only"].default
+    assert "--api-only" in set(getattr(opt, "param_decls", []) or [])
+    assert getattr(opt, "default", None) is False  # opt-in; plain run keeps the UI
+
+
+@pytest.mark.parametrize(
+    "extra,present",
+    [
+        (["--api-only"], True),
+        (["--secure", "--api-only"], True),  # secure headless path
+        ([], False),
+    ],
+)
+def test_reexec_forwards_api_only(monkeypatch, extra, present):
+    """`--api-only` (and only when typed) must reach the re-exec'd child."""
+    result, captured = _invoke_run(monkeypatch, _BASE + extra)
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert ("--api-only" in argv) is present, argv
+
+
+@pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])
+def test_in_venv_path_passes_api_only_to_run_server(monkeypatch, extra, expected):
+    """In-venv path must forward --api-only to run_server(api_only=...)."""
+    studio_mod = _load_run_command()
+
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(
+        _tp_mod,
+        "resolve_tool_policy",
+        lambda host, flag, yes, silent: False if flag is None else bool(flag),
+    )
+
+    captured: dict = {}
+
+    def fake_run_server(**kwargs):
+        captured.update(kwargs)
+        raise _RunServerCaptured(kwargs)
+
+    fake_backend_run = sys.modules.setdefault(
+        "studio.backend.run", _types_module("studio.backend.run")
+    )
+    fake_backend_run.run_server = fake_run_server
+    fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        },
+    )(studio_mod.run)
+    CliRunner().invoke(app, _BASE + extra, catch_exceptions = True)
+
+    assert (
+        captured.get("api_only") is expected
+    ), f"run_server got api_only={captured.get('api_only')!r}, expected {expected}"
+    # Headless serving must suppress the Tauri-only TAURI_PORT line.
+    assert (
+        captured.get("emit_tauri_port") is False
+    ), f"run_server got emit_tauri_port={captured.get('emit_tauri_port')!r}, expected False"

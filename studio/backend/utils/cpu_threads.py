@@ -18,9 +18,9 @@ _THREAD_POOL_ENV_VARS = (
 def configure_cpu_threads(env: Optional[MutableMapping[str, str]] = None) -> None:
     """Apply ``UNSLOTH_CPU_THREADS`` to native CPU pools when configured.
 
-    This must run before importing libraries that initialize an OpenMP or
-    BLAS thread pool. Library-specific variables are left untouched so users
-    can override a single runtime independently.
+    Must run before importing libraries that initialize an OpenMP or BLAS
+    pool. Library-specific vars are left untouched so users can override a
+    single runtime independently.
     """
     environ = os.environ if env is None else env
     configured = environ.get("UNSLOTH_CPU_THREADS", "").strip()

@@ -20,7 +20,7 @@
 #        enable_tools / enabled_tools, and enable_thinking on/off.
 #
 #   3. JSON, images
-#        gemma-4-E2B-it UD-IQ3_XXS (~2.4 GiB) + mmproj-F16 (~986 MiB).
+#        Qwen3-VL-2B-Instruct UD-Q4_K_XL (~1.1 GiB) + mmproj-F16 (~780 MiB).
 #        response_format JSON-schema decoding and OpenAI image_url
 #        (data URI) plus Anthropic source/base64 image inputs.
 #
@@ -91,28 +91,32 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
         if: always() && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -315,7 +319,7 @@ jobs:
     timeout-minutes: 25
     env:
       # Tool calling is the highest-volume GGUF in this workflow
-      # (Qwen3.5-2B at IQ3_XXS = ~890 MiB). Caching HF_HOME would
+      # (Qwen3.5-2B at Q4_K_XL = ~1.28 GiB). Caching HF_HOME would
       # store xet chunks + blobs + snapshots = ~4 GiB compressed --
       # 4-5x file-size inflation, dominated by xet chunks. Use main's
       # `--local-dir gguf-cache` pattern to cache the flat .gguf only.
@@ -324,8 +328,11 @@ jobs:
       # path keeps the test off HF_HOME entirely so the cache size
       # tracks the GGUF file 1:1. The OpenAI/Anth and JSON+images
       # jobs still cover the gguf_variant resolution path.
+      # Q4_K_XL, not IQ3_XXS: at IQ3_XXS this model emits malformed
+      # tool calls that llama-server's peg-native parser rejects with a
+      # 500. Mac/Windows already use Q4_K_XL for the same reason.
       GGUF_REPO: unsloth/Qwen3.5-2B-GGUF
-      GGUF_FILE: Qwen3.5-2B-UD-IQ3_XXS.gguf
+      GGUF_FILE: Qwen3.5-2B-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18889'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -359,7 +366,8 @@ jobs:
         id: download-gguf
         if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
@@ -375,6 +383,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -769,6 +779,9 @@ jobs:
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
           ss -tln | grep ":${STUDIO_PORT}" || true
+          # Capture backend + llama-server logs so a 500 has a server-side traceback.
+          mkdir -p logs/server-logs
+          cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
 
       - name: Upload logs
         # Always upload so green runs are still reviewable.
@@ -781,6 +794,7 @@ jobs:
           path: |
             logs/studio.log
             logs/install.log
+            logs/server-logs/
           retention-days: 7
 
   # ─────────────────────────────────────────────────────────────────────
@@ -791,9 +805,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      GGUF_REPO: unsloth/gemma-4-E2B-it-GGUF
-      GGUF_VARIANT: UD-IQ3_XXS
-      GGUF_FILE: gemma-4-E2B-it-UD-IQ3_XXS.gguf
+      GGUF_REPO: unsloth/Qwen3-VL-2B-Instruct-GGUF
+      # UD-Q4_K_XL, not UD-IQ2_XXS: at 2-bit the temp-0 answer to the JSON
+      # step's capital-of-France probe flips with the host's SIMD kernels
+      # (GitHub runners deterministically answered France while other CPUs
+      # answer Paris; seeds do not rescue it, 1/5 Paris at temp 0.7). The
+      # Q4 quant answered Paris 13/13 across temps and seeds on the same
+      # runners, so the hard Paris assertion below stays reliable.
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: Qwen3-VL-2B-Instruct-UD-Q4_K_XL.gguf
       MMPROJ_FILE: mmproj-F16.gguf
       STUDIO_PORT: '18890'
       HF_HOME: ${{ github.workspace }}/hf-cache
@@ -823,29 +843,33 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Prime HF_HOME with the GGUF + mmproj
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
         if: always() && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -888,13 +912,23 @@ jobs:
             -H 'content-type: application/json' \
             -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
           echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
-          # Load the GGUF (mmproj is auto-detected via the HF repo
-          # lookup, the cached file is pulled out of HF_HOME).
-          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
-            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-            --max-time 900 \
-            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
-            | jq '{status, display_name, is_vision}'
+          # Retry: llama-server startup can race process teardown after a
+          # failed attempt. Keep curl out of a pipe so HTTP failures are not
+          # masked by jq.
+          LOAD_OK=0
+          for attempt in 1 2 3; do
+            HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
+              -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+              -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+              --max-time 900 \
+              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}")
+            if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
+            echo "::warning::/api/inference/load attempt $attempt returned $HTTP; response:"
+            cat /tmp/load.json || true
+            sleep 10
+          done
+          [ "$LOAD_OK" = "1" ] || { echo "::error::/api/inference/load failed 3 attempts"; exit 22; }
+          jq '{status, display_name, is_vision}' /tmp/load.json
 
       - name: JSON schema decoding + image input
         env:

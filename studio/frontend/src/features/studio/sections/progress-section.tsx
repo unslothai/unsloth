@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 import {
   ChartAverageIcon,
   DashboardSpeed01Icon,
+  FolderExportIcon,
   Notebook01Icon,
   RamMemoryIcon,
   StopIcon,
@@ -122,7 +123,7 @@ export function ProgressSection({
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
 
-  // Auto-reset when training stops -- no useEffect needed
+  // Auto-resets when training stops; no useEffect needed
   const stopRequested = data.isTrainingRunning && stopRequestedLocal;
 
   const pct =
@@ -151,6 +152,21 @@ export function ProgressSection({
   const handleCompareInChat = async () => {
     setTrainingCompareHandoff(data.modelName);
     await navigate({ to: "/chat" });
+  };
+
+  // A finished run can be exported to GGUF: deep-link to the Export page with
+  // this run preselected (its output-dir basename is the export model name).
+  const exportRunName = data.outputDir
+    ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
+    : null;
+  const canExportGguf =
+    !data.isTrainingRunning &&
+    !!exportRunName &&
+    !data.resumedLater &&
+    (data.phase === "completed" || data.phase === "stopped");
+  const handleExportGguf = () => {
+    if (!exportRunName) return;
+    void navigate({ to: "/export", search: { run: exportRunName } });
   };
 
   const stoppedLoss = getDisplayMetric(
@@ -219,18 +235,31 @@ export function ProgressSection({
       accent="emerald"
       className="shadow-border border border-border/60 bg-card/90 ring-0 backdrop-blur-sm"
       headerAction={
-        isHistorical ? (
-          <ConfigPopoverButton configItems={configItems} />
-        ) : (
-          <LiveTrainingHeaderActions
-            configItems={configItems}
-            isTrainingRunning={data.isTrainingRunning}
-            onOpenStopDialog={setStopDialogOpen}
-            stopDialogOpen={stopDialogOpen}
-            stopRequested={stopRequested}
-            onSetStopRequested={setStopRequestedLocal}
-          />
-        )
+        <div className="flex items-center gap-2">
+          {canExportGguf && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
+              onClick={handleExportGguf}
+            >
+              <HugeiconsIcon icon={FolderExportIcon} className="size-3.5" />
+              {t("studio.progress.exportGguf")}
+            </Button>
+          )}
+          {isHistorical ? (
+            <ConfigPopoverButton configItems={configItems} />
+          ) : (
+            <LiveTrainingHeaderActions
+              configItems={configItems}
+              isTrainingRunning={data.isTrainingRunning}
+              onOpenStopDialog={setStopDialogOpen}
+              stopDialogOpen={stopDialogOpen}
+              stopRequested={stopRequested}
+              onSetStopRequested={setStopRequestedLocal}
+            />
+          )}
+        </div>
       }
     >
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)]">

@@ -37,31 +37,34 @@ export interface ThreadRecord {
   archived: boolean;
   createdAt: number;
   /**
-   * OpenAI shell tool container id captured from a prior response on
-   * this thread. When set, the next turn reuses it via
-   * `environment.type="container_reference"` so the model can read
-   * files it wrote earlier in the conversation. When null/undefined,
-   * the next turn auto-creates a fresh container.
+   * OpenAI shell tool container id from a prior response. When set, the
+   * next turn reuses it via `environment.type="container_reference"` so
+   * the model can read files it wrote earlier; else auto-creates one.
    *
-   * OpenAI containers expire after ~20 min of inactivity by default;
-   * if a stale id is sent, the backend surfaces an
-   * `_toolEvent.type="container_invalidated"` and the chat-adapter
-   * clears this field so the following turn falls back to auto-create.
+   * Containers expire after ~20 min idle; on a stale id the backend
+   * emits `_toolEvent.type="container_invalidated"` and the chat-adapter
+   * clears this field so the next turn falls back to auto-create.
    */
   openaiCodeExecContainerId?: string | null;
   /**
-   * Anthropic code_execution container id captured from a prior
-   * response on this thread. When set, the next turn sends a
-   * top-level `container` field on /v1/messages so filesystem state
-   * (files, packages, variables) persists across turns. When
-   * null/undefined, Anthropic auto-creates a fresh container.
+   * Anthropic code_execution container id from a prior response. When
+   * set, the next turn sends a top-level `container` on /v1/messages so
+   * filesystem state (files, packages, variables) persists; else auto-
+   * creates one.
    *
-   * Anthropic containers expire after ~1 hour by default; on a stale
-   * id the backend surfaces `_toolEvent.type="container_invalidated"`
-   * and the chat-adapter clears this field so the following turn
-   * falls back to auto-create.
+   * Containers expire after ~1 hour; on a stale id the backend emits
+   * `_toolEvent.type="container_invalidated"` and the chat-adapter
+   * clears this field so the next turn falls back to auto-create.
    */
   anthropicCodeExecContainerId?: string | null;
+  /**
+   * If this thread was created via fork-from-message, points back at
+   * the source thread + branch-point msg. Null/undefined for non-fork
+   * threads. Used by the sidebar "fork" badge and the parent thread's
+   * "N forks" indicator on the branch-point msg.
+   */
+  forkedFromThreadId?: string | null;
+  forkedFromMessageId?: string | null;
 }
 
 export interface MessageRecord {

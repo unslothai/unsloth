@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
-"""
-Manual tuning utils
-"""
+"""Manual tuning utils."""
 
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, fields
@@ -63,7 +61,11 @@ class KernelConfig:
     fuse_mul_post: bool = False
     use_tma_store: bool = False
 
-    def to_string(self, include_tuning_params: bool = False, include_tma: bool = False):
+    def to_string(
+        self,
+        include_tuning_params: bool = False,
+        include_tma: bool = False,
+    ):
         s = []
         if self.permute_x:
             s.append("permute_x")
@@ -116,7 +118,9 @@ class KernelResult:
 
     @staticmethod
     def to_dataframe(
-        results: list["KernelResult"], sort_by: str = "speedup", ascending: bool = False
+        results: list["KernelResult"],
+        sort_by: str = "speedup",
+        ascending: bool = False,
     ):
         df = pd.DataFrame([result.to_dict() for result in results])
         df = df.sort_values(by = sort_by, ascending = ascending)
@@ -202,12 +206,8 @@ def get_kernel_configs(
         )
 
     kernel_configs_fwd = prune_kernel_configs_fwd(kernel_configs_fwd)
-    kernel_configs_backward_dW = prune_kernel_configs_backward_dW(
-        kernel_configs_backward_dW
-    )
-    kernel_configs_backward_dX = prune_kernel_configs_backward_dX(
-        kernel_configs_backward_dX
-    )
+    kernel_configs_backward_dW = prune_kernel_configs_backward_dW(kernel_configs_backward_dW)
+    kernel_configs_backward_dX = prune_kernel_configs_backward_dX(kernel_configs_backward_dX)
     return kernel_configs_fwd, kernel_configs_backward_dW, kernel_configs_backward_dX
 
 
@@ -256,7 +256,6 @@ class TritonTuningContext:
         self.success = True
 
     def __enter__(self):
-        # Setup code can be added here if needed
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):

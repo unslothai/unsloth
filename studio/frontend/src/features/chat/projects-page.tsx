@@ -12,7 +12,13 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -35,14 +41,28 @@ import {
 } from "@/features/chat";
 import {
   Delete02Icon,
+  Download01Icon,
   Edit03Icon,
+  Folder02Icon,
   FolderAddIcon,
   Search01Icon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import {
+  exportProjectConversations,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
+  importConversationsFromFile,
+  EXPORT_FORMATS_LIST,
+  type ConvExportFormat,
+} from "./prompt-storage/prompt-storage-dialog";
+import {
+  listStoredChatThreads,
+} from "./utils/chat-history-storage";
 
 type SortMode = "activity" | "name";
 
@@ -75,6 +95,36 @@ export function ProjectsPage() {
   const [renaming, setRenaming] = useState<ProjectRecord | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
+
+  const globalImportRef = useRef<HTMLInputElement>(null);
+  const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+  const [importFile, setImportFile] = useState<File | null>(null);
+  // null = Recents
+  const [importTargetId, setImportTargetId] = useState<string | null>(null);
+
+  async function handleImport(file: File, projectId: string | null) {
+    try {
+      const count = await importConversationsFromFile(file, projectId);
+      if (count === 0) {
+        toast.info("No conversations found in file.");
+      } else {
+        const dest = projectId
+          ? (projects.find((p) => p.id === projectId)?.name ?? "project")
+          : "Recents";
+        toast.success(`Imported ${count} conversation${count === 1 ? "" : "s"} to ${dest}.`);
+      }
+    } catch {
+      toast.error("Import failed.");
+    }
+  }
+
+  async function commitImport() {
+    if (!importFile) return;
+    const file = importFile;
+    const target = importTargetId;
+    setImportFile(null);
+    await handleImport(file, target);
+  }
 
   const visibleProjects = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
@@ -128,6 +178,48 @@ export function ProjectsPage() {
     }
   }
 
+  async function handleProjectExport(project: ProjectRecord, fmt: ConvExportFormat) {
+    try {
+      const threads = await listStoredChatThreads({ projectId: project.id, includeArchived: false });
+      const ids = [...new Set(threads.map((t) => t.id))];
+      await exportProjectConversations(ids, fmt, project.name);
+    } catch {
+      toast.error("Export failed.");
+    }
+  }
+
+  async function handleBulkProjectExport(
+    scope: "projects" | "all",
+    fmt: ConvExportFormat,
+    merged: boolean,
+  ) {
+    try {
+      let threads;
+      if (scope === "projects") {
+        threads = (
+          await Promise.all(
+            projects.map((p) =>
+              listStoredChatThreads({ projectId: p.id, includeArchived: false }),
+            ),
+          )
+        ).flat();
+      } else {
+        threads = await listStoredChatThreads({ includeArchived: false });
+      }
+      const ids = [...new Set(threads.map((t) => t.id))];
+      if (ids.length === 0) { toast.info("No conversations to export."); return; }
+      const ts = new Date().toISOString().slice(0, 10);
+      const basename = `${scope === "all" ? "all-chats" : "all-projects"}-${ts}`;
+      if (merged) {
+        await exportBulkConversationsMerged(ids, fmt, basename);
+      } else {
+        await exportBulkConversationsSeparate(ids, fmt, basename);
+      }
+    } catch {
+      toast.error("Export failed.");
+    }
+  }
+
   async function commitDelete() {
     const target = deleting;
     if (!target) return;
@@ -142,19 +234,46 @@ export function ProjectsPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-7xl px-4 py-8 font-heading sm:px-6">
+    <main className="mx-auto w-full max-w-6xl px-6 py-10 font-heading sm:px-10">
+      {/* Global import file input */}
+      <input
+        ref={globalImportRef}
+        type="file"
+        accept=".jsonl,.ndjson,.csv"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            setImportTargetId(projects[0]?.id ?? null);
+            setImportFile(file);
+          }
+          e.target.value = "";
+        }}
+      />
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+        <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
           Projects
         </h1>
         <div className="flex items-center gap-3">
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
+              <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
+            </span>
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search projects"
+              className="h-9 w-52 rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card sm:w-64"
+              aria-label="Search projects"
+            />
+          </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">Sort by</span>
             <Select
               value={sortMode}
               onValueChange={(v) => setSortMode(v as SortMode)}
             >
-              <SelectTrigger className="h-9 w-[130px]">
+              <SelectTrigger className="h-9 w-[130px] rounded-full border-none bg-muted shadow-none dark:bg-card">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -163,6 +282,77 @@ export function ProjectsPage() {
               </SelectContent>
             </Select>
           </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="icon"
+                title="Import / Export projects"
+                className="rounded-full border-none bg-muted shadow-none dark:bg-card"
+              >
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem onSelect={() => globalImportRef.current?.click()}>
+                <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
+                Import chats…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Export All Projects</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-52">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                      Combined
+                    </DropdownMenuLabel>
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                      Per chat
+                    </DropdownMenuLabel>
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`ap-s-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, false)}>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Export Projects + Recents</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-52">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                      Combined
+                    </DropdownMenuLabel>
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                      Per chat
+                    </DropdownMenuLabel>
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`all-s-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, false)}>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             onClick={() => {
               setNameDraft("");
@@ -174,30 +364,17 @@ export function ProjectsPage() {
         </div>
       </div>
 
-      <div className="relative mt-6">
-        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-          <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
-        </span>
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search projects..."
-          className="h-11 pl-10"
-          aria-label="Search projects"
-        />
-      </div>
-
       {!hasLoaded ? (
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="min-h-[160px] rounded-[14px] border border-border/70 bg-card p-5"
+              className="min-h-[172px] rounded-[26px] bg-card p-6 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] dark:shadow-none"
             >
-              <Skeleton className="h-5 w-2/3 rounded-[6px]" />
-              <Skeleton className="mt-3 h-4 w-full rounded-[6px]" />
-              <Skeleton className="mt-2 h-4 w-4/5 rounded-[6px]" />
-              <Skeleton className="mt-12 h-3 w-24 rounded-[6px]" />
+              <Skeleton className="size-10 rounded-[14px]" />
+              <Skeleton className="mt-4 h-5 w-2/3 rounded-[8px]" />
+              <Skeleton className="mt-2 h-4 w-4/5 rounded-[8px]" />
+              <Skeleton className="mt-8 h-3 w-24 rounded-[8px]" />
             </div>
           ))}
         </div>
@@ -211,7 +388,7 @@ export function ProjectsPage() {
           {projects.length === 0 && (
             <Button
               variant="outline"
-              className="mt-2"
+              className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
               onClick={() => {
                 setNameDraft("");
                 setCreating(true);
@@ -223,8 +400,24 @@ export function ProjectsPage() {
           )}
         </div>
       ) : (
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {visibleProjects.map((project) => (
+            <div key={`wrap-${project.id}`} className="contents">
+            <input
+              key={`import-${project.id}`}
+              type="file"
+              accept=".jsonl,.ndjson,.csv"
+              className="hidden"
+              ref={(el) => {
+                if (el) projectImportRefs.current.set(project.id, el);
+                else projectImportRefs.current.delete(project.id);
+              }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleImport(file, project.id);
+                e.target.value = "";
+              }}
+            />
             <div
               key={project.id}
               role="button"
@@ -236,19 +429,23 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-card relative flex min-h-[160px] cursor-pointer flex-col rounded-[14px] border border-border/70 bg-card p-5 text-left transition-colors hover:border-border hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="group/project-card relative flex min-h-[172px] cursor-pointer flex-col rounded-[26px] bg-card p-6 text-left shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] transition-colors duration-150 hover:bg-[#f2f2f2] dark:shadow-none dark:hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <div className="flex items-start justify-between gap-2">
-                <h2 className="truncate pr-2 text-[16px] font-semibold text-foreground">
-                  {project.name}
-                </h2>
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-[14px] bg-muted text-foreground/70 transition-colors group-hover/project-card:bg-primary/10 group-hover/project-card:text-primary">
+                  <HugeiconsIcon
+                    icon={Folder02Icon}
+                    strokeWidth={1.75}
+                    className="size-5"
+                  />
+                </span>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="-mr-1 -mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/project-card:opacity-100"
+                      className="-mr-1 -mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10 focus-visible:opacity-100 group-hover/project-card:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:data-[state=open]:bg-white/10"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>
@@ -256,7 +453,7 @@ export function ProjectsPage() {
                   <DropdownMenuContent
                     side="bottom"
                     align="end"
-                    sideOffset={4}
+                    sideOffset={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
                     className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
@@ -271,6 +468,35 @@ export function ProjectsPage() {
                       <span>Rename</span>
                     </DropdownMenuItem>
                     <DropdownMenuItem
+                      onSelect={(e) => {
+                        e.stopPropagation();
+                        projectImportRefs.current.get(project.id)?.click();
+                      }}
+                    >
+                      <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
+                      <span>Import chats</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>
+                        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                        <span>Export</span>
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="w-52">
+                        {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                          <DropdownMenuItem
+                            key={fmt}
+                            onSelect={(e) => {
+                              e.stopPropagation();
+                              void handleProjectExport(project, fmt);
+                            }}
+                          >
+                            {label}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
                       variant="destructive"
                       onSelect={() => setDeleting(project)}
                     >
@@ -280,14 +506,18 @@ export function ProjectsPage() {
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
+              <h2 className="mt-4 truncate text-[16px] font-semibold text-foreground">
+                {project.name}
+              </h2>
               {project.instructions ? (
-                <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">
+                <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
                   {project.instructions}
                 </p>
               ) : null}
-              <span className="mt-auto pt-4 text-xs text-muted-foreground">
+              <span className="mt-auto pt-4 text-xs text-muted-foreground/80">
                 Updated {formatUpdatedAgo(project.updatedAt)}
               </span>
+            </div>
             </div>
           ))}
         </div>
@@ -300,7 +530,7 @@ export function ProjectsPage() {
           if (!open) setCreating(false);
         }}
       >
-        <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>New project</DialogTitle>
           </DialogHeader>
@@ -337,7 +567,7 @@ export function ProjectsPage() {
           if (!open) setRenaming(null);
         }}
       >
-        <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Rename project</DialogTitle>
           </DialogHeader>
@@ -371,6 +601,37 @@ export function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Import destination picker */}
+      <Dialog open={importFile !== null} onOpenChange={(open) => { if (!open) setImportFile(null); }}>
+        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Import chats</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Choose where to import{" "}
+            <span className="font-medium text-foreground">{importFile?.name}</span>:
+          </p>
+          <Select
+            value={importTargetId ?? "__recents__"}
+            onValueChange={(v) => setImportTargetId(v === "__recents__" ? null : v)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select destination" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__recents__">Recents</SelectItem>
+              {projects.map((p) => (
+                <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+            <Button type="button" variant="ghost" onClick={() => setImportFile(null)}>Cancel</Button>
+            <Button type="button" onClick={() => void commitImport()}>Import</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Delete project */}
       <Dialog
         open={deleting !== null}
@@ -378,7 +639,7 @@ export function ProjectsPage() {
           if (!open) setDeleting(null);
         }}
       >
-        <DialogContent className="menu-flat-destructive corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+        <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Delete project</DialogTitle>
           </DialogHeader>
