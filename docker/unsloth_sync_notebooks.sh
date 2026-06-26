@@ -152,23 +152,27 @@ record_state() {
 
 # 1) First-boot populate from the baked template (instant, works offline).
 if [ ! -f "$STATE" ]; then
+    : > "$STATE.tmp" 2>/dev/null || true
     ( cd "$TEMPLATE" && find . -type f -print0 ) | while IFS= read -r -d '' rel; do
         rel="${rel#./}"
         case "$rel" in .unsloth_template_commit) continue ;; esac
         mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
         # A pre-existing file at this path (bind-mounted or hand-created before
-        # the first boot) is user data: never clobber it. Only lay down the baked
-        # template when the path is empty or already byte-identical to it. The
-        # refresh path below has the same ownership rule; this keeps first boot
-        # symmetric so a mounted notebook survives the very first start too.
+        # the first boot) is user data: never clobber it, and -- crucially -- do
+        # NOT record it in the sync state. If it were recorded, the GitHub refresh
+        # below would see its hash match the recorded hash, treat it as pristine
+        # and overwrite it with upstream. Only files we actually lay down (or that
+        # are already byte-identical to the template) are recorded as managed.
         if [ -e "$DEST/$rel" ] \
            && [ "$(hash_of "$DEST/$rel")" != "$(hash_of "$TEMPLATE/$rel")" ]; then
             echo "[unsloth-nb] kept existing user file: $DEST/$rel"
             continue
         fi
-        cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null || true
+        if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
+            printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
+        fi
     done
-    record_state
+    mv "$STATE.tmp" "$STATE" 2>/dev/null || rm -f "$STATE.tmp"
     cp -a "$TEMPLATE/.unsloth_template_commit" "$SYNCED" 2>/dev/null || true
     echo "[unsloth-nb] notebooks ready at $DEST"
 fi
@@ -232,6 +236,13 @@ while IFS= read -r -d '' f; do
     dst="$DEST/$rel"
     if [ -e "$dst" ]; then
         rec="${LAST[$rel]:-}"
+        if [ -z "$rec" ]; then
+            # File exists in DEST but the sync state never recorded it -> it is a
+            # pre-existing user / bind-mounted file. Treat it as user-owned: keep
+            # it and do not adopt it into the state (so it stays protected).
+            kept=$((kept + 1))
+            continue
+        fi
         if [ -n "$rec" ] && [ "$(hash_of "$dst")" != "$rec" ]; then
             # User changed this file since we wrote it -> keep theirs, keep marker.
             printf '%s  %s\n' "$rec" "$rel" >> "$TMPSTATE"

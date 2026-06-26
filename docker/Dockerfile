@@ -15,7 +15,7 @@
 #     https://developer.nvidia.com/cuda/gpus is covered.
 #   * Unsloth's runtime kernels are Triton, which JIT-compiles per device at first run.
 #   * Anything that DOES need to be source-built (rare on this pin set) compiles
-#     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0+PTX",
+#     against TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX",
 #     covering every current NVIDIA compute capability per
 #     https://developer.nvidia.com/cuda/gpus.
 #     The host GPU is irrelevant for compilation; nvcc emits whatever the arch
@@ -65,7 +65,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     #   sm_89   Ada          L4, L40, L40S, RTX 40-series             (amd64 only)
     #   sm_90   Hopper       H100, H200, GH200 (Grace-Hopper is arm64)
     #   sm_100  Blackwell DC B100, B200, GB200 (GB200 is arm64)
-    #   sm_103  Blackwell DC B300, GB300
+    #   sm_103  Blackwell DC B300, GB300 -- covered by sm_100 SASS (see above),
+    #           NOT a separate target here: the bundled CUDA 12.8 nvcc cannot
+    #           compile compute_103 (added in CUDA 12.9), so listing 10.3 would
+    #           break any source / JIT build that honors TORCH_CUDA_ARCH_LIST.
     #   sm_120  Blackwell    RTX 50-series, RTX PRO 6000 Blackwell    (amd64 only)
     #   sm_121  Blackwell    GB10 (DGX Spark)                          (arm64 only)
     # +PTX on the highest lets future arch revisions run via JIT-PTX.
@@ -73,7 +76,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # don't exist on the build host, and any extras that aren't relevant for
     # the target just bloat compile time slightly (not size, since we don't
     # source-build any extension at install time on the pin set).
-    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0+PTX" \
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX" \
     MAX_JOBS=4 \
     CUDA_HOME=/usr/local/cuda \
     # Build-host-independence guards. The build must NEVER introspect a GPU,
@@ -502,9 +505,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TRITON_CACHE_DIR=/workspace/.cache/triton \
     # Keep the arch list visible at runtime in case the user source-builds anything
     # extra inside the container (e.g. a custom CUDA op). Same list as the builder
-    # stage so a `pip install some-cuda-ext` inside the container gets a SASS
-    # blob that covers every supported arch.
-    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;10.3;12.0+PTX"
+    # stage so a `pip install some-cuda-ext` inside the container gets a SASS blob
+    # that covers every supported arch. 10.3 (B300) is intentionally omitted: it
+    # runs sm_100 SASS, and the bundled CUDA 12.8 nvcc cannot compile compute_103
+    # (added in CUDA 12.9), so listing it would fail any such in-container build.
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX"
 
 # zstd: the official Ollama notebooks run `curl ollama.com/install.sh | sh`
 # inside the container, and that installer extracts a zstd tarball -- without

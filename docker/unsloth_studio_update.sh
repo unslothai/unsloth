@@ -23,6 +23,7 @@ set -euo pipefail
 
 STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 REF=""
+ZOO_REF=""
 NO_DEPS="--no-deps"
 RESTART=1
 PACKAGES="unsloth unsloth_zoo"
@@ -32,6 +33,7 @@ usage() { sed -n '2,21p' "$0"; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --ref)         REF="$2"; shift 2;;
+        --zoo-ref)     ZOO_REF="$2"; shift 2;;
         --with-deps)   NO_DEPS=""; shift;;
         --no-restart)  RESTART=0; shift;;
         --packages)    PACKAGES="$2"; shift 2;;
@@ -63,8 +65,23 @@ echo "[studio-update] before: unsloth $(version_of)"
 # (or any branch/tag/sha); otherwise take the latest PyPI release.
 if [ -n "$REF" ]; then
     SPECS="git+https://github.com/unslothai/unsloth.git@${REF}#egg=unsloth"
-    SPECS="$SPECS git+https://github.com/unslothai/unsloth-zoo.git@${REF}#egg=unsloth_zoo"
-    echo "[studio-update] installing from git @${REF}"
+    # unsloth-zoo does NOT track unsloth's tags/SHAs (its release cadence differs;
+    # the publish workflow resolves the zoo ref separately for the same reason).
+    # Use --zoo-ref if given; else use the unsloth ref only when the zoo repo
+    # actually has it, falling back to main so `--ref <unsloth-tag>` does not fail
+    # on a tag/SHA that simply does not exist in unsloth-zoo.
+    _zoo_ref="$ZOO_REF"
+    if [ -z "$_zoo_ref" ]; then
+        if git ls-remote --exit-code https://github.com/unslothai/unsloth-zoo.git \
+                "$REF" >/dev/null 2>&1; then
+            _zoo_ref="$REF"
+        else
+            _zoo_ref="main"
+            echo "[studio-update] unsloth-zoo has no ref '${REF}'; using zoo main"
+        fi
+    fi
+    SPECS="$SPECS git+https://github.com/unslothai/unsloth-zoo.git@${_zoo_ref}#egg=unsloth_zoo"
+    echo "[studio-update] installing from git: unsloth @${REF}, unsloth-zoo @${_zoo_ref}"
 else
     SPECS="$PACKAGES"
     echo "[studio-update] installing latest release of: $PACKAGES"

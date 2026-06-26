@@ -71,6 +71,10 @@ _VALUE_FLAGS = {
     "--abi",
     "--implementation",
 }
+# Of those value-flags, the ones whose VALUE is itself an install target: a
+# requirements file pulls real requirements. An index-url / find-links /
+# constraint / target value is an option, not something to install.
+_REQ_FILE_FLAGS = {"-r", "--requirement"}
 
 
 def _canon(token):
@@ -116,19 +120,30 @@ def main():
 
     head, tail = argv[: i + 1], argv[i + 1 :]
     keep_args, dropped, recorded = [], [], None
+    has_target = False
     skip_next = False
+    prev_flag = None
     for tok in tail:
         if skip_next:
             keep_args.append(tok)
+            # The value of -r/--requirement pulls real requirements (a target);
+            # the value of an index-url / find-links / constraint / etc. flag is
+            # an option, not something to install.
+            if prev_flag in _REQ_FILE_FLAGS:
+                has_target = True
             skip_next = False
+            prev_flag = None
             continue
         if tok in _VALUE_FLAGS:
             keep_args.append(tok)
             skip_next = True
+            prev_flag = tok
             continue
         name = _canon(tok)
         if name is None:
-            keep_args.append(tok)  # flag / url / path
+            keep_args.append(tok)  # bare flag, or a positional url / path / vcs
+            if not tok.startswith("-"):
+                has_target = True  # standalone . / ./pkg / git+... / *.whl
             continue
         if name == "transformers":
             v = _version_pin(tok)
@@ -140,6 +155,7 @@ def main():
             dropped.append(tok)
             continue
         keep_args.append(tok)
+        has_target = True  # a kept package spec
 
     if recorded:
         try:
@@ -155,12 +171,12 @@ def main():
     if dropped:
         print("[unsloth-nb] kept baked versions, skipped: " + " ".join(dropped))
 
-    # Anything left to actually install? Count any non-flag token as a target,
-    # not just tokens with a canonical pkg name: editable / local / url / vcs
-    # installs (`-e .`, `.`, `git+https://...`, a wheel URL) carry no canonical
-    # name but must still run, and a `-r`/`-c` file pulls in real requirements.
-    has_install_target = any(not t.startswith("-") for t in keep_args)
-    if not has_install_target:
+    # Anything left to actually install? `has_target` was set during the scan for
+    # a kept package spec, a positional url / path / vcs / editable target, or a
+    # -r/--requirement file. A line carrying only baked packages plus option flags
+    # (e.g. `--extra-index-url <url> torch`) leaves no target, so no-op instead of
+    # exec'ing a bare `pip install --extra-index-url <url>` that would fail.
+    if not has_target:
         print("[unsloth-nb] nothing to install after keeping the baked stack; ok.")
         return
     cmd = [REAL[tool]] + head + keep_args
