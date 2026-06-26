@@ -177,7 +177,7 @@ def _normalize_compressed_method(save_method):
     key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
     if key in COMPRESSED_EXPORT_SCHEMES:
         return COMPRESSED_EXPORT_SCHEMES[key]
-    if any(tag in key for tag in ("fp8", "fp4", "nvfp4", "mxfp")):
+    if any(tag in key for tag in ("fp8", "fp4", "mxfp")):
         supported = ", ".join(sorted(COMPRESSED_EXPORT_SCHEMES.keys()))
         raise RuntimeError(
             f"Unsloth: save_method='{save_method}' is not a supported compressed export.\n"
@@ -1845,6 +1845,7 @@ def unsloth_save_pretrained_merged(
             suffix = suffix,
             push_to_hub = push_to_hub,
             token = token,
+            is_main_process = is_main_process,
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
@@ -3397,6 +3398,7 @@ def unsloth_generic_save_pretrained_merged(
             suffix = suffix,
             push_to_hub = push_to_hub,
             token = token,
+            is_main_process = is_main_process,
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
@@ -3672,6 +3674,7 @@ def _unsloth_save_compressed_tensors(
     suffix: str,
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
+    is_main_process: bool = True,
     calibration_dataset = None,
     num_calibration_samples: int = 512,
     max_seq_length: int = 2048,
@@ -3692,34 +3695,30 @@ def _unsloth_save_compressed_tensors(
     # Accept os.PathLike save directories (string concatenation below needs a str).
     save_directory = os.fspath(save_directory)
 
-    # 1) Merge LoRA -> 16bit on disk and KEEP it. Must be a local save: merge_and_overwrite_lora
-    #    deletes save_directory when push_to_hub=True, which would remove it before reload.
-    is_peft = isinstance(model, PeftModelForCausalLM) or isinstance(model, PeftModel)
-    if is_peft:
-        print(f"Unsloth: Merging LoRA weights to 16bit before {scheme} quantization...")
-        merge_args = dict(merge_kwargs)
-        merge_args.update(
-            dict(
-                model = model,
-                tokenizer = tokenizer,
-                save_directory = save_directory,
-                save_method = "merged_16bit",
-                push_to_hub = False,
-                token = token,
-            )
-        )
-        unsloth_generic_save(**merge_args)
-    else:
-        print(f"Unsloth: Saving base model to 16bit before {scheme} quantization...")
-        os.makedirs(save_directory, exist_ok = True)
-        model.save_pretrained(save_directory)
-        if tokenizer is not None:
-            tokenizer.save_pretrained(save_directory)
+    # 1) Merge to 16bit on disk and KEEP it, via unsloth_generic_save so LoRA adapters are merged
+    #    and full-finetuned models are written in 16bit consistently. Must be a local save:
+    #    merge_and_overwrite_lora deletes save_directory when push_to_hub=True.
+    print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
+    merge_args = dict(merge_kwargs)
+    merge_args.update(dict(
+        model = model,
+        tokenizer = tokenizer,
+        save_directory = save_directory,
+        save_method = "merged_16bit",
+        push_to_hub = False,
+        token = token,
+        is_main_process = is_main_process,
+    ))
+    unsloth_generic_save(**merge_args)
 
     for _ in range(3):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    # Only the main process quantizes and writes the compressed output (avoids ranks racing).
+    if not is_main_process:
+        return None
 
     # 2) Lazily import / install llm-compressor (without breaking torch / transformers) and
     #    gate on scheme availability up-front so the user gets a clear error fast.
@@ -3765,11 +3764,18 @@ def _unsloth_save_compressed_tensors(
             calib_kind = "disk" if os.path.isdir(calib_value) else "hfid"
         elif hasattr(calibration_dataset, "save_to_disk"):
             import tempfile
-
+            # Only persist the samples we need, so multi-GB training sets are not fully copied.
+            ds_to_save = calibration_dataset
+            try:
+                if (num_calibration_samples and hasattr(ds_to_save, "select")
+                        and len(ds_to_save) > num_calibration_samples):
+                    ds_to_save = ds_to_save.shuffle(seed = 42).select(range(num_calibration_samples))
+            except Exception:
+                ds_to_save = calibration_dataset
             parent = os.path.dirname(os.path.abspath(save_directory)) or None
             calib_tmp = tempfile.mkdtemp(prefix = "unsloth-calib-", dir = parent)
             shutil.rmtree(calib_tmp, ignore_errors = True)  # save_to_disk wants a fresh path
-            calibration_dataset.save_to_disk(calib_tmp)
+            ds_to_save.save_to_disk(calib_tmp)
             calib_kind, calib_value = "disk", calib_tmp
         else:
             raise TypeError(
@@ -3831,7 +3837,10 @@ def _unsloth_save_compressed_tensors(
 
     # 6) Validate the artifact.
     cfg_path = os.path.join(out_dir, "config.json")
-    cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
+    cfg = {}
+    if os.path.exists(cfg_path):
+        with open(cfg_path, "r", encoding = "utf-8") as f:
+            cfg = json.load(f)
     if "quantization_config" not in cfg:
         raise RuntimeError(
             f"Unsloth: {scheme} export failed - no quantization_config written to {cfg_path}"

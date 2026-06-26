@@ -146,7 +146,16 @@ def main():
 
     model = _from_pretrained(auto_model, args.model, args.trust_remote_code)
     model.eval()
-    tokenizer = auto_proc.from_pretrained(args.model, trust_remote_code = args.trust_remote_code)
+    # A tokenizer may be absent if the caller saved it separately; only calibration needs one.
+    try:
+        tokenizer = auto_proc.from_pretrained(args.model, trust_remote_code = args.trust_remote_code)
+    except Exception:
+        if args.needs_calibration:
+            raise RuntimeError(
+                f"Unsloth: calibration export needs a tokenizer but none was found in {args.model}. "
+                "Pass tokenizer=... to save_pretrained_merged."
+            )
+        tokenizer = None
 
     recipe = QuantizationModifier(targets = "Linear", scheme = args.scheme, ignore = ["lm_head"])
     if args.needs_calibration:
@@ -171,10 +180,14 @@ def main():
 
     os.makedirs(args.out, exist_ok = True)
     model.save_pretrained(args.out, save_compressed = True)
-    tokenizer.save_pretrained(args.out)
+    if tokenizer is not None:
+        tokenizer.save_pretrained(args.out)
 
     cfg_path = os.path.join(args.out, "config.json")
-    cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
+    cfg = {}
+    if os.path.exists(cfg_path):
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
     if "quantization_config" not in cfg:
         print(f"Unsloth: ERROR - no quantization_config written to {cfg_path}", flush = True)
         sys.exit(2)
