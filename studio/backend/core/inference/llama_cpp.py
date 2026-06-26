@@ -807,14 +807,16 @@ _CTX_FIT_VRAM_FRACTION = 0.95
 # fraction dominates (5% of 80 GB = 4 GB); on consumer cards it is too thin (5% of
 # 24 GB = 1.2 GB) to cover what the byte estimate omits: CUDA context + compute
 # graph, the gap between nvidia-smi's reported free and the VRAM llama.cpp can
-# actually allocate, and (the common case) a desktop compositor + browser sharing
-# the card whose usage drifts up after the fit reads `free`. Too thin a cushion let
-# auto-fit advertise a context that pinned -ngl -1 at load but then offloaded layers
-# to CPU at runtime, ~halving tok/s on a 24 GB desktop (#6682). 3 GiB ~restores the
-# headroom #6312 removed (it cut the reserve from ~10% of free to 5% of total); on a
-# 27B on a 24 GB card it keeps the load fully on the GPU under a light (~1.6 GB)
-# desktop where 5% spilled it. It is a fixed cushion, not a guarantee -- a heavier
-# desktop can still drift past it. Capped at _MAX_VRAM_RESERVE_FRAC so a small card
+# actually allocate, llama.cpp's own --fit margin (it keeps headroom and offloads
+# before the card is full), and a desktop compositor + browser sharing the card.
+# Too thin a cushion let auto-fit advertise a context that pinned -ngl -1 at load but
+# then offloaded layers to CPU at runtime (#6682). Measured on two 27Bs on a 24 GB
+# card (Qwen3.6-MTP, gemma-3): 5% advertised a context that spilled even on an idle
+# card -- ~35 of 60 tok/s -- and worse under a desktop. 3 GiB ~restores the headroom
+# #6312 removed (it cut the reserve from ~10% of free to 5% of total): it keeps both
+# fully on the GPU when idle and under a ~1 GB desktop, and sharply cuts the spill
+# under heavier ones. It is a fixed cushion, not a guarantee -- a ~2 GB+ desktop can
+# still drift past it. Capped at _MAX_VRAM_RESERVE_FRAC so a small card
 # isn't over-reserved (3 GiB would be 37% of an 8 GB card), and never below 5% so big
 # datacenter cards are unchanged. The cap is the floor's own fraction at its 24 GB
 # design point (3 GiB / 24 GB), so no card reserves a larger fraction than a 24 GB
