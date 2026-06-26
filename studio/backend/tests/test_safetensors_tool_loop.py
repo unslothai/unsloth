@@ -138,6 +138,22 @@ class TestParser:
         assert len(result) == 1
         assert "print('hi')" in result[0]["function"]["arguments"]
 
+    def test_xml_param_preserves_leading_indentation(self):
+        # The chat template wraps the value in a single \n on each side; only
+        # that wrapping newline is trimmed, so significant indentation in a code
+        # argument survives (str.strip() used to destroy it).
+        text = (
+            "<function=python><parameter=code>\n"
+            "    indented = 1\n"
+            "    more\n"
+            "</parameter></function>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "code": "    indented = 1\n    more"
+        }
+
     def test_function_signal_inside_parameter_is_literal(self):
         text = (
             "<function=python>"
@@ -391,6 +407,17 @@ class TestParserMultiFormat:
         # Mistral provides its own id; preserve it.
         assert result[0]["id"] == "abc"
         assert json.loads(result[0]["function"]["arguments"]) == {"query": "hello"}
+
+    def test_mistral_array_parameters_key_alias(self):
+        import json
+
+        # Array object keyed on ``parameters`` (not ``arguments``) must keep its
+        # payload, matching the JSON/XML paths and SGLang's base detector.
+        text = '[TOOL_CALLS] [{"name":"get_weather","parameters":{"city":"Paris"}}]'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Paris"}
 
     def test_mistral_pre_v11_array_multi(self):
         text = (
@@ -2188,9 +2215,9 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
-        assert "_shared_strip_tool_markup" in src, (
-            "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
-        )
+        assert (
+            "_shared_strip_tool_markup" in src
+        ), "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
 
     def test_gguf_uses_canonical_heal_keys(self):
         # GGUF and safetensors heal a bare-string ``arguments`` to the same
