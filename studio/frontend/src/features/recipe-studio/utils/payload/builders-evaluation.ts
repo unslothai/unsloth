@@ -4,7 +4,7 @@
 import type { EvaluationDocumentScoreConfig } from "../../types";
 import { parseJsonObject } from "./parse";
 
-// Always emit a processors[] entry so the block survives save/load. Missing
+// Always emit an evaluations[] entry so the block survives save/load. Missing
 // required fields are tolerated (emitted as empty strings) — the backend
 // scorer will skip rows where the column lookup fails, and on reload the
 // block remains on the canvas in its incomplete state for the user to finish.
@@ -31,7 +31,7 @@ export function buildEvaluationDocumentScoreProcessor(
   const scoreColumn = config.score_column.trim() || "doc_score";
   return {
     // biome-ignore lint/style/useNamingConvention: api schema
-    processor_type: "json_document_score",
+    evaluation_type: "json_document_score",
     name,
     // biome-ignore lint/style/useNamingConvention: api schema
     prediction_column: predictionColumn,

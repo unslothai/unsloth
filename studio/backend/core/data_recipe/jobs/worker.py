@@ -147,7 +147,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             if preview_df is not None:
                 preview_df = apply_studio_post_processors_to_dataframe(
                     df = preview_df,
-                    processors = recipe.get("processors") or [],
+                    evaluations = recipe.get("evaluations") or [],
                 )
 
             dataset = (
@@ -179,7 +179,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
 
             apply_studio_post_processors(
                 base_dataset_path = results.artifact_storage.base_dataset_path,
-                processors = recipe.get("processors") or [],
+                evaluations = recipe.get("evaluations") or [],
             )
 
             artifact_path = str(results.artifact_storage.base_dataset_path)

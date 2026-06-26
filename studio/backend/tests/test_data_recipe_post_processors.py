@@ -10,7 +10,6 @@ import pandas as pd
 import pytest
 
 from core.data_recipe.post_processors import (
-    STUDIO_PROCESSOR_TYPES,
     apply_studio_post_processors,
 )
 from core.data_recipe.post_processors.json_document_score import (
@@ -97,17 +96,13 @@ def test_run_json_document_score_missing_column_raises(parquet_dir: Path) -> Non
         )
 
 
-def test_studio_processor_types_includes_json_document_score() -> None:
-    assert "json_document_score" in STUDIO_PROCESSOR_TYPES
-
-
 def test_apply_studio_post_processors_dispatches_by_type(parquet_dir: Path) -> None:
     base_dataset_path = parquet_dir.parent
     apply_studio_post_processors(
         base_dataset_path = base_dataset_path,
-        processors = [
+        evaluations = [
             {
-                "processor_type": "json_document_score",
+                "evaluation_type": "json_document_score",
                 "name": "score",
                 "prediction_column": "prediction",
                 "reference_column": "reference",
@@ -183,32 +178,32 @@ def test_run_json_document_score_uses_schema_field_comparators(tmp_path: Path) -
     assert out["doc_score"].iloc[0] == pytest.approx(1.0)
 
 
-def test_apply_studio_post_processors_ignores_non_studio_types(parquet_dir: Path) -> None:
-    # schema_transform is owned by data_designer — we should not touch it.
+def test_apply_studio_post_processors_ignores_unknown_evaluation_type(parquet_dir: Path) -> None:
     apply_studio_post_processors(
         base_dataset_path = parquet_dir.parent,
-        processors = [
-            {"processor_type": "schema_transform", "name": "x", "template": {}},
+        evaluations = [
+            {"evaluation_type": "unknown_score", "name": "x"},
         ],
     )
     df = pd.read_parquet(parquet_dir / "batch_00000.parquet")
     assert list(df.columns) == ["prediction", "reference"]
 
 
-def test_build_config_builder_skips_studio_owned_processors(monkeypatch):
-    """A recipe with a json_document_score processor must not crash inside
-    DataDesignerConfigBuilder.add_processor."""
+def test_build_config_builder_excludes_evaluations_from_designer_config(monkeypatch):
+    """Evaluations live in their own top-level field; they must never appear
+    in the recipe handed to DataDesignerConfigBuilder.from_config."""
     from core.data_recipe import service
 
-    captured: list[str] = []
+    captured_config: dict = {}
 
     class _StubBuilder:
         def add_processor(self, *, processor_type, **kwargs):
-            captured.append(processor_type.value)
+            pass
 
     class _StubBuilderFactory:
         @staticmethod
-        def from_config(_cfg):
+        def from_config(cfg):
+            captured_config.update(cfg)
             return _StubBuilder()
 
     class _StubProcessorType:
@@ -244,11 +239,16 @@ def test_build_config_builder_skips_studio_owned_processors(monkeypatch):
         {
             "processors": [
                 {"processor_type": "schema_transform", "name": "a", "template": {}},
-                {"processor_type": "json_document_score", "name": "b"},
-            ]
+            ],
+            "evaluations": [
+                {"evaluation_type": "json_document_score", "name": "b"},
+            ],
         }
     )
-    assert captured == ["schema_transform"]
+    assert "evaluations" not in captured_config["data_designer"]
+    assert captured_config["data_designer"]["processors"] == [
+        {"processor_type": "schema_transform", "name": "a", "template": {}},
+    ]
 
 
 def test_apply_runs_in_declaration_order(tmp_path: Path) -> None:
@@ -266,9 +266,9 @@ def test_apply_runs_in_declaration_order(tmp_path: Path) -> None:
 
     apply_studio_post_processors(
         base_dataset_path = tmp_path,
-        processors = [
+        evaluations = [
             {
-                "processor_type": "json_document_score",
+                "evaluation_type": "json_document_score",
                 "name": "first",
                 "prediction_column": "prediction",
                 "reference_column": "reference",
@@ -278,7 +278,7 @@ def test_apply_runs_in_declaration_order(tmp_path: Path) -> None:
                 "breakdown_column": None,
             },
             {
-                "processor_type": "json_document_score",
+                "evaluation_type": "json_document_score",
                 "name": "second",
                 "prediction_column": "prediction",
                 "reference_column": "reference",
@@ -331,11 +331,11 @@ def test_apply_studio_post_processors_to_dataframe_dispatches_by_type() -> None:
     )
     apply_studio_post_processors_to_dataframe(
         df = df,
-        processors = [
-            # non-studio entry is ignored
-            {"processor_type": "schema_transform", "name": "x", "template": {}},
+        evaluations = [
+            # unknown evaluation_type is ignored
+            {"evaluation_type": "unknown_score", "name": "x"},
             {
-                "processor_type": "json_document_score",
+                "evaluation_type": "json_document_score",
                 "name": "score",
                 "prediction_column": "prediction",
                 "reference_column": "reference",

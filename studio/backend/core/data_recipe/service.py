@@ -14,7 +14,6 @@ from .local_callable_validators import (
     register_oxc_local_callable_validators,
     split_oxc_local_callable_validators,
 )
-from .post_processors import is_studio_processor_type
 
 _IMAGE_CONTEXT_PATCHED = False
 
@@ -247,21 +246,10 @@ def build_config_builder(recipe: dict[str, Any]):
     recipe_core = {
         key: value
         for key, value in recipe.items()
-        if key not in {"model_providers", "mcp_providers"}
+        if key not in {"model_providers", "mcp_providers", "evaluations"}
     }
     recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(recipe_core)
-
-    raw_processors = recipe_core.get("processors") or []
-    designer_processors: list[dict[str, Any]] = []
-    for processor in raw_processors:
-        if not isinstance(processor, dict):
-            continue
-        processor_type_raw = processor.get("processor_type")
-        if isinstance(processor_type_raw, str) and is_studio_processor_type(processor_type_raw):
-            continue
-        designer_processors.append(processor)
-    recipe_core = {**recipe_core, "processors": designer_processors}
 
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
@@ -271,7 +259,9 @@ def build_config_builder(recipe: dict[str, Any]):
 
     # DataDesignerConfigBuilder.from_config currently skips processors.
     # Re-attach so drop_columns/schema_transform survive the API payload.
-    for processor in designer_processors:
+    for processor in recipe_core.get("processors") or []:
+        if not isinstance(processor, dict):
+            continue
         processor_type_raw = processor.get("processor_type")
         if not isinstance(processor_type_raw, str):
             continue

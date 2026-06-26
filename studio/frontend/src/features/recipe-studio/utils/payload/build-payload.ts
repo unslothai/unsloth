@@ -11,7 +11,6 @@ import type {
   RecipeProcessorConfig,
 } from "../../types";
 import { isSemanticRelation } from "../graph/relations";
-import { getConfigErrors } from "../index";
 import {
   getDefaultDataSourceHandle,
   getDefaultDataTargetHandle,
@@ -23,6 +22,8 @@ import {
   isSemanticTargetHandle,
   normalizeRecipeHandleId,
 } from "../handles";
+import { isLikelyImageValue } from "../image-preview";
+import { getConfigErrors } from "../index";
 import { readNodeWidth } from "../rf-node-dimensions";
 import {
   buildEvaluationDocumentScoreProcessor,
@@ -44,10 +45,9 @@ import {
   validateModelConfigProviders,
   validateSubcategoryConfigs,
   validateTimedeltaConfigs,
-  validateValidatorConfigs,
   validateUsedProviders,
+  validateValidatorConfigs,
 } from "./validate";
-import { isLikelyImageValue } from "../image-preview";
 
 function pushUniqueJson(
   label: string,
@@ -103,7 +103,7 @@ export function buildRecipePayload(
 ): RecipePayloadResult {
   const errors: string[] = [];
   const columns: Record<string, unknown>[] = [];
-  const evaluationProcessors: Record<string, unknown>[] = [];
+  const evaluations: Record<string, unknown>[] = [];
   const modelAliases = new Set<string>();
   const modelProviderNames = new Set<string>();
   const localProviderNames = new Set<string>();
@@ -205,7 +205,7 @@ export function buildRecipePayload(
       if (config.evaluation_type === "json_document_score") {
         const built = buildEvaluationDocumentScoreProcessor(config, errors);
         if (built) {
-          evaluationProcessors.push(built);
+          evaluations.push(built);
         }
       }
       continue;
@@ -349,19 +349,21 @@ export function buildRecipePayload(
       sourceHandle =
         isSemanticSourceHandle(sourceHandleNormalized) ||
         isDataSourceHandle(sourceHandleNormalized)
-          ? sourceHandleNormalized ?? semanticSourceDefault
+          ? (sourceHandleNormalized ?? semanticSourceDefault)
           : semanticSourceDefault;
       targetHandle =
         isSemanticTargetHandle(targetHandleNormalized) ||
         isDataTargetHandle(targetHandleNormalized)
-          ? targetHandleNormalized ?? semanticTargetDefault
+          ? (targetHandleNormalized ?? semanticTargetDefault)
           : semanticTargetDefault;
     } else {
       sourceHandle = isDataSourceHandle(sourceHandleNormalized)
-        ? sourceHandleNormalized ?? getDefaultDataSourceHandle(layoutDirection)
+        ? (sourceHandleNormalized ??
+          getDefaultDataSourceHandle(layoutDirection))
         : getDefaultDataSourceHandle(layoutDirection);
       targetHandle = isDataTargetHandle(targetHandleNormalized)
-        ? targetHandleNormalized ?? getDefaultDataTargetHandle(layoutDirection)
+        ? (targetHandleNormalized ??
+          getDefaultDataTargetHandle(layoutDirection))
         : getDefaultDataTargetHandle(layoutDirection);
     }
     return [
@@ -396,7 +398,6 @@ export function buildRecipePayload(
     },
   );
   const recipeProcessors = buildProcessors(processors, errors);
-  recipeProcessors.push(...evaluationProcessors);
   const seedConfig = firstSeed ? buildSeedConfig(firstSeed, errors) : undefined;
   const seedDropProcessor = firstSeed
     ? buildSeedDropProcessor(firstSeed, errors)
@@ -422,6 +423,7 @@ export function buildRecipePayload(
         tool_configs: toolConfigs,
         columns,
         processors: recipeProcessors,
+        evaluations,
       },
       run: {
         rows: 5,
