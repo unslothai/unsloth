@@ -2190,6 +2190,7 @@ def test_acquire_swap_gate_is_cancellation_safe():
     async def main():
         await inference_route._acquire_swap_gate()  # this loop holds the gate
         try:
+
             async def waiter():
                 await inference_route._acquire_swap_gate()
 
