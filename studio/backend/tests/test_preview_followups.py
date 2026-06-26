@@ -52,6 +52,21 @@ def test_rate_limit_window_rolls_off(monkeypatch):
     assert rl.check_rate_limit("ip") == 0
 
 
+def test_rate_limit_eviction_does_not_reset_active_bucket(monkeypatch):
+    # A flood of distinct keys must not cycle the table and clear a live limit.
+    monkeypatch.setattr(rl, "_MAX_REQUESTS", 1)
+    monkeypatch.setattr(rl, "_MAX_BUCKETS", 2)
+    rl.reset()
+    assert rl.check_rate_limit("a") == 0
+    assert rl.check_rate_limit("a") > 0  # 'a' throttled (active)
+    assert rl.check_rate_limit("b") == 0
+    assert rl.check_rate_limit("b") > 0  # 'b' throttled; table now full of actives
+    # A new key can't evict an active bucket -> denied (fail closed)...
+    assert rl.check_rate_limit("c") > 0
+    # ...and the flood did not reset 'a'.
+    assert rl.check_rate_limit("a") > 0
+
+
 # ── Client IP ────────────────────────────────────────────────────────────────
 
 
@@ -73,9 +88,11 @@ def test_client_ip_uses_socket_peer_by_default(monkeypatch):
     assert client_ip(None) == "_unknown"
 
 
-def test_client_ip_honors_forwarded_when_trusted(monkeypatch):
+def test_client_ip_uses_rightmost_forwarded_when_trusted(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_TRUST_FORWARDED", "1")
-    req = _Req("127.0.0.1", {"x-forwarded-for": "198.51.100.7, 10.0.0.1"})
+    # Leftmost is client-spoofable; the trusted proxy appends the real peer on the
+    # right, so the rightmost hop is the one we key on.
+    req = _Req("127.0.0.1", {"x-forwarded-for": "1.2.3.4, 198.51.100.7"})
     assert client_ip(req) == "198.51.100.7"
 
 

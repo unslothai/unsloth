@@ -57,11 +57,16 @@ def _verify_or_404(run: str, checkpoint: str | None, request: Request) -> None:
     so the public surface never confirms whether a run/checkpoint exists. When an
     admin has switched public sharing off, every public request 404s regardless of
     token.
+
+    Verify the (cheap, no-I/O) capability first: an unauthenticated caller with a
+    bad/missing token is rejected without the kill-switch DB read, so spamming
+    ``/p/...`` can't be used as an unbounded settings-DB sink, and the response is
+    identical whether or not sharing is enabled (no on/off oracle).
     """
-    if not get_preview_sharing_enabled():
-        raise HTTPException(status_code = 404, detail = "Not found")
     ref = run if not checkpoint else f"{run}/{checkpoint}"
     if not verify_preview_ref(ref, _extract_token(request)):
+        raise HTTPException(status_code = 404, detail = "Not found")
+    if not get_preview_sharing_enabled():
         raise HTTPException(status_code = 404, detail = "Not found")
 
 
@@ -221,6 +226,8 @@ def _models_response(run: str, checkpoint: str | None):
     }
 
 
+# The models/page GET routes only stat the checkpoint dir (no GPU), so they are
+# token-gated but not rate-limited; only the GPU-backed chat path is throttled.
 @router.get("/{run}/v1/models")
 async def preview_models_latest(run: str, request: Request):
     _verify_or_404(run, None, request)

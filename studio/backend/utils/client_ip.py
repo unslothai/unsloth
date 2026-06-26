@@ -5,7 +5,10 @@
 
 Trust model, in order:
   1. If the operator opts in via ``UNSLOTH_STUDIO_TRUST_FORWARDED`` (Studio behind
-     their own reverse proxy), honor ``X-Forwarded-For``.
+     their own reverse proxy), honor the *rightmost* ``X-Forwarded-For`` hop -- the
+     one the trusted proxy appended. The leftmost entry is client-controlled and
+     spoofable, so this assumes a proxy that appends (or overwrites) the header;
+     only enable the env var behind such a proxy.
   2. If the socket peer is loopback, honor ``CF-Connecting-IP``. Studio's managed
      Cloudflare tunnel terminates at 127.0.0.1, so every tunneled visitor would
      otherwise collapse onto the same socket peer (the local cloudflared process)
@@ -55,9 +58,10 @@ def client_ip(request) -> str:
         return "_unknown"
     peer = request.client.host if request.client else None
     if _trust_forwarded_for():
+        # Rightmost hop = what the trusted proxy saw; the leftmost is spoofable.
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            normalized = _normalize_addr(xff.split(",", 1)[0])
+            normalized = _normalize_addr(xff.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
     if _is_loopback(peer):

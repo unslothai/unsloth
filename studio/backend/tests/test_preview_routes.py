@@ -386,6 +386,27 @@ def test_page_without_token_404(client):
     assert client.get("/p/demorun").status_code == 404
 
 
+def test_checkpoint_route_with_valid_sig(client, captured):
+    # Nested ref: the signed/verified/resolved canonical ref is "run/checkpoint".
+    sig = _sig("demorun/checkpoint-1")
+    r = client.post(
+        f"/p/demorun/checkpoint-1/v1/chat/completions?k={sig}",
+        json = {"messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    assert captured["load_path"].endswith("checkpoint-1")
+
+
+def test_checkpoint_token_does_not_unlock_bare_run(client, captured):
+    # A token minted for the nested checkpoint must not unlock the run ref.
+    r = client.post(
+        f"/p/demorun/v1/chat/completions?k={_sig('demorun/checkpoint-1')}",
+        json = {"messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 404
+    assert "load_path" not in captured
+
+
 def test_bearer_token_accepted(client, captured):
     # OpenAI-compatible clients pass the capability as the api_key (Bearer header).
     r = client.post(

@@ -30,18 +30,14 @@ def _prune(bucket: deque, now: float) -> None:
         bucket.popleft()
 
 
-def _evict_if_full(now: float) -> None:
-    if len(_buckets) < _MAX_BUCKETS:
-        return
-    # Drop buckets that have aged out, then (if still full) an arbitrary one.
+def _evict_aged(now: float) -> None:
+    """Drop only buckets that have fully aged out. Never evict an active bucket:
+    evicting a throttled key would reset its counter, so a flood of distinct keys
+    could cycle the table and clear a victim's (or its own) limit."""
     for key in list(_buckets.keys()):
         _prune(_buckets[key], now)
         if not _buckets[key]:
             del _buckets[key]
-        if len(_buckets) < _MAX_BUCKETS:
-            return
-    if _buckets:
-        _buckets.pop(next(iter(_buckets)))
 
 
 def check_rate_limit(key: str) -> int:
@@ -50,7 +46,13 @@ def check_rate_limit(key: str) -> int:
     with _lock:
         bucket = _buckets.get(key)
         if bucket is None:
-            _evict_if_full(now)
+            if len(_buckets) >= _MAX_BUCKETS:
+                _evict_aged(now)
+            if len(_buckets) >= _MAX_BUCKETS:
+                # Table is full of currently-active clients. Fail closed: deny the
+                # new key rather than evict a live bucket (which would hand out a
+                # rate-limit reset). Pathological only (>= _MAX_BUCKETS live IPs).
+                return max(1, int(_WINDOW_SECONDS))
             bucket = _buckets[key] = deque()
         _prune(bucket, now)
         if len(bucket) >= _MAX_REQUESTS:
