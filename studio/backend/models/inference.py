@@ -1738,6 +1738,14 @@ class DiffusionLoadRequest(BaseModel):
         "HBM cards, which are not nerfed). true/false force it. Negligible "
         "quality effect (below the fp8 quant noise floor); no overflow risk.",
     )
+    transformer_prequant_path: Optional[str] = Field(
+        None,
+        description = "Local path to a pre-quantized transformer checkpoint (built by "
+        "scripts/build_prequant_checkpoint.py) for the requested transformer_quant "
+        "scheme. Loads the already-quantized weights with the dense bf16 never on the "
+        "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
+        "checkpoint if configured, else quantises the dense transformer at load time.",
+    )
 
 
 class DiffusionGenerateRequest(BaseModel):

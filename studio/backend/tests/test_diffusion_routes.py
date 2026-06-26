@@ -343,6 +343,22 @@ def test_transformer_quant_fast_accum_threads_through(client, monkeypatch):
     assert backend.last_load_kwargs.get("transformer_quant_fast_accum") is False
 
 
+def test_transformer_prequant_path_threads_through(client, monkeypatch):
+    backend = _FakeBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "x/z-image",
+            "gguf_filename": "q.gguf",
+            "transformer_quant": "fp8",
+            "transformer_prequant_path": "/data/zimage_fp8.pt",
+        },
+    )
+    assert resp.status_code == 200
+    assert backend.last_load_kwargs.get("transformer_prequant_path") == "/data/zimage_fp8.pt"
+
+
 def test_invalid_transformer_quant_returns_422_without_eviction(client):
     # An unsupported transformer_quant is rejected by the request schema (Literal), so
     # the GPU is never acquired and no chat model is evicted.
