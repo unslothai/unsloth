@@ -2431,10 +2431,13 @@ case "$_torch_index_leaf" in
     *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
 esac
 
-# rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
+# rocm7.2 and the AMD per-gfx indexes (repo.amd.com/.../gfxNNNN) ship torch
+# 2.11.0 -- adjust the constraint to allow it. This also covers a pinned full-URL
+# or family override (e.g. UNSLOTH_TORCH_INDEX_URL=.../gfx1151) that returns early
+# above and so never hits the Strix reroute that otherwise raises this constraint.
 # All other ROCm tags and CUDA stay within <2.11.0.
 case "$TORCH_INDEX_URL" in
-    */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+    */rocm7.2|*/gfx*) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
 esac
 
 # Auto-detect GPU for AMD ROCm based

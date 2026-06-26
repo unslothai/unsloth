@@ -64,15 +64,19 @@ def _run_cuda_repair(
     rocm_marker = False,
     smi_path = "/usr/bin/nvidia-smi",
     cvd = None,
+    index_family = None,
 ):
     """Invoke _ensure_cuda_torch under a fully mocked host; return the pip mock.
 
-    cvd controls CUDA_VISIBLE_DEVICES: None removes it from the env, any string sets it."""
+    cvd controls CUDA_VISIBLE_DEVICES: None removes it from the env, any string sets it.
+    index_family sets UNSLOTH_TORCH_INDEX_FAMILY (the explicit wheel-index pin)."""
     env = {}
     if rocm_marker:
         env["UNSLOTH_ROCM_TORCH_INSTALLED"] = "1"
     if cvd is not None:
         env["CUDA_VISIBLE_DEVICES"] = cvd
+    if index_family is not None:
+        env["UNSLOTH_TORCH_INDEX_FAMILY"] = index_family
 
     def _which(name, *a, **k):
         if name == "nvidia-smi":
@@ -99,6 +103,9 @@ def _run_cuda_repair(
             stack_mod.os.environ.pop("UNSLOTH_ROCM_TORCH_INSTALLED", None)
         if cvd is None:
             stack_mod.os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        if index_family is None:
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
         _ensure_cuda_torch()
     return mock_pip
 
@@ -127,6 +134,19 @@ class TestCudaRepairFires:
         # torch.version.hip; the probe prints "hip" for both.
         mock_pip = _run_cuda_repair(torch_state = "hip")
         assert mock_pip.call_count == 1
+
+    def test_no_gpu_but_explicit_cuda_pin_repairs(self):
+        # Headless / container / CI cross-install: an explicit cu* index pin
+        # commits to CUDA wheels even though no NVIDIA GPU is visible here, so a
+        # ROCm-poisoned venv is still repaired (to the pinned family).
+        mock_pip = _run_cuda_repair(
+            nvidia = False,
+            backend = "cuda",
+            index_family = "cu128",
+            torch_state = "hip",
+        )
+        assert mock_pip.call_count == 1
+        assert "cu128" in _index_url(mock_pip)
 
 
 # No-op cases.

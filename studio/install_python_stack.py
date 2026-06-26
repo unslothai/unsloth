@@ -981,6 +981,30 @@ def _detect_cuda_torch_index_url() -> str:
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 
+def _explicit_torch_index_url() -> "str | None":
+    """The wheel index URL pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY, else None.
+
+    Lets the CUDA/ROCm repair helpers honour the exact pinned family/URL instead
+    of re-probing the GPU. Mirrors install.sh::get_torch_index_url's override.
+    """
+    url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
+    if url:
+        return url.rstrip("/")
+    family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
+    if family:
+        return f"{_PYTORCH_WHL_BASE}/{family.strip('/')}"
+    return None
+
+
+def _explicit_rocm_torch_index_url() -> "str | None":
+    """The pinned wheel index URL when it names a ROCm family (rocm*/gfx*), else None."""
+    url = _explicit_torch_index_url()
+    if url is None:
+        return None
+    leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
+    return url if leaf.startswith(("rocm", "gfx")) else None
+
+
 def _ensure_cuda_torch() -> None:
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
@@ -1013,7 +1037,10 @@ def _ensure_cuda_torch() -> None:
         return
     # Only NVIDIA hosts should carry CUDA torch. _has_usable_nvidia_gpu()
     # covers the /proc/driver/nvidia/gpus fallback when nvidia-smi is absent.
-    if not _has_usable_nvidia_gpu():
+    # An explicit CUDA wheel-index pin (headless / container / CI cross-install)
+    # commits to CUDA wheels regardless of whether a GPU is visible here, so it
+    # overrides the GPU-presence gate.
+    if not _has_usable_nvidia_gpu() and _explicit_torch_index_url() is None:
         return
 
     # Classify the installed torch: "hip" (ROCm build -- the poisoning
@@ -1256,7 +1283,9 @@ def _ensure_rocm_torch() -> None:
     # an incompatible wheel. Use HIP_VISIBLE_DEVICES for the runtime target.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
-    if ver < (7, 2):
+    # An explicit ROCm wheel-index pin is authoritative: never auto-reroute it to
+    # the AMD per-gfx index (the caller already chose the family/URL).
+    if ver < (7, 2) and _explicit_rocm_torch_index_url() is None:
         gfx_codes = _detect_amd_gfx_codes()
         _strix_gfx = {"gfx1151", "gfx1150"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
@@ -1319,23 +1348,35 @@ def _ensure_rocm_torch() -> None:
         )
         rocm_torch_ready = True
     elif not has_hip_torch:
-        # Select best matching wheel tag (newest ROCm version <= installed)
-        tag = next(
-            (
-                t
-                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-                if ver >= (maj, mn)
-            ),
-            None,
-        )
+        # Honour an explicit ROCm wheel-index pin verbatim instead of re-detecting
+        # the host ROCm version; otherwise select the best wheel tag (newest ROCm
+        # version <= installed). gfx*/rocm7.2 indexes serve torch 2.11+, so match
+        # the constraints to the index leaf when overridden.
+        _override_idx = _explicit_rocm_torch_index_url()
+        if _override_idx is not None:
+            index_url = _override_idx
+            tag = index_url.rstrip("/").rsplit("/", 1)[-1].lower()
+        else:
+            tag = next(
+                (
+                    t
+                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+                    if ver >= (maj, mn)
+                ),
+                None,
+            )
         if tag is None:
             print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- " f"skipping torch reinstall")
         else:
-            index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-            print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
-            _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
-                tag, _ROCM_TORCH_PKG_SPECS["_default"]
-            )
+            if _override_idx is None:
+                index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
+            print(f"   ROCm torch -- installing from {index_url}")
+            if tag.startswith("gfx"):
+                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+            else:
+                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
+                    tag, _ROCM_TORCH_PKG_SPECS["_default"]
+                )
             pip_install(
                 f"ROCm torch ({tag})",
                 "--force-reinstall",
