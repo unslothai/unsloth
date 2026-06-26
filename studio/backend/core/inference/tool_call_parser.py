@@ -1219,6 +1219,11 @@ def _parse_deepseek_tool_calls(content: str, *, id_offset: int, allow_incomplete
         return out
     scan_start = begin.end()
     end_pos = content.find(_DEEPSEEK_END, scan_start)
+    # Strict mode (Auto-Heal off): an envelope with no closing
+    # <｜tool▁calls▁end｜> is truncated mid-stream; reject it instead of
+    # healing the body out to EOF, matching the strict XML / Mistral paths.
+    if not allow_incomplete and end_pos < 0:
+        return out
     scan_end = end_pos if end_pos >= 0 else len(content)
     body = content[scan_start:scan_end]
 
@@ -1307,9 +1312,11 @@ def _parse_deepseek_tool_calls(content: str, *, id_offset: int, allow_incomplete
                     },
                 }
             )
-        # Skip past optional ``<｜tool▁call▁end｜>``.
-        next_end = body.find(_DEEPSEEK_CALL_END, brace_end + 1)
-        pos = next_end + len(_DEEPSEEK_CALL_END) if next_end >= 0 else brace_end + 1
+        # Advance just past this call's JSON; the loop re-locates the next
+        # <｜tool▁sep｜> from here. Searching forward for the optional
+        # <｜tool▁call▁end｜> could land on a LATER call's end marker and skip
+        # the call in between when this one's end marker is missing.
+        pos = brace_end + 1
     return out
 
 
@@ -1442,8 +1449,7 @@ def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
             if brace_end is None:
                 pos = arg_begin + len(_KIMI_ARG_BEGIN)
             else:
-                call_end = body.find(_KIMI_CALL_END, brace_end + 1)
-                pos = call_end + len(_KIMI_CALL_END) if call_end >= 0 else brace_end + 1
+                pos = brace_end + 1
             continue
         json_start = arg_begin + len(_KIMI_ARG_BEGIN)
         # Balanced brace lets truncated trailing ``<|tool_call_end|>``
@@ -1482,6 +1488,8 @@ def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
                     },
                 }
             )
-        call_end = body.find(_KIMI_CALL_END, brace_end + 1)
-        pos = call_end + len(_KIMI_CALL_END) if call_end >= 0 else brace_end + 1
+        # Advance past this call's JSON; the loop re-locates the next
+        # <|tool_call_begin|>. Searching forward for <|tool_call_end|> could
+        # skip a following call when this one's end marker is missing.
+        pos = brace_end + 1
     return out

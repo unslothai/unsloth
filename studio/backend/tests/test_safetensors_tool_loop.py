@@ -830,6 +830,36 @@ class TestParserDeepSeek:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "get_time"
 
+    def test_v3_1_strict_rejects_unclosed_envelope(self):
+        # Envelope truncated mid-stream (no <｜tool▁calls▁end｜>): healed by
+        # default, rejected with Auto-Heal off.
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Tokyo"}'
+        )
+        assert len(parse_tool_calls_from_text(text)) == 1
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
+    def test_v3_1_multi_call_recovers_when_first_end_marker_missing(self):
+        # First inner call omits its <｜tool▁call▁end｜>; the second must still
+        # be parsed. Advancing by the JSON end (not by searching forward for
+        # the next end marker) keeps the call in between from being skipped.
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"city": "Paris"}'
+            "<｜tool▁call▁begin｜>get_weather"
+            "<｜tool▁sep｜>"
+            '{"city": "Paris"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in result] == ["get_time", "get_weather"]
+
     def test_deepseek_strip_markup(self):
         text = (
             "before "
@@ -1037,6 +1067,24 @@ class TestParserKimi:
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "c"
+
+    def test_kimi_multi_call_recovers_when_first_end_marker_missing(self):
+        # First call omits its <|tool_call_end|>; the second must still parse.
+        # Advancing by the JSON end keeps the call in between from being
+        # skipped by a forward search for the next end marker.
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.read_file:0"
+            "<|tool_call_argument_begin|>"
+            '{"path":"a"}'
+            "<|tool_call_begin|>functions.web_search:1"
+            "<|tool_call_argument_begin|>"
+            '{"query":"x"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in result] == ["read_file", "web_search"]
 
     def test_kimi_handles_unclosed_section(self):
         # End marker missing -- the parser must still extract the call.
