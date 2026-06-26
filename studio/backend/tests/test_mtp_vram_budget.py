@@ -566,7 +566,9 @@ class TestExtraArgsMtpDetection:
         # the flat MTP reserve), not the looser pin fraction, so mixed/free GPU
         # prefixes are tried in the same order the fit budget admits them.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "ranked=sorted(gpus,key=lambdag:_gpu_usable(g,_fit_fraction),reverse=True)" in compact
+        assert (
+            "ranked=sorted(gpus,key=lambdag:_gpu_usable(g,_fit_fraction),reverse=True)" in compact
+        )
         assert "_gpu_usable(g,_fit_fraction)" in compact
 
     def test_auto_context_uses_tighter_fit_budget_not_pin_budget(self):
