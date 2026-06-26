@@ -123,10 +123,12 @@ def _detected_training_device() -> Any | None:
 def should_use_mlx_training_backend(*, device: Any | None = None) -> bool:
     if device is not None:
         return is_mlx_training_device(device)
+    if is_apple_silicon_training_platform():
+        return True
     detected_device = _detected_training_device()
     if detected_device is not None:
         return is_mlx_training_device(detected_device)
-    return is_apple_silicon_training_platform()
+    return False
 
 
 def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
@@ -344,7 +346,10 @@ class _MLXTrainerAdapter:
         self._dataset_config: dict[str, Any] = {}
         self._event_queue: queue.Queue | None = None
         self._stop_queue: queue.Queue | None = None
+        self._worker_process: mp.Process | None = None
         self._pump_thread: threading.Thread | None = None
+        self._needs_xet_respawn = False
+        self._xet_fallback_used = False
         self._lock = threading.Lock()
 
     def _activate_transformers_for_model(self, model_name: str, hf_token: Optional[str]) -> None:
@@ -524,11 +529,13 @@ class _MLXTrainerAdapter:
             return False
 
         config = self._build_worker_config(training_args)
-        event_queue = queue.Queue()
-        stop_queue = queue.Queue()
+        event_queue = _CTX.Queue()
+        stop_queue = _CTX.Queue()
         self._event_queue = event_queue
         self._stop_queue = stop_queue
         self.should_stop = False
+        self._needs_xet_respawn = False
+        self._xet_fallback_used = False
         self.is_training = True
         self.training_progress = TrainingProgress(
             is_training = True,
@@ -592,7 +599,7 @@ class _MLXTrainerAdapter:
         self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
     ):
         try:
-            self._run_mlx_worker(config, event_queue, stop_queue)
+            self._run_mlx_worker_supervised(config, event_queue, stop_queue)
         except Exception as exc:
             if event_queue is not None:
                 event_queue.put(
@@ -603,6 +610,46 @@ class _MLXTrainerAdapter:
                         "ts": time.time(),
                     }
                 )
+        finally:
+            self._worker_process = None
+
+    def _start_mlx_worker_process(
+        self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
+    ) -> mp.Process:
+        from .worker import run_mlx_training_process
+        with native_path_secret_removed_for_child_start():
+            proc = _CTX.Process(
+                target = run_without_native_path_secret,
+                args = (run_mlx_training_process,),
+                kwargs = {
+                    "event_queue": event_queue,
+                    "stop_queue": stop_queue,
+                    "config": config,
+                },
+                daemon = True,
+            )
+            proc.start()
+            try:
+                from utils.process_lifetime import adopt_pid
+                adopt_pid(proc.pid)
+            except Exception:
+                pass
+        return proc
+
+    def _run_mlx_worker_supervised(
+        self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
+    ):
+        current_config = dict(config)
+        while True:
+            proc = self._start_mlx_worker_process(current_config, event_queue, stop_queue)
+            self._worker_process = proc
+            proc.join()
+            self._worker_process = None
+            if self._needs_xet_respawn and not self.should_stop:
+                self._needs_xet_respawn = False
+                current_config = {**current_config, "disable_xet": True}
+                continue
+            return
 
     def _run_mlx_worker(
         self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
@@ -683,6 +730,7 @@ class _MLXTrainerAdapter:
                 "training cancelled",
                 "training stopped",
             }
+            self._needs_xet_respawn = False
             self.output_dir = output_dir
             self._update_progress(
                 is_training = False,
@@ -694,6 +742,7 @@ class _MLXTrainerAdapter:
             self.is_training = False
             return
         if etype == "error":
+            self._needs_xet_respawn = False
             self._update_progress(
                 is_training = False,
                 is_completed = False,
@@ -702,10 +751,27 @@ class _MLXTrainerAdapter:
             self.is_training = False
             return
         if etype == "stall":
+            if not self._xet_fallback_used:
+                self._xet_fallback_used = True
+                self._needs_xet_respawn = True
+                self._update_progress(
+                    status_message = "Model download stalled on Xet; retrying over HTTP..."
+                )
+                proc = self._worker_process
+                if proc is not None and proc.is_alive():
+                    proc.terminate()
+                return
+            self._needs_xet_respawn = False
+            proc = self._worker_process
+            if proc is not None and proc.is_alive():
+                proc.terminate()
             self._update_progress(
                 is_training = False,
                 is_completed = False,
-                error = event.get("message") or "Model download stalled",
+                error = (
+                    event.get("message")
+                    or "Model download stalled even over HTTP -- check your network connection"
+                ),
             )
             self.is_training = False
 
@@ -714,6 +780,9 @@ class _MLXTrainerAdapter:
         self.save_on_stop = bool(save)
         if self._stop_queue is not None:
             self._stop_queue.put({"type": "stop", "save": save})
+        proc = self._worker_process
+        if proc is not None and proc.is_alive() and not save:
+            proc.terminate()
         status_message = (
             "Stopping training and saving checkpoint..." if save else "Cancelling training..."
         )
@@ -1501,6 +1570,7 @@ class TrainingBackend:
                 }
 
             elif etype == "error":
+                self._needs_xet_respawn = False
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
                 logger.error("Training error: %s", event.get("error"))

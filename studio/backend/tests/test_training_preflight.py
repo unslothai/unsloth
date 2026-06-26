@@ -11,6 +11,7 @@ import os
 import queue
 import subprocess
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -291,7 +292,7 @@ def test_torch_backend_instantiates_existing_unsloth_trainer(monkeypatch):
     assert trainer.__class__ is trainer_mod.UnslothTrainer
 
 
-def test_unsloth_trainer_uses_torch_when_detected_device_is_cpu(monkeypatch):
+def test_unsloth_trainer_routes_to_mlx_on_apple_silicon_even_if_device_is_cpu(monkeypatch):
     package = "core.training"
     _set_training_platform(monkeypatch, package, "mlx")
     from utils.hardware import hardware as hw
@@ -302,7 +303,7 @@ def test_unsloth_trainer_uses_torch_when_detected_device_is_cpu(monkeypatch):
 
     trainer = trainer_mod.UnslothTrainer()
 
-    assert trainer.__class__ is trainer_mod.UnslothTrainer
+    assert trainer.__class__ is not trainer_mod.UnslothTrainer
 
 
 def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monkeypatch):
@@ -310,7 +311,14 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
 
     captured = {}
 
-    def fake_run_mlx_worker(config, event_queue, stop_queue):
+    class FakeProc:
+        def join(self, timeout = None):
+            return None
+
+        def is_alive(self):
+            return False
+
+    def fake_start_mlx_worker(config, event_queue, stop_queue):
         captured["config"] = config
         event_queue.put(
             {
@@ -328,9 +336,10 @@ def test_mlx_trainer_builds_worker_config_and_reports_completion(tmp_path, monke
                 "output_dir": str(output_dir.resolve()),
             }
         )
+        return FakeProc()
 
     trainer = trainer_mod.UnslothTrainer()
-    monkeypatch.setattr(trainer, "_run_mlx_worker", fake_run_mlx_worker)
+    monkeypatch.setattr(trainer, "_start_mlx_worker_process", fake_start_mlx_worker)
 
     assert trainer_mod.TrainingProgress().status_message == "Ready to train"
     assert trainer.load_model(
@@ -504,6 +513,67 @@ def test_mlx_trainer_stop_complete_event_is_not_completed(monkeypatch):
     assert progress.status_message == "Training stopped"
     assert progress.output_dir == "/tmp/out"
     assert trainer.output_dir == "/tmp/out"
+
+
+def test_mlx_trainer_retries_xet_stall_over_http(monkeypatch):
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
+
+    trainer = trainer_mod.UnslothTrainer()
+    assert trainer.load_model("mlx-community/Qwen3-0.6B-4bit")
+    assert trainer.load_and_format_dataset("org/dataset") is not None
+
+    attempts = []
+
+    class FakeProc:
+        def __init__(self, wait_for_respawn = False):
+            self.wait_for_respawn = wait_for_respawn
+            self.terminated = False
+
+        def join(self, timeout = None):
+            if not self.wait_for_respawn:
+                return None
+            deadline = time.time() + 5
+            while time.time() < deadline and not trainer._needs_xet_respawn:
+                time.sleep(0.01)
+
+        def is_alive(self):
+            return True
+
+        def terminate(self):
+            self.terminated = True
+
+    def fake_start_mlx_worker(config, event_queue, stop_queue):
+        attempts.append(dict(config))
+        if len(attempts) == 1:
+            event_queue.put({"type": "stall", "message": "stalled on xet"})
+            return FakeProc(wait_for_respawn = True)
+        event_queue.put({"type": "complete", "status_message": "done", "output_dir": "/tmp/out"})
+        return FakeProc()
+
+    monkeypatch.setattr(trainer, "_start_mlx_worker_process", fake_start_mlx_worker)
+
+    assert trainer.start_training(max_steps = 1)
+    trainer.training_thread.join(timeout = 5)
+    progress = trainer.get_training_progress()
+
+    assert len(attempts) == 2
+    assert attempts[0].get("disable_xet") is False
+    assert attempts[1]["disable_xet"] is True
+    assert progress.is_completed
+    assert progress.output_dir == "/tmp/out"
+
+
+def test_training_backend_error_clears_pending_xet_respawn():
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend()
+    backend._needs_xet_respawn = True
+    backend._progress.is_training = True
+
+    backend._handle_event({"type": "error", "error": "load failed"})
+
+    assert backend._needs_xet_respawn is False
+    assert backend._progress.error == "load failed"
 
 
 def test_mlx_trainer_rejects_new_run_while_old_pump_is_alive(monkeypatch):
