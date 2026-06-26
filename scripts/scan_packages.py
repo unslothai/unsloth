@@ -56,6 +56,7 @@ Exit codes:
 
 import argparse
 import atexit
+import bisect
 import hashlib
 import io
 import json
@@ -1145,11 +1146,6 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     return findings
 
 
-# Cap a DOTALL match's recorded span; longer spans fall back to head + digest.
-# Single-line quoted string literal, used to blank string contents (so brackets
-# inside a string are not counted as code) before measuring a logical line.
-_RE_STR_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
-
 _MAX_MULTILINE_LINES = 12
 # How far a single matched call is followed over its bracket continuations. Larger
 # than the display/digest threshold above so a multi-line call (e.g. a
@@ -1169,6 +1165,11 @@ _GIANT_SPAN_LINES = 60
 # baseline while a change past the cutoff still changes the digest and reopens the
 # finding. The npm scanner bounds its snippets the same way.
 _MAX_LINE_CHARS = 200
+# Cap on recorded spans in one evidence string; beyond it the remaining spans are
+# folded into a digest so a file with thousands of matching lines cannot build a
+# multi-megabyte evidence blob, while an added/removed span past the cap still
+# changes the key. Comfortably above the largest real baseline entry.
+_MAX_EVIDENCE_SPANS = 96
 
 
 def _cap_line(code: str) -> str:
@@ -1181,18 +1182,73 @@ def _cap_line(code: str) -> str:
     return f"{code[:_MAX_LINE_CHARS]} sha256:{digest}"
 
 
-def _logical_line_end(lines: list[str], start: int) -> int:
-    """1-based line where the statement opened at ``start`` closes its brackets,
-    so a multi-line call binds its argument lines (a changed URL/body on a
-    continuation line reopens, not just the line with the API name). String
-    literals are blanked first so a bracket inside a string (``'.../path)'``)
-    does not close the line early and drop later arguments; the span is capped at
-    ``_MAX_CALL_LINES`` so a stray unclosed bracket cannot swallow the file.
-    """
+_PY_TRIPLE = ("'''", '"""')
+# Single-line quoted string literal; blanks complete one-line strings (the legacy
+# view) so the single-line and multi-line blanked spans can be unioned below.
+_RE_STR_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+
+
+def _blank_code_strings(lines: list[str]) -> list[str]:
+    """Replace string contents (single- and triple-quoted, escapes honoured) with
+    spaces across ``lines``, keeping the line count and every bracket OUTSIDE a
+    string intact. Bracket counting then never miscounts a ``)`` that lives inside
+    a string -- including a triple-quoted string spanning several lines, which a
+    per-line regex cannot blank."""
+    out: list[str] = []
+    in_triple: str | None = None  # active ''' or \"\"\" delimiter, or None
+    for line in lines:
+        buf: list[str] = []
+        i, n = 0, len(line)
+        while i < n:
+            if in_triple is not None:
+                end = line.find(in_triple, i)
+                if end == -1:
+                    buf.append(" " * (n - i))
+                    i = n
+                else:
+                    buf.append(" " * (end - i + 3))
+                    i = end + 3
+                    in_triple = None
+                continue
+            ch = line[i]
+            if ch in "'\"":
+                if line[i : i + 3] in _PY_TRIPLE:
+                    delim = line[i : i + 3]
+                    end = line.find(delim, i + 3)
+                    if end == -1:  # opens a triple string that runs past this line
+                        buf.append(" " * (n - i))
+                        in_triple = delim
+                        i = n
+                    else:
+                        buf.append(" " * (end - i + 3))
+                        i = end + 3
+                    continue
+                j = i + 1  # single-line string; skip to its closing quote
+                while j < n:
+                    if line[j] == "\\":
+                        j += 2
+                        continue
+                    if line[j] == ch:
+                        j += 1
+                        break
+                    j += 1
+                buf.append(" " * (j - i))
+                i = j
+                continue
+            buf.append(ch)
+            i += 1
+        out.append("".join(buf))
+    return out
+
+
+def _scan_line_end(view: list[str], start: int) -> int:
+    """1-based line where the statement at ``start`` closes its brackets in
+    ``view`` (one blanked view of the file), capped at ``_MAX_CALL_LINES`` so a
+    stray unclosed bracket cannot swallow the file."""
     depth = 0
-    limit = min(len(lines), start + _MAX_CALL_LINES - 1)
+    limit = min(len(view), start + _MAX_CALL_LINES - 1)
     for j in range(start, limit + 1):
-        ln = _RE_STR_LITERAL.sub("", lines[j - 1])
+        ln = view[j - 1]
         depth += ln.count("(") + ln.count("[") + ln.count("{")
         depth -= ln.count(")") + ln.count("]") + ln.count("}")
         if ln.rstrip().endswith("\\"):
@@ -1201,6 +1257,19 @@ def _logical_line_end(lines: list[str], start: int) -> int:
         if depth <= 0:
             return j
     return limit
+
+
+def _logical_line_end(sl_blanked: list[str], ml_blanked: list[str], start: int) -> int:
+    """1-based line where the statement opened at ``start`` closes, so a multi-line
+    call binds its argument lines (a changed URL/body on a continuation line
+    reopens, not just the API line). Returns the LARGER of the spans found in the
+    single-line-blanked view (legacy: a payload embedded inside a string still
+    counts, so its brackets bind the call) and the multi-line-blanked view (a
+    bracket inside a triple-quoted string argument no longer closes the call
+    early). Taking the union never shrinks the bound span below either view, so
+    neither blanking strategy can drop a continuation line a malicious change
+    relies on."""
+    return max(_scan_line_end(sl_blanked, start), _scan_line_end(ml_blanked, start))
 
 
 def _extract_evidence(
@@ -1223,6 +1292,8 @@ def _extract_evidence(
     rest.
     """
     lines = content.splitlines()
+    sl_blanked = [_RE_STR_LITERAL.sub("", ln) for ln in lines]
+    ml_blanked = _blank_code_strings(lines)
     out = []
     seen: set[tuple[int, int]] = set()
 
@@ -1243,7 +1314,7 @@ def _extract_evidence(
 
     for i, line in enumerate(lines, 1):
         if pattern.search(line):
-            span = (i, _logical_line_end(lines, i))
+            span = (i, _logical_line_end(sl_blanked, ml_blanked, i))
             if span in seen:
                 continue
             seen.add(span)
@@ -1252,9 +1323,13 @@ def _extract_evidence(
                 return " | ".join(out)
 
     had_perline = bool(out)
+    # Precompute newline offsets once so mapping a match offset to its 1-based line
+    # is O(log n) (bisect) rather than O(n) (content.count) per match; the latter
+    # made this fallback quadratic on a minified file with thousands of matches.
+    nl = [p for p, ch in enumerate(content) if ch == "\n"]
     for m in pattern.finditer(content):
-        start = content.count("\n", 0, m.start()) + 1
-        end = content.count("\n", 0, m.end()) + 1
+        start = bisect.bisect_left(nl, m.start()) + 1
+        end = bisect.bisect_left(nl, m.end()) + 1
         if end <= start or (start, end) in seen:
             continue  # single-line matches are already covered by the pass above
         if had_perline and end - start + 1 > _GIANT_SPAN_LINES:
@@ -1268,6 +1343,12 @@ def _extract_evidence(
         out.append(_render(start, end))
         if max_matches and len(out) >= max_matches:
             break
+    if len(out) > _MAX_EVIDENCE_SPANS:
+        rest = "\n".join(out[_MAX_EVIDENCE_SPANS:])
+        digest = hashlib.sha256(rest.encode("utf-8", "replace")).hexdigest()
+        out = out[:_MAX_EVIDENCE_SPANS] + [
+            f"(+{len(out) - _MAX_EVIDENCE_SPANS} more) sha256:{digest}"
+        ]
     return " | ".join(out)
 
 
