@@ -40,7 +40,7 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
-from .loader_utils import _get_fp8_mode_and_check_settings
+from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
 from unsloth_zoo.gradient_checkpointing import (
@@ -1741,6 +1741,7 @@ class FastBaseModel:
         # Detect a stray pre-train forward so train() can drop the torch.compile
         # graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model
 
     @staticmethod

@@ -499,6 +499,40 @@ def _get_fp8_mode_and_check_settings(
     return fp8_mode
 
 
+# Rotary inv_freq buffers are deliberately kept on CPU - Unsloth pre-builds a
+# cos/sin cache per GPU instead (see LlamaRotaryEmbedding.multi_gpu_cos_cached)
+# so the GPU-resident lookup never needs to move the tiny inv_freq tensor itself.
+# torch.nn.parallel.DistributedDataParallel ignores device entirely when it
+# broadcasts buffers across ranks, so a CPU buffer crashes NCCL's
+# _broadcast_coalesced with "No backend type associated with device type cpu".
+# Telling DDP to skip these specific buffers avoids that crash without moving
+# inv_freq to GPU (which would break the per-GPU cache design) and without
+# disabling buffer broadcast for every other module (the user's workaround).
+# Re-run this after wrapping with PEFT too - the buffers' fully qualified
+# names change once they sit under a PeftModel (eg "base_model.model...").
+# https://github.com/unslothai/unsloth/issues/6656
+_ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
+
+
+def _exclude_rope_inv_freq_from_ddp(model):
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    for module_name, module in model.named_modules():
+        for buffer_name, _ in module.named_buffers(recurse = False):
+            if buffer_name in _ROTARY_INV_FREQ_BUFFER_NAMES:
+                fqn = f"{module_name}.{buffer_name}" if module_name else buffer_name
+                if fqn not in ignored:
+                    ignored.append(fqn)
+    if ignored:
+        try:
+            from torch.nn.parallel import DistributedDataParallel
+            DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored)
+        except Exception:
+            # Private PyTorch API - fall back to setting the attribute DDP reads
+            # directly if it ever moves or changes signature.
+            model._ddp_params_and_buffers_to_ignore = ignored
+    return model
+
+
 # =============================================================================
 # Offline loading - single source of truth (shared by vision.py, loader.py and
 # the Studio exporter). Decide offline ONCE at the load boundary and force it
