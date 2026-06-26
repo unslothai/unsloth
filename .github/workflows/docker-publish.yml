@@ -58,6 +58,13 @@ concurrency:
   group: docker-publish-${{ github.ref }}
   cancel-in-progress: false
 
+# Least-privilege default for the GITHUB_TOKEN across every job (CodeQL: set an
+# explicit permissions block). Pushes go to Docker Hub via registry creds, not
+# GITHUB_TOKEN, so read is enough as the default; the merge jobs that need it
+# already declare `packages: write` in their own permissions block.
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # Per-arch build. The matrix fans out two parallel jobs on the matching
@@ -153,20 +160,21 @@ jobs:
           cache-from: type=gha,scope=build-${{ matrix.platform }}
           cache-to:   type=gha,scope=build-${{ matrix.platform }},mode=max
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # NOTE: keep prose OUT of build-args -- docker/build-push-action
+          # forwards every non-empty line verbatim, so a leading-# line would be
+          # passed as a bogus --build-arg. Explanations live here instead:
+          #   UNSLOTH_REF: workflow-dispatch honours the explicit input; tag
+          #     pushes bake the tag's source ref (e.g. v1.2.3) so the published
+          #     image actually contains that release; branch + scheduled runs bake
+          #     the triggering commit SHA; any other event falls back to main.
+          #   UNSLOTH_ZOO_REF (from the resolve step above): explicit dispatch
+          #     input, else the pushed tag IF the zoo repo has it, else main -- a
+          #     branch SHA does not exist in the zoo repo.
           build-args: |
             CUDA_VERSION=12.8.1
             UBUNTU_VERSION=24.04
             PYTHON_VERSION=3.12
-            # Workflow-dispatch: honour the explicit input. Tag pushes:
-            # bake the tag's source ref (e.g. v1.2.3) so the published
-            # tag image actually contains that release. Branch pushes and
-            # scheduled runs: bake the triggering commit SHA. Falls back
-            # to `main` for any other event class.
             UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || github.sha || 'main' }}
-            # UNSLOTH_ZOO_REF comes from the resolve step above: explicit
-            # workflow-dispatch input, else the pushed tag IF the zoo repo
-            # has it, else `main`. SHA-based branch pushes always fall to
-            # `main` -- the SHA doesn't exist in the zoo repo.
             UNSLOTH_ZOO_REF=${{ steps.zoo_ref.outputs.ref }}
 
       # Stash the per-arch digest as an artifact for the merge job to pick up.
@@ -331,10 +339,11 @@ jobs:
           cache-from: type=gha,scope=studio-${{ matrix.platform }}
           cache-to:   type=gha,scope=studio-${{ matrix.platform }},mode=min
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # UNSLOTH_STUDIO_REF mirrors the base job's UNSLOTH_REF resolution so the
+          # Studio tree matches the unsloth baked into the base venv. (Prose stays
+          # out of build-args -- forwarded lines must be KEY=VALUE only.)
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}
-            # Mirror of the base job's UNSLOTH_REF resolution so the Studio
-            # tree matches the unsloth baked into the base venv.
             UNSLOTH_STUDIO_REF=${{ github.event.inputs.unsloth_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || github.sha || 'main' }}
 
       - name: Export digest
