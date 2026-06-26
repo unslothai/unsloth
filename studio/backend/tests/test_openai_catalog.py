@@ -119,7 +119,7 @@ def test_distinct_unloaded_models_sharing_a_basename_both_appear(monkeypatch):
 
     async def _fake_catalog():
         return [
-            _Info("/models/tiny.gguf", "tiny"),                              # cid -> "tiny"
+            _Info("/models/tiny.gguf", "tiny"),  # cid -> "tiny"
             _Info("/ollama/tiny.gguf", "tiny", model_id = "ollama/tiny:q4"),  # same basename, aliased
         ]
 
@@ -137,7 +137,6 @@ def test_empty_and_errored_scans_are_cached(monkeypatch):
     # (fresh install / no local models) or errored scan is still cached for the
     # TTL instead of rescanning the filesystem on every /v1/models poll.
     import routes.models as models_mod
-
     for outcome in ("empty", "error"):
         calls = {"n": 0}
 
