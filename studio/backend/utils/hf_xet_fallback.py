@@ -21,19 +21,33 @@ _shared_import_error = None
 try:
     import unsloth_zoo.hf_xet_fallback as _shared
     _shared_available = True
-except ImportError as exc:
-    # The `as exc` name is unbound when the except block exits, so stash the cause
-    # in a module-level name the degraded branch below can still log.
-    _shared_import_error = exc
-    # Degrade whenever the shared helper cannot be imported. Real cases in Studio
-    # deployments: unsloth_zoo is absent or too old to ship hf_xet_fallback
-    # (ModuleNotFoundError), or unsloth_zoo IS installed but importing it raises
-    # ImportError because a heavy dependency it initializes at package import (e.g.
-    # torch) is missing -- a llama.cpp/GGUF-only Studio install has no torch. In
-    # every case Studio must still boot with plain HF downloads instead of crashing
-    # the server on import; a genuinely broken helper degrades here too, which is
-    # the intended best-effort posture (the cause is logged below).
-    _shared_available = False
+except Exception as _exc:  # noqa: BLE001 - any import failure must degrade, not crash
+    # unsloth_zoo runs torch/GPU device detection in its package __init__, which
+    # raises on a Studio host without torch (ImportError) or without a GPU
+    # (NotImplementedError) -- a CPU / llama.cpp GGUF-only deployment. The download
+    # helper needs none of that, so retry with unsloth_zoo's documented light import
+    # path (UNSLOTH_ZOO_DISABLE_GPU_INIT) before giving up. The first attempt above
+    # keeps full device init unchanged on a normal GPU host; a failed import is
+    # dropped from sys.modules, so the retry re-runs __init__ on the light path.
+    _shared_import_error = _exc
+    import os as _os
+
+    _prev_gpu_init = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
+    _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+    try:
+        import unsloth_zoo.hf_xet_fallback as _shared
+        _shared_available = True
+        _shared_import_error = None
+    except Exception as _exc2:  # noqa: BLE001
+        # unsloth_zoo is absent/too old, or genuinely broken: degrade so Studio
+        # still boots with plain HF downloads instead of crashing on import.
+        _shared_import_error = _exc2
+        _shared_available = False
+    finally:
+        if _prev_gpu_init is None:
+            _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
+        else:
+            _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = _prev_gpu_init
 
 if _shared_available:
     # Bind the shared API by assignment (not `from ... import`) so each public name

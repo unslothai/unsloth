@@ -39,10 +39,11 @@ import huggingface_hub
 try:
     import unsloth_zoo.hf_xet_fallback as _shared_mod
     shared = _shared_mod
-except ImportError:
+except Exception:  # noqa: BLE001
     # The degraded-path test must still collect when unsloth_zoo lacks the helper,
-    # is not installed at all, or is installed but fails to import because torch is
-    # absent -- the same ImportError cases the shim itself degrades for.
+    # is not installed at all, fails to import because torch is absent (ImportError),
+    # or fails because the host has no GPU (NotImplementedError from its device
+    # init) -- the same failure cases the shim itself degrades for.
     shared = None
 
 import utils.hf_xet_fallback as xf
@@ -299,5 +300,52 @@ def test_degrades_when_shared_helper_import_raises_importerror():
             sys.modules["unsloth_zoo.hf_xet_fallback"] = saved_shared
         if saved_zoo is not None:
             sys.modules["unsloth_zoo"] = saved_zoo
+        if saved_shim is not None:
+            sys.modules["utils.hf_xet_fallback"] = saved_shim
+
+
+def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
+    """unsloth_zoo's package __init__ runs torch/GPU device detection that raises
+    NotImplementedError on a GPU-less host (CPU GGUF Studio). The shim must retry
+    the import under UNSLOTH_ZOO_DISABLE_GPU_INIT=1 (its light path) -- which is
+    what lets the real helper load on CPU-only hosts -- then restore the env. If
+    even the retry fails, it degrades instead of crashing the server."""
+    import importlib
+    import os
+
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+    seen_env = []
+
+    class _GpuGatedBlocker:
+        def find_spec(self, name, path = None, target = None):
+            if name == "unsloth_zoo.hf_xet_fallback":
+                # Record the env each import attempt sees; raise the no-GPU error
+                # both times so the shim ends up degrading (the recovery-succeeds
+                # path is covered by real unsloth_zoo on a CPU host in CI).
+                seen_env.append(os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT"))
+                raise NotImplementedError("Unsloth cannot find any torch accelerator")
+            return None
+
+    finder = _GpuGatedBlocker()
+    saved = {
+        k: v for k, v in list(sys.modules.items())
+        if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")
+    }
+    for k in saved:
+        del sys.modules[k]
+    saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
+    sys.meta_path.insert(0, finder)
+    try:
+        degraded = importlib.import_module("utils.hf_xet_fallback")
+        # First attempt without the light env, then a retry with it set.
+        assert seen_env == [None, "1"], seen_env
+        # Both attempts raised -> Studio still boots in degraded mode.
+        assert issubclass(degraded.DownloadStallError, RuntimeError)
+        # The env override must not leak past the import.
+        assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("utils.hf_xet_fallback", None)
+        sys.modules.update(saved)
         if saved_shim is not None:
             sys.modules["utils.hf_xet_fallback"] = saved_shim
