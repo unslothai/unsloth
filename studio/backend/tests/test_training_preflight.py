@@ -19,9 +19,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import torch
-import typer
-import yaml
-from typer.testing import CliRunner
 
 
 def _stub_if_missing(name, attrs):
@@ -313,6 +310,24 @@ def test_mlx_adapter_builds_config_and_reports_completion(tmp_path, monkeypatch)
     assert config["learning_rate"] == 3e-4
     assert config["output_dir"] == str(output_dir.resolve())
     assert config["allow_external_output_dir"] is True
+
+
+def test_mlx_worker_helpers_cover_cli_paths(tmp_path, monkeypatch):
+    _load_trainer_module(monkeypatch, "mlx")
+    from core.training.worker import (
+        _resolve_mlx_local_dataset_files,
+        _resolve_mlx_output_dir,
+    )
+
+    dataset = tmp_path / "train.jsonl"
+    dataset.write_text('{"text":"hello"}\n', encoding = "utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert _resolve_mlx_local_dataset_files(["train.jsonl"]) == [str(dataset)]
+    assert _resolve_mlx_output_dir(
+        {"output_dir": "cli-out", "allow_external_output_dir": True},
+        "mlx-community/Qwen3-0.6B-4bit",
+    ) == str((tmp_path / "cli-out").resolve())
 
 
 def test_run_mlx_training_process_applies_side_effects_before_hardware_detection(monkeypatch):

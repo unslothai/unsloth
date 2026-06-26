@@ -2,34 +2,20 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import time
-import os
-import platform
 from pathlib import Path
 from typing import Optional
 
 import typer
-import yaml
 
 from unsloth_cli._inference import ensure_studio_backend_path
 from unsloth_cli.config import Config, load_config
 from unsloth_cli.options import add_options_from_config
 
 
-def _forced_trainer_backend() -> str | None:
-    value = os.environ.get("UNSLOTH_STUDIO_TRAINER_BACKEND")
-    if not value:
-        return None
-    value = value.strip().lower()
-    if value in {"mlx", "torch", "cuda", "rocm", "xpu", "cpu"}:
-        return value
-    return None
-
-
 def _should_use_mlx_backend_for_cli() -> bool:
-    forced = _forced_trainer_backend()
-    if forced is not None:
-        return forced == "mlx"
-    return platform.system() == "Darwin" and platform.machine() == "arm64"
+    ensure_studio_backend_path()
+    from studio.backend.core.training.training import should_use_mlx_training_backend
+    return should_use_mlx_training_backend()
 
 
 def _activate_mlx_transformers(model_name: str, hf_token: str | None) -> None:
@@ -47,9 +33,9 @@ def _create_cli_trainer(model_name: str, hf_token: str | None):
     if _should_use_mlx_backend_for_cli():
         _activate_mlx_transformers(model_name, hf_token)
         ensure_studio_backend_path()
-        from studio.backend.core.training.training import _create_mlx_trainer_adapter
+        from studio.backend.core.training.training import create_mlx_trainer_adapter
 
-        return _create_mlx_trainer_adapter()
+        return create_mlx_trainer_adapter()
 
     ensure_studio_backend_path()
     from studio.backend.core.training.trainer import UnslothTrainer
@@ -86,9 +72,7 @@ def train(
         raise typer.Exit(code = 2)
 
     config_overrides = config_overrides or {}
-    output_dir_explicit = "output_dir" in cfg.training.model_fields_set
     cfg.apply_overrides(**config_overrides)
-    output_dir_explicit = output_dir_explicit or "output_dir" in config_overrides
 
     # CLI/env tokens take precedence; guard against unresolved typer.Option
     # (decorator interaction)
@@ -102,6 +86,8 @@ def train(
     wandb_token = wandb_token or cfg.logging.wandb_token
 
     if dry_run:
+        import yaml
+
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
@@ -160,8 +146,6 @@ def train(
     ds, eval_ds = result
 
     training_kwargs = cfg.training_kwargs()
-    if not output_dir_explicit:
-        training_kwargs["output_dir"] = None
     training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 

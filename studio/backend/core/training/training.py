@@ -14,6 +14,7 @@ import json as _json
 import math
 import multiprocessing as mp
 import os
+import platform
 import queue
 import re
 import shutil
@@ -111,20 +112,9 @@ def is_mlx_training_device(device: Any) -> bool:
     )
 
 
-def _detected_training_device() -> Any | None:
-    try:
-        from utils.hardware import hardware as _hw
-        return _hw.DEVICE
-    except Exception:
-        return None
-
-
 def should_use_mlx_training_backend(*, device: Any | None = None) -> bool:
     if device is not None:
         return is_mlx_training_device(device)
-    detected_device = _detected_training_device()
-    if detected_device is not None:
-        return is_mlx_training_device(detected_device)
     return is_apple_silicon_training_platform()
 
 
@@ -295,7 +285,7 @@ PLOT_HEIGHT = 3.5
 
 @dataclass
 class TrainingProgress:
-    """Mirror of trainer.TrainingProgress so the parent never imports heavy ML modules."""
+    """Shared training progress payload for Studio and backend-aware trainers."""
 
     epoch: float = 0
     step: int = 0
@@ -549,9 +539,10 @@ class _MLXTrainerAdapter:
         output_dir = training_args.get("output_dir")
         if output_dir:
             output_dir = os.path.abspath(os.path.expanduser(str(output_dir)))
-        return {
+        values = {
             **self._model_config,
             **self._dataset_config,
+            **training_args,
             "training_type": (
                 "Continued Pretraining"
                 if self.is_cpt
@@ -559,57 +550,14 @@ class _MLXTrainerAdapter:
                 if peft["use_lora"]
                 else "Full Finetuning"
             ),
-            "use_lora": peft["use_lora"],
-            "lora_r": peft["lora_r"],
-            "lora_alpha": peft["lora_alpha"],
-            "lora_dropout": peft["lora_dropout"],
-            "target_modules": peft["target_modules"],
-            "gradient_checkpointing": peft["gradient_checkpointing"],
-            "use_rslora": peft["use_rslora"],
-            "use_loftq": peft["use_loftq"],
-            "finetune_vision_layers": peft["finetune_vision_layers"],
-            "finetune_language_layers": peft["finetune_language_layers"],
-            "finetune_attention_modules": peft["finetune_attention_modules"],
-            "finetune_mlp_modules": peft["finetune_mlp_modules"],
-            "num_epochs": training_args.get("num_epochs", 3),
-            "learning_rate": training_args.get("learning_rate", "2e-4"),
-            "embedding_learning_rate": training_args.get("embedding_learning_rate"),
-            "batch_size": training_args.get("batch_size", 2),
-            "gradient_accumulation_steps": training_args.get("gradient_accumulation_steps", 4),
-            "warmup_steps": training_args.get("warmup_steps"),
-            "warmup_ratio": training_args.get("warmup_ratio"),
-            "max_steps": training_args.get("max_steps", 0),
-            "save_steps": training_args.get("save_steps", 0),
-            "weight_decay": training_args.get("weight_decay", 0.001),
-            "max_grad_norm": training_args.get("max_grad_norm", 0.0),
-            "max_grad_value": _coerce_optional_nonneg_float(
-                "max_grad_value", training_args.get("max_grad_value")
-            ),
-            "max_grad_leaf_norm": _coerce_optional_nonneg_float(
-                "max_grad_leaf_norm", training_args.get("max_grad_leaf_norm")
-            ),
-            "cast_norm_output_to_input_dtype": _coerce_optional_bool(
-                training_args.get("cast_norm_output_to_input_dtype"), True
-            ),
-            "random_seed": _coerce_seed(training_args.get("random_seed")),
-            "packing": training_args.get("packing", False),
-            "optim": training_args.get("optim", "adamw_8bit"),
-            "lr_scheduler_type": training_args.get("lr_scheduler_type", "linear"),
-            "train_on_completions": training_args.get("train_on_completions", False),
-            "enable_wandb": training_args.get("enable_wandb", False),
-            "wandb_token": training_args.get("wandb_token"),
-            "wandb_project": training_args.get("wandb_project", "unsloth-training"),
-            "enable_tensorboard": training_args.get("enable_tensorboard", False),
-            "tensorboard_dir": training_args.get("tensorboard_dir", "runs"),
-            "resume_from_checkpoint": training_args.get("resume_from_checkpoint"),
-            "is_embedding": False,
-            "subject": None,
-            "resolved_gpu_ids": None,
-            "gpu_selection": None,
-            "disable_xet": False,
+            **peft,
             "output_dir": output_dir,
             "allow_external_output_dir": bool(output_dir),
         }
+        config = _build_training_worker_config(values)
+        config["resolved_gpu_ids"] = None
+        config["gpu_selection"] = None
+        return config
 
     def _run_training_thread(
         self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
@@ -660,6 +608,8 @@ class _MLXTrainerAdapter:
                         ):
                             self.training_progress.error = "Training process exited unexpectedly"
                     self.is_training = False
+                    self._event_queue = None
+                    self._stop_queue = None
                 return
 
     def _drain_events(self, event_queue: queue.Queue | None = None):
@@ -745,7 +695,7 @@ class _MLXTrainerAdapter:
         return self.training_progress
 
 
-def _create_mlx_trainer_adapter(*args, **kwargs):
+def create_mlx_trainer_adapter(*args, **kwargs):
     return _MLXTrainerAdapter(*args, **kwargs)
 
 
@@ -843,82 +793,8 @@ class TrainingBackend:
         # treat this fresh setup as a recoverable death.
         self._pump_running = False
 
-        # Build config dict for the subprocess
-        config = {
-            "model_name": kwargs["model_name"],
-            "project_name": kwargs.get("project_name"),
-            "training_type": kwargs.get("training_type", "LoRA/QLoRA"),
-            "hf_token": kwargs.get("hf_token", ""),
-            "load_in_4bit": kwargs.get("load_in_4bit", True),
-            "max_seq_length": kwargs.get("max_seq_length", 2048),
-            "vision_image_size": kwargs.get("vision_image_size"),
-            "hf_dataset": kwargs.get("hf_dataset", ""),
-            "local_datasets": kwargs.get("local_datasets"),
-            "local_eval_datasets": kwargs.get("local_eval_datasets"),
-            "format_type": kwargs.get("format_type", ""),
-            "subset": kwargs.get("subset"),
-            "train_split": kwargs.get("train_split", "train"),
-            "eval_split": kwargs.get("eval_split"),
-            "eval_steps": kwargs.get("eval_steps", 0.00),
-            "dataset_streaming": kwargs.get("dataset_streaming", False),
-            "dataset_slice_start": kwargs.get("dataset_slice_start"),
-            "dataset_slice_end": kwargs.get("dataset_slice_end"),
-            "custom_format_mapping": kwargs.get("custom_format_mapping"),
-            "is_dataset_image": kwargs.get("is_dataset_image", False),
-            "is_dataset_audio": kwargs.get("is_dataset_audio", False),
-            "is_embedding": kwargs.get("is_embedding", False),
-            "num_epochs": kwargs.get("num_epochs", 3),
-            "learning_rate": kwargs.get("learning_rate", "2e-4"),
-            "embedding_learning_rate": kwargs.get("embedding_learning_rate"),
-            "batch_size": kwargs.get("batch_size", 2),
-            "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
-            "warmup_steps": kwargs.get("warmup_steps"),
-            "warmup_ratio": kwargs.get("warmup_ratio"),
-            "max_steps": kwargs.get("max_steps", 0),
-            "save_steps": kwargs.get("save_steps", 0),
-            "weight_decay": kwargs.get("weight_decay", 0.001),
-            "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
-            "max_grad_value": _coerce_optional_nonneg_float(
-                "max_grad_value", kwargs.get("max_grad_value")
-            ),
-            "max_grad_leaf_norm": _coerce_optional_nonneg_float(
-                "max_grad_leaf_norm", kwargs.get("max_grad_leaf_norm")
-            ),
-            "cast_norm_output_to_input_dtype": _coerce_optional_bool(
-                kwargs.get("cast_norm_output_to_input_dtype"), True
-            ),
-            # MLX/CUDA/embedding workers need an int (transformers.set_seed(None) raises).
-            "random_seed": _coerce_seed(kwargs.get("random_seed")),
-            "packing": kwargs.get("packing", False),
-            "optim": kwargs.get("optim", "adamw_8bit"),
-            "lr_scheduler_type": kwargs.get("lr_scheduler_type", "linear"),
-            "use_lora": kwargs.get("use_lora", True),
-            "lora_r": kwargs.get("lora_r", 16),
-            "lora_alpha": kwargs.get("lora_alpha", 16),
-            "lora_dropout": kwargs.get("lora_dropout", 0.0),
-            "target_modules": kwargs.get("target_modules"),
-            "gradient_checkpointing": kwargs.get("gradient_checkpointing", "unsloth"),
-            "use_rslora": kwargs.get("use_rslora", False),
-            "use_loftq": kwargs.get("use_loftq", False),
-            "train_on_completions": kwargs.get("train_on_completions", False),
-            "finetune_vision_layers": kwargs.get("finetune_vision_layers", True),
-            "finetune_language_layers": kwargs.get("finetune_language_layers", True),
-            "finetune_attention_modules": kwargs.get("finetune_attention_modules", True),
-            "finetune_mlp_modules": kwargs.get("finetune_mlp_modules", True),
-            "enable_wandb": kwargs.get("enable_wandb", False),
-            "wandb_token": kwargs.get("wandb_token"),
-            "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
-            "enable_tensorboard": kwargs.get("enable_tensorboard", False),
-            "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
-            "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
-            "trust_remote_code": kwargs.get("trust_remote_code", False),
-            "approved_remote_code_fingerprint": kwargs.get("approved_remote_code_fingerprint"),
-            "subject": kwargs.get("subject"),
-            "gpu_ids": kwargs.get("gpu_ids"),
-            "s3_config": kwargs.get("s3_config"),
-            # Flipped to True only by the HTTP-fallback respawn after a stall.
-            "disable_xet": kwargs.get("disable_xet", False),
-        }
+        # Build config dict for the subprocess.
+        config = _build_training_worker_config(kwargs)
 
         # Full finetuning always runs in 16-bit; LoRA/QLoRA/CPT keep the request.
         if config["training_type"] == "Full Finetuning":
@@ -948,7 +824,7 @@ class TrainingBackend:
         )
 
         defer_auto_selection = False
-        if _hw.DEVICE == _hw.DeviceType.MLX:
+        if should_use_mlx_training_backend(device = _hw.DEVICE):
             config["resolved_gpu_ids"] = None
             config["gpu_selection"] = None
         elif gpu_ids:
