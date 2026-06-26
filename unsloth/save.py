@@ -149,9 +149,56 @@ def has_curl():
 CURL_FLAG = "-DLLAMA_CURL=ON" if has_curl() else "-DLLAMA_CURL=OFF"
 
 
+# FP8/FP4 compressed export via llm-compressor (for vLLM).
+# save_method alias -> (llm-compressor scheme, needs_calibration, output dir suffix).
+COMPRESSED_EXPORT_SCHEMES = {
+    "fp8"        : ("FP8_DYNAMIC", False, "fp8"),
+    "fp8_dynamic": ("FP8_DYNAMIC", False, "fp8"),
+    "dynamic_fp8": ("FP8_DYNAMIC", False, "fp8"),
+    "w8a8_fp8"   : ("FP8_DYNAMIC", False, "fp8"),
+    "mxfp8"      : ("MXFP8",       False, "mxfp8"),
+    "w8a8_mxfp8" : ("MXFP8",       False, "mxfp8"),
+    "mxfp4"      : ("MXFP4",       False, "mxfp4"),
+    "w4a4_mxfp4" : ("MXFP4",       False, "mxfp4"),
+    "nvfp4"      : ("NVFP4",       True,  "nvfp4"),
+    "w4a4_nvfp4" : ("NVFP4",       True,  "nvfp4"),
+}
+
+
+def _normalize_compressed_method(save_method):
+    """Return (scheme, needs_calibration, suffix) if `save_method` is an FP8/FP4 compressed
+    export, else None (so normal lora / merged_16bit / merged_4bit handling proceeds).
+
+    Near-miss FP8/FP4 names that are not supported raise a precise error instead of silently
+    falling through to the generic "unknown save_method" message.
+    """
+    if not isinstance(save_method, str):
+        return None
+    key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
+    if key in COMPRESSED_EXPORT_SCHEMES:
+        return COMPRESSED_EXPORT_SCHEMES[key]
+    if any(tag in key for tag in ("fp8", "fp4", "nvfp4", "mxfp")):
+        supported = ", ".join(sorted(COMPRESSED_EXPORT_SCHEMES.keys()))
+        raise RuntimeError(
+            f"Unsloth: save_method='{save_method}' is not a supported compressed export.\n"
+            f"Supported FP8/FP4 export methods: {supported}\n"
+            "(only dynamic FP8, MXFP8, and W4A4 MXFP4/NVFP4 are wired up for now)."
+        )
+    return None
+
+
 def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
+    print("\nCompressed-tensors FP8/FP4 export "
+          "(save_pretrained_merged(..., save_method=...), for vLLM):")
+    seen = set()
+    for key, (scheme, needs_calib, _suffix) in COMPRESSED_EXPORT_SCHEMES.items():
+        if scheme in seen:
+            continue
+        seen.add(scheme)
+        note = "needs calibration data" if needs_calib else "data-free"
+        print(f'"{key}"  ==> llm-compressor {scheme} ({note})')
 
 
 def _quantize_q2_k_l(
@@ -1227,6 +1274,72 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
+def install_llm_compressor():
+    """Import llm-compressor, installing it on first use for FP8/FP4 export.
+
+    Pins the current torch + transformers so pip does not upgrade them (a plain install pulls
+    transformers>=5 and breaks Unsloth). Returns (oneshot, QuantizationModifier).
+    """
+    try:
+        from llmcompressor import oneshot
+        from llmcompressor.modifiers.quantization import QuantizationModifier
+        return oneshot, QuantizationModifier
+    except Exception:
+        pass
+
+    print(
+        "Unsloth: Installing llm-compressor for FP8/FP4 export "
+        "(pinning your torch + transformers so they are not upgraded). "
+        "This can take a few minutes..."
+    )
+    import importlib
+    import tempfile
+    constraints = ""
+    try:
+        import torch as _torch
+        constraints += f"torch=={_torch.__version__.split('+')[0]}\n"
+    except Exception:
+        pass
+    try:
+        import transformers as _tf
+        constraints += f"transformers=={_tf.__version__}\n"
+    except Exception:
+        pass
+
+    cmd = [sys.executable, "-m", "pip", "install", "llmcompressor"]
+    cpath = None
+    if constraints:
+        with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
+            f.write(constraints)
+            cpath = f.name
+        cmd += ["-c", cpath]
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            "Unsloth: Failed to install llm-compressor. Install it manually with:\n"
+            f"    {sys.executable} -m pip install llmcompressor\n"
+            "(pin torch and transformers to your current versions to avoid upgrading them).\n"
+            f"Underlying error: {e}"
+        )
+    finally:
+        if cpath is not None:
+            try: os.remove(cpath)
+            except Exception: pass
+
+    importlib.invalidate_caches()
+    try:
+        from llmcompressor import oneshot
+        from llmcompressor.modifiers.quantization import QuantizationModifier
+    except Exception as e:
+        raise RuntimeError(
+            "Unsloth: llm-compressor was installed but could not be imported. "
+            "Please restart your Python session and try again.\n"
+            f"Underlying error: {repr(e)}"
+        )
+    return oneshot, QuantizationModifier
+
+
 def try_execute(commands, force_complete = False):
     for command in commands:
         with subprocess.Popen(
@@ -1694,6 +1807,9 @@ def unsloth_save_pretrained_merged(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
     datasets: Optional[List[str]] = None,
+    calibration_dataset = None,
+    num_calibration_samples: int = 512,
+    max_seq_length: int = 2048,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -1703,6 +1819,7 @@ def unsloth_save_pretrained_merged(
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -1710,9 +1827,34 @@ def unsloth_save_pretrained_merged(
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
 
+    # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
+    _compressed = _normalize_compressed_method(save_method)
+    if _compressed is not None:
+        scheme, needs_calibration, suffix = _compressed
+        _unsloth_save_compressed_tensors(
+            model = self,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            scheme = scheme,
+            needs_calibration = needs_calibration,
+            suffix = suffix,
+            push_to_hub = push_to_hub,
+            token = token,
+            calibration_dataset = calibration_dataset,
+            num_calibration_samples = num_calibration_samples,
+            max_seq_length = max_seq_length,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     del arguments["self"]
+    del arguments["_compressed"]
+    del arguments["calibration_dataset"]
+    del arguments["num_calibration_samples"]
+    del arguments["max_seq_length"]
     unsloth_save_model(**arguments)
     for _ in range(3):
         gc.collect()
@@ -1722,7 +1864,7 @@ def unsloth_push_to_hub_merged(
     self,
     repo_id: str,
     tokenizer = None,
-    save_method: str = "merged_16bit",  # ["lora", "merged_16bit", "merged_4bit"]
+    save_method: str = "merged_16bit",  # ["lora", "merged_16bit", "merged_4bit", "fp8", "mxfp4", "nvfp4", "mxfp8"]
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Trained with Unsloth",
     private: Optional[bool] = None,
@@ -1736,6 +1878,9 @@ def unsloth_push_to_hub_merged(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
     datasets: Optional[List[str]] = None,
+    calibration_dataset = None,
+    num_calibration_samples: int = 512,
+    max_seq_length: int = 2048,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -1745,6 +1890,7 @@ def unsloth_push_to_hub_merged(
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -1752,12 +1898,42 @@ def unsloth_push_to_hub_merged(
             "You can do it separately via `tokenizer.push_to_hub(...)`"
         )
 
+    # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
+    _compressed = _normalize_compressed_method(save_method)
+    if _compressed is not None:
+        scheme, needs_calibration, suffix = _compressed
+        _unsloth_save_compressed_tensors(
+            model = self,
+            save_directory = repo_id,
+            tokenizer = tokenizer,
+            scheme = scheme,
+            needs_calibration = needs_calibration,
+            suffix = suffix,
+            push_to_hub = True,
+            token = token,
+            private = private,
+            commit_message = commit_message,
+            commit_description = commit_description,
+            create_pr = create_pr,
+            revision = revision,
+            calibration_dataset = calibration_dataset,
+            num_calibration_samples = num_calibration_samples,
+            max_seq_length = max_seq_length,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     arguments["save_directory"] = repo_id
     arguments["push_to_hub"] = True
     del arguments["self"]
     del arguments["repo_id"]
+    del arguments["_compressed"]
+    del arguments["calibration_dataset"]
+    del arguments["num_calibration_samples"]
+    del arguments["max_seq_length"]
     unsloth_save_model(**arguments)
     for _ in range(3):
         gc.collect()
@@ -3166,7 +3342,7 @@ def unsloth_generic_save_pretrained_merged(
     self,
     save_directory: Union[str, os.PathLike],
     tokenizer = None,
-    save_method: str = "merged_16bit",  # ["lora", "merged_16bit", "merged_4bit"]
+    save_method: str = "merged_16bit",  # ["lora", "merged_16bit", "merged_4bit", "fp8", "mxfp4", "nvfp4", "mxfp8"]
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
     is_main_process: bool = True,
@@ -3180,6 +3356,9 @@ def unsloth_generic_save_pretrained_merged(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
     datasets: Optional[List[str]] = None,
+    calibration_dataset = None,
+    num_calibration_samples: int = 512,
+    max_seq_length: int = 2048,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -3189,6 +3368,10 @@ def unsloth_generic_save_pretrained_merged(
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    4.  FP8 / FP4 compressed export for vLLM via llm-compressor:
+        `fp8` (dynamic W8A8), `mxfp4`, `nvfp4` (W4A4), `mxfp8`. The LoRA is merged to 16bit at
+        `save_directory`, then a quantized checkpoint is written to `save_directory + "-<fmt>"`.
+        `nvfp4` needs calibration data (defaults to ultrachat; override with `calibration_dataset`).
     """
     if tokenizer is None:
         logger.warning_once(
@@ -3196,9 +3379,34 @@ def unsloth_generic_save_pretrained_merged(
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
 
+    # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
+    _compressed = _normalize_compressed_method(save_method)
+    if _compressed is not None:
+        scheme, needs_calibration, suffix = _compressed
+        _unsloth_save_compressed_tensors(
+            model = self,
+            save_directory = save_directory,
+            tokenizer = tokenizer,
+            scheme = scheme,
+            needs_calibration = needs_calibration,
+            suffix = suffix,
+            push_to_hub = push_to_hub,
+            token = token,
+            calibration_dataset = calibration_dataset,
+            num_calibration_samples = num_calibration_samples,
+            max_seq_length = max_seq_length,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     del arguments["self"]
+    del arguments["_compressed"]
+    del arguments["calibration_dataset"]
+    del arguments["num_calibration_samples"]
+    del arguments["max_seq_length"]
     unsloth_generic_save(**arguments)
     for _ in range(3):
         gc.collect()
@@ -3222,6 +3430,9 @@ def unsloth_generic_push_to_hub_merged(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.75,
     datasets: Optional[List[str]] = None,
+    calibration_dataset = None,
+    num_calibration_samples: int = 512,
+    max_seq_length: int = 2048,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -3231,6 +3442,7 @@ def unsloth_generic_push_to_hub_merged(
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -3238,12 +3450,42 @@ def unsloth_generic_push_to_hub_merged(
             "You can do it separately via `tokenizer.push_to_hub(...)`"
         )
 
+    # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
+    _compressed = _normalize_compressed_method(save_method)
+    if _compressed is not None:
+        scheme, needs_calibration, suffix = _compressed
+        _unsloth_save_compressed_tensors(
+            model = self,
+            save_directory = repo_id,
+            tokenizer = tokenizer,
+            scheme = scheme,
+            needs_calibration = needs_calibration,
+            suffix = suffix,
+            push_to_hub = True,
+            token = token,
+            private = private,
+            commit_message = commit_message,
+            commit_description = commit_description,
+            create_pr = create_pr,
+            revision = revision,
+            calibration_dataset = calibration_dataset,
+            num_calibration_samples = num_calibration_samples,
+            max_seq_length = max_seq_length,
+        )
+        for _ in range(3):
+            gc.collect()
+        return
+
     arguments = dict(locals())
     arguments["model"] = self
     arguments["save_directory"] = repo_id
     arguments["push_to_hub"] = True
     del arguments["self"]
     del arguments["repo_id"]
+    del arguments["_compressed"]
+    del arguments["calibration_dataset"]
+    del arguments["num_calibration_samples"]
+    del arguments["max_seq_length"]
     unsloth_generic_save(**arguments)
     for _ in range(3):
         gc.collect()
@@ -3386,6 +3628,211 @@ def _unsloth_save_torchao_with_given_config(
             shutil.rmtree(save_directory)
         except:
             pass
+
+
+def _scheme_is_available(scheme):
+    """True if `scheme` is a known preset in the installed compressed_tensors."""
+    try:
+        from compressed_tensors.quantization import quant_scheme as _qs
+        presets = getattr(_qs, "PRESET_SCHEMES", None)
+        if presets is None:
+            return True
+        return scheme in presets
+    except Exception:
+        # If we cannot introspect, let llm-compressor validate the scheme itself.
+        return True
+
+
+def _print_compressed_hw_note(scheme, out_dir):
+    if scheme == "FP8_DYNAMIC":
+        hw = "NVIDIA GPUs with compute capability >= 8.9 (Ada / Hopper) or newer"
+    else:
+        hw = ("NVIDIA Blackwell (SM100+) for full activation quantization "
+              "(older GPUs fall back to weight-only in vLLM)")
+    print(
+        f"Unsloth: Saved {scheme} compressed checkpoint to '{out_dir}'.\n"
+        f"Unsloth: Load it with vLLM for accelerated inference. Hardware for full speed: {hw}."
+    )
+
+
+def _unsloth_save_compressed_tensors(
+    model,
+    save_directory: Union[str, os.PathLike],
+    tokenizer,
+    scheme: str,
+    needs_calibration: bool,
+    suffix: str,
+    push_to_hub: bool = False,
+    token: Optional[Union[str, bool]] = None,
+    calibration_dataset = None,
+    num_calibration_samples: int = 512,
+    max_seq_length: int = 2048,
+    **merge_kwargs,
+):
+    """Export an FP8/FP4 compressed-tensors checkpoint via llm-compressor.
+
+    Mirrors the torchao PTQ path: LoRA is first merged into the base model at 16bit and
+    written to `save_directory` (which is kept). The merged checkpoint is then quantized with
+    llm-compressor's `QuantizationModifier(scheme)` in a separate process (so Unsloth's
+    transformers monkey-patches do not interfere), and written to the sibling directory
+    `save_directory + "-" + suffix`. The result is intended for vLLM inference.
+    """
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+        tokenizer = patch_saving_functions(tokenizer)
+    if token is None and push_to_hub:
+        token = get_token()
+    # Accept os.PathLike save directories (string concatenation below needs a str).
+    save_directory = os.fspath(save_directory)
+
+    # 1) Merge LoRA -> 16bit on disk and KEEP it. Must be a local save: merge_and_overwrite_lora
+    #    deletes save_directory when push_to_hub=True, which would remove it before reload.
+    is_peft = isinstance(model, PeftModelForCausalLM) or isinstance(model, PeftModel)
+    if is_peft:
+        print(f"Unsloth: Merging LoRA weights to 16bit before {scheme} quantization...")
+        merge_args = dict(merge_kwargs)
+        merge_args.update(dict(
+            model = model,
+            tokenizer = tokenizer,
+            save_directory = save_directory,
+            save_method = "merged_16bit",
+            push_to_hub = False,
+            token = token,
+        ))
+        unsloth_generic_save(**merge_args)
+    else:
+        print(f"Unsloth: Saving base model to 16bit before {scheme} quantization...")
+        os.makedirs(save_directory, exist_ok = True)
+        model.save_pretrained(save_directory)
+        if tokenizer is not None:
+            tokenizer.save_pretrained(save_directory)
+
+    for _ in range(3):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    # 2) Lazily import / install llm-compressor (without breaking torch / transformers) and
+    #    gate on scheme availability up-front so the user gets a clear error fast.
+    install_llm_compressor()
+    if not _scheme_is_available(scheme):
+        try:
+            import transformers as _tf
+            tf_ver = _tf.__version__
+        except Exception:
+            tf_ver = "unknown"
+        raise RuntimeError(
+            f"Unsloth: scheme '{scheme}' is not available in your installed "
+            f"compressed-tensors / llm-compressor.\n"
+            f"It requires a newer llm-compressor that needs transformers>=5.9 "
+            f"(you have transformers {tf_ver}).\n"
+            "Use save_method in {fp8, mxfp4, nvfp4}, or upgrade transformers + llm-compressor."
+        )
+
+    # 3) Detect VLM + trust_remote_code from the in-memory model config.
+    is_vlm = False
+    if hasattr(model, "config") and hasattr(model.config, "architectures"):
+        is_vlm = any(
+            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+            for x in (model.config.architectures or [])
+        )
+        is_vlm = is_vlm or hasattr(model.config, "vision_config")
+    if is_vlm:
+        logger.warning(
+            "Unsloth: FP8/FP4 compressed export for vision / multimodal models is experimental; "
+            "vision-tower layers may be affected."
+        )
+    trust_remote_code = bool(getattr(model.config, "auto_map", None)) if hasattr(model, "config") else False
+
+    # 4) Marshal the calibration dataset for the subprocess: None -> ultrachat default; a
+    #    str/PathLike is a local save_to_disk dir if it exists else a Hub id; a Dataset -> temp dir.
+    calib_kind, calib_value = "none", ""
+    calib_tmp = None
+    if needs_calibration and calibration_dataset is not None:
+        if isinstance(calibration_dataset, (str, os.PathLike)):
+            calib_value = os.fspath(calibration_dataset)
+            calib_kind = "disk" if os.path.isdir(calib_value) else "hfid"
+        elif hasattr(calibration_dataset, "save_to_disk"):
+            import tempfile
+            parent = os.path.dirname(os.path.abspath(save_directory)) or None
+            calib_tmp = tempfile.mkdtemp(prefix = "unsloth-calib-", dir = parent)
+            shutil.rmtree(calib_tmp, ignore_errors = True)  # save_to_disk wants a fresh path
+            calibration_dataset.save_to_disk(calib_tmp)
+            calib_kind, calib_value = "disk", calib_tmp
+        else:
+            raise TypeError(
+                "Unsloth: calibration_dataset must be None, a Hugging Face dataset id, a local "
+                "path saved with Dataset.save_to_disk(...), or a Dataset with save_to_disk()."
+            )
+    elif not needs_calibration and calibration_dataset is not None:
+        logger.warning_once(
+            f"Unsloth: scheme '{scheme}' is data-free; ignoring calibration_dataset."
+        )
+
+    # 5) Quantize in a separate process: importing Unsloth patches transformers attention, which
+    #    breaks the forward llm-compressor runs for calibration. Run the converter by file path
+    #    (not `-m`) so the subprocess stays unpatched, like GGUF shelling out to llama.cpp.
+    out_dir = save_directory + "-" + suffix
+    runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_compressed_quantize.py")
+    cmd = [
+        sys.executable, runner,
+        "--model", str(save_directory),
+        "--scheme", scheme,
+        "--out", out_dir,
+        "--calibration-dataset-kind", calib_kind,
+        "--num-calibration-samples", str(num_calibration_samples),
+        "--max-seq-length", str(max_seq_length),
+    ]
+    if needs_calibration:    cmd.append("--needs-calibration")
+    if calib_value:          cmd += ["--calibration-dataset", calib_value]
+    if is_vlm:               cmd.append("--is-vlm")
+    if trust_remote_code:    cmd.append("--trust-remote-code")
+
+    print(f"Unsloth: Quantizing the merged model to {scheme} with llm-compressor "
+          "(in a separate process)...")
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Unsloth: {scheme} quantization failed (llm-compressor subprocess exit {e.returncode}). "
+            "See the output above for details."
+        )
+    finally:
+        if calib_tmp is not None and os.path.isdir(calib_tmp):
+            try: shutil.rmtree(calib_tmp)
+            except Exception: pass
+
+    # 6) Validate the artifact.
+    cfg_path = os.path.join(out_dir, "config.json")
+    cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
+    if "quantization_config" not in cfg:
+        raise RuntimeError(
+            f"Unsloth: {scheme} export failed - no quantization_config written to {cfg_path}"
+        )
+
+    # 7) Optional hub upload of the compressed artifact (not the intermediate 16bit one).
+    if push_to_hub:
+        print(f"Unsloth: Uploading {scheme} checkpoint to '{save_directory}' ...")
+        from huggingface_hub import HfApi
+        api = HfApi(token = token)
+        api.create_repo(
+            repo_id = save_directory, repo_type = "model",
+            private = merge_kwargs.get("private", None), exist_ok = True,
+        )
+        api.upload_folder(
+            folder_path = out_dir, repo_id = save_directory, repo_type = "model",
+            commit_message = merge_kwargs.get("commit_message", None),
+            commit_description = merge_kwargs.get("commit_description", None),
+            create_pr = merge_kwargs.get("create_pr", False),
+            revision = merge_kwargs.get("revision", None),
+        )
+
+    # 8) Inference hardware note.
+    for _ in range(3):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    _print_compressed_hw_note(scheme, out_dir)
+    return out_dir
 
 
 def unsloth_save_pretrained_torchao(
