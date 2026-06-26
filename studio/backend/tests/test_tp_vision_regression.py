@@ -724,8 +724,9 @@ def test_layer_min_gpus_bound_before_gpu_selection_try():
 
 
 def test_already_in_target_state_reloads_on_tensor_off_after_fallback():
-    """The backend fast path mirrors the route dedup: a preserved fallback reloads
-    on an explicit tensor-off request, not short-circuit as loaded (Codex #6659)."""
+    """The backend fast path mirrors the route dedup: a preserved fallback reloads on
+    an EXPLICIT tensor-off request, but an implicit same-settings reload (carry-forward
+    preserve_multi_gpu_on_layer=True) still dedupes (Codex #6659)."""
 
     def _backend(layer_preserves: bool) -> LlamaCppBackend:
         b = _fallback_loaded_backend(layer_preserves_tensor_intent = layer_preserves)
@@ -747,7 +748,12 @@ def test_already_in_target_state_reloads_on_tensor_off_after_fallback():
         extra_args = ["--split-mode", "layer"],
         is_vision = False,
     )
-    # Preserved fallback + tensor dropped -> reload (not already in target state).
+    # Preserved fallback + EXPLICIT tensor drop -> reload (not already in target state).
     assert _backend(True)._already_in_target_state(**kwargs) is False
+    # Same preserved fallback but an implicit reload that carries the intent forward
+    # (HF auto-pick / local-dir flows skip the route guard and reach here) -> dedupe.
+    assert (
+        _backend(True)._already_in_target_state(**kwargs, preserve_multi_gpu_on_layer = True) is True
+    )
     # A genuine layer load (no preserved intent) -> dedupe, no churn.
     assert _backend(False)._already_in_target_state(**kwargs) is True

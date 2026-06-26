@@ -4621,6 +4621,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                preserve_multi_gpu_on_layer = preserve_multi_gpu_on_layer,
             ):
                 logger.info(
                     f"load_model: backend already in target state for "
@@ -6627,6 +6628,7 @@ class LlamaCppBackend:
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
         mtp_draft_path: Optional[str] = None,
+        preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
 
@@ -6669,12 +6671,15 @@ class LlamaCppBackend:
         # server. An identical request would downgrade the same way.
         if not _tensor_parallel_matches_loaded(extra_args, tensor_parallel, self._tensor_parallel):
             return False
-        # Preserved tensor->layer fallback + a request that drops tensor intent:
-        # reload so placement re-selects instead of keeping the all-GPU mask (mirrors
-        # the route, #6659). Broader than the route check but only ever forces a
-        # reload (safe), and the route runs first.
-        if self._layer_preserves_tensor_intent and not _effective_tensor_parallel(
-            extra_args, tensor_parallel
+        # Preserved tensor->layer fallback + an EXPLICIT tensor drop: reload so
+        # placement re-selects instead of keeping the all-GPU mask (mirrors the route,
+        # #6659). preserve_multi_gpu_on_layer carries the route's carry-forward decision
+        # (True for an implicit same-settings reload), so those still dedupe -- the HF
+        # auto-pick / local-dir flows skip the route guard and only reach here.
+        if (
+            self._layer_preserves_tensor_intent
+            and not _effective_tensor_parallel(extra_args, tensor_parallel)
+            and not preserve_multi_gpu_on_layer
         ):
             return False
 
