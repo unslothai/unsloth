@@ -8,6 +8,7 @@ Integrates Unsloth training with the FastAPI backend.
 
 import gc
 import os
+import platform
 import sys
 import types
 
@@ -124,10 +125,37 @@ class TrainingProgress:
     eval_loss: Optional[float] = None
 
 
+def _forced_trainer_backend() -> str | None:
+    value = os.environ.get("UNSLOTH_STUDIO_TRAINER_BACKEND")
+    if not value:
+        return None
+    value = value.strip().lower()
+    if value in {"mlx", "torch", "cuda", "rocm", "xpu", "cpu"}:
+        return value
+    return None
+
+
+def _should_use_mlx_trainer() -> bool:
+    forced = _forced_trainer_backend()
+    if forced is not None:
+        return forced == "mlx"
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def _create_mlx_trainer(*args, **kwargs):
+    from .training import _create_mlx_trainer_adapter
+    return _create_mlx_trainer_adapter(*args, **kwargs)
+
+
 class UnslothTrainer:
     """
     Unsloth Training Backend
     """
+
+    def __new__(cls, *args, **kwargs):
+        if cls is UnslothTrainer and _should_use_mlx_trainer():
+            return _create_mlx_trainer(*args, **kwargs)
+        return super().__new__(cls)
 
     def __init__(self):
         self.model = None

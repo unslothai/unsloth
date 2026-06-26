@@ -6,13 +6,22 @@ empty-chat-template crash) before train(). The real methods are bound onto a lig
 fake self so the production logic runs against controlled batches."""
 
 import importlib
+import json
+import os
+import queue
+import subprocess
 import sys
+import threading
 import types
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import torch
+import typer
+import yaml
+from typer.testing import CliRunner
 
 
 def _stub_if_missing(name, attrs):
@@ -182,6 +191,162 @@ class TestChatTemplateRendersEmpty(unittest.TestCase):
     def test_no_messages_key_not_flagged(self):
         s = self._self(train_dataset = [{"text": "raw"}], tokenizer = _EmptyTemplateTokenizer())
         self.assertFalse(s._chat_template_renders_empty())
+
+
+def _clear_trainer_module(package: str):
+    sys.modules.pop(f"{package}.trainer", None)
+    pkg = sys.modules.get(package)
+    if pkg is not None and hasattr(pkg, "trainer"):
+        delattr(pkg, "trainer")
+
+
+def _set_training_platform(monkeypatch, package: str, backend: str):
+    training_mod = importlib.import_module(f"{package}.training")
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", None)
+    monkeypatch.setattr(
+        training_mod.platform,
+        "system",
+        lambda: "Darwin" if backend == "mlx" else "Linux",
+    )
+    monkeypatch.setattr(
+        training_mod.platform,
+        "machine",
+        lambda: "arm64" if backend == "mlx" else "x86_64",
+    )
+
+
+def _load_trainer_module(
+    monkeypatch,
+    backend: str,
+    package: str = "core.training",
+):
+    _set_training_platform(monkeypatch, package, backend)
+    _clear_trainer_module(package)
+    if package in sys.modules:
+        importlib.reload(sys.modules[package])
+    trainer_mod = importlib.import_module(f"{package}.trainer")
+    training_mod = importlib.import_module(f"{package}.training")
+    monkeypatch.setattr(
+        training_mod._MLXTrainerAdapter,
+        "_activate_transformers_for_model",
+        lambda self, model_name, hf_token: None,
+    )
+    return trainer_mod
+
+
+class _ExitedProc:
+    def join(self, timeout = None):
+        return None
+
+    def is_alive(self):
+        return False
+
+
+class _TerminableProc:
+    def __init__(self):
+        self.terminated = False
+        self._done = threading.Event()
+
+    def join(self, timeout = None):
+        self._done.wait(timeout = timeout or 5)
+
+    def is_alive(self):
+        return not self.terminated
+
+    def terminate(self):
+        self.terminated = True
+        self._done.set()
+
+
+def test_unsloth_trainer_dispatches_for_mlx_and_torch(monkeypatch):
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
+
+    mlx_trainer = trainer_mod.UnslothTrainer()
+
+    assert type(mlx_trainer).__module__ == "core.training.training"
+    assert mlx_trainer.get_training_progress().status_message == "Ready to train"
+
+    trainer_mod = _load_trainer_module(monkeypatch, "torch")
+
+    assert trainer_mod.UnslothTrainer().__class__ is trainer_mod.UnslothTrainer
+
+
+def test_mlx_adapter_builds_config_and_reports_completion(tmp_path, monkeypatch):
+    trainer_mod = _load_trainer_module(monkeypatch, "mlx")
+    captured = {}
+
+    def fake_run_worker(config, event_queue, stop_queue):
+        captured["config"] = config
+        event_queue.put({"type": "progress", "step": 1, "total_steps": 1, "loss": 0.25})
+        event_queue.put(
+            {"type": "complete", "status_message": "done", "output_dir": config["output_dir"]}
+        )
+
+    trainer = trainer_mod.UnslothTrainer()
+    monkeypatch.setattr(trainer, "_run_mlx_worker", fake_run_worker)
+
+    assert trainer.load_model("mlx-community/Qwen3-0.6B-4bit", max_seq_length = 1024)
+    assert trainer.prepare_model_for_training(use_lora = False)
+    dataset, eval_dataset = trainer.load_and_format_dataset("org/dataset")
+    output_dir = tmp_path / "mlx-out"
+
+    assert trainer.start_training(
+        dataset = dataset,
+        eval_dataset = eval_dataset,
+        output_dir = output_dir,
+        max_steps = 1,
+        learning_rate = 3e-4,
+    )
+    trainer.training_thread.join(timeout = 5)
+
+    progress = trainer.get_training_progress()
+    config = captured["config"]
+    assert progress.is_completed
+    assert progress.output_dir == str(output_dir.resolve())
+    assert config["model_name"] == "mlx-community/Qwen3-0.6B-4bit"
+    assert config["hf_dataset"] == "org/dataset"
+    assert config["training_type"] == "Full Finetuning"
+    assert config["load_in_4bit"] is False
+    assert config["max_seq_length"] == 1024
+    assert config["learning_rate"] == 3e-4
+    assert config["output_dir"] == str(output_dir.resolve())
+    assert config["allow_external_output_dir"] is True
+
+
+def test_run_mlx_training_process_applies_side_effects_before_hardware_detection(monkeypatch):
+    _load_trainer_module(monkeypatch, "mlx")
+    from core.training import worker
+    from utils.hardware import hardware as hw
+
+    order = []
+
+    def fake_activate(model_name, hf_token):
+        order.append(("activate", model_name, hf_token))
+
+    def fake_detect_hardware():
+        order.append("detect")
+        hw.DEVICE = hw.DeviceType.CPU
+        return hw.DEVICE
+
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
+    monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising = False)
+    monkeypatch.setattr(worker, "_activate_transformers_version_or_warn", fake_activate)
+    monkeypatch.setattr(hw, "detect_hardware", fake_detect_hardware)
+
+    event_queue = queue.Queue()
+    worker.run_mlx_training_process(
+        event_queue = event_queue,
+        stop_queue = queue.Queue(),
+        config = {"model_name": "mlx-community/Gemma-4-12B", "disable_xet": True},
+    )
+
+    event = event_queue.get_nowait()
+    assert order == [("activate", "mlx-community/Gemma-4-12B", None), "detect"]
+    assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+    assert os.environ["HF_HUB_ENABLE_HF_TRANSFER"] == "0"
+    assert "MLX training requires Apple Silicon" in event["error"]
 
 
 if __name__ == "__main__":
