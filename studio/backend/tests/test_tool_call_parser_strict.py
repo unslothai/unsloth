@@ -191,3 +191,47 @@ class TestHealingPathUnaffected:
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
+
+
+class TestGlmStrict:
+    def test_closed_glm_call_is_accepted(self):
+        text = (
+            "<tool_call>get_weather\n"
+            "<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n"
+            "</tool_call>"
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "get_weather"
+
+    def test_unclosed_glm_call_is_rejected(self):
+        # No </tool_call> close: truncated, reject with Auto-Heal off.
+        text = "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>"
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
+
+
+class TestKimiStrict:
+    _SB = "<|tool_calls_section_begin|>"
+    _KB = "<|tool_call_begin|>"
+    _AB = "<|tool_call_argument_begin|>"
+    _KE = "<|tool_call_end|>"
+    _SE = "<|tool_calls_section_end|>"
+
+    def test_full_kimi_call_is_accepted(self):
+        text = self._SB + self._KB + "functions.x:0" + self._AB + '{"a":1}' + self._KE + self._SE
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "x"
+
+    def test_kimi_call_without_call_end_is_rejected(self):
+        # Section closed but the call lacks <|tool_call_end|>: reject in strict.
+        text = self._SB + self._KB + "functions.x:0" + self._AB + '{"a":1}' + self._SE
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
+
+    def test_kimi_without_section_end_is_rejected(self):
+        # No <|tool_calls_section_end|>: truncated section, reject in strict.
+        text = self._SB + self._KB + "functions.x:0" + self._AB + '{"a":1}' + self._KE
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1

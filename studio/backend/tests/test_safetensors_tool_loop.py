@@ -907,6 +907,22 @@ class TestParserDeepSeek:
         text = "<｜tool▁calls▁begin｜>..."
         assert has_tool_signal(text)
 
+    def test_deepseek_short_opener_is_stripped(self):
+        # The short ``<｜tool▁calls｜>`` opener is parsed, so its markup must
+        # also be stripped (the strip patterns used to require ...calls_begin
+        # and left the short-opener markup leaking to the UI).
+        text = (
+            "before "
+            "<｜tool▁calls｜>"
+            "<｜tool▁call▁begin｜>foo"
+            "<｜tool▁sep｜>"
+            "{}"
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+            " after"
+        )
+        assert strip_tool_markup(text, final = True) == "before  after"
+
 
 class TestParserGLM:
     """GLM 4.5 / 4.6 / 4.7 coverage. Marker collides with Qwen's

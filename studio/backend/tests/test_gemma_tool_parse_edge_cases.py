@@ -159,3 +159,18 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
     )
     calls = parse_tool_calls_from_text(content)
     assert [c["function"]["name"] for c in calls] == ["python"], calls
+
+
+def test_wrapperless_nested_object_argument_is_parsed():
+    # skip_special_tokens stream: the <|tool_call> wrapper and <|"|> string
+    # markers were stripped, so a nested object arrives bare. It must parse as a
+    # nested dict, not the literal string "{city:NYC}".
+    calls = parse_tool_calls_from_text("call:f{loc:{city:NYC},n:3}")
+    assert len(calls) == 1
+    assert _args(calls[0]) == {"loc": {"city": "NYC"}, "n": 3}
+
+
+def test_wrapperless_array_argument_is_parsed():
+    calls = parse_tool_calls_from_text("call:label{labels:[bug,ui],n:2}")
+    assert len(calls) == 1
+    assert _args(calls[0]) == {"labels": ["bug", "ui"], "n": 2}

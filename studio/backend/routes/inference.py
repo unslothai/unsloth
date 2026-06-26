@@ -1597,7 +1597,7 @@ _TOOL_XML_RE = _re.compile(
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
     r"|<\|python_tag\|>(?:[^<]|<(?!\|))*"
-    r"|<｜tool[▁_]calls[▁_]begin｜>.*?(?:<｜tool▁calls▁end｜>|\Z)"
+    r"|<｜tool[▁_]calls(?:[▁_]begin)?｜>.*?(?:<｜tool▁calls▁end｜>|\Z)"
     r"|<\|tool_calls_section_begin\|>.*?(?:<\|tool_calls_section_end\|>|\Z)"
     r"|</parameter>\s*\Z",
     _re.DOTALL,

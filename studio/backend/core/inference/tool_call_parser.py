@@ -60,6 +60,15 @@ TOOL_XML_SIGNALS = (
 )
 
 
+# DeepSeek envelope opener variants llama.cpp accepts, including the short
+# ``<｜tool▁calls｜>`` form and the space / escaped-underscore spellings. Shared
+# by ``_DEEPSEEK_BEGIN_RE`` (parsing) and the strip patterns below so a signal we
+# parse can never be left un-stripped (a short-opener envelope used to leak).
+_DEEPSEEK_OPEN_ALT = (
+    r"tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\_calls\\_begin|tool▁calls"
+)
+_DEEPSEEK_OPEN_RE_SRC = r"<｜(?:" + _DEEPSEEK_OPEN_ALT + r")｜>"
+
 # Closed pairs only (mid-stream); _TOOL_ALL_PATS also eats unclosed
 # tails for end-of-turn cleanup. ``[\w-]+`` on ``<function=...>`` tracks
 # OpenAI's ``^[a-zA-Z0-9_-]{1,64}$`` so MCP tool names with hyphens
@@ -71,8 +80,8 @@ _TOOL_CLOSED_PATS = [
     re.compile(r"\[TOOL_CALLS\]\s*\[.*?\](?:\s*</s>)?", re.DOTALL),
     # Mistral v11+ ``[TOOL_CALLS]name{json}`` (may chain), close at ``}``.
     re.compile(r"\[TOOL_CALLS\]\s*[\w\.\-]+\s*(?:\[ARGS\])?\s*\{.*?\}", re.DOTALL),
-    # DeepSeek R1 / V3 / V3.1: full envelope ``<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>``.
-    re.compile(r"<｜tool[▁_]calls[▁_]begin｜>.*?<｜tool▁calls▁end｜>", re.DOTALL),
+    # DeepSeek R1 / V3 / V3.1: full envelope (any opener variant) ... end.
+    re.compile(_DEEPSEEK_OPEN_RE_SRC + r".*?<｜tool▁calls▁end｜>", re.DOTALL),
     # Kimi K2: ``<|tool_calls_section_begin|>...<|tool_calls_section_end|>``.
     re.compile(r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>", re.DOTALL),
 ]
@@ -82,8 +91,8 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
     re.compile(r"<\|python_tag\|>.*$", re.DOTALL),
-    # DeepSeek envelopes truncated mid-stream.
-    re.compile(r"<｜tool[▁_]calls[▁_]begin｜>.*$", re.DOTALL),
+    # DeepSeek envelopes truncated mid-stream (any opener variant).
+    re.compile(_DEEPSEEK_OPEN_RE_SRC + r".*$", re.DOTALL),
     re.compile(r"<｜tool▁call▁begin｜>.*$", re.DOTALL),
     # Kimi K2 envelope truncated.
     re.compile(r"<\|tool_calls_section_begin\|>.*$", re.DOTALL),
@@ -191,9 +200,7 @@ _MISTRAL_V11_NAME_RE = re.compile(r"\s*([\w\.\-]+)\s*")
 # DeepSeek R1 / V3 / V3.1 markers (full-width pipe U+FF5C, lower-
 # one-eighth-block U+2581). llama.cpp accepts five variants of the
 # outer block-open; we mirror its tolerance.
-_DEEPSEEK_BEGIN_RE = re.compile(
-    r"<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\_calls\\_begin|tool▁calls)｜>"
-)
+_DEEPSEEK_BEGIN_RE = re.compile(_DEEPSEEK_OPEN_RE_SRC)
 _DEEPSEEK_END = "<｜tool▁calls▁end｜>"
 _DEEPSEEK_CALL_BEGIN = "<｜tool▁call▁begin｜>"
 _DEEPSEEK_SEP = "<｜tool▁sep｜>"
@@ -1178,7 +1185,20 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
             elif ch == "," and depth == 0 and _GEMMA_KEY_RE.match(body, i + 1):
                 break
             i += 1
-        out[key] = _gemma_coerce_scalar(body[vstart:i])
+        raw_val = body[vstart:i].strip()
+        if raw_val[:1] in "{[":
+            # Nested object/array in the wrapper-less stream: parse it
+            # recursively instead of keeping it as a string. Accept the parse
+            # only when it consumes the whole balanced value, so a truncated /
+            # malformed value falls back to the raw string instead of {} / [].
+            parsed, end = _gemma_parse_value(raw_val, 0)
+            balanced = end == len(raw_val) and (
+                raw_val[0] != "{"
+                or _gemma_balanced_brace_end(raw_val, 0, len(raw_val)) == len(raw_val) - 1
+            )
+            out[key] = parsed if balanced else _gemma_coerce_scalar(raw_val)
+        else:
+            out[key] = _gemma_coerce_scalar(raw_val)
         if i < n and body[i] == ",":
             i += 1
     return out
@@ -1368,6 +1388,10 @@ def _parse_glm_tool_calls(
         name = m.group(1).strip()
         body_start = m.end()
         close = content.find(_GLM_TC_CLOSE, body_start)
+        # Strict mode (Auto-Heal off): a block with no </tool_call> close is
+        # truncated; reject it instead of healing the body out to EOF.
+        if not allow_incomplete and close < 0:
+            break
         body_end = close if close >= 0 else len(content)
         body = content[body_start:body_end]
 
@@ -1436,12 +1460,23 @@ def _parse_kimi_tool_calls(
         section_end = content.find(_KIMI_SECTION_END, scan_start)
         scan_end = section_end if section_end >= 0 else len(content)
         body = content[scan_start:scan_end]
-        # Truncated tail: parse what we have, then exit.
+        # Truncated tail: parse what we have, then exit. In strict mode
+        # (Auto-Heal off) a section with no <|tool_calls_section_end|> is
+        # truncated; reject it instead.
         if section_end < 0:
-            out.extend(_parse_kimi_section_body(body, id_offset = id_offset + len(out)))
+            if allow_incomplete:
+                out.extend(
+                    _parse_kimi_section_body(
+                        body, id_offset = id_offset + len(out), allow_incomplete = True
+                    )
+                )
             return out
         outer_pos = section_end + len(_KIMI_SECTION_END)
-        out.extend(_parse_kimi_section_body(body, id_offset = id_offset + len(out)))
+        out.extend(
+            _parse_kimi_section_body(
+                body, id_offset = id_offset + len(out), allow_incomplete = allow_incomplete
+            )
+        )
 
     # llama.cpp treats the ``<|tool_calls_section_begin|>`` wrapper as
     # optional -- Kimi K2 can emit a bare ``<|tool_call_begin|>`` call (e.g.
@@ -1449,11 +1484,17 @@ def _parse_kimi_tool_calls(
     # loop matched nothing but a bare call marker is present, parse the whole
     # content as one section body so the call is not dropped.
     if not out and _KIMI_CALL_BEGIN in content:
-        out.extend(_parse_kimi_section_body(content, id_offset = id_offset))
+        out.extend(
+            _parse_kimi_section_body(
+                content, id_offset = id_offset, allow_incomplete = allow_incomplete
+            )
+        )
     return out
 
 
-def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
+def _parse_kimi_section_body(
+    body: str, *, id_offset: int, allow_incomplete: bool = True
+) -> list[dict]:
     """Parse one Kimi K2 section body (between begin / end markers)."""
     out: list[dict] = []
     pos = 0
@@ -1511,6 +1552,14 @@ def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
+        if not allow_incomplete:
+            # Strict mode: this call must close with <|tool_call_end|> before the
+            # next <|tool_call_begin|>; otherwise it is truncated, so reject it.
+            end_marker = body.find(_KIMI_CALL_END, brace_end + 1)
+            next_call = body.find(_KIMI_CALL_BEGIN, brace_end + 1)
+            if end_marker < 0 or (next_call >= 0 and end_marker > next_call):
+                pos = brace_end + 1
+                continue
         if name:
             out.append(
                 {
