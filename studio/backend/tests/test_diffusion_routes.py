@@ -402,7 +402,11 @@ def test_transformer_cache_threads_through(client, monkeypatch):
 def test_invalid_transformer_cache_returns_422(client):
     resp = client.post(
         "/api/inference/images/load",
-        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "transformer_cache": "deepcache"},
+        json = {
+            "model_path": "x/z-image",
+            "gguf_filename": "q.gguf",
+            "transformer_cache": "deepcache",
+        },
     )
     assert resp.status_code == 422
 
@@ -410,7 +414,11 @@ def test_invalid_transformer_cache_returns_422(client):
 def test_out_of_range_cache_threshold_returns_422(client):
     resp = client.post(
         "/api/inference/images/load",
-        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "transformer_cache_threshold": 1.5},
+        json = {
+            "model_path": "x/z-image",
+            "gguf_filename": "q.gguf",
+            "transformer_cache_threshold": 1.5,
+        },
     )
     assert resp.status_code == 422
 

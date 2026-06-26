@@ -72,19 +72,20 @@ def apply_step_cache(
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
-    thr = threshold if threshold is not None else (
-        QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD
+    thr = (
+        threshold
+        if threshold is not None
+        else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
     )
     try:
         from diffusers import FirstBlockCacheConfig
 
-        config = FirstBlockCacheConfig(threshold=thr)
+        config = FirstBlockCacheConfig(threshold = thr)
         enable_cache = getattr(transformer, "enable_cache", None)
         if callable(enable_cache):
             enable_cache(config)
         else:
             from diffusers.hooks import apply_first_block_cache
-
             apply_first_block_cache(transformer, config)
         try:
             transformer._unsloth_step_cache = f"{mode}@{thr}"

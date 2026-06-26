@@ -1903,6 +1903,4 @@ class DiffusionStatusResponse(BaseModel):
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
     )
-    transformer_cache: Optional[str] = Field(
-        None, description = "Step cache engaged: fbcache | null"
-    )
+    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
