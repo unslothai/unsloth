@@ -918,12 +918,7 @@ class TestParserGLM:
         )
         result = parse_tool_calls_from_text(text)
         args = _json.loads(result[0]["function"]["arguments"])
-        assert args == {
-            "name": "John Doe",
-            "age": 30,
-            "active": True,
-            "score": 95.5,
-        }
+        assert args == {"name": "John Doe", "age": 30, "active": True, "score": 95.5}
 
     def test_glm_multi_call_back_to_back(self):
         # GLM emits parallel calls as consecutive ``<tool_call>...
@@ -941,9 +936,7 @@ class TestParserGLM:
         # Truncated mid-stream (no </tool_call>) -- the parser must
         # still surface what it found rather than dropping the call.
         text = (
-            "<tool_call>web_search\n"
-            "<arg_key>query</arg_key>\n"
-            "<arg_value>partial</arg_value>"
+            "<tool_call>web_search\n<arg_key>query</arg_key>\n<arg_value>partial</arg_value>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -1200,8 +1193,7 @@ class TestParserCrossFormatRouting:
             result = parse_tool_calls_from_text(text)
             assert len(result) == 1, f"{label}: parser missed the call"
             assert result[0]["function"]["name"] == expected_name, (
-                f"{label}: got {result[0]['function']['name']!r}, "
-                f"expected {expected_name!r}"
+                f"{label}: got {result[0]['function']['name']!r}, " f"expected {expected_name!r}"
             )
 
     def test_all_new_markers_in_tool_xml_signals(self):
@@ -1209,16 +1201,15 @@ class TestParserCrossFormatRouting:
         # supported emission marker -- otherwise the BUFFERING state
         # leaks tool content to the user before parse.
         from core.inference.tool_call_parser import TOOL_XML_SIGNALS
-
         for marker in (
             "<｜tool▁calls▁begin｜>",
             "<｜tool▁call▁begin｜>",
             "<|tool_calls_section_begin|>",
             "<|tool_call_begin|>",
         ):
-            assert (
-                marker in TOOL_XML_SIGNALS
-            ), f"streaming loop would not wake on {marker!r}"
+            assert marker in TOOL_XML_SIGNALS, f"streaming loop would not wake on {marker!r}"
+
+
 def test_active_tools_are_passed_to_single_turn_after_render_html_success():
     captured_tool_names: list[list[str]] = []
     exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -1461,6 +1452,7 @@ class TestLoopBasic:
         # roundtrip can replay it verbatim.
         tool_start = next(e for e in events if e["type"] == "tool_start")
         assert tool_start["tool_call_id"] == "functions.web_search:0"
+
     def test_render_html_emits_provisional_tool_start(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
         turn_iter = iter(

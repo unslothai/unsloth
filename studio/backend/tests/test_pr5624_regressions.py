@@ -235,9 +235,7 @@ def test_deepseek_v3_1_huge_truncated_body_is_linear():
     linear. Budget 1s to flag any future regression."""
     import time as _time
 
-    text = (
-        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn" "<｜tool▁sep｜>" + "x" * 50_000
-    )
+    text = "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * 50_000
     start = _time.time()
     calls = parse_tool_calls_from_text(text)
     elapsed = _time.time() - start
@@ -258,10 +256,7 @@ def test_deepseek_v3_1_truncated_arguments_drops_call_without_crash():
 
 def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
     text = (
-        "<｜tool▁calls▁begin｜>"
-        "<｜tool▁call▁begin｜>get_time"
-        "<｜tool▁sep｜>"
-        '{"city":"Tokyo"}'
+        "<｜tool▁calls▁begin｜>" "<｜tool▁call▁begin｜>get_time" "<｜tool▁sep｜>" '{"city":"Tokyo"}'
         # neither <｜tool▁call▁end｜> nor <｜tool▁calls▁end｜>
     )
     calls = parse_tool_calls_from_text(text)

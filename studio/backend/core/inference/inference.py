@@ -237,7 +237,6 @@ class InferenceBackend:
         if native_tpl is None:
             try:
                 from transformers import AutoTokenizer
-
                 nt = AutoTokenizer.from_pretrained(self.active_model_name)
                 native_tpl = nt.chat_template or False
             except Exception as exc:

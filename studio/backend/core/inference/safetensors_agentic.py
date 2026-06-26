@@ -585,8 +585,7 @@ def run_safetensors_tool_loop(
                     break
             if len(deduped) != len(tool_calls):
                 logger.info(
-                    "Safetensors: collapsed %d repeated tool call(s) in one "
-                    "turn to %d",
+                    "Safetensors: collapsed %d repeated tool call(s) in one turn to %d",
                     len(tool_calls),
                     len(deduped),
                 )

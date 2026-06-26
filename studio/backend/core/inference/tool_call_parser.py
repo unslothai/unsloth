@@ -74,9 +74,7 @@ _TOOL_CLOSED_PATS = [
     # DeepSeek R1 / V3 / V3.1: full envelope ``<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>``.
     re.compile(r"<｜tool[▁_]calls[▁_]begin｜>.*?<｜tool▁calls▁end｜>", re.DOTALL),
     # Kimi K2: ``<|tool_calls_section_begin|>...<|tool_calls_section_end|>``.
-    re.compile(
-        r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>", re.DOTALL
-    ),
+    re.compile(r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
@@ -215,9 +213,7 @@ _DEEPSEEK_R1_CLOSE_RE = re.compile(r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_EN
 # ``<arg_key>`` directly and ``</tool_call>`` for a zero-argument call
 # (``<tool_call>get_current_date</tool_call>``). First-char ``[^\n<{]``
 # excludes Qwen.
-_GLM_TC_OPEN_RE = re.compile(
-    r"<tool_call>\s*([^\n<{][^\n<]*?)\s*(?=\n|<arg_key>|</tool_call>)"
-)
+_GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([^\n<{][^\n<]*?)\s*(?=\n|<arg_key>|</tool_call>)")
 _GLM_TC_CLOSE = "</tool_call>"
 _GLM_ARG_PAIR_RE = re.compile(
     r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
@@ -657,11 +653,7 @@ def _parse_llama3_python_tag(
                     cursor = brace + end_offset
                     continue
                 name = obj.get("name") or obj.get("function") or ""
-                args = (
-                    obj.get("parameters")
-                    if "parameters" in obj
-                    else obj.get("arguments", {})
-                )
+                args = obj.get("parameters") if "parameters" in obj else obj.get("arguments", {})
                 # Skip rather than fabricate ``{"value": args}`` when the
                 # model emits a non-dict / non-string ``arguments`` value.
                 if isinstance(args, dict):
@@ -949,7 +941,12 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
         )
 
 
-def _parse_gemma_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_gemma_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """Gemma 4: ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``.
 
     Also handles the ``skip_special_tokens`` stream where the ``<|tool_call>``
@@ -1203,7 +1200,12 @@ def _gemma_parse_mapping_body(body: str) -> dict[str, Any]:
 # ── DeepSeek R1 / V3 / V3.1 ─────────────────────────────────────────
 
 
-def _parse_deepseek_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_deepseek_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """DeepSeek R1 / V3 / V3.1.
 
     R1:    ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`<｜tool▁call▁end｜>...``
@@ -1323,7 +1325,12 @@ def _parse_deepseek_tool_calls(content: str, *, id_offset: int, allow_incomplete
 # ── GLM 4.5 / 4.6 / 4.7 ─────────────────────────────────────────────
 
 
-def _parse_glm_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_glm_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """GLM 4.5 / 4.6 / 4.7.
 
     ``<tool_call>NAME[\\n]<arg_key>K</arg_key>[\\n]<arg_value>V</arg_value>
@@ -1382,7 +1389,12 @@ def _parse_glm_tool_calls(content: str, *, id_offset: int, allow_incomplete: boo
 # ── Kimi K2 / Moonshot ──────────────────────────────────────────────
 
 
-def _parse_kimi_tool_calls(content: str, *, id_offset: int, allow_incomplete: bool = True) -> list[dict]:
+def _parse_kimi_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """Kimi K2.
 
     ``<|tool_calls_section_begin|><|tool_call_begin|>functions.NAME:IDX
