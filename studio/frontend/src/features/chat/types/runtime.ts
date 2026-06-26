@@ -11,6 +11,7 @@ export interface InferenceParams {
   maxSeqLength: number;
   maxTokens: number;
   systemPrompt: string;
+  systemVariables: string;
   checkpoint: string;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trustRemoteCode?: boolean;
@@ -32,6 +33,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   maxSeqLength: 4096,
   maxTokens: 8192,
   systemPrompt: "",
+  systemVariables: "",
   checkpoint: "",
   trustRemoteCode: false,
   fastMode: false,

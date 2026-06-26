@@ -6,6 +6,7 @@ Training history API routes — browse, view, and delete past training runs.
 """
 
 import json
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
@@ -28,10 +29,28 @@ from storage.studio_db import (
     update_run_display_name,
 )
 from utils.models.checkpoints import has_preview_model, preview_ref
+from utils.preview_sharing_settings import get_preview_sharing_enabled
+from utils.preview_token import sign_preview_ref
 
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
+    """Previewability + the signed `/p` share ref for a run's output dir.
+
+    The signature is what makes the share link a capability: these routes are
+    authenticated, so only the run's owner ever receives it. When public sharing
+    is switched off, omit the signature so the UI hides the copy-link affordance
+    (and the link would 404 anyway). ``sharing_on`` is resolved once per request.
+    """
+    ref = preview_ref(output_dir)
+    return {
+        "has_preview_model": has_preview_model(output_dir),
+        "preview_ref": ref,
+        "preview_sig": sign_preview_ref(ref) if (ref and sharing_on) else None,
+    }
 
 
 @router.get("/runs", response_model = TrainingRunListResponse)
@@ -42,14 +61,14 @@ async def list_training_runs(
 ):
     """List training runs, newest first."""
     result = list_runs(limit = limit, offset = offset)
+    sharing_on = get_preview_sharing_enabled()
     return TrainingRunListResponse(
         runs = [
             TrainingRunSummary(
                 **{
                     **r,
                     "can_resume": can_resume_run(r),
-                    "has_preview_model": has_preview_model(r.get("output_dir")),
-                    "preview_ref": preview_ref(r.get("output_dir")),
+                    **_preview_fields(r.get("output_dir"), sharing_on),
                 }
             )
             for r in result["runs"]
@@ -78,8 +97,7 @@ async def get_training_run_detail(run_id: str, current_subject: str = Depends(ge
             **{
                 **{k: v for k, v in run.items() if k != "config_json"},
                 "can_resume": can_resume_run(run),
-                "has_preview_model": has_preview_model(run.get("output_dir")),
-                "preview_ref": preview_ref(run.get("output_dir")),
+                **_preview_fields(run.get("output_dir"), get_preview_sharing_enabled()),
             }
         ),
         config = config,
@@ -111,8 +129,7 @@ async def update_training_run(
         **{
             **{k: v for k, v in refreshed.items() if k != "config_json"},
             "can_resume": can_resume_run(refreshed),
-            "has_preview_model": has_preview_model(refreshed.get("output_dir")),
-            "preview_ref": preview_ref(refreshed.get("output_dir")),
+            **_preview_fields(refreshed.get("output_dir"), get_preview_sharing_enabled()),
         }
     )
 

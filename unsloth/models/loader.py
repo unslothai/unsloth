@@ -33,11 +33,15 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
+    _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     prepare_device_map,
+    _offline_aware_load,
+    _resolve_checkpoint_tokenizer_name,
+    _is_offline_related_error,
 )
 import os, contextlib, sys
 
@@ -284,6 +288,7 @@ def _fix_rope_inv_freq(model):
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
+    @_offline_aware_load
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
@@ -357,16 +362,7 @@ class FastLanguageModel(FastLlamaModel):
             if is_dist:
                 device_map = distributed_device_map
 
-        # Honour offline env vars BEFORE FastModel delegation so 8bit /
-        # full-finetuning / qat paths also receive local_files_only.
-        if not kwargs.get("local_files_only", False):
-            _offline = {"1", "true", "yes", "on"}
-            if (
-                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
-                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
-            ):
-                kwargs["local_files_only"] = True
-
+        # @_offline_aware_load already forced offline when needed; delegations inherit it.
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name = model_name,
@@ -496,6 +492,8 @@ class FastLanguageModel(FastLlamaModel):
 
         autoconfig_error = None
         peft_error = None
+        autoconfig_exc = None
+        peft_exc = None
         model_config = None
         peft_config = None
         local_files_only = kwargs.get("local_files_only", False)
@@ -513,6 +511,7 @@ class FastLanguageModel(FastLlamaModel):
             raise
         except Exception as error:
             autoconfig_error = str(error)
+            autoconfig_exc = error
             if "architecture" in autoconfig_error:
                 if "qwen3_5" in autoconfig_error:
                     raise ImportError(
@@ -539,6 +538,7 @@ class FastLanguageModel(FastLlamaModel):
             raise
         except Exception as error:
             peft_error = str(error)
+            peft_exc = error
             if "architecture" in peft_error:
                 raise ValueError(
                     f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"
@@ -557,6 +557,34 @@ class FastLanguageModel(FastLlamaModel):
                 "We must only allow one config file.\n"
                 "Please separate the LoRA and base models to 2 repos."
             )
+        if not is_model and not is_peft:
+            error = autoconfig_error if autoconfig_error is not None else peft_error
+            # Old transformers version
+            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"
+                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
+                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
+                    f"to obtain the latest transformers build, then restart this session."
+                )
+            # Create a combined error message showing both failures
+            combined_error = (
+                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
+                f"AutoConfig error: {autoconfig_error}\n\n"
+                f"PeftConfig error: {peft_error}\n\n"
+            )
+            # Chain an offline-related cause if either probe had one, so @_offline_aware_load
+            # still retries from cache (e.g. adapter repo: permanent AutoConfig 404 + transient PeftConfig).
+            _cause = next(
+                (
+                    e
+                    for e in (autoconfig_exc, peft_exc)
+                    if e is not None and _is_offline_related_error(e)
+                ),
+                autoconfig_exc or peft_exc,
+            )
+            raise RuntimeError(combined_error) from _cause
+
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
             trust_remote_code = trust_remote_code,
@@ -581,24 +609,6 @@ class FastLanguageModel(FastLlamaModel):
                 # remote repo, so both config.json and adapter_config.json
                 # definitely exist -- no need for an extra HfFileSystem network call.
                 both_exist = True
-
-        if not is_model and not is_peft:
-            error = autoconfig_error if autoconfig_error is not None else peft_error
-            # Old transformers version
-            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"
-                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
-                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
-                    f"to obtain the latest transformers build, then restart this session."
-                )
-            # Create a combined error message showing both failures
-            combined_error = (
-                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
-                f"AutoConfig error: {autoconfig_error}\n\n"
-                f"PeftConfig error: {peft_error}\n\n"
-            )
-            raise RuntimeError(combined_error)
 
         # Get base model for PEFT:
         if is_peft:
@@ -755,15 +765,8 @@ class FastLanguageModel(FastLlamaModel):
             use_gradient_checkpointing, max_seq_length, dtype
         )
 
-        # Check if this is local model since the tokenizer gets overwritten
-        if (
-            os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
-            and os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
-            and os.path.exists(os.path.join(old_model_name, "special_tokens_map.json"))
-        ):
-            tokenizer_name = old_model_name
-        else:
-            tokenizer_name = kwargs.pop("tokenizer_name", None)
+        # Keep the local checkpoint dir as tokenizer when self-sufficient (see _resolve_checkpoint_tokenizer_name).
+        tokenizer_name = _resolve_checkpoint_tokenizer_name(old_model_name, kwargs)
 
         if fast_inference:
             fast_inference, model_name = fast_inference_setup(model_name, model_config)
@@ -867,6 +870,7 @@ class FastLanguageModel(FastLlamaModel):
                 old_model_name,
                 token = token,
                 revision = revision,
+                local_files_only = local_files_only,
                 is_trainable = True,
                 trust_remote_code = trust_remote_code,
             )
@@ -882,6 +886,7 @@ class FastLanguageModel(FastLlamaModel):
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         model = _fix_rope_inv_freq(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model, tokenizer
 
 
@@ -928,6 +933,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @_offline_aware_load
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
@@ -1134,18 +1140,12 @@ class FastModel(FastBaseModel):
 
         autoconfig_error = None
         peft_error = None
+        autoconfig_exc = None
+        peft_exc = None
         model_config = None
         peft_config = None
+        # @_offline_aware_load already forced offline when needed; nested calls inherit it.
         local_files_only = kwargs.get("local_files_only", False)
-        # Mirror env-var fallback for direct callers (FastVisionModel / FastTextModel).
-        if not local_files_only:
-            _offline = {"1", "true", "yes", "on"}
-            if (
-                os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
-                or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
-            ):
-                local_files_only = True
-                kwargs["local_files_only"] = True
 
         # Text-diffusion slow-path dispatch, factored so both the normal route (below) and the
         # legacy-config fallback (in the AutoConfig except handler) share one call site.
@@ -1180,6 +1180,7 @@ class FastModel(FastBaseModel):
             raise
         except Exception as error:
             autoconfig_error = str(error)
+            autoconfig_exc = error
             # Legacy text-diffusion configs use model_type "diffusion_gemma", which current
             # transformers does not register by name (it ships "diffusion_gemma4"). AutoConfig
             # raises before we can dispatch; route straight to the diffusion slow path, whose
@@ -1212,6 +1213,7 @@ class FastModel(FastBaseModel):
             raise
         except Exception as error:
             peft_error = str(error)
+            peft_exc = error
             if "architecture" in peft_error:
                 raise ValueError(
                     f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"
@@ -1228,6 +1230,34 @@ class FastModel(FastBaseModel):
                 "We must only allow one config file.\n"
                 "Please separate the LoRA and base models to 2 repos."
             )
+        if not is_model and not is_peft:
+            error = autoconfig_error if autoconfig_error is not None else peft_error
+            # Old transformers version
+            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"
+                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
+                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
+                    f"to obtain the latest transformers build, then restart this session."
+                )
+            # Create a combined error message showing both failures
+            combined_error = (
+                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
+                f"AutoConfig error: {autoconfig_error}\n\n"
+                f"PeftConfig error: {peft_error}\n\n"
+            )
+            # Chain an offline-related cause if either probe had one, so @_offline_aware_load
+            # still retries from cache (e.g. adapter repo: permanent AutoConfig 404 + transient PeftConfig).
+            _cause = next(
+                (
+                    e
+                    for e in (autoconfig_exc, peft_exc)
+                    if e is not None and _is_offline_related_error(e)
+                ),
+                autoconfig_exc or peft_exc,
+            )
+            raise RuntimeError(combined_error) from _cause
+
         model_types = get_transformers_model_type(
             peft_config if peft_config is not None else model_config,
             trust_remote_code = trust_remote_code,
@@ -1432,24 +1462,6 @@ class FastModel(FastBaseModel):
                 # definitely exist -- no need for an extra HfFileSystem network call.
                 both_exist = True
 
-        if not is_model and not is_peft:
-            error = autoconfig_error if autoconfig_error is not None else peft_error
-            # Old transformers version
-            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"
-                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"
-                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
-                    f"to obtain the latest transformers build, then restart this session."
-                )
-            # Create a combined error message showing both failures
-            combined_error = (
-                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
-                f"AutoConfig error: {autoconfig_error}\n\n"
-                f"PeftConfig error: {peft_error}\n\n"
-            )
-            raise RuntimeError(combined_error)
-
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
@@ -1547,15 +1559,16 @@ class FastModel(FastBaseModel):
             if model_type in model_types_all:
                 supports_sdpa = False
 
-        # Check if this is local model since the tokenizer gets overwritten
-        if (
-            os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
-            and os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
-            and os.path.exists(os.path.join(old_model_name, "special_tokens_map.json"))
-        ):
-            tokenizer_name = old_model_name
-        else:
-            tokenizer_name = kwargs.pop("tokenizer_name", None)
+        # Keep the local checkpoint dir as tokenizer when self-sufficient (see
+        # _resolve_checkpoint_tokenizer_name). A VLM also needs local processor files, else
+        # we fall back to the base repo so its cached processor loads.
+        _ckpt_arch = getattr(model_config, "architectures", None) or []
+        _ckpt_is_vlm = any(x.endswith("ForConditionalGeneration") for x in _ckpt_arch) or hasattr(
+            model_config, "vision_config"
+        )
+        tokenizer_name = _resolve_checkpoint_tokenizer_name(
+            old_model_name, kwargs, require_processor = _ckpt_is_vlm
+        )
 
         # Capture task intent before text_only can replace a parent VLM config
         # with its nested text config.
@@ -1783,6 +1796,7 @@ class FastModel(FastBaseModel):
                     old_model_name,
                     token = token,
                     revision = revision,
+                    local_files_only = local_files_only,
                     is_trainable = True,
                     trust_remote_code = trust_remote_code,
                 )
@@ -1810,6 +1824,7 @@ class FastModel(FastBaseModel):
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         model = _fix_rope_inv_freq(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model, tokenizer
 
 
