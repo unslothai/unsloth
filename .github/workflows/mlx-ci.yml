@@ -245,6 +245,9 @@ jobs:
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           mkdir -p mlx_workdir
+          # Authenticate llama.cpp's release-API lookup (anonymous 403s on rate-limit);
+          # read-only GITHUB_TOKEN scoped here only, never to steps that run binaries.
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           python tests/studio/run_real_mlx_smoke.py train \
             --workdir "$PWD/mlx_workdir"
 
