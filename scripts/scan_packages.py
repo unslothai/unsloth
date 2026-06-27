@@ -1195,6 +1195,8 @@ def _ends_with_odd_backslash(s: str) -> bool:
     backslash that escapes the newline (a string/line continuation) rather than a
     literal ``\\\\`` pair."""
     return (len(s) - len(s.rstrip("\\"))) % 2 == 1
+
+
 # Single-line quoted string literal; blanks complete one-line strings (the legacy
 # view) so the single-line and multi-line blanked spans can be unioned below.
 _RE_STR_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")

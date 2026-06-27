@@ -1156,11 +1156,7 @@ def _format_match(
 
 
 def _stream_overflow_digest(
-    matches,
-    lines: list[str],
-    sl_blanked: list[str],
-    ml_blanked: list[str],
-    nl: list[int],
+    matches, lines: list[str], sl_blanked: list[str], ml_blanked: list[str], nl: list[int]
 ) -> tuple[int, str]:
     """A single digest binding the LOGICAL line (the bound bracket-group context,
     not just the regex match text) of every overflow match in the iterable, plus
@@ -1176,12 +1172,7 @@ def _stream_overflow_digest(
 
 
 def _fold_overflow_match(
-    h,
-    m: re.Match,
-    lines: list[str],
-    sl_blanked: list[str],
-    ml_blanked: list[str],
-    nl: list[int],
+    h, m: re.Match, lines: list[str], sl_blanked: list[str], ml_blanked: list[str], nl: list[int]
 ) -> None:
     """Fold one overflow match's whitespace-normalized logical-line context into the
     running hash ``h``. Shared by _stream_overflow_digest and the inline overflow
@@ -1211,8 +1202,7 @@ def _evidence(
         return ""
     lines, sl_blanked, ml_blanked, nl = _index_text(text)
     shown = [
-        _format_match(text, lines, sl_blanked, ml_blanked, nl, m, max_chars)
-        for m in shown_matches
+        _format_match(text, lines, sl_blanked, ml_blanked, nl, m, max_chars) for m in shown_matches
     ]
     # Fold the rest (past the cap) into one digest as they arrive, never building a
     # second list. Byte-identical to digesting matches[_MAX_EVIDENCE_MATCHES:].
