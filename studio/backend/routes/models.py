@@ -22,6 +22,7 @@ import re as _re
 
 _VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
+
 class CachedModelRepo(BaseModel):
     repo_id: str
     size_bytes: int

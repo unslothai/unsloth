@@ -69,7 +69,14 @@ def _seed_cache(tmp_path, repo_id, blob_ids, gguf_files):
 def patch_hub_gguf(monkeypatch):
     """Patch GGUF listing and cache scans for sibling-derived update checks."""
 
-    def _sibling(path: str, size: int, sha = None, *, lfs_dict = False, blob_id = None):
+    def _sibling(
+        path: str,
+        size: int,
+        sha = None,
+        *,
+        lfs_dict = False,
+        blob_id = None,
+    ):
         if lfs_dict:
             lfs = {"sha256": sha} if sha else {}
         else:
@@ -142,7 +149,9 @@ def _call(coro):
 # ── GGUF variant update detection ───────────────────────────────
 
 
-def test_variant_update_check_missing_remote_blob_id_is_not_phantom_update(tmp_path, patch_hub_gguf):
+def test_variant_update_check_missing_remote_blob_id_is_not_phantom_update(
+    tmp_path, patch_hub_gguf
+):
     """Missing sha/blob metadata is unknown, not update_available=True."""
     repo = "unsloth/gemma-3-4b-it-GGUF"
     patch_hub_gguf.apply(
@@ -269,9 +278,7 @@ def test_force_download_bypasses_cache_first_early_return(monkeypatch):
 
 def _rev(*files):
     return SimpleNamespace(
-        files = [
-            SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}") for name, blob in files
-        ]
+        files = [SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}") for name, blob in files]
     )
 
 

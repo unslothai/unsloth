@@ -136,9 +136,7 @@ class GgufVariantDetail(BaseModel):
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
     size_bytes: int = Field(0, description = "File size in bytes")
-    download_size_bytes: int = Field(
-        0, description = "Total bytes needed to download this variant"
-    )
+    download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )

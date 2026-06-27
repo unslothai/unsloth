@@ -47,9 +47,9 @@ _REPO_SIZE_NEG_TTL = 60.0
 _MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _repo_size_cache_lock = threading.Lock()
 
+
 def get_repo_snapshot_metadata_cached(
-    repo_id: str,
-    hf_token: Optional[str] = None,
+    repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[int, frozenset[str]]:
     token_fp = hf_cache_scan.token_fingerprint(hf_token)
     cache_key = (repo_id, token_fp, "snapshot")
@@ -66,6 +66,7 @@ def get_repo_snapshot_metadata_cached(
             return 0, frozenset()
     try:
         from huggingface_hub import HfApi
+
         info = HfApi(token = hf_token).model_info(
             repo_id,
             files_metadata = True,

@@ -404,8 +404,10 @@ def _manifest_snapshot_dirs(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
 ) -> list[Path]:
-    repo_dirs = [repo_cache_dir] if repo_cache_dir is not None else list(
-        iter_repo_cache_dirs(repo_type, repo_id)
+    repo_dirs = (
+        [repo_cache_dir]
+        if repo_cache_dir is not None
+        else list(iter_repo_cache_dirs(repo_type, repo_id))
     )
     snapshots: list[Path] = []
     seen: set[str] = set()

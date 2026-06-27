@@ -296,7 +296,6 @@ def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str
     result: dict[str, dict[str, set[str]]] = {}
     try:
         from hub.services.models import cache_inventory
-
         scans = cache_inventory.all_hf_cache_scans()
     except Exception as e:
         logger.warning("Failed to scan local GGUF blobs for %s: %s", repo_id, e)
@@ -322,9 +321,7 @@ def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str
 
 
 def _variant_update_available_from_requirement(
-    local_blobs: dict[str, set[str]],
-    requirement: Optional[_GgufVariantRequirement],
-    variant: str,
+    local_blobs: dict[str, set[str]], requirement: Optional[_GgufVariantRequirement], variant: str
 ) -> bool:
     if requirement is None or not local_blobs:
         return False

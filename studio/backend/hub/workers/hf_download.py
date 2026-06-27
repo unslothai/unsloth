@@ -656,7 +656,6 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
     if plan is not None:
         try:
             from hub.services.models.deletion import reclaim_replaced_gguf_variant
-
             reclaim_replaced_gguf_variant(
                 repo_id,
                 variant,
