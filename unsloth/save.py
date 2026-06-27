@@ -2420,13 +2420,16 @@ def unsloth_save_pretrained_gguf(
                 "Unsloth: Please use .push_to_hub_gguf(save_method='lora') instead of "
                 ".save_pretrained_gguf(save_method='lora', push_to_hub=True)."
             )
-        if quantization_method in _LORA_GGUF_OUTTYPES:
-            _outtype = quantization_method
+        _qm = quantization_method
+        if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
+            _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
+        if _qm in _LORA_GGUF_OUTTYPES:
+            _outtype = _qm
         else:
-            if quantization_method not in (None, "fast_quantized"):
+            if _qm not in (None, "fast_quantized"):
                 logger.warning_once(
                     f"Unsloth: LoRA GGUF export does not support "
-                    f"quantization_method='{quantization_method}'; using outtype 'f16'. "
+                    f"quantization_method={quantization_method!r}; using outtype 'f16'. "
                     f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
                 )
             _outtype = "f16"
@@ -2748,13 +2751,16 @@ def unsloth_push_to_hub_gguf(
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
     if save_method is not None and str(save_method).lower() == "lora":
-        if quantization_method in _LORA_GGUF_OUTTYPES:
-            _outtype = quantization_method
+        _qm = quantization_method
+        if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
+            _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
+        if _qm in _LORA_GGUF_OUTTYPES:
+            _outtype = _qm
         else:
-            if quantization_method not in (None, "fast_quantized"):
+            if _qm not in (None, "fast_quantized"):
                 logger.warning_once(
                     f"Unsloth: LoRA GGUF export does not support "
-                    f"quantization_method='{quantization_method}'; using outtype 'f16'. "
+                    f"quantization_method={quantization_method!r}; using outtype 'f16'. "
                     f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
                 )
             _outtype = "f16"
@@ -3085,6 +3091,11 @@ def _unsloth_save_lora_gguf(
 
     # Resolve the dequantized base id (the adapter usually references a 4bit repo).
     base_model_id = _lora_base_model_id(model)
+    if not base_model_id:
+        raise RuntimeError(
+            "Unsloth: could not determine the base model for LoRA GGUF export "
+            "(no adapter base_model_name_or_path or model config _name_or_path)."
+        )
     try:
         base_model_id = get_model_name(base_model_id, load_in_4bit = False)
     except Exception:
@@ -4033,6 +4044,17 @@ def _unsloth_save_compressed_tensors(
                 create_pr = merge_kwargs.get("create_pr", False),
                 revision = merge_kwargs.get("revision", None),
             )
+            # Attach datasets metadata to the pushed repo, like the normal merged push path.
+            datasets = merge_kwargs.get("datasets", None)
+            if datasets:
+                try:
+                    from huggingface_hub import metadata_update
+
+                    metadata_update(repo_id, {"datasets": datasets}, overwrite = True, token = token)
+                except Exception as meta_err:
+                    logger.warning_once(
+                        f"Unsloth: could not update datasets metadata for {repo_id}: {meta_err}"
+                    )
 
         # 9) Inference hardware note.
         result = repo_id if push_to_hub else out_dir
@@ -4043,7 +4065,10 @@ def _unsloth_save_compressed_tensors(
             try:
                 model.to(model_dev)  # restore the model to its original device
             except Exception:
-                pass
+                logger.warning_once(
+                    "Unsloth: could not restore the model to its original device after compressed "
+                    "export; it may remain on CPU."
+                )
         if calib_tmp is not None and os.path.isdir(calib_tmp):
             shutil.rmtree(calib_tmp, ignore_errors = True)
         if work_tmp is not None:

@@ -67,6 +67,15 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
     else:
         raise ValueError(f"Unknown calibration-dataset-kind: {kind}")
 
+    try:
+        if len(ds) == 0:
+            raise RuntimeError(
+                "Unsloth: the calibration dataset is empty after loading/subsampling; "
+                "pass a non-empty calibration_dataset."
+            )
+    except TypeError:
+        pass  # streaming / iterable datasets have no len(); let llm-compressor handle them
+
     cols = set(ds.column_names)
     if "input_ids" in cols:
         return ds
@@ -75,10 +84,29 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
         # of calling apply_chat_template (which would raise).
         has_chat_template = bool(getattr(_tok, "chat_template", None))
 
+        def _content_to_text(content):
+            # content may be a str, None, or a multimodal list of parts (str or {"text": ...}).
+            if content is None:
+                return ""
+            if isinstance(content, str):
+                return content
+            if isinstance(content, (list, tuple)):
+                parts = []
+                for part in content:
+                    if isinstance(part, str):
+                        parts.append(part)
+                    elif isinstance(part, dict):
+                        text = part.get("text") or part.get("content")
+                        if isinstance(text, str):
+                            parts.append(text)
+                return " ".join(parts)
+            return str(content)
+
         def _prep(ex):
+            msgs = ex["messages"] or []
             if has_chat_template:
-                return {"text": _tok.apply_chat_template(ex["messages"], tokenize = False)}
-            return {"text": "\n".join(m.get("content", "") for m in ex["messages"])}
+                return {"text": _tok.apply_chat_template(msgs, tokenize = False)}
+            return {"text": "\n".join(_content_to_text(m.get("content")) for m in msgs)}
 
         ds = ds.map(_prep)
     elif "text" not in cols:
@@ -200,11 +228,19 @@ def main():
                 "retrying with the 'basic' pipeline (needs the full model to fit in memory).",
                 flush = True,
             )
-            # Free the partially-processed model (and the traceback frames pinning it) before
-            # loading a fresh copy, so the fallback does not transiently hold two copies on GPU.
+            # Free the partially-processed model before loading a fresh copy, so the fallback does
+            # not transiently hold two copies on GPU. llm-compressor keeps the model in a global
+            # session after a failed run, so reset it first; also drop the traceback frames (e) and
+            # the local reference that pin the model.
             import gc as _gc
             import torch as _torch
 
+            try:
+                from llmcompressor.core import reset_session
+
+                reset_session()
+            except Exception:
+                pass
             e = None
             del model
             _gc.collect()
