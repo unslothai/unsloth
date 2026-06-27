@@ -554,10 +554,19 @@ export function useChatModelRuntime() {
           const loadCustomContextLength = stateBeforeUnload.customContextLength;
           const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
           const loadTensorParallel = stateBeforeUnload.tensorParallel;
+          let loadVisionProjectorEnabled =
+            stateBeforeUnload.visionProjectorEnabled;
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
+          const willResetPerModelLoadSettings =
+            Boolean(currentCheckpoint) &&
+            currentCheckpoint !== modelId &&
+            !keepSpeculative;
+          if (willResetPerModelLoadSettings) {
+            loadVisionProjectorEnabled = true;
+          }
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -586,6 +595,7 @@ export function useChatModelRuntime() {
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
+              load_mmproj: loadVisionProjectorEnabled,
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
@@ -626,16 +636,19 @@ export function useChatModelRuntime() {
             // keepSpeculative skips this for a staged Load: the user picked the
             // mode for this model on the sidebar, so honor it (the backend still
             // falls back at runtime if the model has no MTP head).
-            if (currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative) {
+            if (willResetPerModelLoadSettings) {
               const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
                 speculativeType: persistedSpeculativeType,
                 loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+                visionProjectorEnabled: true,
+                loadedVisionProjectorEnabled: null,
               });
               loadSpeculativeType = persistedSpeculativeType;
               loadSpecDraftNMax = null;
+              loadVisionProjectorEnabled = true;
             }
 
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
@@ -666,6 +679,7 @@ export function useChatModelRuntime() {
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               tensor_parallel: loadTensorParallel,
+              load_mmproj: loadVisionProjectorEnabled,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -699,6 +713,7 @@ export function useChatModelRuntime() {
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
             const loadedTp = loadResponse.tensor_parallel ?? false;
+            const loadedVisionProjector = loadResponse.load_mmproj ?? true;
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
@@ -765,6 +780,8 @@ export function useChatModelRuntime() {
               loadedKvCacheDtype: loadedKv,
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              visionProjectorEnabled: loadedVisionProjector,
+              loadedVisionProjectorEnabled: loadedVisionProjector,
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
@@ -865,6 +882,8 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  load_mmproj:
+                    stateBeforeUnload.loadedVisionProjectorEnabled ?? true,
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,

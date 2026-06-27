@@ -1248,6 +1248,7 @@ class LlamaCppBackend:
         self._spec_fallback_reason: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
+        self._load_mmproj: bool = True
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
         # runner, not llama-server. Set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
@@ -1389,6 +1390,10 @@ class LlamaCppBackend:
     @property
     def is_vision(self) -> bool:
         return self._is_vision
+
+    @property
+    def load_mmproj(self) -> bool:
+        return getattr(self, "_load_mmproj", True)
 
     @property
     def is_diffusion(self) -> bool:
@@ -4478,6 +4483,7 @@ class LlamaCppBackend:
         # Common
         model_identifier: str,
         is_vision: bool = False,
+        load_mmproj: bool = True,
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
@@ -4508,6 +4514,7 @@ class LlamaCppBackend:
             "hf_token": hf_token,
             "model_identifier": model_identifier,
             "is_vision": is_vision,
+            "load_mmproj": load_mmproj,
             "n_ctx": n_ctx,
             "chat_template_override": chat_template_override,
             "cache_type_kv": cache_type_kv,
@@ -4541,6 +4548,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                load_mmproj = load_mmproj,
             ):
                 logger.info(
                     f"load_model: backend already in target state for "
@@ -4584,7 +4592,12 @@ class LlamaCppBackend:
                         hf_token = hf_token,
                     )
                     # Auto-download mmproj for vision models unless opted out.
-                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
+                    if (
+                        is_vision
+                        and load_mmproj
+                        and not mmproj_path
+                        and not extra_args_disable_mmproj(extra_args)
+                    ):
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
@@ -4764,8 +4777,9 @@ class LlamaCppBackend:
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
                 # Keep fit-budget and launch-flag mmproj resolution in sync.
+                wants_mmproj = bool(is_vision and load_mmproj)
                 launch_mmproj_path = None
-                if not extra_args_disable_mmproj(extra_args):
+                if wants_mmproj and not extra_args_disable_mmproj(extra_args):
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
@@ -4773,12 +4787,20 @@ class LlamaCppBackend:
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
-                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
-                if is_vision and not effective_is_vision:
+                effective_is_vision = bool(launch_mmproj_path) and wants_mmproj
+                if is_vision and load_mmproj and not effective_is_vision:
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
+                elif is_vision and not load_mmproj:
+                    logger.info(
+                        "Vision projector disabled for this GGUF load; "
+                        "image input will be disabled for this session"
+                    )
+                effective_load_mmproj = (
+                    bool(effective_is_vision) if is_vision else bool(load_mmproj)
+                )
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
@@ -5900,6 +5922,7 @@ class LlamaCppBackend:
                 else:
                     self._hf_variant = None
                 self._is_vision = effective_is_vision
+                self._load_mmproj = effective_load_mmproj
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately; do
@@ -6077,6 +6100,7 @@ class LlamaCppBackend:
                         )
                         cmd = self._strip_mmproj_args(_last_spawn_cmd)
                         self._is_vision = False
+                        self._load_mmproj = False
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)
                         if not self._wait_for_health(timeout = 600.0):
@@ -6484,6 +6508,7 @@ class LlamaCppBackend:
         chat_template_override: Optional[str],
         extra_args: Optional[List[str]],
         is_vision: bool,
+        load_mmproj: bool = True,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
@@ -6510,6 +6535,8 @@ class LlamaCppBackend:
         elif (self._hf_variant or "").lower() != (hf_variant or "").lower():
             return False
         if self._requested_n_ctx != int(n_ctx):
+            return False
+        if bool(getattr(self, "_load_mmproj", True)) != bool(load_mmproj):
             return False
 
         def _norm(value):
@@ -6620,6 +6647,7 @@ class LlamaCppBackend:
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None
             self._is_vision = False
+            self._load_mmproj = True
             self._is_audio = False
             self._audio_type = None
             self._audio_probed = False

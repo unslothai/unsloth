@@ -63,6 +63,8 @@ export interface LoadModelRequest {
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
+  /** Load the GGUF mmproj vision projector for image input. */
+  load_mmproj?: boolean | null;
 }
 
 export interface ValidateModelResponse {
@@ -151,6 +153,8 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** Whether the current GGUF load requested mmproj vision projector support. */
+  load_mmproj?: boolean;
 }
 
 export interface UnloadModelRequest {
@@ -195,6 +199,8 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** Whether the current GGUF load requested mmproj vision projector support. */
+  load_mmproj?: boolean;
   /**
    * Why MTP was disabled on the loaded model despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable

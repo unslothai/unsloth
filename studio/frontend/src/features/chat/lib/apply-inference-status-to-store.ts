@@ -226,6 +226,11 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    ...(status.load_mmproj !== undefined &&
+      prevState.loadedVisionProjectorEnabled === null && {
+        visionProjectorEnabled: status.load_mmproj,
+        loadedVisionProjectorEnabled: status.load_mmproj,
+      }),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {

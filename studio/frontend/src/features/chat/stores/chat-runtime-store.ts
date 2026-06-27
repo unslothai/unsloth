@@ -650,6 +650,10 @@ type ChatRuntimeStore = {
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
+  /** Load the GGUF mmproj vision projector for image input. */
+  visionProjectorEnabled: boolean;
+  /** Backend-reported mmproj load state; null until first hydrated. */
+  loadedVisionProjectorEnabled: boolean | null;
   /** Persisted: when false, picking a local model stages it as
    *  `pendingSelection` (and opens settings) instead of loading immediately,
    *  so load settings can be set before the single load. */
@@ -766,6 +770,8 @@ type ChatRuntimeStore = {
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
+  setTensorParallel: (value: boolean) => void;
+  setVisionProjectorEnabled: (value: boolean) => void;
   /** Revert the editable load knobs to the loaded model's baseline (or defaults
    *  when nothing is loaded). Used by the settings-sheet Reset button and to
    *  start each deferred-staging session clean so one staged pick's settings
@@ -775,7 +781,6 @@ type ChatRuntimeStore = {
    *  the settings sheet's restore effect and the "Load on selection" paths,
    *  which skip the sheet but must still honor a saved config. */
   applyRememberedLoadSettings: (settings: RememberedLoadSettings) => void;
-  setTensorParallel: (value: boolean) => void;
   setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
@@ -997,6 +1002,7 @@ function loadedBaselineSettings(s: ChatRuntimeStore) {
     customContextLength: null,
     kvCacheDtype: s.loadedKvCacheDtype,
     tensorParallel: s.loadedTensorParallel ?? false,
+    visionProjectorEnabled: s.loadedVisionProjectorEnabled ?? true,
     speculativeType: hasLoadedModel
       ? s.loadedSpeculativeType
       : readPersistedSpeculativeType(),
@@ -1092,6 +1098,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   tensorParallel: false,
   loadedTensorParallel: null,
+  visionProjectorEnabled: true,
+  loadedVisionProjectorEnabled: null,
   loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
@@ -1335,6 +1343,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpecDraftNMax: null,
       tensorParallel: false,
       loadedTensorParallel: null,
+      visionProjectorEnabled: true,
+      loadedVisionProjectorEnabled: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,
@@ -1533,6 +1543,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),
+  setVisionProjectorEnabled: (visionProjectorEnabled) =>
+    set({ visionProjectorEnabled }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
   applyRememberedLoadSettings: (settings) =>
     // Coalesce every field: a blob persisted by an older/newer build can omit
@@ -1543,6 +1555,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       speculativeType: settings.speculativeType ?? "auto",
       specDraftNMax: settings.specDraftNMax ?? null,
       tensorParallel: settings.tensorParallel ?? false,
+      visionProjectorEnabled: settings.visionProjectorEnabled ?? true,
     }),
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
@@ -1572,8 +1585,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // Speculative starts from the standing default, not the loaded model's
         // mode, so a fresh pick doesn't inherit (and then carry, via the staged
         // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
+        // Vision Projector is also a per-load choice, so each new staged GGUF
+        // starts with the documented default instead of inheriting a prior
+        // text-only load.
         speculativeType: readPersistedSpeculativeType(),
         specDraftNMax: null,
+        visionProjectorEnabled: true,
+        loadedVisionProjectorEnabled: null,
       };
     });
   },

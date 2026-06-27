@@ -309,6 +309,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         captured = None,
         training_active,
         decision,
+        include_mmproj = True,
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
         with _stub_guard_deps(
@@ -321,6 +322,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 load_in_4bit = True,
                 max_seq_length = 0,
                 requested_gpu_ids = None,
+                include_mmproj = include_mmproj,
             )
 
     def test_noop_when_training_inactive(self):
@@ -351,7 +353,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
     def test_gguf_config_passes_is_gguf_and_override(self):
         captured = []
         config = SimpleNamespace(is_gguf = True)
-        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5):
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5) as estimate:
             self._guard(
                 config = config,
                 captured = captured,
@@ -360,6 +362,21 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         self.assertEqual(captured[0]["is_gguf"], True)
         self.assertEqual(captured[0]["required_override_gb"], 12.5)
+        self.assertTrue(estimate.call_args.kwargs["include_mmproj"])
+
+    def test_gguf_disabled_mmproj_excludes_projector_from_override(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5) as estimate:
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {}),
+                include_mmproj = False,
+            )
+        self.assertEqual(captured[0]["required_override_gb"], 12.5)
+        self.assertFalse(estimate.call_args.kwargs["include_mmproj"])
 
 
 class TestEffectiveLoadIn4bit(unittest.TestCase):
@@ -420,16 +437,21 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         decision,
         captured = None,
         load_in_4bit = True,
+        load_mmproj = True,
+        is_gguf = False,
     ):
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(
-            model_path = "unsloth/Qwen3-1.7B", load_in_4bit = load_in_4bit, max_seq_length = 4096
+            model_path = "unsloth/Qwen3-1.7B",
+            load_in_4bit = load_in_4bit,
+            load_mmproj = load_mmproj,
+            max_seq_length = 4096,
         )
         cfg = SimpleNamespace(
             identifier = "unsloth/Qwen3-1.7B",
             display_name = "Qwen3-1.7B",
-            is_gguf = False,
+            is_gguf = is_gguf,
             is_lora = False,
             is_vision = False,
             path = None,
@@ -466,6 +488,19 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         )
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
+
+    def test_passes_load_mmproj_to_guard(self):
+        captured = []
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5) as estimate:
+            self._validate(
+                training_active = True,
+                decision = (True, {}),
+                captured = captured,
+                load_mmproj = False,
+                is_gguf = True,
+            )
+        self.assertEqual(captured[0]["required_override_gb"], 12.5)
+        self.assertFalse(estimate.call_args.kwargs["include_mmproj"])
 
     def test_rejects_gguf_with_gpu_ids_before_guard(self):
         # /validate must mirror /load's GGUF + gpu_ids 400, before the VRAM guard.
@@ -551,6 +586,28 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
 
+    def test_remote_can_exclude_mmproj_companion(self):
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], True)),
+            patch.object(
+                self.route, "_remote_gguf_companion_bytes", return_value = 1 * 1024**3
+            ) as comp,
+        ):
+            gb = self.route._estimate_gguf_required_gb(cfg, include_mmproj = False)
+        self.assertAlmostEqual(gb, 11.0, places = 6)
+        self.assertFalse(comp.call_args.kwargs["include_mmproj"])
+
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
         cfg = SimpleNamespace(
@@ -582,6 +639,29 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0):
                 gb = self.route._estimate_gguf_required_gb(cfg, max_seq_length = 8192)
         self.assertAlmostEqual(gb, 1000 / (1024**3) + 2.0, places = 6)  # weights + KV
+
+    def test_local_can_exclude_mmproj_companion(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            model = p / "model.gguf"
+            mmproj = p / "mmproj.gguf"
+            mtp = p / "mtp.gguf"
+            model.write_bytes(b"m" * 1000)
+            mmproj.write_bytes(b"v" * 2000)
+            mtp.write_bytes(b"d" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(model),
+                gguf_mmproj_file = str(mmproj),
+                gguf_mtp_file = str(mtp),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(
+                self.route.LlamaCppBackend, "_get_gguf_size_bytes", return_value = 1000
+            ):
+                gb = self.route._estimate_gguf_required_gb(cfg, include_mmproj = False)
+        self.assertAlmostEqual(gb, 4000 / (1024**3), places = 9)  # weights + MTP only
 
     def test_kv_helper_graceful_on_non_gguf(self):
         import tempfile

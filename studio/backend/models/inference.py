@@ -100,6 +100,13 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    load_mmproj: bool = Field(
+        True,
+        description = (
+            "For GGUF vision models, load the mmproj vision projector. "
+            "Disable to run the model as text-only and avoid the extra VRAM cost."
+        ),
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -133,6 +140,13 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    load_mmproj: bool = Field(
+        True,
+        description = (
+            "For GGUF vision models, include the mmproj vision projector in "
+            "validation-time VRAM sizing. Mirrors LoadRequest.load_mmproj."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -269,6 +283,10 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
+    load_mmproj: bool = Field(
+        True,
+        description = "Whether the current GGUF load requested mmproj vision projector support.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -396,6 +414,10 @@ class InferenceStatusResponse(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    load_mmproj: bool = Field(
+        True,
+        description = "Whether the current GGUF load requested mmproj vision projector support.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,

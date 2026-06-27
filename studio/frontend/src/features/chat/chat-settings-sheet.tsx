@@ -122,6 +122,36 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
+function getBillionScaleModelSize(modelId: string): number | null {
+  const match = modelId.match(
+    /(?:^|[^a-z0-9])(\d+(?:\.\d+)?)\s*b(?:[^a-z0-9]|$)/i,
+  );
+  if (!match) return null;
+  const parsed = Number.parseFloat(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isLikelyMtpModel(modelId: string | null | undefined): boolean {
+  if (!modelId) return false;
+  if (!/(?:^|[^a-z0-9])mtp(?:[^a-z0-9]|$)/i.test(modelId)) return false;
+  const size = getBillionScaleModelSize(modelId);
+  return size == null || size >= 3;
+}
+
+function speculativeModeMayUseMtp(
+  mode: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  const normalized = mode?.trim().toLowerCase() || "auto";
+  if (normalized === "mtp" || normalized === "mtp+ngram") return true;
+  if (normalized === "draft-mtp") return true;
+  if (normalized.includes("draft-mtp")) return true;
+  return (
+    (normalized === "auto" || normalized === "default") &&
+    isLikelyMtpModel(modelId)
+  );
+}
+
 function getPromptVariablesError(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -592,7 +622,17 @@ export function ChatSettingsPanel({
   const loadedSpecDraftNMax = useChatRuntimeStore(
     (s) => s.loadedSpecDraftNMax,
   );
+  const visionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.visionProjectorEnabled,
+  );
+  const setVisionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.setVisionProjectorEnabled,
+  );
+  const loadedVisionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.loadedVisionProjectorEnabled,
+  );
   const currentCheckpoint = params.checkpoint;
+  const activeLoadModelId = pendingSelection?.id ?? currentCheckpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
@@ -669,11 +709,36 @@ export function ChatSettingsPanel({
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
+  const visionProjectorDirty =
+    loadedVisionProjectorEnabled !== null &&
+    visionProjectorEnabled !== loadedVisionProjectorEnabled;
   // A saved chat-template override is a reload-time setting too, so surface
   // Apply for a template-only edit (otherwise it could never be applied).
   const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
   const modelSettingsDirty =
-    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty || templateDirty;
+    kvDirty ||
+    ctxDirty ||
+    specDirty ||
+    specDraftDirty ||
+    tpDirty ||
+    visionProjectorDirty ||
+    templateDirty;
+  const warnIfMmprojMtpSelected = (
+    nextSpeculativeType: string | null | undefined = speculativeType,
+    nextVisionProjectorEnabled: boolean = visionProjectorEnabled,
+  ) => {
+    if (
+      !isGguf ||
+      !nextVisionProjectorEnabled ||
+      !speculativeModeMayUseMtp(nextSpeculativeType, activeLoadModelId)
+    ) {
+      return;
+    }
+    toast.warning("Vision Projector may not work well with MTP", {
+      description:
+        "If image input behaves poorly, set Speculative Decoding to Off or disable Vision Projector before applying.",
+    });
+  };
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -1098,6 +1163,7 @@ export function ChatSettingsPanel({
                       value={speculativeType ?? "auto"}
                       onValueChange={(v) => {
                         setSpeculativeType(v);
+                        warnIfMmprojMtpSelected(v);
                         if (v !== "mtp" && v !== "mtp+ngram") {
                           setSpecDraftNMax(null);
                         }
@@ -1193,6 +1259,28 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Vision Projector
+                    </span>
+                    <InfoHint>
+                      Loads the GGUF mmproj file for image input. Disable to run
+                      vision-capable models as text-only and avoid the extra VRAM
+                      cost.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={visionProjectorEnabled}
+                    onCheckedChange={(checked) => {
+                      setVisionProjectorEnabled(checked);
+                      warnIfMmprojMtpSelected(speculativeType, checked);
+                    }}
+                    aria-label="Load vision projector"
+                    data-test-id="vision-projector-switch"
+                  />
+                </div>
                   </>
                 )}
                 <div className="flex items-center justify-between gap-3">
@@ -1270,6 +1358,7 @@ export function ChatSettingsPanel({
                               speculativeType,
                               specDraftNMax,
                               tensorParallel,
+                              visionProjectorEnabled,
                             });
                           } else {
                             clearRememberedLoadSettings(pid);
@@ -1306,7 +1395,10 @@ export function ChatSettingsPanel({
               <div className="flex flex-wrap gap-1.5">
                 <Button
                   type="button"
-                  onClick={() => onReloadModel?.()}
+                  onClick={() => {
+                    warnIfMmprojMtpSelected();
+                    onReloadModel?.();
+                  }}
                   size="sm"
                   className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
                 >

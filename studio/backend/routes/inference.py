@@ -2095,6 +2095,8 @@ def _request_matches_loaded_settings(
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
         return False
+    if bool(request.load_mmproj) != bool(llama_backend.load_mmproj):
+        return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
     ):
@@ -2314,6 +2316,7 @@ def _estimate_gguf_required_gb(
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    include_mmproj: bool = True,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -2323,7 +2326,10 @@ def _estimate_gguf_required_gb(
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+        companion_attrs = ["gguf_mtp_file"]
+        if include_mmproj:
+            companion_attrs.append("gguf_mmproj_file")
+        for attr in companion_attrs:
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
@@ -2344,7 +2350,7 @@ def _estimate_gguf_required_gb(
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(
-                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+                repo, hf_token = hf_token, include_mmproj = include_mmproj and bool(has_vision)
             )
             return (main_bytes + companions) / (1024**3)
         return None
@@ -2363,6 +2369,7 @@ def _guard_chat_load_against_training(
     requested_gpu_ids: Optional[List[int]],
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    include_mmproj: bool = True,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
@@ -2386,6 +2393,7 @@ def _guard_chat_load_against_training(
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
+            include_mmproj = include_mmproj,
         )
         if is_gguf
         else None
@@ -2574,6 +2582,7 @@ async def load_model(
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
                     tensor_parallel = llama_backend.tensor_parallel,
+                    load_mmproj = llama_backend.load_mmproj,
                 )
         else:
             if (
@@ -2667,6 +2676,7 @@ async def load_model(
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            include_mmproj = request.load_mmproj,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -2769,6 +2779,7 @@ async def load_model(
             _common_load_kwargs = dict(
                 model_identifier = config.identifier,
                 is_vision = config.is_vision,
+                load_mmproj = request.load_mmproj,
                 n_ctx = request.max_seq_length,
                 chat_template_override = effective_chat_template_override,
                 cache_type_kv = request.cache_type_kv,
@@ -2786,7 +2797,7 @@ async def load_model(
             else:
                 # Local mode: llama-server loads via -m <path>
                 if native_grant_backed:
-                    if config.gguf_mmproj_file:
+                    if request.load_mmproj and config.gguf_mmproj_file:
                         _validate_native_gguf_companion(
                             config.gguf_mmproj_file, config.gguf_file, "vision companion"
                         )
@@ -2886,6 +2897,7 @@ async def load_model(
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,
+                load_mmproj = llama_backend.load_mmproj,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -3159,6 +3171,7 @@ async def validate_model(
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
+            include_mmproj = request.load_mmproj,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
@@ -3585,6 +3598,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,
+                load_mmproj = llama_backend.load_mmproj,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
