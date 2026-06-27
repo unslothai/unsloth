@@ -192,17 +192,11 @@ _DEEPSEEK_END = "<｜tool▁calls▁end｜>"
 _DEEPSEEK_CALL_BEGIN = "<｜tool▁call▁begin｜>"
 _DEEPSEEK_SEP = "<｜tool▁sep｜>"
 _DEEPSEEK_CALL_END = "<｜tool▁call▁end｜>"
-# R1 specifically wraps the args in a Markdown ```json ... ``` fence and
-# prefixes the call with the literal ``function`` token; V3 / V3.1 do
-# not. Detect R1 by the presence of ``function<｜tool▁sep｜>`` followed
-# by ``\n```json``.
-_DEEPSEEK_R1_FUNC_RE = re.compile(
-    r"(?:"
-    + re.escape(_DEEPSEEK_CALL_BEGIN)
-    + r")?function"
-    + re.escape(_DEEPSEEK_SEP)
-    + r"([^\n]+)\n```json\n",
-)
+# R1 wraps args in a Markdown ```json ... ``` fence and prefixes the call with
+# the literal ``function`` token; V3 / V3.1 do not. Scanned with ``str.find``
+# (a greedy ``([^\n]+)\n```json`` regex is O(N^2) on a fence-less truncated body).
+_DEEPSEEK_R1_FUNC_MARKER = "function" + _DEEPSEEK_SEP
+_DEEPSEEK_R1_FENCE = "\n```json\n"
 _DEEPSEEK_R1_CLOSE_RE = re.compile(r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_END))
 # V3 / V3.1 (bare-JSON, no fence) is handled by ``str.find`` on the sep
 # marker; see ``_parse_deepseek_tool_calls`` -- a ``([^\n<]+?)`` regex
@@ -215,10 +209,10 @@ _DEEPSEEK_R1_CLOSE_RE = re.compile(r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_EN
 # excludes Qwen.
 _GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([^\n<{][^\n<]*?)\s*(?=\n|<arg_key>|</tool_call>)")
 _GLM_TC_CLOSE = "</tool_call>"
-_GLM_ARG_PAIR_RE = re.compile(
-    r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
-    re.DOTALL,
-)
+_GLM_ARG_KEY_OPEN = "<arg_key>"
+_GLM_ARG_KEY_CLOSE = "</arg_key>"
+_GLM_ARG_VAL_OPEN = "<arg_value>"
+_GLM_ARG_VAL_CLOSE = "</arg_value>"
 # Template emits string args raw and non-strings via tojson; without
 # tool schema we can only safely decode unambiguous JSON literals.
 # Bare ``42`` / ``true`` / ``null`` remain ambiguous with strings.
@@ -1229,14 +1223,21 @@ def _parse_deepseek_tool_calls(
     # R1 path first: ``function<｜tool▁sep｜>NAME\n```json\n{...}\n```<｜tool▁call▁end｜>``.
     pos = 0
     while pos < len(body):
-        m = _DEEPSEEK_R1_FUNC_RE.search(body, pos)
-        if not m:
+        fpos = body.find(_DEEPSEEK_R1_FUNC_MARKER, pos)
+        if fpos < 0:
             break
-        name = m.group(1).strip()
-        json_start = m.end()
+        name_start = fpos + len(_DEEPSEEK_R1_FUNC_MARKER)
+        nl = body.find("\n", name_start)
+        if nl < 0:
+            break
+        if not body.startswith(_DEEPSEEK_R1_FENCE, nl):
+            pos = name_start
+            continue
+        name = body[name_start:nl].strip()
+        json_start = nl + len(_DEEPSEEK_R1_FENCE)
         # Walk a balanced ``{`` even if the trailing fence is truncated.
         if json_start >= len(body) or body[json_start] != "{":
-            pos = m.end()
+            pos = json_start
             continue
         brace_end = _balanced_brace_end(body, json_start)
         if brace_end is None:
@@ -1346,9 +1347,29 @@ def _parse_glm_tool_calls(
         body = content[body_start:body_end]
 
         args: dict[str, Any] = {}
-        for pair in _GLM_ARG_PAIR_RE.finditer(body):
-            key = pair.group(1).strip()
-            raw_val = pair.group(2)
+        # Walk arg_key/arg_value pairs with ``str.find``; a lazy-group ``finditer``
+        # is O(N^2) when an unclosed body holds many bare ``<arg_key>`` tokens.
+        apos = 0
+        while True:
+            ks = body.find(_GLM_ARG_KEY_OPEN, apos)
+            if ks < 0:
+                break
+            ke = body.find(_GLM_ARG_KEY_CLOSE, ks + len(_GLM_ARG_KEY_OPEN))
+            if ke < 0:
+                break
+            vstart = ke + len(_GLM_ARG_KEY_CLOSE)
+            while vstart < len(body) and body[vstart] in " \t\r\n":
+                vstart += 1
+            if not body.startswith(_GLM_ARG_VAL_OPEN, vstart):
+                apos = ke + len(_GLM_ARG_KEY_CLOSE)
+                continue
+            vs = vstart + len(_GLM_ARG_VAL_OPEN)
+            ve = body.find(_GLM_ARG_VAL_CLOSE, vs)
+            if ve < 0:
+                break
+            key = body[ks + len(_GLM_ARG_KEY_OPEN) : ke].strip()
+            raw_val = body[vs:ve]
+            apos = ve + len(_GLM_ARG_VAL_CLOSE)
             # Template emits non-strings via ``tojson``, strings verbatim. Probe for
             # an unambiguous JSON literal; else keep the value RAW so whitespace in
             # string args (code, diffs) survives -- matches vLLM glm4_moe.

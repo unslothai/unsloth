@@ -1584,19 +1584,26 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
 # (closed pair, orphan open to EOF, bare orphan close, tail-only ``</parameter>``).
 # Mistral ``[TOOL_CALLS]`` goes to the parser's balanced-brace helper -- a non-greedy
 # ``\{.*?\}`` here would truncate nested JSON at the first ``}``.
+# Reuse the parser's DeepSeek opener alternation so the display strip covers every
+# opener the parser accepts (incl. the space / escaped-underscore spellings); a
+# signal we parse must never be left un-stripped.
+from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
+
 _TOOL_XML_RE = _re.compile(
     # Hyphen in the name char-class matches MCP tool names with dashes
     # (mcp__srv__list-issues) that would otherwise leak past this strip. The Llama-3
     # ``<|python_tag|>...`` arm runs to the next ``<|`` sentinel or EOF;
-    # ``(?:[^<]|<(?!\|))*`` keeps literal ``<``, newlines, embedded JSON. The last two
-    # arms strip DeepSeek and Kimi / GLM section blocks (full-width ``｜`` markers).
+    # ``(?:[^<]|<(?!\|))*`` keeps literal ``<``, newlines, embedded JSON. The last
+    # arms strip DeepSeek envelopes (every opener variant), Kimi section blocks, and
+    # a bare (section-less) Kimi call.
     r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
     r"|<\|python_tag\|>(?:[^<]|<(?!\|))*"
-    r"|<｜tool[▁_]calls(?:[▁_]begin)?｜>.*?(?:<｜tool▁calls▁end｜>|\Z)"
+    r"|" + _DS_OPEN_SRC + r".*?(?:<｜tool▁calls▁end｜>|\Z)"
     r"|<\|tool_calls_section_begin\|>.*?(?:<\|tool_calls_section_end\|>|\Z)"
+    r"|<\|tool_call_begin\|>.*?(?:<\|tool_call_end\|>|\Z)"
     r"|</parameter>\s*\Z",
     _re.DOTALL,
 )

@@ -24,7 +24,11 @@ import re as _re
 _src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
-_ns = {"_re": _re}
+# The regex reuses the parser's shared DeepSeek opener alternation; provide it so
+# the extracted ``_re.compile`` expression resolves the same source.
+from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
+
+_ns = {"_re": _re, "_DS_OPEN_SRC": _DS_OPEN_SRC}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
 _helper = _re.search(
@@ -281,3 +285,39 @@ def test_no_catastrophic_backtracking_on_orphan_opening_spam():
     elapsed = time.perf_counter() - t0
     assert elapsed < 0.1, f"regex took {elapsed*1000:.0f}ms on 1000x orphan opens"
     assert "<tool_call>" not in cleaned
+
+
+# ── DeepSeek opener variants + bare Kimi (parse/strip symmetry) ──
+
+
+def test_strips_deepseek_space_opener_variant():
+    # The space-separated opener is parsed by the parser, so the display strip
+    # must remove it too (the shared opener alternation is reused here).
+    text = (
+        "pre <｜tool calls begin｜><｜tool▁call▁begin｜>get_x<｜tool▁sep｜>"
+        '{"a":1}<｜tool▁call▁end｜><｜tool▁calls▁end｜> post'
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "tool" not in cleaned.replace("post", "").replace("pre", "")
+    assert cleaned == "pre  post"
+
+
+def test_strips_deepseek_escaped_underscore_opener_variant():
+    text = (
+        "pre <｜tool\\_calls\\_begin｜><｜tool▁call▁begin｜>get_y<｜tool▁sep｜>"
+        '{"a":1}<｜tool▁call▁end｜><｜tool▁calls▁end｜> post'
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == "pre  post"
+
+
+def test_strips_bare_kimi_call_without_section_wrapper():
+    # Kimi can emit a bare <|tool_call_begin|>...<|tool_call_end|> with no
+    # section wrapper; the parser accepts it, so the strip must cover it.
+    text = (
+        "pre <|tool_call_begin|>functions.get_w:0<|tool_call_argument_begin|>"
+        '{"a":1}<|tool_call_end|> post'
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "tool_call_begin" not in cleaned
+    assert cleaned == "pre  post"

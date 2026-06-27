@@ -243,6 +243,49 @@ def test_deepseek_v3_1_huge_truncated_body_is_linear():
     assert calls == []
 
 
+def test_deepseek_r1_huge_fenceless_body_is_linear():
+    """R1 detection used a greedy ``([^\\n]+)\\n```json`` regex that is O(N^2) on a
+    fence-less body of repeated ``function<sep>`` tokens. The parser now scans with
+    ``str.find``; budget 1s to flag any regression."""
+    import time as _time
+
+    text = "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * 40_000
+    start = _time.time()
+    calls = parse_tool_calls_from_text(text)
+    elapsed = _time.time() - start
+    assert elapsed < 1.0, f"R1 path is non-linear: {elapsed:.2f}s"
+    assert calls == []
+
+
+def test_glm_unclosed_body_many_arg_keys_is_linear():
+    """An unclosed GLM ``<tool_call>`` body runs to EOF; a lazy-group ``finditer``
+    over many bare ``<arg_key>`` tokens was O(N^2). The parser now walks pairs with
+    ``str.find``; budget 1s."""
+    import time as _time
+
+    text = "<tool_call>foo\n" + "<arg_key>k" * 40_000
+    start = _time.time()
+    parse_tool_calls_from_text(text)
+    elapsed = _time.time() - start
+    assert elapsed < 1.0, f"GLM path is non-linear: {elapsed:.2f}s"
+
+
+def test_deepseek_r1_fenced_json_parses():
+    """R1 wraps args in a ```json fence after ``function<sep>NAME``."""
+    import json as _json
+
+    text = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather\n"
+        "```json\n"
+        '{"city":"NYC","unit":"c"}\n'
+        "```<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    )
+    calls = parse_tool_calls_from_text(text)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "get_weather"
+    assert _json.loads(calls[0]["function"]["arguments"]) == {"city": "NYC", "unit": "c"}
+
+
 def test_deepseek_v3_1_truncated_arguments_drops_call_without_crash():
     text = (
         "<｜tool▁calls▁begin｜>"
