@@ -1173,7 +1173,9 @@ def _ensure_cpu_torch() -> None:
         return
     if probe.returncode != 0:
         return
-    _lines = [line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()]
+    _lines = [
+        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
+    ]
     if not _lines or _lines[-1] != "gpu":
         return  # already CPU (or unreadable) -- nothing to repair
 
