@@ -1644,7 +1644,13 @@ export function HubModelPicker({
     // is not dropped by the recommendation default.
     rows =
       formatFilter === "all"
-        ? rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac))
+        ? rows.filter((r) =>
+            // Images (task set) loads single-file GGUF only, so don't surface
+            // non-GGUF text-to-image rows (e.g. safetensors on Mac, which
+            // isRecommendableFormat admits) that the page can't load —
+            // selecting one is a silent no-op.
+            task ? r.isGguf : isRecommendableFormat(r.id, r.isGguf, isMac),
+          )
         : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
     if (recommendedSort !== "recommended") return rows;
     return rows.filter((r) => {
@@ -1678,6 +1684,7 @@ export function HubModelPicker({
     isMac,
     gpu,
     isChatSupported,
+    task,
   ]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
@@ -1974,10 +1981,14 @@ export function HubModelPicker({
       .filter((id) => !isHiddenModelId(id))
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
-      // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
-      // on Mac (matches the empty Recommended view so search stays consistent).
-      .filter(
-        (id) => !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+      // Images (task set) loads single-file GGUF only, so don't surface non-GGUF
+      // text-to-image rows the page can't load (mirrors the Recommended view).
+      // Otherwise chat-only keeps runnable formats: GGUF anywhere, plus MLX/
+      // safetensors on Mac.
+      .filter((id) =>
+        task
+          ? isKnownGgufRepo(id)
+          : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
       .filter((id) =>
@@ -1993,6 +2004,7 @@ export function HubModelPicker({
     isChatSupported,
     formatFilter,
     isMac,
+    task,
   ]);
 
   const hubOptionKeys = useMemo(() => {

@@ -116,6 +116,10 @@ class DiffusionBackend:
             # emulation on those cards and would still pick BF16.)
             dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
             return "cuda", dtype
+        # Intel XPU enables the Images page (CHAT_ONLY=False in hardware.py), so
+        # without this branch an Arc user would silently run diffusion on CPU.
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return "xpu", torch.bfloat16
         mps = getattr(torch.backends, "mps", None)
         if mps is not None and mps.is_available():
             return "mps", torch.float16
@@ -158,6 +162,28 @@ class DiffusionBackend:
 
     # ── Background load + progress ─────────────────────────────────────────
 
+    def validate_load(
+        self,
+        repo_id: str,
+        *,
+        gguf_filename: Optional[str] = None,
+        family_override: Optional[str] = None,
+    ) -> DiffusionFamily:
+        """Cheap, pure-synchronous pre-flight: returns the resolved family or
+        raises ValueError. No I/O, so a caller can reject a bad request before
+        taking the GPU (begin_load and load_pipeline re-check on the load path)."""
+        if not gguf_filename:
+            raise ValueError(
+                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
+            )
+        fam = detect_family(repo_id, family_override)
+        if fam is None:
+            raise ValueError(
+                f"'{repo_id}' isn't a supported image-generation model. "
+                f"Supported: Z-Image, Qwen-Image, FLUX.1, FLUX.2-klein."
+            )
+        return fam
+
     def begin_load(
         self,
         repo_id: str,
@@ -169,16 +195,9 @@ class DiffusionBackend:
         cpu_offload: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
-        if not gguf_filename:
-            raise ValueError(
-                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
-            )
-        fam = detect_family(repo_id, family_override)
-        if fam is None:
-            raise ValueError(
-                f"'{repo_id}' isn't a supported image-generation model. "
-                f"Supported: Z-Image, Qwen-Image, FLUX.1, FLUX.2-klein."
-            )
+        fam = self.validate_load(
+            repo_id, gguf_filename = gguf_filename, family_override = family_override
+        )
 
         with self._lock:
             # Allow starting over a previously-failed load, but not over a live one.
@@ -330,16 +349,9 @@ class DiffusionBackend:
     ) -> dict[str, Any]:
         import diffusers
 
-        if not gguf_filename:
-            raise ValueError(
-                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
-            )
-        fam = detect_family(repo_id, family_override)
-        if fam is None:
-            raise ValueError(
-                f"'{repo_id}' isn't a supported image-generation model. "
-                f"Supported: Z-Image, Qwen-Image, FLUX.1, FLUX.2-klein."
-            )
+        fam = self.validate_load(
+            repo_id, gguf_filename = gguf_filename, family_override = family_override
+        )
         base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
         device, dtype = self._pick_device_and_dtype()
 

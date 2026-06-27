@@ -29,6 +29,11 @@ class _FakeBackend:
     def is_loaded(self) -> bool:
         return self.loaded
 
+    def validate_load(self, model_path, **kwargs):
+        # The route runs this cheap pre-flight before taking the GPU. The fake
+        # accepts anything; tests that exercise rejection patch it to raise.
+        return None
+
     def begin_load(self, model_path, **kwargs):
         # The real backend loads on a thread; the fake completes instantly.
         self.loaded = True
@@ -244,13 +249,37 @@ def test_load_unknown_family_returns_400(client, monkeypatch):
         raise ValueError("'x/y' isn't a supported image-generation model. Supported: Z-Image.")
 
     backend = _FakeBackend()
-    backend.begin_load = _raise
+    # Validation runs in the pre-flight (before the GPU is taken), so that is
+    # where an unsupported model is rejected now.
+    backend.validate_load = _raise
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     resp = client.post(
         "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
     )
     assert resp.status_code == 400
     assert "isn't a supported image-generation model" in resp.json()["detail"]
+
+
+def test_load_validation_failure_does_not_evict_chat(client, monkeypatch):
+    # A rejected image-model pick must not tear down the user's loaded chat model:
+    # validation runs before acquire_for, so chat keeps the GPU on a 400.
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    evicted = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append(True))
+
+    backend = _FakeBackend()
+
+    def _raise(*a, **k):
+        raise ValueError("'x/y' isn't a supported image-generation model.")
+
+    backend.validate_load = _raise
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
+    )
+    assert resp.status_code == 400
+    assert evicted == []  # chat backend was never evicted
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
 def test_load_progress_route(client):

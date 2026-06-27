@@ -10069,6 +10069,14 @@ async def load_diffusion_model(
 
     backend = get_diffusion_backend()
     try:
+        # Reject an unsupported/malformed request BEFORE taking the GPU, so a
+        # bad image-model pick doesn't evict the user's loaded chat model only
+        # to 400. validate_load is pure (no I/O), so it runs inline.
+        backend.validate_load(
+            request.model_path,
+            gguf_filename = request.gguf_filename,
+            family_override = request.family_override,
+        )
         # Take the GPU from the chat backend, then kick the (slow) load onto a
         # background thread and return at once — the client polls images/load-progress.
         await asyncio.to_thread(acquire_for, DIFFUSION)

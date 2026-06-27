@@ -580,18 +580,6 @@ export function ImagesPage() {
     }
   }, []);
 
-  useEffect(() => {
-    void refreshStatus();
-    // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the
-    // load toast — its poll loop is gone, so it would otherwise hang forever
-    // (duration: Infinity) on whatever page the user navigated to.
-    return () => {
-      if (pollTimer.current) clearTimeout(pollTimer.current);
-      if (genPollTimer.current) clearInterval(genPollTimer.current);
-      dismissLoadToast();
-    };
-  }, [refreshStatus, dismissLoadToast]);
-
   // Poll load-progress until the background load reaches "ready" or "error",
   // updating the persistent toast in place each tick.
   const pollLoadProgress = useCallback(async () => {
@@ -613,6 +601,16 @@ export function ImagesPage() {
         void refreshStatus();
         return;
       }
+      if (p.phase === null) {
+        // No load in flight and nothing loaded: the load was cancelled or
+        // evicted (e.g. a chat load took the GPU) and the backend cleared its
+        // state. Terminal — otherwise this loop would spin forever and leave
+        // busy stuck on "loading", deadening the picker and Generate button.
+        dismissLoadToast();
+        setBusy(null);
+        void refreshStatus();
+        return;
+      }
       // Include bytes_total: the estimate lands as a 0→real jump while phase and
       // bytes_downloaded hold, and the toast shows the percentage off that total.
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
@@ -625,6 +623,36 @@ export function ImagesPage() {
     }
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
   }, [dismissLoadToast, refreshStatus]);
+
+  useEffect(() => {
+    void (async () => {
+      await refreshStatus();
+      // A load runs on the backend as a daemon thread that survives navigation.
+      // On (re)mount, resume tracking one that's still in flight so the page
+      // shows progress and updates on completion, instead of a stale view that
+      // never polls (no toast, and no refresh when the load finishes).
+      try {
+        const p = await getDiffusionLoadProgress();
+        if (p.phase === "downloading" || p.phase === "finalizing") {
+          setBusy("loading");
+          dismissLoadToast();
+          lastLoadSig.current = null;
+          loadToastId.current = toast(null, loadToastArgs(p, loadToastId.current));
+          void pollLoadProgress();
+        }
+      } catch {
+        // Resume is best-effort; a failed probe just leaves the idle view.
+      }
+    })();
+    // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the
+    // load toast — its poll loop is gone, so it would otherwise hang forever
+    // (duration: Infinity) on whatever page the user navigated to.
+    return () => {
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+      if (genPollTimer.current) clearInterval(genPollTimer.current);
+      dismissLoadToast();
+    };
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
 
   const handleLoad = useCallback(
     async (repoId: string, ggufFilename: string) => {
@@ -660,6 +688,10 @@ export function ImagesPage() {
   // and seed the inputs with that model's defaults.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
+      // Ignore picks while a load/generation/unload is in flight: starting a
+      // replacement load now would tear down the live poll/toast and reset
+      // busy, while the backend rejects the second load with a 409.
+      if (busy !== null) return;
       if (!meta.ggufVariant || !meta.ggufFilename) return; // not a quant pick
       setQuant(meta.ggufVariant);
       const d = defaultsFor(id);
@@ -667,10 +699,18 @@ export function ImagesPage() {
       setGuidance(d.guidance);
       void handleLoad(id, meta.ggufFilename);
     },
-    [handleLoad],
+    [busy, handleLoad],
   );
 
   const handleUnload = useCallback(async () => {
+    // Ejecting cancels any in-flight replacement load on the backend, so tear
+    // down its client-side tracking too: the load poll reschedules on phase
+    // null and the persistent toast never resolves, so both would otherwise
+    // leak forever after the unload.
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+    dismissLoadToast();
+    lastLoadSig.current = null;
     setBusy("unloading");
     try {
       setStatus(await unloadDiffusionModel());
@@ -681,7 +721,7 @@ export function ImagesPage() {
     } finally {
       setBusy(null);
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, dismissLoadToast]);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
