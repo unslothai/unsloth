@@ -131,6 +131,25 @@ def test_verbose_keeps_scanner_requests(logs, monkeypatch):
     assert logs.events[0][2]["method"] == "CONNECT"
 
 
+def test_duplicate_success_get_deduped_by_default(logs):
+    # Two identical successful GETs within the window: only the first logs.
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(2):
+        _run(mw(_scope("/api/runs"), _noop_receive, _send))
+    assert len(logs.events) == 1
+
+
+def test_verbose_keeps_duplicate_success_get(logs, monkeypatch):
+    # ... but --verbose must emit every line, including the duplicate. The direct
+    # backend --verbose path doesn't zero the dedup env vars, so the dedup helper
+    # itself has to honor verbose (regression: it previously dropped the repeat).
+    monkeypatch.setenv("UNSLOTH_STUDIO_VERBOSE", "1")
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(2):
+        _run(mw(_scope("/api/runs"), _noop_receive, _send))
+    assert len(logs.events) == 2
+
+
 # ── verbose helper (B1/B2) ─────────────────────────────────────────────
 
 

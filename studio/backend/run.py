@@ -1374,7 +1374,9 @@ if __name__ == "__main__":
     # suppression site see it; also restore library/DEBUG logging.
     if args.verbose:
         os.environ["UNSLOTH_STUDIO_VERBOSE"] = "1"
-        os.environ.setdefault("LOG_LEVEL", "DEBUG")
+        # Force DEBUG: --verbose must restore the demoted lines even when a
+        # launcher already exported LOG_LEVEL=INFO/WARNING (setdefault would not).
+        os.environ["LOG_LEVEL"] = "DEBUG"
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
     if args.secure and not args.cloudflare:

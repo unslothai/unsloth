@@ -32,7 +32,8 @@ def _enable_verbose_access_logs() -> None:
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] = "0"
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
     os.environ["UNSLOTH_STUDIO_VERBOSE"] = "1"
-    os.environ.setdefault("LOG_LEVEL", "DEBUG")
+    # Force DEBUG so demoted lines reappear even if LOG_LEVEL was preset.
+    os.environ["LOG_LEVEL"] = "DEBUG"
 
 
 # Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then

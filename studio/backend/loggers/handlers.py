@@ -92,7 +92,11 @@ class LoggingMiddleware:
         """True if an identical GET/2xx log fired < window ago. The query string
         is part of the identity, so distinct query-driven GETs are not collapsed.
         Mutations and non-2xx are never deduped. Quiet-poll paths use a longer
-        heartbeat window. Stamps only on emit, so steady polls still log."""
+        heartbeat window. Stamps only on emit, so steady polls still log. Verbose
+        keeps every line (the direct backend --verbose path doesn't zero the dedup
+        env vars, so honor it here too, not just via the CLI helper)."""
+        if _logs_verbose():
+            return False
         if method != "GET" or not (200 <= status_code < 300):
             return False
         window_ms = _QUIET_POLL_DEDUP_MS if path in _QUIET_POLL_PATHS else _ACCESS_LOG_DEDUP_MS
