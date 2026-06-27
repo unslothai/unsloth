@@ -885,6 +885,10 @@ class FastLanguageModel(FastLlamaModel):
                 # adapter_model.safetensors). Passing use_safetensors=False here would skip
                 # a safetensors-only adapter's weights, leaving PeftModel.from_pretrained to
                 # fetch them in-process. Leave it as auto so the adapter's format is warmed.
+                # Restrict the warm to the adapter's own files (adapter_config.json +
+                # adapter_model.*) plus the root tokenizer / config: a repo that also publishes
+                # merged full-model weights must not pull them just to load a small adapter.
+                adapter_only = True,
             )
             # The killable child already did the forced download; clear the flag so
             # the in-process load reuses that warm cache instead of re-forcing.
@@ -1843,6 +1847,10 @@ class FastModel(FastBaseModel):
                 # adapter_model.safetensors). Passing use_safetensors=False here would skip
                 # a safetensors-only adapter's weights, leaving PeftModel.from_pretrained to
                 # fetch them in-process. Leave it as auto so the adapter's format is warmed.
+                # Restrict the warm to the adapter's own files (adapter_config.json +
+                # adapter_model.*) plus the root tokenizer / config: a repo that also publishes
+                # merged full-model weights must not pull them just to load a small adapter.
+                adapter_only = True,
             )
             # The killable child already did the forced download; clear the flag so
             # the in-process load reuses that warm cache instead of re-forcing.

@@ -186,6 +186,11 @@ class FastDiffusionModel:
         # stall, so the weight load below is a cache hit and cannot hang. Done
         # after validation so a non-diffusion repo fails on config metadata alone,
         # without first pulling multi-GB weights.
+        # subfolder is deliberately NOT forwarded: the pipeline / config / processor loads below
+        # resolve the repo ROOT (the whole DiffusionPipeline -- model_index.json plus every
+        # component subfolder), not a single subfolder, so narrowing the warm to one subfolder
+        # would leave the other components (unet/, vae/, text_encoder/) to an unprotected
+        # in-process Xet download while pulling subfolder weights the load never reads.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -193,7 +198,6 @@ class FastDiffusionModel:
             cache_dir = cache_dir,
             local_files_only = local_files_only,
             fast_inference = False,
-            subfolder = kwargs.get("subfolder"),
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
         )

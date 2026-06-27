@@ -968,6 +968,29 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
 )
 
 
+# Exactly the files a PEFT adapter load (PeftModel.from_pretrained) reads: its config and its
+# weight files (adapter_model.safetensors / .bin, sharded or not). "adapter_model*" is a glob so
+# a sharded adapter is still covered; the merged / full-model weights an adapter repo may ALSO
+# publish (model*.safetensors, pytorch_model*.bin) match none of these and so are not pulled.
+_ADAPTER_PREFETCH_PATTERNS = (
+    "adapter_config.json",
+    "adapter_model*",
+)
+
+
+# Weight files that live in a SUBDIRECTORY, not the repo root. A bare from_pretrained(model_name)
+# (no subfolder) resolves only root weight files, so for such a root load these subdir weights are
+# unread; ignoring them keeps a repo's alternate-precision / experimental weight dirs (fp16/,
+# experimental/) from being pulled by the otherwise-unfiltered warm. Hugging Face's fnmatch "*"
+# spans "/", so "*/*.safetensors" matches any nested .safetensors while a root "model.safetensors"
+# (no "/") is kept. Only applied when the caller asserts a root-only load (weights_at_root), never
+# to a diffusion pipeline warm whose component weights DO live in subfolders.
+_SUBDIR_WEIGHT_IGNORE_PATTERNS = (
+    "*/*.safetensors",
+    "*/*.bin",
+)
+
+
 def _in_requested_load_scope(filename, subfolder):
     """True if a repo-relative *filename* belongs to the location being loaded.
 
@@ -1106,6 +1129,8 @@ def maybe_prefetch_hf_snapshot(
     from_tf = False,
     from_flax = False,
     tokenizer_only = False,
+    adapter_only = False,
+    weights_at_root = False,
 ):
     """Warm the Hugging Face cache for a remote repo before the in-process load.
 
@@ -1162,12 +1187,12 @@ def maybe_prefetch_hf_snapshot(
     if fast_inference:
         return False
 
-    # A tokenizer-only warm allow-lists the exact tokenizer / config files below, so the
-    # weight-format ignore list is moot -- and skipping it avoids the model_info network
-    # call its auto branch would otherwise make for a repo whose weights we never fetch.
+    # A tokenizer-only or adapter-only warm allow-lists the exact files the load reads below, so
+    # the weight-format ignore list is moot -- and skipping it avoids the model_info network call
+    # its auto branch would otherwise make for a repo whose full weights we never fetch.
     ignore_patterns = (
         None
-        if tokenizer_only
+        if tokenizer_only or adapter_only
         else _prefetch_ignore_patterns(
             model_name,
             token = token,
@@ -1178,22 +1203,36 @@ def maybe_prefetch_hf_snapshot(
             from_flax = from_flax,
         )
     )
-    # When loading from a subfolder, warm that subfolder instead of the whole repo: a
-    # from_pretrained(..., subfolder=X) resolves every weight file under X/, so the rest
-    # is wasted bandwidth and disk. Also warm the repo-ROOT tokenizer / config files: the
-    # tokenizer / processor load reads those from the root even when the weights live in a
-    # subfolder, so a subfolder-only prefetch would leave them to an unprotected in-process
-    # download. Also warm the custom-code / tiktoken assets a trust_remote_code load fetches
-    # from the root. The root patterns are exact filenames or literal-prefixed globs (e.g.
-    # modeling_*.py), so they stay anchored to repo-root files in practice.
+    # Narrow the warm to exactly what the in-process load reads, so a repo that ships extra
+    # weights (alternate checkpoints, merged full models, alternate precisions) is not pulled in
+    # full. Every branch still warms the repo-ROOT tokenizer / config / custom-code assets a
+    # tokenizer / processor / trust_remote_code load reads from the root, so those never fall to
+    # an unprotected in-process download. The root patterns are exact filenames or literal-prefixed
+    # globs (e.g. modeling_*.py), so they stay anchored to repo-root files in practice.
     allow_patterns = None
     if tokenizer_only:
         # A distinct tokenizer repo: warm only its tokenizer / config / vocab files. Restrict
         # to those exact root filenames so we never pull weights, even if that repo also
         # happens to ship them (the weights are not what the tokenizer load reads).
         allow_patterns = list(_ROOT_AUX_PREFETCH_PATTERNS)
+    elif adapter_only:
+        # A PEFT adapter load reads only adapter_config.json + adapter_model.* (plus the root
+        # tokenizer / config it may also load). Restrict to those so an adapter repo that ALSO
+        # publishes merged / full-model weights does not pull multi-GB of weights PeftModel never
+        # reads (and risk filling disk before a small adapter loads).
+        allow_patterns = [*_ADAPTER_PREFETCH_PATTERNS, *_ROOT_AUX_PREFETCH_PATTERNS]
     elif isinstance(subfolder, str) and subfolder.strip("/"):
+        # Loading from a subfolder: a from_pretrained(..., subfolder=X) resolves every weight
+        # file under X/, so warm that subfolder (plus the root aux files) and skip the rest.
         allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
+    elif weights_at_root:
+        # A bare from_pretrained(model_name) (no subfolder) reads only the ROOT weight files.
+        # Keep the warm otherwise unfiltered (config, tokenizer, root weights) but drop weights
+        # nested in subdirectories (fp16/, experimental/, alternate-checkpoint dirs) the root
+        # load never reads. Only weight files are excluded, so a subdir's config the load might
+        # still consult stays warmed. Not applied to diffusion (its component weights live in
+        # subfolders); see FastDiffusionModel's call, which leaves weights_at_root False.
+        ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
         snapshot_download_with_xet_fallback(
             model_name,

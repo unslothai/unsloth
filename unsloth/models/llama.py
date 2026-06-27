@@ -2439,6 +2439,10 @@ class FastLlamaModel:
             use_safetensors = kwargs.get("use_safetensors"),
             from_tf = kwargs.get("from_tf", False),
             from_flax = kwargs.get("from_flax", False),
+            # A bare from_pretrained(model_name) reads only the ROOT weight files, so skip
+            # weights nested in subdirs (fp16/, experimental/) the load never reads. Ignored
+            # when a subfolder is set (that branch narrows the warm to the subfolder instead).
+            weights_at_root = True,
         )
         # The killable child already did the forced download; clear the flag so the
         # in-process load reuses that warm cache instead of re-forcing over Xet.
