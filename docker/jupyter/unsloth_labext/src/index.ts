@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 import {
   ILabShell,
   JupyterFrontEnd,
@@ -6,9 +9,11 @@ import {
 import { IThemeManager } from '@jupyterlab/apputils';
 import { Widget } from '@lumino/widgets';
 import { UNSLOTH_LOGO_DATA_URI } from './logo';
+import aboutPlugin from './about';
 import cellNavPlugin from './cellNav';
 import colabTitlePlugin from './colabTitle';
 import outputSelectPlugin from './outputSelect';
+import splashPlugin from './splash';
 import uiChromePlugin from './uiChrome';
 
 /**
@@ -70,5 +75,7 @@ export default [
   logoPlugin,
   colabTitlePlugin,
   outputSelectPlugin,
-  uiChromePlugin
+  uiChromePlugin,
+  aboutPlugin,
+  splashPlugin
 ];

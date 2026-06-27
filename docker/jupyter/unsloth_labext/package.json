@@ -8,7 +8,7 @@
     "jupyterlab-extension",
     "theme"
   ],
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "author": "Unsloth AI",
   "private": true,
   "main": "lib/index.js",
@@ -35,8 +35,10 @@
     "@jupyterlab/apputils": "^4.5.0",
     "@jupyterlab/cells": "^4.5.0",
     "@jupyterlab/codemirror": "^4.5.0",
+    "@jupyterlab/mainmenu": "^4.5.0",
     "@jupyterlab/notebook": "^4.5.0",
     "@jupyterlab/theme-dark-extension": "^4.5.0",
+    "@lumino/disposable": "^2.0.0",
     "@lumino/widgets": "^2.0.0"
   },
   "devDependencies": {

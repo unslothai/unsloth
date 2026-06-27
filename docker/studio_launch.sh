@@ -103,6 +103,21 @@ if [[ -n "${PUBLIC_SSH_KEY}" ]] && command -v sshd >/dev/null 2>&1; then
 fi
 
 mkdir -p /workspace
+
+# --- Branding / AGPLv3 attribution integrity gate (whole container) -----------
+# This image is built by Unsloth and ships under the GNU AGPLv3. Refuse to start
+# anything if the Unsloth attribution (Help/About, spinning-logo splash, branded
+# login, theme, AGPLv3 license text + source links) has been stripped or altered.
+# The same checker also runs as a jupyter_server extension (refuses JupyterLab on
+# its own) and at image-build time. Bypass for local development if ever needed:
+# UNSLOTH_SKIP_BRANDING_CHECK=1 (intended for Unsloth's own debugging, not resale).
+if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
+    if ! /opt/unsloth-venv/bin/python -m unsloth_branding --verify; then
+        echo "Refusing to start the container." >&2
+        exit 1
+    fi
+fi
+
 echo "Unsloth Studio  -> http://localhost:8000   (first-boot password below)"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
 if [[ "${UNSLOTH_JUPYTER_CLOUDFLARE}" == "1" ]]; then

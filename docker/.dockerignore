@@ -18,6 +18,9 @@
 !unsloth_nb_strip_colab.py
 !unsloth_colab_compat.py
 !jupyter
+!jupyter/unsloth_branding.py
+!jupyter/jupyter_server_config.d
+!jupyter/jupyter_server_config.d/**
 !jupyter/overrides.json
 !jupyter/favicon.ico
 !jupyter/logo.png

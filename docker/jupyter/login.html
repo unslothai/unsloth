@@ -57,6 +57,14 @@
   .unsloth-login-card button:hover { background: hsl(160, 55%, 36%); }
   .unsloth-login-card .message { margin-top: 16px; font-size: 13px; }
   .unsloth-login-card .message.error { color: hsl(0, 75%, 68%); }
+  /* AGPLv3 attribution footer. Part of the Unsloth attribution set the image's
+     integrity guard verifies (Built by Unsloth + copyright + source link). */
+  .unsloth-attrib {
+    margin-top: 18px; text-align: center; font-size: 12px; line-height: 1.6;
+    color: hsl(60, 8%, 58%); width: 360px; max-width: 90vw;
+  }
+  .unsloth-attrib a { color: hsl(160, 45%, 60%); text-decoration: none; }
+  .unsloth-attrib a:hover { text-decoration: underline; }
 </style>
 {% endblock %}
 
@@ -91,6 +99,13 @@
     <div class="message {{key}}">{{ message[key] }}</div>
     {% endfor %}
   {% endif %}
+</div>
+<div class="unsloth-attrib">
+  Built by Unsloth. Licensed under the GNU AGPLv3.<br/>
+  Copyright 2026-Present the Unsloth team.<br/>
+  <a href="https://github.com/unslothai/unsloth" target="_blank" rel="noopener">github.com/unslothai/unsloth</a>
+  &middot;
+  <a href="https://unsloth.ai" target="_blank" rel="noopener">unsloth.ai</a>
 </div>
 {% endblock %}
 

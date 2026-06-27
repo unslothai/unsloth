@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 // Auto-generated: Unsloth circle logo (circle-logo-small.png) as a base64
 // PNG data URI, embedded so the top-bar logo plugin has no runtime asset
 // dependency and renders identically in light and dark themes.

@@ -238,7 +238,27 @@ RUN JS="$(/opt/unsloth-venv/bin/python -c 'import os, jupyter_server; print(os.p
       || echo ">> sloth stickers not installed (login falls back to the Unsloth logo)"; } \
  && rm -rf /tmp/unsloth-branding \
  && /opt/unsloth-venv/bin/jupyter labextension disable @jupyterlab/application-extension:logo \
- && /opt/unsloth-venv/bin/jupyter labextension lock @jupyterlab/application-extension:logo
+ && /opt/unsloth-venv/bin/jupyter labextension lock @jupyterlab/application-extension:logo \
+ && /opt/unsloth-venv/bin/jupyter labextension disable @jupyterlab/apputils-extension:splash \
+ && /opt/unsloth-venv/bin/jupyter labextension lock @jupyterlab/apputils-extension:splash
+# Branding integrity guard: the canonical attribution checker (also a
+# jupyter_server extension), the full AGPLv3 license text, and the config that
+# enables the extension. Installed into the base venv so it is on the jupyter
+# process's import + config search path. The stock @apputils-extension:splash is
+# disabled+locked above so the labextension's spinning-logo splash is the sole
+# ISplashScreen provider. The build-time --verify FAILS the image build if any
+# Unsloth attribution / license asset is missing or altered.
+COPY jupyter/unsloth_branding.py /tmp/unsloth-branding-guard/unsloth_branding.py
+COPY jupyter/jupyter_server_config.d/unsloth_branding_guard.json /tmp/unsloth-branding-guard/unsloth_branding_guard.json
+RUN SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" \
+ && cp /tmp/unsloth-branding-guard/unsloth_branding.py "${SP}/unsloth_branding.py" \
+ && mkdir -p /opt/unsloth-venv/etc/jupyter/jupyter_server_config.d \
+ && cp /tmp/unsloth-branding-guard/unsloth_branding_guard.json \
+       /opt/unsloth-venv/etc/jupyter/jupyter_server_config.d/unsloth_branding_guard.json \
+ && cp "${UNSLOTH_STUDIO_HOME}/src/studio/LICENSE.AGPL-3.0" \
+       /opt/unsloth-venv/share/jupyter/UNSLOTH_LICENSE.AGPL-3.0 \
+ && rm -rf /tmp/unsloth-branding-guard \
+ && /opt/unsloth-venv/bin/python -m unsloth_branding --verify
 RUN chmod +x /usr/local/bin/unsloth-studio-launch \
              /usr/local/bin/unsloth-studio-update \
              /usr/local/bin/unsloth-llama-update \
