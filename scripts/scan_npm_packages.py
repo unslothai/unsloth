@@ -914,9 +914,31 @@ _MAX_GROUP_LINES = 200
 _RE_JS_STR = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
 
 
-def _bracket_depth(line: str) -> int:
-    s = _RE_JS_STR.sub("", line)
-    return s.count("(") + s.count("[") + s.count("{") - s.count(")") - s.count("]") - s.count("}")
+_RE_BRACKETS = re.compile(r"[()\[\]{}]")
+_OPENERS = frozenset("([{")
+
+
+def _bracket_lr(line: str) -> tuple[int, int]:
+    """Order-aware bracket reduction of one already-string-blanked line: ``(L, R)``
+    where ``L`` is the count of closers with no opener earlier on the line (they
+    need an opener to the LEFT / on a prior line) and ``R`` is the count of openers
+    with no closer later on the line (they need a closer to the RIGHT / on a later
+    line). A plain net count (opens minus closes) collapses order and so masks a
+    trailing opener that follows leading closers on the same line, e.g.
+    ``}); const opts = {`` nets -1 and hides the ``{`` that opens the host-config
+    object; tracking the running minimum keeps that opener visible so the group
+    binds the path/headers that follow. Only bracket characters are walked (pulled
+    out with one C-level regex pass) so a long minified line stays cheap."""
+    depth = 0
+    low = 0
+    for ch in _RE_BRACKETS.findall(line):
+        if ch in _OPENERS:
+            depth += 1
+        else:
+            depth -= 1
+            if depth < low:
+                low = depth
+    return -low, depth - low
 
 
 def _find_unescaped(line: str, quote: str, start: int) -> int:
@@ -1041,29 +1063,39 @@ def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
     """(start, end) line indices of the bracket group enclosing line ``idx`` in one
     blanked view: scan back to the still-open opener, then forward to its close."""
     # Backward: find the line that opens a bracket still unclosed at the match,
-    # so a match inside a multi-line object starts from the object opener.
+    # so a match inside a multi-line object starts from the object opener. Each line
+    # is reduced to (L, R) and applied in order: first the L closers consume open
+    # brackets from the running context (a stray closer whose opener is outside the
+    # window only clamps depth at 0, it never goes negative), then the R openers
+    # add to it. Tracking order this way (rather than a single net per line) keeps a
+    # trailing opener visible even when leading closers on the same line net it to
+    # <= 0, e.g. `}); const opts = {`, which a net count would drop -- letting a
+    # changed path/headers after such a line ride the unchanged-hostname key.
     start = idx
     depth = 0
     for j in range(max(0, idx - _MAX_CONT_LINES), idx):
-        depth += _bracket_depth(blanked[j])
-        if depth <= 0:
-            # The window can start mid-block, so a leading unmatched `}` (its opener
-            # outside the window) would drive depth negative and mask a real opener
-            # that follows; clamp at 0 so the next `{`/`(` still registers as the
-            # enclosing opener instead of being cancelled by the stray closer.
-            depth = 0
-            start = idx  # everything opened so far in the window has closed
-        elif start == idx:
-            start = j  # first still-open opener
+        left, right = _bracket_lr(blanked[j])
+        if left >= depth:
+            depth = 0  # everything opened so far in the window has closed
+            start = idx
+        else:
+            depth -= left
+        if right > 0:
+            if depth == 0:
+                start = j  # outermost still-open opener begins here
+            depth += right
 
-    # Forward: extend until the group opened at `start` closes past the match.
-    # The cap is measured from the match (`idx`), not from `start`, so an opener
-    # found near the backward limit does not eat the whole forward budget and drop
-    # the path/headers/body that follow the matched line.
+    # Forward: extend until the group opened at `start` closes past the match. The
+    # same order-aware reduction is used (clamping leading closers at 0) so the
+    # foreign `})` on the opener line does not drive the count negative and stop the
+    # scan before the real close. The cap is measured from the match (`idx`), not
+    # from `start`, so an opener found near the backward limit does not eat the
+    # whole forward budget and drop the path/headers/body that follow the match.
     depth = 0
     end = start
     for j in range(start, min(len(blanked), idx + _MAX_GROUP_LINES)):
-        depth += _bracket_depth(blanked[j])
+        left, right = _bracket_lr(blanked[j])
+        depth = max(0, depth - left) + right
         end = j
         if j >= idx and depth <= 0:
             break

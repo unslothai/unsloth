@@ -616,6 +616,18 @@ def test_outbound_host_config_opener_after_unmatched_closer_binds():
     )
 
 
+def test_outbound_host_config_close_then_open_same_line_binds():
+    # Stronger than the previous case: the unmatched closer and the host-config
+    # opener share ONE line, e.g. `}); const opts = {`. A net per-line bracket count
+    # nets that line to <= 0 and drops the trailing `{`, so the group would start at
+    # the hostname line and a changed path could ride the unchanged-hostname key.
+    # Order-aware reduction keeps the opener, so the path binds and a change reopens.
+    obj = "}); const opts = {\n  hostname: '169.254.169.254',\n  path: '%s',\n};\nrun(opts);\n"
+    assert snp._finding_key(_host_finding(obj % "/old")) != snp._finding_key(
+        _host_finding(obj % "/evil")
+    )
+
+
 def test_outbound_host_multiline_template_literal_reopens():
     # A ) inside a multi-line backtick template literal must not close the call
     # early; the options object after the template binds, so a changed header
