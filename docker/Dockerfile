@@ -664,15 +664,19 @@ RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}
 #     `!pip install ...` / `!uv pip install ...` cell becomes SAFE + idempotent
 #     (keeps the baked torch/vLLM stack; records the requested transformers so
 #     its sidecar is activated for the model cells).
+#   * unsloth_nb_pip_magic.py -> site-packages: re-points the IPython `%pip` /
+#     `%uv` line magics and the `!python -m pip` form at the same shim, so the
+#     in-process / module install paths cannot bypass PATH and clobber the stack.
 #   * IPython startup hook: activates the right sidecar before the first model
 #     cell in manual JupyterLab.
 #   * unsloth-run: headless `unsloth-run <notebook|url>` that auto-picks the
 #     sidecar and executes every cell -- the robust driven path.
 # ---------------------------------------------------------------------------
-COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
+COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
 RUN set -eux \
  && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
  && cp /opt/unsloth-nb/unsloth_nb_compat.py "$SP/unsloth_nb_compat.py" \
+ && cp /opt/unsloth-nb/unsloth_nb_pip_magic.py "$SP/unsloth_nb_pip_magic.py" \
  && cp /opt/unsloth-nb/unsloth_colab_compat.py "$SP/unsloth_colab_compat.py" \
  && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py /opt/unsloth-nb/unsloth_nb_view.py /opt/unsloth-nb/unsloth_nb_strip_colab.py \
  && mkdir -p /opt/unsloth-nb/bin \

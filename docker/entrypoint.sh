@@ -45,16 +45,19 @@ warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 
 # CPU mode for hosts that cannot pass a GPU into a Linux container at all:
 # Docker Desktop on macOS (no Metal passthrough), Docker Desktop on Windows
-# without WSL2 GPU support, plain CPU Linux boxes, and CI runners. Training
-# needs an NVIDIA GPU, but Jupyter, GGUF tooling (the baked llama.cpp), and
-# Studio chat / Data Recipes all work on CPU. With UNSLOTH_ALLOW_CPU=1 a
-# missing GPU degrades to a warning instead of the hard pre-flight failure;
-# when a GPU IS visible the normal checks below still run so a broken GPU
-# setup is not silently ignored.
+# without WSL2 GPU support, plain CPU Linux boxes, and CI runners. CPU mode
+# covers Jupyter, the GGUF tooling and llama.cpp-backed Studio chat (llama.cpp
+# runs on CPU), and Data Recipes. It does NOT cover training or loading an
+# Unsloth model for chat (FastLanguageModel.from_pretrained runs CUDA probes
+# like torch.cuda.get_device_properties and raises without a GPU). With
+# UNSLOTH_ALLOW_CPU=1 a missing GPU degrades to a warning instead of the hard
+# pre-flight failure; when a GPU IS visible the normal checks below still run so
+# a broken GPU setup is not silently ignored.
 if [[ "${UNSLOTH_ALLOW_CPU:-0}" == "1" ]]; then
     if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
         warn "UNSLOTH_ALLOW_CPU=1 and no GPU visible -- continuing on CPU."
-        warn "Training requires an NVIDIA GPU. CPU mode covers Jupyter, GGUF tooling and Studio chat."
+        warn "CPU mode covers Jupyter, GGUF tooling and llama.cpp (GGUF) Studio chat."
+        warn "Training and loading Unsloth models (FastLanguageModel) still require an NVIDIA GPU."
         sync_notebooks
         exec "$@"
     fi
@@ -91,8 +94,9 @@ Likely causes (in order of frequency):
        k8s:        nvidia.com/gpu resource request + GPU operator
 
   5. This host has no NVIDIA GPU at all (Docker Desktop on macOS, Windows
-     without WSL2 GPU support, CPU-only Linux). Training needs a GPU, but
-     Jupyter, GGUF tooling and Studio chat work on CPU:
+     without WSL2 GPU support, CPU-only Linux). Training and loading Unsloth
+     models need a GPU, but Jupyter, GGUF tooling and llama.cpp (GGUF) Studio
+     chat work on CPU:
        docker run -e UNSLOTH_ALLOW_CPU=1 ...
 
 To bypass this check entirely (e.g. offline tooling), set UNSLOTH_SKIP_GPU_CHECK=1.

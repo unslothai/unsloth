@@ -431,6 +431,17 @@ def _os_error_messages(exc: BaseException) -> list[str]:
     return [message.lower() for message in messages if message]
 
 
+def is_cross_device_error(exc: BaseException) -> bool:
+    """True for an EXDEV "cross-device link" rename failure.
+
+    os.replace / os.rename cannot move across filesystems -- e.g. inside a Docker
+    build where the staging tree and the install dir land on different overlayfs
+    layers (Errno 18). Unlike a busy/in-use error, a cross-device move is safely
+    completed by a copy + remove of the (idle) source.
+    """
+    return isinstance(exc, OSError) and exc.errno == errno.EXDEV
+
+
 def is_busy_lock_error(exc: BaseException) -> bool:
     if isinstance(exc, BusyInstallConflict):
         return True
@@ -4767,11 +4778,34 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
     try:
         os.replace(staging_dir, dst)
     except OSError as exc:
-        if not is_busy_lock_error(exc):
+        # Busy/in-use (Windows AV holding a DLL) OR cross-device (overlayfs in a
+        # Docker build): both are safe to complete by copying the freshly
+        # extracted staging tree and removing it. Anything else (disk full,
+        # missing path) re-raises so we never leave a partial install behind.
+        if not (is_busy_lock_error(exc) or is_cross_device_error(exc)):
             raise
         log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
         shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
         remove_tree(staging_dir)
+
+
+def move_install_dir_aside(src: Path, dst: Path) -> None:
+    """Move an existing install dir to ``dst`` (a unique, non-existent sibling).
+
+    os.replace is the fast path. On a cross-device link (EXDEV -- e.g. moving the
+    base-image llama.cpp aside during a Docker studio build, where the rollback
+    path is on a different overlay) fall back to copy + remove. A busy/in-use
+    failure is deliberately NOT copy-faked here: the source is a live install and
+    a partial copy + rmtree would be worse than failing, so it re-raises.
+    """
+    try:
+        os.replace(src, dst)
+    except OSError as exc:
+        if not is_cross_device_error(exc):
+            raise
+        log(f"os.replace cross-device ({exc!r}); copy+remove {src} -> {dst}")
+        shutil.copytree(src, dst, dirs_exist_ok = True)
+        remove_tree(src)
 
 
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
@@ -4781,7 +4815,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         if install_dir.exists():
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
-            os.replace(install_dir, rollback_dir)
+            move_install_dir_aside(install_dir, rollback_dir)
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
         log(f"activating staged install {staging_dir} -> {install_dir}")
@@ -4796,7 +4830,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             if install_dir.exists():
                 failed_dir = unique_install_side_path(install_dir, "failed")
                 log(f"moving failed active install to {failed_dir}")
-                os.replace(install_dir, failed_dir)
+                move_install_dir_aside(install_dir, failed_dir)
             elif staging_dir.exists():
                 failed_dir = staging_dir
                 staging_dir = None
@@ -4804,7 +4838,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
 
             if rollback_dir and rollback_dir.exists():
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
-                os.replace(rollback_dir, install_dir)
+                move_install_dir_aside(rollback_dir, install_dir)
                 log(f"restored previous install from rollback path {rollback_dir.name}")
                 if is_busy_lock_error(exc):
                     raise BusyInstallConflict(

@@ -236,12 +236,13 @@ else
   ok_studio=0; ok_jupyter=0
   for _ in $(seq 1 60); do
     if [ "$ok_studio" = 0 ] && curl -fsS "http://localhost:$PORT_STUDIO/api/health" >/dev/null 2>&1; then ok_studio=1; fi
-    if [ "$ok_jupyter" = 0 ] && curl -fsS "http://localhost:$PORT_JUPYTER/api" >/dev/null 2>&1; then ok_jupyter=1; fi
+    # /login, not /api: a password hash is always configured so /api returns 403.
+    if [ "$ok_jupyter" = 0 ] && curl -fsS "http://localhost:$PORT_JUPYTER/login" >/dev/null 2>&1; then ok_jupyter=1; fi
     [ "$ok_studio" = 1 ] && [ "$ok_jupyter" = 1 ] && break
     sleep 5
   done
   [ "$ok_studio" = 1 ]  && ok "Studio /api/health healthy" || { bad "Studio /api/health never went healthy (docker logs ${STUDIO_CID:0:12})"; docker logs --tail 15 "$STUDIO_CID" 2>&1 | sed 's/^/         /'; }
-  [ "$ok_jupyter" = 1 ] && ok "JupyterLab /api responding"  || bad "JupyterLab /api never responded"
+  [ "$ok_jupyter" = 1 ] && ok "JupyterLab /login responding"  || bad "JupyterLab /login never responded"
 fi
 hr
 
