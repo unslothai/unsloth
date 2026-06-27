@@ -19,7 +19,7 @@ import secrets
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -207,6 +207,7 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
 async def upload_kb_document(
     kb_id: str,
     file: UploadFile = File(...),
+    ocr: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
@@ -218,7 +219,7 @@ async def upload_kb_document(
         conn.close()
     stored_path, filename = _save_upload(file)
     document_id, job_id = ingestion.start_ingestion(
-        store.kb_scope(kb_id), kb_id, None, filename, stored_path
+        store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -238,12 +239,13 @@ def list_kb_documents(kb_id: str, subject: str = Depends(get_current_subject)) -
 async def upload_thread_document(
     thread_id: str,
     file: UploadFile = File(...),
+    ocr: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
     stored_path, filename = _save_upload(file)
     document_id, job_id = ingestion.start_ingestion(
-        store.thread_scope(thread_id), None, thread_id, filename, stored_path
+        store.thread_scope(thread_id), None, thread_id, filename, stored_path, ocr = ocr
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -263,6 +265,7 @@ def list_thread_documents(thread_id: str, subject: str = Depends(get_current_sub
 async def upload_project_document(
     project_id: str,
     file: UploadFile = File(...),
+    ocr: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
@@ -278,6 +281,7 @@ async def upload_project_document(
         filename,
         stored_path,
         project_id = project_id,
+        ocr = ocr,
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 

@@ -94,18 +94,26 @@ def _embed_all(texts: list[str], model_name: str | None):
     return vectors
 
 
-def _ocr_scanned_pages(pages: list, stored_path: str, conn, job_id: str) -> list:
+def _ocr_scanned_pages(
+    pages: list,
+    stored_path: str,
+    conn,
+    job_id: str,
+    ocr: bool | None = None,
+) -> list:
     """Replace text on near-empty (scanned/image-only) PDF pages with vision-model
     OCR, so image PDFs become searchable and readable like any other document.
 
-    No-op when OCR is disabled, no page looks scanned, or no vision model is loaded
-    (degrades exactly like figure captioning). Returns new ``Page`` objects for the
-    OCR'd pages, the originals otherwise.
+    ``ocr`` overrides the ``config.OCR_SCANNED`` default per upload (the chat's OCR
+    toggle); ``None`` falls back to the config default. No-op when OCR is disabled, no
+    page looks scanned, or no vision model is loaded (degrades exactly like figure
+    captioning). Returns new ``Page`` objects for the OCR'd pages, the originals
+    otherwise.
 
     OCR'd pages have no text layer, so they get no PDF highlight regions in the
     preview (the locator anchors chunk phrases on the original word boxes, which a
     scanned page lacks); the OCR text is still searchable and readable."""
-    if not config.OCR_SCANNED:
+    if not (config.OCR_SCANNED if ocr is None else ocr):
         return pages
     scanned = [
         p.page_number
@@ -141,14 +149,19 @@ def _ocr_scanned_pages(pages: list, stored_path: str, conn, job_id: str) -> list
 
 
 def _run(
-    job_id: str, document_id: str, scope: str, stored_path: str, model_name: str | None
+    job_id: str,
+    document_id: str,
+    scope: str,
+    stored_path: str,
+    model_name: str | None,
+    ocr: bool | None = None,
 ) -> None:
     conn = rag_db.get_connection()
     try:
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         if stored_path.lower().endswith(".pdf"):
-            pages = _ocr_scanned_pages(pages, stored_path, conn, job_id)
+            pages = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
         if config.CAPTION_IMAGES and stored_path.lower().endswith(".pdf"):
             # Caption figures, splice into page text (no-op without a vision model).
             try:
@@ -218,6 +231,7 @@ def start_ingestion(
     *,
     project_id: str | None = None,
     model_name: str | None = None,
+    ocr: bool | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -261,7 +275,7 @@ def start_ingestion(
         _jobs[job_id] = queue.Queue()
     threading.Thread(
         target = _run,
-        args = (job_id, document_id, scope, stored_path, model_name),
+        args = (job_id, document_id, scope, stored_path, model_name, ocr),
         daemon = True,
     ).start()
     return document_id, job_id

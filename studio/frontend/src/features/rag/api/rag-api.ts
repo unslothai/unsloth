@@ -39,9 +39,15 @@ async function ragRequest<T>(
   return json as T;
 }
 
-async function ragUpload(path: string, file: File): Promise<DocumentUploadResult> {
+async function ragUpload(
+  path: string,
+  file: File,
+  ocr?: boolean,
+): Promise<DocumentUploadResult> {
   const form = new FormData();
   form.append("file", file);
+  // Per-upload OCR override for scanned pages; omitted -> backend config default.
+  if (ocr !== undefined) form.append("ocr", String(ocr));
   // No Content-Type: let the browser set the multipart boundary.
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: "POST",
@@ -103,10 +109,12 @@ export async function listKnowledgeBaseDocuments(
 export function uploadKnowledgeBaseDocument(
   kbId: string,
   file: File,
+  ocr?: boolean,
 ): Promise<DocumentUploadResult> {
   return ragUpload(
     `/knowledge-bases/${encodeURIComponent(kbId)}/documents`,
     file,
+    ocr,
   );
 }
 
@@ -122,8 +130,13 @@ export async function listThreadDocuments(
 export function uploadThreadDocument(
   threadId: string,
   file: File,
+  ocr?: boolean,
 ): Promise<DocumentUploadResult> {
-  return ragUpload(`/threads/${encodeURIComponent(threadId)}/documents`, file);
+  return ragUpload(
+    `/threads/${encodeURIComponent(threadId)}/documents`,
+    file,
+    ocr,
+  );
 }
 
 export async function listProjectDocuments(
@@ -138,8 +151,13 @@ export async function listProjectDocuments(
 export function uploadProjectDocument(
   projectId: string,
   file: File,
+  ocr?: boolean,
 ): Promise<DocumentUploadResult> {
-  return ragUpload(`/projects/${encodeURIComponent(projectId)}/documents`, file);
+  return ragUpload(
+    `/projects/${encodeURIComponent(projectId)}/documents`,
+    file,
+    ocr,
+  );
 }
 
 // Cached "does this project have indexed sources?" probe so the chat adapter can

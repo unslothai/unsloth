@@ -161,9 +161,10 @@ def ocr_pages(
     page_pngs: dict[int, bytes], *, endpoint: tuple[str, str] | None = None
 ) -> dict[int, str]:
     """OCR rendered page PNGs (keyed by 1-based page number) to text via the loaded
-    vision model. Returns ``{}`` when disabled, no vision model, or no pages.
-    Bounded by ``OCR_MAX_PAGES``."""
-    if not config.OCR_SCANNED or not page_pngs:
+    vision model. Returns ``{}`` when there is no vision model or no pages. The caller
+    (`ingestion._ocr_scanned_pages`) owns the on/off policy (config default plus the
+    per-upload override), so this does not re-check it. Bounded by ``OCR_MAX_PAGES``."""
+    if not page_pngs:
         return {}
     ep = endpoint or vision_endpoint()
     if ep is None:

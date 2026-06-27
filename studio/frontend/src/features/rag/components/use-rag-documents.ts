@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useChatRuntimeStore } from "@/features/chat";
 import { toast } from "@/lib/toast";
 import {
   deleteDocument,
@@ -231,12 +232,15 @@ export function useRagDocuments(
       tempId: string,
     ) => {
       try {
+        // Read the OCR toggle fresh at upload time (RAG options live in the chat
+        // store); non-reactive so it doesn't widen this callback's deps.
+        const ocr = useChatRuntimeStore.getState().ragOcrScanned;
         const result =
           activeScope.type === "kb"
-            ? await uploadKnowledgeBaseDocument(activeScope.kbId, file)
+            ? await uploadKnowledgeBaseDocument(activeScope.kbId, file, ocr)
             : activeScope.type === "project"
-              ? await uploadProjectDocument(activeScope.projectId, file)
-              : await uploadThreadDocument(activeScope.threadId, file);
+              ? await uploadProjectDocument(activeScope.projectId, file, ocr)
+              : await uploadThreadDocument(activeScope.threadId, file, ocr);
         sigByDocId.current.set(result.documentId, fileSignature(file));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));

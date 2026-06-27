@@ -75,13 +75,7 @@ def test_render_pdf_pages_empty_request(tmp_path):
 # ── captioner.ocr_pages gating ───────────────────────────────────────
 
 
-def test_ocr_pages_disabled(monkeypatch):
-    monkeypatch.setattr(captioner.config, "OCR_SCANNED", False)
-    assert captioner.ocr_pages({1: b"x"}, endpoint = ("http://x", "local")) == {}
-
-
 def test_ocr_pages_no_endpoint(monkeypatch):
-    monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: None)
     assert captioner.ocr_pages({1: b"x"}) == {}
 
@@ -167,6 +161,50 @@ def test_born_digital_pdf_skips_ocr(rag_conn, stub_embeddings, monkeypatch, tmp_
     assert called == []  # page had real text -> never considered scanned
     text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
     assert "marker-quokka" in text
+
+
+def _ingest_with_ocr(rag_conn, thread_id, path, ocr):
+    scope = store.thread_scope(thread_id)
+    document_id = store.create_document(
+        rag_conn,
+        scope = scope,
+        filename = "scan.pdf",
+        sha256 = str(path) + str(ocr),
+        thread_id = thread_id,
+        status = "pending",
+        stored_path = str(path),
+    )
+    job_id = ingestion._new_job(rag_conn, document_id, scope)
+    ingestion._run(job_id, document_id, scope, str(path), None, ocr = ocr)
+    return store.get_document(rag_conn, document_id)
+
+
+def test_ocr_override_false_skips_ocr_when_config_on(
+    rag_conn, stub_embeddings, monkeypatch, tmp_path
+):
+    # Config default ON, but the per-upload toggle (ocr=False) skips OCR.
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
+    monkeypatch.setattr(captioner, "_ocr_one", lambda *a: "should not run")
+    pdf = tmp_path / "scan.pdf"
+    _image_only_pdf(pdf, pages = 1)
+    doc = _ingest_with_ocr(rag_conn, "t1", pdf, ocr = False)
+    assert doc["num_chunks"] == 0  # scanned page left empty
+
+
+def test_ocr_override_true_runs_ocr_when_config_off(
+    rag_conn, stub_embeddings, monkeypatch, tmp_path
+):
+    # Config default OFF, but the per-upload toggle (ocr=True) forces OCR on.
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", False)
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
+    monkeypatch.setattr(captioner, "_ocr_one", lambda *a: "forced ocr text quokka")
+    pdf = tmp_path / "scan.pdf"
+    _image_only_pdf(pdf, pages = 1)
+    doc = _ingest_with_ocr(rag_conn, "t1", pdf, ocr = True)
+    assert doc["num_chunks"] >= 1
+    text, _ = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert "quokka" in text
 
 
 def test_ocr_disabled_leaves_scanned_pdf_empty(rag_conn, stub_embeddings, monkeypatch, tmp_path):
