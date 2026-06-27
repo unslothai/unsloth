@@ -47,7 +47,8 @@ def test_lora_gguf_conversion_does_not_use_shell() -> None:
 
     for call in popen_calls:
         shell = [
-            kw for kw in call.keywords
+            kw
+            for kw in call.keywords
             if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
         ]
         assert not shell, "subprocess.Popen must not use shell=True"
@@ -65,9 +66,9 @@ def test_lora_gguf_conversion_does_not_use_shell() -> None:
 
         assert len(elts) >= 2, "argv must include the interpreter and the converter script"
         first = elts[0]
-        assert isinstance(first, ast.Attribute) and first.attr == "executable", (
-            "argv[0] should be sys.executable, not a shell string"
-        )
+        assert (
+            isinstance(first, ast.Attribute) and first.attr == "executable"
+        ), "argv[0] should be sys.executable, not a shell string"
 
 
 def test_legacy_ggml_wrappers_delegate_safely() -> None:
@@ -81,9 +82,8 @@ def test_legacy_ggml_wrappers_delegate_safely() -> None:
         node = _get_function(source, function_name)
         calls = [c for c in ast.walk(node) if isinstance(c, ast.Call)]
         assert any(
-            isinstance(c.func, ast.Name) and c.func.id == "_unsloth_save_lora_gguf"
-            for c in calls
+            isinstance(c.func, ast.Name) and c.func.id == "_unsloth_save_lora_gguf" for c in calls
         ), f"{function_name} should delegate to _unsloth_save_lora_gguf"
-        assert not _popen_calls(node), (
-            f"{function_name} should not call subprocess.Popen directly anymore"
-        )
+        assert not _popen_calls(
+            node
+        ), f"{function_name} should not call subprocess.Popen directly anymore"
