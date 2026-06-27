@@ -482,14 +482,19 @@ def test_preserved_fallback_carried_across_non_drop_reload():
 
 
 def test_same_model_guard_checks_path_and_variant():
-    """The same-model guard also matches the loaded quant by path (local multi-variant
-    dir) else variant (HF repo), so a different variant of the same model_identifier
-    doesn't inherit the prior variant's preserved tensor intent (#6659)."""
+    """The same-model guard matches the resolved config.identifier (what load_model
+    stores, after from_identifier normalizes shorthands) -- not the raw request id --
+    and also matches the loaded quant by path (local multi-variant dir) else variant (HF
+    repo), so a reload keeps the carry-forward and a different variant doesn't inherit
+    the prior one's preserved tensor intent (#6659)."""
     route = Path(_BACKEND_DIR) / "routes" / "inference.py"
     src = route.read_text()
     idx = src.find("_same_model_loaded = (")
     assert idx != -1
     block = src[idx : idx + 1300]
+    # Identity compares the normalized config.identifier, not the raw model_identifier.
+    head = src[idx : idx + 200]
+    assert "config.identifier" in head and "== (model_identifier" not in head
     assert "llama_backend.gguf_path" in block and "config.gguf_file" in block
     assert "llama_backend.hf_variant" in block and "config.gguf_variant" in block
 

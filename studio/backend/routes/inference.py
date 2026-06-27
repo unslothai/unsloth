@@ -2850,15 +2850,19 @@ async def load_model(
             # Tensor intent for this load: the request itself, or a preserved
             # multi-GPU layer fallback carried across a reload of the SAME model that
             # doesn't drop it (e.g. a ctx-only change), so a fitting model doesn't
-            # silently collapse to one GPU. Only a tensor field change or a --split-mode
-            # override counts as the drop -- an unrelated pass-through extra keeps the
-            # preserved placement; the same-model guard stops a switch-without-unload
+            # silently collapse to one GPU. Only an explicit non-tensor --split-mode
+            # override counts as the drop -- the tensor field echo / unrelated extras keep
+            # the preserved placement; the same-model guard stops a switch-without-unload
             # inheriting the prior model's intent.
             _explicit_tensor_drop = _is_explicit_tensor_drop(request)
+            # Compare the resolved config.identifier (what load_model stores), not the
+            # raw request id: from_identifier normalizes shorthands (adds unsloth/, fixes
+            # case), so a reload with the shorthand would otherwise miss the match and
+            # drop the carry-forward. #6659
             _same_model_loaded = (
                 llama_backend.is_loaded
                 and (llama_backend.model_identifier or "").lower()
-                == (model_identifier or "").lower()
+                == (config.identifier or "").lower()
             )
             # model_identifier is variant-agnostic for HF repos and dir-level for a
             # local multi-variant directory, so also require the loaded quant to match
