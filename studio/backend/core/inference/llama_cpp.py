@@ -5162,6 +5162,7 @@ class LlamaCppBackend:
 
                     def _subset_model_size(n_gpus: int) -> int:
                         return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
+
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
