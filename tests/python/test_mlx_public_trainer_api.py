@@ -1020,7 +1020,7 @@ def test_mlx_torch_cuda_compatibility_shim():
 
     free_bytes, total_bytes = torch.cuda.mem_get_info()
     assert total_bytes == int(total * 1024 * 1024 * 1024)
-    assert free_bytes == max(total_bytes - torch.cuda.max_memory_reserved(), 0)
+    assert 0 <= free_bytes <= total_bytes
 
     torch.cuda.empty_cache()
     torch.cuda.synchronize()

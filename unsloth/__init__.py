@@ -136,6 +136,10 @@ if _IS_MLX:
             target = kwargs.get("device", device)
             if _is_mlx_cuda_device_target(target):
                 return self
+            # device given by keyword: don't also pass the positional None, or the
+            # original raises "multiple values for 'device'" (e.g. .to(device="cpu")).
+            if "device" in kwargs:
+                return original_to(self, *args, **kwargs)
             return original_to(self, device, *args, **kwargs)
 
         batch_encoding_to._unsloth_mlx_cuda_noop = True
@@ -254,11 +258,16 @@ if _IS_MLX:
                 clear_gpu_memory()
 
             def mem_get_info(device = None):
-                """Return (free, total) bytes for torch.cuda compatibility API."""
-                _, peak_gb, total_gb = get_gpu_memory_stats()
-                total = int(total_gb * 1024 * 1024 * 1024)
-                peak = int(peak_gb * 1024 * 1024 * 1024)
-                return (max(total - peak, 0), total)
+                """Return (free, total) bytes for torch.cuda compatibility API.
+                Free uses CURRENT active memory, not the peak high-water mark, so
+                a capacity check stays accurate after a transient spike."""
+                import mlx.core as mx
+                total = int(get_gpu_memory_stats()[2] * 1024 * 1024 * 1024)
+                get_active = getattr(mx, "get_active_memory", None)
+                if get_active is None and hasattr(mx, "metal"):
+                    get_active = getattr(mx.metal, "get_active_memory", None)
+                active = int(get_active()) if callable(get_active) else 0
+                return (max(total - active, 0), total)
 
             cuda.get_device_properties = get_device_properties
             cuda.get_device_name = get_device_name
