@@ -1596,7 +1596,12 @@ def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str
     """Apply route-level XML leak cleanup only when Auto-Heal is enabled."""
     if not auto_heal_tool_calls:
         return text
-    return _TOOL_XML_RE.sub("", text)
+    # Strip bracket-tag calls with the parser's balanced-brace scan first so a
+    # two-level-nested JSON arg is removed whole instead of the catch-all eating
+    # the trailing prose after it.
+    from core.tool_healing import _strip_bracket_tag_calls
+
+    return _TOOL_XML_RE.sub("", _strip_bracket_tag_calls(text))
 
 
 logger = get_logger(__name__)

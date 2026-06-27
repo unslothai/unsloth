@@ -29,7 +29,7 @@ exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
 _helper = _re.search(
     r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
-    r"(?:    .+\n)+",
+    r"(?:(?: {4}.*)?\n)+",
     _src,
 )
 assert _helper, "could not extract _strip_tool_xml_for_display source"
@@ -309,3 +309,23 @@ def test_no_catastrophic_backtracking_on_orphan_opening_spam():
     elapsed = time.perf_counter() - t0
     assert elapsed < 0.1, f"regex took {elapsed*1000:.0f}ms on 1000x orphan opens"
     assert "<tool_call>" not in cleaned
+
+
+# ── Two-level-nested bracket JSON (balanced-scan strip) ──────────
+
+
+def test_route_strip_two_level_nested_bracket_keeps_trailing_prose():
+    # A [TOOL_CALLS] call with two-level-nested JSON args must be removed whole
+    # so the trailing prose survives. A one-level regex either left the markup
+    # or let the catch-all eat everything to EOS.
+    text = 'before [TOOL_CALLS]search{"f":{"g":{"h":1}}} after'
+    cleaned = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert cleaned == "before  after"
+    assert "[TOOL_CALLS]" not in cleaned
+
+
+def test_route_strip_two_level_nested_rehearsal_keeps_trailing_prose():
+    text = 'note python[ARGS]{"a":{"b":{"c":1}}} done'
+    cleaned = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert cleaned == "note  done"
+    assert "[ARGS]" not in cleaned

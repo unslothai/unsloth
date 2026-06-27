@@ -361,6 +361,14 @@ class TestParser:
         partial = "answer [TOOL_CALLS]web_search"
         assert strip_tool_markup(partial, final = False) == partial
 
+    def test_strip_removes_two_level_nested_bracket_call_keeps_prose(self):
+        # A bracket call with two-level-nested JSON args must be removed whole
+        # (a one-level regex left the markup or, in final mode, ate the trailing
+        # prose). The balanced-brace scan handles any nesting depth.
+        text = 'before [TOOL_CALLS]search{"f":{"g":{"h":1}}} after'
+        assert strip_tool_markup(text, final = False) == "before  after"
+        assert strip_tool_markup(text, final = True) == "before  after"
+
     # <think> pre-strip.
 
     def test_think_block_stripped_before_xml(self):
@@ -402,6 +410,34 @@ class TestParser:
         )
         result = parse_tool_calls_from_text(text)
         assert result == []
+
+    def test_think_literal_inside_real_tool_argument_is_preserved(self):
+        # A real tool call whose argument legitimately contains a <think> /
+        # [THINK] literal must NOT be corrupted (the think-strip used to delete
+        # those substrings from the argument body).
+        text = (
+            '<tool_call>{"name":"write","arguments":'
+            '{"text":"compare <think> and </think> tags"}}</tool_call>'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"])["text"] == (
+            "compare <think> and </think> tags"
+        )
+
+    def test_bracket_tag_argument_with_think_literal_is_preserved(self):
+        text = '[TOOL_CALLS]search{"q":"explain [THINK] blocks"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"])["q"] == "explain [THINK] blocks"
+
+    def test_real_call_after_think_with_rehearsal_inside(self):
+        # A rehearsed call inside <think> is skipped, but the real call after
+        # </think> is parsed -- without deleting the think text from content.
+        text = '<think>plan: search[ARGS]{"q":"x"}</think>search[ARGS]{"q":"real"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"])["q"] == "real"
 
     # XML takes precedence over bracket-tag.
 

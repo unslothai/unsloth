@@ -399,9 +399,14 @@ def parse_tool_calls_from_text(
     ``<think>`` and ``[THINK]`` blocks are stripped first so a rehearsed call
     inside an open reasoning block is not executed as a real call.
     """
-    # Strip thinking blocks so post-reasoning calls are recognised and a call
-    # rehearsed inside an (optionally unclosed) reasoning block is not parsed.
-    content = _THINK_TAG_RE.sub("", content)
+    # A tool-call marker inside a <think>/[THINK] reasoning block is a rehearsal,
+    # not a real call, so skip any candidate that STARTS inside one. We no longer
+    # delete the blocks from ``content``: a real tool argument may legitimately
+    # contain a ``<think>`` / ``[THINK]`` literal, and stripping corrupted it.
+    _think_spans = [(t.start(), t.end()) for t in _THINK_TAG_RE.finditer(content)]
+
+    def _in_think(pos: int) -> bool:
+        return any(s <= pos < e for s, e in _think_spans)
 
     tool_calls: list[dict] = []
     # Collect JSON- and Gemma-format candidates with their byte spans, then
@@ -419,11 +424,15 @@ def parse_tool_calls_from_text(
         # XML-style parser below applies to nested <function= markers).
         if _inside_open_parameter(content, m.start()):
             continue
+        if _in_think(m.start()):
+            continue
         end = _balanced_brace_end(content, m.end() - 1)
         if end >= 0:
             candidates.append((m.start(), end, "json", m))
     for m in _TC_GEMMA_START_RE.finditer(content):
         if _inside_open_parameter(content, m.start()):
+            continue
+        if _in_think(m.start()):
             continue
         end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = True)
         if end >= 0:
@@ -468,7 +477,7 @@ def parse_tool_calls_from_text(
         func_starts = [
             fm
             for fm in _TC_FUNC_START_RE.finditer(content)
-            if not _inside_open_parameter(content, fm.start())
+            if not _inside_open_parameter(content, fm.start()) and not _in_think(fm.start())
         ]
         for idx, fm in enumerate(func_starts):
             func_name = fm.group(1)
@@ -538,6 +547,8 @@ def parse_tool_calls_from_text(
     # Pattern 3: Mistral bracket-tag [TOOL_CALLS]name{json}.
     if not tool_calls:
         for m in _MISTRAL_BRACKET_RE.finditer(content):
+            if _in_think(m.start()):
+                continue
             tool_name = m.group(1)
             args_start = m.end()
             args_end = _balanced_json_span(content, args_start)
@@ -563,6 +574,8 @@ def parse_tool_calls_from_text(
     # Pattern 4: Rehearsal name[ARGS]{json}.
     if not tool_calls:
         for m in _REHEARSAL_RE.finditer(content):
+            if _in_think(m.start()):
+                continue
             tool_name = m.group(1)
             args_start = m.end()
             args_end = _balanced_json_span(content, args_start)
@@ -588,6 +601,32 @@ def parse_tool_calls_from_text(
     return tool_calls
 
 
+def _strip_bracket_tag_calls(text: str) -> str:
+    """Remove complete ``[TOOL_CALLS]name{json}`` / ``name[ARGS]{json}`` calls with a
+    balanced-brace scan, so arbitrarily nested JSON args are stripped whole. A
+    fixed-depth regex left two-level args un-stripped (markup leaked) or ate the
+    trailing prose after them. A truncated tail (bare marker / unbalanced JSON) is
+    left for the caller's catch-all patterns."""
+    out: list[str] = []
+    cursor = 0
+    n = len(text)
+    while cursor < n:
+        mb = _MISTRAL_BRACKET_RE.search(text, cursor)
+        mr = _REHEARSAL_RE.search(text, cursor)
+        cands = [m for m in (mb, mr) if m is not None]
+        if not cands:
+            out.append(text[cursor:])
+            break
+        m = min(cands, key = lambda x: x.start())
+        end = _balanced_json_span(text, m.end())
+        if end is None:
+            out.append(text[cursor:])
+            break
+        out.append(text[cursor : m.start()])
+        cursor = end + 1
+    return "".join(out)
+
+
 def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     """Strip tool-call XML markup from text.
 
@@ -595,6 +634,9 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     When ``final`` is True, trailing incomplete tool-call blocks are removed
     too, and the result is stripped of surrounding whitespace.
     """
+    # Balanced-brace strip for bracket-tag calls first (handles any JSON nesting
+    # depth); the regex patterns then cover the XML forms and truncated tails.
+    text = _strip_bracket_tag_calls(text)
     patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in patterns:
         text = pat.sub("", text)
