@@ -3929,6 +3929,17 @@ def _unsloth_save_compressed_tensors(
             elif hasattr(calibration_dataset, "save_to_disk"):
                 # Only persist the samples we need, so multi-GB training sets are not fully copied.
                 ds_to_save = calibration_dataset
+                # A DatasetDict's len() is the split count, not rows; pick one split first so the
+                # row subsample below applies and we do not save every split to the temp dir.
+                try:
+                    from datasets import DatasetDict
+
+                    if isinstance(ds_to_save, DatasetDict):
+                        ds_to_save = ds_to_save.get("train", None) or next(
+                            iter(ds_to_save.values())
+                        )
+                except Exception:
+                    pass
                 try:
                     if (
                         num_calibration_samples

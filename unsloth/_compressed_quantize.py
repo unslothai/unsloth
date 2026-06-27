@@ -25,6 +25,34 @@ import os
 import sys
 
 
+def _is_moe(config):
+    """True if the model config looks like a sparse Mixture-of-Experts model."""
+    if config is None:
+        return False
+    for cfg in (config, getattr(config, "text_config", None)):
+        if cfg is None:
+            continue
+        for attr in ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts"):
+            v = getattr(cfg, attr, None)
+            if isinstance(v, int) and v > 1:
+                return True
+    return "moe" in (getattr(config, "model_type", "") or "").lower()
+
+
+def _has_mtp(config):
+    """True if the model carries MTP / speculative-decoding layers (e.g. Qwen3-Next, DeepSeek)."""
+    if config is None:
+        return False
+    mt = (getattr(config, "model_type", "") or "").lower()
+    if "qwen3_next" in mt or "mtp" in mt:
+        return True
+    for attr in ("num_nextn_predict_layers", "num_mtp_layers", "mtp_num_layers"):
+        v = getattr(config, attr, None)
+        if isinstance(v, int) and v > 0:
+            return True
+    return False
+
+
 def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_length):
     from datasets import DatasetDict, load_dataset, load_from_disk
 
@@ -198,8 +226,16 @@ def main():
             )
         tokenizer = None
 
+    # MoE models: keep the router/gate unquantized (it decides expert routing) and calibrate every
+    # expert even if the sample set does not route tokens to all of them.
+    is_moe = _is_moe(getattr(model, "config", None))
+    ignore = ["lm_head"]
+    if is_moe:
+        ignore.append("re:.*\\.gate$")
+    moe_kwargs = {"moe_calibrate_all_experts": True} if is_moe else {}
+
     def _make_recipe():
-        return QuantizationModifier(targets = "Linear", scheme = args.scheme, ignore = ["lm_head"])
+        return QuantizationModifier(targets = "Linear", scheme = args.scheme, ignore = ignore)
 
     if args.needs_calibration:
         ds = _build_calibration_dataset(
@@ -221,6 +257,7 @@ def main():
                 max_seq_length = args.max_seq_length,
                 num_calibration_samples = args.num_calibration_samples,
                 pipeline = "sequential",
+                **moe_kwargs,
             )
         except Exception as e:
             print(
@@ -254,6 +291,7 @@ def main():
                 max_seq_length = args.max_seq_length,
                 num_calibration_samples = args.num_calibration_samples,
                 pipeline = "basic",
+                **moe_kwargs,
             )
     else:
         oneshot(model = model, recipe = _make_recipe())
@@ -262,6 +300,14 @@ def main():
     model.save_pretrained(args.out, save_compressed = True)
     if tokenizer is not None:
         tokenizer.save_pretrained(args.out)
+
+    if _has_mtp(getattr(model, "config", None)):
+        print(
+            "Unsloth: WARNING - this model has MTP / speculative-decoding tensors that are not "
+            "included in the compressed export (only the main model is quantized and saved). Use "
+            "the non-compressed save path if you need the MTP weights.",
+            flush = True,
+        )
 
     cfg_path = os.path.join(args.out, "config.json")
     cfg = {}
