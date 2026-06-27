@@ -86,7 +86,9 @@ def main(argv = None) -> int:
     quantize_(
         transformer,
         _make_quant_config(scheme),
-        filter_fn = make_filter_fn(args.min_features, exclude_name_tokens = exclude_tokens_for_scheme(scheme)),
+        filter_fn = make_filter_fn(
+            args.min_features, exclude_name_tokens = exclude_tokens_for_scheme(scheme)
+        ),
     )
 
     # Move the state dict to CPU for a portable, GPU-free artifact.

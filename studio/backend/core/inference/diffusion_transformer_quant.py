@@ -72,6 +72,7 @@ def exclude_tokens_for_scheme(scheme: str) -> tuple[str, ...]:
     M=1 projections as int8 and crashes at the first denoise step on Flux / Qwen."""
     return _INT8_EXCLUDE_NAME_TOKENS if scheme == TQ_INT8 else ()
 
+
 # Per-architecture preference order for ``auto`` -- best (fastest, in-bar) first, with
 # the lower-precision schemes listed as fallbacks for that arch tier. On Blackwell, fp8
 # leads: measured on a B200, plain fp8 dynamic is both faster AND more accurate than the
