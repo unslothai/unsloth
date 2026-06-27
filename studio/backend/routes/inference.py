@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, List, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 import json
 import httpx
 from loggers import get_logger
@@ -2064,18 +2064,34 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
 
 
 def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[str]]) -> bool:
-    """Whether an inherited --split-mode should be stripped on reload.
+    """Whether an inherited --split-mode (and its coupled --tensor-split) should
+    be stripped on reload.
 
     The binary Tensor Parallelism toggle can't carry --split-mode's row/none/
     layer modes, so only strip when the toggle overrides it: tensor being turned
     on, or the inherited mode is tensor (toggle turning it off). Non-tensor modes
-    survive. Shared by the inheritance strip and the already-loaded stale check
-    so they agree on what reload would do.
+    survive. A manual per-GPU ratio is handled by _should_strip_tensor_split,
+    which strips only --tensor-split so the inherited mode is kept. Shared by the
+    inheritance strip and the already-loaded stale check so they agree on what
+    reload would do.
     """
     fields_set = getattr(request, "model_fields_set", set())
     return "tensor_parallel" in fields_set and (
         request.tensor_parallel or resolve_tensor_parallel(backend_extra, False)
     )
+
+
+def _should_strip_tensor_split(request: LoadRequest) -> bool:
+    """Whether an inherited --tensor-split alone should be stripped on reload.
+
+    Manual mode with a per-GPU ratio emits its own --tensor-split, which an
+    inherited one (appended last) would override, so strip the inherited ratio.
+    Unlike _should_strip_split_mode this leaves --split-mode untouched, so a
+    user's row/none/layer mode survives a Studio split-ratio edit. When the
+    Tensor Parallelism toggle IS overriding the mode, _should_strip_split_mode
+    (called alongside this at every site) strips --split-mode anyway.
+    """
+    return request.gpu_memory_mode == "manual" and bool(request.tensor_split)
 
 
 def _request_matches_loaded_settings(
@@ -2110,11 +2126,36 @@ def _request_matches_loaded_settings(
         else strip_shadowing_flags(
             backend_extra,
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
+            strip_tensor_split = _should_strip_tensor_split(request),
+            strip_offload = request.gpu_memory_mode == "manual",
         )
     )
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
+        return False
+    # The diffusion runner is mode-agnostic (it always reports "auto" and ignores
+    # the layer/MoE/split knobs), so a standing manual preference in the request
+    # must not force a needless reload -- only the GPU pick matters.
+    if not llama_backend.is_diffusion:
+        if request.gpu_memory_mode != llama_backend.gpu_memory_mode:
+            return False
+        # Manual: a layer-count change always reloads; MoE/split only matter with
+        # an explicit offload (gpu_layers >= 0), so a leftover value under Auto
+        # must not force one. Mirrors LlamaCppBackend._already_in_target_state.
+        if request.gpu_memory_mode == "manual" and (
+            request.gpu_layers != llama_backend.gpu_layers
+            or (
+                request.gpu_layers >= 0
+                and (
+                    request.n_cpu_moe != llama_backend.n_cpu_moe
+                    or (request.tensor_split or None) != (llama_backend.tensor_split or None)
+                )
+            )
+        ):
+            return False
+    _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
+    if _req_gpu_ids != llama_backend.gpu_ids:
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
@@ -2151,14 +2192,17 @@ def _request_matches_loaded_settings(
     # contain any shadow flag, so the reload path strips them rather than
     # leaving a stale override in effect. (backend_extra computed above.)
     if request.llama_extra_args is None:
-        # Mirror the reload's conditional split-mode strip, so a preserved
-        # non-tensor mode (row/none/layer) isn't seen as stale and doesn't
-        # trigger a needless reload of a healthy server.
+        # Mirror the reload's conditional strips, so a preserved non-tensor mode
+        # (row/none/layer) isn't seen as stale and doesn't trigger a needless
+        # reload of a healthy server, while an inherited offload/ratio flag that
+        # the reload *would* strip is correctly seen as stale.
         if (
             backend_extra
             and strip_shadowing_flags(
                 backend_extra,
                 strip_split_mode = _should_strip_split_mode(request, backend_extra),
+                strip_tensor_split = _should_strip_tensor_split(request),
+                strip_offload = request.gpu_memory_mode == "manual",
             )
             != backend_extra
         ):
@@ -2308,16 +2352,41 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
+def _manual_gpu_layer_fraction(gguf_path: str, gpu_layers: int) -> Optional[float]:
+    """Fraction of the model pinned on the GPU under manual ``--gpu-layers``, or
+    None when the layer count can't be read (caller keeps the full estimate).
+    ``gpu_layers`` >= layer count -> 1.0 (all on GPU); 0 -> 0.0 (all on CPU)."""
+    try:
+        from utils.models.gguf_metadata import read_gguf_staged_dims
+
+        dims = read_gguf_staged_dims(gguf_path)
+        n_layers = dims.get("layer_count") if dims else None
+        if not n_layers:
+            return None
+        return min(max(gpu_layers, 0), n_layers) / n_layers
+    except Exception:
+        return None
+
+
 def _estimate_gguf_required_gb(
     config: ModelConfig,
     hf_token: Optional[str] = None,
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
+    gpu_layers: int = -1,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
-    resolves so the caller default-denies."""
+    resolves so the caller default-denies.
+
+    Manual mode with a pinned ``gpu_layers`` keeps only that fraction of layers
+    (weights + their KV) on the GPU and spills the rest to system RAM, so the
+    GPU-resident estimate is scaled down by the offloaded fraction -- otherwise a
+    low/zero gpu_layers config is wrongly blocked as full residency. A large
+    ``--n-cpu-moe`` saves still more VRAM, but that isn't credited here: the guard
+    must not *under*-estimate and OOM the training run."""
     try:
         total_bytes = 0
         main = getattr(config, "gguf_file", None)
@@ -2328,13 +2397,22 @@ def _estimate_gguf_required_gb(
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
         if total_bytes > 0:
-            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
+            resident_gb = total_bytes / (1024**3) + _estimate_gguf_kv_gb(
                 main, max_seq_length, llama_extra_args, n_parallel
             )
+            if main and gpu_memory_mode == "manual" and gpu_layers >= 0:
+                frac = _manual_gpu_layer_fraction(str(main), gpu_layers)
+                if frac is not None:
+                    resident_gb *= frac
+            return resident_gb
 
         repo = getattr(config, "gguf_hf_repo", None)
         variant = getattr(config, "gguf_variant", None)
         if repo and variant:
+            # Remote (not-yet-downloaded) GGUF: the layer count lives in the
+            # header, which isn't local yet, so manual offload can't be credited
+            # here. Returning the full size over-blocks a CPU-heavy manual load
+            # during training, which is the safe direction (never under-estimate).
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
@@ -2363,11 +2441,14 @@ def _guard_chat_load_against_training(
     requested_gpu_ids: Optional[List[int]],
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
+    gpu_layers: int = -1,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
     effective quantization (see _effective_load_in_4bit). Raises HTTP 409 when the
-    model would not fit alongside training."""
+    model would not fit alongside training. Manual GGUF offload (gpu_memory_mode /
+    gpu_layers) shrinks the GGUF estimate so a CPU-heavy pick isn't over-blocked."""
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
 
@@ -2386,6 +2467,8 @@ def _guard_chat_load_against_training(
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
+            gpu_memory_mode = gpu_memory_mode,
+            gpu_layers = gpu_layers,
         )
         if is_gguf
         else None
@@ -2574,6 +2657,13 @@ async def load_model(
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
                     tensor_parallel = llama_backend.tensor_parallel,
+                    gpu_memory_mode = llama_backend.gpu_memory_mode,
+                    gpu_layers = llama_backend.gpu_layers,
+                    n_cpu_moe = llama_backend.n_cpu_moe,
+                    tensor_split = llama_backend.tensor_split,
+                    n_layers = llama_backend.n_layers,
+                    n_moe_layers = llama_backend.n_moe_layers,
+                    gpu_ids = llama_backend.gpu_ids,
                 )
         else:
             if (
@@ -2640,12 +2730,15 @@ async def load_model(
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
 
-        # Reject GGUF + gpu_ids first so the guard can't mask it with a VRAM 409.
+        # GGUF supports gpu_ids: validate the pick up front (before the training
+        # guard) so a bad pick is a clean 400, not masked by a VRAM 409. Rejects
+        # negative / out-of-range / duplicate ids and UUID/MIG parents.
         if config.is_gguf and effective_gpu_ids is not None:
-            raise HTTPException(
-                status_code = 400,
-                detail = "gpu_ids is not supported for GGUF models yet.",
-            )
+            from utils.hardware.hardware import resolve_requested_gpu_ids
+            try:
+                resolve_requested_gpu_ids(effective_gpu_ids)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
         # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
@@ -2667,6 +2760,8 @@ async def load_model(
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -2740,6 +2835,14 @@ async def load_model(
                         strip_split_mode = _should_strip_split_mode(
                             request, llama_backend.extra_args
                         ),
+                        # manual + per-GPU ratio emits its own --tensor-split; drop
+                        # an inherited one (appended last would override it) while
+                        # keeping the user's --split-mode row/none/layer choice.
+                        strip_tensor_split = _should_strip_tensor_split(request),
+                        # manual emits its own --fit/--gpu-layers, so an inherited
+                        # offload flag must not last-wins-override it. auto leaves a
+                        # user's inherited -ngl alone (offload_overridden).
+                        strip_offload = request.gpu_memory_mode == "manual",
                     )
                     try:
                         extra_llama_args = validate_extra_args(stripped)
@@ -2774,6 +2877,11 @@ async def load_model(
                 cache_type_kv = request.cache_type_kv,
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
+                gpu_memory_mode = request.gpu_memory_mode,
+                gpu_layers = request.gpu_layers,
+                n_cpu_moe = request.n_cpu_moe,
+                tensor_split = request.tensor_split,
+                gpu_ids = effective_gpu_ids,
                 n_parallel = _n_parallel,
             )
             if config.gguf_hf_repo:
@@ -2886,6 +2994,13 @@ async def load_model(
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,
+                gpu_memory_mode = llama_backend.gpu_memory_mode,
+                gpu_layers = llama_backend.gpu_layers,
+                n_cpu_moe = llama_backend.n_cpu_moe,
+                tensor_split = llama_backend.tensor_split,
+                n_layers = llama_backend.n_layers,
+                n_moe_layers = llama_backend.n_moe_layers,
+                gpu_ids = llama_backend.gpu_ids,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -3143,12 +3258,14 @@ async def validate_model(
         # Refuse early (before the frontend unloads to load this) if it can't fit
         # alongside training, using the same settings /load uses so they agree.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
-        # Mirror /load: reject GGUF + gpu_ids before the guard so both return 400.
+        # Mirror /load: GGUF supports gpu_ids, so validate the pick (a bad one is
+        # a clean 400) before the guard sizes the model against training VRAM.
         if config.is_gguf and effective_gpu_ids is not None:
-            raise HTTPException(
-                status_code = 400,
-                detail = "gpu_ids is not supported for GGUF models yet.",
-            )
+            from utils.hardware.hardware import resolve_requested_gpu_ids
+            try:
+                resolve_requested_gpu_ids(effective_gpu_ids)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
         # Off-loop: guard does sync nvidia-smi / HF work.
         await asyncio.to_thread(
@@ -3159,6 +3276,8 @@ async def validate_model(
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
         )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
@@ -3192,10 +3311,15 @@ async def validate_model(
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
         # slider before the GPU load; None until the file is downloaded.
+        # Staged header dims (one read): native context, total layer count, and
+        # MoE expert-layer count -- let the staged flow size the context, GPU-
+        # layers and manual --n-cpu-moe sliders before the load.
         context_length: Optional[int] = None
+        layer_count: Optional[int] = None
+        moe_layer_count: Optional[int] = None
         if request.include_context_length and is_gguf:
             from hub.utils.gguf import resolve_local_gguf_path
-            from utils.models.gguf_metadata import read_gguf_context_length
+            from utils.models.gguf_metadata import read_gguf_staged_dims
 
             # Best-effort: a header-read failure must never fail validation of an
             # otherwise-valid model (the outer except turns it into a 400).
@@ -3211,9 +3335,13 @@ async def validate_model(
                         model_identifier, request.gguf_variant
                     )
                 if local_gguf:
-                    context_length = read_gguf_context_length(local_gguf)
+                    dims = read_gguf_staged_dims(local_gguf)
+                    if dims:
+                        context_length = dims["context_length"]
+                        layer_count = dims["layer_count"]
+                        moe_layer_count = dims["moe_layer_count"]
             except Exception as e:
-                logger.debug("Context-length probe failed for %s: %s", model_log_label, e)
+                logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
         return ValidateModelResponse(
             valid = True,
@@ -3228,6 +3356,8 @@ async def validate_model(
             requires_trust_remote_code = requires_trust_remote_code,
             requires_security_review = requires_security_review,
             context_length = context_length,
+            layer_count = layer_count,
+            moe_layer_count = moe_layer_count,
         )
 
     except HTTPException:
@@ -3585,6 +3715,13 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,
+                gpu_memory_mode = llama_backend.gpu_memory_mode,
+                gpu_layers = llama_backend.gpu_layers,
+                n_cpu_moe = llama_backend.n_cpu_moe,
+                tensor_split = llama_backend.tensor_split,
+                n_layers = llama_backend.n_layers,
+                n_moe_layers = llama_backend.n_moe_layers,
+                gpu_ids = llama_backend.gpu_ids,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,

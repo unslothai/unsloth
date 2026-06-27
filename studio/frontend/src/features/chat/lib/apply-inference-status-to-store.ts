@@ -5,6 +5,7 @@ import { getInferenceStatus } from "../api/chat-api";
 import { mergeBackendRecommendedInference } from "../presets/preset-policy";
 import {
   CHAT_REASONING_ENABLED_KEY,
+  loadedGpuMemoryFields,
   loadOptionalBool,
   type ReasoningEffort,
   type ReasoningStyle,
@@ -226,6 +227,9 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    ...(seedLoadParams &&
+      prevState.loadedGpuMemoryMode === null &&
+      loadedGpuMemoryFields(status)),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {

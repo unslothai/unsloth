@@ -467,8 +467,13 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
 
-    def test_rejects_gguf_with_gpu_ids_before_guard(self):
-        # /validate must mirror /load's GGUF + gpu_ids 400, before the VRAM guard.
+    def test_validates_gguf_gpu_ids_before_guard(self):
+        # gpu_ids is now SUPPORTED for GGUF (the GPU picker); /validate must
+        # mirror /load by validating the pick before the VRAM guard, so a bad
+        # pick is a clean 400 (not the removed "not supported for GGUF") and the
+        # guard is never reached. Patch the validator so the test is
+        # deterministic regardless of the host's GPU env.
+        import utils.hardware.hardware as hardware_mod
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(model_path = "x.gguf", gpu_ids = [0])
@@ -490,12 +495,18 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(
+                hardware_mod,
+                "resolve_requested_gpu_ids",
+                side_effect = ValueError("Invalid gpu_ids [0]: rejected by test"),
+            ),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):
             with self.assertRaises(HTTPException) as exc:
                 asyncio.run(self.route.validate_model(request, current_subject = "u"))
         self.assertEqual(exc.exception.status_code, 400)
-        self.assertIn("gpu_ids is not supported for GGUF", exc.exception.detail)
+        self.assertIn("gpu_ids", exc.exception.detail.lower())
+        self.assertNotIn("not supported", exc.exception.detail.lower())
         self.assertEqual(captured, [])  # guard never reached
 
 
@@ -582,6 +593,71 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0):
                 gb = self.route._estimate_gguf_required_gb(cfg, max_seq_length = 8192)
         self.assertAlmostEqual(gb, 1000 / (1024**3) + 2.0, places = 6)  # weights + KV
+
+    def _local_gguf_cfg(self, path):
+        return SimpleNamespace(
+            gguf_file = str(path),
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = None,
+            gguf_variant = None,
+        )
+
+    def test_manual_scales_estimate_by_gpu_layer_fraction(self):
+        # Manual offload keeps only gpu_layers/total of the model (weights + KV)
+        # on the GPU; the guard estimate scales down so a CPU-heavy pick isn't
+        # over-blocked. auto mode (the default) must not scale.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            cfg = self._local_gguf_cfg(p)
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 2.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = 0.25),
+            ):
+                resident = 1000 / (1024**3) + 2.0
+                manual = self.route._estimate_gguf_required_gb(
+                    cfg, gpu_memory_mode = "manual", gpu_layers = 8
+                )
+                auto = self.route._estimate_gguf_required_gb(cfg)
+        self.assertAlmostEqual(manual, resident * 0.25, places = 6)
+        self.assertAlmostEqual(auto, resident, places = 6)  # default never scales
+
+    def test_manual_keeps_full_estimate_when_layer_count_unreadable(self):
+        # _manual_gpu_layer_fraction returns None (can't read layers) -> no scale,
+        # the conservative full estimate stands so training can't be OOM'd.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.gguf"
+            p.write_bytes(b"x" * 1000)
+            cfg = self._local_gguf_cfg(p)
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_manual_gpu_layer_fraction", return_value = None),
+            ):
+                gb = self.route._estimate_gguf_required_gb(
+                    cfg, gpu_memory_mode = "manual", gpu_layers = 4
+                )
+        self.assertAlmostEqual(gb, 1000 / (1024**3), places = 9)
+
+    def test_manual_gpu_layer_fraction_clamps_and_reads_layers(self):
+        # _manual_gpu_layer_fraction imports read_gguf_staged_dims lazily, so
+        # patch it at its source module.
+        import utils.models.gguf_metadata as gm
+
+        frac = self.route._manual_gpu_layer_fraction
+        with patch.object(gm, "read_gguf_staged_dims", return_value = {"layer_count": 32}):
+            self.assertAlmostEqual(frac("x.gguf", 8), 0.25, places = 9)
+            self.assertEqual(frac("x.gguf", 0), 0.0)  # all on CPU
+            self.assertEqual(frac("x.gguf", 999), 1.0)  # clamps above layer count
+        # Unreadable / non-GGUF (None dims, or a None/zero layer_count) -> None so
+        # the caller keeps the full estimate.
+        with patch.object(gm, "read_gguf_staged_dims", return_value = None):
+            self.assertIsNone(frac("x.gguf", 8))
+        with patch.object(gm, "read_gguf_staged_dims", return_value = {"layer_count": None}):
+            self.assertIsNone(frac("x.gguf", 8))
 
     def test_kv_helper_graceful_on_non_gguf(self):
         import tempfile
@@ -679,6 +755,38 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         inf.unload_model.assert_not_called()
         inf._shutdown_subprocess.assert_not_called()
         llama.unload_model.assert_not_called()
+
+
+# ── split-mode vs tensor-split strip predicates (manual ratio decoupling) ─────
+
+
+class TestStripSplitPredicates(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.route = _load_inference_route()
+
+    def _req(self, **kw):
+        from models.inference import LoadRequest
+        return LoadRequest(model_path = "unsloth/Qwen3-1.7B", **kw)
+
+    def test_should_strip_tensor_split_only_for_manual_ratio(self):
+        # The new predicate: True only for manual mode WITH a per-GPU ratio.
+        self.assertTrue(
+            self.route._should_strip_tensor_split(
+                self._req(gpu_memory_mode = "manual", gpu_layers = 8, tensor_split = [2, 1])
+            )
+        )
+        self.assertFalse(  # manual, no ratio
+            self.route._should_strip_tensor_split(self._req(gpu_memory_mode = "manual", gpu_layers = 8))
+        )
+        self.assertFalse(self.route._should_strip_tensor_split(self._req()))  # auto
+
+    def test_split_mode_strip_decouples_from_manual_ratio(self):
+        # fix #5: a manual ratio must NOT strip --split-mode (the user's row/none
+        # survives), but the Tensor Parallelism toggle still owns the whole group.
+        manual_ratio = self._req(gpu_memory_mode = "manual", gpu_layers = 8, tensor_split = [2, 1])
+        self.assertFalse(self.route._should_strip_split_mode(manual_ratio, []))
+        self.assertTrue(self.route._should_strip_split_mode(self._req(tensor_parallel = True), []))
 
 
 if __name__ == "__main__":

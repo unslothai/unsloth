@@ -237,14 +237,22 @@ def test_fit_ctx_floors_explicit_request_under_fit():
     assert flags[flags.index("--fit-ctx") + 1] == "98304"
 
 
-def test_fit_ctx_skipped_without_fit_or_explicit_ctx_or_support():
+def test_fit_ctx_skipped_without_fit_or_support():
+    # No --fit on -> no --fit-ctx.
     assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
         1, False, 98304, 98304, _CAPS_ALL
     )
-    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(1, True, 0, 262144, _CAPS_ALL)
+    # --fit on but the binary doesn't support --fit-ctx.
     assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
         1, True, 98304, 98304, _CAPS_NONE
     )
+
+
+def test_fit_ctx_floors_auto_request_at_8192():
+    # Auto ctx (requested 0) under --fit floors the window at 8192 so the fit
+    # step can't shrink it to a tiny size.
+    flags = LlamaCppBackend._ctx_integrity_flags(1, True, 0, 262144, _CAPS_ALL)
+    assert flags[flags.index("--fit-ctx") + 1] == "8192"
 
 
 def test_probe_missing_binary_reports_new_capabilities_false():

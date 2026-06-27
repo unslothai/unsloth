@@ -25,8 +25,11 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  GPU_LAYERS_AUTO,
   isLocalModelPath,
+  loadedGpuMemoryFields,
   pendingSelectionMatches,
+  persistGpuMemoryModeOnLoad,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
@@ -42,6 +45,7 @@ import {
 } from "../lib/apply-inference-status-to-store";
 import {
   mergeBackendRecommendedInference,
+  resolveFitMaxSeqLength,
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
 import {
@@ -535,9 +539,17 @@ export function useChatModelRuntime() {
             previousModel?.isGguf === true
             || previousVariant != null
             || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
-          const rollbackMaxSeqLength = previousIsGguf
-            ? (stateBeforeUnload.ggufContextLength ?? 0)
-            : maxSeqLength;
+          // Respect the rolled-back model's auto-layers mode: a Manual+Auto model
+          // with an unpinned (auto) context must reload with 0 (so --fit
+          // re-auto-sizes), not the positive context it happened to pick (which
+          // the backend would treat as a pin).
+          const rollbackMaxSeqLength = resolveFitMaxSeqLength(
+            previousIsGguf,
+            stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
+            stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+            stateBeforeUnload.loadedCustomContextLength,
+            previousIsGguf ? (stateBeforeUnload.ggufContextLength ?? 0) : maxSeqLength,
+          );
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
@@ -551,11 +563,19 @@ export function useChatModelRuntime() {
           // updates this snapshot in lock-step so non-staged loads are unchanged.
           const loadChatTemplateOverride = stateBeforeUnload.chatTemplateOverride;
           const loadKvCacheDtype = stateBeforeUnload.kvCacheDtype;
-          const loadCustomContextLength = stateBeforeUnload.customContextLength;
+          // gpuMemoryMode is a standing preference (kept across a model switch);
+          // the rest are per-model knobs the reset below clears, so they are
+          // re-baselined there in lock-step with the store.
+          let loadCustomContextLength = stateBeforeUnload.customContextLength;
           const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
           const loadTensorParallel = stateBeforeUnload.tensorParallel;
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
+          const loadGpuMemoryMode = stateBeforeUnload.gpuMemoryMode;
+          let loadGpuLayers = stateBeforeUnload.gpuLayers;
+          let loadNCpuMoe = stateBeforeUnload.nCpuMoe;
+          let loadSplitRatio = stateBeforeUnload.splitRatio;
+          let loadSelectedGpuIds = stateBeforeUnload.selectedGpuIds;
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
           try {
@@ -568,16 +588,40 @@ export function useChatModelRuntime() {
             // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
             // pass, unload, then have /load refuse it. Uses the click-time
             // snapshot (same values loadModel uses below), so the two agree.
-            const validateMaxSeqLength = resolveLoadMaxSeqLength({
-              modelId,
-              ggufVariant,
-              customContextLength: loadCustomContextLength,
-              ggufContextLength: loadGgufContextLength,
-              currentCheckpoint,
-              activeGgufVariant: loadActiveGgufVariant,
-              maxSeqLength,
-              presetSource: loadActivePresetSource,
-            });
+            // It must also mirror what /load does on a cross-model switch: the
+            // reset below clears the per-model Auto-layers context pin + GPU pick, and
+            // Manual+Auto sizes context through resolveFitMaxSeqLength.
+            // gpuMemoryMode is a standing preference, kept across the switch.
+            const resetsPerModelSettings = Boolean(
+              currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative,
+            );
+            const validateCustomContextLength = resetsPerModelSettings
+              ? null
+              : loadCustomContextLength;
+            const validateGpuIds = resetsPerModelSettings
+              ? null
+              : loadSelectedGpuIds;
+            // The reset below re-baselines gpuLayers to Auto; mirror it here.
+            const validateGpuLayers = resetsPerModelSettings
+              ? GPU_LAYERS_AUTO
+              : loadGpuLayers;
+            const validateMaxSeqLength = resolveFitMaxSeqLength(
+              isGguf,
+              loadGpuMemoryMode,
+              validateGpuLayers,
+              validateCustomContextLength,
+              resolveLoadMaxSeqLength({
+                modelId,
+                ggufVariant,
+                isGguf,
+                customContextLength: validateCustomContextLength,
+                ggufContextLength: loadGgufContextLength,
+                currentCheckpoint,
+                activeGgufVariant: loadActiveGgufVariant,
+                maxSeqLength,
+                presetSource: loadActivePresetSource,
+              }),
+            );
             const validation = await validateModel({
               model_path: modelId,
               nativePathLease: validateNativePathLease,
@@ -586,6 +630,12 @@ export function useChatModelRuntime() {
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
+              gpu_ids: validateGpuIds ?? undefined,
+              // Mirror /load's manual offload so the guard credits a low
+              // gpu_layers pick (most weights on CPU), like validateGpuLayers
+              // re-baselines the layer count above.
+              gpu_memory_mode: loadGpuMemoryMode,
+              gpu_layers: validateGpuLayers,
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
@@ -626,16 +676,33 @@ export function useChatModelRuntime() {
             // keepSpeculative skips this for a staged Load: the user picked the
             // mode for this model on the sidebar, so honor it (the backend still
             // falls back at runtime if the model has no MTP head).
-            if (currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative) {
+            if (resetsPerModelSettings) {
               const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
                 speculativeType: persistedSpeculativeType,
                 loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+                // Per-model GPU knobs must not follow onto a different model
+                // (gpuMemoryMode is a standing preference and is kept).
+                selectedGpuIds: null,
+                gpuLayers: GPU_LAYERS_AUTO,
+                nCpuMoe: 0,
+                splitRatio: null,
+                // A Manual+Auto context pin is per-model; clear it so a different
+                // model loads at Auto/native, not the previous model's pin.
+                customContextLength: null,
               });
               loadSpeculativeType = persistedSpeculativeType;
               loadSpecDraftNMax = null;
+              // Keep the click-time snapshot in lock-step with the store reset so
+              // the load below sizes against the cleared per-model knobs, not the
+              // previous model's (gpuMemoryMode is standing, so left as captured).
+              loadCustomContextLength = null;
+              loadSelectedGpuIds = null;
+              loadGpuLayers = GPU_LAYERS_AUTO;
+              loadNCpuMoe = 0;
+              loadSplitRatio = null;
             }
 
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
@@ -649,13 +716,20 @@ export function useChatModelRuntime() {
               maxSeqLength,
               presetSource: loadActivePresetSource,
             });
+            const loadMaxSeqLength = resolveFitMaxSeqLength(
+              isGguf,
+              loadGpuMemoryMode,
+              loadGpuLayers,
+              loadCustomContextLength,
+              effectiveMaxSeqLength,
+            );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
-              max_seq_length: effectiveMaxSeqLength,
+              max_seq_length: loadMaxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
@@ -666,6 +740,11 @@ export function useChatModelRuntime() {
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               tensor_parallel: loadTensorParallel,
+              gpu_memory_mode: loadGpuMemoryMode,
+              gpu_layers: loadGpuLayers,
+              n_cpu_moe: loadNCpuMoe,
+              tensor_split: loadSplitRatio ?? undefined,
+              gpu_ids: loadSelectedGpuIds ?? undefined,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -676,6 +755,10 @@ export function useChatModelRuntime() {
             // preference now (the requested intent, not the resolved echo;
             // saveSpeculativeType keeps only the universal auto/ngram/off).
             saveSpeculativeType(loadSpeculativeType);
+            // Persist the GPU Memory mode only on a successful non-diffusion
+            // GGUF load (not on dropdown change), so an abandoned selection
+            // doesn't stick and a mode-agnostic diffusion load doesn't clobber it.
+            persistGpuMemoryModeOnLoad(loadResponse, loadGpuMemoryMode);
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
@@ -711,9 +794,12 @@ export function useChatModelRuntime() {
             const reportedNativeCtx = loadResponse.is_gguf
               ? (loadResponse.native_context_length ?? null)
               : null;
-            // A successful reload has applied settings, so clear pending custom
-            // context state and display the backend-reported effective context.
-            const keepCustomCtx = null;
+            // Keep an explicit Manual+Auto context pin (so a later Apply doesn't
+            // revert it to Auto); other cases baseline on ggufContextLength.
+            const keepCustomCtx =
+              loadGpuMemoryMode === "manual" && loadGpuLayers < 0 && (loadCustomContextLength ?? 0) > 0
+                ? loadCustomContextLength
+                : null;
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
@@ -765,11 +851,13 @@ export function useChatModelRuntime() {
               loadedKvCacheDtype: loadedKv,
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              ...loadedGpuMemoryFields(loadResponse),
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
               customContextLength: keepCustomCtx,
+              loadedCustomContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: effectiveChatTemplateOverride,
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
@@ -865,11 +953,24 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
+                  gpu_layers: stateBeforeUnload.loadedGpuLayers ?? -1,
+                  n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
+                  tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
+                  gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,
                   loadedSpeculativeType: null,
                   loadedSpecDraftNMax: null,
+                  // Re-baseline the GPU knobs from the rolled-back model, else
+                  // the on-switch reset shows phantom unsaved changes.
+                  loadedGpuMemoryMode: null,
+                  // refresh() can't re-derive the context pin (status has no such
+                  // field), so restore it to the rolled-back model's directly.
+                  customContextLength: stateBeforeUnload.loadedCustomContextLength,
+                  loadedCustomContextLength:
+                    stateBeforeUnload.loadedCustomContextLength,
                 });
                 await refresh();
               } catch {

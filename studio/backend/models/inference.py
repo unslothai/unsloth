@@ -64,7 +64,7 @@ class LoadRequest(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
+        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models the picked devices are pinned via CUDA/HIP_VISIBLE_DEVICES.",
     )
     speculative_type: Optional[str] = Field(
         None,
@@ -100,6 +100,49 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = (
+            "GPU memory strategy for GGUF models. 'auto' (default): Unsloth "
+            "selects GPUs and caps context to fit VRAM. 'manual': you own the "
+            "offload. Leave gpu_layers at -1 (Auto) to hand memory management to "
+            "llama.cpp's --fit (no device masking, no context auto-reduce, no "
+            "gpu-layer/tensor-split planning); set gpu_layers >= 0 to pin layers "
+            "and n_cpu_moe yourself (--fit off), with tensor_parallel still "
+            "applying (split by free VRAM unless tensor_split is set, no planner). "
+            "Ignored for non-GGUF."
+        ),
+    )
+    gpu_layers: int = Field(
+        -1,
+        ge = -1,
+        description = (
+            "Manual mode only: number of layers to offload to the GPU "
+            "(--gpu-layers, with --fit off). A value >= the model's layer count "
+            "offloads all of them. -1 = Auto: hand layer + context sizing to "
+            "llama.cpp's --fit. Ignored unless gpu_memory_mode is 'manual'."
+        ),
+    )
+    n_cpu_moe: int = Field(
+        0,
+        ge = 0,
+        description = (
+            "Manual mode only: keep the first N MoE expert layers on the CPU "
+            "(--n-cpu-moe) to save VRAM on MoE models. 0 = none, N = number of "
+            "MoE layers offloaded (the backend offsets past any leading dense "
+            "layers). Ignored unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
+        ),
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = (
+            "Manual mode only: relative share of the model per GPU (--tensor-split), "
+            "in the order of the GPUs in use, e.g. [2, 1] for 2:1. Omit it to let "
+            "llama.cpp use its default, which splits by free VRAM. Any list given is "
+            "passed through as-is, so send [1, 1] to force an even split. Ignored "
+            "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
+        ),
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -133,6 +176,11 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    # Manual GGUF offload, so validate's training-coexistence guard sizes the same
+    # GPU-resident footprint /load will (a low gpu_layers keeps most weights on
+    # CPU). Defaults preserve old behavior for callers that omit them.
+    gpu_memory_mode: Literal["auto", "manual"] = Field("auto")
+    gpu_layers: int = Field(-1, ge = -1)
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -166,6 +214,16 @@ class ValidateModelResponse(BaseModel):
         None,
         description = "Native training context length, read from the GGUF header when the file "
         "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
+    )
+    layer_count: Optional[int] = Field(
+        None,
+        description = "Total layer count (GGUF block_count), the manual gpu-layers ceiling, read "
+        "from the header alongside context_length; None when not read.",
+    )
+    moe_layer_count: Optional[int] = Field(
+        None,
+        description = "MoE expert-layer count (the manual --n-cpu-moe ceiling), read from the GGUF "
+        "header alongside context_length; 0 for dense models, None when not read.",
     )
 
 
@@ -268,6 +326,34 @@ class LoadResponse(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = "Active GPU memory strategy ('auto' or 'manual').",
+    )
+    gpu_layers: int = Field(
+        -1,
+        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    n_cpu_moe: int = Field(
+        0,
+        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
+    )
+    n_layers: Optional[int] = Field(
+        None,
+        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    n_moe_layers: int = Field(
+        0,
+        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
     )
 
 
@@ -396,6 +482,34 @@ class InferenceStatusResponse(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = "Active GPU memory strategy ('auto' or 'manual').",
+    )
+    gpu_layers: int = Field(
+        -1,
+        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    n_cpu_moe: int = Field(
+        0,
+        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
+    )
+    n_layers: Optional[int] = Field(
+        None,
+        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    n_moe_layers: int = Field(
+        0,
+        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,

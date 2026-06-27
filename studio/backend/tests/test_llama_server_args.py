@@ -747,6 +747,34 @@ def test_strip_shadowing_flags_defaults_strip_split_mode_too():
     assert strip_shadowing_flags(["--split-mode", "tensor"]) == []
 
 
+def test_strip_offload_is_opt_in_and_covers_moe():
+    base = dict(
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+    )
+    # Default: offload (incl. MoE) flags are NOT stripped.
+    assert strip_shadowing_flags(["--n-cpu-moe", "8", "--top-k", "20"], **base) == [
+        "--n-cpu-moe",
+        "8",
+        "--top-k",
+        "20",
+    ]
+    # Opt-in strips layer AND MoE offload flags (value-aware), keeps the rest.
+    assert strip_shadowing_flags(
+        ["--n-cpu-moe", "8", "--gpu-layers", "33", "--fit", "off", "--top-k", "20"],
+        **base,
+        strip_offload = True,
+    ) == ["--top-k", "20"]
+    # Boolean --cpu-moe drops the flag only, not the following value.
+    assert strip_shadowing_flags(["--cpu-moe", "--seed", "-1"], **base, strip_offload = True) == [
+        "--seed",
+        "-1",
+    ]
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -794,6 +822,23 @@ def test_strip_split_mode_only_drops_tensor_split_too():
         ["--split-mode", "tensor", "--tensor-split", "1,1", "-c", "4096"]
     ) == ["-c", "4096"]
     assert strip_split_mode_only(["-sm=tensor", "-ts=3,1"]) == []
+
+
+def test_strip_tensor_split_alone_preserves_split_mode():
+    # Manual mode emits its own --tensor-split, so an inherited ratio is dropped
+    # -- but the user's --split-mode row/none/layer choice (which the manual
+    # ratio toggle can't express) must survive. strip_tensor_split removes only
+    # the ratio, unlike strip_split_mode which removes the whole group.
+    out = strip_shadowing_flags(
+        ["--split-mode", "row", "--tensor-split", "1,1", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_tensor_split = True,
+    )
+    assert out == ["--split-mode", "row", "--top-k", "20"]
 
 
 def test_strip_shadowing_flags_keeps_model_draft_without_spec():

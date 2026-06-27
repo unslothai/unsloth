@@ -68,6 +68,7 @@ import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { loadModel, validateModel } from "./api/chat-api";
+import { resolveFitMaxSeqLength } from "./presets/preset-policy";
 import {
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -79,8 +80,10 @@ import {
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
+  loadedGpuMemoryFields,
   type ReasoningEffort,
   resolveLoadedSpeculativeSettings,
+  persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
@@ -945,15 +948,31 @@ export function SharedComposer({
         if (isAlreadyActive) {
           return "ready";
         }
+        // Size validation exactly as the load below, so the training-guard
+        // preflight checks the footprint that actually loads (under Manual + Auto
+        // layers the load sends 0 / the pinned context, not raw maxSeqLength).
+        const compareMaxSeqLength = resolveFitMaxSeqLength(
+          sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null,
+          currentStore.gpuMemoryMode,
+          currentStore.gpuLayers,
+          currentStore.customContextLength,
+          maxSeqLength,
+        );
         const validation = await validateModel({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          // Size the guard against the GPUs the compare load will use.
+          gpu_ids: currentStore.selectedGpuIds ?? undefined,
+          // Manual offload too, so the guard credits a low gpu_layers pick the
+          // same way the compare load (resolveFitMaxSeqLength above) does.
+          gpu_memory_mode: currentStore.gpuMemoryMode,
+          gpu_layers: currentStore.gpuLayers,
         });
         if (
           validation.requires_trust_remote_code ||
@@ -977,7 +996,7 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
@@ -986,10 +1005,18 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
-          // Honor the Tensor Parallelism toggle on compare loads too.
+          // Honor the Tensor Parallelism + GPU Memory choices on compare loads.
           tensor_parallel: currentStore.tensorParallel,
+          gpu_memory_mode: currentStore.gpuMemoryMode,
+          gpu_layers: currentStore.gpuLayers,
+          n_cpu_moe: currentStore.nCpuMoe,
+          tensor_split: currentStore.splitRatio ?? undefined,
+          gpu_ids: currentStore.selectedGpuIds ?? undefined,
         });
         saveSpeculativeType(specSettings.speculativeType);
+        // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
+        // so an applied manual choice survives a restart.
+        persistGpuMemoryModeOnLoad(resp, currentStore.gpuMemoryMode);
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -1006,6 +1033,10 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          ...loadedGpuMemoryFields(resp),
+          // Drives the GPU Memory controls' diffusion gate; set alongside the
+          // GPU fields on every load path so the gate can't read stale.
+          loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
           ...resolveLoadedSpeculativeSettings(resp),
         });

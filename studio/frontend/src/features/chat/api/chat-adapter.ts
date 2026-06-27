@@ -40,12 +40,15 @@ import {
 import {
   type PendingImageEditReference,
   type RagAutoInject,
+  loadedGpuMemoryFields,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
+  persistGpuMemoryModeOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import { resolveFitMaxSeqLength } from "../presets/preset-policy";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { isMultimodalResponse } from "../types/api";
 import type {
@@ -1330,11 +1333,17 @@ async function autoLoadSmallestModel(): Promise<{
     is_lora: boolean;
     gguf_variant?: string | null;
   }): Promise<boolean> {
+    const rt = useChatRuntimeStore.getState();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
+      // Size the guard against the GPUs and manual offload the auto-load will use
+      // (it sends the same gpuMemoryMode/gpuLayers below).
+      gpu_ids: rt.selectedGpuIds ?? undefined,
+      gpu_memory_mode: rt.gpuMemoryMode,
+      gpu_layers: rt.gpuLayers,
     });
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
     // files on its own; both are deferred to the explicit consent dialog instead.
@@ -1376,18 +1385,32 @@ async function autoLoadSmallestModel(): Promise<{
               continue;
             }
             loadAttempts += 1;
+            const rt = useChatRuntimeStore.getState();
             const loadResp = await loadModel({
               model_path: repo.repo_id,
               hf_token: hfToken,
-              max_seq_length: 0,
+              max_seq_length: resolveFitMaxSeqLength(
+                /* isGguf */ true,
+                rt.gpuMemoryMode,
+                rt.gpuLayers,
+                rt.customContextLength,
+                0,
+              ),
               load_in_4bit: true,
               is_lora: false,
               gguf_variant: variant.quant,
               trust_remote_code: trustRemoteCode,
               speculative_type: specSettings.speculativeType,
               spec_draft_n_max: specSettings.specDraftNMax,
+              // GPU Memory is a standing preference, so honor it on auto-load.
+              gpu_memory_mode: rt.gpuMemoryMode,
+              gpu_layers: rt.gpuLayers,
+              n_cpu_moe: rt.nCpuMoe,
+              tensor_split: rt.splitRatio ?? undefined,
+              gpu_ids: rt.selectedGpuIds ?? undefined,
             });
             saveSpeculativeType(specSettings.speculativeType);
+            persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
             useChatRuntimeStore
               .getState()
               .setCheckpoint(repo.repo_id, variant.quant);
@@ -1432,6 +1455,10 @@ async function autoLoadSmallestModel(): Promise<{
               loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
               tensorParallel: loadResp.tensor_parallel ?? false,
               loadedTensorParallel: loadResp.tensor_parallel ?? false,
+              ...loadedGpuMemoryFields(loadResp),
+              // Drives the GPU Memory controls' diffusion gate; set alongside the
+              // GPU fields on every load path so the gate can't read stale.
+              loadedIsDiffusion: loadResp.is_diffusion ?? false,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
               loadedChatTemplateOverride: null,
@@ -1555,18 +1582,32 @@ async function autoLoadSmallestModel(): Promise<{
         return { loaded: false, blockedByTrustRemoteCode };
       }
       loadAttempts += 1;
+      const rt = useChatRuntimeStore.getState();
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
-        max_seq_length: 0,
+        max_seq_length: resolveFitMaxSeqLength(
+          /* isGguf */ true,
+          rt.gpuMemoryMode,
+          rt.gpuLayers,
+          rt.customContextLength,
+          0,
+        ),
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
+        // GPU Memory is a standing preference, so honor it on auto-load.
+        gpu_memory_mode: rt.gpuMemoryMode,
+        gpu_layers: rt.gpuLayers,
+        n_cpu_moe: rt.nCpuMoe,
+        tensor_split: rt.splitRatio ?? undefined,
+        gpu_ids: rt.selectedGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);
+      persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
       useChatRuntimeStore
         .getState()
         .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
@@ -1603,6 +1644,10 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        ...loadedGpuMemoryFields(loadResp),
+        // Drives the GPU Memory controls' diffusion gate; set alongside the
+        // GPU fields on every load path so the gate can't read stale.
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),

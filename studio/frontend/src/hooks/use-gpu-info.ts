@@ -11,6 +11,18 @@ export interface GpuInfo {
   systemRamAvailableGb: number;
 }
 
+export interface SystemGpuDevice {
+  index: number;
+  name: string;
+  memoryTotalGb: number;
+  /**
+   * "physical" = `index` is a stable physical/PCI id safe to pin via gpu_ids;
+   * "relative" = an ordinal into a parent CUDA_VISIBLE_DEVICES mask, which the
+   * backend can't map back, so the picker must not offer it.
+   */
+  physicalIndex: boolean;
+}
+
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   name: "Unknown",
@@ -18,64 +30,123 @@ const DEFAULT_GPU: GpuInfo = {
   systemRamAvailableGb: 0,
 };
 
-// Module-level cache so multiple components share one fetch.
-let cachedGpu: GpuInfo | null = null;
-let fetchPromise: Promise<GpuInfo> | null = null;
+interface SystemPayload {
+  gpu?: {
+    available?: boolean;
+    devices?: Array<{
+      index?: number;
+      name?: string;
+      memory_total_gb?: number;
+      index_kind?: string;
+    }>;
+  };
+  memory?: { available_gb?: number };
+}
 
-async function fetchGpuOnce(): Promise<GpuInfo> {
-  if (cachedGpu) return cachedGpu;
-  if (fetchPromise) return fetchPromise;
+// One module-level cache so every GPU hook shares a single /api/system fetch.
+let cachedSystem: SystemPayload | null = null;
+let systemPromise: Promise<SystemPayload | null> | null = null;
 
-  fetchPromise = (async () => {
+async function fetchSystemOnce(): Promise<SystemPayload | null> {
+  if (cachedSystem) return cachedSystem;
+  if (systemPromise) return systemPromise;
+  systemPromise = (async () => {
     try {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const ramAvailableGb = data?.memory?.available_gb ?? 0;
-      const gpuData = data?.gpu;
-      if (!gpuData?.available || !gpuData.devices?.length) {
-        // No discrete GPU (e.g. Mac): still surface system RAM so memory math
-        // (unified memory) has a budget to work with.
-        const info: GpuInfo = { ...DEFAULT_GPU, systemRamAvailableGb: ramAvailableGb };
-        cachedGpu = info;
-        return info;
-      }
-      const devices = gpuData.devices as Array<{ name?: string; memory_total_gb?: number }>;
-      const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
-      const info: GpuInfo = {
-        available: true,
-        name: devices[0]?.name ?? "Unknown",
-        memoryTotalGb: totalGb,
-        systemRamAvailableGb: ramAvailableGb,
-      };
-      cachedGpu = info;
-      return info;
+      cachedSystem = (await res.json()) as SystemPayload;
+      return cachedSystem;
     } catch {
-      // Reset promise so subsequent calls retry (e.g. backend wasn't ready)
-      fetchPromise = null;
-      return DEFAULT_GPU;
+      systemPromise = null; // reset so a later call retries (backend not ready)
+      return null;
     }
   })();
+  return systemPromise;
+}
 
-  return fetchPromise;
+function toGpuInfo(data: SystemPayload | null): GpuInfo {
+  const ramAvailableGb = data?.memory?.available_gb ?? 0;
+  const gpuData = data?.gpu;
+  if (!gpuData?.available || !gpuData.devices?.length) {
+    // No discrete GPU (e.g. Mac): still surface system RAM so memory math
+    // (unified memory) has a budget to work with.
+    return { ...DEFAULT_GPU, systemRamAvailableGb: ramAvailableGb };
+  }
+  const devices = gpuData.devices;
+  const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
+  return {
+    available: true,
+    name: devices[0]?.name ?? "Unknown",
+    memoryTotalGb: totalGb,
+    systemRamAvailableGb: ramAvailableGb,
+  };
+}
+
+function toGpuDevices(data: SystemPayload | null): SystemGpuDevice[] {
+  return (data?.gpu?.devices ?? [])
+    .filter((d) => typeof d.index === "number")
+    .map((d) => ({
+      index: d.index as number,
+      name: d.name ?? `GPU ${d.index}`,
+      memoryTotalGb: d.memory_total_gb ?? 0,
+      physicalIndex: d.index_kind === "physical",
+    }));
 }
 
 /**
- * Fetch GPU info from /api/system. Cached at module level, so only one request
- * is made no matter how many components call this hook.
+ * Aggregate GPU info from /api/system. Cached at module level, so only one
+ * request is made no matter how many GPU hooks are mounted.
  */
 export function useGpuInfo(): GpuInfo {
-  const [gpu, setGpu] = useState<GpuInfo>(cachedGpu ?? DEFAULT_GPU);
-
+  const [gpu, setGpu] = useState<GpuInfo>(
+    cachedSystem ? toGpuInfo(cachedSystem) : DEFAULT_GPU,
+  );
   useEffect(() => {
-    if (cachedGpu) return;
-
+    // No early return on cachedSystem: a consumer mounting as the cache fills
+    // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
-    fetchGpuOnce().then((info) => {
-      if (!cancelled) setGpu(info);
+    fetchSystemOnce().then((d) => {
+      if (!cancelled) setGpu(toGpuInfo(d));
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
-
   return gpu;
+}
+
+/** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */
+export function useGpuDevices(): SystemGpuDevice[] {
+  const [devices, setDevices] = useState<SystemGpuDevice[]>(
+    cachedSystem ? toGpuDevices(cachedSystem) : [],
+  );
+  useEffect(() => {
+    // No early return on cachedSystem: a consumer mounting as the cache fills
+    // (between render and effect) would otherwise stay stuck at the default.
+    let cancelled = false;
+    fetchSystemOnce().then((d) => {
+      if (!cancelled) setDevices(toGpuDevices(d));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return devices;
+}
+
+/**
+ * Pinnable physical GPU indices from the already-fetched /api/system cache, for
+ * non-React code (the store) that needs to validate a persisted `gpu_ids` pick
+ * without triggering a fetch. Returns:
+ *  - `null` when the cache isn't populated yet (caller can't validate, so keep
+ *    the pick and let the backend guard reject a truly bad one);
+ *  - `[]` when the host has no pinnable multi-GPU set (single GPU, or relative/
+ *    UUID-masked indices) -- the picker is hidden, so any saved pick is stale;
+ *  - the physical indices otherwise.
+ */
+export function cachedPinnableGpuIndices(): number[] | null {
+  if (!cachedSystem) return null;
+  const physical = toGpuDevices(cachedSystem).filter((d) => d.physicalIndex);
+  // Mirrors the sheet's showGpuPicker gate: only a 2+ physical-GPU host can pin.
+  return physical.length > 1 ? physical.map((d) => d.index) : [];
 }
