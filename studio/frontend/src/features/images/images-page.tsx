@@ -637,7 +637,7 @@ export function ImagesPage() {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, loadToastId.current));
+          loadToastId.current = toast(null, loadToastArgs(p));
           void pollLoadProgress();
         }
       } catch {
