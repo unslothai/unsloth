@@ -830,10 +830,7 @@ class FastBaseModel:
         # otherwise fetch it in-process, unprotected by the Xet->HTTP fallback, so a stalled
         # Xet download of those files could still hang from_pretrained. Warm just its
         # tokenizer / config files through the same killable subprocess.
-        if (
-            isinstance(tokenizer_name, str) and tokenizer_name
-            and tokenizer_name != model_name
-        ):
+        if isinstance(tokenizer_name, str) and tokenizer_name and tokenizer_name != model_name:
             maybe_prefetch_hf_snapshot(
                 tokenizer_name,
                 token = token,

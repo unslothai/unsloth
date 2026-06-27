@@ -2403,10 +2403,7 @@ class FastLlamaModel:
         # so a stalled Xet tokenizer download could still hang from_pretrained. Warm just its
         # tokenizer / config files through the same killable subprocess. fast_inference is not
         # forwarded: the tokenizer loads in-process regardless of the vLLM weight path.
-        if (
-            isinstance(tokenizer_name, str) and tokenizer_name
-            and tokenizer_name != model_name
-        ):
+        if isinstance(tokenizer_name, str) and tokenizer_name and tokenizer_name != model_name:
             maybe_prefetch_hf_snapshot(
                 tokenizer_name,
                 token = token,

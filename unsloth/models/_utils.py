@@ -1053,14 +1053,18 @@ def maybe_prefetch_hf_snapshot(
     # A tokenizer-only warm allow-lists the exact tokenizer / config files below, so the
     # weight-format ignore list is moot -- and skipping it avoids the model_info network
     # call its auto branch would otherwise make for a repo whose weights we never fetch.
-    ignore_patterns = None if tokenizer_only else _prefetch_ignore_patterns(
-        model_name,
-        token = token,
-        revision = revision,
-        subfolder = subfolder,
-        use_safetensors = use_safetensors,
-        from_tf = from_tf,
-        from_flax = from_flax,
+    ignore_patterns = (
+        None
+        if tokenizer_only
+        else _prefetch_ignore_patterns(
+            model_name,
+            token = token,
+            revision = revision,
+            subfolder = subfolder,
+            use_safetensors = use_safetensors,
+            from_tf = from_tf,
+            from_flax = from_flax,
+        )
     )
     # When loading from a subfolder, warm that subfolder instead of the whole repo: a
     # from_pretrained(..., subfolder=X) resolves every weight file under X/, so the rest
