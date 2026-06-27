@@ -252,9 +252,13 @@ def test_valid_call_after_missing_close_is_recovered():
     # closed call: nesting is decided by the brace region, not an envelope that
     # would run to EOF, so the second call is still recovered.
     text = "<|tool_call>call:a{x:1} <|tool_call>call:b{y:2}<tool_call|>"
-    names_inc = [c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = True)]
+    names_inc = [
+        c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = True)
+    ]
     assert "b" in names_inc, names_inc
-    names_strict = [c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = False)]
+    names_strict = [
+        c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = False)
+    ]
     assert names_strict == ["b"], names_strict
 
 
