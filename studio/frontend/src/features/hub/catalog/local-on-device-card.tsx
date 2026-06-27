@@ -26,6 +26,7 @@ import {
 } from "../inventory";
 import {
   downloadManager,
+  jobKeyOf,
   selectActiveJob,
   useDownloadManagerStore,
 } from "../download-manager";
@@ -43,7 +44,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ggufVariantDisplayLabel,
   sortLocalGgufVariants,
@@ -56,6 +57,7 @@ import {
   UpdateConfirmDialog,
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
+import { TransportConflictDialog } from "./transport-conflict-dialog";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
 import { useOnlineStatus } from "../hooks/use-online-status";
@@ -215,6 +217,28 @@ export function LocalOnDeviceCard({
     variant: string | null;
     available: boolean;
   } | null>(null);
+  const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
+    null,
+  );
+  const updateTransportConflict = useDownloadManagerStore((state) =>
+    updateConflictKey
+      ? (state.conflicts[updateConflictKey]?.info ?? null)
+      : null,
+  );
+  const cancelUpdateConflict = useCallback(() => {
+    if (updateConflictKey) downloadManager.cancelConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
+  const resumeUpdateConflict = useCallback(() => {
+    if (!updateConflictKey) return;
+    downloadManager.resumeConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
+  const restartUpdateConflict = useCallback(() => {
+    if (!updateConflictKey) return;
+    downloadManager.restartConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
   const hfToken = useHfTokenStore((s) => s.token);
   // Whether HuggingFace is reachable; the on-select update check is skipped
   // entirely when offline (no wasted request, no stale "update available").
@@ -244,11 +268,16 @@ export function LocalOnDeviceCard({
   const handleConfirmUpdate = () => {
     if (!repoId) return;
     setUpdateOpen(false);
+    const variant = updateVariantRef.current;
     void downloadManager.requestStart({
       kind: "model",
       repoId,
-      variant: updateVariantRef.current,
+      variant,
       expectedBytes: 0,
+    }).then((outcome) => {
+      if (outcome === "conflict") {
+        setUpdateConflictKey(jobKeyOf("model", repoId, variant));
+      }
     });
   };
   const localGgufPath = path.trim();
@@ -661,6 +690,12 @@ export function LocalOnDeviceCard({
         updating={false}
         onConfirm={handleConfirmUpdate}
         description="Re-download the latest version of this model from Hugging Face. Progress shows in the Downloads panel."
+      />
+      <TransportConflictDialog
+        conflict={updateTransportConflict}
+        onCancel={cancelUpdateConflict}
+        onKeepTransport={resumeUpdateConflict}
+        onSwitchTransport={restartUpdateConflict}
       />
     </div>
   );

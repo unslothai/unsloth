@@ -39,6 +39,7 @@ from hub.services.models.common import (
     _runtime_for_format,
 )
 from hub.utils.gguf import extract_quant_label
+from hub.utils.gguf_plan import build_gguf_variant_plans
 
 logger = get_logger(__name__)
 
@@ -297,26 +298,145 @@ def _scan_cached_gguf() -> list[dict]:
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
-def _gguf_remote_update(repo_id: str, local_blobs: dict[str, set[str]], hf_token) -> bool:
-    """True iff any cached MAIN gguf file's remote ``main`` blob is absent from the
-    locally cached blobs for that file.
+def _gguf_variant_update_available_from_remote(
+    local_blobs: dict[str, set[str]],
+    remote_paths: set[str],
+    remote_hashes: frozenset[str],
+) -> bool:
+    local_by_posix = {key.replace("\\", "/"): value for key, value in local_blobs.items()}
+    local_hashes = frozenset(blob for blobs in local_by_posix.values() for blob in blobs)
+    remote_paths = {path.replace("\\", "/") for path in remote_paths}
+    return bool(remote_paths - set(local_by_posix) or remote_hashes - local_hashes)
+
+
+def _remote_blob_id(path_info) -> Optional[str]:
+    lfs = getattr(path_info, "lfs", None)
+    if isinstance(lfs, dict):
+        value = lfs.get("sha256")
+    else:
+        value = getattr(lfs, "sha256", None)
+    value = value or getattr(path_info, "blob_id", None)
+    return str(value) if value else None
+
+
+def gguf_variant_update_statuses(
+    repo_id: str,
+    local_blobs_by_variant: dict[str, dict[str, set[str]]],
+    hf_token: Optional[str] = None,
+    *,
+    remote_paths_by_variant: Optional[dict[str, list[str]]] = None,
+) -> dict[str, bool]:
+    """Return update status for selected GGUF variants using one shared predicate.
+
+    ``local_blobs_by_variant`` maps quant label -> cached MAIN GGUF repo paths
+    and their local blob hashes. When ``remote_paths_by_variant`` is provided,
+    callers already know the current remote filenames and this function resolves
+    those paths with one ``get_paths_info`` call. Otherwise it resolves the
+    current remote GGUF variant plans from model metadata. The comparison itself
+    is intentionally main-GGUF-only; companion-only mmproj/MTP changes do not
+    trigger an update cue.
+    """
+    local_by_variant = {
+        str(variant).strip().lower(): blobs
+        for variant, blobs in local_blobs_by_variant.items()
+        if str(variant).strip() and blobs
+    }
+    result = {variant: False for variant in local_by_variant}
+    if not local_by_variant:
+        return result
+
+    if remote_paths_by_variant is not None:
+        from huggingface_hub import get_paths_info
+
+        path_to_variants: dict[str, set[str]] = {}
+        for variant, paths in remote_paths_by_variant.items():
+            variant_key = str(variant).strip().lower()
+            if variant_key not in local_by_variant:
+                continue
+            for path in paths:
+                path_key = str(path).replace("\\", "/")
+                if not path_key:
+                    continue
+                path_to_variants.setdefault(path_key, set()).add(variant_key)
+        if not path_to_variants:
+            return result
+
+        remote_paths: dict[str, set[str]] = {variant: set() for variant in local_by_variant}
+        remote_hashes: dict[str, set[str]] = {variant: set() for variant in local_by_variant}
+        for path, variants in path_to_variants.items():
+            for variant in variants:
+                remote_paths[variant].add(path)
+        for path_info in get_paths_info(
+            repo_id = repo_id,
+            paths = list(path_to_variants),
+            token = hf_token,
+        ):
+            path = str(path_info.path).replace("\\", "/")
+            remote_blob = _remote_blob_id(path_info)
+            for variant in path_to_variants.get(path, set()):
+                if remote_blob:
+                    remote_hashes[variant].add(remote_blob)
+        for variant, local_blobs in local_by_variant.items():
+            result[variant] = _gguf_variant_update_available_from_remote(
+                local_blobs,
+                remote_paths.get(variant, set()),
+                frozenset(remote_hashes.get(variant, set())),
+            )
+        return result
+
+    from huggingface_hub import HfApi
+
+    info = HfApi(token = hf_token).model_info(
+        repo_id,
+        files_metadata = True,
+        token = hf_token,
+    )
+    plans = build_gguf_variant_plans(list(getattr(info, "siblings", []) or []))
+    for variant, local_blobs in local_by_variant.items():
+        plan = plans.get(variant)
+        if plan is None:
+            continue
+        result[variant] = _gguf_variant_update_available_from_remote(
+            local_blobs,
+            {path.replace("\\", "/") for path in plan.main_filenames},
+            plan.main_hashes,
+        )
+    return result
+
+
+def _gguf_remote_update(
+    repo_id: str,
+    local_blobs: dict[str, set[str]],
+    gguf_variant: Optional[str] = None,
+    hf_token = None,
+) -> bool:
+    """True iff the selected remote MAIN GGUF files are absent from the local cache.
 
     Compares per-file blob SHAs (HF names blobs by lfs.sha256, else git blob id)
     so a metadata-only commit does NOT flag an update. ``local_blobs`` maps each
     file to the SET of blobs cached across revisions. A model that was already
     updated still holds the pre-update revision next to the new one, so it counts
     as current the moment the remote blob is one of them (a blob equality against
-    a single arbitrary revision would report a phantom update). ``get_paths_info``
-    returns repo-relative POSIX paths; the cached ``file_name`` keys can carry a
-    platform separator, so both sides are normalized to forward slashes before
-    comparing. Best-effort: callers swallow exceptions and keep update_available
-    False."""
+    a single arbitrary revision would report a phantom update). For a selected
+    variant, resolve the CURRENT remote GGUF plan first so filename changes and
+    re-shards are detected instead of querying stale local paths. Best-effort:
+    callers swallow exceptions and keep update_available False."""
     from huggingface_hub import get_paths_info
 
+    variant = (gguf_variant or "").strip().lower()
+    if variant:
+        return gguf_variant_update_statuses(
+            repo_id,
+            {variant: local_blobs},
+            hf_token,
+        ).get(variant, False)
+
+    # Repo-level fallback only; selected variants resolve the current remote
+    # plan above so renamed/re-sharded quants are compared against current files.
     local_by_posix = {key.replace("\\", "/"): value for key, value in local_blobs.items()}
     remote_path_infos = get_paths_info(repo_id = repo_id, paths = list(local_by_posix), token = hf_token)
     for path_info in remote_path_infos:
-        remote_blob = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
+        remote_blob = _remote_blob_id(path_info)
         local_set = local_by_posix.get(path_info.path.replace("\\", "/"))
         if not local_set or remote_blob not in local_set:
             return True
@@ -690,7 +810,7 @@ async def repo_update_status_response(
             ):
                 return {"update_available": cached_entry[1]}
             result = await asyncio.wait_for(
-                asyncio.to_thread(_gguf_remote_update, repo_id, local_blobs, hf_token),
+                asyncio.to_thread(_gguf_remote_update, repo_id, local_blobs, gguf_variant, hf_token),
                 timeout = 6.0,
             )
             with _gguf_update_check_lock:

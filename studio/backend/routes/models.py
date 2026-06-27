@@ -2680,7 +2680,7 @@ async def get_gguf_variants(
         # mmproj adapters are excluded so they can't inflate a quant's bytes.
         cached_bytes_by_quant_per_snapshot: list[dict[str, int]] = []
         cached_revision_ids: list[str] = []
-        cached_blob_ids: list[str] = []
+        cached_blob_ids: set[str] = set()
         # GGUF file rel-paths present per snapshot revision, so split-variant
         # shard completeness can be checked within a single revision (F8).
         gguf_files_by_revision: dict[str, set[str]] = {}
@@ -2720,7 +2720,7 @@ async def get_gguf_variants(
                             gguf_files_by_revision[rev_id] = rev_files
                     blobs = entry / "blobs"
                     if blobs.is_dir():
-                        cached_blob_ids = [str(blob.relative_to(blobs)) for blob in blobs.iterdir()]
+                        cached_blob_ids = {str(blob.relative_to(blobs)) for blob in blobs.iterdir()}
                     break
         except Exception:
             pass
@@ -2778,47 +2778,48 @@ async def get_gguf_variants(
                 for by_quant in cached_bytes_by_quant_per_snapshot
             )
 
-        def _check_available_updates() -> dict[str, bool]:
-            from huggingface_hub import get_paths_info
-
-            updates_dict: dict[str, bool] = {}
-            # Build the remote-check list from EVERY shard of each downloaded
-            # variant (F7), so a later-shard remote update is detected too.
+        def _downloaded_variant_update_inputs():
             all_cached_files: set[str] = set()
             for files in gguf_files_by_revision.values():
                 all_cached_files |= files
-            downloaded_filenames: list[str] = []
+            local_blobs_by_variant: dict[str, dict[str, set[str]]] = {}
+            remote_paths_by_variant: dict[str, list[str]] = {}
             for v in variants:
                 if not _is_fully_downloaded(v):
                     continue
-                for shard in _shard_filenames(v.filename, all_cached_files):
-                    if shard not in downloaded_filenames:
-                        downloaded_filenames.append(shard)
-            if downloaded_filenames:
-                remote_path_infos = get_paths_info(
-                    repo_id = repo_id, paths = downloaded_filenames, token = hf_token
-                )
-                for path_info in remote_path_infos:
-                    remote_blob_id = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
-                    updates_dict[path_info.path] = remote_blob_id not in cached_blob_ids
-            return updates_dict
+                variant_key = v.quant.lower()
+                remote_paths = _shard_filenames(v.filename, all_cached_files)
+                remote_paths_by_variant[variant_key] = remote_paths
+                local_blobs: dict[str, set[str]] = {}
+                for path in remote_paths:
+                    if any(path in files for files in gguf_files_by_revision.values()):
+                        local_blobs[path] = set(cached_blob_ids)
+                # Byte-size fallback can mark older or renamed local files as
+                # downloaded. Give the shared freshness helper the current
+                # remote filename so a missing/mismatched blob still reports an
+                # update instead of losing the cue.
+                if not local_blobs and cached_blob_ids:
+                    local_blobs[v.filename] = set(cached_blob_ids)
+                if local_blobs:
+                    local_blobs_by_variant[variant_key] = local_blobs
+            return local_blobs_by_variant, remote_paths_by_variant
 
         # Update check is best-effort: a network/rate-limit/offline failure
         # must not break variant listing (mirrors list_cached_models).
         try:
-            updates_dict = await asyncio.to_thread(_check_available_updates)
+            from hub.services.models.cache_inventory import gguf_variant_update_statuses
+
+            local_blobs_by_variant, remote_paths_by_variant = _downloaded_variant_update_inputs()
+            updates_by_quant = await asyncio.to_thread(
+                gguf_variant_update_statuses,
+                repo_id,
+                local_blobs_by_variant,
+                hf_token,
+                remote_paths_by_variant = remote_paths_by_variant,
+            )
         except Exception as e:
             logger.warning(f"Skipping update check for GGUF repo '{repo_id}': {e}")
-            updates_dict = {}
-
-        def _variant_update_available(v) -> bool:
-            # A split variant is updatable if ANY of its shards changed remotely.
-            all_cached: set[str] = set()
-            for files in gguf_files_by_revision.values():
-                all_cached |= files
-            return any(
-                updates_dict.get(shard, False) for shard in _shard_filenames(v.filename, all_cached)
-            )
+            updates_by_quant = {}
 
         return GgufVariantsResponse(
             repo_id = repo_id,
@@ -2828,7 +2829,7 @@ async def get_gguf_variants(
                     quant = v.quant,
                     size_bytes = v.size_bytes,
                     downloaded = _is_fully_downloaded(v),
-                    update_available = _variant_update_available(v),
+                    update_available = updates_by_quant.get(v.quant.lower(), False),
                 )
                 for v in variants
             ],
