@@ -33,13 +33,15 @@ def main() -> int:
     for label, cls_name, base in MODELS:
         cls = getattr(diffusers, cls_name, None)
         if cls is None:
-            print(f"\n### {label}: {cls_name} NOT in diffusers"); continue
+            print(f"\n### {label}: {cls_name} NOT in diffusers")
+            continue
         try:
-            cfg = cls.load_config(base, subfolder="transformer", token=tok)
+            cfg = cls.load_config(base, subfolder = "transformer", token = tok)
             with init_empty_weights():
                 model = cls.from_config(cfg)
         except Exception as e:  # noqa: BLE001
-            print(f"\n### {label}: load failed {type(e).__name__}: {e}"); continue
+            print(f"\n### {label}: load failed {type(e).__name__}: {e}")
+            continue
         lins = [(n, m) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
         selected = [(n, m) for n, m in lins if m.in_features >= MIN and m.out_features >= MIN]
         print(f"\n### {label}: {len(lins)} Linear, {len(selected)} pass min_features={MIN}")
@@ -54,12 +56,16 @@ def main() -> int:
                 tag.append("NO-BLOCK-IDX")
             if ratio >= 3:
                 tag.append(f"out={ratio:.0f}xin")
-            if any(t in n.lower() for t in ("norm", "embed", "time", "guidance", "modulation", "adaln", "cond")):
+            if any(
+                t in n.lower()
+                for t in ("norm", "embed", "time", "guidance", "modulation", "adaln", "cond")
+            ):
                 tag.append("NAME")
             if tag:
                 sus.append((n, m.in_features, m.out_features, ",".join(tag)))
         # Print the distinct fqn shapes (collapse block indices to {i})
         import re
+
         seen = {}
         for n, i, o, tag in sus:
             key = re.sub(r"\.\d+\.", ".{i}.", n)
@@ -69,8 +75,11 @@ def main() -> int:
         for (key, i, o, tag), cnt in sorted(seen.items()):
             print(f"    [{cnt:>3}x] {key:55s} {i:>6}->{o:<6} [{tag}]")
         # Also show a few non-suspect selected names for contrast (the real FLOP linears)
-        good = [n for n, m in selected if (n, m.in_features, m.out_features) not in
-                {(s[0], s[1], s[2]) for s in sus}][:6]
+        good = [
+            n
+            for n, m in selected
+            if (n, m.in_features, m.out_features) not in {(s[0], s[1], s[2]) for s in sus}
+        ][:6]
         print(f"  kept-for-int8 examples: {good}")
     return 0
 
