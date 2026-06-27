@@ -370,8 +370,7 @@ def parse_tool_calls_from_text(
                 obj = json.loads(content[m.end() - 1 : end + 1])
                 name = obj.get("name", "")
                 # Accept ``parameters`` as an alias for ``arguments`` (Llama-3.2
-                # template drift wrapped in a Hermes ``<tool_call>``); otherwise
-                # the payload would silently parse to ``{}``.
+                # drift inside a Hermes ``<tool_call>``); else it parses to ``{}``.
                 arguments = obj.get("arguments")
                 if arguments is None:
                     arguments = obj.get("parameters", {})
@@ -414,9 +413,8 @@ def parse_tool_calls_from_text(
                 body = body[:close_idx]
             else:
                 # Lenient: terminate at the last </function> so trailing prose
-                # after a bare (un-wrapped) call does not leak into the final
-                # parameter value; if there is no close at all, heal by keeping
-                # the whole body.
+                # after a bare call doesn't leak into the final parameter value;
+                # with no close at all, heal by keeping the whole body.
                 close_idx = body.rfind(_FUNC_CLOSE_TAG)
                 if close_idx >= 0:
                     body = body[:close_idx]

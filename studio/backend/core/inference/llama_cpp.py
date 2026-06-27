@@ -42,9 +42,8 @@ from core.tool_healing import (
     _TOOL_ALL_PATS,
 )
 
-# Share strip / signal constants with the multi-format parser so the
-# BUFFERING state machine also catches Llama-3 / Mistral / Gemma 4
-# emissions (legacy helper only knew <tool_call> / <function=).
+# Share strip / signal constants with the multi-format parser so BUFFERING also
+# catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -7947,9 +7946,8 @@ class LlamaCppBackend:
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
-            # Reuse the shared signal tuple so the GGUF BUFFERING state machine
-            # wakes on every emission format the parser knows (Llama-3 / Mistral
-            # / Gemma 4), matching the safetensors path.
+            # Reuse the shared signal tuple so GGUF BUFFERING wakes on every format
+            # the parser knows (Llama-3 / Mistral / Gemma 4), like the safetensors path.
             _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
 
             # Build payload -- stream: True so we detect tool signals

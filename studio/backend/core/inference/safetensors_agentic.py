@@ -50,10 +50,9 @@ logger = get_logger(__name__)
 # Buffer cap while disambiguating a possible tool-call prefix.
 _MAX_BUFFER_CHARS = 32
 
-# Forward-looking intent ("I'll...", "First, ...", "Step 1:") that
-# means the model is planning rather than answering. Used to nudge it
-# to call a tool. Excludes "I can / I should / I want / let's" because
-# those also appear in direct answers and explanations. Mirrors GGUF.
+# Forward-looking intent ("I'll", "First,", "Step 1:") => model is planning, not
+# answering; used to nudge a tool call. Excludes "I can/should/want", "let's"
+# (they also appear in plain answers). Mirrors GGUF.
 _INTENT_SIGNAL = re.compile(
     r"(?i)("
     r"\b(i['’](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
@@ -447,10 +446,9 @@ def run_safetensors_tool_loop(
             ):
                 detect_state = _state_draining
             else:
-                # Drain the buffer and fall through to STREAMING so the
-                # intent re-prompt + safety-net parser can still fire on
-                # short emissions like "Let me search." that never exit
-                # BUFFERING (would otherwise silently end the loop).
+                # Drain the buffer and fall through to STREAMING so the intent
+                # re-prompt + safety-net parser still fire on short emissions like
+                # "Let me search." that never exit BUFFERING (else the loop ends).
                 if content_buffer:
                     cumulative_display += content_buffer
                     cleaned = strip_tool_markup(cumulative_display, final = True)
@@ -460,21 +458,18 @@ def run_safetensors_tool_loop(
                 detect_state = _state_streaming
 
         if detect_state == _state_streaming:
-            # No tool XML detected mid-stream -- run the parser anyway.
-            # The Llama-3.2 bare-JSON tool form ``{"name":..,"parameters":..}``
-            # carries no XML signal, so gating this on has_tool_signal()
-            # silently dropped real tool calls and re-prompted the model into
-            # giving up. parse_tool_calls_from_text is strict (it only fires
-            # on a valid tool-call shape), so plain answers stay untouched.
-            # This mirrors what llama-server already does for GGUF.
+            # Run the parser even with no XML signal: the Llama-3.2 bare-JSON form
+            # ``{"name":..,"parameters":..}`` carries none, so gating on
+            # has_tool_signal() dropped real calls. parse_tool_calls_from_text is
+            # strict (fires only on a valid shape), so plain answers stay untouched.
+            # Mirrors GGUF.
             safety_tc = parse_tool_calls_from_text(
                 content_accum,
                 id_offset = next_call_id,
             )
             if not safety_tc:
-                # Re-prompt only when the model planned without acting
-                # (intent signal present); direct answers like "4" or
-                # "Hello!" never trigger. Mirrors GGUF.
+                # Re-prompt only when the model planned without acting (intent
+                # signal); "4" / "Hello!" never trigger. Mirrors GGUF.
                 _stripped = content_accum.strip()
                 if (
                     tools
@@ -496,11 +491,9 @@ def run_safetensors_tool_loop(
                     yield {"type": "status", "text": ""}
                     continue
 
-                # Final answer. If a literal tool marker in prose was buffered /
-                # drained during streaming but never parsed as a real call,
-                # restore the raw cumulative text so the prose surfaces in full
-                # instead of being truncated at the marker; route-level cleanup
-                # still applies the Auto-Heal display policy.
+                # Final answer. If a literal tool marker in prose was buffered but
+                # never parsed as a call, restore the raw text so the prose surfaces
+                # in full; route-level cleanup still applies the Auto-Heal policy.
                 if content_accum and any(sig in content_accum for sig in tool_xml_signals):
                     yield {"type": "content", "text": content_accum}
                 yield {"type": "status", "text": ""}

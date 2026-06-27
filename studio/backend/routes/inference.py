@@ -1267,11 +1267,10 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # Markers the safetensors / MLX parser recognises. If the template
-    # advertises tools but uses none of them, drop the pill (parser
-    # can't honour the emission). The two ``{"name":`` variants cover
-    # Llama-3.2 ``custom_tools`` whose template prompts the bare-JSON
-    # form without a ``<|python_tag|>`` prefix.
+    # Markers the safetensors / MLX parser recognises. If the template advertises
+    # tools but uses none, drop the pill (parser can't honour the emission). The
+    # two ``{"name":`` variants cover Llama-3.2 ``custom_tools`` whose template
+    # prompts the bare-JSON form without a ``<|python_tag|>`` prefix.
     _PARSER_MARKERS = (
         "<tool_call>",
         "<function=",
@@ -1575,18 +1574,16 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     return nudge + " " + _RAG_GROUNDING_NUDGE
 
 
-# Strip leaked tool-call markup. Covers every shared-parser format AND
-# the four leak shapes the speculative buffer in ``llama_cpp.py`` splits
-# across the visible/DRAIN boundary (closed pair, orphan open to EOF,
-# bare orphan close, tail-only ``</parameter>``). Mistral ``[TOOL_CALLS]``
-# is delegated to the parser's balanced-brace helper -- a non-greedy
-# ``\{.*?\}`` here would truncate nested JSON at the first ``}``.
+# Strip leaked tool-call markup: every shared-parser format AND the four leak
+# shapes ``llama_cpp.py``'s speculative buffer splits across the visible/DRAIN
+# boundary (closed pair, orphan open to EOF, bare orphan close, tail-only
+# ``</parameter>``). Mistral ``[TOOL_CALLS]`` goes to the parser's balanced-brace
+# helper -- a non-greedy ``\{.*?\}`` here would truncate nested JSON at the first ``}``.
 _TOOL_XML_RE = _re.compile(
     # Hyphen in the name char-class matches MCP tool names with dashes
     # (mcp__srv__list-issues) that would otherwise leak past this strip.
-    # The Llama-3 ``<|python_tag|>...`` arm runs to the next ``<|`` sentinel
-    # or EOF; ``(?:[^<]|<(?!\|))*`` keeps literal ``<``, newlines, and
-    # embedded JSON inside the strip.
+    # The Llama-3 ``<|python_tag|>...`` arm runs to the next ``<|`` sentinel or EOF;
+    # ``(?:[^<]|<(?!\|))*`` keeps literal ``<``, newlines, and embedded JSON.
     r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
