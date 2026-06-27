@@ -735,11 +735,12 @@ def test_extract_evidence_records_multiline_after_oneline():
     assert sp._evidence_hash(eo) != sp._evidence_hash(ea)
 
 
-def test_extract_evidence_skips_giant_whole_file_span():
+def test_extract_evidence_giant_span_binds_anchors_not_middle():
     # A giant greedy DOTALL span bridging anchors across the whole file (here
-    # socket...connect...subprocess over 60+ unrelated lines) is not recorded when
-    # the per-line pass already bound the signal (os.dup2), so the evidence stays
-    # stable against churn in the bridged middle (a dependency bump).
+    # socket...connect...subprocess over 60+ unrelated lines) is bound by its head
+    # and tail anchor lines plus a digest, NOT the bridged middle, so churn in the
+    # middle (a dependency bump editing x = i to y = i) stays stable while the
+    # anchors are still pinned (it is not dropped, which would fail open).
     gap = "\n".join(f"    x = {i}" for i in range(70))
     a = "import socket\nsock.connect(addr)\n" + gap + "\nos.dup2(fd, 0)\nsubprocess.Popen(cmd)\n"
     b = (
@@ -749,8 +750,25 @@ def test_extract_evidence_skips_giant_whole_file_span():
     )
     ea = sp._extract_evidence(a, sp.RE_REVERSE_SHELL)
     eb = sp._extract_evidence(b, sp.RE_REVERSE_SHELL)
-    assert "os.dup2" in ea and "sha256:" not in ea
-    assert sp._evidence_hash(ea) == sp._evidence_hash(eb)
+    assert "sha256:" in ea  # anchors are bound by a digest, not dropped
+    assert sp._evidence_hash(ea) == sp._evidence_hash(eb)  # middle churn stays stable
+
+
+def test_extract_evidence_giant_span_appended_payload_reopens():
+    # The anchor binding must reopen when an appended cross-line payload extends the
+    # bridged span past the cap: an existing one-line /tmp+subprocess finding plus a
+    # NEW /tmp/evil line and a later subprocess.run (60+ lines apart, sharing no
+    # single line so the per-line pass never binds them) moves the span's tail
+    # anchor, so the evidence changes instead of riding the unchanged key.
+    existing = "import os\n/tmp/x; subprocess.run(['id'])\n"
+    gap = "\n".join(f"    pad{i} = {i}" for i in range(65))
+    appended = existing + "/tmp/evil\n" + gap + "\nsubprocess.run(['curl', 'evil'])\n"
+    base = sp._extract_evidence(existing, sp.RE_TEMP_EXEC)
+    app = sp._extract_evidence(appended, sp.RE_TEMP_EXEC)
+    assert sp._evidence_hash(base) != sp._evidence_hash(app)
+    # a pure line shift of the same payload does not reopen
+    shifted = sp._extract_evidence("\n\n" + appended, sp.RE_TEMP_EXEC)
+    assert sp._evidence_hash(app) == sp._evidence_hash(shifted)
 
 
 def test_extract_evidence_binds_moderate_appended_dotall_span():

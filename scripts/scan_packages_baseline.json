@@ -227,14 +227,6 @@
       "evidence_hash": "30be130f165f418dfd37b144c5ae333de184b95f828ab8bd4010a67b84a5f814"
     },
     {
-      "package": "multiprocess",
-      "file": "multiprocess/tests/__init__.py",
-      "check": "Reverse shell / bind shell pattern",
-      "severity": "CRITICAL",
-      "evidence": "L3355:                     os.dup2(conn.fileno(), i) | L3387:                          \"test needs os.dup2()\") | L3405:             os.dup2(fd, newfd)",
-      "evidence_hash": "b9b97af527515a533f063314fb502e572ac3a92aaeffc2d788207b1447d9f96a"
-    },
-    {
       "package": "numba",
       "file": "numba/pycc/decorators.py",
       "check": "Downloads and executes remote code",
@@ -884,14 +876,6 @@
     },
     {
       "package": "unsloth-zoo",
-      "file": "scripts/scan_packages.py",
-      "check": "Writes to /tmp and executes (staged dropper)",
-      "severity": "CRITICAL",
-      "evidence": "L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\",",
-      "evidence_hash": "dc06185fb21ee4d9a14a5bd4378b09da1e6b6fea584264591c1a51825997c22d"
-    },
-    {
-      "package": "unsloth-zoo",
       "file": "tests/security/fixtures/_build.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
@@ -1481,6 +1465,22 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L836:         code = compile(module, \"<werkzeug routing>\", \"exec\")\nExec: L736:         exec(code, globs, locs)",
       "evidence_hash": "5c0992c90f05c772abd94d00784f157de337e1f8567f8b3aee1b15e46c96cd5d"
+    },
+    {
+      "package": "multiprocess",
+      "file": "multiprocess/tests/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L3355:                     os.dup2(conn.fileno(), i) | L3387:                          \"test needs os.dup2()\") | L3405:             os.dup2(fd, newfd) | L19: import socket ..                                      stderr=subprocess.PIPE) sha256:a5410c8d400eb35bdcdefd23845b7caf59d467b697f602b029e385606510acd6",
+      "evidence_hash": "f494917158f8f19c87d4e1c108c40dccdab915718bab5d0ec8a6921c0c99d32e"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "scripts/scan_packages.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", | L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", ..             except subprocess.TimeoutExpired: sha256:faa655f4958f4fe6db5a3edee82aee79f28f85598b3c0f4b82bdad46b3b388a1",
+      "evidence_hash": "0d58e81e3c44882d49c78916d816c605708e50e0d04433294ece875525c6182c"
     }
   ]
 }

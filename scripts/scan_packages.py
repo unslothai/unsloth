@@ -1344,6 +1344,19 @@ def _scan_line_end(view: list[str], start: int) -> int:
     return min(len(view), start + _MAX_CALL_LINES - 1)
 
 
+def _render_anchor_span(lines: list[str], start: int, end: int) -> str:
+    """Evidence for a giant bridged DOTALL span: the head and tail anchor lines
+    plus a digest over just their code (no line numbers, so a pure line shift is
+    stable). Binds the ends of the match -- where an appended cross-line payload
+    adds or moves an anchor -- without digesting the bridged middle, which would
+    drift on unrelated edits. Head/tail are display-capped; the digest fully binds
+    their rstripped code."""
+    head = lines[start - 1].rstrip()
+    tail = lines[end - 1].rstrip()
+    digest = hashlib.sha256((head + "\n" + tail).encode("utf-8", "replace")).hexdigest()
+    return f"L{start}: {_cap_line(head)} .. {_cap_line(tail)} sha256:{digest}"
+
+
 def _logical_line_end(sl_blanked: list[str], ml_blanked: list[str], start: int) -> int:
     """1-based line where the statement opened at ``start`` closes, so a multi-line
     call binds its argument lines (a changed URL/body on a continuation line
@@ -1454,11 +1467,23 @@ def _extract_evidence(
         if end <= start or (start, end) in seen:
             continue  # single-line matches are already covered by the pass above
         if had_perline and end - start + 1 > _GIANT_SPAN_LINES:
-            # Per-line already bound the signal lines; a giant greedy DOTALL span
-            # bridging them only adds a whole-file digest that drifts on any
-            # unrelated edit (e.g. a dep bump moving the matched lines), so skip
-            # it. A genuinely appended multi-line construct (<= _GIANT_SPAN_LINES)
-            # is still recorded below, so its payload reopens the finding.
+            # A giant greedy DOTALL span bridges its anchors across unrelated code,
+            # so digesting the whole middle would drift on any churn there (a dep
+            # bump editing a bridged line). But dropping the match entirely lets an
+            # appended cross-line payload -- a new `/tmp/...` line and a later
+            # `subprocess` line that share no single line, so the per-line pass
+            # never bound them -- ride the unchanged key. Bind only the head and
+            # tail anchor lines (the ends of the bridged match): an added or moved
+            # anchor (e.g. a new `subprocess.run` that becomes the span's tail)
+            # reopens, while churn in the bridged interior stays stable. The digest
+            # is over the anchor code (no line numbers) so a pure line shift does
+            # not reopen.
+            if (start, end) not in seen:
+                if len(out) < _MAX_EVIDENCE_SPANS:
+                    seen.add((start, end))
+                _emit(_render_anchor_span(lines, start, end))
+            if max_matches and len(out) >= max_matches:
+                break
             continue
         if len(out) < _MAX_EVIDENCE_SPANS:
             seen.add((start, end))

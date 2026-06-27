@@ -1212,6 +1212,14 @@ def _evidence(
     return " | ".join(shown)
 
 
+def _ioc_evidence(text: str, needle: str) -> str:
+    """Matched-line context (with bracket-group continuation) for a literal IOC
+    needle, so a changed adjacent fetch/exfil body reopens the key instead of
+    riding the bare constant. Falls back to the needle itself if, defensively,
+    nothing matches (the caller only reaches here when ``needle in text``)."""
+    return _evidence(text, re.compile(re.escape(needle))) or needle
+
+
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
 
 
@@ -1613,7 +1621,10 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     if rel.lower().endswith(_JS_FAMILY_SUFFIXES):
         text = _strip_js_noncode(text)
 
-    # IOC substrings (literal, case-sensitive).
+    # IOC substrings (literal, case-sensitive). Evidence is the matched-line
+    # context (with its bracket-group continuation), not the bare needle: an IOC
+    # host/hash left in place while the adjacent fetch/exfil body changes must
+    # reopen the key instead of riding the constant.
     for needle, (sev, why) in KNOWN_IOC_STRINGS.items():
         if needle in text:
             findings.append(
@@ -1622,12 +1633,14 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     package = pkg.display,
                     filename = rel,
                     pattern = "known-ioc-string",
-                    evidence = needle,
+                    evidence = _ioc_evidence(text, needle),
                     detail = f"{why}: {needle!r}",
                 )
             )
 
-    # Cred surfaces, tier 1: hosts with no legit use; bare substring.
+    # Cred surfaces, tier 1: hosts with no legit use. Bind the outbound context
+    # (path/headers/body) when present so a changed exfil payload on the same call
+    # reopens; falls back to the bare host when it is not in an outbound call.
     for needle, why in CRED_HOST_ALWAYS_BAD:
         if needle in text:
             findings.append(
@@ -1636,7 +1649,7 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     package = pkg.display,
                     filename = rel,
                     pattern = "cred-surface-host (always-bad)",
-                    evidence = needle,
+                    evidence = _outbound_host_evidence(text, needle),
                     detail = (
                         f"references {why} ({needle!r}); no legitimate "
                         "frontend use of this surface"
@@ -1758,7 +1771,7 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
                             package = pkg.display,
                             filename = rel,
                             pattern = "known-ioc-string",
-                            evidence = needle,
+                            evidence = _ioc_evidence(text, needle),
                             detail = f"{why}: {needle!r}",
                         )
                     )
