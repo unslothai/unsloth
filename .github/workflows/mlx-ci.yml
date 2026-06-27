@@ -314,20 +314,12 @@ jobs:
             echo
           done
 
-      # Studio prebuilt llama.cpp install + GGUF inference. Mirrors the
-      # path Studio's setup.sh takes on macOS since #5963: plan against
-      # the unslothai/llama.cpp fork's latest release, which ships the
-      # bin-macos-arm64 bundle plus the llama-prebuilt-manifest.json the
-      # default policy reads. After install, downloads a small published
-      # GGUF (unsloth/gemma-3-270m-it-GGUF, Q4_K_M) and validates
-      # llama-server /completion end to end. An install failure or a
-      # non-zero binary exit is an Unsloth/Studio bug.
-      # Placed last, after every HF_TOKEN step: the untrusted prebuilt is exercised
-      # only in the final smoke step, so a tampered binary has no later token-bearing
-      # step (or shared workspace it could poison) to corrupt. Install + download
-      # never runs a binary, so secrets stay in this step's env and never in a run
-      # script shared with a llama.cpp launch. GH_TOKEN: releases API; HF_TOKEN
-      # (withheld on PR): probe fetch + the public GGUF download.
+      # Validates the macOS prebuilt path Studio's setup.sh uses (#5963): install the
+      # unslothai/llama.cpp fork's latest release, download a small public GGUF, and
+      # check llama-server /completion end to end. Split and placed last so the
+      # untrusted binary runs only in the final smoke step, after every HF_TOKEN step,
+      # leaving no token-bearing step or shared workspace for a tampered prebuilt to
+      # corrupt. GH_TOKEN: releases API; HF_TOKEN (withheld on PR): probe + GGUF fetch.
       - name: Studio prebuilt llama.cpp install + GGUF download (Mac M1)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -337,9 +329,7 @@ jobs:
           set -euo pipefail
           INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
           rm -rf "$INSTALL_DIR"
-          # Mirror studio/setup.sh on macOS: plan against the unslothai/llama.cpp
-          # fork's latest release (no tag flags). Download only -- no llama-quantize
-          # / llama-server launch in this token-bearing step.
+          # Download only -- no llama-quantize / llama-server launch in this step.
           python studio/install_llama_prebuilt.py \
             --install-dir "$INSTALL_DIR" \
             --published-repo unslothai/llama.cpp
@@ -349,9 +339,8 @@ jobs:
             'gemma-3-270m-it-Q4_K_M.gguf' \
             /tmp/ggufs
 
-      # Final step: runs the downloaded binaries with no secrets in env or run
-      # script, after all token-bearing steps. Clears the GitHub Actions command
-      # files too, so even a tampered prebuilt cannot influence the job.
+      # Final step: runs the downloaded binaries with no secrets present, and clears
+      # the GitHub Actions command files so a tampered prebuilt cannot influence the job.
       - name: Studio prebuilt llama.cpp GGUF inference smoke (Mac M1)
         run: |
           set -euo pipefail

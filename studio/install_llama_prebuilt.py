@@ -5204,8 +5204,7 @@ def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
 
 
 def linux_runtime_dirs(binary_path: Path) -> list[str]:
-    # ldd may execute the binary (see ldd(1) Security), so probe the untrusted
-    # prebuilt with a secret-free env rather than the inherited os.environ.
+    # ldd may execute the binary, so probe it with a secret-free env.
     missing = linux_missing_libraries(binary_path, env = secret_free_environ())
     if not missing:
         return []
@@ -5502,9 +5501,8 @@ def _wsl_system_rocm_lib_dirs() -> list[str]:
     return out
 
 
-# Secrets a downloaded llama.cpp binary never needs. binary_env() must not hand a
-# tampered prebuilt the process env (CI tokens, or end users' HF / cloud creds);
-# the installer's own API calls read os.environ directly, so auth is unaffected.
+# Secrets a downloaded llama.cpp binary never needs; keep them out of binary_env().
+# The installer's own API calls read os.environ directly, so auth is unaffected.
 _SECRET_ENV_EXACT_NAMES = frozenset(
     {
         "HF_TOKEN",
@@ -5527,8 +5525,8 @@ _SECRET_ENV_EXACT_NAMES = frozenset(
         "SSH_AUTH_SOCK",
     }
 )
-# Case-insensitive substring markers for names we do not enumerate. No bare "KEY":
-# it would strip benign runtime vars (PATH / LD_LIBRARY_PATH / CUDA are preserved).
+# Case-insensitive substring markers for names we do not enumerate (no bare "KEY",
+# which would hit benign runtime vars).
 _SECRET_ENV_MARKERS = (
     "TOKEN",
     "SECRET",
@@ -5539,8 +5537,7 @@ _SECRET_ENV_MARKERS = (
     "PRIVATE_KEY",
     "API_KEY",
 )
-# Proxy / index URLs embed creds in their value (https://user:secret@host); the
-# offline validation binaries never need them, so drop by name (case-insensitive).
+# Proxy / index URLs embed creds in their value; the offline binaries never need them.
 _SECRET_ENV_URL_NAMES = frozenset(
     {
         "HTTP_PROXY",
@@ -5555,8 +5552,7 @@ _SECRET_ENV_URL_NAMES = frozenset(
         "UV_EXTRA_INDEX_URL",
     }
 )
-# Also catch URL userinfo creds in any other value: any authority before the host
-# (scheme://user:secret@host AND token-only scheme://ghp_token@host).
+# Also drop values with URL userinfo creds (scheme://user:secret@host or token@host).
 _URL_USERINFO_CREDENTIAL_RE = re.compile(r"://[^/@\s]+@")
 
 
@@ -5578,10 +5574,9 @@ def strip_secret_env(env: dict[str, str]) -> dict[str, str]:
     }
 
 
-# Home / cache / config pointers that locate on-disk token stores
-# (~/.cache/huggingface/token, ~/.aws/credentials, ~/.config/gh, ...). Stripping
-# the token env vars is not enough: a tampered binary can still read those files
-# via $HOME, so point these at an empty throwaway home for the binary launch.
+# Home / cache pointers to on-disk token stores (~/.cache/huggingface/token,
+# ~/.aws/credentials, ...). Stripping env tokens is not enough; point these at an
+# empty home so the binary cannot read those files via $HOME.
 _RUNTIME_HOME_POINTER_VARS = (
     "HOME",
     "USERPROFILE",
@@ -5594,8 +5589,7 @@ _RUNTIME_HOME_POINTER_VARS = (
     "HUGGINGFACE_HUB_CACHE",
     "HF_HUB_CACHE",
 )
-# Explicit pointers to credential / config files that live outside HOME, so the
-# redirect above does not cover them. Drop them and let lookups fall back into the
+# Credential / config file pointers outside HOME; drop so lookups fall back to the
 # empty home.
 _CREDENTIAL_FILE_POINTER_VARS = (
     "NETRC",
@@ -5603,8 +5597,7 @@ _CREDENTIAL_FILE_POINTER_VARS = (
     "DOCKER_CONFIG",
     "GIT_CONFIG_GLOBAL",
 )
-# GitHub Actions command files / hooks: a binary that appends to these influences
-# later, secret-bearing workflow steps (PATH or env injection). Drop them.
+# GitHub Actions command files: appending to these injects PATH/env into later steps.
 _CI_COMMAND_FILE_VARS = (
     "GITHUB_ENV",
     "GITHUB_PATH",
@@ -5617,9 +5610,8 @@ _isolated_runtime_home_dir: str | None = None
 
 
 def isolated_runtime_home() -> str:
-    # One empty dir, created lazily and removed at exit. Defeats env-driven
-    # credential-file lookups; a binary resolving the real home via getpwuid is
-    # out of scope and needs OS sandboxing.
+    # Empty dir, created lazily and removed at exit. (A binary resolving the real
+    # home via getpwuid is out of scope; that needs OS sandboxing.)
     global _isolated_runtime_home_dir
     if _isolated_runtime_home_dir is None:
         path = tempfile.mkdtemp(prefix = "unsloth-prebuilt-home-")
@@ -5629,15 +5621,13 @@ def isolated_runtime_home() -> str:
 
 
 def secret_free_environ() -> dict[str, str]:
-    # os.environ with secrets stripped and every home / credential-file pointer
-    # neutralised. Used for the binary env and for any probe (e.g. ldd) that runs
-    # the untrusted binary.
+    # os.environ minus secrets, with home / credential pointers neutralised. Used for
+    # the binary env and any probe (e.g. ldd) that runs the untrusted binary.
     env = strip_secret_env(os.environ.copy())
     runtime_home = isolated_runtime_home()
     for pointer in _RUNTIME_HOME_POINTER_VARS:
         env[pointer] = runtime_home
-    # Windows reconstructs the profile from %HOMEDRIVE%%HOMEPATH%, so split the
-    # throwaway home across them (a no-op pair on POSIX).
+    # Windows rebuilds the profile from %HOMEDRIVE%%HOMEPATH% (no-op pair on POSIX).
     drive, tail = os.path.splitdrive(runtime_home)
     env["HOMEDRIVE"], env["HOMEPATH"] = drive, tail or runtime_home
     for pointer in (*_CREDENTIAL_FILE_POINTER_VARS, *_CI_COMMAND_FILE_VARS):
