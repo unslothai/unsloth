@@ -1147,12 +1147,17 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
 
 _MAX_MULTILINE_LINES = 12
-# How far a single matched call is followed over its bracket continuations. Larger
-# than the display/digest threshold above so a multi-line call (e.g. a
-# ``requests.post(`` with many options before ``data=``) binds its whole argument
-# list in the digest, while staying bounded so a miscounted bracket (a multi-line
-# string the single-line blanker cannot mask) cannot swallow unrelated code.
-_MAX_CALL_LINES = 40
+# How far a single matched call is followed over its bracket continuations. A call
+# that genuinely closes is bound all the way to its real close, up to the hard
+# limit, so a ``requests.post(`` with many option/header lines before ``data=``
+# binds its whole argument list in the digest and a changed payload on a late
+# continuation line reopens (a 40-line soft cap would hash only the first 40 lines
+# and let a later ``data=``/headers change ride the baseline key). A bracket that
+# never closes within the hard limit is a miscount (a multi-line string the
+# single-line blanker cannot mask) or a stray opener, so it is bound only to the
+# soft cap and cannot swallow unrelated code.
+_MAX_CALL_LINES = 40  # soft cap: how far a NEVER-closing opener is followed
+_MAX_CALL_HARD_LINES = 200  # hard cap: how far a closing call is followed to bind it
 # A span larger than this is a greedy DOTALL match bridging anchors across
 # unrelated code (e.g. ``import socket`` near the top and ``subprocess`` near the
 # bottom of a multi-thousand-line test file), not a single appended payload, so
@@ -1183,6 +1188,13 @@ def _cap_line(code: str) -> str:
 
 
 _PY_TRIPLE = ("'''", '"""')
+
+
+def _ends_with_odd_backslash(s: str) -> bool:
+    """True if ``s`` ends with an odd run of backslashes, i.e. a trailing
+    backslash that escapes the newline (a string/line continuation) rather than a
+    literal ``\\\\`` pair."""
+    return (len(s) - len(s.rstrip("\\"))) % 2 == 1
 # Single-line quoted string literal; blanks complete one-line strings (the legacy
 # view) so the single-line and multi-line blanked spans can be unioned below.
 _RE_STR_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
@@ -1196,6 +1208,7 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
     per-line regex cannot blank."""
     out: list[str] = []
     in_triple: str | None = None  # active ''' or \"\"\" delimiter, or None
+    in_string: str | None = None  # active ' or " continued via a trailing backslash
     for line in lines:
         buf: list[str] = []
         i, n = 0, len(line)
@@ -1209,6 +1222,33 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
                     buf.append(" " * (end - i + 3))
                     i = end + 3
                     in_triple = None
+                continue
+            if in_string is not None:
+                # A single-/double-quoted string continued onto this line by a
+                # backslash-escaped newline. Resume blanking until its closing quote;
+                # if this line also ends on an odd trailing backslash the string
+                # continues again, otherwise it closes (or is unterminated) here. A
+                # per-line regex blanker cannot see this, so a `)` on the
+                # continuation line would otherwise be counted as code and close the
+                # call early -- dropping the URL/body lines that follow.
+                j, closed = i, False
+                while j < n:
+                    if line[j] == "\\":
+                        j += 2
+                        continue
+                    if line[j] == in_string:
+                        j += 1
+                        closed = True
+                        break
+                    j += 1
+                buf.append(" " * (min(j, n) - i))
+                if closed:
+                    in_string = None
+                    i = j
+                else:
+                    i = n
+                    if not _ends_with_odd_backslash(line):
+                        in_string = None  # unterminated without continuation; stop
                 continue
             ch = line[i]
             if ch in "'\"":
@@ -1224,16 +1264,26 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
                         i = end + 3
                     continue
                 j = i + 1  # single-line string; skip to its closing quote
+                closed = False
                 while j < n:
                     if line[j] == "\\":
                         j += 2
                         continue
                     if line[j] == ch:
                         j += 1
+                        closed = True
                         break
                     j += 1
-                buf.append(" " * (j - i))
-                i = j
+                buf.append(" " * (min(j, n) - i))
+                if closed:
+                    i = j
+                else:
+                    # Ran off the line without closing: an odd trailing backslash
+                    # escapes the newline and continues the string onto the next
+                    # line, so remember the quote; otherwise it is just unterminated.
+                    i = n
+                    if _ends_with_odd_backslash(line):
+                        in_string = ch
                 continue
             buf.append(ch)
             i += 1
@@ -1241,22 +1291,55 @@ def _blank_code_strings(lines: list[str]) -> list[str]:
     return out
 
 
+_RE_BRACKETS = re.compile(r"[()\[\]{}]")
+_OPENERS = frozenset("([{")
+
+
+def _bracket_lr(line: str) -> tuple[int, int]:
+    """Order-aware bracket reduction of one already-string-blanked line: ``(L, R)``
+    where ``L`` is the count of closers with no opener earlier on the line (they
+    need an opener to the LEFT / a prior line) and ``R`` is the count of openers
+    with no closer later on the line (they need a closer to the RIGHT / a later
+    line). A plain net count (opens minus closes) collapses order and so masks a
+    trailing opener that follows leading closers on the same line, e.g.
+    ``]; requests.post(`` nets to 0 and hides the ``(`` that opens the flagged
+    call; tracking the running minimum keeps that opener visible so the call's
+    argument lines still bind. Only bracket characters are walked (pulled out with
+    one C-level regex pass) so a long minified line stays cheap."""
+    depth = 0
+    low = 0
+    for ch in _RE_BRACKETS.findall(line):
+        if ch in _OPENERS:
+            depth += 1
+        else:
+            depth -= 1
+            if depth < low:
+                low = depth
+    return -low, depth - low
+
+
 def _scan_line_end(view: list[str], start: int) -> int:
     """1-based line where the statement at ``start`` closes its brackets in
-    ``view`` (one blanked view of the file), capped at ``_MAX_CALL_LINES`` so a
-    stray unclosed bracket cannot swallow the file."""
+    ``view`` (one blanked view of the file). A call that closes is followed to its
+    real close up to ``_MAX_CALL_HARD_LINES`` so its whole argument list binds; a
+    bracket that never closes within that hard limit (a stray/miscounted opener) is
+    bound only to the ``_MAX_CALL_LINES`` soft cap so it cannot swallow the file.
+    Brackets are applied in order via ``_bracket_lr`` (leading closers clamp at 0)
+    so a closer that precedes the opener on the same line does not cancel it."""
     depth = 0
-    limit = min(len(view), start + _MAX_CALL_LINES - 1)
-    for j in range(start, limit + 1):
+    hard = min(len(view), start + _MAX_CALL_HARD_LINES - 1)
+    for j in range(start, hard + 1):
         ln = view[j - 1]
-        depth += ln.count("(") + ln.count("[") + ln.count("{")
-        depth -= ln.count(")") + ln.count("]") + ln.count("}")
+        left, right = _bracket_lr(ln)
+        depth = max(0, depth - left) + right
         if ln.rstrip().endswith("\\"):
             continue  # explicit backslash continuation: the call (e.g. its `(` and
             # URL/body) is on the next physical line, so do not close here
         if depth <= 0:
             return j
-    return limit
+    # Never closed within the hard limit: bind only the soft cap so a stray opener
+    # cannot bind a giant unrelated span.
+    return min(len(view), start + _MAX_CALL_LINES - 1)
 
 
 def _logical_line_end(sl_blanked: list[str], ml_blanked: list[str], start: int) -> int:
@@ -1344,7 +1427,16 @@ def _extract_evidence(
             span = (i, _logical_line_end(sl_blanked, ml_blanked, i))
             if span in seen:
                 continue
-            seen.add(span)
+            # Only track spans while still filling the display list: past the cap
+            # every span is folded into the overflow digest, so growing `seen` with
+            # all of them would keep memory proportional to the match count (the
+            # behavior this cap exists to bound) on a generated file with millions
+            # of one-line matches. The per-line spans are unique by line number, so
+            # dropping them from `seen` past the cap cannot cause a missed dedup
+            # here; at worst the fallback re-folds an over-cap span into the same
+            # digest, which stays deterministic and still reopens on a change.
+            if len(out) < _MAX_EVIDENCE_SPANS:
+                seen.add(span)
             _emit(_render(*span))
             if max_matches and len(out) >= max_matches:
                 return " | ".join(out)
@@ -1366,7 +1458,8 @@ def _extract_evidence(
             # it. A genuinely appended multi-line construct (<= _GIANT_SPAN_LINES)
             # is still recorded below, so its payload reopens the finding.
             continue
-        seen.add((start, end))
+        if len(out) < _MAX_EVIDENCE_SPANS:
+            seen.add((start, end))
         _emit(_render(start, end))
         if max_matches and len(out) >= max_matches:
             break

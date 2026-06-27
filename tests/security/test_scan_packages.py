@@ -524,6 +524,44 @@ def test_extract_evidence_overflow_is_streamed_and_bounded():
     assert sha(ev) != sha(chg)  # an over-cap payload change reopens
 
 
+def test_extract_evidence_same_line_close_then_open_binds_call():
+    # A continued statement that closes on the same physical line that opens a
+    # flagged call, e.g. `]; requests.post(`, nets to <= 0 under a plain bracket
+    # count, dropping the call's `(` so the scan would stop at the opener line.
+    # Order-aware counting keeps the opener, so the argument lines bind and a
+    # changed body on a continuation line reopens.
+    old = "x = [a]; requests.post(\n  'http://h/old',\n  data=secret,\n)\n"
+    new = "x = [a]; requests.post(\n  'http://h/old',\n  data=EVIL,\n)\n"
+    assert sp._evidence_hash(sp._extract_evidence(old, sp.RE_NETWORK)) != sp._evidence_hash(
+        sp._extract_evidence(new, sp.RE_NETWORK)
+    )
+
+
+def test_extract_evidence_backslash_continued_string_binds_tail():
+    # A single-quoted string can continue across lines with a trailing backslash.
+    # The `)` inside that continued string on the next line must not be counted as
+    # code and close the call early, or a changed argument after it would not
+    # reopen. The blanker tracks the continuation so the whole call binds.
+    old = "requests.post('http://h\\\n/path)', data='old')\n"
+    new = "requests.post('http://h\\\n/path)', data='EVIL')\n"
+    assert sp._evidence_hash(sp._extract_evidence(old, sp.RE_NETWORK)) != sp._evidence_hash(
+        sp._extract_evidence(new, sp.RE_NETWORK)
+    )
+
+
+def test_extract_evidence_long_call_tail_past_soft_cap_reopens():
+    # A call with more argument lines than the soft cap (_MAX_CALL_LINES) is still
+    # followed to its real close under the hard limit, so a changed payload on a
+    # continuation line well past the soft cap reopens instead of riding the first
+    # _MAX_CALL_LINES lines. A bracket that never closes stays bound to the soft cap.
+    mid = "\n".join(f"  opt{i}=1," for i in range(sp._MAX_CALL_LINES + 20))
+    old = "requests.post(\n" + mid + "\n  data='old',\n)\n"
+    new = "requests.post(\n" + mid + "\n  data='EVIL',\n)\n"
+    assert sp._evidence_hash(sp._extract_evidence(old, sp.RE_NETWORK)) != sp._evidence_hash(
+        sp._extract_evidence(new, sp.RE_NETWORK)
+    )
+
+
 def test_extract_evidence_fallback_line_numbers_are_correct():
     # The DOTALL fallback maps match offsets to line numbers via precomputed
     # newline offsets (bisect, not a quadratic content.count per match); guard that

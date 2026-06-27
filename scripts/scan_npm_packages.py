@@ -43,6 +43,7 @@ import base64 as _b64  # imported only so the IOC string-scan can detect it
 import bisect
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -1154,24 +1155,41 @@ def _format_match(
     return snippet
 
 
-def _overflow_digest(
-    matches: list[re.Match],
+def _stream_overflow_digest(
+    matches,
     lines: list[str],
     sl_blanked: list[str],
     ml_blanked: list[str],
     nl: list[int],
-) -> str:
+) -> tuple[int, str]:
     """A single digest binding the LOGICAL line (the bound bracket-group context,
-    not just the regex match text) of every overflow match, so a changed payload on
-    a line past the display cap still reopens. Whitespace-normalized to match
+    not just the regex match text) of every overflow match in the iterable, plus
+    the count of matches folded. Streams the matches (any iterable of re.Match) so a
+    huge overflow never materializes a list. Whitespace-normalized to match
     _evidence_hash so a reindent does not reopen."""
     h = hashlib.sha256()
+    count = 0
     for m in matches:
-        idx = bisect.bisect_left(nl, m.start())
-        ll = _logical_line_text(lines, sl_blanked, ml_blanked, idx)
-        h.update(b"\x00")
-        h.update(" ".join(ll.split()).encode("utf-8", "replace"))
-    return h.hexdigest()
+        _fold_overflow_match(h, m, lines, sl_blanked, ml_blanked, nl)
+        count += 1
+    return count, h.hexdigest()
+
+
+def _fold_overflow_match(
+    h,
+    m: re.Match,
+    lines: list[str],
+    sl_blanked: list[str],
+    ml_blanked: list[str],
+    nl: list[int],
+) -> None:
+    """Fold one overflow match's whitespace-normalized logical-line context into the
+    running hash ``h``. Shared by _stream_overflow_digest and the inline overflow
+    fold in _outbound_host_evidence so both produce the identical digest."""
+    idx = bisect.bisect_left(nl, m.start())
+    ll = _logical_line_text(lines, sl_blanked, ml_blanked, idx)
+    h.update(b"\x00")
+    h.update(" ".join(ll.split()).encode("utf-8", "replace"))
 
 
 def _evidence(
@@ -1183,20 +1201,24 @@ def _evidence(
     # already-flagged file changes the evidence instead of riding the first few.
     # Past _MAX_EVIDENCE_MATCHES the remaining matches are folded into one digest
     # (binding their logical-line context) so the evidence string stays bounded
-    # while a changed payload past the cap still reopens.
-    matches = list(pat.finditer(text))
-    if not matches:
+    # while a changed payload past the cap still reopens. The matches are streamed
+    # from finditer rather than materialized into a list: a generated file can
+    # repeat a cheap signal (e.g. NPM_TOKEN) millions of times, and holding a
+    # re.Match per occurrence before applying the cap would stall or OOM the scan.
+    it = pat.finditer(text)
+    shown_matches = list(itertools.islice(it, _MAX_EVIDENCE_MATCHES))
+    if not shown_matches:
         return ""
     lines, sl_blanked, ml_blanked, nl = _index_text(text)
     shown = [
         _format_match(text, lines, sl_blanked, ml_blanked, nl, m, max_chars)
-        for m in matches[:_MAX_EVIDENCE_MATCHES]
+        for m in shown_matches
     ]
-    if len(matches) > _MAX_EVIDENCE_MATCHES:
-        digest = _overflow_digest(
-            matches[_MAX_EVIDENCE_MATCHES:], lines, sl_blanked, ml_blanked, nl
-        )
-        shown.append(f"(+{len(matches) - _MAX_EVIDENCE_MATCHES} more) sha256:{digest}")
+    # Fold the rest (past the cap) into one digest as they arrive, never building a
+    # second list. Byte-identical to digesting matches[_MAX_EVIDENCE_MATCHES:].
+    overflow_count, digest = _stream_overflow_digest(it, lines, sl_blanked, ml_blanked, nl)
+    if overflow_count:
+        shown.append(f"(+{overflow_count} more) sha256:{digest}")
     return " | ".join(shown)
 
 
@@ -1560,10 +1582,14 @@ def _outbound_host_evidence(text: str, host: str) -> str:
     # single-context case keeps its existing snippet. Each form is capped at
     # _MAX_EVIDENCE_MATCHES matches so a host repeated thousands of times in a
     # minified file cannot make the overlap check quadratic; once chosen is full
-    # the rest are folded into a digest so an added context still reopens.
+    # the rest are folded into a digest AS THEY ARRIVE (never accumulated into a
+    # list, so a host repeated millions of times cannot OOM the scan) and an added
+    # context still reopens.
+    lines, sl_blanked, ml_blanked, nl = _index_text(text)
     claimed: list[tuple[int, int]] = []
     chosen: list[re.Match] = []
-    overflow: list[re.Match] = []
+    overflow_count = 0
+    overflow_hash = hashlib.sha256()
     for pat in patterns:
         for m in pat.finditer(text):
             if len(chosen) < _MAX_EVIDENCE_MATCHES:
@@ -1575,15 +1601,14 @@ def _outbound_host_evidence(text: str, host: str) -> str:
                 claimed.append((m.start(), m.end()))
                 chosen.append(m)
             else:
-                overflow.append(m)
+                _fold_overflow_match(overflow_hash, m, lines, sl_blanked, ml_blanked, nl)
+                overflow_count += 1
     if not chosen:
         return host
     chosen.sort(key = lambda m: m.start())
-    lines, sl_blanked, ml_blanked, nl = _index_text(text)
     shown = [_format_match(text, lines, sl_blanked, ml_blanked, nl, m, 1000) for m in chosen]
-    if overflow:
-        digest = _overflow_digest(overflow, lines, sl_blanked, ml_blanked, nl)
-        shown.append(f"(+{len(overflow)} more) sha256:{digest}")
+    if overflow_count:
+        shown.append(f"(+{overflow_count} more) sha256:{overflow_hash.hexdigest()}")
     return " | ".join(shown)
 
 

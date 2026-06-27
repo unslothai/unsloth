@@ -743,6 +743,22 @@ def test_evidence_caps_match_count_with_digest_remainder():
     assert snp._evidence_hash(ev) != snp._evidence_hash(snp._evidence(less, snp._JS_ENV_TOKEN))
 
 
+def test_evidence_streams_overflow_count_is_exact():
+    # The overflow matches are streamed from finditer (not collected into a list
+    # before the cap), so the "(+N more)" count must still equal the exact number of
+    # matches past the display cap for a large input, and the shown spans stay
+    # bounded to the cap.
+    extra = 1000
+    total = snp._MAX_EVIDENCE_MATCHES + extra
+    body = "".join(f"x{i} = process.env.NPM_TOKEN\n" for i in range(total))
+    ev = snp._evidence(body, snp._JS_ENV_TOKEN)
+    import re as _re
+
+    m = _re.search(r"\(\+(\d+) more\)", ev)
+    assert m and int(m.group(1)) == extra  # every over-cap match counted
+    assert ev.count(" | ") <= snp._MAX_EVIDENCE_MATCHES  # display stays bounded
+
+
 def test_outbound_host_config_reindent_is_stable():
     # A formatter-only reindent of the bound continuation lines must NOT change
     # the key (whitespace is normalized before the logical-line digest).
