@@ -320,53 +320,54 @@ def parse_tool_calls_from_text(
       <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
     """
     tool_calls: list[dict] = []
-    # Collect JSON- and Gemma-format candidates with byte spans, then accept in
-    # document order (tools run in returned order). A marker inside an open
-    # <function=...><parameter=> value is that parameter's data, so skip it.
-    candidates = []  # (start, brace_end, kind, match)
-    # Unclosed starts (braces never balance): everything after is the call's
-    # argument data through EOF, so the XML fallback must treat it as excluded.
-    unclosed_starts = []
-    for m in _TC_JSON_START_RE.finditer(content):
-        if _inside_open_parameter(content, m.start()):
-            continue
-        end = _balanced_brace_end(content, m.end() - 1)
-        if end >= 0:
-            candidates.append((m.start(), end, "json", m))
-        else:
-            unclosed_starts.append(m.start())
-    for m in _TC_GEMMA_START_RE.finditer(content):
-        if _inside_open_parameter(content, m.start()):
-            continue
-        end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = True)
-        if end >= 0:
-            candidates.append((m.start(), end, "gemma", m))
-        else:
-            unclosed_starts.append(m.start())
-    candidates.sort(key = lambda c: c[0])
+    # Collect JSON/Gemma markers with their full envelope [start, env_end): a
+    # balanced call runs to its close marker (searched after the braces, since
+    # junk can sit between } and the marker), an unbalanced/unclosed one runs to
+    # EOF. A marker starting inside another's envelope is that call's argument
+    # data, never its own call. A marker inside an open <function=...><parameter=>
+    # value is that parameter's data, so skip it.
+    markers = []  # (start, brace_end, env_end, kind, match); brace_end < 0 = unclosed
+    for start_re, gemma, kind in (
+        (_TC_JSON_START_RE, False, "json"),
+        (_TC_GEMMA_START_RE, True, "gemma"),
+    ):
+        close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
+        for m in start_re.finditer(content):
+            if _inside_open_parameter(content, m.start()):
+                continue
+            brace_end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = gemma)
+            if brace_end < 0:
+                env_end = len(content)
+            else:
+                cm = close_re.search(content, brace_end + 1)
+                env_end = cm.end() if cm else len(content)
+            markers.append((m.start(), brace_end, env_end, kind, m))
+    markers.sort(key = lambda c: c[0])
 
-    spans = [(s, e) for s, e, _kind, _m in candidates]
-    for idx, (start, end, kind, m) in enumerate(candidates):
-        # Skip a candidate nested in another candidate's span: it is the outer
-        # call's argument data. Checked against every span (not just parsed
-        # ones), so a marker in an outer call that fails to parse is never run.
-        if any(s <= start and end <= e for j, (s, e) in enumerate(spans) if j != idx):
+    envelopes = [(s, e) for s, _be, e, _k, _m in markers]
+    for idx, (start, brace_end, env_end, kind, m) in enumerate(markers):
+        # Skip a marker nested in another marker's envelope -- it is the outer
+        # call's argument data (covers an unclosed outer, whose envelope is EOF),
+        # so a nested or post-brace marker is never run as its own call.
+        if any(s <= start < e for j, (s, e) in enumerate(envelopes) if j != idx):
             continue
+        if brace_end < 0:
+            continue  # unclosed: not parseable; its envelope still excludes XML below
         if not allow_incomplete:
-            tail = content[end + 1 :].lstrip()
+            tail = content[brace_end + 1 :].lstrip()
             close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
             if close_re.match(tail) is None:
                 continue
         try:
             if kind == "json":
-                obj = json.loads(content[m.end() - 1 : end + 1])
+                obj = json.loads(content[m.end() - 1 : brace_end + 1])
                 name = obj.get("name", "")
                 arguments = obj.get("arguments", {})
                 if isinstance(arguments, dict):
                     arguments = json.dumps(arguments)
             else:
                 name = m.group(1)
-                arguments = json.dumps(_gemma_arguments_to_json(content[m.end() : end]))
+                arguments = json.dumps(_gemma_arguments_to_json(content[m.end() : brace_end]))
         except (json.JSONDecodeError, ValueError):
             continue
         tool_calls.append(
@@ -378,16 +379,14 @@ def parse_tool_calls_from_text(
         )
 
     if not tool_calls:
-        # Exclude <function=> markers inside any collected JSON/Gemma candidate
-        # span (its argument data, even if it failed to parse) and inside any
-        # unclosed start through EOF; otherwise nested XML in a malformed call
-        # escapes into an executable tool call.
-        exclusion_spans = spans + [(s, len(content)) for s in unclosed_starts]
+        # Exclude <function=> markers inside any marker's envelope (its argument
+        # data, even if the call failed to parse), so nested XML in a malformed
+        # call cannot escape into an executable tool call.
         func_starts = [
             fm
             for fm in _TC_FUNC_START_RE.finditer(content)
             if not _inside_open_parameter(content, fm.start())
-            and not any(s <= fm.start() <= e for s, e in exclusion_spans)
+            and not any(s <= fm.start() < e for s, e in envelopes)
         ]
         for idx, fm in enumerate(func_starts):
             func_name = fm.group(1)
@@ -477,17 +476,16 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
                 out.append(text[cursor:start])
                 cursor = len(text)
             break
-        # Match the close marker via re pos (no remainder copy): streaming
-        # re-scans a growing buffer per token, so slicing here is quadratic.
-        close_idx = brace_end + 1
-        while close_idx < len(text) and text[close_idx].isspace():
-            close_idx += 1
-        close = _TC_GEMMA_END_TAG_RE.match(text, close_idx)
+        # Search for the close marker after the braces (not just immediately
+        # after): junk between } and <tool_call|> is malformed-call markup, so
+        # strip through the close and keep any text after it. None anywhere after
+        # means nothing closes from here on, so stop (keeps this linear).
+        close = _TC_GEMMA_END_TAG_RE.search(text, brace_end + 1)
         if close is None:
             if final:
                 out.append(text[cursor:start])
                 cursor = len(text)
-            continue
+            break
         out.append(text[cursor:start])
         cursor = close.end()
     out.append(text[cursor:])
