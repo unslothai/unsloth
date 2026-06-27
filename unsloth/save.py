@@ -3847,7 +3847,7 @@ def _unsloth_save_compressed_tensors(
 
     # 2) Pick the local working dir. For a hub push, save_directory is a repo id, so merge and
     #    quantize inside an isolated temp dir instead of writing ./<repo_id> into the cwd.
-    repo_id, work_tmp, calib_tmp = None, None, None
+    repo_id, work_tmp, calib_tmp, model_dev = None, None, None, None
     if push_to_hub:
         repo_id = os.fspath(save_directory)
         work_tmp = tempfile.mkdtemp(prefix = "unsloth-compressed-")
@@ -3929,8 +3929,7 @@ def _unsloth_save_compressed_tensors(
                         )
                 except Exception:
                     ds_to_save = calibration_dataset
-                parent = os.path.dirname(os.path.abspath(local_dir)) or None
-                calib_tmp = tempfile.mkdtemp(prefix = "unsloth-calib-", dir = parent)
+                calib_tmp = tempfile.mkdtemp(prefix = "unsloth-calib-")
                 shutil.rmtree(calib_tmp, ignore_errors = True)  # save_to_disk wants a fresh path
                 ds_to_save.save_to_disk(calib_tmp)
                 calib_kind, calib_value = "disk", calib_tmp
@@ -3975,6 +3974,29 @@ def _unsloth_save_compressed_tensors(
         if trust_remote_code:
             cmd.append("--trust-remote-code")
 
+        # Free the in-memory model's CUDA memory before the subprocess loads its own copy from
+        # disk, so a single GPU need not hold both at once. Best-effort and restored in finally;
+        # skipped for quantized or multi-device models where moving is unsafe.
+        try:
+            if (
+                torch.cuda.is_available()
+                and hasattr(model, "parameters")
+                and not getattr(model, "is_loaded_in_4bit", False)
+                and not getattr(model, "is_loaded_in_8bit", False)
+                and not getattr(model, "is_quantized", False)
+            ):
+                _devs = {str(p.device) for p in model.parameters()}
+                if len(_devs) == 1 and next(iter(_devs)).startswith("cuda"):
+                    _dev = next(model.parameters()).device
+                    model.to("cpu")
+                    model_dev = _dev  # set only after a successful move, so finally can restore
+        except Exception:
+            model_dev = None
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         print(
             f"Unsloth: Quantizing the merged model to {scheme} with llm-compressor "
             "(in a separate process)..."
@@ -4017,6 +4039,11 @@ def _unsloth_save_compressed_tensors(
         _print_compressed_hw_note(scheme, result)
         return result
     finally:
+        if model_dev is not None:
+            try:
+                model.to(model_dev)  # restore the model to its original device
+            except Exception:
+                pass
         if calib_tmp is not None and os.path.isdir(calib_tmp):
             shutil.rmtree(calib_tmp, ignore_errors = True)
         if work_tmp is not None:

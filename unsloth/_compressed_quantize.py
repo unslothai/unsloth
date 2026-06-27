@@ -71,9 +71,14 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
     if "input_ids" in cols:
         return ds
     if "messages" in cols:
+        # Base / non-chat tokenizers have no chat template; concatenate message contents instead
+        # of calling apply_chat_template (which would raise).
+        has_chat_template = bool(getattr(_tok, "chat_template", None))
 
         def _prep(ex):
-            return {"text": _tok.apply_chat_template(ex["messages"], tokenize = False)}
+            if has_chat_template:
+                return {"text": _tok.apply_chat_template(ex["messages"], tokenize = False)}
+            return {"text": "\n".join(m.get("content", "") for m in ex["messages"])}
 
         ds = ds.map(_prep)
     elif "text" not in cols:
@@ -176,10 +181,10 @@ def main():
             args.num_calibration_samples,
             args.max_seq_length,
         )
-        # Let llm-compressor pick its default (sequential) pipeline: it onloads layer-by-layer,
-        # so models that do not fit in memory at once can still calibrate. Running here in a clean
-        # process (Unsloth's attention patches are absent) means tracing works; fall back to the
-        # memory-hungry "basic" pipeline only if tracing fails.
+        # Use the sequential pipeline: it onloads layer-by-layer, so models that do not fit in
+        # memory at once can still calibrate. Running here in a clean process (Unsloth's attention
+        # patches are absent) means tracing works; fall back to the memory-hungry "basic" pipeline
+        # only if tracing fails.
         try:
             oneshot(
                 model = model,
@@ -187,6 +192,7 @@ def main():
                 recipe = _make_recipe(),
                 max_seq_length = args.max_seq_length,
                 num_calibration_samples = args.num_calibration_samples,
+                pipeline = "sequential",
             )
         except Exception as e:
             print(
