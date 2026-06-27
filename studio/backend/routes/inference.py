@@ -2093,20 +2093,19 @@ def _carry_preserved_tensor_intent(
 
 
 def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
-    """True when a request deliberately drops tensor intent: an explicit
-    tensor_parallel field change, a non-tensor --split-mode override, or an explicit
-    clear of extras (llama_extra_args=[]) that wipes an extras-driven split mode --
-    NOT an unrelated pass-through extra (e.g. --top-k) or inherit (None), which keep a
-    preserved multi-GPU layer fallback. Shared by the already-loaded dedup and the
-    load carry-forward so the two agree (#6659)."""
-    fields_set = getattr(request, "model_fields_set", set())
-    extras = request.llama_extra_args
-    explicit = (
-        "tensor_parallel" in fields_set
-        or parse_split_mode_override(extras) is not None
-        or ("llama_extra_args" in fields_set and extras is not None and not extras)
-    )
-    return explicit and not _effective_tensor_parallel(extras, request.tensor_parallel)
+    """True only when the request explicitly selects a non-tensor --split-mode (e.g.
+    layer/row/none), a deliberate departure from a preserved tensor->layer fallback.
+
+    A bare tensor_parallel field is NOT a drop: the Studio UI always sends it and echoes
+    the /load response's resolved value back, so after a fallback every reload carries
+    tensor_parallel=false even though the user never changed it -- treating that as a drop
+    would collapse the preserved multi-GPU placement on the next ctx/settings reload. An
+    empty clear is not a drop either (a fallback always stores --split-mode layer, never a
+    tensor split mode, so a clear never wipes tensor intent), nor is an unrelated extra
+    (--top-k) or inherit (None). tensor_parallel=true / --split-mode tensor re-engage
+    tensor. Shared by the already-loaded dedup and the load carry-forward (#6659)."""
+    override = parse_split_mode_override(request.llama_extra_args)
+    return override is not None and override.strip().lower() != "tensor"
 
 
 def _request_matches_loaded_settings(

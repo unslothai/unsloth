@@ -619,24 +619,26 @@ def _fallback_loaded_backend(layer_preserves_tensor_intent: bool) -> LlamaCppBac
     return b
 
 
-def test_explicit_tensor_off_reloads_after_multi_gpu_fallback():
-    """An explicit tensor-off Apply on a preserved fallback reloads (placement
-    re-selects); a genuine layer load (no preserved intent) dedupes (Codex #6659)."""
+def test_tensor_off_echo_preserves_multi_gpu_fallback():
+    """The Studio UI always sends tensor_parallel and echoes the /load response's
+    resolved value, so after a fallback a ctx/settings reload carries tensor_parallel=
+    false even though the user never changed it. That echo must NOT collapse the
+    preserved multi-GPU placement -- it dedupes (Codex #6659)."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()
 
     req = LoadRequest(model_path = "owner/repo", tensor_parallel = False)
-    assert "tensor_parallel" in req.model_fields_set, "the toggle must be explicit"
+    assert "tensor_parallel" in req.model_fields_set, "the UI always sends the field"
 
-    # Preserved multi-GPU fallback: the toggle going off drops that intent -> reload.
+    # Preserved fallback + bare tensor=false echo: dedupe, keep multi-GPU (no collapse).
     assert (
         inference_routes._request_matches_loaded_settings(
             req, _fallback_loaded_backend(layer_preserves_tensor_intent = True)
         )
-        is False
+        is True
     )
-    # A deliberate layer load (not a tensor fallback): tensor-off dedupes, no churn.
+    # A genuine layer load (no preserved intent): tensor-off also dedupes, no churn.
     assert (
         inference_routes._request_matches_loaded_settings(
             req, _fallback_loaded_backend(layer_preserves_tensor_intent = False)
@@ -699,26 +701,29 @@ def test_tensor_off_under_env_tensor_does_not_reload_loop(monkeypatch):
 
 
 def test_is_explicit_tensor_drop_truth_table():
-    """A drop is an explicit tensor_parallel change, a non-tensor --split-mode override,
-    or an explicit clear of extras (llama_extra_args=[]); an unrelated pass-through extra
-    (--top-k) or inherit (None) is not, so a preserved fallback isn't collapsed by it,
-    while a clear of extras-driven tensor intent still drops (Codex #6659)."""
+    """Only an explicit non-tensor --split-mode override is a drop. A bare
+    tensor_parallel field (the UI always sends it and echoes the fallback's false), an
+    empty clear, an unrelated extra (--top-k), or inherit (None) must NOT collapse a
+    preserved fallback; --split-mode tensor / tensor_parallel=true re-engage (Codex
+    #6659)."""
     from models.inference import LoadRequest
 
     f = _load_inference_routes_module()._is_explicit_tensor_drop
-    assert f(LoadRequest(model_path = "owner/repo", tensor_parallel = False)) is True
-    assert f(LoadRequest(model_path = "owner/repo", tensor_parallel = True)) is False
+    # A non-tensor split-mode override is the one deliberate departure -> drop.
     assert (
         f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "layer"])) is True
     )
+    # tensor / retry re-engages, never a drop.
     assert (
         f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "tensor"]))
         is False
     )
-    # An unrelated extra must NOT count as a tensor drop (carry the intent).
+    # A bare tensor_parallel field is the UI echo, not a drop (would collapse on reload).
+    assert f(LoadRequest(model_path = "owner/repo", tensor_parallel = False)) is False
+    assert f(LoadRequest(model_path = "owner/repo", tensor_parallel = True)) is False
+    # Unrelated extra / empty clear / inherit all keep the preserved placement.
     assert f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--top-k", "20"])) is False
-    # An explicit clear of extras wipes an extras-driven split mode -> drop.
-    assert f(LoadRequest(model_path = "owner/repo", llama_extra_args = [])) is True
+    assert f(LoadRequest(model_path = "owner/repo", llama_extra_args = [])) is False
     assert f(LoadRequest(model_path = "owner/repo")) is False
 
 
