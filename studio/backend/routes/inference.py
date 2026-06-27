@@ -7343,7 +7343,11 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             _pre = None
         if isinstance(_pre, dict) and not _embeddings_input_present(_pre):
             raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
-    # Embeddings is a model-bearing inference path too, so honor auto-switch.
+    # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
+    # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
+    # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
+    # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
+    # a non-embedding target switches, then llama-server returns a no-pooling error.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
@@ -8903,7 +8907,6 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
     return has_image
 
 
-@router.post("/messages/count_tokens")
 def _validate_anthropic_client_tools(tools) -> None:
     # Reject malformed client tools before any model load, so an invalid request
     # never evicts the loaded model. AnthropicTool relaxed name/input_schema to
@@ -8926,6 +8929,7 @@ def _validate_anthropic_client_tools(tools) -> None:
             )
 
 
+@router.post("/messages/count_tokens")
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
     request: Request,

@@ -230,6 +230,41 @@ def test_count_tokens_endpoint_wires_auto_switch_before_loaded_check():
     assert src.index("_maybe_auto_switch_model") < src.index("is_loaded")
 
 
+def test_openai_compat_routes_bound_to_handlers_with_auth():
+    # Inserting a helper between a @router.post decorator and its handler silently
+    # rebinds the route to the helper and drops its auth dependency (this happened to
+    # /messages/count_tokens). The source-inspection tests above miss it because they
+    # call the handler directly. Lock the path -> (handler, auth) mapping at the route
+    # level so any decorator/handler split is caught.
+    expected = {
+        ("POST", "/chat/completions"): "openai_chat_completions",
+        ("POST", "/completions"): "openai_completions",
+        ("POST", "/embeddings"): "openai_embeddings",
+        ("POST", "/responses"): "openai_responses",
+        ("POST", "/messages"): "anthropic_messages",
+        ("POST", "/messages/count_tokens"): "anthropic_count_tokens",
+        ("POST", "/audio/generate"): "generate_audio",
+        ("GET", "/models"): "openai_list_models",
+        ("GET", "/models/{model_id:path}"): "openai_retrieve_model",
+    }
+    seen = {}
+    for r in inference_route.router.routes:
+        path = getattr(r, "path", None)
+        endpoint = getattr(r, "endpoint", None)
+        if path is None or endpoint is None:
+            continue
+        for method in getattr(r, "methods", None) or ():
+            seen[(method, path)] = r
+    for key, handler in expected.items():
+        assert key in seen, f"route {key} is not registered"
+        route = seen[key]
+        assert (
+            route.endpoint.__name__ == handler
+        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        deps = [d.call.__name__ for d in route.dependant.dependencies]
+        assert "get_current_subject" in deps, f"{key} lost its auth dependency"
+
+
 # ── resolver ────────────────────────────────────────────────────────
 
 
@@ -358,6 +393,44 @@ def test_idle_loop_does_not_unload_freshly_loaded_model(monkeypatch):
 
     asyncio.run(_drive())
     assert unloads == []
+
+
+def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
+    # The headline behavior (the other idle tests only cover the negative paths):
+    # with nothing in flight and the TTL elapsed, the loop frees the GGUF exactly
+    # once and records its identity so a later alias request can reload that variant.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+
+    def _unload():
+        unloads.append(1)
+        backend.is_loaded = False  # a real unload clears the slot
+
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.02))
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+    assert unloads == [1]  # freed once, not repeatedly
+    stash = kw.get_last_unloaded_model()
+    assert stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
 
 
 def test_audio_generate_is_tracked_as_inference_path():
@@ -510,6 +583,45 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
     empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
     resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
     assert "unsloth/B-GGUF" not in resp2.overrides
+
+
+def test_model_override_rejects_zero_max_seq_length():
+    # 0 is not a valid sequence length and the setter drops a falsy value, so the
+    # payload must reject it at the boundary instead of accepting then discarding it.
+    import pydantic
+    import routes.settings as settings_route
+
+    with pytest.raises(pydantic.ValidationError):
+        settings_route.ModelOverridePayload(model_id = "x", max_seq_length = 0)
+    assert settings_route.ModelOverridePayload(model_id = "x", max_seq_length = 1).max_seq_length == 1
+
+
+def test_update_openai_auto_switch_writes_both_keys_in_one_transaction(monkeypatch):
+    # The PUT must persist enabled + idle in a single upsert so a settings write can't
+    # leave one key updated and the other stale.
+    import routes.settings as settings_route
+    import storage.studio_db as db
+    from utils.openai_auto_switch_settings import (
+        AUTO_UNLOAD_IDLE_SETTING_KEY,
+        OPENAI_AUTO_SWITCH_SETTING_KEY,
+    )
+
+    calls = []
+
+    def _capture(mapping):
+        calls.append(dict(mapping))
+        return {}
+
+    monkeypatch.setattr(db, "upsert_app_settings", _capture)
+    settings._cache.clear()
+
+    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True, auto_unload_idle_seconds = 120)
+    resp = settings_route.update_openai_auto_switch(payload, "tester")
+    assert resp.enabled is True and resp.auto_unload_idle_seconds == 120
+    assert len(calls) == 1  # one transaction, not two
+    written = calls[0]
+    assert written.get(OPENAI_AUTO_SWITCH_SETTING_KEY) is True
+    assert written.get(AUTO_UNLOAD_IDLE_SETTING_KEY) == 120
 
 
 # ── /v1/models discovery ────────────────────────────────────────────

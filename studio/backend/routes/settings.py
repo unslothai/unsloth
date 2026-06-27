@@ -38,9 +38,8 @@ from utils.openai_auto_switch_settings import (
     get_model_overrides,
     get_openai_auto_switch_enabled,
     get_stored_auto_unload_idle_seconds,
-    set_auto_unload_idle_seconds,
     set_model_override,
-    set_openai_auto_switch_enabled,
+    set_openai_auto_switch,
 )
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
@@ -90,7 +89,9 @@ class OpenAIAutoSwitchResponse(BaseModel):
 class ModelOverridePayload(BaseModel):
     model_id: str = Field(..., min_length = 1)
     llama_extra_args: list[str] = Field(default_factory = list)
-    max_seq_length: Optional[int] = Field(default = None, ge = 0, le = 1048576)
+    # ge=1: 0 is not a valid sequence length, and the setter drops a falsy value,
+    # so reject it at the boundary instead of accepting then silently discarding it.
+    max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
 
 
 class ModelOverridesResponse(BaseModel):
@@ -174,8 +175,9 @@ def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
-        enabled = set_openai_auto_switch_enabled(payload.enabled)
-        idle_seconds = set_auto_unload_idle_seconds(payload.auto_unload_idle_seconds)
+        enabled, idle_seconds = set_openai_auto_switch(
+            payload.enabled, payload.auto_unload_idle_seconds
+        )
     except ValueError as exc:
         raise log_and_http_error(
             exc,

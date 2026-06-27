@@ -86,17 +86,6 @@ def get_openai_auto_switch_enabled() -> bool:
     return parsed if parsed is not None else DEFAULT_OPENAI_AUTO_SWITCH_ENABLED
 
 
-def set_openai_auto_switch_enabled(value: Any) -> bool:
-    parsed = _coerce_bool(value)
-    if parsed is None:
-        raise ValueError("OpenAI auto-switch must be true or false.")
-    from storage.studio_db import upsert_app_settings
-
-    upsert_app_settings({OPENAI_AUTO_SWITCH_SETTING_KEY: parsed})
-    _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
-    return parsed
-
-
 def _stored_idle_seconds() -> Optional[int]:
     """The persisted idle TTL as an int, or None when never set."""
     return _coerce_int(_cached_setting(AUTO_UNLOAD_IDLE_SETTING_KEY, None))
@@ -137,15 +126,24 @@ def get_auto_unload_idle_seconds() -> int:
     return env if env is not None else 0
 
 
-def set_auto_unload_idle_seconds(value: Any) -> int:
-    parsed = _coerce_int(value)
-    if parsed is None:
+def set_openai_auto_switch(enabled: Any, idle_seconds: Any) -> tuple[bool, int]:
+    """Set both auto-switch flags in one transaction so a settings PUT can't leave
+    one key updated and the other stale. Both values are coerced before any write,
+    so an invalid value raises without persisting either."""
+    parsed_enabled = _coerce_bool(enabled)
+    if parsed_enabled is None:
+        raise ValueError("OpenAI auto-switch must be true or false.")
+    parsed_idle = _coerce_int(idle_seconds)
+    if parsed_idle is None:
         raise ValueError("Auto-unload idle seconds must be a non-negative integer.")
     from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings({AUTO_UNLOAD_IDLE_SETTING_KEY: parsed})
+    upsert_app_settings(
+        {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled, AUTO_UNLOAD_IDLE_SETTING_KEY: parsed_idle}
+    )
+    _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
     _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
-    return parsed
+    return parsed_enabled, parsed_idle
 
 
 def get_model_overrides() -> dict[str, dict]:
