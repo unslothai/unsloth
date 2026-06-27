@@ -58,7 +58,7 @@ SPLASH_PLUGIN_ID = "unsloth-jupyterlab:splash"
 LOGO_DATA_URI_PREFIX = "data:image/png;base64,iVBOR"
 
 
-def resolve_paths(venv_share=None, jupyter_server_dir=None):
+def resolve_paths(venv_share=None, jupyter_server_dir=None, config_dirs=None):
     """Resolve the installed locations of every checked branding asset.
 
     Defaults point at the live venv + the installed jupyter_server package. Tests
@@ -71,6 +71,21 @@ def resolve_paths(venv_share=None, jupyter_server_dir=None):
 
         jupyter_server_dir = os.path.dirname(jupyter_server.__file__)
     labext_dir = os.path.join(venv_share, "labextensions", LABEXT_NAME)
+
+    # Every page_config.json JupyterLab merges to compute disabledExtensions: the
+    # app-settings file plus a labconfig/ file under each jupyter config dir
+    # (where `jupyter labextension disable` writes). Tests pass config_dirs=[] for
+    # a hermetic tree; live resolution scans the real jupyter config path.
+    if config_dirs is None:
+        try:
+            from jupyter_core.paths import jupyter_config_path
+
+            config_dirs = jupyter_config_path()
+        except Exception:
+            config_dirs = []
+    page_configs = [os.path.join(venv_share, "lab", "settings", "page_config.json")]
+    page_configs += [os.path.join(d, "labconfig", "page_config.json") for d in config_dirs]
+
     return {
         "license": os.path.join(venv_share, "UNSLOTH_LICENSE.AGPL-3.0"),
         "login": os.path.join(jupyter_server_dir, "templates", "login.html"),
@@ -80,6 +95,7 @@ def resolve_paths(venv_share=None, jupyter_server_dir=None):
         "labext_static": os.path.join(labext_dir, "static"),
         "favicon": os.path.join(jupyter_server_dir, "static", "favicons", "favicon.ico"),
         "logo": os.path.join(jupyter_server_dir, "static", "logo", "logo.png"),
+        "page_configs": page_configs,
     }
 
 
@@ -176,6 +192,36 @@ def verify_branding(paths = None):
         problems.append("missing or empty favicon: " + paths["favicon"])
     if not _nonempty_file(paths["logo"]):
         problems.append("missing or empty logo: " + paths["logo"])
+
+    # 7. No page_config.json disables the Unsloth extension or its plugins.
+    #    Disabling via `disabledExtensions` leaves the static bundle on disk (so
+    #    check 5 still passes) yet strips the logo / About / splash at load. Since
+    #    the guard exists to refuse stripped attribution, reject that too. Stock
+    #    plugins we disable ourselves (logo/splash) are unaffected -- we only flag
+    #    ids belonging to unsloth-jupyterlab.
+    for pc_path in paths.get("page_configs", []):
+        text = _read(pc_path)
+        if not text:
+            continue
+        try:
+            disabled = json.loads(text).get("disabledExtensions", {})
+        except ValueError:
+            problems.append("page_config.json is not valid JSON: " + pc_path)
+            continue
+        # Modern JupyterLab uses a {id: bool} map; older configs used a list.
+        if isinstance(disabled, dict):
+            disabled_ids = [k for k, v in disabled.items() if v]
+        elif isinstance(disabled, (list, tuple)):
+            disabled_ids = list(disabled)
+        else:
+            disabled_ids = []
+        for ident in disabled_ids:
+            if not isinstance(ident, str):
+                continue
+            if ident == LABEXT_NAME or ident.startswith(LABEXT_NAME + ":"):
+                problems.append(
+                    "page_config.json disables Unsloth attribution '" + ident + "': " + pc_path
+                )
 
     return problems
 

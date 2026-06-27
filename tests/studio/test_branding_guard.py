@@ -69,7 +69,11 @@ def _stage(tmp_path):
     (js_dir / "static" / "logo").mkdir(parents = True)
     (js_dir / "static" / "logo" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\nlogo")
 
-    return ub.resolve_paths(venv_share = str(venv_share), jupyter_server_dir = str(js_dir))
+    # config_dirs = [] keeps the tree hermetic (no host jupyter config scanned);
+    # page_config tests write to the app-settings page_config.json directly.
+    return ub.resolve_paths(
+        venv_share = str(venv_share), jupyter_server_dir = str(js_dir), config_dirs = [],
+    )
 
 
 def test_positive_clean_tree_passes(tmp_path):
@@ -143,6 +147,22 @@ def _empty_favicon(paths):
     open(paths["favicon"], "w").close()
 
 
+def _disable_unsloth_ext(paths):
+    with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
+        json.dump({"disabledExtensions": {ub.LABEXT_NAME: True}}, f)
+
+
+def _disable_unsloth_plugin(paths):
+    with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
+        json.dump({"disabledExtensions": {ub.ABOUT_PLUGIN_ID: True}}, f)
+
+
+def _disable_unsloth_ext_list_form(paths):
+    # Older JupyterLab configs used a list of ids rather than an {id: bool} map.
+    with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
+        json.dump({"disabledExtensions": [ub.SPLASH_PLUGIN_ID]}, f)
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -157,6 +177,9 @@ def _empty_favicon(paths):
         _strip_bundle_logo,
         _remove_logo_png,
         _empty_favicon,
+        _disable_unsloth_ext,
+        _disable_unsloth_plugin,
+        _disable_unsloth_ext_list_form,
     ],
 )
 def test_negative_each_marker_is_enforced(tmp_path, mutate):
@@ -165,6 +188,17 @@ def test_negative_each_marker_is_enforced(tmp_path, mutate):
     mutate(paths)
     problems = ub.verify_branding(paths)
     assert problems, "stripping " + mutate.__name__ + " must be detected"
+
+
+def test_disabling_stock_plugins_is_allowed(tmp_path):
+    """We disable the stock logo/splash ourselves -- the guard must not flag those."""
+    paths = _stage(tmp_path)
+    with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
+        json.dump({"disabledExtensions": {
+            "@jupyterlab/application-extension:logo": True,
+            "@jupyterlab/apputils-extension:splash": True,
+        }}, f)
+    assert ub.verify_branding(paths) == []
 
 
 def test_attribution_sources_have_no_encoded_obfuscation():

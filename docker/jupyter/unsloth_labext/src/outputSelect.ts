@@ -22,9 +22,16 @@ import {
  *   - the chord is exactly Ctrl/Cmd+A (no Alt; Shift ignored), and
  *   - focus is NOT in a text editor / input / contenteditable (so editing a
  *     code cell with Ctrl+A still selects within that editor), and
- *   - the current selection anchor or the last pointer-down landed inside an
- *     output area.
- * In every other case we do nothing and JupyterLab keeps its default behaviour.
+ *   - the keystroke target OR the last pointer-down landed inside an output area.
+ *
+ * We deliberately do NOT use the text selection anchor to decide ownership: a
+ * stale selection inside an output survives a later click onto a command-mode
+ * cell or the file browser (clicking a non-text region does not always move the
+ * anchor), which would make Ctrl/Cmd+A keep re-selecting that old output instead
+ * of doing the normal select-all in the new context. The last pointer-down is
+ * reset on every click (to null when the click is outside any output), so it
+ * tracks the user's current intent; in every other case we do nothing and
+ * JupyterLab keeps its default behaviour.
  */
 
 // Output containers, widest first. `.jp-OutputArea-output` is a single output;
@@ -95,13 +102,13 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
       if (inEditableContext()) {
         return;
       }
-      // Prefer the output holding the current selection; fall back to the last
-      // place the user clicked.
-      const selection = window.getSelection();
-      let output = closestOutput(selection?.anchorNode ?? null);
-      if (!output) {
-        output = lastPointerOutput;
-      }
+      // Own the chord only when the user is actually in an output right now:
+      // the keystroke target, else the last place they clicked. We do NOT trust
+      // the text selection anchor -- it goes stale after clicking away from a
+      // previously selected output (see the file header), which would otherwise
+      // hijack select-all in the notebook / file browser.
+      const output =
+        closestOutput(event.target as Node | null) ?? lastPointerOutput;
       if (!output) {
         return;
       }

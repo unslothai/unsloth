@@ -240,7 +240,8 @@ RUN JS="$(/opt/unsloth-venv/bin/python -c 'import os, jupyter_server; print(os.p
  && /opt/unsloth-venv/bin/jupyter labextension disable @jupyterlab/application-extension:logo \
  && /opt/unsloth-venv/bin/jupyter labextension lock @jupyterlab/application-extension:logo \
  && /opt/unsloth-venv/bin/jupyter labextension disable @jupyterlab/apputils-extension:splash \
- && /opt/unsloth-venv/bin/jupyter labextension lock @jupyterlab/apputils-extension:splash
+ && /opt/unsloth-venv/bin/jupyter labextension lock @jupyterlab/apputils-extension:splash \
+ && /opt/unsloth-venv/bin/jupyter labextension lock unsloth-jupyterlab
 # Branding integrity guard: the canonical attribution checker (also a
 # jupyter_server extension), the full AGPLv3 license text, and the config that
 # enables the extension. Installed into the base venv so it is on the jupyter

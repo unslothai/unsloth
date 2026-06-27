@@ -19,6 +19,13 @@ stay in the cell (still inert), just below the magic -- so `%%capture` now also
 captures them. Idempotent and fully guarded: any problem returns the input
 unchanged, so a cell never breaks because of this helper.
 
+The hoist is restricted to cell magics whose body is executed as code (Python or
+shell), where a moved-down `#@title`/comment line stays an inert comment. Magics
+that treat the body as literal content (`%%writefile`, `%%file`, `%%html`,
+`%%javascript`, `%%latex`, `%%markdown`, `%%svg`, ...) are left untouched: moving
+the Colab form comment into their body would write/render it and corrupt the
+generated file or output.
+
 This mirrors unsloth_nb_compat.register_ipython(): it is wired from the baked
 IPython startup file (docker/unsloth_ipython_startup.py).
 """
@@ -27,8 +34,21 @@ from __future__ import annotations
 import sys
 
 
+# Cell magics whose body is executed as code (Python or shell), so a hoisted
+# `#@title`/`#@param`/comment line stays an inert comment. We ONLY hoist these.
+# Anything not listed (content/data magics like %%writefile, %%file, %%html,
+# %%javascript, %%latex, %%markdown, %%svg) is left untouched, because injecting
+# the Colab form comment into its body would corrupt the written file / output.
+_SAFE_CELL_MAGICS = frozenset({
+    "capture",  # the Colab install pattern: suppress pip/install output
+    "time", "timeit", "prun", "debug",
+    "bash", "sh", "shell",
+    "python", "python2", "python3", "pypy",
+})
+
+
 def colab_cell_magic_fix(lines):
-    """Hoist a `%%` cell magic above leading blank/comment lines.
+    """Hoist a safe `%%` cell magic above leading blank/comment lines.
 
     `lines` is the IPython cell as a list of strings (each ending in '\\n').
     Returns a (possibly reordered) list of the same lines.
@@ -43,7 +63,13 @@ def colab_cell_magic_fix(lines):
             # First real line. Only act if it is a cell magic that is not yet on
             # top (i.e. something was skipped before it).
             if stripped.startswith("%%") and i > 0:
-                return [line] + skipped + lines[i + 1 :]
+                name = stripped[2:].split(maxsplit=1)
+                name = name[0] if name else ""
+                if name in _SAFE_CELL_MAGICS:
+                    return [line] + skipped + lines[i + 1 :]
+                # Content/data magic (%%writefile, %%html, ...): do not move the
+                # comment into its body. Leave the cell exactly as written.
+                return lines
             return lines  # already on top, or not a magic
         return lines  # all blank/comment -> nothing to do
     except Exception:
