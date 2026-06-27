@@ -200,6 +200,16 @@ def main():
                 "retrying with the 'basic' pipeline (needs the full model to fit in memory).",
                 flush = True,
             )
+            # Free the partially-processed model (and the traceback frames pinning it) before
+            # loading a fresh copy, so the fallback does not transiently hold two copies on GPU.
+            import gc as _gc
+            import torch as _torch
+
+            e = None
+            del model
+            _gc.collect()
+            if _torch.cuda.is_available():
+                _torch.cuda.empty_cache()
             model = _from_pretrained(auto_model, args.model, args.trust_remote_code)
             model.eval()
             oneshot(
