@@ -2373,54 +2373,6 @@ class FastLlamaModel:
         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
         get_statistics(kwargs.get("local_files_only", False))
 
-        # Pre-download the repo in a killable subprocess that falls back from Xet
-        # to HTTP on a no-progress stall, so the in-process load below is a cache
-        # hit and cannot hang on a stalled Xet transfer. revision is intentionally
-        # not forwarded: the base-model load below resolves model_name (possibly a
-        # remapped prequantized repo, where the caller's revision does not exist) on
-        # its default branch without a revision, so warming a specific revision would
-        # predownload a snapshot the load never reads and leave the real transfer
-        # unprotected.
-        _prefetched = maybe_prefetch_hf_snapshot(
-            model_name,
-            token = token,
-            cache_dir = kwargs.get("cache_dir"),
-            local_files_only = kwargs.get("local_files_only", False),
-            fast_inference = fast_inference,
-            subfolder = kwargs.get("subfolder"),
-            force_download = kwargs.get("force_download", False),
-            use_safetensors = kwargs.get("use_safetensors"),
-            from_tf = kwargs.get("from_tf", False),
-            from_flax = kwargs.get("from_flax", False),
-        )
-        # The killable child already did the forced download; clear the flag so the
-        # in-process load reuses that warm cache instead of re-forcing over Xet.
-        if _prefetched and kwargs.get("force_download", False):
-            kwargs["force_download"] = False
-
-        # The tokenizer loads in-process below (load_correct_tokenizer) regardless of the
-        # vLLM weight path, so a stalled Xet download of its tokenizer / config files could
-        # still hang from_pretrained. Warm that repo's tokenizer files through the same
-        # killable subprocess. The base prefetch above already covered them when it warmed
-        # model_name itself, so only warm here when the tokenizer comes from a different repo,
-        # or when fast_inference skipped the base warm entirely.
-        _tokenizer_repo = (
-            tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
-        )
-        _warm_tokenizer_repo = (
-            isinstance(_tokenizer_repo, str)
-            and bool(_tokenizer_repo)
-            and (_tokenizer_repo != model_name or fast_inference)
-        )
-        if _warm_tokenizer_repo:
-            maybe_prefetch_hf_snapshot(
-                _tokenizer_repo,
-                token = token,
-                cache_dir = kwargs.get("cache_dir"),
-                local_files_only = kwargs.get("local_files_only", False),
-                tokenizer_only = True,
-            )
-
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
@@ -2467,6 +2419,54 @@ class FastLlamaModel:
         IS_FALCON_H1 = model_config.model_type.startswith("falcon_h1")
 
         preferred_attn_impl = resolve_attention_implementation(model_function, model_config)
+
+        # Pre-download the repo in a killable subprocess that falls back from Xet to HTTP on a
+        # no-progress stall, so the in-process weight load below is a cache hit and cannot hang
+        # on a stalled Xet transfer. This runs AFTER the AutoConfig load + model-class check
+        # above, so an unsupported / incompatible repo fails on its small config fetch without
+        # first pulling multi-GB of weights. revision is intentionally not forwarded: the
+        # base-model load below resolves model_name (possibly a remapped prequantized repo,
+        # where the caller's revision does not exist) on its default branch without a revision,
+        # so warming a specific revision would predownload a snapshot the load never reads.
+        _prefetched = maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = kwargs.get("local_files_only", False),
+            fast_inference = fast_inference,
+            subfolder = kwargs.get("subfolder"),
+            force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
+            from_tf = kwargs.get("from_tf", False),
+            from_flax = kwargs.get("from_flax", False),
+        )
+        # The killable child already did the forced download; clear the flag so the
+        # in-process load reuses that warm cache instead of re-forcing over Xet.
+        if _prefetched and kwargs.get("force_download", False):
+            kwargs["force_download"] = False
+
+        # The tokenizer loads in-process below (load_correct_tokenizer) regardless of the
+        # vLLM weight path, so a stalled Xet download of its tokenizer / config files could
+        # still hang from_pretrained. Warm that repo's tokenizer files through the same
+        # killable subprocess. The base prefetch above already covered them when it warmed
+        # model_name itself, so only warm here when the tokenizer comes from a different repo,
+        # or when fast_inference skipped the base warm entirely.
+        _tokenizer_repo = (
+            tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
+        )
+        _warm_tokenizer_repo = (
+            isinstance(_tokenizer_repo, str)
+            and bool(_tokenizer_repo)
+            and (_tokenizer_repo != model_name or fast_inference)
+        )
+        if _warm_tokenizer_repo:
+            maybe_prefetch_hf_snapshot(
+                _tokenizer_repo,
+                token = token,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = kwargs.get("local_files_only", False),
+                tokenizer_only = True,
+            )
 
         has_rope_scaling = False
         try:

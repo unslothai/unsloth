@@ -838,6 +838,12 @@ _PREFETCH_IGNORE_PATTERNS = (
     "*.mlpackage/*",
     "*.mlmodel",
     "*.gguf",
+    # Original / training checkpoint formats that from_pretrained does not read (it loads
+    # safetensors / .bin, or h5 / msgpack under from_tf / from_flax). Skip them so the warm
+    # does not pull multi-GB of unused weights for a repo that ships them alongside HF weights.
+    "*.pt",
+    "*.pth",
+    "*.ckpt",
     "optimizer.*",
     "scheduler.*",
     "rng_state*",

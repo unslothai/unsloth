@@ -805,6 +805,13 @@ class FastBaseModel:
         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
         get_statistics(kwargs.get("local_files_only", False))
 
+        # vLLM owns the weight download only when it is actually available; if
+        # fast_inference was requested but vLLM is missing, the load falls through to the
+        # in-process HF path (fast_inference_setup flips the flag to False below), so the
+        # weights must still be warmed here rather than left to an unprotected in-process
+        # Xet download. Resolve availability now so the prefetch skip reflects the real path.
+        _vllm_owns_weights = fast_inference and is_vLLM_available()
+
         # Pre-download the repo in a killable subprocess that falls back from Xet
         # to HTTP on a no-progress stall, so the in-process load below is a cache
         # hit and cannot hang on a stalled Xet transfer.
@@ -814,7 +821,7 @@ class FastBaseModel:
             revision = kwargs.get("revision"),
             cache_dir = kwargs.get("cache_dir"),
             local_files_only = kwargs.get("local_files_only", False),
-            fast_inference = fast_inference,
+            fast_inference = _vllm_owns_weights,
             subfolder = kwargs.get("subfolder"),
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
@@ -838,7 +845,7 @@ class FastBaseModel:
         _warm_tokenizer_repo = (
             isinstance(_tokenizer_repo, str)
             and bool(_tokenizer_repo)
-            and (_tokenizer_repo != model_name or fast_inference)
+            and (_tokenizer_repo != model_name or _vllm_owns_weights)
         )
         if _warm_tokenizer_repo:
             maybe_prefetch_hf_snapshot(
