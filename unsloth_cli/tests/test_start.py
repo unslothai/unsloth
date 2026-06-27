@@ -1012,3 +1012,44 @@ def test_connect_hermes_no_launch(fake_studio, tmp_path):
     assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
     assert config["model"]["default"] == MODEL["id"]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+# ── Pi (OpenAI-compatible /v1, key in config, ~/.pi relocated via HOME) ──
+
+
+def test_write_pi_config_fresh(tmp_path):
+    path = tmp_path / ".pi" / "agent" / "models.json"
+    start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, path)
+    config = json.loads(path.read_text())
+    provider = config["providers"]["unsloth"]
+    assert provider["api"] == "openai-completions"
+    assert provider["baseUrl"] == f"{BASE}/v1"
+    assert provider["apiKey"] == "sk-unsloth-abc"
+    assert provider["models"] == [{"id": MODEL["id"]}]
+
+
+def test_write_pi_config_preserves_and_idempotent(tmp_path):
+    path = tmp_path / ".pi" / "agent" / "models.json"
+    path.parent.mkdir(parents = True)
+    path.write_text(json.dumps({"providers": {"google": {"api": "gemini"}}}))
+    start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, path)
+    config = json.loads(path.read_text())
+    assert config["providers"]["google"] == {"api": "gemini"}  # unrelated provider kept
+    assert config["providers"]["unsloth"]["baseUrl"] == f"{BASE}/v1"
+    before = path.read_text()
+    start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, path)
+    assert path.read_text() == before
+
+
+def test_connect_pi_no_launch(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    # Pi has no config-dir env var, so the session is HOME-scoped to keep ~/.pi clean.
+    home = tmp_path / "agents" / "pi"
+    _assert_env_set(result.output, "HOME", str(home))
+    # Provider/model pinned on the command (Pi defaults to google otherwise).
+    assert f"pi --provider unsloth --model {MODEL['id']}" in result.output
+    config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
+    assert config["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
+    assert config["providers"]["unsloth"]["models"] == [{"id": MODEL["id"]}]
+    assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)

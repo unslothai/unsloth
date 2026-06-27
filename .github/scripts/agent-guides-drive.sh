@@ -131,32 +131,6 @@ run_timed() {  # $1=outfile, rest=command
   return "$rc"
 }
 
-# ── Pi: no start.py command at HEAD -> hand-written recipe ──────────────
-write_pi_config() {
-  if unsloth start pi --help >/dev/null 2>&1; then
-    # Tripwire: once a real recipe exists, the hand-written config would mask any
-    # drift in it, defeating the point of this CI. Fail hard so the cell is
-    # migrated to the self-updating `unsloth start pi --no-launch` path.
-    guide_fail "start.py now ships a 'pi' command -- migrate this CI cell to the 'unsloth start pi --no-launch' path so the documented recipe is exercised (the hand-written Pi config no longer reflects it)"
-  fi
-  mkdir -p "$HOME/.pi/agent"
-  python3 - "$UNSLOTH_BASE_URL" "$UNSLOTH_API_KEY" "$UNSLOTH_MODEL_ID" <<'PY'
-import json, os, sys
-base, key, model = sys.argv[1], sys.argv[2], sys.argv[3]
-cfg = {"providers": {"unsloth": {
-    "api": "openai-completions",
-    "baseUrl": f"{base}/v1",
-    "apiKey": key,
-    "models": [{"id": model}],
-}}}
-path = os.path.expanduser("~/.pi/agent/models.json")
-with open(path, "w") as fh:
-    json.dump(cfg, fh, indent=2)
-PY
-  cp "$HOME/.pi/agent/models.json" "$REDACTED_DIR/pi-models.json" 2>/dev/null || true
-  redact "$REDACTED_DIR/pi-models.json"
-}
-
 # Read a value from an `export VAR=...` line in the connect --no-launch output.
 # `unsloth start` writes each agent's session config off the user's ~ and points
 # at it through a relocation env var (CODEX_HOME / OPENCODE_CONFIG /
@@ -228,6 +202,16 @@ crosscheck_contract() {
     opencode)
       cfg="$(raw_env OPENCODE_CONFIG)"
       [ -n "$cfg" ] && [ -f "$cfg" ] && cp "$cfg" "$REDACTED_DIR/opencode.json"
+      ;;
+    pi)
+      # Pi has no config-dir env var; the session is HOME-relocated, and the
+      # provider config lives at $HOME/.pi/agent/models.json.
+      cfg="$(raw_env HOME)/.pi/agent/models.json"
+      if [ -f "$cfg" ]; then
+        grep -q '"openai-completions"' "$cfg" \
+          || echo "::warning::Pi provider api is no longer 'openai-completions' (write_pi_config)"
+        cp "$cfg" "$REDACTED_DIR/pi-models.json"
+      fi
       ;;
   esac
   redact "$REDACTED_DIR"/* 2>/dev/null || true
@@ -355,27 +339,23 @@ case "$MODE" in
   connection)
     PROMPT='Reply with exactly the single word: pong'
     OUT="$LOGS_DIR/${AGENT}-connection.txt"
-    if [ "$AGENT" = "pi" ]; then
-      write_pi_config
-      run_timed "$OUT" pi -p --provider unsloth --model "$UNSLOTH_MODEL_ID" "$PROMPT"
-    else
-      parse_connect
-      crosscheck_contract
-      # claude/codex run in print mode via the flags start.py emits
-      # (claude -p / codex exec). For agents whose default subcommand prints
-      # to stdout we pass the prompt through ctx.args.
-      case "$AGENT" in
-        claude)   invoke_via_connect "$OUT" "${CLAUDE_CONNECT_FLAGS[@]}" -p "$PROMPT" ;;
-        codex)    invoke_via_connect "$OUT" exec --dangerously-bypass-approvals-and-sandbox "$PROMPT" ;;
-        opencode) invoke_via_connect "$OUT" run "$PROMPT" ;;
-        hermes)   patch_hermes_tools none
-                  invoke_via_connect "$OUT" -z "$PROMPT" ;;
-        openclaw) patch_openclaw_agent notools
-                  invoke_via_connect "$OUT" agent --local --agent ci \
-                    --model "unsloth/${UNSLOTH_MODEL_ID}" --message "$PROMPT" ;;
-        *)        invoke_via_connect "$OUT" "$PROMPT" ;;
-      esac
-    fi
+    parse_connect
+    crosscheck_contract
+    # claude/codex run in print mode via the flags start.py emits
+    # (claude -p / codex exec). For agents whose default subcommand prints
+    # to stdout we pass the prompt through ctx.args.
+    case "$AGENT" in
+      claude)   invoke_via_connect "$OUT" "${CLAUDE_CONNECT_FLAGS[@]}" -p "$PROMPT" ;;
+      codex)    invoke_via_connect "$OUT" exec --dangerously-bypass-approvals-and-sandbox "$PROMPT" ;;
+      opencode) invoke_via_connect "$OUT" run "$PROMPT" ;;
+      pi)       invoke_via_connect "$OUT" -p "$PROMPT" ;;
+      hermes)   patch_hermes_tools none
+                invoke_via_connect "$OUT" -z "$PROMPT" ;;
+      openclaw) patch_openclaw_agent notools
+                invoke_via_connect "$OUT" agent --local --agent ci \
+                  --model "unsloth/${UNSLOTH_MODEL_ID}" --message "$PROMPT" ;;
+      *)        invoke_via_connect "$OUT" "$PROMPT" ;;
+    esac
     # A non-zero exit from the documented launch command is drift even if it
     # printed something: a benign-looking "command not found" / usage dump would
     # otherwise slip past assert_reply (which only flags empty/error-keyword text).
@@ -396,20 +376,16 @@ case "$MODE" in
 
     # The start.py recipe writers + crosscheck must see the repo; run them
     # from the repo root BEFORE cd-ing into the scratch work dir.
-    if [ "$AGENT" != "pi" ]; then
-      parse_connect
-      crosscheck_contract
-      # File-edit needs real tools, so we cannot zero them as in connection.
-      # hermes keeps default tools; openclaw still strips its AGENTS.md/SOUL.md
-      # bootstrap (the largest prompt chunk) via the 'ci' agent. The scratch work
-      # dir is empty, so no project context files are auto-loaded either.
-      case "$AGENT" in
-        hermes)   patch_hermes_tools default ;;
-        openclaw) patch_openclaw_agent tools ;;
-      esac
-    else
-      write_pi_config
-    fi
+    parse_connect
+    crosscheck_contract
+    # File-edit needs real tools, so we cannot zero them as in connection.
+    # hermes keeps default tools; openclaw still strips its AGENTS.md/SOUL.md
+    # bootstrap (the largest prompt chunk) via the 'ci' agent. The scratch work
+    # dir is empty, so no project context files are auto-loaded either.
+    case "$AGENT" in
+      hermes)   patch_hermes_tools default ;;
+      openclaw) patch_openclaw_agent tools ;;
+    esac
 
     # Drive from inside the work dir so the agent edits files there. All log
     # writes use absolute $LOGS_DIR, so cwd does not matter for them.
@@ -418,7 +394,14 @@ case "$MODE" in
     invoke_turn() {  # $1=outfile $2=continue? $3=prompt
       local out="$1" cont="$2" prompt="$3"
       case "$AGENT" in
-        pi)       run_timed "$out" pi -p --provider unsloth --model "$UNSLOTH_MODEL_ID" "$prompt" ;;
+        pi)
+          # Pi continues the previous session with -c; provider/model come from
+          # the parsed `unsloth start pi` recipe (CONNECT_CMD), not hardcoded here.
+          if [ "$cont" = "continue" ]; then
+            invoke_via_connect "$out" -p --continue "$prompt"
+          else
+            invoke_via_connect "$out" -p "$prompt"
+          fi ;;
         claude)
           # --dangerously-skip-permissions lets headless claude actually use the
           # Write/Bash tools (otherwise it blocks on an approval prompt and emits

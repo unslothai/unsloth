@@ -39,6 +39,7 @@ _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
+_PI_PROVIDER = "unsloth"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -718,6 +719,30 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
+def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
+    config = _read_json_object(path)
+    if config is None:
+        typer.echo(
+            f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
+            "yourself, or move the file aside and re-run.",
+            err = True,
+        )
+        return
+    before = json.dumps(config, sort_keys = True)
+    # Pi reads custom providers from ~/.pi/agent/models.json (HOME-relocated for the
+    # session). Studio is a generic OpenAI-compatible /v1 endpoint, and the key lives
+    # in the config rather than the env (matching openclaw/opencode).
+    _subdict(config, "providers")[_PI_PROVIDER] = {
+        "api": "openai-completions",
+        "baseUrl": f"{base}/v1",
+        "apiKey": key,
+        "models": [{"id": model["id"]}],
+    }
+    if json.dumps(config, sort_keys = True) != before:
+        _write_private_json(path, config)
+        typer.echo(f"Updated {path}")
+
+
 @start_app.command("claude", context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
@@ -882,4 +907,33 @@ def hermes(
         # like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
         write_hermes_config(base, entry, home / "config.yaml")
         env = {_HERMES_ENV_KEY: key, "HERMES_HOME": str(home)}
+        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+
+
+@start_app.command("pi", context_settings = _PASSTHROUGH)
+def pi(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+):
+    """Point Pi (coding agent) at the running Studio server and start it."""
+    base, key, entry = _connect(
+        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
+    )
+    # Pi defaults to the google provider, so pin our provider/model on the command
+    # line; the custom OpenAI-compatible endpoint itself is only configurable via
+    # ~/.pi/agent/models.json.
+    command = ["pi", "--provider", _PI_PROVIDER, "--model", entry["id"], *ctx.args]
+    install_hint = "npm install -g @earendil-works/pi-coding-agent"
+    with _session_config("pi", launch) as home:
+        # Pi has no config-dir env var; it resolves ~/.pi off $HOME (Node's homedir()
+        # honors it), so HOME-scope the session to leave the user's ~/.pi untouched.
+        # The key rides in the config, so HOME is the only env var needed.
+        write_pi_config(base, key, entry, home / ".pi" / "agent" / "models.json")
+        env = {"HOME": str(home)}
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
