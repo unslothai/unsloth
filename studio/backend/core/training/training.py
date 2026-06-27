@@ -1054,6 +1054,10 @@ class TrainingBackend:
             elif etype == "error":
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
+                # Evict the throttle key on error/stop too (not just on complete),
+                # so a re-run reusing the job_id logs its first heartbeat at once
+                # and the entry doesn't linger for the process lifetime.
+                progress_throttle.reset(("training", self.current_job_id))
                 logger.error("Training error: %s", event.get("error"))
                 stack = event.get("stack", "")
                 if stack:
