@@ -17,7 +17,7 @@ def _not_verbose(monkeypatch):
 def test_first_message_logs_then_identical_repeats_throttle():
     t = ProgressThrottle(interval_s = 100)  # large window: only the first logs
     k = "load"
-    assert t.should_log(k, "Downloading...") is True   # first
+    assert t.should_log(k, "Downloading...") is True  # first
     assert t.should_log(k, "Downloading...") is False  # identical repeat within window
     assert t.should_log(k, "Downloading...") is False
 
@@ -27,11 +27,12 @@ def test_message_change_always_logs():
     k = "load"
     assert t.should_log(k, "Loading model...") is True
     assert t.should_log(k, "Loading model...") is False
-    assert t.should_log(k, "Importing Unsloth...") is True   # phase change logs
+    assert t.should_log(k, "Importing Unsloth...") is True  # phase change logs
 
 
 def test_heartbeat_emits_after_interval():
     import time
+
     t = ProgressThrottle(interval_s = 0.05)
     k = "load"
     assert t.should_log(k, "same") is True
@@ -73,5 +74,5 @@ def test_verbose_disables_throttle(monkeypatch):
 def test_distinct_keys_are_independent():
     t = ProgressThrottle(interval_s = 100)
     assert t.should_log("a", "m") is True
-    assert t.should_log("b", "m") is True   # different key, independent
+    assert t.should_log("b", "m") is True  # different key, independent
     assert t.should_log("a", "m") is False

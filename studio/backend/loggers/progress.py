@@ -24,7 +24,6 @@ def _interval_default() -> float:
 
 def _verbose() -> bool:
     from loggers.config import logs_verbose
-
     return logs_verbose()
 
 
@@ -40,7 +39,11 @@ class ProgressThrottle:
         self._last_msg: dict = {}
         self._guard = threading.Lock()
 
-    def should_log(self, key, message: str = "") -> bool:
+    def should_log(
+        self,
+        key,
+        message: str = "",
+    ) -> bool:
         if self._interval <= 0 or _verbose():
             return True
         now = time.monotonic()
