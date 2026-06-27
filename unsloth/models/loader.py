@@ -189,6 +189,7 @@ DISABLE_COMPILE_MODEL_NAMES = [
     "aya_vision",
     "modernbert",
     "granite,llava_next",  # Granite-vision 3
+    "paddleocr-",  # PaddleOCR-VL (trust_remote_code model)
 ]
 
 global DISABLE_SDPA_MODEL_NAMES
