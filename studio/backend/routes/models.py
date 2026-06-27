@@ -2808,7 +2808,6 @@ async def get_gguf_variants(
         # must not break variant listing (mirrors list_cached_models).
         try:
             from hub.services.models.cache_inventory import gguf_variant_update_statuses
-
             local_blobs_by_variant, remote_paths_by_variant = _downloaded_variant_update_inputs()
             updates_by_quant = await asyncio.to_thread(
                 gguf_variant_update_statuses,

@@ -299,9 +299,7 @@ def _scan_cached_gguf() -> list[dict]:
 
 
 def _gguf_variant_update_available_from_remote(
-    local_blobs: dict[str, set[str]],
-    remote_paths: set[str],
-    remote_hashes: frozenset[str],
+    local_blobs: dict[str, set[str]], remote_paths: set[str], remote_hashes: frozenset[str]
 ) -> bool:
     local_by_posix = {key.replace("\\", "/"): value for key, value in local_blobs.items()}
     local_hashes = frozenset(blob for blobs in local_by_posix.values() for blob in blobs)
@@ -810,7 +808,9 @@ async def repo_update_status_response(
             ):
                 return {"update_available": cached_entry[1]}
             result = await asyncio.wait_for(
-                asyncio.to_thread(_gguf_remote_update, repo_id, local_blobs, gguf_variant, hf_token),
+                asyncio.to_thread(
+                    _gguf_remote_update, repo_id, local_blobs, gguf_variant, hf_token
+                ),
                 timeout = 6.0,
             )
             with _gguf_update_check_lock:
