@@ -74,7 +74,9 @@ def _stage(tmp_path):
     # config_dirs = [] keeps the tree hermetic (no host jupyter config scanned);
     # page_config tests write to the app-settings page_config.json directly.
     return ub.resolve_paths(
-        venv_share = str(venv_share), jupyter_server_dir = str(js_dir), config_dirs = [],
+        venv_share = str(venv_share),
+        jupyter_server_dir = str(js_dir),
+        config_dirs = [],
     )
 
 
@@ -194,10 +196,15 @@ def test_disabling_stock_plugins_is_allowed(tmp_path):
     """We disable the stock logo/splash ourselves -- the guard must not flag those."""
     paths = _stage(tmp_path)
     with open(paths["page_configs"][0], "w", encoding = "utf-8") as f:
-        json.dump({"disabledExtensions": {
-            "@jupyterlab/application-extension:logo": True,
-            "@jupyterlab/apputils-extension:splash": True,
-        }}, f)
+        json.dump(
+            {
+                "disabledExtensions": {
+                    "@jupyterlab/application-extension:logo": True,
+                    "@jupyterlab/apputils-extension:splash": True,
+                }
+            },
+            f,
+        )
     assert ub.verify_branding(paths) == []
 
 

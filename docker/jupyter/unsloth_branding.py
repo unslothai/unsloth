@@ -58,7 +58,11 @@ SPLASH_PLUGIN_ID = "unsloth-jupyterlab:splash"
 LOGO_DATA_URI_PREFIX = "data:image/png;base64,iVBOR"
 
 
-def resolve_paths(venv_share = None, jupyter_server_dir = None, config_dirs = None):
+def resolve_paths(
+    venv_share = None,
+    jupyter_server_dir = None,
+    config_dirs = None,
+):
     """Resolve the installed locations of every checked branding asset.
 
     Defaults point at the live venv + the installed jupyter_server package. Tests

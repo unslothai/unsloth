@@ -39,12 +39,22 @@ import sys
 # Anything not listed (content/data magics like %%writefile, %%file, %%html,
 # %%javascript, %%latex, %%markdown, %%svg) is left untouched, because injecting
 # the Colab form comment into its body would corrupt the written file / output.
-_SAFE_CELL_MAGICS = frozenset({
-    "capture",  # the Colab install pattern: suppress pip/install output
-    "time", "timeit", "prun", "debug",
-    "bash", "sh", "shell",
-    "python", "python2", "python3", "pypy",
-})
+_SAFE_CELL_MAGICS = frozenset(
+    {
+        "capture",  # the Colab install pattern: suppress pip/install output
+        "time",
+        "timeit",
+        "prun",
+        "debug",
+        "bash",
+        "sh",
+        "shell",
+        "python",
+        "python2",
+        "python3",
+        "pypy",
+    }
+)
 
 
 def colab_cell_magic_fix(lines):
@@ -63,7 +73,7 @@ def colab_cell_magic_fix(lines):
             # First real line. Only act if it is a cell magic that is not yet on
             # top (i.e. something was skipped before it).
             if stripped.startswith("%%") and i > 0:
-                name = stripped[2:].split(maxsplit=1)
+                name = stripped[2:].split(maxsplit = 1)
                 name = name[0] if name else ""
                 if name in _SAFE_CELL_MAGICS:
                     return [line] + skipped + lines[i + 1 :]
