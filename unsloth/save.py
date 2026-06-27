@@ -3833,7 +3833,9 @@ def _unsloth_save_compressed_tensors(
         work_tmp = tempfile.mkdtemp(prefix = "unsloth-compressed-")
         local_dir = os.path.join(work_tmp, os.path.basename(repo_id.rstrip("/")) or "model")
     else:
+        # Drop trailing separators so the sibling "<dir>-<fmt>" output is not nested inside <dir>.
         local_dir = os.fspath(save_directory)
+        local_dir = local_dir.rstrip("/\\") or local_dir
 
     # Wrap the body so the isolated temp dirs are always cleaned up, even when the merge,
     # quantization, validation, or hub upload raises.
