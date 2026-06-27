@@ -158,6 +158,11 @@ if not UNSLOTH_ENABLE_LOGGING:
     logging.getLogger("torchao").addFilter(
         HideLoggingMessage("Skipping import of cpp extensions due to incompatible torch version")
     )
+    # torch >= 2.11 path: torchao dlopens each prebuilt _C*.so and logs "Failed to load
+    # .../_C*.so" when one can't (ABI tag mismatch in the wheel, e.g. a cp310 .so under a
+    # cp312 runtime on Colab, or an arch-specific kernel the GPU lacks). It falls back to
+    # non-cpp paths and Unsloth doesn't use these kernels, so drop the cosmetic record.
+    logging.getLogger("torchao").addFilter(HideLoggingMessage("Failed to load "))
     # SyntaxWarning: invalid escape sequence '\.'
     warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
@@ -2349,11 +2354,9 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
-        # Also catch CUDA shared library mismatches during vllm import
-        # e.g. "libcudart.so.12: cannot open shared object file"
-        if (
-            "libcudart" in message or "libcublas" in message or "libnvrtc" in message
-        ) and "cannot open shared object file" in message:
+        # Forced extension load raises the bare loader error (no "vllm._C"
+        # wrapper); match any .so failure as callers feed only vLLM imports.
+        if "cannot open shared object file" in message:
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
@@ -2545,6 +2548,16 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
+# vLLM's compiled extensions. A CUDA-major ABI break hits all of them, so
+# probing the eagerly-loaded _C and its siblings reliably trips it.
+_VLLM_COMPILED_EXTENSIONS = (
+    "vllm._C",
+    "vllm._C_stable_libtorch",
+    "vllm._moe_C",
+    "vllm._rocm_C",
+)
+
+
 def disable_broken_vllm(error = None):
     """Disable vLLM dynamically when its shared library is ABI-broken."""
     global VLLM_BROKEN
@@ -2562,6 +2575,15 @@ def disable_broken_vllm(error = None):
 
         try:
             import vllm  # noqa: F401
+
+            # Lazy vLLM lets a bare `import vllm` succeed even when an extension
+            # is ABI-broken; force-load each to surface the .so failure here.
+            # A missing one raises ModuleNotFoundError (skipped below).
+            for _ext in _VLLM_COMPILED_EXTENSIONS:
+                try:
+                    importlib.import_module(_ext)
+                except ModuleNotFoundError:
+                    pass
             return False
         except Exception as import_error:
             failure = import_error
