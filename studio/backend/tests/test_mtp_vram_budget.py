@@ -561,13 +561,16 @@ class TestExtraArgsMtpDetection:
         assert "_mtp_kv_unsized" in compact
         assert "mtp_overhead_fnisNoneor_mtp_kv_unsized" in compact
 
-    def test_load_model_ranks_subsets_by_active_pin_fraction(self):
-        # Auto/cap subset ranking uses the active budget fraction (lowered by the
-        # flat MTP reserve), not a hard-coded 0.95, so the ranking order matches
-        # the fit budget that is then tested (Finding G4).
+    def test_load_model_ranks_subsets_by_floored_pool_budget(self):
+        # Auto/cap subset ranking sorts by _pool_budget_mib([g], frac), the exact
+        # floored single-GPU budget the per-subset fit then admits, so the order
+        # matches the budget being tested. Ranking by the unfloored fraction
+        # (_gpu_usable) mis-orders mixed card sizes and splits a one-GPU fit across
+        # two (Finding G4; #6688 review). The fraction is still the active one
+        # (lowered by the flat MTP reserve), not a hard-coded 0.95.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_gpu_usable(g,pin_fraction)" in compact
-        assert "_gpu_usable(g,_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
+        assert "_pool_budget_mib([g],pin_fraction)" in compact
+        assert "_pool_budget_mib([g],_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
 
     @pytest.mark.parametrize(
         "args,expected",

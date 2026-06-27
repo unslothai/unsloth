@@ -5237,8 +5237,8 @@ class LlamaCppBackend:
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(
-                                    g, _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
+                                key = lambda g: _pool_budget_mib(
+                                    [g], _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
                                 ),
                                 reverse = True,
                             )
@@ -5298,10 +5298,15 @@ class LlamaCppBackend:
                         else:
                             # Auto context: prefer fewer GPUs, cap to fit. Same
                             # headroom threshold as _select_gpus (#5106). Rank by the
-                            # active pin fraction so the order matches the fit budget.
+                            # floored single-GPU budget (_pool_budget_mib), the same
+                            # value the per-subset fit then admits, so a one-GPU fit
+                            # isn't split across two; the unfloored 5% mis-orders
+                            # mixed card sizes (#6688 review).
                             pin_fraction = _pin_fraction
                             ranked = sorted(
-                                gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
+                                gpus,
+                                key = lambda g: _pool_budget_mib([g], pin_fraction),
+                                reverse = True,
                             )
                             for n_gpus in range(1, len(ranked) + 1):
                                 subset = ranked[:n_gpus]

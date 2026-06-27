@@ -816,6 +816,33 @@ def test_floored_budget_defers_tight_consumer_model_to_fit():
     assert int(18.5 * 1024) < budget  # a smaller model fits and pins
 
 
+def test_auto_subset_ranking_orders_by_floored_budget_not_raw_fraction():
+    # #6688 review: auto/cap ranking must sort by the floored single-GPU budget
+    # (_pool_budget_mib([g], frac)), the value the per-subset fit then admits, not
+    # by the unfloored free-(1-frac)*total. On a mixed pair (24 GB / 80 GB) the
+    # two orders disagree, and the unfloored one would split a one-GPU fit in two.
+    frac = _CTX_FIT_VRAM_FRACTION
+    totals = {0: 24576, 1: 81920}
+    gpus = [(0, 24000), (1, 26000)]  # 24 GB and 80 GB cards
+
+    def floored(g):
+        return _pooled_usable_mib([g], frac, totals)
+
+    def unfloored(g):
+        idx, free = g
+        return free - (1.0 - frac) * totals[idx]
+
+    # Floored: the 80 GB card has the larger single-GPU budget, so it ranks first.
+    assert sorted(gpus, key = floored, reverse = True)[0] == (1, 26000)
+    # Unfloored: the 24 GB card wins the raw-fraction sort -> the old mis-order.
+    assert sorted(gpus, key = unfloored, reverse = True)[0] == (0, 24000)
+    # A ~21.5 GiB footprint fits the 80 GB card alone but not the 24 GB card, so
+    # the floored order finds a one-GPU fit the unfloored order would have split.
+    footprint = 21504
+    assert footprint <= floored((1, 26000))
+    assert footprint > floored((0, 24000))
+
+
 # ---------------------------------------------------------------------------
 # Apple Silicon unified-memory context cap (#5118, #6529): no discrete GPU on
 # Metal, so the auto context defaulted to native and over-committed unified
