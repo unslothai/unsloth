@@ -33,6 +33,7 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
+    _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
@@ -919,6 +920,7 @@ class FastLanguageModel(FastLlamaModel):
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         model = _fix_rope_inv_freq(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model, tokenizer
 
 
@@ -1889,6 +1891,7 @@ class FastModel(FastBaseModel):
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         model = _fix_rope_inv_freq(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model, tokenizer
 
 
