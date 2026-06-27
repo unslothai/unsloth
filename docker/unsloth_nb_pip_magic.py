@@ -32,7 +32,7 @@ def _rewrite_python_dash_m(lines):
         out = []
         for line in lines:
             body = line.rstrip("\n")
-            tail = line[len(body):]  # preserve the trailing newline(s), if any
+            tail = line[len(body) :]  # preserve the trailing newline(s), if any
             m = _PY_M_PIP.match(body)
             if m:
                 out.append(m.group(1) + "!" + m.group(2) + m.group(3) + tail)
@@ -55,6 +55,7 @@ def register_ipython():
         def _magic(line):
             # /opt/unsloth-nb/bin is first on PATH, so `pip`/`uv` here is the shim.
             return ip.system(tool + " " + line)
+
         return _magic
 
     # Override the built-in %pip / %uv so they route through the shim too.
