@@ -262,6 +262,7 @@ if _IS_MLX:
                 Free uses CURRENT active memory, not the peak high-water mark, so
                 a capacity check stays accurate after a transient spike."""
                 import mlx.core as mx
+
                 total = int(get_gpu_memory_stats()[2] * 1024 * 1024 * 1024)
                 get_active = getattr(mx, "get_active_memory", None)
                 if get_active is None and hasattr(mx, "metal"):
