@@ -26,9 +26,9 @@ _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
 # The lazy ``(.*?)\n\)`` could grab a shorter expression if an arm is ever wrapped;
 # pin the DeepSeek + bare-Kimi arms so a silent truncation fails loudly here.
-assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(1), (
-    "extracted _TOOL_XML_RE is missing expected arms (extraction truncated?)"
-)
+assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(
+    1
+), "extracted _TOOL_XML_RE is missing expected arms (extraction truncated?)"
 # The regex reuses the parser's shared DeepSeek opener alternation; provide it so
 # the extracted ``_re.compile`` expression resolves the same source.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
