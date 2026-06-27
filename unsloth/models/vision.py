@@ -826,13 +826,23 @@ class FastBaseModel:
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # A distinct tokenizer / processor repo is loaded separately below, which would
-        # otherwise fetch it in-process, unprotected by the Xet->HTTP fallback, so a stalled
-        # Xet download of those files could still hang from_pretrained. Warm just its
-        # tokenizer / config files through the same killable subprocess.
-        if isinstance(tokenizer_name, str) and tokenizer_name and tokenizer_name != model_name:
+        # The tokenizer / processor loads in-process below (auto_processor / AutoTokenizer)
+        # regardless of the vLLM weight path, so a stalled Xet download of its tokenizer /
+        # processor / config files could still hang from_pretrained. Warm that repo's files
+        # through the same killable subprocess. The base prefetch above already covered them
+        # when it warmed model_name itself, so only warm here when the tokenizer / processor
+        # comes from a different repo, or when fast_inference skipped the base warm entirely.
+        _tokenizer_repo = (
+            tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
+        )
+        _warm_tokenizer_repo = (
+            isinstance(_tokenizer_repo, str)
+            and bool(_tokenizer_repo)
+            and (_tokenizer_repo != model_name or fast_inference)
+        )
+        if _warm_tokenizer_repo:
             maybe_prefetch_hf_snapshot(
-                tokenizer_name,
+                _tokenizer_repo,
                 token = token,
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = kwargs.get("local_files_only", False),

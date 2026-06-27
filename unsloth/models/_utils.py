@@ -866,6 +866,18 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
     "chat_template.json",
     "preprocessor_config.json",
     "processor_config.json",
+    # Custom-code entry points a trust_remote_code config / model / tokenizer / processor
+    # load fetches from the repo root. Each carries a literal prefix, so it stays effectively
+    # root-anchored, and matches nothing on a non-remote-code repo (harmless there).
+    "configuration_*.py",
+    "modeling_*.py",
+    "tokenization_*.py",
+    "processing_*.py",
+    "image_processing_*.py",
+    "feature_extraction_*.py",
+    "video_processing_*.py",
+    # tiktoken vocab assets (e.g. Qwen's qwen.tiktoken) a custom tokenizer can require.
+    "*.tiktoken",
 )
 
 
@@ -938,7 +950,15 @@ def _prefetch_ignore_patterns(
     ]
     # Drop the weight format the load will not read. Transformers reads exactly one
     # format, so prefetching the other doubles the very download we optimize.
-    if use_safetensors is True:
+    if from_tf or from_flax:
+        # TF (*.h5) / Flax (*.msgpack) loads read those as the weights and never touch the
+        # PyTorch formats. The static list above already keeps the requested h5 / msgpack;
+        # drop safetensors and .bin outright so the auto branch does not warm multi-GB of
+        # PyTorch weights the load will discard (and risk a disk-full on a mixed-format repo).
+        ignore_patterns.extend((
+            "*.safetensors", "*.safetensors.index.json", "*.bin", "*.bin.index.json",
+        ))
+    elif use_safetensors is True:
         # Explicit safetensors: the load never reads .bin, so skip it outright -- even
         # for a bin-only repo, where the load fails anyway, do not pull multi-GB of
         # PyTorch weights first. No model_info call needed for an explicit request.
@@ -1071,8 +1091,9 @@ def maybe_prefetch_hf_snapshot(
     # is wasted bandwidth and disk. Also warm the repo-ROOT tokenizer / config files: the
     # tokenizer / processor load reads those from the root even when the weights live in a
     # subfolder, so a subfolder-only prefetch would leave them to an unprotected in-process
-    # download. The root patterns are exact filenames (no wildcard), so they match only
-    # root-level files, not same-named files deeper in the repo.
+    # download. Also warm the custom-code / tiktoken assets a trust_remote_code load fetches
+    # from the root. The root patterns are exact filenames or literal-prefixed globs (e.g.
+    # modeling_*.py), so they stay anchored to repo-root files in practice.
     allow_patterns = None
     if tokenizer_only:
         # A distinct tokenizer repo: warm only its tokenizer / config / vocab files. Restrict
