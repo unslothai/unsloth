@@ -1824,7 +1824,9 @@ def unsloth_save_pretrained_merged(
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
-    4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
+    4.  FP8 / FP4 compressed export for vLLM (`fp8`, `mxfp4`, `nvfp4`, `mxfp8`): keeps the
+        16bit merge at `save_directory` and writes the quantized checkpoint to
+        `save_directory + "-<fmt>"`.
     """
     if tokenizer is None:
         logger.warning_once(
@@ -2418,7 +2420,16 @@ def unsloth_save_pretrained_gguf(
                 "Unsloth: Please use .push_to_hub_gguf(save_method='lora') instead of "
                 ".save_pretrained_gguf(save_method='lora', push_to_hub=True)."
             )
-        _outtype = quantization_method if quantization_method in _LORA_GGUF_OUTTYPES else "f16"
+        if quantization_method in _LORA_GGUF_OUTTYPES:
+            _outtype = quantization_method
+        else:
+            if quantization_method not in (None, "fast_quantized"):
+                logger.warning_once(
+                    f"Unsloth: LoRA GGUF export does not support "
+                    f"quantization_method='{quantization_method}'; using outtype 'f16'. "
+                    f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
+                )
+            _outtype = "f16"
         return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = _outtype)
 
     try:
@@ -2737,7 +2748,16 @@ def unsloth_push_to_hub_gguf(
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
     if save_method is not None and str(save_method).lower() == "lora":
-        _outtype = quantization_method if quantization_method in _LORA_GGUF_OUTTYPES else "f16"
+        if quantization_method in _LORA_GGUF_OUTTYPES:
+            _outtype = quantization_method
+        else:
+            if quantization_method not in (None, "fast_quantized"):
+                logger.warning_once(
+                    f"Unsloth: LoRA GGUF export does not support "
+                    f"quantization_method='{quantization_method}'; using outtype 'f16'. "
+                    f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
+                )
+            _outtype = "f16"
         return _unsloth_save_lora_gguf(
             self,
             tokenizer,
@@ -3760,7 +3780,7 @@ def _scheme_is_available(scheme):
 
 
 def _print_compressed_hw_note(scheme, out_dir):
-    if scheme == "FP8_DYNAMIC":
+    if scheme in ("FP8_DYNAMIC", "MXFP8"):
         hw = "NVIDIA GPUs with compute capability >= 8.9 (Ada / Hopper) or newer"
     else:
         hw = (
