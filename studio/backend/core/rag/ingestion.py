@@ -155,6 +155,7 @@ def _run(
     stored_path: str,
     model_name: str | None,
     ocr: bool | None = None,
+    caption: bool | None = None,
 ) -> None:
     conn = rag_db.get_connection()
     try:
@@ -162,7 +163,8 @@ def _run(
         pages = parsers.parse(stored_path)
         if stored_path.lower().endswith(".pdf"):
             pages = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
-        if config.CAPTION_IMAGES and stored_path.lower().endswith(".pdf"):
+        caption_on = config.CAPTION_IMAGES if caption is None else caption
+        if caption_on and stored_path.lower().endswith(".pdf"):
             # Caption figures, splice into page text (no-op without a vision model).
             try:
                 figures = parsers.render_pdf_figures(
@@ -232,6 +234,7 @@ def start_ingestion(
     project_id: str | None = None,
     model_name: str | None = None,
     ocr: bool | None = None,
+    caption: bool | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -275,7 +278,7 @@ def start_ingestion(
         _jobs[job_id] = queue.Queue()
     threading.Thread(
         target = _run,
-        args = (job_id, document_id, scope, stored_path, model_name, ocr),
+        args = (job_id, document_id, scope, stored_path, model_name, ocr, caption),
         daemon = True,
     ).start()
     return document_id, job_id

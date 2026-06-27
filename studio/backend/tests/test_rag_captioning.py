@@ -13,13 +13,16 @@ def _img(page):
     return ParsedImage(image_bytes = b"\x89PNG fake", page_number = page, xref = page)
 
 
-def test_caption_images_disabled_by_default(monkeypatch):
+def test_caption_images_runs_when_images_present(monkeypatch):
+    # Policy now lives in ingestion (_run); caption_images itself no longer checks
+    # config.CAPTION_IMAGES, so with images + an endpoint it captions regardless.
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
-    assert captioner.caption_images([_img(1)], endpoint = ("http://x", "local")) == {}
+    monkeypatch.setattr(captioner, "_caption_one", lambda *a: "a chart")
+    out = captioner.caption_images([_img(1)], endpoint = ("http://x", "local"))
+    assert out == {1: ["a chart"]}
 
 
 def test_caption_images_groups_by_page(monkeypatch):
-    monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
     monkeypatch.setattr(captioner.config, "CAPTION_MAX_IMAGES", 8)
     monkeypatch.setattr(captioner, "_caption_one", lambda base, model, b, t: "a chart of results")
     out = captioner.caption_images([_img(1), _img(1), _img(3)], endpoint = ("http://x", "local"))
@@ -27,7 +30,6 @@ def test_caption_images_groups_by_page(monkeypatch):
 
 
 def test_caption_images_respects_cap(monkeypatch):
-    monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
     monkeypatch.setattr(captioner.config, "CAPTION_MAX_IMAGES", 2)
     calls = []
     monkeypatch.setattr(captioner, "_caption_one", lambda *a: (calls.append(1) or "cap"))
@@ -36,9 +38,42 @@ def test_caption_images_respects_cap(monkeypatch):
 
 
 def test_caption_images_no_endpoint(monkeypatch):
-    monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: None)
     assert captioner.caption_images([_img(1)]) == {}
+
+
+def test_caption_runaway_guard_applied(monkeypatch):
+    # A weak vision model looping on a sparse figure must not flood the index;
+    # captions are passed through _collapse_runaway before storage.
+    monkeypatch.setattr(captioner, "_caption_one", lambda *a: "\n".join(["LOOP"] * 40))
+    out = captioner.caption_images([_img(1)], endpoint = ("http://x", "local"))
+    assert out[1][0].splitlines().count("LOOP") == 3  # 40 -> 3
+
+
+def test_caption_prompt_and_token_budget(monkeypatch):
+    # The caption prompt is chart-aware and the token cap is config-driven; OCR keeps
+    # its own prompt + budget (shared _vision_complete must not cross-contaminate).
+    captured: dict = {}
+
+    def fake_vision_complete(base_url, model, image_bytes, *, prompt, timeout, max_tokens):
+        captured.update(prompt = prompt, timeout = timeout, max_tokens = max_tokens)
+        return "ok"
+
+    monkeypatch.setattr(captioner, "_vision_complete", fake_vision_complete)
+    monkeypatch.setattr(captioner.config, "CAPTION_MAX_TOKENS", 277)
+
+    captioner._caption_one("http://x", "local", b"img", 12.0)
+    prompt = captured["prompt"].lower()
+    assert ("axis" in prompt or "axes" in prompt) and "legend" in prompt
+    assert "do not infer missing labels or invent numbers" in prompt
+    assert captured["max_tokens"] == 277
+    assert captured["timeout"] == 12.0
+
+    captured.clear()
+    monkeypatch.setattr(captioner.config, "OCR_MAX_TOKENS", 999)
+    captioner._ocr_one("http://x", "local", b"img", 5.0)
+    assert captured["max_tokens"] == 999
+    assert "transcribe" in captured["prompt"].lower()
 
 
 def test_splice_captions_appends_to_right_page():
@@ -103,3 +138,100 @@ def test_captioned_text_is_searchable(rag_home, stub_embeddings, monkeypatch):
     finally:
         conn.close()
     assert hits, "spliced caption text should be retrievable via lexical search"
+
+
+# ── per-upload caption override (parallels test_rag_ocr_fallback.py) ──
+
+
+def _figure_pdf(path):
+    """A born-digital PDF: a page with real text (so it is not treated as scanned)
+    plus a vector drawing region that render_pdf_figures detects as a figure."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_textbox(
+        pymupdf.Rect(40, 40, 550, 120),
+        "Quarterly revenue report. The chart below shows the trend.",
+        fontsize = 11,
+    )
+    shape = page.new_shape()
+    shape.draw_rect(pymupdf.Rect(60, 140, 540, 520))
+    for i in range(8):
+        shape.draw_line((80, 160 + i * 40), (520, 160 + i * 40))
+    shape.finish(color = (0, 0, 0), fill = (0.8, 0.8, 0.9))
+    shape.commit()
+    doc.save(str(path))
+    doc.close()
+
+
+def _ingest_with_caption(rag_conn, thread_id, path, caption):
+    from core.rag import ingestion, store
+
+    scope = store.thread_scope(thread_id)
+    document_id = store.create_document(
+        rag_conn,
+        scope = scope,
+        filename = "fig.pdf",
+        sha256 = str(path) + str(caption),
+        thread_id = thread_id,
+        status = "pending",
+        stored_path = str(path),
+    )
+    job_id = ingestion._new_job(rag_conn, document_id, scope)
+    # _run(job_id, document_id, scope, stored_path, model_name, ocr, caption)
+    ingestion._run(job_id, document_id, scope, str(path), None, None, caption)
+    return store.get_document(rag_conn, document_id)
+
+
+def test_caption_override_true_runs_when_config_off(
+    rag_conn, stub_embeddings, monkeypatch, tmp_path
+):
+    # Config default OFF, but the per-upload toggle (caption=True) forces captioning.
+    from core.rag import tool
+
+    monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
+    monkeypatch.setattr(captioner, "_caption_one", lambda *a: "bar chart of revenue wombat-7")
+
+    pdf = tmp_path / "fig.pdf"
+    _figure_pdf(pdf)
+    _ingest_with_caption(rag_conn, "t1", pdf, True)
+
+    text, _ = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert "wombat-7" in text  # the spliced figure caption reached the index
+
+
+def test_caption_override_false_skips_when_config_on(
+    rag_conn, stub_embeddings, monkeypatch, tmp_path
+):
+    # Config default ON, but the per-upload toggle (caption=False) skips captioning.
+    monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
+    called = []
+    monkeypatch.setattr(captioner, "_caption_one", lambda *a: called.append(1) or "should not run")
+
+    pdf = tmp_path / "fig.pdf"
+    _figure_pdf(pdf)
+    _ingest_with_caption(rag_conn, "t1", pdf, False)
+
+    assert called == []  # no vision caption calls despite config ON
+
+
+def test_caption_none_follows_config(rag_conn, stub_embeddings, monkeypatch, tmp_path):
+    # Omitted override (None) falls back to config.CAPTION_IMAGES.
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
+    seen = []
+    monkeypatch.setattr(captioner, "_caption_one", lambda *a: seen.append(1) or "chart caption")
+
+    monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
+    pdf_off = tmp_path / "off.pdf"
+    _figure_pdf(pdf_off)
+    _ingest_with_caption(rag_conn, "t1", pdf_off, None)
+    assert seen == []  # config OFF + no override -> no captioning
+
+    monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
+    pdf_on = tmp_path / "on.pdf"
+    _figure_pdf(pdf_on)
+    _ingest_with_caption(rag_conn, "t2", pdf_on, None)
+    assert seen  # config ON + no override -> captioning runs

@@ -25,11 +25,15 @@ WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
 
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 
-# Figure captioning via the loaded vision model; off by default since each caption
-# is a model call. MAX_IMAGES bounds per-doc cost.
-CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "0") == "1"
+# Figure captioning via the loaded vision model: detected figures (charts, plots,
+# tables, diagrams) are described so their content becomes searchable. On by default
+# but a strict no-op without a vision model loaded; MAX_IMAGES bounds per-doc cost
+# (worst case MAX_IMAGES model calls). The chat's "Describe figures & charts" toggle
+# overrides this per upload.
+CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "1") == "1"
 CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "8"))
 CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "30"))
+CAPTION_MAX_TOKENS = int(os.environ.get("RAG_CAPTION_MAX_TOKENS", "320"))
 
 # Scanned-PDF OCR: a page with little or no extractable text (an image-only/scanned
 # page) is rendered and transcribed by the loaded vision model so it becomes

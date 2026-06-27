@@ -23,9 +23,14 @@ from . import config
 logger = logging.getLogger(__name__)
 
 _CAPTION_PROMPT = (
-    "Describe this figure or image from a document in one or two concise "
-    "sentences, for search indexing. State what it depicts (e.g. a diagram, "
-    "chart, table or photo) and its key content. Do not add commentary."
+    "Describe this document figure for search indexing. If it is a chart, plot, or "
+    "graph, name the chart type and report the title, the x and y axis labels with "
+    "units, the legend or series names, and the salient trends, maxima, minima, "
+    "outliers, and clearly readable values. If it is a table, give its topic, the "
+    "column headers, and the key rows or values. If it is a diagram, map, or photo, "
+    "state what it depicts and read any labels. Quote short visible text verbatim. "
+    "Report only what is visible; do not infer missing labels or invent numbers. "
+    "Keep it concise."
 )
 
 _OCR_PROMPT = (
@@ -118,7 +123,12 @@ def _vision_complete(
 
 def _caption_one(base_url: str, model: str, image_bytes: bytes, timeout: float) -> str | None:
     return _vision_complete(
-        base_url, model, image_bytes, prompt = _CAPTION_PROMPT, timeout = timeout, max_tokens = 200
+        base_url,
+        model,
+        image_bytes,
+        prompt = _CAPTION_PROMPT,
+        timeout = timeout,
+        max_tokens = config.CAPTION_MAX_TOKENS,
     )
 
 
@@ -136,9 +146,13 @@ def _ocr_one(base_url: str, model: str, image_bytes: bytes, timeout: float) -> s
 def caption_images(
     images: list, *, endpoint: tuple[str, str] | None = None
 ) -> dict[int, list[str]]:
-    """Caption ``ParsedImage`` objects, keyed by 1-based page number; ``{}`` when
-    disabled, no vision model, or no images. Bounded by ``CAPTION_MAX_IMAGES``."""
-    if not config.CAPTION_IMAGES or not images:
+    """Caption ``ParsedImage`` objects, keyed by 1-based page number. Returns ``{}``
+    when there are no images or no vision model is loaded. The caller
+    (`ingestion._run`) owns the on/off policy (config default plus the per-upload
+    toggle), so this does not re-check it. Bounded by ``CAPTION_MAX_IMAGES``; each
+    caption is passed through ``_collapse_runaway`` so a looping vision model cannot
+    flood the index."""
+    if not images:
         return {}
     ep = endpoint or vision_endpoint()
     if ep is None:
@@ -153,7 +167,7 @@ def caption_images(
         caption = _caption_one(base_url, model, image_bytes, config.CAPTION_TIMEOUT_S)
         if caption:
             page = getattr(img, "page_number", None) or 0
-            out.setdefault(int(page), []).append(caption)
+            out.setdefault(int(page), []).append(_collapse_runaway(caption))
     return out
 
 

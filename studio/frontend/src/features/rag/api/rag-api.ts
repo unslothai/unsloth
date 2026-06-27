@@ -43,11 +43,13 @@ async function ragUpload(
   path: string,
   file: File,
   ocr?: boolean,
+  caption?: boolean,
 ): Promise<DocumentUploadResult> {
   const form = new FormData();
   form.append("file", file);
-  // Per-upload OCR override for scanned pages; omitted -> backend config default.
+  // Per-upload overrides for the vision passes; omitted -> backend config default.
   if (ocr !== undefined) form.append("ocr", String(ocr));
+  if (caption !== undefined) form.append("caption", String(caption));
   // No Content-Type: let the browser set the multipart boundary.
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: "POST",
@@ -110,11 +112,13 @@ export function uploadKnowledgeBaseDocument(
   kbId: string,
   file: File,
   ocr?: boolean,
+  caption?: boolean,
 ): Promise<DocumentUploadResult> {
   return ragUpload(
     `/knowledge-bases/${encodeURIComponent(kbId)}/documents`,
     file,
     ocr,
+    caption,
   );
 }
 
@@ -131,11 +135,13 @@ export function uploadThreadDocument(
   threadId: string,
   file: File,
   ocr?: boolean,
+  caption?: boolean,
 ): Promise<DocumentUploadResult> {
   return ragUpload(
     `/threads/${encodeURIComponent(threadId)}/documents`,
     file,
     ocr,
+    caption,
   );
 }
 
@@ -152,11 +158,13 @@ export function uploadProjectDocument(
   projectId: string,
   file: File,
   ocr?: boolean,
+  caption?: boolean,
 ): Promise<DocumentUploadResult> {
   return ragUpload(
     `/projects/${encodeURIComponent(projectId)}/documents`,
     file,
     ocr,
+    caption,
   );
 }
 

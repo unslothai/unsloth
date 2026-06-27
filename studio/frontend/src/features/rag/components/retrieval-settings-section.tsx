@@ -112,6 +112,10 @@ export function RetrievalSettingsSection() {
   );
   const ragOcrScanned = useChatRuntimeStore((s) => s.ragOcrScanned);
   const setRagOcrScanned = useChatRuntimeStore((s) => s.setRagOcrScanned);
+  const ragCaptionFigures = useChatRuntimeStore((s) => s.ragCaptionFigures);
+  const setRagCaptionFigures = useChatRuntimeStore(
+    (s) => s.setRagCaptionFigures,
+  );
 
   return (
     <div className="flex flex-col gap-5 pt-1">
@@ -225,6 +229,28 @@ export function RetrievalSettingsSection() {
           checked={ragOcrScanned}
           onCheckedChange={setRagOcrScanned}
           aria-label="OCR scanned pages"
+          className="mt-0.5"
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+            Describe figures &amp; charts
+            <InfoHint>
+              Caption PDF figures, charts, tables and diagrams at upload with the
+              loaded model's vision, so their content becomes searchable. Needs a
+              vision model; adds vision calls for detected figures.
+            </InfoHint>
+          </span>
+          <span className="text-[12px] leading-[1.3] text-muted-foreground">
+            Read charts and diagrams when attaching.
+          </span>
+        </div>
+        <Switch
+          checked={ragCaptionFigures}
+          onCheckedChange={setRagCaptionFigures}
+          aria-label="Describe figures and charts"
           className="mt-0.5"
         />
       </div>

@@ -208,6 +208,7 @@ async def upload_kb_document(
     kb_id: str,
     file: UploadFile = File(...),
     ocr: bool | None = Form(None),
+    caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
@@ -219,7 +220,7 @@ async def upload_kb_document(
         conn.close()
     stored_path, filename = _save_upload(file)
     document_id, job_id = ingestion.start_ingestion(
-        store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr
+        store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr, caption = caption
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -240,12 +241,19 @@ async def upload_thread_document(
     thread_id: str,
     file: UploadFile = File(...),
     ocr: bool | None = Form(None),
+    caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
     stored_path, filename = _save_upload(file)
     document_id, job_id = ingestion.start_ingestion(
-        store.thread_scope(thread_id), None, thread_id, filename, stored_path, ocr = ocr
+        store.thread_scope(thread_id),
+        None,
+        thread_id,
+        filename,
+        stored_path,
+        ocr = ocr,
+        caption = caption,
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -266,6 +274,7 @@ async def upload_project_document(
     project_id: str,
     file: UploadFile = File(...),
     ocr: bool | None = Form(None),
+    caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
@@ -282,6 +291,7 @@ async def upload_project_document(
         stored_path,
         project_id = project_id,
         ocr = ocr,
+        caption = caption,
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
