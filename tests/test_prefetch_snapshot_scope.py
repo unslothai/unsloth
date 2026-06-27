@@ -87,7 +87,7 @@ def test_weights_at_root_excludes_subdir_weights(capture):
     explicit use_safetensors avoids the auto branch's model_info network call."""
     ok, st = capture(weights_at_root = True, use_safetensors = True)
     assert ok is True
-    assert st["allow_patterns"] is None          # the warm stays otherwise unfiltered
+    assert st["allow_patterns"] is None  # the warm stays otherwise unfiltered
     ig = st["ignore_patterns"]
     assert "*/*.safetensors" in ig and "*/*.bin" in ig
     kept = _filter(_SAMPLE_FILES, st["allow_patterns"], ig)
@@ -105,7 +105,7 @@ def test_adapter_only_excludes_merged_weights(capture):
     config); a repo that also ships merged full-model weights must not pull them."""
     ok, st = capture(adapter_only = True)
     assert ok is True
-    assert st["ignore_patterns"] is None          # the exact allowlist makes the format filter moot
+    assert st["ignore_patterns"] is None  # the exact allowlist makes the format filter moot
     allow = st["allow_patterns"]
     assert "adapter_config.json" in allow and "adapter_model*" in allow
     kept = _filter(_SAMPLE_FILES, allow, st["ignore_patterns"])
