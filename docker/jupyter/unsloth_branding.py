@@ -58,7 +58,7 @@ SPLASH_PLUGIN_ID = "unsloth-jupyterlab:splash"
 LOGO_DATA_URI_PREFIX = "data:image/png;base64,iVBOR"
 
 
-def resolve_paths(venv_share=None, jupyter_server_dir=None, config_dirs=None):
+def resolve_paths(venv_share = None, jupyter_server_dir = None, config_dirs = None):
     """Resolve the installed locations of every checked branding asset.
 
     Defaults point at the live venv + the installed jupyter_server package. Tests
@@ -68,7 +68,6 @@ def resolve_paths(venv_share=None, jupyter_server_dir=None, config_dirs=None):
         venv_share = os.path.join(sys.prefix, "share", "jupyter")
     if jupyter_server_dir is None:
         import jupyter_server  # local import: only needed for live resolution
-
         jupyter_server_dir = os.path.dirname(jupyter_server.__file__)
     labext_dir = os.path.join(venv_share, "labextensions", LABEXT_NAME)
 
@@ -79,7 +78,6 @@ def resolve_paths(venv_share=None, jupyter_server_dir=None, config_dirs=None):
     if config_dirs is None:
         try:
             from jupyter_core.paths import jupyter_config_path
-
             config_dirs = jupyter_config_path()
         except Exception:
             config_dirs = []
