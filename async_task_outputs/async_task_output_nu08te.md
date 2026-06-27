@@ -1,0 +1,2 @@
+- User requested adding comments `/gemini review` and `@codex review` on all 3 targets.
+- PENDING: identify the 3 targets and post both comments on each.

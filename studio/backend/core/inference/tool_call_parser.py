@@ -2,10 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Backend-neutral tool-call parser shared by GGUF, safetensors, and MLX.
-
-Covers the emission formats so the safetensors + MLX agentic loop sees
-the same call shape llama-server normalises for GGUF:
+Backend-neutral tool-call parser shared by GGUF, safetensors, and MLX, so the
+safetensors + MLX agentic loop sees the same call shape llama-server gives GGUF:
 
   - ``<tool_call>{json}</tool_call>``           (Qwen / Hermes)
   - ``<function=name><parameter=k>v</parameter></function>``  (Qwen3.5 xml)
@@ -21,25 +19,21 @@ the same call shape llama-server normalises for GGUF:
   - ``<tool_call>NAME\\n<arg_key>k</arg_key>\\n<arg_value>v</arg_value>...</tool_call>``  (GLM 4.5 / 4.6 / 4.7)
   - ``<|tool_calls_section_begin|>...<|tool_call_begin|>functions.NAME:IDX<|tool_call_argument_begin|>{json}<|tool_call_end|>...``  (Kimi K2)
 
-Closing tags / brackets are tolerated when missing because models
-frequently truncate them mid-stream.
+Missing closing tags / brackets are tolerated: models often truncate mid-stream.
 """
 
 import json
 import re
 from typing import Any
 
-# The Qwen/Hermes ``<tool_call>{json}``, Qwen3.5 ``<function=...>`` XML, and
-# Gemma 4 ``<|tool_call>call:...`` formats are parsed by the shared
-# ``core.tool_healing`` helper, which external inference servers also import
-# and which carries the strict/Auto-Heal (``allow_incomplete``) contract. This
-# module adds the formats tool_healing does not cover (Llama-3 ``<|python_tag|>``,
-# Mistral ``[TOOL_CALLS]``, and Llama-3.2 bare JSON).
+# Qwen/Hermes, Qwen3.5 XML, and Gemma 4 are parsed by the shared
+# ``core.tool_healing`` helper (also imported by external servers), which carries
+# the strict/Auto-Heal (``allow_incomplete``) contract. This module adds the rest:
+# Llama-3 ``<|python_tag|>``, Mistral ``[TOOL_CALLS]``, Llama-3.2 bare JSON.
 from core import tool_healing as _tool_healing
 
 
-# Markers that flip the streaming buffer from STREAMING to DRAINING so
-# partial markup never leaks before the parser sees it.
+# Flip the streaming buffer STREAMING->DRAINING so partial markup never leaks.
 TOOL_XML_SIGNALS = (
     "<tool_call>",
     "<function=",
@@ -69,10 +63,9 @@ _DEEPSEEK_OPEN_ALT = (
 )
 _DEEPSEEK_OPEN_RE_SRC = r"<｜(?:" + _DEEPSEEK_OPEN_ALT + r")｜>"
 
-# Closed pairs only (mid-stream); _TOOL_ALL_PATS also eats unclosed
-# tails for end-of-turn cleanup. ``[\w-]+`` on ``<function=...>`` tracks
-# OpenAI's ``^[a-zA-Z0-9_-]{1,64}$`` so MCP tool names with hyphens
-# (mcp__srv__list-issues) parse the same as the built-ins.
+# Closed pairs only (mid-stream); _TOOL_ALL_PATS also eats unclosed tails at
+# end-of-turn. ``[\w-]+`` on ``<function=...>`` tracks OpenAI's
+# ``^[a-zA-Z0-9_-]{1,64}$`` so hyphenated MCP names parse like built-ins.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>.*?</function>', re.DOTALL),
@@ -151,22 +144,18 @@ RAG_SEARCH_CAP_NUDGE = (
 
 # Qwen / Hermes ``<tool_call>{json}``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-# Qwen3.5 / Hermes ``<function=name><parameter=k>v`` AND the attribute
-# form ``<function name="name"><param name="k">v`` used by MiniCPM-5,
-# MiniMax-M2, etc. Name char class is ``[\w\.\-]+`` so MCP tool names
-# with hyphens (mcp__srv__list-issues) and dotted module names parse
-# the same as the built-ins. Name lands in group(1) or group(2).
+# Qwen3.5 ``<function=name>...`` AND the attribute form
+# ``<function name="name">...`` (MiniCPM-5, MiniMax-M2). Name class ``[\w\.\-]+``
+# (hyphenated MCP / dotted names) lands in group(1) or group(2).
 _TC_FUNC_START_RE = re.compile(r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>\s*')
-# Body terminates at either ``</tool_call>`` (Hermes wrapper) OR
-# ``</function>`` (Qwen3.5 / MiniCPM-5 standalone) so the parser stops
-# at the close tag even when prose follows. Without ``</function>``,
+# Body ends at ``</tool_call>`` (Hermes) or ``</function>`` (Qwen3.5 / MiniCPM-5)
+# so it stops at the close even when prose follows; without ``</function>``,
 # trailing prose leaked into the last parameter value.
 _TC_END_TAG_RE = re.compile(r"</(?:tool_call|function)>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
 # Trailing class is horizontal whitespace only (``[^\S\n]*``, not ``\s*``) so the
-# wrapping newline + the value's first-line indentation are NOT consumed here;
-# ``_trim_param_value`` then trims exactly one wrapping newline, preserving code
-# indentation (matches SGLang's qwen3_coder detector).
+# wrapping newline + value's first-line indentation survive; ``_trim_param_value``
+# then trims one wrapping newline, preserving code indentation (SGLang qwen3_coder).
 _TC_PARAM_START_RE = re.compile(
     r'<(?:parameter|param)(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")>[^\S\n]*'
 )
@@ -182,17 +171,15 @@ _LLAMA3_KV_RE = re.compile(
     re.VERBOSE,
 )
 
-# Mistral ``[TOOL_CALLS]`` trigger. v11+ chains them, each followed by
-# a bare name plus ``{json}`` (Magistral) or ``[ARGS]{json}`` (Ministral
-# / Large 3).
+# Mistral ``[TOOL_CALLS]`` trigger. v11+ chains them, each followed by a bare name
+# plus ``{json}`` (Magistral) or ``[ARGS]{json}`` (Ministral / Large 3).
 _MISTRAL_TRIGGER = "[TOOL_CALLS]"
 _MISTRAL_ARGS_MARKER = "[ARGS]"
-# Mistral Small 3.2 emits ``name[CALL_ID]<id>[ARGS]{json}``; the call-id
-# segment is absent on Ministral / Magistral. llama.cpp distinguishes the
-# two on the presence of ``[CALL_ID]`` (common/chat.cpp).
+# Mistral Small 3.2 emits ``name[CALL_ID]<id>[ARGS]{json}`` (absent on Ministral /
+# Magistral); llama.cpp distinguishes the two on ``[CALL_ID]`` (common/chat.cpp).
 _MISTRAL_CALL_ID_MARKER = "[CALL_ID]"
-# Magistral wraps reasoning in ``[THINK] ... [/THINK]`` before the answer.
-# A ``[TOOL_CALLS]`` inside that block is chain-of-thought, not a real call.
+# Magistral wraps reasoning in ``[THINK]...[/THINK]``; a ``[TOOL_CALLS]`` inside
+# that block is chain-of-thought, not a real call.
 _MISTRAL_THINK_OPEN = "[THINK]"
 _MISTRAL_THINK_CLOSE = "[/THINK]"
 _MISTRAL_V11_NAME_RE = re.compile(r"\s*([\w\.\-]+)\s*")
@@ -261,8 +248,7 @@ _GEMMA_KEY_RE = re.compile(r"\s*([\w\.\-]+)\s*:")
 
 
 def _balanced_bracket_end(text: str, start: int) -> int | None:
-    """Index of `]` matching `[` at ``text[start]``; ignores brackets
-    in JSON strings. None if unmatched."""
+    """Index of the ``]`` matching ``[`` at ``text[start]`` (ignores brackets in JSON strings)."""
     if start >= len(text) or text[start] != "[":
         return None
     depth = 0
@@ -292,9 +278,8 @@ def _balanced_bracket_end(text: str, start: int) -> int | None:
 
 
 def _skip_mistral_call_id(text: str, pos: int) -> int:
-    """Skip an optional ``[CALL_ID]<id>`` segment (Mistral Small 3.2) at
-    ``pos``. Returns the position of the next meaningful token (``[ARGS]``
-    or ``{``), or ``pos`` unchanged when no ``[CALL_ID]`` is present."""
+    """Skip an optional ``[CALL_ID]<id>`` segment (Mistral Small 3.2); returns the
+    next token pos (``[ARGS]`` / ``{``), or ``pos`` unchanged when absent."""
     n = len(text)
     i = pos
     while i < n and text[i] in " \t\n\r":
@@ -313,14 +298,10 @@ def _skip_mistral_call_id(text: str, pos: int) -> int:
 
 
 def _strip_mistral_reasoning(content: str) -> str:
-    """Drop a leading Magistral ``[THINK] ... [/THINK]`` reasoning block so a
-    ``[TOOL_CALLS]`` emitted *inside* the chain-of-thought is not mistaken for
-    a real call (llama.cpp parses reasoning separately; see test-chat.cpp).
-
-    Only a leading block is removed -- the reasoning prefix is always first,
-    so a literal ``[THINK]`` inside a later tool argument is left untouched.
-    An unclosed leading ``[THINK]`` (still streaming) means nothing has been
-    committed yet, so everything from it onward is dropped."""
+    """Drop a leading Magistral ``[THINK]...[/THINK]`` block so a ``[TOOL_CALLS]``
+    inside the chain-of-thought is not taken as a real call (llama.cpp parses
+    reasoning separately; see test-chat.cpp). Only the leading block is removed; an
+    unclosed ``[THINK]`` (still streaming) drops everything from it onward."""
     i = 0
     n = len(content)
     while i < n and content[i] in " \t\n\r":
@@ -335,11 +316,9 @@ def _strip_mistral_reasoning(content: str) -> str:
 
 def _strip_mistral_closed_calls(text: str) -> str:
     """Strip cleanly-closed ``[TOOL_CALLS]`` blocks (array, ``name{json}``,
-    or ``name[ARGS]{json}``) via balanced brace/bracket scanning.
-
-    A non-greedy ``\\{.*?\\}`` would truncate at the first ``}`` and lose
-    nested JSON. Unclosed runs are left for ``final=True`` cleanup.
-    """
+    ``name[ARGS]{json}``) via balanced scanning -- a non-greedy ``\\{.*?\\}`` would
+    truncate at the first ``}`` and lose nested JSON. Unclosed runs are left for
+    ``final=True`` cleanup."""
     n = len(text)
     out = []
     cursor = 0
@@ -391,9 +370,8 @@ def _strip_mistral_closed_calls(text: str) -> str:
 
 
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
-    """Strip tool-call markup. ``final=False`` keeps in-progress
-    markup buffered; ``final=True`` also drops trailing unclosed runs
-    and trims."""
+    """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
+    ``final=True`` also drops trailing unclosed runs and trims."""
     text = _strip_mistral_closed_calls(text)
     pats = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in pats:
@@ -411,16 +389,12 @@ def parse_tool_calls_from_text(
     id_offset: int = 0,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """Return OpenAI-format tool calls. Tries each format and returns
-    as soon as one matches so we never double-count.
+    """Return OpenAI-format tool calls, trying each format and returning at the
+    first match so we never double-count.
 
-    ``allow_incomplete`` controls Auto-Heal: when True (default) genuinely
-    truncated calls (no closing ``</function>`` / ``<tool_call|>``, or a
-    parameter that never closes) are still healed into a call; when False the
-    parser only accepts a well-formed, closed call (trailing prose after the
-    close is still tolerated), matching the strict path llama-server uses when
-    Auto-Heal is disabled.
-    """
+    ``allow_incomplete=True`` (default) heals truncated calls (missing close tag /
+    unclosed parameter); ``False`` accepts only well-formed closed calls (trailing
+    prose tolerated), matching llama-server's strict path when Auto-Heal is off."""
     # DeepSeek / Kimi use unique (often full-width) markers that do not collide
     # with the shared formats, so try them first.
     for parser in (
@@ -431,11 +405,9 @@ def parse_tool_calls_from_text(
         if calls:
             return calls
 
-    # Qwen/Hermes ``<tool_call>{json}`` (arguments + parameters keys), Qwen3.5
-    # ``<function=...>`` XML, and Gemma 4 native ``<|tool_call>call:...`` go
-    # through the shared tool_healing parser, which carries the strict/Auto-Heal
-    # contract plus nested-marker, trailing-prose (rfind close), and ``<|"|>``
-    # quoted-string handling the GGUF path already relies on.
+    # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 go through the shared tool_healing
+    # parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and
+    # ``<|"|>`` quoted-string handling the GGUF path relies on).
     calls = _tool_healing.parse_tool_calls_from_text(
         content,
         id_offset = id_offset,
@@ -444,11 +416,10 @@ def parse_tool_calls_from_text(
     if calls:
         return calls
 
-    # Formats tool_healing does not cover. GLM shares the ``<tool_call>`` opener
-    # but uses a bare name (no ``{``), so tool_healing skips it;
-    # ``_parse_function_xml`` adds the ``<function name="...">`` attribute syntax;
-    # the rest add Llama-3 and Mistral emissions. These run only after
-    # tool_healing finds nothing, so a call it rejected in strict mode is never
+    # Formats tool_healing does not cover: GLM shares the ``<tool_call>`` opener but
+    # uses a bare name (no ``{``) so tool_healing skips it; _parse_function_xml adds
+    # the ``<function name="...">`` form; the rest add Llama-3 and Mistral. These run
+    # only after tool_healing finds nothing, so a strict-rejected call is never
     # re-healed here.
     for parser in (
         _parse_glm_tool_calls,  # GLM 4.x <tool_call>name
@@ -460,6 +431,9 @@ def parse_tool_calls_from_text(
         calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
         if calls:
             return calls
+
+    # Llama-3.2 bare ``{"name":..., "parameters":...}``. Strict (starts with ``{``
+    # and parses to the right shape) so plain prose stays untouched.
     return _parse_llama3_bare_json(content, id_offset = id_offset)
 
 
@@ -510,11 +484,10 @@ def _parse_tool_call_json(
 
 
 def _trim_param_value(val: str) -> str:
-    """Trim a single wrapping newline the chat template adds around an XML
-    parameter value (``<parameter=k>\nVALUE\n</parameter>``) while preserving any
-    significant leading indentation / trailing whitespace inside VALUE. Using
-    ``str.strip()`` here destroyed the indentation of code/diff arguments; SGLang's
-    qwen3_coder detector trims only the wrapping newline."""
+    """Trim one wrapping newline the template adds around an XML parameter value
+    (``<parameter=k>\nVALUE\n</parameter>``), preserving inner indentation.
+    ``str.strip()`` destroyed code/diff indentation; SGLang's qwen3_coder trims only
+    the wrapping newline."""
     if val.startswith("\n"):
         val = val[1:]
     if val.endswith("\n"):
@@ -590,10 +563,9 @@ def _parse_llama3_python_tag(
     id_offset: int,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """Parse the four Llama-3 emissions: ``<|python_tag|>NAME.call(...)``
-    (built-in), ``<|python_tag|>{"name":..., "parameters":...}`` (custom),
-    multi-call via ``; `` separators, ``parameters`` or ``arguments`` key.
-    """
+    """Parse the Llama-3 emissions: ``<|python_tag|>NAME.call(...)`` (built-in),
+    ``<|python_tag|>{"name":..., "parameters":...}`` (custom), multi-call via
+    ``; ``, ``parameters`` or ``arguments`` key."""
     out: list[dict] = []
     if _LLAMA3_PYTHON_TAG not in content:
         return out
@@ -633,10 +605,9 @@ def _parse_llama3_python_tag(
         for kv in _LLAMA3_KV_RE.finditer(body):
             k = kv.group(1)
             if kv.group(2) is not None:
-                # ``json.loads`` on a quoted string handles \n/\t/\uXXXX
-                # escapes correctly AND keeps literal UTF-8 bytes (emoji
-                # / CJK) intact -- the older ``bytes.decode('unicode_escape')``
-                # path mangled non-ASCII.
+                # ``json.loads`` on a quoted string handles \n/\t/\uXXXX AND keeps
+                # literal UTF-8 (emoji/CJK) intact -- the old
+                # ``bytes.decode('unicode_escape')`` mangled non-ASCII.
                 try:
                     args[k] = json.loads('"' + kv.group(2) + '"')
                 except (json.JSONDecodeError, ValueError):
@@ -708,10 +679,9 @@ def _parse_llama3_bare_json(
     id_offset: int,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """Llama-3.2 ``custom_tools``: bare ``{"name":..., "parameters":{...}}``
-    without ``<|python_tag|>``. Strict (must start with ``{`` after sentinel
-    strip; ``name`` non-empty; ``parameters`` or ``arguments`` is a dict) so
-    plain prose and tool-message echoes don't trigger."""
+    """Llama-3.2 ``custom_tools``: bare ``{"name":..., "parameters":{...}}`` without
+    ``<|python_tag|>``. Strict (starts with ``{`` after sentinel strip; ``name``
+    non-empty; ``parameters``/``arguments`` a dict) so prose and echoes don't fire."""
     out: list[dict] = []
     stripped = content.lstrip()
     # Sentinels can chain in any order, so loop until none match.
@@ -722,11 +692,9 @@ def _parse_llama3_bare_json(
         "<|end_header_id|>",
         "<|eom_id|>",
     )
-    # Role labels Meta's Llama-3 chat template inserts between
-    # ``<|start_header_id|>`` and ``<|end_header_id|>`` -- consume so a
-    # round-trip like
-    # ``<|start_header_id|>assistant<|end_header_id|>\n\n{json}``
-    # reaches the JSON body.
+    # Consume the role label Meta's template inserts between ``<|start_header_id|>``
+    # and ``<|end_header_id|>`` so a round-trip like
+    # ``<|start_header_id|>assistant<|end_header_id|>\n\n{json}`` reaches the body.
     _header_roles = ("assistant", "user", "system", "tool", "ipython")
     while True:
         stripped = stripped.lstrip()
@@ -764,9 +732,9 @@ def _parse_llama3_bare_json(
         name = obj.get("name") or obj.get("function") or ""
         if not isinstance(name, str) or not name:
             break
-        # ``parameters`` must be a dict (Llama-3 spec).
-        # ``arguments`` may be a dict or a JSON-string of a dict (OpenAI shape).
-        # Anything looser would fire on prose like ``{"name":"x","parameters":"sentence"}``.
+        # ``parameters`` must be a dict (Llama-3 spec); ``arguments`` may be a dict
+        # or JSON-string of one (OpenAI). Looser would fire on prose like
+        # ``{"name":"x","parameters":"sentence"}``.
         if "parameters" in obj:
             args = obj.get("parameters")
             if not isinstance(args, dict):
@@ -805,9 +773,8 @@ def _parse_mistral_tool_calls(
     id_offset: int,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """Parse all Mistral emissions: pre-v11 ``[TOOL_CALLS][...]`` /
-    ``[TOOL_CALLS]{...}`` and v11+ ``[TOOL_CALLS]name{json}`` /
-    ``[TOOL_CALLS]name[ARGS]{json}`` (parallel-friendly)."""
+    """Parse all Mistral emissions: pre-v11 ``[TOOL_CALLS][...]`` / ``[TOOL_CALLS]{...}``
+    and v11+ ``[TOOL_CALLS]name{json}`` / ``[TOOL_CALLS]name[ARGS]{json}``."""
     out: list[dict] = []
     content = _strip_mistral_reasoning(content)
     idx = content.find(_MISTRAL_TRIGGER)
@@ -948,9 +915,8 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
     if not isinstance(obj, dict):
         return
     name = obj.get("name") or ""
-    # Mistral templates use ``arguments``; accept the ``parameters`` alias too
-    # (the sibling JSON/XML paths and SGLang's base detector both alias it) so an
-    # array object keyed on ``parameters`` does not lose its payload.
+    # Mistral uses ``arguments``; accept the ``parameters`` alias too (sibling paths
+    # and SGLang's base detector alias it) so an array object keyed on it keeps args.
     args = obj.get("arguments")
     if args is None:
         args = obj.get("parameters", {})
@@ -1012,8 +978,7 @@ def _parse_gemma_tool_calls(
 
 
 def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
-    """Index of `}` matching `{` at ``brace_pos``; ignores braces inside
-    JSON strings. None if unmatched."""
+    """Index of the ``}`` matching ``{`` at ``brace_pos`` (ignores braces in JSON strings)."""
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
     depth = 0
@@ -1043,8 +1008,7 @@ def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
 
 
 def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:
-    """Like ``_balanced_brace_end`` but skips ``<|"|>`` strings and
-    matches `{`/`[` symmetrically."""
+    """Like ``_balanced_brace_end`` but skips ``<|"|>`` strings and matches {}/[] symmetrically."""
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
     depth = 0

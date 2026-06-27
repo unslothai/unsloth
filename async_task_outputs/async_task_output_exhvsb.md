@@ -1,0 +1,35 @@
+- Decision: Treated PRs `#5620`, `#5624`, and `#5704` as an investigation/synthesis task, not code review or execution, because the goal was to understand how they relate.
+- Decision: Did not run or modify PR code. Only used read-only summaries, GitHub metadata, and similarity search.
+- Decision: Identified the central theme as Unsloth Studio safetensors/MLX tool-calling parity with GGUF/`llama-server`, because all three PRs touch the parser/healing/agentic-loop path.
+- Decision: Determined `#5624` is git-stacked on `#5620`, because GitHub metadata showed `#5624` base branch is `studio-tools-multi-format-v2`.
+- Decision: Determined `#5704` is not part of that stack but parallel/off `main`, because its branch is `daniel/studio-mistral-tool-call-rescue` → `main` and it edits overlapping parser modules.
+- Decision: Identified the history behind the drafts as `#5520` foundation → `#5615` first multi-format parser → `#5619` revert → `#5620` v2 draft → `#5624` stacked extension, with `#5811` as a later v3 unblock path.
+- Files created/edited: None intentionally edited in the reviewed repos. Generated local logs under `logs/` and result JSON under `async_task_outputs/`.
+- File generated: `logs/prsum_5620_*.log`, from `python3 -u pr_summarizer.py --repo unslothai/unsloth --pr 5620`; completed and produced summary at `/mnt/disks/unslothai/ubuntu/data/pr_summaries/unslothai__unsloth/pr_5620.json`.
+- File generated: `logs/prsum_5624_*.log`, from `python3 -u pr_summarizer.py --repo unslothai/unsloth --pr 5624`; completed and produced summary at `/mnt/disks/unslothai/ubuntu/data/pr_summaries/unslothai__unsloth/pr_5624.json`.
+- File generated: `logs/prsum_5704_*.log`, from `python3 -u pr_summarizer.py --repo unslothai/unsloth --pr 5704`; cache hit on SHA `28200411`, summary available for `https://github.com/unslothai/unsloth/pull/5704`.
+- File generated: `async_task_outputs/similar_5620.json`; similarity scan completed. Key high matches included `#5704`, `#5619`, `#5615`.
+- File generated: `async_task_outputs/similar_5624.json`; similarity scan completed.
+- File generated: `async_task_outputs/similar_5704.json`; similarity scan completed.
+- Command run: `gh auth status 2>&1 | head -20`; exit status not explicitly shown but succeeded. Key output: logged in to `github.com` account `danielhanchen` with `GH_TOKEN`, active account true.
+- Command run: `python pr_summarizer.py --help 2>&1 | head -40`; succeeded. Confirmed flags `--repo`, `--pr`, `--all-open`, `--parallel`, `--slow`, `--force`, `--limit`.
+- Command run: `python3 -u pr_summarizer.py --repo unslothai/unsloth --pr 5620`; completed after summarize/compress.
+- Command run: `python3 -u pr_summarizer.py --repo unslothai/unsloth --pr 5624`; completed in `34.6s`.
+- Command run: `python3 -u pr_summarizer.py --repo unslothai/unsloth --pr 5704`; completed via cache hit.
+- Command run: `python find_similar_prs.py --help 2>&1 | head -40`; succeeded. Confirmed usage `--pr`, `--repos`, `--parallel`, `--slow`, `--output`, `--no-refine`.
+- Command run: `python3 -u find_similar_prs.py --pr unslothai/unsloth#5620 --output async_task_outputs/similar_5620.json`; completed.
+- Command run: `python3 -u find_similar_prs.py --pr unslothai/unsloth#5624 --output async_task_outputs/similar_5624.json`; completed.
+- Command run: `python3 -u find_similar_prs.py --pr unslothai/unsloth#5704 --output async_task_outputs/similar_5704.json`; completed.
+- Command run: `gh pr view 5620 -R unslothai/unsloth --json number,title,state,isDraft,createdAt,headRefName,baseRefName,body`; succeeded. Key output: title `studio: tool calling + healing parity for Llama-3, Mistral, Gemma 4 on safetensors + MLX`, state `OPEN`, draft `True`, branch `studio-tools-multi-format-v2 -> main`, body starts `DRAFT - holding open while we validate end to end with real models.`
+- Command run: `gh pr view 5624 -R unslothai/unsloth --json number,title,state,isDraft,createdAt,headRefName,baseRefName,body`; succeeded. Key output: title `studio: tool calling for DeepSeek (R1/V3/V3.1), GLM 4.x, Kimi K2`, state `OPEN`, draft true, stacked on `studio-tools-multi-format-v2`.
+- Command run: `gh pr view 5704 -R unslothai/unsloth --json number,title,state,isDraft,createdAt,headRefName,baseRefName,body`; succeeded. Key output: title `Studio: parse Mistral [TOOL_CALLS] and rehearsal tool-call shapes`, state open, branch `daniel/studio-mistral-tool-call-rescue -> main`.
+- Command run: `gh pr list -R unslothai/unsloth --state all --search "studio tool in:title" --limit 40 --json number,title,state,isDraft,createdAt,headRefName`; succeeded. Found related PRs including `#5052`, `#5061`, `#5099`, `#5314`.
+- Command run: `gh pr view` for lineage PRs `5520 5615 5619 5811 5706 5709 5735`; succeeded and established lineage/adjacent PRs.
+- Command run: `tail -n 4 logs/simprs_5620_*.log logs/simprs_5624_*.log logs/simprs_5704_*.log`; succeeded and showed scans mid-run around batches `18/41` through `26/41`.
+- Command run: polling loop waiting for `async_task_outputs/similar_5620.json`, `async_task_outputs/similar_5624.json`, `async_task_outputs/similar_5704.json`; output `ALL DONE`.
+- Error: A progress command `Check similarity scan progress` exited with code `2` because the glob/output files were not ready or command shape failed. It was non-blocking and resolved by checking log tails and polling until files existed.
+- Completed: PR summaries for `#5620`, `#5624`, `#5704`.
+- Completed: Similarity scans for all three PRs.
+- Completed: Manual GitHub metadata/body lookup for target and related lineage PRs.
+- Completed: Final synthesis delivered to user explaining stack relationship, lineage, related PRs, and bottom-line conclusion.
+- Pending: No code changes, tests, malicious scan, checkout, benchmark, or full `pr_workflow` execution were done. User was offered deeper follow-up such as malicious scan/benchmarks on a specific PR or diff-level parser comparison across `#5620`/`#5704`/`#5811`.
