@@ -2349,10 +2349,8 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
-        # Force-loading an extension raises the bare loader error (e.g.
-        # "libcudart.so.12: cannot open shared object file") without vLLM's
-        # "vllm._C" wrapper, and a CUDA mismatch can surface through any linked
-        # .so. Match generically; every caller feeds this only vLLM imports.
+        # Forced extension load raises the bare loader error (no "vllm._C"
+        # wrapper); match any .so failure as callers feed only vLLM imports.
         if "cannot open shared object file" in message:
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
@@ -2545,10 +2543,8 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
-# vLLM's shipped compiled extensions. On CUDA, _C and _C_stable_libtorch are
-# imported eagerly at platform init, so an ABI break (e.g. a CUDA-major
-# mismatch) crashes there -- the reported failure -- and breaks the rest
-# uniformly, so probing _C and its siblings reliably trips it.
+# vLLM's compiled extensions. A CUDA-major ABI break hits all of them, so
+# probing the eagerly-loaded _C and its siblings reliably trips it.
 _VLLM_COMPILED_EXTENSIONS = (
     "vllm._C",
     "vllm._C_stable_libtorch",
@@ -2575,11 +2571,9 @@ def disable_broken_vllm(error = None):
         try:
             import vllm  # noqa: F401
 
-            # Modern vLLM loads its compiled extensions lazily, so a bare
-            # `import vllm` succeeds even when they're ABI-broken (e.g. built
-            # for another CUDA major). Force-load each so the .so failure
-            # surfaces here; a build that lacks one raises ModuleNotFoundError
-            # (skipped below).
+            # Lazy vLLM lets a bare `import vllm` succeed even when an extension
+            # is ABI-broken; force-load each to surface the .so failure here.
+            # A missing one raises ModuleNotFoundError (skipped below).
             for _ext in _VLLM_COMPILED_EXTENSIONS:
                 try:
                     importlib.import_module(_ext)

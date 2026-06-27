@@ -11,14 +11,9 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""Regression test for issue #6590: ``fast_inference=True`` crashed with
-``ImportError: libcudart.so.13`` because modern vLLM loads its compiled
-extensions lazily. A bare ``import vllm`` succeeds even when ``vllm._C`` (or a
-sibling like ``vllm._C_stable_libtorch``) is ABI-broken, so
-``disable_broken_vllm`` never fired and the failure surfaced uncaught later
-inside ``fast_inference_setup``.
-
-Runs under the GPU-free ``tests/conftest.py`` with a synthetic vLLM."""
+"""Regression test for #6590: modern vLLM lazy-loads its compiled extensions, so
+a bare ``import vllm`` succeeds even when ``vllm._C`` (or a sibling) is ABI-broken
+and ``disable_broken_vllm`` missed it. GPU-free, via a synthetic vLLM."""
 
 from __future__ import annotations
 
@@ -36,7 +31,7 @@ _LIBCUDART_ERROR = "libcudart.so.13: cannot open shared object file: No such fil
 
 
 class _ExtensionLoader(importlib.abc.Loader):
-    """A compiled extension that either loads cleanly or fails on dlopen."""
+    """A compiled extension that loads cleanly or fails on dlopen."""
 
     def __init__(self, broken, error):
         self.broken = broken
@@ -51,14 +46,13 @@ class _ExtensionLoader(importlib.abc.Loader):
 
 
 class _FakeVllmFinder(importlib.abc.MetaPathFinder):
-    """A lazy-loading vLLM: ``import vllm`` is fine, and each ``vllm._*``
-    extension is present-and-healthy, present-but-ABI-broken, or absent —
-    mirroring how real vLLM only loads ``_C`` & friends when used."""
+    """Lazy vLLM: ``import vllm`` succeeds; each ``vllm._*`` ext is healthy,
+    ABI-broken, or absent, as real vLLM only loads ``_C`` & friends on use."""
 
     def __init__(self, present, broken, error):
-        self.present = present  # extensions this build ships
-        self.broken = broken  # subset of present that fails to dlopen
-        self.error = error  # dlopen message the broken ones raise
+        self.present = present
+        self.broken = broken
+        self.error = error
 
     def find_spec(
         self,
@@ -81,9 +75,8 @@ def _fake_vllm(
     broken,
     error = _LIBCUDART_ERROR,
 ):
-    """Install a synthetic lazy vLLM and restore every global the guard
-    touches (VLLM_BROKEN, the find_spec patch + meta-path blocker, and the
-    vllm* sys.modules entries) on exit."""
+    """Install a synthetic lazy vLLM, restoring VLLM_BROKEN, find_spec,
+    meta_path, and the vllm* sys.modules entries on exit."""
     from unsloth import import_fixes
 
     submodules = import_fixes._VLLM_COMPILED_EXTENSIONS
@@ -118,8 +111,7 @@ def _fake_vllm(
     ids = ["core_C", "sibling_C_stable_libtorch"],
 )
 def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
-    # A CUDA-major mismatch breaks every extension, but the break can surface
-    # through any one vLLM lazily loads — _C or a sibling. Either must be caught.
+    # A CUDA-major mismatch breaks every ext; whichever one loads first must trip detection.
     present = {"vllm._C", "vllm._C_stable_libtorch"}
     with _fake_vllm(present = present, broken = {broken_ext}) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
@@ -142,10 +134,8 @@ def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
     ids = ["libnccl", "libcuda"],
 )
 def test_disable_broken_vllm_detects_non_cudart_so_failure(error):
-    # Force-loading vllm._C directly raises the bare loader error, without
-    # vLLM's "vllm._C" wrapper. A CUDA-major mismatch can surface through a
-    # linked .so other than libcudart (libnccl, libcuda, ...), which the old
-    # libcudart/libcublas/libnvrtc allow-list would have let slip through.
+    # A CUDA mismatch can surface through a non-libcudart .so (libnccl, libcuda),
+    # which the old libcudart/libcublas/libnvrtc allow-list let slip through.
     with _fake_vllm(present = {"vllm._C"}, broken = {"vllm._C"}, error = error) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
 
@@ -162,10 +152,8 @@ def test_disable_broken_vllm_detects_non_cudart_so_failure(error):
     ids = ["core_only", "all_present"],
 )
 def test_disable_broken_vllm_keeps_healthy_vllm_enabled(present):
-    # A normal install: every extension that's present loads cleanly. Whether
-    # only _C is built or _C plus siblings are, the probe must not disable it —
-    # neither a ModuleNotFoundError on an absent sibling nor a clean load of an
-    # extra present one may be mistaken for an ABI break.
+    # Healthy install: an absent sibling (ModuleNotFoundError) or an extra present
+    # ext that loads cleanly must NOT be mistaken for an ABI break.
     with _fake_vllm(present = present, broken = set()) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
 

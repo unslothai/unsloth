@@ -36,17 +36,15 @@ from .import_fixes import (
     fix_huggingface_hub,
 )
 
-# Redirect a read-only Hugging Face cache before anything below can import
-# huggingface_hub / transformers / vllm (disable_broken_vllm probes
-# `import vllm` and its compiled extensions, check_fbgemm_gpu_version
-# imports transformers, and fix_huggingface_hub imports huggingface_hub
-# itself), all of which can
-# freeze Hub's cache constants with the un-redirected paths. unsloth_zoo
-# runs the same redirect at import, but that happens after these probes.
-# hf_cache.py is stdlib-only, so load it straight from its file without
-# triggering the full unsloth_zoo package init this early; the zoo's own
-# call later is an idempotent no-op. Older unsloth_zoo without hf_cache.py
-# is skipped silently.
+# Redirect a read-only Hugging Face cache before anything below imports
+# huggingface_hub / transformers / vllm (disable_broken_vllm probes `import vllm`
+# and its compiled extensions, check_fbgemm_gpu_version imports transformers,
+# fix_huggingface_hub imports huggingface_hub) -- any of which would freeze Hub's
+# cache constants with the un-redirected paths. unsloth_zoo runs the same redirect
+# at import, but only after these probes. hf_cache.py is stdlib-only, so load it
+# straight from its file without triggering the full unsloth_zoo init this early;
+# the zoo's later call is an idempotent no-op. Older unsloth_zoo without it is
+# skipped silently.
 try:
     import importlib.util as _importlib_util
     from pathlib import Path as _Path
