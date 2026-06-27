@@ -45,15 +45,17 @@ def _stage(tmp_path):
     labext = venv_share / "labextensions" / ub.LABEXT_NAME
     (labext / "static").mkdir(parents = True)
     (labext / "package.json").write_text(json.dumps({"name": ub.LABEXT_NAME}), encoding = "utf-8")
-    bundle = " ".join([
-        ub.PHRASE,
-        ub.SHORT_LABEL,
-        ub.COPYRIGHT,
-        ub.AGPL_URL,
-        ub.ABOUT_PLUGIN_ID,
-        ub.SPLASH_PLUGIN_ID,
-        ub.LOGO_DATA_URI_PREFIX + "AAAAdummyimagebytes",
-    ])
+    bundle = " ".join(
+        [
+            ub.PHRASE,
+            ub.SHORT_LABEL,
+            ub.COPYRIGHT,
+            ub.AGPL_URL,
+            ub.ABOUT_PLUGIN_ID,
+            ub.SPLASH_PLUGIN_ID,
+            ub.LOGO_DATA_URI_PREFIX + "AAAAdummyimagebytes",
+        ]
+    )
     (labext / "static" / "remoteEntry.abc123.js").write_text(bundle, encoding = "utf-8")
 
     (js_dir / "templates").mkdir(parents = True)
@@ -117,7 +119,6 @@ def _rebrand_labext(paths):
 
 def _strip_bundle_phrase(paths):
     import glob
-
     for path in glob.glob(os.path.join(paths["labext_static"], "*.js")):
         with open(path, encoding = "utf-8") as f:
             text = f.read()
@@ -127,7 +128,6 @@ def _strip_bundle_phrase(paths):
 
 def _strip_bundle_logo(paths):
     import glob
-
     for path in glob.glob(os.path.join(paths["labext_static"], "*.js")):
         with open(path, encoding = "utf-8") as f:
             text = f.read()
@@ -176,7 +176,16 @@ def test_attribution_sources_have_no_encoded_obfuscation():
         os.path.join(src_dir, "unsloth_labext", "src", "about.ts"),
         os.path.join(src_dir, "unsloth_labext", "src", "splash.ts"),
     ]
-    forbidden = ["b64decode", "b64encode", "atob(", "btoa(", "fromCharCode", "unescape(", "rot13", "codecs.decode"]
+    forbidden = [
+        "b64decode",
+        "b64encode",
+        "atob(",
+        "btoa(",
+        "fromCharCode",
+        "unescape(",
+        "rot13",
+        "codecs.decode",
+    ]
     for path in files:
         with open(path, encoding = "utf-8") as f:
             text = f.read()
@@ -192,7 +201,9 @@ def test_canonical_phrase_is_plain_text_in_definition_files():
     markers as plain constants (the runtime PHRASE value matches, even though the
     source wraps it across adjacent literals)."""
     src_dir = os.path.join(REPO, "docker", "jupyter")
-    ts = open(os.path.join(src_dir, "unsloth_labext", "src", "branding.ts"), encoding = "utf-8").read()
+    ts = open(
+        os.path.join(src_dir, "unsloth_labext", "src", "branding.ts"), encoding = "utf-8"
+    ).read()
     assert ub.PHRASE in ts, "branding.ts must hold the full PHRASE as one literal"
     py = open(os.path.join(src_dir, "unsloth_branding.py"), encoding = "utf-8").read()
     for marker in (ub.SHORT_LABEL, ub.COPYRIGHT, ub.SOURCE_URL, ub.AGPL_URL, ub.THEME_NAME):
