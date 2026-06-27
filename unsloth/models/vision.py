@@ -826,6 +826,22 @@ class FastBaseModel:
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
+        # A distinct tokenizer / processor repo is loaded separately below, which would
+        # otherwise fetch it in-process, unprotected by the Xet->HTTP fallback, so a stalled
+        # Xet download of those files could still hang from_pretrained. Warm just its
+        # tokenizer / config files through the same killable subprocess.
+        if (
+            isinstance(tokenizer_name, str) and tokenizer_name
+            and tokenizer_name != model_name
+        ):
+            maybe_prefetch_hf_snapshot(
+                tokenizer_name,
+                token = token,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = kwargs.get("local_files_only", False),
+                tokenizer_only = True,
+            )
+
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":

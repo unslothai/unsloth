@@ -993,6 +993,7 @@ def maybe_prefetch_hf_snapshot(
     use_safetensors = None,
     from_tf = False,
     from_flax = False,
+    tokenizer_only = False,
 ):
     """Warm the Hugging Face cache for a remote repo before the in-process load.
 
@@ -1049,7 +1050,10 @@ def maybe_prefetch_hf_snapshot(
     if fast_inference:
         return False
 
-    ignore_patterns = _prefetch_ignore_patterns(
+    # A tokenizer-only warm allow-lists the exact tokenizer / config files below, so the
+    # weight-format ignore list is moot -- and skipping it avoids the model_info network
+    # call its auto branch would otherwise make for a repo whose weights we never fetch.
+    ignore_patterns = None if tokenizer_only else _prefetch_ignore_patterns(
         model_name,
         token = token,
         revision = revision,
@@ -1066,7 +1070,12 @@ def maybe_prefetch_hf_snapshot(
     # download. The root patterns are exact filenames (no wildcard), so they match only
     # root-level files, not same-named files deeper in the repo.
     allow_patterns = None
-    if isinstance(subfolder, str) and subfolder.strip("/"):
+    if tokenizer_only:
+        # A distinct tokenizer repo: warm only its tokenizer / config / vocab files. Restrict
+        # to those exact root filenames so we never pull weights, even if that repo also
+        # happens to ship them (the weights are not what the tokenizer load reads).
+        allow_patterns = list(_ROOT_AUX_PREFETCH_PATTERNS)
+    elif isinstance(subfolder, str) and subfolder.strip("/"):
         allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
     try:
         snapshot_download_with_xet_fallback(
