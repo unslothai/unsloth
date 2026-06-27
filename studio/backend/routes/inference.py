@@ -2352,8 +2352,10 @@ def _target_is_vision(load_path: str) -> bool:
     from utils.models.model_config import is_vision_model
     try:
         return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
-    except Exception:
-        return True  # detection failure: don't block the swap, let the load decide
+    except Exception as exc:
+        # Detection failure: don't block the swap, let the load decide.
+        logger.debug("auto-switch: vision probe failed for %s: %s", load_path, exc)
+        return True
 
 
 def _messages_have_image(messages) -> bool:
@@ -6948,7 +6950,21 @@ def _openai_model_objects() -> list[dict]:
 # don't rescan the HF cache and models dirs on every request.
 _CATALOG_CACHE: dict = {"at": 0.0, "models": []}
 _CATALOG_TTL_S = 30.0
-_CATALOG_LOCK = asyncio.Lock()
+# Per-loop lock (like _auto_switch_lock): a module-level asyncio.Lock ties its
+# waiters to the loop that first awaited it, so a second event loop awaiting it
+# in a multi-loop ASGI process can hang. The cache double-check keeps correctness
+# even when two loops each scan once.
+_catalog_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_catalog_locks_guard = threading.Lock()
+
+
+def _catalog_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    with _catalog_locks_guard:
+        lock = _catalog_locks.get(loop)
+        if lock is None:
+            lock = _catalog_locks[loop] = asyncio.Lock()
+        return lock
 
 
 async def _cached_local_catalog() -> list:
@@ -6965,7 +6981,7 @@ async def _cached_local_catalog() -> list:
     now = time.monotonic()
     if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
         return _CATALOG_CACHE["models"]
-    async with _CATALOG_LOCK:
+    async with _catalog_lock():
         now = time.monotonic()
         if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
             return _CATALOG_CACHE["models"]
@@ -6996,6 +7012,11 @@ async def _openai_catalog_objects() -> list[dict]:
 
     # Locally available (downloaded/cached) models that are not already loaded.
     for info in await _cached_local_catalog():
+        # /v1 serves local models only through llama.cpp, so advertise only GGUF
+        # models: a safetensors/LoRA entry would be selectable but never loadable
+        # (auto-switch resolves GGUFs only, and the slot can't hold non-GGUF).
+        if getattr(info, "model_format", None) != "gguf":
+            continue
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
@@ -8710,6 +8731,11 @@ async def openai_responses(
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
+    # System/developer-only input normalises to a non-empty list, so reject it
+    # before the switch (mirror chat) or an invalid request evicts the resident
+    # model only for the chat handler to 400 it as having no non-system message.
+    if not any(m.role not in ("system", "developer") for m in messages):
+        raise HTTPException(status_code = 400, detail = "At least one non-system message is required.")
     # Reject a malformed function tool before any model load, mirroring the
     # /v1/chat/completions check, so an invalid request never switches the model.
     # Built-in tools (web_search, mcp, ...) carry no name and are dropped later.

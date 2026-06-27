@@ -636,6 +636,23 @@ def test_responses_hook_runs_after_input_validation():
     assert src.index("No input provided") < src.index("_maybe_auto_switch_model")
 
 
+def test_responses_system_only_rejected_before_switch(monkeypatch):
+    # Codex P2: instructions-only input normalises to a lone system message, which
+    # passes the empty-input check; it must 400 before the switch so an invalid
+    # Responses request can't evict the resident model.
+    from fastapi import HTTPException
+    from models.inference import ResponsesRequest
+
+    async def _boom(*a, **k):
+        raise AssertionError("must not switch a system-only Responses request")
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
+    payload = ResponsesRequest(model = "org/B-GGUF", instructions = "be helpful", input = "")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+
+
 def test_keepwarm_tracks_inflight_when_enabled_even_if_idle_zero(monkeypatch):
     # In-flight must be counted whenever auto-switch is on, even with idle TTL 0,
     # so enabling idle mid-stream cannot unload an in-flight request.
@@ -1555,6 +1572,38 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
     # But the model is still resolvable by its on-disk path (an indexed alias).
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf(str(gguf)) is not None
+
+
+def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
+    # gemini: one bad scanner (e.g. a permission error on ./models) must drop only
+    # that source, not abort the whole index and lose what the others found.
+    from types import SimpleNamespace
+    import routes.models as models_route
+    import utils.paths as paths
+
+    def _boom(*a, **k):
+        raise OSError("permission denied")
+
+    lm_info = SimpleNamespace(
+        id = "org/Repo-GGUF", path = "/lm/Repo", model_id = "org/Repo-GGUF", display_name = "Repo"
+    )
+    monkeypatch.setattr(models_route, "_scan_models_dir", _boom)  # ./models blows up
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [lm_info])
+    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [tmp_path])
+    # The on-disk GGUF check is covered elsewhere; here a found info becomes an entry.
+    monkeypatch.setattr(
+        resolver,
+        "_local_gguf_entry",
+        lambda loader_id, info: resolver._LocalGgufEntry(loader_id, "/lm/Repo", ()),
+    )
+    resolver._scan = (0.0, {})
+    index = resolver._build_index()
+    assert any(e.loader_id == "org/Repo-GGUF" for e in index.values())
 
 
 def test_embeddings_input_present_helper():

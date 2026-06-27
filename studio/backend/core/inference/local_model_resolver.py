@@ -139,23 +139,35 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
 
+    # Each source is guarded on its own so one bad root (a permission error, a
+    # malformed cache) drops only that source, not the whole index.
+    found: list = []
     try:
-        found = _scan_models_dir(Path("./models").resolve())
+        found += _scan_models_dir(Path("./models").resolve())
+    except Exception as exc:
+        logger.debug("auto-switch: ./models scan failed: %s", exc)
+    try:
         for hf_dir in (_resolve_hf_cache_dir(), legacy_hf_cache_dir(), hf_default_cache_dir()):
             found += _scan_hf_once(hf_dir)
+    except Exception as exc:
+        logger.debug("auto-switch: HF cache scan failed: %s", exc)
+    try:
         for lm_dir in lmstudio_model_dirs():
             found += _scan_lmstudio_dir(lm_dir)
-        try:
-            from storage.studio_db import list_scan_folders
-            for folder in list_scan_folders():
+    except Exception as exc:
+        logger.debug("auto-switch: LM Studio scan failed: %s", exc)
+    try:
+        from storage.studio_db import list_scan_folders
+        for folder in list_scan_folders():
+            try:
                 fp = Path(folder["path"])
                 found += (
                     _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
                 )
-        except Exception:
-            pass
-    except Exception:
-        return index
+            except Exception as exc:
+                logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
+    except Exception as exc:
+        logger.debug("auto-switch: scan folders enumerate failed: %s", exc)
     for info in found:
         raw_id = getattr(info, "id", None)
         if not raw_id:
