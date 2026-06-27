@@ -29,10 +29,9 @@ import re
 # nesting may leak partial markup, but the call is still parsed correctly.
 _BRACKETED_JSON_ONE_LEVEL = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
 
-# Pre-compiled patterns for tool XML stripping. The hyphen in the name
-# char-class lets dashed MCP tool/parameter names (mcp__srv__list-issues,
-# issue-number) parse alongside the built-ins, including the Mistral
-# [TOOL_CALLS] and rehearsal [ARGS] bracket-tag forms.
+# Pre-compiled tool-XML strip patterns. The hyphen in the name char-class lets
+# dashed MCP names (mcp__srv__list-issues, issue-number) parse alongside the
+# built-ins, including the Mistral [TOOL_CALLS] and rehearsal [ARGS] forms.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
@@ -42,9 +41,8 @@ _TOOL_CLOSED_PATS = [
     re.compile(r"\b[\w-]+\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
 ]
 # Trailing-unclosed patterns. The bracket-tag open forms match the bare marker
-# (not requiring the `{`) so a partial `[TOOL_CALLS]web_search` / `python[ARGS]`
-# streamed before its opening brace is stripped instead of leaking to the UI,
-# matching how `<tool_call>.*$` strips a bare open tag.
+# (no `{`), so a partial `[TOOL_CALLS]web_search` / `python[ARGS]` streamed before
+# its brace is stripped instead of leaking, like `<tool_call>.*$` strips a bare open.
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
@@ -75,10 +73,9 @@ _FUNC_CLOSE_TAG = "</function>"
 # (`meet at 10:00, 11:00 tomorrow`), not a new key.
 _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
 
-# Thinking blocks stripped before any tool-call pattern is matched.
-# Accept an unclosed trailing block during streaming. Without that, a
-# rehearsed tool call inside an open <think> survives this pass and
-# may be executed as a real call when the surrounding parser sees it.
+# Thinking blocks stripped before any tool-call pattern is matched. Accept an
+# unclosed trailing block during streaming, else a tool call rehearsed inside an
+# open <think> survives this pass and may be executed as a real call.
 _THINK_TAG_RE = re.compile(r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL)
 
 # Mistral ``[TOOL_CALLS]name{json}`` prefix. The name char-class includes the

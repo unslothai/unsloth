@@ -44,9 +44,8 @@ def strip_tool_markup(text: str, *, final: bool = False) -> str:
     return _tool_healing.strip_tool_call_markup(text, final = final)
 
 
-# Prefixes the streaming buffer watches for to gate in-progress text. The
-# bracket-tag forms (Mistral [TOOL_CALLS], rehearsal [ARGS]) are included so
-# the streaming buffer keeps that markup buffered until it can be parsed.
+# Prefixes the streaming buffer watches to gate in-progress text. Bracket-tag forms
+# (Mistral [TOOL_CALLS], rehearsal [ARGS]) keep that markup buffered until parsed.
 TOOL_XML_SIGNALS = (
     "<tool_call>",
     "<|tool_call>",

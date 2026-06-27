@@ -8215,15 +8215,11 @@ class LlamaCppBackend:
                                         if not stripped_buf:
                                             continue
 
-                                        # Check tool signal prefixes. Most
-                                        # signals start a tool call, so
-                                        # `startswith` is the right test, but
-                                        # rehearsal/bracket tags like `[ARGS]`
-                                        # arrive mid-buffer (e.g.
-                                        # `web_search[ARGS]{...}`); for those
-                                        # fall back to a substring check so the
-                                        # BUFFERING window still catches the
-                                        # markup before it streams as content.
+                                        # Most signals start a tool call, so
+                                        # `startswith` fits; bracket tags like
+                                        # `[ARGS]` arrive mid-buffer
+                                        # (`web_search[ARGS]{...}`), so also do a
+                                        # substring check so BUFFERING catches them.
                                         is_prefix = False
                                         is_match = False
                                         for sig in _tool_xml_signals:
