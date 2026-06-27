@@ -515,25 +515,6 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
 # ── /v1/models discovery ────────────────────────────────────────────
 
 
-def test_list_switch_eligible_ids(monkeypatch):
-    # Several index keys map to the same entry; the listing is the distinct,
-    # SORTED set of loader ids (insertion order B,A,C below differs from sorted).
-    eb = resolver._LocalGgufEntry("unsloth/B-GGUF", "/p/B", ("Q4_K_M",))
-    ea = resolver._LocalGgufEntry("unsloth/A-GGUF", "/p/A", ())
-    ec = resolver._LocalGgufEntry("unsloth/C-GGUF", "/p/C", ())
-    monkeypatch.setattr(
-        resolver,
-        "_build_index",
-        lambda: {"unsloth/b-gguf": eb, "b-gguf": eb, "unsloth/a-gguf": ea, "unsloth/c-gguf": ec},
-    )
-    resolver._scan = (0.0, {})
-    assert resolver.list_switch_eligible_ids() == [
-        "unsloth/A-GGUF",
-        "unsloth/B-GGUF",
-        "unsloth/C-GGUF",
-    ]
-
-
 def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
     # The resolver lowercases its index, so a retrieve that differs only in case
     # from a catalog id must still hit (200), not 404. Guards the .lower() compare
@@ -1533,10 +1514,14 @@ def test_advertised_loader_id_prefers_alias_over_abs_path():
         f(SimpleNamespace(id = "/home/me/models/x", model_id = "org/X-GGUF", display_name = "X"))
         == "org/X-GGUF"
     )
-    # No alias available: keep the path (still resolvable by it).
+    # No alias available: strip the path to a public id so a host path is never advertised.
     assert (
-        f(SimpleNamespace(id = "/home/me/models/x", model_id = None, display_name = None))
-        == "/home/me/models/x"
+        f(
+            SimpleNamespace(
+                id = "/home/me/models/Qwen3-8B-Q4_K_M.gguf", model_id = None, display_name = None
+            )
+        )
+        == "Qwen3-8B-Q4_K_M"
     )
     # A normal repo id is advertised as-is.
     assert (
@@ -1565,7 +1550,8 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
     resolver._scan = (0.0, {})
 
     # The advertised id is the alias, never the absolute path.
-    assert resolver.list_switch_eligible_ids() == ["org/Repo-GGUF"]
+    advertised = sorted({entry.loader_id for entry in resolver._index().values()})
+    assert advertised == ["org/Repo-GGUF"]
     # But the model is still resolvable by its on-disk path (an indexed alias).
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf(str(gguf)) is not None
@@ -2205,6 +2191,47 @@ def test_chat_validates_confirm_and_modality_before_switch():
     hook = inspect.getsource(inference_route._maybe_auto_switch_model)
     assert hook.index("require_vision") < hook.index("_load_model_impl")
     assert "does not support vision" in hook
+
+
+def test_messages_have_image_helper():
+    from models.inference import ChatMessage, ImageContentPart, ImageUrl, TextContentPart
+
+    f = inference_route._messages_have_image
+    text_only = [
+        ChatMessage(role = "user", content = "hi"),
+        ChatMessage(role = "user", content = [TextContentPart(type = "text", text = "hi")]),
+    ]
+    assert f(text_only) is False
+    img = ImageContentPart(type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA"))
+    assert f([ChatMessage(role = "user", content = [img])]) is True
+
+
+def test_anthropic_request_has_image_helper():
+    from types import SimpleNamespace
+
+    f = inference_route._anthropic_request_has_image
+    text = SimpleNamespace(messages = [SimpleNamespace(content = "hi")])
+    assert f(text) is False
+    text_block = SimpleNamespace(
+        messages = [SimpleNamespace(content = [{"type": "text", "text": "hi"}])]
+    )
+    assert f(text_block) is False
+    dict_img = SimpleNamespace(messages = [SimpleNamespace(content = [{"type": "image"}])])
+    assert f(dict_img) is True
+    typed_img = SimpleNamespace(messages = [SimpleNamespace(content = [SimpleNamespace(type = "image")])])
+    assert f(typed_img) is True
+
+
+def test_responses_and_anthropic_wire_require_vision_from_images():
+    # P2: the modality guard must fire on /v1/responses and /v1/messages too, so an
+    # image request can't evict a vision model for a text-only target. Lock the wiring
+    # at the source: each hook derives require_vision from the request's images.
+    import inspect
+
+    responses_src = inspect.getsource(inference_route.openai_responses)
+    assert "require_vision = _messages_have_image(" in responses_src
+    anthropic_src = inspect.getsource(inference_route.anthropic_messages)
+    assert "require_vision = _anthropic_request_has_image(" in anthropic_src
 
 
 # ── codex review (round 5): count_tokens tools, tool_choice, process-wide gate ──

@@ -2356,13 +2356,31 @@ def _target_is_vision(load_path: str) -> bool:
         return True  # detection failure: don't block the swap, let the load decide
 
 
+def _messages_have_image(messages) -> bool:
+    return any(
+        isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
+        for m in messages
+    )
+
+
 def _request_has_image(payload) -> bool:
     if getattr(payload, "image_base64", None):
         return True
-    return any(
-        isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
-        for m in payload.messages
-    )
+    return _messages_have_image(payload.messages)
+
+
+def _anthropic_request_has_image(payload) -> bool:
+    # Mirror anthropic_messages_to_openai: an Anthropic image block carries
+    # ``type == "image"`` (typed AnthropicImageBlock or a raw dict).
+    for msg in getattr(payload, "messages", None) or []:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            bt = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if bt == "image":
+                return True
+    return False
 
 
 def disable_openai_auto_switch_for_request(scope) -> None:
@@ -2498,8 +2516,13 @@ async def _maybe_auto_switch_model(
         # only 400 below, evicting the working model. Reject before the swap. Only
         # the resolver branch (an explicit new target); the reload-stash path just
         # restores the model the request was already using. Vision capability comes
-        # from a companion mmproj, so it is knowable without loading.
-        if require_vision and resolved is not None and not _target_is_vision(target_id):
+        # from a companion mmproj, a filesystem probe -- run it off the loop, like
+        # the resolver above.
+        if (
+            require_vision
+            and resolved is not None
+            and not await asyncio.to_thread(_target_is_vision, target_id)
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
@@ -7016,9 +7039,11 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     from core.inference.model_ids import model_id_matches
 
     # Loaded models resolve without a catalog scan (the common case); only build
-    # the full catalog -- which may hit the filesystem -- for unloaded ids.
+    # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
+    # case-insensitively, like the catalog loop below and the resolver's index.
     for entry in _openai_model_objects():
-        if entry["id"] == model_id:
+        eid = entry["id"]
+        if isinstance(eid, str) and eid.lower() == model_id.lower():
             return {**entry, "loaded": True}
 
     objects = await _openai_catalog_objects()
@@ -8704,7 +8729,15 @@ async def openai_responses(
             )
     # After input validation so a 400 never triggers a load. Switches the
     # streaming path; non-streaming re-checks via the idempotent chat handler.
-    await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
+    # require_vision rejects a swap to a text-only target before it runs, so an
+    # image request can't evict the resident vision model only to 400 afterwards
+    # (the non-streaming chat re-check short-circuits on _already_serving).
+    await _maybe_auto_switch_model(
+        _switch_model_for_payload(payload),
+        request,
+        current_subject,
+        require_vision = _messages_have_image(messages),
+    )
 
     if payload.stream:
         monitor_id = None
@@ -8976,7 +9009,15 @@ async def anthropic_messages(
     # invalid request never evicts the loaded model.
     _validate_anthropic_client_tools(payload.tools)
 
-    await _maybe_auto_switch_model(_switch_model_for_payload(payload), request, current_subject)
+    # require_vision rejects a swap to a text-only target before it runs, so an
+    # image request can't evict the resident vision model only to hit the vision
+    # guard (_normalize_anthropic_openai_images) below after the load.
+    await _maybe_auto_switch_model(
+        _switch_model_for_payload(payload),
+        request,
+        current_subject,
+        require_vision = _anthropic_request_has_image(payload),
+    )
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,

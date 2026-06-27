@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from core.inference.model_ids import public_model_id
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -55,7 +56,8 @@ def _advertised_loader_id(info) -> Optional[str]:
     for alt in (getattr(info, "model_id", None), getattr(info, "display_name", None)):
         if alt and not _is_abs_path_id(alt):
             return alt
-    return raw_id
+    # No clean alias: strip to a path-free public id so a host path is never advertised.
+    return public_model_id(raw_id) or raw_id
 
 
 def _resolve_load_dir(p):
@@ -223,15 +225,3 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str
         # Best-effort: any resolver failure falls through to the loaded model,
         # so a malformed name can never turn a servable request into a 500.
         return None
-
-
-def list_switch_eligible_ids() -> list[str]:
-    """Distinct loader ids for every downloaded GGUF auto-switch can serve.
-
-    Advertised in ``/v1/models`` so a client can discover what to swap to. Each
-    is a name ``resolve_local_gguf`` accepts.
-    """
-    try:
-        return sorted({entry.loader_id for entry in _index().values()})
-    except Exception:
-        return []
