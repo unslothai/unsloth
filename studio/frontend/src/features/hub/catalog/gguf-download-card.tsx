@@ -20,7 +20,6 @@ import {
 import {
   type GgufVariantDetail,
   deleteCachedModel,
-  getUpdateStatus,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
@@ -393,11 +392,6 @@ export function GgufDownloadCard({
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
-  const [updateStatus, setUpdateStatus] = useState<{
-    repoId: string;
-    variant: string;
-    available: boolean;
-  } | null>(null);
   const localVariantPath = cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
@@ -438,7 +432,7 @@ export function GgufDownloadCard({
     if (completedVariantKeys.size === 0) return withLive;
     return withLive.map((v) =>
       completedVariantKeys.has(normalizeGgufVariantIdentity(v.quant))
-        ? { ...v, downloaded: true, partial: false }
+        ? { ...v, downloaded: true, partial: false, update_available: false }
         : v,
     );
   }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
@@ -466,6 +460,7 @@ export function GgufDownloadCard({
       setCompletedVariantKeys((prev) =>
         prev.has(key) ? prev : new Set(prev).add(key),
       );
+      void refresh();
     },
   });
   const progress = job.progress;
@@ -552,39 +547,7 @@ export function GgufDownloadCard({
     ? formatBytes(ggufVariantDownloadSizeBytes(selected))
     : null;
   const updateAvailable =
-    updateStatus?.repoId === repoId &&
-    updateStatus.variant === selectedQuant &&
-    updateStatus.available;
-  // On-demand, best-effort check for the selected cached variant. The result is
-  // scoped to the repo+variant so stale positives cannot move across selections.
-  useEffect(() => {
-    if (!online || !selected?.downloaded || !selectedQuant) {
-      setUpdateStatus(null);
-      return;
-    }
-    const target = { repoId, variant: selectedQuant };
-    let canceled = false;
-    getUpdateStatus(repoId, selectedQuant, hfToken || undefined)
-      .then((available) => {
-        if (!canceled) setUpdateStatus({ ...target, available });
-      })
-      .catch(() => {
-        if (!canceled) setUpdateStatus(null);
-      });
-    return () => {
-      canceled = true;
-    };
-    // `completedVariantKeys` is a dep so a finished (re)download — including a
-    // managed update — re-checks update status: once the new revision's blobs
-    // land, getUpdateStatus returns false and the "Update available" cue clears.
-  }, [
-    online,
-    repoId,
-    selected?.downloaded,
-    selectedQuant,
-    hfToken,
-    completedVariantKeys,
-  ]);
+    selected?.downloaded === true && selected.update_available === true;
   const selectedVariantKey = selectedQuant
     ? normalizeGgufVariantIdentity(selectedQuant)
     : null;
@@ -655,8 +618,8 @@ export function GgufDownloadCard({
   // progress and a working Cancel — the same UX as any other download — instead
   // of a bespoke modal/toast. The worker re-resolves `main` and pulls only the
   // changed blobs, so the cached version stays intact (and runnable) until the
-  // new revision lands. Completion clears the "Update available" cue via the
-  // re-check below (a completed variant re-runs getUpdateStatus).
+  // new revision lands. Completion refreshes the variant list, whose metadata
+  // carries the "Update available" cue.
   const handleConfirmUpdate = useCallback(() => {
     if (!updateTarget) return;
     const variant = updateTarget;

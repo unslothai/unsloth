@@ -291,6 +291,57 @@ def _partial_transport_for_variant(repo_id: str, variant: str) -> Optional[str]:
     return hf_cache_scan.partial_transport_for("model", repo_id, variant)
 
 
+def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str]]]:
+    """Map quant -> repo-relative main GGUF filename -> cached blob hashes."""
+    result: dict[str, dict[str, set[str]]] = {}
+    try:
+        from hub.services.models import cache_inventory
+
+        scans = cache_inventory.all_hf_cache_scans()
+    except Exception as e:
+        logger.warning("Failed to scan local GGUF blobs for %s: %s", repo_id, e)
+        return result
+
+    target_lower = repo_id.lower()
+    for hf_cache in scans:
+        for repo_info in hf_cache.repos:
+            if str(getattr(repo_info, "repo_type", "")) != "model":
+                continue
+            if str(getattr(repo_info, "repo_id", "")).lower() != target_lower:
+                continue
+            for path, hashes in cache_inventory._repo_gguf_blob_map(repo_info).items():
+                normalized = str(path).replace("\\", "/")
+                if not hashes:
+                    continue
+                quant = extract_quant_label(normalized).lower()
+                if is_big_endian_gguf_path(normalized, quant):
+                    continue
+                bucket = result.setdefault(quant, {}).setdefault(normalized, set())
+                bucket.update(str(blob) for blob in hashes if blob)
+    return result
+
+
+def _variant_update_available_from_requirement(
+    local_blobs: dict[str, set[str]],
+    requirement: Optional[_GgufVariantRequirement],
+    variant: str,
+) -> bool:
+    if requirement is None or not local_blobs:
+        return False
+    local_by_posix = {path.replace("\\", "/"): blobs for path, blobs in local_blobs.items()}
+    for expected in requirement.expected_files:
+        path = str(expected.path).replace("\\", "/")
+        if not is_main_gguf_variant_path(path, variant):
+            continue
+        remote_blob = expected.sha256
+        if not remote_blob:
+            continue
+        local_set = local_by_posix.get(path)
+        if not local_set or remote_blob not in local_set:
+            return True
+    return False
+
+
 def delete_variant_incomplete_blobs_result(
     repo_id: str,
     variant: str,
@@ -657,9 +708,12 @@ async def get_gguf_variants_response(
                         _partial_transport_for_variant(repo_id, variant.quant),
                     )
 
+        local_blobs_by_quant = _local_main_gguf_blobs_by_quant(repo_id)
+
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
+            downloaded = _is_fully_downloaded(v) and not is_partial
             return GgufVariantDetail(
                 filename = v.filename,
                 quant = v.quant,
@@ -668,7 +722,13 @@ async def get_gguf_variants_response(
                 download_size_bytes = (
                     requirement.download_size_bytes if requirement is not None else v.size_bytes
                 ),
-                downloaded = _is_fully_downloaded(v) and not is_partial,
+                downloaded = downloaded,
+                update_available = downloaded
+                and _variant_update_available_from_requirement(
+                    local_blobs_by_quant.get(v.quant.lower(), {}),
+                    requirement,
+                    v.quant,
+                ),
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
             )

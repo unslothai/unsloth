@@ -9,7 +9,6 @@ import json
 import os
 import shutil
 import sys
-import time
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
@@ -23,24 +22,9 @@ import re as _re
 
 _VALID_REPO_ID = _re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
-# Split-GGUF shard filename, e.g. "foo-Q4_K_M-00001-of-00010.gguf".
-_SHARD_RE = _re.compile(r"^(.*)-\d{5}-of-(\d{5})\.gguf$", _re.IGNORECASE)
-
-# Short in-process TTL cache for per-repo remote update checks (F5), keyed by
-# repo_id -> (monotonic stamp, update_available). Repeated picker opens within
-# the TTL make zero new Hub calls.
-_UPDATE_CHECK_TTL = 60.0
-# repo_id -> (monotonic stamp, update_available, local-blob fingerprint). The
-# fingerprint invalidates a cached result when local blobs change (download /
-# delete) inside the TTL window; expired entries are pruned each pass so the
-# dict stays bounded to repos seen within the last _UPDATE_CHECK_TTL seconds.
-_update_check_cache: dict[tuple[str, str], tuple[float, bool, frozenset]] = {}
-
-
 class CachedModelRepo(BaseModel):
     repo_id: str
     size_bytes: int
-    update_available: bool = False
     last_modified: Optional[float] = None
 
 
@@ -50,10 +34,6 @@ class CachedModelsResponse(BaseModel):
 
 def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(_VALID_REPO_ID.fullmatch(repo_id))
-
-
-def _hf_token_fingerprint(hf_token: Optional[str]) -> str:
-    return hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else "anon"
 
 
 def _normalize_hf_token(hf_token) -> Optional[str]:
@@ -2635,208 +2615,38 @@ async def get_gguf_variants(
     hf_token_header: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    """List GGUF quantization variants for a HF repo or local directory.
-
-    Returns all variants with file sizes, vision support, and the
-    recommended default.
-    """
+    """List GGUF quantization variants for a HF repo or local directory."""
     try:
         hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
-        from utils.models.model_config import is_local_path, list_local_gguf_variants
+        from hub.services.models import gguf_variants as hub_gguf_variants
 
-        # Local directory path — scan filesystem.
-        if is_local_path(repo_id):
-            variants, has_vision = list_local_gguf_variants(repo_id)
-
-            filenames = [v.filename for v in variants]
-            best = _pick_best_gguf(filenames)
-            default_variant = _extract_quant_label(best) if best else None
-
-            return GgufVariantsResponse(
-                repo_id = repo_id,
-                variants = [
-                    GgufVariantDetail(
-                        filename = v.filename,
-                        quant = v.quant,
-                        size_bytes = v.size_bytes,
-                        downloaded = True,  # all local variants are downloaded
-                        update_available = False,  # only HF models can be updated for now
-                    )
-                    for v in variants
-                ],
-                has_vision = has_vision,
-                default_variant = default_variant,
-                context_length = _read_native_context_length(repo_id, is_local = True),
-            )
-
-        # Remote HuggingFace repo — query HF API.
-        variants, has_vision = list_gguf_variants(repo_id, hf_token = hf_token)
-
-        filenames = [v.filename for v in variants]
-        best = _pick_best_gguf(filenames)
-        default_variant = _extract_quant_label(best) if best else None
-
-        # Per-snapshot so a split GGUF's shards must all sit in one snapshot;
-        # mmproj adapters are excluded so they can't inflate a quant's bytes.
-        cached_bytes_by_quant_per_snapshot: list[dict[str, int]] = []
-        cached_revision_ids: list[str] = []
-        cached_blob_ids: set[str] = set()
-        # GGUF file rel-paths present per snapshot revision, so split-variant
-        # shard completeness can be checked within a single revision (F8).
-        gguf_files_by_revision: dict[str, set[str]] = {}
-        try:
-            from huggingface_hub import constants as hf_constants
-
-            if not _is_valid_repo_id(repo_id):
-                raise ValueError(f"Invalid repo_id format: {repo_id}")
-
-            cache_dir = Path(hf_constants.HF_HUB_CACHE)
-            target = f"models--{repo_id.replace('/', '--')}".lower()
-            for entry in cache_dir.iterdir():
-                if entry.name.lower() == target:
-                    snapshots = entry / "snapshots"
-                    if snapshots.is_dir():
-                        for snap in snapshots.iterdir():
-                            by_quant: dict[str, int] = {}
-                            rev_id = str(snap.relative_to(snapshots))
-                            rev_files: set[str] = set()
-                            for f in _iter_gguf_paths(snap):
-                                if _is_mmproj_filename(f.name):
-                                    continue
-                                try:
-                                    size = f.stat().st_size
-                                except OSError:
-                                    continue  # broken symlink / unreadable: skip
-                                rel = f.relative_to(snap).as_posix()
-                                q = _extract_quant_label(rel)
-                                if _is_big_endian_gguf_path(rel, q):
-                                    continue
-                                rev_files.add(rel)
-                                q = q.lower()
-                                by_quant[q] = by_quant.get(q, 0) + size
-                            if by_quant:
-                                cached_bytes_by_quant_per_snapshot.append(by_quant)
-                            cached_revision_ids.append(rev_id)
-                            gguf_files_by_revision[rev_id] = rev_files
-                    blobs = entry / "blobs"
-                    if blobs.is_dir():
-                        cached_blob_ids = {str(blob.relative_to(blobs)) for blob in blobs.iterdir()}
-                    break
-        except Exception:
-            pass
-
-        def _shard_filenames(filename: str, _candidates) -> list[str]:
-            """All expected shard rel-paths of a split GGUF.
-
-            Returns ``[filename]`` for an unsharded variant. For a split variant
-            (``...-NNNNN-of-TOTAL.gguf``) returns every declared sibling shard,
-            even when only one shard is currently cached.
-            """
-            m = _SHARD_RE.match(filename)
-            if not m:
-                return [filename]
-            prefix = m.group(1)
-            total = m.group(2)
-            try:
-                total_count = int(total)
-            except ValueError:
-                return [filename]
-            if total_count <= 1:
-                return [filename]
-            width = len(total)
-            return [
-                f"{prefix}-{index:0{width}d}-of-{total}.gguf" for index in range(1, total_count + 1)
-            ]
-
-        def _is_fully_downloaded(variant) -> bool:
-            from huggingface_hub import try_to_load_from_cache
-
-            # An older cached revision still counts as downloaded so the UI can
-            # show it as downloaded-but-updatable rather than missing. For a
-            # split variant ALL shards must sit in the SAME revision (F8): a
-            # revision with only shard 1 cached is not fully downloaded.
-            for revision in cached_revision_ids:
-                rev_files = gguf_files_by_revision.get(revision, set())
-                shards = _shard_filenames(variant.filename, rev_files)
-                if len(shards) > 1:
-                    if all(s in rev_files for s in shards):
-                        return True
-                    continue
-                cache_exists = try_to_load_from_cache(
-                    repo_id = repo_id,
-                    filename = variant.filename,
-                    revision = revision,
-                )
-                if isinstance(cache_exists, str):
-                    return True
-            if variant.size_bytes == 0:
-                return False
-            # Complete within one snapshot (tolerance for symlink size jitter).
-            quant = variant.quant.lower()
-            return any(
-                by_quant.get(quant, 0) >= variant.size_bytes * 0.99
-                for by_quant in cached_bytes_by_quant_per_snapshot
-            )
-
-        def _downloaded_variant_update_inputs():
-            all_cached_files: set[str] = set()
-            for files in gguf_files_by_revision.values():
-                all_cached_files |= files
-            local_blobs_by_variant: dict[str, dict[str, set[str]]] = {}
-            remote_paths_by_variant: dict[str, list[str]] = {}
-            for v in variants:
-                if not _is_fully_downloaded(v):
-                    continue
-                variant_key = v.quant.lower()
-                remote_paths = _shard_filenames(v.filename, all_cached_files)
-                remote_paths_by_variant[variant_key] = remote_paths
-                local_blobs: dict[str, set[str]] = {}
-                for path in remote_paths:
-                    if any(path in files for files in gguf_files_by_revision.values()):
-                        local_blobs[path] = set(cached_blob_ids)
-                # Byte-size fallback can mark older or renamed local files as
-                # downloaded. Give the shared freshness helper the current
-                # remote filename so a missing/mismatched blob still reports an
-                # update instead of losing the cue.
-                if not local_blobs and cached_blob_ids:
-                    local_blobs[v.filename] = set(cached_blob_ids)
-                if local_blobs:
-                    local_blobs_by_variant[variant_key] = local_blobs
-            return local_blobs_by_variant, remote_paths_by_variant
-
-        # Update check is best-effort: a network/rate-limit/offline failure
-        # must not break variant listing (mirrors list_cached_models).
-        try:
-            from hub.services.models.cache_inventory import gguf_variant_update_statuses
-            local_blobs_by_variant, remote_paths_by_variant = _downloaded_variant_update_inputs()
-            updates_by_quant = await asyncio.to_thread(
-                gguf_variant_update_statuses,
-                repo_id,
-                local_blobs_by_variant,
-                hf_token,
-                remote_paths_by_variant = remote_paths_by_variant,
-            )
-        except Exception as e:
-            logger.warning(f"Skipping update check for GGUF repo '{repo_id}': {e}")
-            updates_by_quant = {}
+        response = await hub_gguf_variants.get_gguf_variants_response(
+            repo_id,
+            hf_token = hf_token,
+        )
+        local = is_local_path(repo_id)
 
         return GgufVariantsResponse(
-            repo_id = repo_id,
+            repo_id = response.repo_id,
             variants = [
                 GgufVariantDetail(
                     filename = v.filename,
                     quant = v.quant,
                     size_bytes = v.size_bytes,
-                    downloaded = _is_fully_downloaded(v),
-                    update_available = updates_by_quant.get(v.quant.lower(), False),
+                    download_size_bytes = int(
+                        getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
+                    ),
+                    downloaded = bool(v.downloaded),
+                    update_available = bool(getattr(v, "update_available", False)),
                 )
-                for v in variants
+                for v in response.variants
             ],
-            has_vision = has_vision,
-            default_variant = default_variant,
-            context_length = _read_native_context_length(repo_id, is_local = False),
+            has_vision = response.has_vision,
+            default_variant = response.default_variant,
+            context_length = _read_native_context_length(repo_id, is_local = local),
         )
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing GGUF variants for '{repo_id}': {e}", exc_info = True)
         raise HTTPException(
@@ -3263,44 +3073,6 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
         return {"cached": []}
 
 
-def _remote_weights_changed(
-    repo_id: str, weight_filenames: list[str], local_blob_set: set[str], hf_token: Optional[str]
-) -> bool:
-    """True iff any remote weight file's blob id is absent from the local set.
-
-    Compares per-weight-file blob SHAs (HF names blobs by git hash) instead of
-    the latest commit hash, so a metadata-only commit does NOT flag an update.
-    Best-effort: callers swallow exceptions and keep update_available False.
-    """
-    from huggingface_hub import HfApi, get_paths_info
-
-    remote_blobs: set[str] = set()
-    try:
-        info = HfApi(token = hf_token).model_info(
-            repo_id,
-            repo_type = "model",
-            files_metadata = True,
-            token = hf_token,
-        )
-        for sibling in getattr(info, "siblings", []) or []:
-            filename = str(getattr(sibling, "rfilename", "") or "")
-            if not filename.endswith((".safetensors", ".bin")):
-                continue
-            lfs = getattr(sibling, "lfs", None)
-            blob = getattr(lfs, "sha256", None) if lfs else getattr(sibling, "blob_id", None)
-            if blob:
-                remote_blobs.add(str(blob))
-    except Exception:
-        # Fallback to the old local-filename query if full metadata is unavailable.
-        remote_path_infos = get_paths_info(repo_id = repo_id, paths = weight_filenames, token = hf_token)
-        for path_info in remote_path_infos:
-            remote_blob = path_info.lfs.sha256 if path_info.lfs else path_info.blob_id
-            if remote_blob:
-                remote_blobs.add(str(remote_blob))
-
-    return bool(remote_blobs - local_blob_set)
-
-
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
@@ -3341,34 +3113,13 @@ async def list_cached_models(
                         (_blob_mtime(f) for f in weight_files),
                         default = 0.0,
                     )
-                    # Local weight-file blob SHAs: HF names each blob by its git
-                    # hash, so the blob file name IS the local blob id (G1).
-                    local_blob_set: set[str] = set()
-                    weight_filenames: set[str] = set()
-                    for f in weight_files:
-                        weight_filenames.add(f.file_name)
-                        blob_path = getattr(f, "blob_path", None)
-                        if blob_path:
-                            local_blob_set.add(Path(blob_path).name)
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
                     if existing is None or total_size > existing["size_bytes"]:
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
-                            "update_available": False,
-                            "_weight_filenames": sorted(weight_filenames),
-                            "_local_blob_set": local_blob_set,
                         }
-                        try:
-                            commits = await asyncio.to_thread(list_repo_commits, repo_id)
-                            latest_remote_commit = commits[0].commit_id
-                            local_commit_list = [
-                                i.commit_hash for i in repo_info.revisions
-                            ]
-                            row["update_available"] = latest_remote_commit not in local_commit_list
-                        except Exception:
-                            pass
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
                         lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
@@ -3382,55 +3133,9 @@ async def list_cached_models(
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                     continue
 
-        # Remote update check (F5/F16/S1): runs best-effort for public repos
-        # without a token too, with bounded per-call timeout and TTL caching so
-        # repeated picker opens avoid repeated Hub calls.
         rows = list(seen_lower.values())
-        now = time.monotonic()
-        # Prune expired entries so the cache stays bounded to recently-seen repos.
-        for stale_key in [
-            k for k, v in _update_check_cache.items() if now - v[0] >= _UPDATE_CHECK_TTL
-        ]:
-            _update_check_cache.pop(stale_key, None)
-
-        async def _check_row(row: dict) -> None:
-            repo_id = row["repo_id"]
-            fingerprint = frozenset(row["_local_blob_set"])
-            cache_key = (repo_id.lower(), _hf_token_fingerprint(hf_token))
-            cached = _update_check_cache.get(cache_key)
-            # Reuse only if fresh AND the local blobs are unchanged since the
-            # cached result (a local download/delete must invalidate it).
-            if (
-                cached is not None
-                and now - cached[0] < _UPDATE_CHECK_TTL
-                and cached[2] == fingerprint
-            ):
-                row["update_available"] = cached[1]
-                return
-            try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        _remote_weights_changed,
-                        repo_id,
-                        row["_weight_filenames"],
-                        row["_local_blob_set"],
-                        hf_token,
-                    ),
-                    timeout = 6.0,
-                )
-                row["update_available"] = result
-                _update_check_cache[cache_key] = (time.monotonic(), result, fingerprint)
-            except Exception:
-                # Best-effort: leave update_available False on any failure.
-                pass
-
-        await asyncio.gather(*(_check_row(row) for row in rows))
-
-        # Drop internal fields before returning; newest download first, stable
-        # repo_id tie-break for equal/missing mtimes.
-        for row in rows:
-            row.pop("_weight_filenames", None)
-            row.pop("_local_blob_set", None)
+        # Local-only list path: update checks are GGUF-only and happen lazily
+        # when a repo's variants are viewed.
         cached = sorted(
             rows,
             key = lambda c: (-(c.get("last_modified") or 0.0), c["repo_id"].lower()),

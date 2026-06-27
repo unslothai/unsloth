@@ -623,6 +623,15 @@ function normalizeGgufVariantsResponse(res: {
   };
 }
 
+function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
+  const downloadBytes = variant.download_size_bytes;
+  return typeof downloadBytes === "number" &&
+    Number.isFinite(downloadBytes) &&
+    downloadBytes > 0
+    ? downloadBytes
+    : variant.size_bytes;
+}
+
 function GgufVariantExpander({
   repoId,
   onSelect,
@@ -651,7 +660,7 @@ function GgufVariantExpander({
   /** Update/delete actions for cached variant rows. Omitted by browse-only
    *  expanders (Recommended, etc.) that don't manage on-disk variants. */
   variantActions?: {
-    onUpdate?: (quant: string) => Promise<void> | void;
+    onUpdate?: (quant: string, expectedBytes: number) => Promise<void> | void;
     updateTitle?: string;
     renderUpdateDescription?: (quant: string) => ReactNode;
     getUpdateSuccessMessage?: (quant: string) => string;
@@ -896,6 +905,7 @@ function GgufVariantExpander({
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
+        const expectedBytes = ggufVariantExpectedBytes(v);
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
         return (
@@ -904,7 +914,7 @@ function GgufVariantExpander({
               type="button"
               {...variantList.getOptionProps(variantOptionKey, false)}
               onClick={() =>
-                handleVariantClick(v.quant, v.downloaded, v.size_bytes)
+                handleVariantClick(v.quant, v.downloaded, expectedBytes)
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
@@ -968,7 +978,7 @@ function GgufVariantExpander({
                 buttonClassName="p-1"
                 iconClassName="size-3"
                 disabled={updateDisabled}
-                onConfirm={() => onUpdateVariant(v.quant)}
+                onConfirm={() => onUpdateVariant(v.quant, expectedBytes)}
                 onUpdated={() => setRefreshKey((key) => key + 1)}
               />
             )}
@@ -1568,13 +1578,13 @@ export function HubModelPicker({
   // call. The worker re-resolves `main` and pulls only changed blobs, so the
   // cached copy stays usable until the new revision lands. The row's
   // ModelUpdateAction refreshes the list when this repo+variant completes.
-  const startManagedUpdate = useCallback((repoId: string, variant: string | null) => {
+  const startManagedUpdate = useCallback((repoId: string, variant: string, expectedBytes: number) => {
     return downloadManager
       .requestStart({
         kind: "model",
         repoId,
         variant,
-        expectedBytes: 0,
+        expectedBytes,
       })
       .then((outcome) => {
         if (outcome === "conflict") {
@@ -1586,12 +1596,8 @@ export function HubModelPicker({
   }, []);
 
   const updateGgufVariant = useCallback(
-    (repoId: string, quant: string) => startManagedUpdate(repoId, quant),
-    [startManagedUpdate],
-  );
-
-  const updateCachedVariant = useCallback(
-    (repoId: string) => startManagedUpdate(repoId, null),
+    (repoId: string, quant: string, expectedBytes: number) =>
+      startManagedUpdate(repoId, quant, expectedBytes),
     [startManagedUpdate],
   );
 
@@ -2430,7 +2436,8 @@ export function HubModelPicker({
             gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
             systemRamGb={gpu.systemRamAvailableGb || undefined}
             variantActions={{
-              onUpdate: (quant) => updateGgufVariant(c.repo_id, quant),
+              onUpdate: (quant, expectedBytes) =>
+                updateGgufVariant(c.repo_id, quant, expectedBytes),
               // Can't update the model that's live in memory under itself.
               updateDisabled: loadedModelId === c.repo_id,
               onDelete: async (quant) => {
@@ -2475,28 +2482,6 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
-        {c.update_available && (
-          <ModelUpdateAction
-            ariaLabel={`Update ${c.repo_id}`}
-            title="Update cached model?"
-            description={
-              <>
-                This will update{" "}
-                <span className="font-medium text-foreground">
-                  {c.repo_id}
-                </span>
-                {"."}
-              </>
-            }
-            repoId={c.repo_id}
-            variant={null}
-            buttonClassName="mr-1"
-            // Can't update the model that's live in memory under itself.
-            disabled={loadedModelId === c.repo_id}
-            onConfirm={() => updateCachedVariant(c.repo_id)}
-            onUpdated={refreshCachedLists}
-          />
-        )}
         <ModelDeleteAction
           ariaLabel={`Delete ${c.repo_id}`}
           title="Delete cached model?"

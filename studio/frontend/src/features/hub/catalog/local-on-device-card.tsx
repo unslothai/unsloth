@@ -22,7 +22,6 @@ import {
   type LocalModelInfo,
   type ModelInventoryFormat,
   deleteCachedModel,
-  getUpdateStatus,
 } from "../inventory";
 import {
   downloadManager,
@@ -44,7 +43,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ggufVariantDisplayLabel,
   sortLocalGgufVariants,
@@ -212,11 +211,6 @@ export function LocalOnDeviceCard({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<{
-    repoId: string;
-    variant: string | null;
-    available: boolean;
-  } | null>(null);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
   );
@@ -240,13 +234,9 @@ export function LocalOnDeviceCard({
     setUpdateConflictKey(null);
   }, [updateConflictKey]);
   const hfToken = useHfTokenStore((s) => s.token);
-  // Whether HuggingFace is reachable; the on-select update check is skipped
-  // entirely when offline (no wasted request, no stale "update available").
+  // Update availability is derived from the GGUF variant metadata; offline rows
+  // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
-  // Holds the GGUF quant the update should target (the selected variant);
-  // null for non-GGUF models. Kept in a ref so the update action — created
-  // above where the selected variant is computed — always reads the latest.
-  const updateVariantRef = useRef<string | null>(null);
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -259,27 +249,6 @@ export function LocalOnDeviceCard({
       onChange?.();
     },
   });
-  // Update runs as a MANAGED download (same path as a normal download) so it
-  // shows in the "Downloading N items" panel with manifest-based progress and a
-  // working Cancel — not a blocking modal. The worker re-resolves `main` and
-  // pulls only changed blobs, so the cached copy stays runnable until the new
-  // revision lands. The "Update available" cue clears via the re-check below
-  // once the managed job settles (see `updateJobActive`).
-  const handleConfirmUpdate = () => {
-    if (!repoId) return;
-    setUpdateOpen(false);
-    const variant = updateVariantRef.current;
-    void downloadManager.requestStart({
-      kind: "model",
-      repoId,
-      variant,
-      expectedBytes: 0,
-    }).then((outcome) => {
-      if (outcome === "conflict") {
-        setUpdateConflictKey(jobKeyOf("model", repoId, variant));
-      }
-    });
-  };
   const localGgufPath = path.trim();
   const needsVariantSelection =
     isGguf && requiresVariant && !localGgufPath.toLowerCase().endsWith(".gguf");
@@ -343,12 +312,7 @@ export function LocalOnDeviceCard({
     sortedVariants?.find((variant) =>
       ggufVariantsMatch(variant.quant, selectedQuant),
     ) ?? null;
-  useEffect(() => {
-    updateVariantRef.current = needsVariantSelection ? selectedQuant : null;
-  }, [needsVariantSelection, selectedQuant]);
   // True while a managed download/update for this repo+variant is in flight.
-  // When it flips back to false the (re)download settled, so the update-status
-  // effect below re-checks and clears the cue once the new revision is on disk.
   const updateJobActive = useDownloadManagerStore((s) =>
     repoId
       ? Boolean(
@@ -362,11 +326,12 @@ export function LocalOnDeviceCard({
       : false,
   );
   const updateTargetVariant = needsVariantSelection ? selectedQuant : null;
-  const hasUpdateTargetVariant = !needsVariantSelection || !!selectedQuant;
+  const updateExpectedBytes =
+    selectedVariant?.download_size_bytes ?? selectedVariant?.size_bytes ?? 0;
   const updateAvailable =
-    updateStatus?.repoId === repoId &&
-    updateStatus.variant === updateTargetVariant &&
-    updateStatus.available;
+    needsVariantSelection &&
+    selectedVariant?.downloaded === true &&
+    selectedVariant.update_available === true;
   const canUpdate =
     online &&
     source === "hf_cache" &&
@@ -374,35 +339,26 @@ export function LocalOnDeviceCard({
     !isActive &&
     !isLoading &&
     !updateJobActive &&
-    hasUpdateTargetVariant &&
     updateAvailable;
-  useEffect(() => {
-    if (!online || source !== "hf_cache" || !repoId || !hasUpdateTargetVariant) {
-      setUpdateStatus(null);
-      return;
-    }
-    let canceled = false;
-    const variant = updateTargetVariant;
-    getUpdateStatus(repoId, variant ?? undefined, hfToken || undefined)
-      .then((available) => {
-        if (!canceled) setUpdateStatus({ repoId, variant, available });
-      })
-      .catch(() => {
-        if (!canceled) setUpdateStatus(null);
-      });
-    return () => {
-      canceled = true;
-    };
-    // `updateJobActive` is a dep so a settled managed update re-checks status.
-  }, [
-    online,
-    source,
-    repoId,
-    updateTargetVariant,
-    hasUpdateTargetVariant,
-    hfToken,
-    updateJobActive,
-  ]);
+  // Update runs as a MANAGED download (same path as a normal download) so it
+  // shows in the Downloads panel with manifest-based progress and a working
+  // Cancel. The worker re-resolves `main` and pulls changed blobs while the old
+  // cached copy stays runnable until the new revision verifies.
+  const handleConfirmUpdate = () => {
+    if (!repoId || !updateTargetVariant) return;
+    setUpdateOpen(false);
+    void downloadManager.requestStart({
+      kind: "model",
+      repoId,
+      variant: updateTargetVariant,
+      expectedBytes: updateExpectedBytes,
+    }).then((outcome) => {
+      if (outcome === "conflict") {
+        setUpdateConflictKey(jobKeyOf("model", repoId, updateTargetVariant));
+      }
+      void currentVariantState.refresh();
+    });
+  };
   const selectedVariantIsActive =
     needsVariantSelection && selectedQuant
       ? isActive && ggufVariantsMatch(activeGgufVariant, selectedQuant)

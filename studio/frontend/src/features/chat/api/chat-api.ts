@@ -309,7 +309,6 @@ export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
 export interface CachedModelRepo {
   repo_id: string;
   size_bytes: number;
-  update_available?: boolean;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;

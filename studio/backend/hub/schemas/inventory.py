@@ -27,6 +27,9 @@ class GgufVariantDetail(BaseModel):
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
+    update_available: bool = Field(
+        False, description = "Whether a newer main GGUF blob is available on Hugging Face"
+    )
     partial: bool = Field(
         False,
         description = "Whether this variant has an in-progress (.incomplete) blob in cache",
@@ -184,10 +187,6 @@ class CachedModelRepo(CachedRepoBase):
 
 class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
-
-
-class UpdateStatusResponse(BaseModel):
-    update_available: bool = False
 
 
 class AddScanFolderRequest(BaseModel):

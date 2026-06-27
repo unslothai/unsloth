@@ -3,9 +3,8 @@
 """Tests for model-update detection and the GGUF force-download helper.
 
 Covers:
-  * get_gguf_variants degrades to update_available=False when the remote
-    update check fails (offline / rate-limit / gated), instead of 500ing.
-  * get_gguf_variants reports update_available correctly on success.
+  * GGUF variant listing computes update_available from the already-fetched
+    sibling metadata instead of a second Hub call.
   * hf_hub_download_with_xet_fallback(force_download=True) bypasses the
     try_to_load_from_cache cache-first early-return.
 
@@ -31,46 +30,105 @@ if "structlog" not in sys.modules:
     )
 
 import pytest
-import routes.models as M
 from hub.services.models import cache_inventory as CI
+from hub.services.models import deletion as D
+from hub.services.models import gguf_variants as GV
 
 
 def _variants():
     return [
-        SimpleNamespace(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 1000),
-        SimpleNamespace(filename = "model-Q8_0.gguf", quant = "Q8_0", size_bytes = 2000),
+        SimpleNamespace(
+            filename = "model-Q4_K_M.gguf",
+            quant = "Q4_K_M",
+            display_label = None,
+            size_bytes = 1000,
+        ),
+        SimpleNamespace(
+            filename = "model-Q8_0.gguf",
+            quant = "Q8_0",
+            display_label = None,
+            size_bytes = 2000,
+        ),
     ]
 
 
 def _seed_cache(tmp_path, repo_id, blob_ids, gguf_files):
     repo = tmp_path / f"models--{repo_id.replace('/', '--')}"
     snap = repo / "snapshots" / ("a" * 40)
-    snap.mkdir(parents = True)
+    snap.mkdir(parents = True, exist_ok = True)
     for name, size in gguf_files.items():
         (snap / name).write_bytes(b"\0" * size)
     blobs = repo / "blobs"
-    blobs.mkdir()
+    blobs.mkdir(exist_ok = True)
     for b in blob_ids:
         (blobs / b).write_bytes(b"x")
-    return repo
+    return repo, snap, blobs
 
 
 @pytest.fixture
-def patch_hf(monkeypatch):
-    """Patch the huggingface_hub bits get_gguf_variants pulls in."""
+def patch_hub_gguf(monkeypatch):
+    """Patch GGUF listing and cache scans for sibling-derived update checks."""
 
-    def _apply(tmp_path, *, paths_info_impl):
-        import huggingface_hub as hf
+    def _sibling(path: str, size: int, sha = None, *, lfs_dict = False, blob_id = None):
+        if lfs_dict:
+            lfs = {"sha256": sha} if sha else {}
+        else:
+            lfs = SimpleNamespace(sha256 = sha) if sha else None
+        return SimpleNamespace(rfilename = path, size = size, lfs = lfs, blob_id = blob_id)
 
-        monkeypatch.setattr(hf.constants, "HF_HUB_CACHE", str(tmp_path), raising = False)
-        monkeypatch.setattr(
-            M, "list_gguf_variants", lambda r, hf_token = None: (_variants(), False), raising = True
+    def _repo_info(repo_id: str, repo_path, files: list[tuple[str, str]]):
+        return SimpleNamespace(
+            repo_id = repo_id,
+            repo_type = "model",
+            repo_path = repo_path,
+            revisions = [
+                SimpleNamespace(
+                    files = [
+                        SimpleNamespace(
+                            file_name = name,
+                            blob_path = str(repo_path / "blobs" / blob),
+                        )
+                        for name, blob in files
+                    ]
+                )
+            ],
         )
-        monkeypatch.setattr(M, "is_local_path", lambda p: False, raising = False)
-        monkeypatch.setattr(hf, "try_to_load_from_cache", lambda **k: None, raising = False)
-        monkeypatch.setattr(hf, "get_paths_info", paths_info_impl, raising = False)
 
-    return _apply
+    def _apply(tmp_path, repo_id: str, *, local_blob: str, remote_sibling):
+        with GV._VARIANT_HASH_LOCK:
+            GV._VARIANT_HASH_CACHE.clear()
+            GV._VARIANT_REQUIREMENT_CACHE.clear()
+            GV._VARIANT_REQUIREMENT_NEG_CACHE.clear()
+        repo, snap, _blobs = _seed_cache(
+            tmp_path,
+            repo_id,
+            blob_ids = [local_blob],
+            gguf_files = {"model-Q4_K_M.gguf": 1000},
+        )
+        monkeypatch.setattr(
+            GV,
+            "list_gguf_variants",
+            lambda r, hf_token = None: (_variants(), False, [remote_sibling]),
+            raising = True,
+        )
+        monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+        monkeypatch.setattr(
+            CI,
+            "all_hf_cache_scans",
+            lambda: [
+                SimpleNamespace(
+                    repos = [
+                        _repo_info(
+                            repo_id,
+                            repo,
+                            [("model-Q4_K_M.gguf", local_blob)],
+                        )
+                    ]
+                )
+            ],
+        )
+
+    return SimpleNamespace(apply = _apply, sibling = _sibling)
 
 
 def _call(coro):
@@ -81,65 +139,80 @@ def _call(coro):
         loop.close()
 
 
-# ── get_gguf_variants update detection ───────────────────────────────
+# ── GGUF variant update detection ───────────────────────────────
 
 
-def test_update_check_failure_does_not_500(tmp_path, patch_hf):
-    """A failed update check must not break the variant listing."""
+def test_variant_update_check_missing_remote_blob_id_is_not_phantom_update(tmp_path, patch_hub_gguf):
+    """Missing sha/blob metadata is unknown, not update_available=True."""
     repo = "unsloth/gemma-3-4b-it-GGUF"
-    _seed_cache(tmp_path, repo, blob_ids = ["oldsha"], gguf_files = {"model-Q4_K_M.gguf": 1000})
-
-    def boom(**kwargs):
-        raise RuntimeError("429 Too Many Requests / offline")
-
-    patch_hf(tmp_path, paths_info_impl = boom)
-    resp = _call(M.get_gguf_variants(repo_id = repo, hf_token = None, current_subject = "t"))
+    patch_hub_gguf.apply(
+        tmp_path,
+        repo,
+        local_blob = "oldsha",
+        remote_sibling = patch_hub_gguf.sibling("model-Q4_K_M.gguf", 1000, None),
+    )
+    resp = _call(GV.get_gguf_variants_response(repo))
     assert len(resp.variants) == 2
     q4 = next(v for v in resp.variants if v.quant == "Q4_K_M")
     assert q4.downloaded is True
     assert q4.update_available is False
 
 
-def test_update_check_detects_update(tmp_path, patch_hf):
+def test_variant_update_check_detects_update_from_existing_siblings(tmp_path, patch_hub_gguf):
     repo = "unsloth/gemma-3-4b-it-GGUF"
-    _seed_cache(tmp_path, repo, blob_ids = ["oldsha"], gguf_files = {"model-Q4_K_M.gguf": 1000})
-
-    def ok(
-        repo_id,
-        paths,
-        token = None,
-    ):
-        return [
-            SimpleNamespace(
-                path = "model-Q4_K_M.gguf", lfs = SimpleNamespace(sha256 = "NEWsha"), blob_id = None
-            )
-        ]
-
-    patch_hf(tmp_path, paths_info_impl = ok)
-    resp = _call(M.get_gguf_variants(repo_id = repo, hf_token = None, current_subject = "t"))
+    patch_hub_gguf.apply(
+        tmp_path,
+        repo,
+        local_blob = "oldsha",
+        remote_sibling = patch_hub_gguf.sibling("model-Q4_K_M.gguf", 1000, "NEWsha"),
+    )
+    resp = _call(GV.get_gguf_variants_response(repo))
     q4 = next(v for v in resp.variants if v.quant == "Q4_K_M")
     assert q4.update_available is True
 
 
-def test_update_check_no_update_when_blob_matches(tmp_path, patch_hf):
+def test_variant_update_check_no_update_when_blob_matches(tmp_path, patch_hub_gguf):
     repo = "unsloth/gemma-3-4b-it-GGUF"
-    _seed_cache(tmp_path, repo, blob_ids = ["samesha"], gguf_files = {"model-Q4_K_M.gguf": 1000})
-
-    def ok(
-        repo_id,
-        paths,
-        token = None,
-    ):
-        return [
-            SimpleNamespace(
-                path = "model-Q4_K_M.gguf", lfs = SimpleNamespace(sha256 = "samesha"), blob_id = None
-            )
-        ]
-
-    patch_hf(tmp_path, paths_info_impl = ok)
-    resp = _call(M.get_gguf_variants(repo_id = repo, hf_token = None, current_subject = "t"))
+    patch_hub_gguf.apply(
+        tmp_path,
+        repo,
+        local_blob = "samesha",
+        remote_sibling = patch_hub_gguf.sibling("model-Q4_K_M.gguf", 1000, "samesha"),
+    )
+    resp = _call(GV.get_gguf_variants_response(repo))
     q4 = next(v for v in resp.variants if v.quant == "Q4_K_M")
     assert q4.update_available is False
+
+
+def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(tmp_path, patch_hub_gguf):
+    repo = "unsloth/gemma-3-4b-it-GGUF"
+    patch_hub_gguf.apply(
+        tmp_path,
+        repo,
+        local_blob = "dictsha",
+        remote_sibling = patch_hub_gguf.sibling(
+            "model-Q4_K_M.gguf",
+            1000,
+            "dictsha",
+            lfs_dict = True,
+        ),
+    )
+    resp = _call(GV.get_gguf_variants_response(repo))
+    assert next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
+
+    patch_hub_gguf.apply(
+        tmp_path,
+        repo,
+        local_blob = "blobid",
+        remote_sibling = patch_hub_gguf.sibling(
+            "model-Q4_K_M.gguf",
+            1000,
+            None,
+            blob_id = "blobid",
+        ),
+    )
+    resp = _call(GV.get_gguf_variants_response(repo))
+    assert next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
 
 
 # ── hf_hub_download_with_xet_fallback force_download bypass (X2/F2) ───
@@ -185,34 +258,21 @@ def test_force_download_bypasses_cache_first_early_return(monkeypatch):
     assert attempts[0]["force"] is True
 
 
-# ── repo_update_status_response: multi-revision GGUF blob comparison ──
+# ── multi-revision GGUF blob comparison and update reclaim ──
 #
 # Regression for the phantom "Update available" cue that lingered AFTER a model
 # was already updated. A re-download leaves BOTH the old and new revision
 # snapshots in the HF cache, so the same gguf file resolves to several blobs.
-# The local collection must keep ALL of them (a set per file), and the
-# remote-vs-local diff must treat the file as current when the remote (`main`)
-# blob is present in ANY cached revision, mirroring routes/models.py's
-# `cached_blob_ids` membership test. The old code collapsed the revisions to one
-# arbitrary blob (`setdefault`) and compared it with `!=`, so an up-to-date model
-# kept reporting an update.
+# The local collection must keep ALL of them (a set per file), and stale hashes
+# must be pruned only after the replacement revision verifies.
 
 
 def _rev(*files):
     return SimpleNamespace(
-        files = [SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}") for name, blob in files]
+        files = [
+            SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}") for name, blob in files
+        ]
     )
-
-
-def _paths_info(path, sha):
-    def _impl(
-        repo_id,
-        paths,
-        token = None,
-    ):
-        return [SimpleNamespace(path = path, lfs = SimpleNamespace(sha256 = sha), blob_id = None)]
-
-    return _impl
 
 
 def test_repo_gguf_blob_map_collects_all_revision_blobs():
@@ -227,24 +287,76 @@ def test_repo_gguf_blob_map_collects_all_revision_blobs():
     assert CI._repo_gguf_blob_map(repo_info) == {"lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}}
 
 
-def test_gguf_remote_update_false_when_main_blob_in_any_local_revision(monkeypatch):
-    """Remote (main) blob present among the local revisions => no update, even
-    though an older revision's blob differs."""
-    import huggingface_hub as hf
+def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp_path):
+    """After a verified update, stale same-variant files/blobs are removed while
+    the freshly downloaded hash and sibling variants remain cached."""
+    repo_id = "org/repo-GGUF"
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    old_snap = repo_path / "snapshots" / ("a" * 40) / "model-Q4_K_M.gguf"
+    new_snap = repo_path / "snapshots" / ("b" * 40) / "model-Q4_K_M.gguf"
+    sibling_snap = repo_path / "snapshots" / ("b" * 40) / "model-Q8_0.gguf"
+    old_blob = repo_path / "blobs" / "OLDsha"
+    new_blob = repo_path / "blobs" / "NEWsha"
+    sibling_blob = repo_path / "blobs" / "Q8sha"
+    for path, payload in (
+        (old_snap, b"old"),
+        (new_snap, b"new"),
+        (sibling_snap, b"sibling"),
+        (old_blob, b"old-blob"),
+        (new_blob, b"new-blob"),
+        (sibling_blob, b"sibling-blob"),
+    ):
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(payload)
 
-    local_blobs = {"lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}}
-    monkeypatch.setattr(
-        hf, "get_paths_info", _paths_info("lfm2-350m-q4_k_m.gguf", "NEWsha"), raising = False
+    repo_info = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "model-Q4_K_M.gguf",
+                        file_path = str(old_snap),
+                        blob_path = str(old_blob),
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "model-Q4_K_M.gguf",
+                        file_path = str(new_snap),
+                        blob_path = str(new_blob),
+                    ),
+                    SimpleNamespace(
+                        file_name = "model-Q8_0.gguf",
+                        file_path = str(sibling_snap),
+                        blob_path = str(sibling_blob),
+                    ),
+                ]
+            ),
+        ],
     )
-    assert CI._gguf_remote_update("repo/x", local_blobs, None) is False
-
-
-def test_gguf_remote_update_true_when_main_blob_absent(monkeypatch):
-    """Remote (main) blob not among the local blobs => update available."""
-    import huggingface_hub as hf
-
-    local_blobs = {"lfm2-350m-q4_k_m.gguf": {"OLDsha"}}
     monkeypatch.setattr(
-        hf, "get_paths_info", _paths_info("lfm2-350m-q4_k_m.gguf", "NEWsha"), raising = False
+        CI,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo_info])],
     )
-    assert CI._gguf_remote_update("repo/x", local_blobs, None) is True
+    invalidated = []
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: invalidated.append(True))
+
+    result = D.reclaim_replaced_gguf_variant(repo_id, "Q4_K_M", frozenset({"NEWsha"}))
+
+    assert result["removed_snapshots"] == 1
+    assert result["deleted_blobs"] == 1
+    assert result["removed_dirs"] == 1
+    assert old_snap.exists() is False
+    assert old_snap.parent.exists() is False
+    assert old_blob.exists() is False
+    assert new_snap.exists() is True
+    assert new_blob.exists() is True
+    assert sibling_snap.exists() is True
+    assert sibling_blob.exists() is True
+    assert invalidated == [True]

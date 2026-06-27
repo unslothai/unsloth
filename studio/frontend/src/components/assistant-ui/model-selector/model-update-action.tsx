@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { subscribeJobListeners } from "@/features/hub/download-manager";
+import { UpdateConfirmDialog } from "@/features/hub/catalog/download-card";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
 import { cn } from "@/lib/utils";
 import { RefreshCw } from "lucide-react";
@@ -102,26 +93,14 @@ export function ModelUpdateAction({
         <RefreshCw className={cn("size-3.5", iconClassName)} />
       </button>
 
-      <AlertDialog open={open} onOpenChange={setOpen}>
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{title}</AlertDialogTitle>
-            <AlertDialogDescription>{description}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>No</AlertDialogCancel>
-            <AlertDialogAction
-              variant="default"
-              onClick={(e) => {
-                e.preventDefault();
-                handleConfirm();
-              }}
-            >
-              Yes
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <UpdateConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={title}
+        description={description}
+        updating={false}
+        onConfirm={handleConfirm}
+      />
     </>
   );
 }
