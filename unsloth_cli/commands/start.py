@@ -640,14 +640,28 @@ def write_opencode_config(base: str, key: str, model: dict, path: Path) -> None:
         return
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
+    model_entry = {"name": model["id"]}
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        # A custom-provider model with no limit defaults to context 0, which silently
+        # disables OpenCode's auto-compaction; declare the real window (and a sane
+        # output cap) so it compacts instead of overflowing the server.
+        model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
     _subdict(config, "provider")["unsloth"] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
         "options": {"baseURL": f"{base}/v1", "apiKey": key},
-        "models": {model["id"]: {"name": model["id"]}},
+        "models": {model["id"]: model_entry},
     }
     # OpenCode selects a model by "<providerID>/<modelID>".
     config["model"] = f"unsloth/{model['id']}"
+    if window:
+        # Compact with ~10% headroom (near 90% full). The fixed 20k-token default
+        # buffer over-compacts, or never settles, on a small local context.
+        compaction = _subdict(config, "compaction")
+        compaction["auto"] = True
+        compaction["reserved"] = max(1, window // 10)
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -684,6 +698,14 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
         default = model["id"],
         api_mode = "openai",
     )
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        # Hermes auto-detects context from GET /v1/models, but OpenAI's schema has no
+        # context field, so it can fall back to a 256k default that overflows a small
+        # local model. Pin the real window (top-level model.context_length is the
+        # highest-priority override) and compact at 90% of it (Hermes defaults to 50%).
+        _subdict(config, "model")["context_length"] = int(window)
+        _subdict(config, "compression").update(enabled = True, threshold = 0.9)
     _subdict(config, "providers")[_HERMES_PROVIDER] = {
         "base_url": f"{base}/v1",
         "api_mode": "openai",
@@ -735,6 +757,11 @@ def claude(
     window = entry.get("context_length") or entry.get("max_context_length")
     if window:
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
+        # Compact at 90% of that window; the override only takes effect once the
+        # window is set, and it can only lower the threshold, so it just guarantees
+        # headroom before the server's context limit instead of relying on Claude's
+        # default (which is tuned for its native 200K/1M window).
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
     command = ["claude", "--model", model_id, *_claude_flags(), *ctx.args]
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"

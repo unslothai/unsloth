@@ -175,8 +175,10 @@ def test_connect_claude_no_launch(fake_studio):
     # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
     # Auto-compact window is sized to the loaded model's real context length so the
-    # session compacts before it overflows the local server's (much smaller) window.
+    # session compacts before it overflows the local server's (much smaller) window,
+    # and compaction is forced at 90% of it for headroom.
     _assert_env_set(result.output, "CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(MODEL["context_length"]))
+    _assert_env_set(result.output, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "90")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
     # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
     assert "--settings" in result.output
@@ -190,6 +192,7 @@ def test_connect_claude_compact_window_omitted_without_context(fake_studio, monk
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in result.output
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in result.output
 
 
 def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypatch):
@@ -898,8 +901,13 @@ def test_write_opencode_config_fresh(tmp_path):
     provider = config["provider"]["unsloth"]
     assert provider["npm"] == "@ai-sdk/openai-compatible"
     assert provider["options"] == {"baseURL": f"{BASE}/v1", "apiKey": "sk-unsloth-abc"}
-    assert provider["models"] == {MODEL["id"]: {"name": MODEL["id"]}}
+    # Context limit must be declared, or OpenCode treats it as 0 and disables compaction.
+    assert provider["models"] == {
+        MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
+    }
     assert config["model"] == f"unsloth/{MODEL['id']}"
+    # Compaction buffer scaled to ~10% of the window (compact near 90%).
+    assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
 
 
 def test_write_opencode_config_preserves_and_idempotent(tmp_path):
@@ -947,6 +955,9 @@ def test_write_hermes_config_fresh(hermes_config):
     assert config["model"]["provider"] == "custom:unsloth"
     assert config["model"]["default"] == MODEL["id"]
     assert config["model"]["api_mode"] == "openai"
+    # Pin the real context window (top-level override) and compact at 90% of it.
+    assert config["model"]["context_length"] == MODEL["context_length"]
+    assert config["compression"] == {"enabled": True, "threshold": 0.9}
     provider = config["providers"]["unsloth"]
     assert provider["base_url"] == f"{BASE}/v1"
     assert provider["api_mode"] == "openai"
