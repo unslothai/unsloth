@@ -100,7 +100,11 @@ def _ocr_scanned_pages(pages: list, stored_path: str, conn, job_id: str) -> list
 
     No-op when OCR is disabled, no page looks scanned, or no vision model is loaded
     (degrades exactly like figure captioning). Returns new ``Page`` objects for the
-    OCR'd pages, the originals otherwise."""
+    OCR'd pages, the originals otherwise.
+
+    OCR'd pages have no text layer, so they get no PDF highlight regions in the
+    preview (the locator anchors chunk phrases on the original word boxes, which a
+    scanned page lacks); the OCR text is still searchable and readable."""
     if not config.OCR_SCANNED:
         return pages
     scanned = [
@@ -110,6 +114,13 @@ def _ocr_scanned_pages(pages: list, stored_path: str, conn, job_id: str) -> list
     ]
     if not scanned or captioner.vision_endpoint() is None:
         return pages
+    if len(scanned) > config.OCR_MAX_PAGES:
+        logger.warning(
+            "OCR: %d scanned pages exceed OCR_MAX_PAGES=%d; pages past the cap stay "
+            "untranscribed (raise RAG_OCR_MAX_PAGES to cover them)",
+            len(scanned),
+            config.OCR_MAX_PAGES,
+        )
     scanned = scanned[: config.OCR_MAX_PAGES]
     _progress(conn, job_id, "ocr", 0.25)
     page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)

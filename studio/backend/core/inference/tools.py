@@ -1184,7 +1184,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         from storage import rag_db
         if not rag_db.RAG_AVAILABLE:
             return None
-        from core.rag.tool import search_for_autoinject, whole_document_context
+        from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
         return None
@@ -1192,11 +1192,20 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     text: str | None = None
     sources: list[dict] = []
 
-    # Whole-document mode: a thread-attached file small enough to fit is injected
-    # in full so the model reads everything (summaries, cross-references, etc.).
-    # Thread attachments only: a KB selection is exclusive (search that corpus), and
-    # project sources stay retrieval-ranked, so both keep top-K below. Oversized
-    # files (or no thread doc) also fall through to top-K retrieval.
+    floor_override = rag_scope.get("autoinject_min_score")
+    floor = float(floor_override) if floor_override is not None else _autoinject_floor()
+    # Cap at the lean top_k, but honor a lower user setting.
+    lean_k = _autoinject_top_k()
+    sidebar_k = _opt_int(rag_scope.get("default_top_k"))
+    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+
+    # Whole-document mode: a thread-attached file small enough to fit is injected in
+    # full so the model reads everything (summaries, cross-references, etc.). A KB
+    # selection is exclusive (search that corpus), so whole-doc never preempts it. In
+    # a project chat the project sources stay retrieval-ranked: they are retrieved
+    # top-K and appended to the whole attachment under one citation numbering, so
+    # project grounding is preserved. Oversized files (or no thread doc) fall through
+    # to the combined top-K retrieval below.
     thread_id = rag_scope.get("thread_id")
     if thread_id and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope):
         try:
@@ -1209,15 +1218,25 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             whole = None
         if whole is not None:
             text, sources = whole
+            project_id = rag_scope.get("project_id")
+            if project_id:
+                try:
+                    proj = search_for_autoinject(
+                        query = query,
+                        scope_project_id = project_id,
+                        top_k = top_k,
+                        min_dense_score = floor,
+                        **_scope_retrieval_kwargs(rag_scope),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
+                    proj = None
+                if proj is not None:
+                    sources = sources + proj[1]
+                    text = render_sources(sources)
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
     if text is None:
-        floor_override = rag_scope.get("autoinject_min_score")
-        floor = float(floor_override) if floor_override is not None else _autoinject_floor()
-        # Cap at the lean top_k, but honor a lower user setting.
-        lean_k = _autoinject_top_k()
-        sidebar_k = _opt_int(rag_scope.get("default_top_k"))
-        top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
         try:
             found = search_for_autoinject(
                 query = query,

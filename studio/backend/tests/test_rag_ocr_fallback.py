@@ -97,6 +97,16 @@ def test_collapse_runaway_caps_repeated_lines():
     assert "body" in lines
 
 
+def test_collapse_runaway_caps_interleaved_repeats():
+    # Weak models also loop non-consecutively (alternating a few lines); the global
+    # per-line cap must bound those too, not just consecutive runs.
+    text = "\n".join(["Llion Vaswani Google", "Niki Parmar Google"] * 40)
+    out = captioner._collapse_runaway(text)
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    assert lines.count("Llion Vaswani Google") <= 8
+    assert lines.count("Niki Parmar Google") <= 8
+
+
 def test_collapse_runaway_noop_on_normal_text():
     text = "Heading\n\nFirst paragraph.\nSecond paragraph.\n\nFooter"
     assert captioner._collapse_runaway(text) == text

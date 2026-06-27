@@ -90,6 +90,30 @@ def _format(rows, hits) -> tuple[str, list[dict]]:
     return "\n\n".join(blocks), sources
 
 
+def render_sources(sources: list[dict]) -> str:
+    """Render a citation-source list to sequentially-numbered ``<chunk>`` blocks,
+    rewriting each source's ``citationId`` to match its 1-based position. Lets
+    independently-built source lists (a whole-document thread attachment plus
+    retrieved project passages) be merged under one citation numbering."""
+    blocks: list[str] = []
+    for i, s in enumerate(sources, 1):
+        s["citationId"] = i
+        src = quoteattr(s.get("filename") or "unknown")
+        page = s.get("page")
+        page_attr = f" page={quoteattr(str(page))}" if page else ""
+        blocks.append(f'<chunk id="{i}" source={src}{page_attr}>\n{s.get("text") or ""}\n</chunk>')
+    return "\n\n".join(blocks)
+
+
+def _row_token_count(row) -> int:
+    """Chunk token count for budgeting, falling back to a length estimate when the
+    stored count is missing or zero, so a malformed chunk cannot bypass the budget."""
+    tc = row["token_count"]
+    if tc:
+        return int(tc)
+    return max(1, len(row["text"] or "") // 4)
+
+
 def search_knowledge_base_with_sources(
     *,
     query: str,
@@ -211,31 +235,23 @@ def whole_document_context(
         conn.close()
     if not rows:
         return None
-    total = sum(int(r["token_count"] or 0) for r in rows)
+    total = sum(_row_token_count(r) for r in rows)
     if max_tokens > 0 and total > max_tokens:
         return None
 
-    blocks: list[str] = []
-    sources: list[dict] = []
-    for i, r in enumerate(rows, 1):
-        filename = r["filename"] or "unknown"
-        page = r["page_number"]
-        text = r["text"] or ""
-        src = quoteattr(filename)
-        page_attr = f" page={quoteattr(str(page))}" if page else ""
-        blocks.append(f'<chunk id="{i}" source={src}{page_attr}>\n{text}\n</chunk>')
-        sources.append(
-            {
-                "citationId": i,
-                "chunkId": r["id"],
-                "documentId": r["document_id"],
-                "filename": filename,
-                "page": page,
-                "text": text,
-                "score": None,
-            }
-        )
-    return "\n\n".join(blocks), sources
+    sources: list[dict] = [
+        {
+            "citationId": i,
+            "chunkId": r["id"],
+            "documentId": r["document_id"],
+            "filename": r["filename"] or "unknown",
+            "page": r["page_number"],
+            "text": r["text"] or "",
+            "score": None,
+        }
+        for i, r in enumerate(rows, 1)
+    ]
+    return render_sources(sources), sources
 
 
 def search_knowledge_base(

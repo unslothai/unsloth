@@ -5,7 +5,13 @@
 
 Both turn pixels into text the normal FTS5 + dense path can index. Each is a no-op
 (never raises) without a loaded vision model or on failure: captioning is gated by
-``config.CAPTION_IMAGES``, OCR by ``config.OCR_SCANNED``."""
+``config.CAPTION_IMAGES``, OCR by ``config.OCR_SCANNED``.
+
+These reuse the loaded chat model's vision endpoint, so the model must be served
+with a micro-batch large enough for one image's tokens (llama-server
+``--ubatch-size`` >= image tokens): some vision encoders (e.g. Gemma-family) attend
+non-causally over the whole image and abort the server otherwise. Studio's vision
+chat already requires this, so OCR inherits it."""
 
 from __future__ import annotations
 
@@ -31,22 +37,34 @@ _OCR_PROMPT = (
 )
 
 
-def _collapse_runaway(text: str, max_repeat: int = 3) -> str:
+def _collapse_runaway(
+    text: str,
+    max_repeat: int = 3,
+    max_total: int = 8,
+) -> str:
     """Bound pathological repetition: some vision models loop on sparse images and
-    emit the same line hundreds of times. Cap any run of identical consecutive lines
-    at ``max_repeat`` so the index is not flooded; legitimate short repeats survive."""
+    emit the same line many times, consecutively or interleaved with others. Cap each
+    distinct non-empty line at ``max_repeat`` in a row and ``max_total`` overall, and
+    collapse blank-line floods, so a degenerate page cannot flood the index.
+    ``max_total`` is generous so legitimate repeats (e.g. a short table column) and
+    short repeats survive; only egregious looping is trimmed."""
     out: list[str] = []
+    seen: dict[str, int] = {}
     prev: str | None = None
     run = 0
     for line in text.splitlines():
         key = line.strip()
-        if key and key == prev:
-            run += 1
-            if run > max_repeat:
+        if not key:
+            if prev == "":  # collapse runs of blank lines to a single separator
                 continue
-        else:
-            prev = key
-            run = 1
+            prev = ""
+            out.append("")
+            continue
+        run = run + 1 if key == prev else 1
+        prev = key
+        seen[key] = seen.get(key, 0) + 1
+        if run > max_repeat or seen[key] > max_total:
+            continue
         out.append(line)
     return "\n".join(out)
 

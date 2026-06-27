@@ -144,8 +144,17 @@ def test_whole_document_context_none_when_empty(rag_conn):
 
 
 def test_whole_document_context_none_without_scope(rag_conn):
-    # Neither thread nor project -> no scope resolves -> None (never whole-doc).
+    # No thread scope -> None (whole-doc is thread-attachment only).
     assert tool.whole_document_context(max_tokens = 6000) is None
+
+
+def test_whole_document_context_null_token_count_enforces_budget(rag_conn):
+    # A chunk with no stored token_count must not bypass the budget via `or 0`;
+    # fall back to a length estimate so a huge doc still trips the cap.
+    big = "word " * 20_000  # ~20k tokens by length estimate
+    _add_doc(rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", [big], tokens = [None])
+    assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000) is None
+    assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 1_000_000) is not None
 
 
 def test_whole_document_context_spans_multiple_docs(rag_conn):
@@ -228,22 +237,59 @@ def test_whole_document_context_thread_scope_only(rag_conn):
     assert {s["filename"] for s in sources} == {"thread.txt"}
 
 
-def test_build_rag_autoinject_excludes_project_scope(rag_conn):
-    # Real frontend payload: project chat sends both thread_id and project_id.
+def test_build_rag_autoinject_appends_project_retrieval(rag_conn, monkeypatch):
+    # Project chat: the thread attachment is whole-doc'd AND the project sources are
+    # kept on top-K retrieval, merged under one sequential citation numbering.
     _add_doc(
-        rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["thread attachment text"]
+        rag_conn,
+        store.thread_scope("t1"),
+        "td",
+        "thread.txt",
+        "h1",
+        ["thread chunk one", "thread chunk two"],
     )
-    _add_doc(
-        rag_conn, store.project_scope("p1"), "pd", "project.txt", "h2", ["project corpus text"]
+    proj = (
+        "PROJ",
+        [
+            {
+                "citationId": 1,
+                "chunkId": "pj:0",
+                "documentId": "pj",
+                "filename": "project.txt",
+                "page": None,
+                "text": "project passage zeta",
+                "score": 0.91,
+            }
+        ],
     )
+    captured = {}
+
+    def fake_search(**kw):
+        captured.update(kw)
+        return proj
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "project_id": "p1"})
     injected = _injected_text(result)
-    assert "thread attachment text" in injected
-    assert "project corpus text" not in injected
+    # Whole thread attachment AND the project passage are both injected.
+    assert "thread chunk one" in injected
+    assert "thread chunk two" in injected
+    assert "project passage zeta" in injected
+    # The companion retrieval was scoped to the project only (not thread or KB).
+    assert captured.get("scope_project_id") == "p1"
+    assert captured.get("scope_thread_id") is None
+    assert captured.get("scope_kb_id") is None
+    # Citation ids are sequential across the merged set: thread 1,2 then project 3.
+    assert '<chunk id="1"' in injected
+    assert '<chunk id="2"' in injected
+    assert '<chunk id="3"' in injected
 
 
-def test_build_rag_autoinject_thread_whole_doc_ignores_project_size(rag_conn):
-    # A large project corpus must not push a small thread attachment over budget.
+def test_build_rag_autoinject_thread_whole_doc_ignores_project_size(rag_conn, monkeypatch):
+    # A large project corpus must not push a small thread attachment over budget:
+    # whole-doc resolves the thread scope alone. The project companion retrieval is
+    # stubbed out (no hits) to keep this focused on the budget.
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: None)
     _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["small thread file"])
     _add_doc(
         rag_conn, store.project_scope("p1"), "pd", "project.txt", "h2", ["big"], tokens = [50_000]
