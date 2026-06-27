@@ -1849,6 +1849,17 @@ def unsloth_save_pretrained_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
+            # Forward standard save kwargs to the 16bit merge.
+            state_dict = state_dict,
+            save_function = save_function,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            variant = variant,
+            save_peft_format = save_peft_format,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
         )
         for _ in range(3):
             gc.collect()
@@ -1925,6 +1936,14 @@ def unsloth_push_to_hub_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
+            # Forward standard save kwargs to the 16bit merge.
+            use_temp_dir = use_temp_dir,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
         )
         for _ in range(3):
             gc.collect()
@@ -2351,6 +2370,7 @@ def unsloth_save_pretrained_gguf(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    save_method: str = None,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -2388,6 +2408,18 @@ def unsloth_save_pretrained_gguf(
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
+
+    # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
+    if save_method is not None and str(save_method).lower() == "lora":
+        if not is_main_process:
+            return None
+        if push_to_hub:
+            raise ValueError(
+                "Unsloth: Please use .push_to_hub_gguf(save_method='lora') instead of "
+                ".save_pretrained_gguf(save_method='lora', push_to_hub=True)."
+            )
+        _outtype = quantization_method if quantization_method in _LORA_GGUF_OUTTYPES else "f16"
+        return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = _outtype)
 
     try:
         base_model_name = get_model_name(self.config._name_or_path, load_in_4bit = False)
@@ -2672,6 +2704,7 @@ def unsloth_push_to_hub_gguf(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
     datasets: Optional[List[str]] = None,
+    save_method: str = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2701,6 +2734,23 @@ def unsloth_push_to_hub_gguf(
     """
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
+
+    # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
+    if save_method is not None and str(save_method).lower() == "lora":
+        _outtype = quantization_method if quantization_method in _LORA_GGUF_OUTTYPES else "f16"
+        return _unsloth_save_lora_gguf(
+            self,
+            tokenizer,
+            repo_id,
+            outtype = _outtype,
+            push_to_hub = True,
+            token = token,
+            private = private,
+            commit_message = commit_message,
+            commit_description = commit_description,
+            create_pr = create_pr,
+            revision = revision,
+        )
 
     # Step 1: Determine save directory
     model_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
@@ -2955,93 +3005,183 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
     )
 
 
-# Corrected method within the model class to convert LoRA to GGML and push to Hugging Face Hub
+# Valid output float types for llama.cpp's convert_lora_to_gguf.py.
+_LORA_GGUF_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
+
+
+def _lora_base_model_id(model):
+    """Base model id for a PEFT model: prefer the active adapter's recorded base, else the
+    model config (the adapter's `base_model_name_or_path` is the authoritative source)."""
+    base = None
+    peft_config = getattr(model, "peft_config", None)
+    if isinstance(peft_config, dict) and peft_config:
+        adapter = getattr(model, "active_adapter", None)
+        if callable(adapter):
+            try:
+                adapter = adapter()
+            except Exception:
+                adapter = None
+        if isinstance(adapter, (list, tuple)):
+            adapter = adapter[0] if adapter else None
+        cfg = peft_config.get(adapter) if adapter in peft_config else next(iter(peft_config.values()))
+        base = getattr(cfg, "base_model_name_or_path", None)
+    if not base:
+        base = getattr(getattr(model, "config", None), "_name_or_path", None)
+    return os.fspath(base) if base else ""
+
+
+def _unsloth_save_lora_gguf(
+    model,
+    tokenizer,
+    save_directory,
+    outtype = "f16",
+    push_to_hub = False,
+    token = None,
+    private = None,
+    commit_message = "Converted LoRA to GGUF with Unsloth",
+    commit_description = "Convert LoRA to GGUF format using Unsloth",
+    create_pr = False,
+    revision = None,
+):
+    """Export a PEFT/LoRA adapter straight to a GGUF LoRA file via llama.cpp's
+    convert_lora_to_gguf.py (loadable with `llama-cli --lora ...`). For a full / merged model
+    use save_pretrained_gguf instead. `save_directory` is a local dir, or a Hub repo id when
+    push_to_hub=True. Returns the local .gguf path, or the repo id when pushing."""
+    import tempfile
+
+    if not isinstance(model, (PeftModelForCausalLM, PeftModel)):
+        raise RuntimeError(
+            "Unsloth: LoRA GGUF export needs a PEFT/LoRA model. "
+            "For a full or merged model use save_pretrained_gguf(...) instead."
+        )
+    if outtype not in _LORA_GGUF_OUTTYPES:
+        raise ValueError(
+            f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."
+        )
+    if token is None and push_to_hub:
+        token = get_token()
+
+    # Resolve the dequantized base id (the adapter usually references a 4bit repo).
+    base_model_id = _lora_base_model_id(model)
+    try:
+        base_model_id = get_model_name(base_model_id, load_in_4bit = False)
+    except Exception:
+        pass
+    # Windows-safe basename (handles both C:\... and / separators).
+    if os.path.isdir(base_model_id):
+        model_name = os.path.basename(os.path.normpath(base_model_id))
+    else:
+        model_name = base_model_id.replace("\\", "/").rstrip("/").split("/")[-1]
+    if not model_name:
+        model_name = "model"
+
+    # Save the adapter; for a hub push use an isolated temp dir, else save_directory itself.
+    if push_to_hub:
+        lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
+    else:
+        os.makedirs(save_directory, exist_ok = True)
+        lora_dir = save_directory
+
+    # Wrap so the isolated temp dir used for hub pushes is always cleaned up, even on failure.
+    try:
+        save_lora_to_custom_dir(model, tokenizer, lora_dir)
+
+        # Ensure a full llama.cpp checkout (ships convert_lora_to_gguf.py) and locate the converter.
+        install_llama_cpp(just_clone_repo = True)
+        converter = os.path.join(LLAMA_CPP_DEFAULT_DIR, "convert_lora_to_gguf.py")
+        if not os.path.exists(converter):
+            raise RuntimeError(
+                f"Unsloth: convert_lora_to_gguf.py not found in '{LLAMA_CPP_DEFAULT_DIR}'. "
+                "A full llama.cpp checkout is required for LoRA GGUF export."
+            )
+
+        out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
+        cmd = [sys.executable, converter, lora_dir, "--outfile", out_gguf, "--outtype", outtype]
+        # A local base dir provides config directly; otherwise the id is resolved from the Hub.
+        if os.path.isdir(base_model_id):
+            cmd += ["--base", base_model_id]
+        else:
+            cmd += ["--base-model-id", base_model_id]
+        if bool(getattr(model.config, "auto_map", None)):
+            cmd.append("--trust-remote-code")
+
+        print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
+        try:
+            with subprocess.Popen(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                bufsize = 1,
+                universal_newlines = True,
+                encoding = "utf-8",
+                errors = "replace",
+            ) as sp:
+                for line in sp.stdout:
+                    print(line, end = "", flush = True)
+                sp.wait()
+                if sp.returncode != 0:
+                    raise subprocess.CalledProcessError(sp.returncode, sp.args)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Unsloth: LoRA -> GGUF conversion failed (exit {e.returncode}). "
+                "See the output above for details."
+            )
+
+        if not push_to_hub:
+            print(f"Unsloth: Done. Saved LoRA GGUF to '{out_gguf}'")
+            return out_gguf
+
+        print(f"Unsloth: Uploading LoRA GGUF to '{save_directory}' ...")
+        from huggingface_hub import HfApi
+
+        api = HfApi(token = token)
+        api.create_repo(
+            repo_id = save_directory, repo_type = "model", private = private, exist_ok = True,
+        )
+        api.upload_folder(
+            folder_path = lora_dir,
+            repo_id = save_directory,
+            repo_type = "model",
+            allow_patterns = ["*.gguf"],
+            commit_message = commit_message,
+            commit_description = commit_description,
+            create_pr = create_pr,
+            revision = revision,
+        )
+        print(f"Unsloth: Done. Uploaded to https://huggingface.co/{save_directory.lstrip('/')}")
+        return save_directory
+    finally:
+        if push_to_hub:
+            shutil.rmtree(lora_dir, ignore_errors = True)
+
+
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
     tokenizer,
     repo_id: str,
     use_temp_dir: Optional[bool] = None,
-    commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
+    commit_message: Optional[str] = "Converted LoRA to GGUF with Unsloth",
     private: Optional[bool] = None,
     token: Union[bool, str, None] = None,
     create_pr: bool = False,
     revision: str = None,
-    commit_description: str = "Convert LoRA to GGML format using Unsloth",
+    commit_description: str = "Convert LoRA to GGUF format using Unsloth",
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    outtype: str = "f16",
 ):
-    if not os.path.exists("llama.cpp"):
-        if IS_KAGGLE_ENVIRONMENT:
-            python_install = install_python_non_blocking(["protobuf"])
-            python_install.wait()
-            install_llama_cpp_blocking(use_cuda = False)
-            makefile = None
-        else:
-            git_clone = install_llama_cpp_clone_non_blocking()
-            python_install = install_python_non_blocking(["protobuf"])
-            git_clone.wait()
-            makefile = install_llama_cpp_make_non_blocking()
-            python_install.wait()
-    else:
-        makefile = None
-
-    for _ in range(3):
-        gc.collect()
-
-    lora_directory_push = "lora-to-ggml-push"
-    save_lora_to_custom_dir(self, tokenizer, lora_directory_push)
-
-    model_type = self.config.model_type
-    output_file = os.path.join(lora_directory_push, "ggml-adapter-model.bin")
-
-    print(f"Unsloth: Converting auto-saved LoRA adapters at {lora_directory_push} to GGML format.")
-    print(f"The output file will be {output_file}")
-
-    try:
-        with subprocess.Popen(
-            [
-                sys.executable,
-                "llama.cpp/convert-lora-to-ggml.py",
-                lora_directory_push,
-                output_file,
-                "llama",
-            ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            bufsize = 1,
-            universal_newlines = True,
-            encoding = "utf-8",
-            errors = "replace",
-        ) as sp:
-            for line in sp.stdout:
-                print(line, end = "", flush = True)
-            for line in sp.stderr:
-                print(line, end = "", flush = True)
-            sp.wait()
-            if sp.returncode != 0:
-                raise subprocess.CalledProcessError(sp.returncode, sp.args)
-    except subprocess.CalledProcessError as e:
-        print(f"Error: Conversion failed with return code {e.returncode}")
-        return
-
-    print(f"Unsloth: Conversion completed! Output file: {output_file}")
-
-    print("Unsloth: Uploading GGML file to Hugging Face Hub...")
-    username = upload_to_huggingface(
+    return _unsloth_save_lora_gguf(
         self,
+        tokenizer,
         repo_id,
-        token,
-        "GGML converted LoRA",
-        "ggml",
-        output_file,
-        None,
-        private,
-    )
-    link = f"{repo_id.lstrip('/')}"
-    print("Unsloth: Done.")
-    print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
-    print(
-        "\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!"
+        outtype = outtype,
+        push_to_hub = True,
+        token = token,
+        private = private,
+        commit_message = commit_message,
+        commit_description = commit_description,
+        create_pr = create_pr,
+        revision = revision,
     )
 
 
@@ -3051,65 +3191,9 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     tokenizer,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    outtype: str = "f16",
 ):
-    if not os.path.exists("llama.cpp"):
-        if IS_KAGGLE_ENVIRONMENT:
-            python_install = install_python_non_blocking(["protobuf"])
-            python_install.wait()
-            install_llama_cpp_blocking(use_cuda = False)
-            makefile = None
-        else:
-            git_clone = install_llama_cpp_clone_non_blocking()
-            python_install = install_python_non_blocking(["protobuf"])
-            git_clone.wait()
-            makefile = install_llama_cpp_make_non_blocking()
-            python_install.wait()
-    else:
-        makefile = None
-
-    for _ in range(3):
-        gc.collect()
-
-    # Use the provided save_directory for local saving
-    save_lora_to_custom_dir(self, tokenizer, save_directory)
-
-    model_type = self.config.model_type
-    output_file = os.path.join(save_directory, "ggml-adapter-model.bin")
-
-    print(f"Unsloth: Converting auto-saved LoRA adapters at {save_directory} to GGML format.")
-    print(f"The output file will be {output_file}")
-
-    try:
-        with subprocess.Popen(
-            [
-                sys.executable,
-                "llama.cpp/convert-lora-to-ggml.py",
-                save_directory,
-                output_file,
-                "llama",
-            ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            bufsize = 1,
-            universal_newlines = True,
-            encoding = "utf-8",
-            errors = "replace",
-        ) as sp:
-            for line in sp.stdout:
-                print(line, end = "", flush = True)
-            for line in sp.stderr:
-                print(line, end = "", flush = True)
-            sp.wait()
-            if sp.returncode != 0:
-                raise subprocess.CalledProcessError(sp.returncode, sp.args)
-    except subprocess.CalledProcessError as e:
-        print(f"Error: Conversion failed with return code {e.returncode}")
-        return
-    print("Unsloth: Done.")
-    print(f"Unsloth: Conversion completed! Output file: {output_file}")
-    print(
-        "\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!"
-    )
+    return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 
 from .models.loader_utils import get_model_name
@@ -3402,6 +3486,17 @@ def unsloth_generic_save_pretrained_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
+            # Forward standard save kwargs to the 16bit merge.
+            state_dict = state_dict,
+            save_function = save_function,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            variant = variant,
+            save_peft_format = save_peft_format,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
         )
         for _ in range(3):
             gc.collect()
@@ -3478,6 +3573,14 @@ def unsloth_generic_push_to_hub_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
+            # Forward standard save kwargs to the 16bit merge.
+            use_temp_dir = use_temp_dir,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            datasets = datasets,
         )
         for _ in range(3):
             gc.collect()
@@ -3688,42 +3791,20 @@ def _unsloth_save_compressed_tensors(
     transformers monkey-patches do not interfere), and written to the sibling directory
     `save_directory + "-" + suffix`. The result is intended for vLLM inference.
     """
+    import tempfile
+
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
     if token is None and push_to_hub:
         token = get_token()
-    # Accept os.PathLike save directories (string concatenation below needs a str).
-    save_directory = os.fspath(save_directory)
 
-    # 1) Merge to 16bit on disk and KEEP it, via unsloth_generic_save so LoRA adapters are merged
-    #    and full-finetuned models are written in 16bit consistently. Must be a local save:
-    #    merge_and_overwrite_lora deletes save_directory when push_to_hub=True.
-    print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
-    merge_args = dict(merge_kwargs)
-    merge_args.update(
-        dict(
-            model = model,
-            tokenizer = tokenizer,
-            save_directory = save_directory,
-            save_method = "merged_16bit",
-            push_to_hub = False,
-            token = token,
-            is_main_process = is_main_process,
-        )
-    )
-    unsloth_generic_save(**merge_args)
-
-    for _ in range(3):
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    # Only the main process quantizes and writes the compressed output (avoids ranks racing).
+    # Only the main process installs deps, merges, quantizes, and uploads (mirrors the non-PEFT
+    # save path); other ranks return at once so they neither race on dirs nor run pip installs.
     if not is_main_process:
         return None
 
-    # 2) Lazily import / install llm-compressor (without breaking torch / transformers) and
-    #    gate on scheme availability up-front so the user gets a clear error fast.
+    # 1) Install llm-compressor and gate on scheme availability BEFORE merging, so an unsupported
+    #    scheme (e.g. mxfp8) fails fast instead of writing a full 16bit checkpoint first.
     install_llm_compressor()
     if not _scheme_is_available(scheme):
         try:
@@ -3739,148 +3820,179 @@ def _unsloth_save_compressed_tensors(
             "Use save_method in {fp8, mxfp4, nvfp4}, or upgrade transformers + llm-compressor."
         )
 
-    # 3) Detect VLM + trust_remote_code from the in-memory model config.
-    is_vlm = False
-    if hasattr(model, "config") and hasattr(model.config, "architectures"):
-        is_vlm = any(
-            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-            for x in (model.config.architectures or [])
-        )
-        is_vlm = is_vlm or hasattr(model.config, "vision_config")
-    if is_vlm:
-        logger.warning(
-            "Unsloth: FP8/FP4 compressed export for vision / multimodal models is experimental; "
-            "vision-tower layers may be affected."
-        )
-    trust_remote_code = (
-        bool(getattr(model.config, "auto_map", None)) if hasattr(model, "config") else False
-    )
+    # 2) Pick the local working dir. For a hub push, save_directory is a repo id, so merge and
+    #    quantize inside an isolated temp dir instead of writing ./<repo_id> into the cwd.
+    repo_id, work_tmp, calib_tmp = None, None, None
+    if push_to_hub:
+        repo_id = os.fspath(save_directory)
+        work_tmp = tempfile.mkdtemp(prefix = "unsloth-compressed-")
+        local_dir = os.path.join(work_tmp, os.path.basename(repo_id.rstrip("/")) or "model")
+    else:
+        local_dir = os.fspath(save_directory)
 
-    # 4) Marshal the calibration dataset for the subprocess: None -> ultrachat default; a
-    #    str/PathLike is a local save_to_disk dir if it exists else a Hub id; a Dataset -> temp dir.
-    calib_kind, calib_value = "none", ""
-    calib_tmp = None
-    if needs_calibration and calibration_dataset is not None:
-        if isinstance(calibration_dataset, (str, os.PathLike)):
-            calib_value = os.fspath(calibration_dataset)
-            calib_kind = "disk" if os.path.isdir(calib_value) else "hfid"
-        elif hasattr(calibration_dataset, "save_to_disk"):
-            import tempfile
-
-            # Only persist the samples we need, so multi-GB training sets are not fully copied.
-            ds_to_save = calibration_dataset
-            try:
-                if (
-                    num_calibration_samples
-                    and hasattr(ds_to_save, "select")
-                    and len(ds_to_save) > num_calibration_samples
-                ):
-                    ds_to_save = ds_to_save.shuffle(seed = 42).select(range(num_calibration_samples))
-            except Exception:
-                ds_to_save = calibration_dataset
-            parent = os.path.dirname(os.path.abspath(save_directory)) or None
-            calib_tmp = tempfile.mkdtemp(prefix = "unsloth-calib-", dir = parent)
-            shutil.rmtree(calib_tmp, ignore_errors = True)  # save_to_disk wants a fresh path
-            ds_to_save.save_to_disk(calib_tmp)
-            calib_kind, calib_value = "disk", calib_tmp
-        else:
-            raise TypeError(
-                "Unsloth: calibration_dataset must be None, a Hugging Face dataset id, a local "
-                "path saved with Dataset.save_to_disk(...), or a Dataset with save_to_disk()."
-            )
-    elif not needs_calibration and calibration_dataset is not None:
-        logger.warning_once(
-            f"Unsloth: scheme '{scheme}' is data-free; ignoring calibration_dataset."
-        )
-
-    # 5) Quantize in a separate process: importing Unsloth patches transformers attention, which
-    #    breaks the forward llm-compressor runs for calibration. Run the converter by file path
-    #    (not `-m`) so the subprocess stays unpatched, like GGUF shelling out to llama.cpp.
-    out_dir = save_directory + "-" + suffix
-    runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_compressed_quantize.py")
-    cmd = [
-        sys.executable,
-        runner,
-        "--model",
-        str(save_directory),
-        "--scheme",
-        scheme,
-        "--out",
-        out_dir,
-        "--calibration-dataset-kind",
-        calib_kind,
-        "--num-calibration-samples",
-        str(num_calibration_samples),
-        "--max-seq-length",
-        str(max_seq_length),
-    ]
-    if needs_calibration:
-        cmd.append("--needs-calibration")
-    if calib_value:
-        cmd += ["--calibration-dataset", calib_value]
-    if is_vlm:
-        cmd.append("--is-vlm")
-    if trust_remote_code:
-        cmd.append("--trust-remote-code")
-
-    print(
-        f"Unsloth: Quantizing the merged model to {scheme} with llm-compressor "
-        "(in a separate process)..."
-    )
+    # Wrap the body so the isolated temp dirs are always cleaned up, even when the merge,
+    # quantization, validation, or hub upload raises.
     try:
-        subprocess.check_call(cmd)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(
-            f"Unsloth: {scheme} quantization failed (llm-compressor subprocess exit {e.returncode}). "
-            "See the output above for details."
+        # 3) Merge to 16bit at local_dir (kept for local saves) via unsloth_generic_save, so LoRA
+        #    adapters are merged and full-finetuned models written in 16bit consistently. Extra
+        #    save kwargs (state_dict, max_shard_size, ...) flow through merge_kwargs.
+        print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
+        merge_args = dict(merge_kwargs)
+        merge_args.update(
+            dict(
+                model = model,
+                tokenizer = tokenizer,
+                save_directory = local_dir,
+                save_method = "merged_16bit",
+                push_to_hub = False,
+                token = token,
+                is_main_process = is_main_process,
+            )
         )
+        unsloth_generic_save(**merge_args)
+
+        # 4) Detect VLM + trust_remote_code from the in-memory model config.
+        is_vlm = False
+        if hasattr(model, "config") and hasattr(model.config, "architectures"):
+            is_vlm = any(
+                x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+                for x in (model.config.architectures or [])
+            )
+            is_vlm = is_vlm or hasattr(model.config, "vision_config")
+        if is_vlm:
+            logger.warning(
+                "Unsloth: FP8/FP4 compressed export for vision / multimodal models is "
+                "experimental; vision-tower layers may be affected."
+            )
+        trust_remote_code = (
+            bool(getattr(model.config, "auto_map", None)) if hasattr(model, "config") else False
+        )
+
+        # 5) Marshal the calibration dataset for the subprocess: None -> ultrachat default; a
+        #    str/PathLike is a local save_to_disk dir if it exists else a Hub id; Dataset -> temp.
+        calib_kind, calib_value = "none", ""
+        if needs_calibration and calibration_dataset is not None:
+            if isinstance(calibration_dataset, (str, os.PathLike)):
+                calib_value = os.fspath(calibration_dataset)
+                calib_kind = "disk" if os.path.isdir(calib_value) else "hfid"
+            elif hasattr(calibration_dataset, "save_to_disk"):
+                # Only persist the samples we need, so multi-GB training sets are not fully copied.
+                ds_to_save = calibration_dataset
+                try:
+                    if (
+                        num_calibration_samples
+                        and hasattr(ds_to_save, "select")
+                        and len(ds_to_save) > num_calibration_samples
+                    ):
+                        ds_to_save = ds_to_save.shuffle(seed = 42).select(
+                            range(num_calibration_samples)
+                        )
+                except Exception:
+                    ds_to_save = calibration_dataset
+                parent = os.path.dirname(os.path.abspath(local_dir)) or None
+                calib_tmp = tempfile.mkdtemp(prefix = "unsloth-calib-", dir = parent)
+                shutil.rmtree(calib_tmp, ignore_errors = True)  # save_to_disk wants a fresh path
+                ds_to_save.save_to_disk(calib_tmp)
+                calib_kind, calib_value = "disk", calib_tmp
+            else:
+                raise TypeError(
+                    "Unsloth: calibration_dataset must be None, a Hugging Face dataset id, a "
+                    "local path saved with Dataset.save_to_disk(...), or a Dataset with "
+                    "save_to_disk()."
+                )
+        elif not needs_calibration and calibration_dataset is not None:
+            logger.warning_once(
+                f"Unsloth: scheme '{scheme}' is data-free; ignoring calibration_dataset."
+            )
+
+        # 6) Quantize in a separate process: importing Unsloth patches transformers attention,
+        #    which breaks the forward llm-compressor runs for calibration. Run the converter by
+        #    file path (not `-m`) so the subprocess stays unpatched, like GGUF -> llama.cpp.
+        out_dir = local_dir + "-" + suffix
+        runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_compressed_quantize.py")
+        cmd = [
+            sys.executable,
+            runner,
+            "--model",
+            local_dir,
+            "--scheme",
+            scheme,
+            "--out",
+            out_dir,
+            "--calibration-dataset-kind",
+            calib_kind,
+            "--num-calibration-samples",
+            str(num_calibration_samples),
+            "--max-seq-length",
+            str(max_seq_length),
+        ]
+        if needs_calibration:
+            cmd.append("--needs-calibration")
+        if calib_value:
+            cmd += ["--calibration-dataset", calib_value]
+        if is_vlm:
+            cmd.append("--is-vlm")
+        if trust_remote_code:
+            cmd.append("--trust-remote-code")
+
+        print(
+            f"Unsloth: Quantizing the merged model to {scheme} with llm-compressor "
+            "(in a separate process)..."
+        )
+        try:
+            subprocess.check_call(cmd)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Unsloth: {scheme} quantization failed (llm-compressor subprocess exit "
+                f"{e.returncode}). See the output above for details."
+            )
+
+        # 7) Validate the artifact.
+        cfg_path = os.path.join(out_dir, "config.json")
+        cfg = {}
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding = "utf-8") as f:
+                cfg = json.load(f)
+        if "quantization_config" not in cfg:
+            raise RuntimeError(
+                f"Unsloth: {scheme} export failed - no quantization_config written to {cfg_path}"
+            )
+
+        # 8) Optional hub upload of the compressed artifact (not the intermediate 16bit one).
+        if push_to_hub:
+            print(f"Unsloth: Uploading {scheme} checkpoint to '{repo_id}' ...")
+            from huggingface_hub import HfApi
+
+            api = HfApi(token = token)
+            api.create_repo(
+                repo_id = repo_id,
+                repo_type = "model",
+                private = merge_kwargs.get("private", None),
+                exist_ok = True,
+            )
+            api.upload_folder(
+                folder_path = out_dir,
+                repo_id = repo_id,
+                repo_type = "model",
+                commit_message = merge_kwargs.get("commit_message", None),
+                commit_description = merge_kwargs.get("commit_description", None),
+                create_pr = merge_kwargs.get("create_pr", False),
+                revision = merge_kwargs.get("revision", None),
+            )
+
+        # 9) Inference hardware note.
+        result = repo_id if push_to_hub else out_dir
+        _print_compressed_hw_note(scheme, result)
+        return result
     finally:
         if calib_tmp is not None and os.path.isdir(calib_tmp):
-            try:
-                shutil.rmtree(calib_tmp)
-            except Exception:
-                pass
-
-    # 6) Validate the artifact.
-    cfg_path = os.path.join(out_dir, "config.json")
-    cfg = {}
-    if os.path.exists(cfg_path):
-        with open(cfg_path, "r", encoding = "utf-8") as f:
-            cfg = json.load(f)
-    if "quantization_config" not in cfg:
-        raise RuntimeError(
-            f"Unsloth: {scheme} export failed - no quantization_config written to {cfg_path}"
-        )
-
-    # 7) Optional hub upload of the compressed artifact (not the intermediate 16bit one).
-    if push_to_hub:
-        print(f"Unsloth: Uploading {scheme} checkpoint to '{save_directory}' ...")
-        from huggingface_hub import HfApi
-
-        api = HfApi(token = token)
-        api.create_repo(
-            repo_id = save_directory,
-            repo_type = "model",
-            private = merge_kwargs.get("private", None),
-            exist_ok = True,
-        )
-        api.upload_folder(
-            folder_path = out_dir,
-            repo_id = save_directory,
-            repo_type = "model",
-            commit_message = merge_kwargs.get("commit_message", None),
-            commit_description = merge_kwargs.get("commit_description", None),
-            create_pr = merge_kwargs.get("create_pr", False),
-            revision = merge_kwargs.get("revision", None),
-        )
-
-    # 8) Inference hardware note.
-    for _ in range(3):
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    _print_compressed_hw_note(scheme, out_dir)
-    return out_dir
+            shutil.rmtree(calib_tmp, ignore_errors = True)
+        if work_tmp is not None:
+            shutil.rmtree(work_tmp, ignore_errors = True)
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def unsloth_save_pretrained_torchao(

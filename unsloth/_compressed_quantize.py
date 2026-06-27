@@ -40,7 +40,15 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
         ds = load_dataset("HuggingFaceH4/ultrachat_200k", split = f"train_sft[:{num_samples}]")
         ds = ds.shuffle(seed = 42)
     elif kind == "hfid":
-        ds = load_dataset(value, split = f"train[:{num_samples}]")
+        # Not every dataset has a "train" split (e.g. train_sft only); fall back to the first one.
+        try:
+            ds = load_dataset(value, split = f"train[:{num_samples}]")
+        except (ValueError, KeyError):
+            ds = load_dataset(value)
+            if isinstance(ds, DatasetDict):
+                ds = ds[next(iter(ds.keys()))]
+            if num_samples and len(ds) > num_samples:
+                ds = ds.select(range(num_samples))
         ds = ds.shuffle(seed = 42)
     elif kind == "disk":
         ds = load_from_disk(value)
