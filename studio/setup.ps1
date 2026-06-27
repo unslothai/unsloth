@@ -2568,11 +2568,39 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $_expectedKnown = $true
         if ($_pinnedIdx) {
             $_pinLeaf = Get-TorchIndexLeaf $_pinnedIdx
-            # Normalize a pinned rocm*/gfx* leaf to the generic "rocm" flavor so it
-            # compares against the installed +rocm wheel (also "rocm"); cu*/cpu
-            # leaves stay specific so a cu126-vs-cu128 mismatch still rebuilds.
+            # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds.
             if ($_pinLeaf -like 'gfx*' -or $_pinLeaf -like 'rocm*') {
-                $expectedTorchTag = "rocm"
+                # Do NOT collapse a pinned ROCm/gfx leaf to a generic "rocm": that
+                # would match any installed +rocm wheel and mask a pin change from
+                # one ROCm family to another (e.g. rocm6.4 -> gfx1151, or rocm6.4
+                # -> rocm6.3), leaving the requested index unapplied. Compare what
+                # the wheel tag exposes -- the ROCm version (+rocmX.Y) and whether
+                # the index serves the torch 2.11 line (gfx* / rocm>=7.2 do; older
+                # rocm does not). gfx pins carry no rocm version in the leaf, so
+                # they compare on the 2.11 line only.
+                $_pinNeeds211 = $false
+                $_pinRocmVer = $null
+                if ($_pinLeaf -like 'gfx*') {
+                    $_pinNeeds211 = $true
+                } elseif ($_pinLeaf -match '^rocm(\d+)\.(\d+)') {
+                    $_pinRocmVer = "$($Matches[1]).$($Matches[2])"
+                    $_pinNeeds211 = ([int]$Matches[1] -gt 7) -or ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -ge 2)
+                }
+                $_instRocmVer = $null
+                if ($torchVer -match '\+rocm(\d+)\.(\d+)') { $_instRocmVer = "$($Matches[1]).$($Matches[2])" }
+                $_instIs211 = $false
+                if ($torchVer -match '^(\d+)\.(\d+)') {
+                    $_instIs211 = ([int]$Matches[1] -gt 2) -or ([int]$Matches[1] -eq 2 -and [int]$Matches[2] -ge 11)
+                }
+                if ($_pinRocmVer -and $_instRocmVer) {
+                    # Both ROCm versions readable: compare them exactly.
+                    $expectedTorchTag = "rocm$_pinRocmVer"
+                    $installedTorchTag = "rocm$_instRocmVer"
+                } else {
+                    # gfx pin or unreadable version: compare on the torch 2.11 line.
+                    $expectedTorchTag  = if ($_pinNeeds211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+                    $installedTorchTag = if ($_instIs211)   { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+                }
             } elseif ($_pinLeaf -like 'cu*' -or $_pinLeaf -eq 'cpu') {
                 $expectedTorchTag = $_pinLeaf
             } else {
@@ -2584,6 +2612,13 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             }
         } elseif ($HasNvidiaSmi) {
             $expectedTorchTag = Get-PytorchCudaTag
+        } elseif ($HasROCm -or $script:ROCmGfxArch) {
+            # AMD/ROCm host with no explicit pin: an existing +rocm wheel is the
+            # correct build, not stale. (gfx arch counts even when $HasROCm is
+            # false -- name-inferred Adrenalin hosts still get ROCm torch below.)
+            # Without this an unpinned ROCm venv compares "rocm" != "cpu" and is
+            # needlessly rebuilt, and an installer-managed setup exits as stale.
+            $expectedTorchTag = "rocm"
         } else {
             $expectedTorchTag = "cpu"
         }
@@ -2899,11 +2934,15 @@ if ($ROCmIndexUrl) {
     }
 }
 
-if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
+if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     substep "installing PyTorch (CPU-only)..."
     # After an AMD ROCm fallback, force-reinstall so a partially-installed ROCm torch
     # (which still satisfies the CPU torch>= range) is replaced by the CPU build. Skip
     # the forced reinstall on a genuine CPU-only host so the common path stays fast.
+    # The $ROCmCpuFallback term matters when a PINNED ROCm index failed: $CuTag is
+    # still the rocm/gfx leaf (not "cpu"), so without it execution would fall through
+    # to the CUDA branch and install from the CPU index WITHOUT --force-reinstall,
+    # leaving the partial ROCm torch in place.
     # Build the array directly: an if-expression collapses @("x") to a scalar string,
     # which @splat would then enumerate char-by-char into broken single-letter args.
     $cpuForce = @()
