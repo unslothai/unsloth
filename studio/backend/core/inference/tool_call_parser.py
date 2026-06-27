@@ -1095,11 +1095,8 @@ def _gemma_parse_value(text: str, i: int):
 
 def _gemma_coerce_scalar(raw: str) -> Any:
     """Coerce an unquoted Gemma value to bool/int/float/None, else keep str.
-
-    Surrounding matching quotes are stripped first (a stuck model may emit the
-    same value sometimes quoted, sometimes not; normalising lets the agentic
-    loop's duplicate-call collapse recognise them as identical).
-    """
+    Surrounding quotes are stripped first so the loop's duplicate-call collapse
+    treats quoted and unquoted variants of the same value as identical."""
     raw = raw.strip()
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
         return raw[1:-1]
@@ -1121,14 +1118,10 @@ def _gemma_coerce_scalar(raw: str) -> Any:
 
 
 def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
-    """Parse a quote-less Gemma arg body ``key:value, key2:value2``.
-
-    Used for the ``skip_special_tokens`` stream where the ``<|"|>`` string
-    markers were removed. Each value runs until the next top-level ``, key:``
-    boundary (or the end), tracking ``{}``/``[]``/``()`` depth, so commas and
-    braces inside a ``code`` or ``command`` value are preserved instead of
-    truncating at the first comma.
-    """
+    """Parse a quote-less Gemma arg body ``key:value, key2:value2`` (the
+    ``skip_special_tokens`` stream with ``<|"|>`` markers removed). Each value runs
+    to the next top-level ``, key:`` boundary, tracking ``{}``/``[]``/``()`` depth so
+    commas/braces inside a ``code`` / ``command`` value aren't truncated."""
     out: dict[str, Any] = {}
     i, n = 0, len(body)
     while i < n:
@@ -1151,10 +1144,9 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
             i += 1
         raw_val = body[vstart:i].strip()
         if raw_val[:1] in "{[":
-            # Nested object/array in the wrapper-less stream: parse it
-            # recursively instead of keeping it as a string. Accept the parse
-            # only when it consumes the whole balanced value, so a truncated /
-            # malformed value falls back to the raw string instead of {} / [].
+            # Nested object/array in the wrapper-less stream: parse recursively,
+            # but accept only when it consumes the whole balanced value so a
+            # truncated / malformed value falls back to the raw string.
             parsed, end = _gemma_parse_value(raw_val, 0)
             balanced = end == len(raw_val) and (
                 raw_val[0] != "{"
@@ -1227,9 +1219,8 @@ def _parse_deepseek_tool_calls(
         return out
     scan_start = begin.end()
     end_pos = content.find(_DEEPSEEK_END, scan_start)
-    # Strict mode (Auto-Heal off): an envelope with no closing
-    # <｜tool▁calls▁end｜> is truncated mid-stream; reject it instead of
-    # healing the body out to EOF, matching the strict XML / Mistral paths.
+    # Strict mode (Auto-Heal off): an envelope with no closing <｜tool▁calls▁end｜>
+    # is truncated mid-stream; reject instead of healing out to EOF.
     if not allow_incomplete and end_pos < 0:
         return out
     scan_end = end_pos if end_pos >= 0 else len(content)
@@ -1275,24 +1266,20 @@ def _parse_deepseek_tool_calls(
     if out:
         return out
 
-    # V3 / V3.1 path: name then bare JSON. We use ``str.find`` for the
-    # sep marker and walk back for the name (regex search with a
-    # ``[^\n<]+`` quantifier is O(N^2) on adversarial truncated bodies).
+    # V3 / V3.1: name then bare JSON. Use ``str.find`` for the sep marker and walk
+    # back for the name (a ``[^\n<]+`` regex search is O(N^2) on truncated bodies).
     pos = 0
     while pos < len(body):
         sep_pos = body.find(_DEEPSEEK_SEP, pos)
         if sep_pos < 0:
             break
-        # Walk left from sep_pos to find the name start. Stops at
-        # ``\n`` (previous turn boundary), ``<`` (start of an arbitrary
-        # tag), or ``>`` (end of an optional ``<｜tool▁call▁begin｜>``
-        # marker).
+        # Walk left from sep_pos to the name start; stop at ``\n`` (turn boundary),
+        # ``<`` (tag start), or ``>`` (end of an optional ``<｜tool▁call▁begin｜>``).
         name_start = sep_pos
         while name_start > pos and body[name_start - 1] not in "\n<>":
             name_start -= 1
         name = body[name_start:sep_pos].strip()
         json_start = sep_pos + len(_DEEPSEEK_SEP)
-        # Skip any whitespace before the JSON.
         while json_start < len(body) and body[json_start] in " \t\n\r":
             json_start += 1
         if json_start >= len(body) or body[json_start] != "{":
@@ -1321,9 +1308,8 @@ def _parse_deepseek_tool_calls(
                 }
             )
         # Advance just past this call's JSON; the loop re-locates the next
-        # <｜tool▁sep｜> from here. Searching forward for the optional
-        # <｜tool▁call▁end｜> could land on a LATER call's end marker and skip
-        # the call in between when this one's end marker is missing.
+        # <｜tool▁sep｜>. Searching forward for the optional <｜tool▁call▁end｜>
+        # could land on a LATER call's end marker and skip the call between.
         pos = brace_end + 1
     return out
 
@@ -1363,11 +1349,9 @@ def _parse_glm_tool_calls(
         for pair in _GLM_ARG_PAIR_RE.finditer(body):
             key = pair.group(1).strip()
             raw_val = pair.group(2)
-            # The template emits non-strings via ``tojson`` and strings
-            # verbatim. Probe the stripped value for an unambiguous JSON
-            # literal; otherwise keep the value RAW so significant leading /
-            # trailing whitespace in string args (code, diffs) survives --
-            # matches vLLM glm4_moe, which never strips string values.
+            # Template emits non-strings via ``tojson``, strings verbatim. Probe for
+            # an unambiguous JSON literal; else keep the value RAW so whitespace in
+            # string args (code, diffs) survives -- matches vLLM glm4_moe.
             probe = raw_val.strip()
             if (
                 probe[:1] in '{["'
@@ -1424,9 +1408,8 @@ def _parse_kimi_tool_calls(
         section_end = content.find(_KIMI_SECTION_END, scan_start)
         scan_end = section_end if section_end >= 0 else len(content)
         body = content[scan_start:scan_end]
-        # Truncated tail: parse what we have, then exit. In strict mode
-        # (Auto-Heal off) a section with no <|tool_calls_section_end|> is
-        # truncated; reject it instead.
+        # Truncated tail: parse what we have, then exit. In strict mode a section
+        # with no <|tool_calls_section_end|> is truncated; reject it instead.
         if section_end < 0:
             if allow_incomplete:
                 out.extend(
@@ -1442,11 +1425,9 @@ def _parse_kimi_tool_calls(
             )
         )
 
-    # llama.cpp treats the ``<|tool_calls_section_begin|>`` wrapper as
-    # optional -- Kimi K2 can emit a bare ``<|tool_call_begin|>`` call (e.g.
-    # straight after reasoning, without closing the section). If the section
-    # loop matched nothing but a bare call marker is present, parse the whole
-    # content as one section body so the call is not dropped.
+    # llama.cpp treats the ``<|tool_calls_section_begin|>`` wrapper as optional --
+    # Kimi K2 can emit a bare ``<|tool_call_begin|>`` call. If the section loop
+    # matched nothing but a bare call is present, parse all content as one section.
     if not out and _KIMI_CALL_BEGIN in content:
         out.extend(
             _parse_kimi_section_body(
@@ -1503,9 +1484,8 @@ def _parse_kimi_section_body(
             continue
         brace_end = _balanced_brace_end(body, json_start)
         if brace_end is None:
-            # Malformed / truncated JSON for this call: skip it but keep
-            # parsing later calls instead of dropping the rest of the
-            # section (vLLM recovers subsequent calls).
+            # Malformed / truncated JSON: skip this call but keep parsing later
+            # ones instead of dropping the rest of the section (vLLM recovers them).
             nxt = body.find(_KIMI_CALL_BEGIN, json_start)
             if nxt < 0:
                 break

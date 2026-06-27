@@ -1048,11 +1048,10 @@ class InferenceBackend:
                 preserve_thinking = preserve_thinking,
             )
 
-            # If tools were requested but the (possibly overridden) template
-            # ignored them, the render is identical with and without tools.
-            # Detect that by comparison (robust against tool names that also
-            # appear in the system prompt) and fall back to the model's native
-            # template, which carries the family's tool-calling syntax.
+            # If tools were requested but the (possibly overridden) template ignored
+            # them, the render is identical with and without tools. Detect by
+            # comparison (robust against tool names in the system prompt) and fall
+            # back to the model's native template, which has the tool-calling syntax.
             if tools:
                 probe_no_tools = self._apply_chat_template_for_generation(
                     tokenizer,
