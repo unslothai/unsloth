@@ -1606,6 +1606,22 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
     assert any(e.loader_id == "org/Repo-GGUF" for e in index.values())
 
 
+def test_info_has_local_gguf_reads_files_not_model_format(tmp_path):
+    # Codex: HF-cache GGUF snapshots leave model_format unset, so /v1/models must
+    # decide GGUF-ness from the on-disk files. A standalone .gguf (no model_format)
+    # is servable; a safetensors-only dir is not.
+    from types import SimpleNamespace
+
+    gguf = tmp_path / "model-Q4_K_M.gguf"
+    gguf.write_bytes(b"x" * 32)
+    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(gguf), path = str(gguf))) is True
+
+    st = tmp_path / "safetensors_model"
+    st.mkdir()
+    (st / "model.safetensors").write_bytes(b"x" * 32)
+    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(st), path = str(st))) is False
+
+
 def test_embeddings_input_present_helper():
     f = inference_route._embeddings_input_present
     assert f({"input": "hi"}) is True

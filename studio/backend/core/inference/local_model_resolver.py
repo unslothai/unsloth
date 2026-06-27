@@ -100,6 +100,15 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         return None
 
 
+def info_has_local_gguf(info) -> bool:
+    """True when *info* (a LocalModelInfo) points to on-disk GGUF weights the
+    auto-switch path can load. Read from the files, not ``info.model_format``: the
+    HF-cache scanner leaves model_format unset for GGUF snapshots, so a
+    model_format filter would drop every cached GGUF. Lets /v1/models advertise
+    exactly what /v1 can serve."""
+    return _local_gguf_entry(getattr(info, "id", "") or "", info) is not None
+
+
 def _build_index() -> dict[str, _LocalGgufEntry]:
     """Map normalized id/model_id/display_name -> local GGUF entry.
 

@@ -7011,12 +7011,15 @@ async def _openai_catalog_objects() -> list[dict]:
         by_id[entry["id"]] = {**entry, "loaded": True}
 
     # Locally available (downloaded/cached) models that are not already loaded.
-    for info in await _cached_local_catalog():
-        # /v1 serves local models only through llama.cpp, so advertise only GGUF
-        # models: a safetensors/LoRA entry would be selectable but never loadable
-        # (auto-switch resolves GGUFs only, and the slot can't hold non-GGUF).
-        if getattr(info, "model_format", None) != "gguf":
-            continue
+    # Advertise only GGUF models /v1 can actually serve (llama.cpp). GGUF-ness is
+    # read from the on-disk files, not model_format: the HF-cache scanner leaves
+    # model_format unset for GGUF snapshots, so a model_format filter would drop
+    # every cached GGUF. The file checks run off the loop.
+    from core.inference.local_model_resolver import info_has_local_gguf
+
+    catalog = await _cached_local_catalog()
+    servable = await asyncio.to_thread(lambda: [i for i in catalog if info_has_local_gguf(i)])
+    for info in servable:
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue

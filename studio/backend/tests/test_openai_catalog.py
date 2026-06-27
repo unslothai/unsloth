@@ -13,6 +13,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import routes.inference as inf  # noqa: E402
+from core.inference import local_model_resolver as resolver  # noqa: E402
 
 
 class _Info:
@@ -21,12 +22,12 @@ class _Info:
         id,
         display_name,
         model_id = None,
-        model_format = "gguf",
+        is_gguf = True,
     ):
         self.id = id
         self.display_name = display_name
         self.model_id = model_id
-        self.model_format = model_format
+        self.is_gguf = is_gguf  # drives the files-based GGUF check in the test
 
 
 class _FakeLlama:
@@ -55,12 +56,16 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
         return [
             _Info("/data/models/Qwen3-Q4.gguf", "Qwen3-Q4"),  # same as loaded -> dedup
             _Info("/data/models/Llama-8B-Q8.gguf", "Llama-8B-Q8"),  # available, not loaded
-            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),  # hf cache repo id
+            # HF-cache GGUF: model_format is unset for these, so a files-based check
+            # (not model_format) must still list it.
+            _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
             # Non-GGUF (safetensors) can't be served via /v1: must NOT be advertised.
-            _Info("/data/models/Mistral-7B", "Mistral-7B", model_format = None),
+            _Info("/data/models/Mistral-7B", "Mistral-7B", is_gguf = False),
         ]
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    # GGUF-ness is read from the on-disk files; drive it off each info's flag here.
+    monkeypatch.setattr(resolver, "info_has_local_gguf", lambda info: info.is_gguf)
 
     data = asyncio.run(inf._openai_catalog_objects())
     ids = {m["id"]: m for m in data}
@@ -70,6 +75,7 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
     assert ids["Qwen3-Q4"]["context_length"] == 4096
     # Available-but-not-loaded GGUF models are listed too.
     assert ids["Llama-8B-Q8"]["loaded"] is False
+    # The HF-cache GGUF is listed despite model_format being unset.
     assert ids["org/Foo"]["loaded"] is False
     # The non-GGUF model is filtered out (/v1 can never serve it).
     assert "Mistral-7B" not in ids
