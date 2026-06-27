@@ -816,7 +816,9 @@ _MAX_VRAM_RESERVE_FRAC = 0.125
 def _vram_reserve_mib(total_mib: float, frac: float) -> float:
     """Per-card VRAM reserve: ``(1 - frac) * total`` floored at _MIN_VRAM_RESERVE_MIB
     and capped at _MAX_VRAM_RESERVE_FRAC * total (see _MIN_VRAM_RESERVE_MIB for why)."""
-    return min(max((1.0 - frac) * total_mib, _MIN_VRAM_RESERVE_MIB), _MAX_VRAM_RESERVE_FRAC * total_mib)
+    return min(
+        max((1.0 - frac) * total_mib, _MIN_VRAM_RESERVE_MIB), _MAX_VRAM_RESERVE_FRAC * total_mib
+    )
 
 
 def _pooled_usable_mib(subset, frac, total_by_idx):
@@ -830,6 +832,7 @@ def _pooled_usable_mib(subset, frac, total_by_idx):
     if known_total > 0:
         budget += max(0.0, known_free - _vram_reserve_mib(known_total, frac))
     return budget
+
 
 # Apple unified memory is shared with the OS, so tighter than VRAM. Matches the
 # 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.

@@ -760,7 +760,9 @@ def test_vram_reserve_unchanged_on_datacenter_card():
     # 80 GB: 5% = 4096 MiB already exceeds the floor, so behaviour is unchanged
     # from #6312 (no over-reserving the big cards it was tuned for).
     total = 81920
-    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == (1.0 - _CTX_FIT_VRAM_FRACTION) * total
+    assert (
+        _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == (1.0 - _CTX_FIT_VRAM_FRACTION) * total
+    )
 
 
 def test_vram_reserve_capped_on_small_card():
