@@ -29,10 +29,26 @@ def _naive(text, patterns):
 
 
 _TOKENS = [
-    "<tool_call>", "</tool_call>", "<|tool_call>", "<tool_call|>",
-    "<function=x>", "<function=mcp__s__a-b>", "</function>",
-    "<parameter=p>", "</parameter>", "call:fn{", "}", "{", '<|"|>',
-    "A", " ", "\n", "id", "x:1", "</tool", "call>",
+    "<tool_call>",
+    "</tool_call>",
+    "<|tool_call>",
+    "<tool_call|>",
+    "<function=x>",
+    "<function=mcp__s__a-b>",
+    "</function>",
+    "<parameter=p>",
+    "</parameter>",
+    "call:fn{",
+    "}",
+    "{",
+    '<|"|>',
+    "A",
+    " ",
+    "\n",
+    "id",
+    "x:1",
+    "</tool",
+    "call>",
 ]
 
 
@@ -46,9 +62,7 @@ def test_guard_matches_plain_loop_on_fuzz():
 
 def test_strip_markup_representative_cases_unchanged():
     assert strip_tool_call_markup("a <tool_call>{}</tool_call> b") == "a  b"
-    assert (
-        strip_tool_call_markup("a <function=x><parameter=p>1</parameter></function> b") == "a  b"
-    )
+    assert strip_tool_call_markup("a <function=x><parameter=p>1</parameter></function> b") == "a  b"
     # Non-final keeps an unclosed block; final strips it to EOF.
     assert strip_tool_call_markup("a <tool_call>{partial") == "a <tool_call>{partial"
     assert strip_tool_call_markup("a <tool_call>{partial", final = True) == "a"

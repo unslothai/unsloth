@@ -47,6 +47,7 @@ def strip_tool_patterns(text: str, patterns) -> str:
         text = pat.sub("", text)
     return text
 
+
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 _TC_GEMMA_START_RE = re.compile(r"<\|tool_call>call:([\w-]+)\s*\{")
