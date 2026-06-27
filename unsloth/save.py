@@ -3023,7 +3023,9 @@ def _lora_base_model_id(model):
                 adapter = None
         if isinstance(adapter, (list, tuple)):
             adapter = adapter[0] if adapter else None
-        cfg = peft_config.get(adapter) if adapter in peft_config else next(iter(peft_config.values()))
+        cfg = (
+            peft_config.get(adapter) if adapter in peft_config else next(iter(peft_config.values()))
+        )
         base = getattr(cfg, "base_model_name_or_path", None)
     if not base:
         base = getattr(getattr(model, "config", None), "_name_or_path", None)
@@ -3136,7 +3138,10 @@ def _unsloth_save_lora_gguf(
 
         api = HfApi(token = token)
         api.create_repo(
-            repo_id = save_directory, repo_type = "model", private = private, exist_ok = True,
+            repo_id = save_directory,
+            repo_type = "model",
+            private = private,
+            exist_ok = True,
         )
         api.upload_folder(
             folder_path = lora_dir,
