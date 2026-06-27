@@ -576,12 +576,15 @@ jobs:
           ok_studio=0; ok_jupyter=0
           for i in $(seq 1 60); do
               if curl -fsS http://localhost:18000/api/health >/dev/null 2>&1; then ok_studio=1;  fi
-              if curl -fsS http://localhost:18888/api        >/dev/null 2>&1; then ok_jupyter=1; fi
+              # Probe /login, not /api: the launcher always sets a Jupyter password
+              # hash, so /api returns 403 (curl -f would never flip ok_jupyter).
+              # /login is the unauthenticated page and 200s once the server is up.
+              if curl -fsS http://localhost:18888/login      >/dev/null 2>&1; then ok_jupyter=1; fi
               [ "$ok_studio" = 1 ] && [ "$ok_jupyter" = 1 ] && break
               sleep 5
           done
           [ "$ok_studio"  = 1 ] || { echo "Studio /api/health never went healthy"; exit 1; }
-          [ "$ok_jupyter" = 1 ] || { echo "Jupyter /api never responded"; exit 1; }
+          [ "$ok_jupyter" = 1 ] || { echo "Jupyter /login never responded"; exit 1; }
           echo "Studio + Jupyter healthy"
         env:
           STEPS_META_STUDIO_JSON: ${{ steps.meta_studio.outputs.json }}
