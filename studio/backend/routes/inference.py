@@ -685,6 +685,7 @@ try:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -721,6 +722,7 @@ except ImportError:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -2090,6 +2092,21 @@ def _carry_preserved_tensor_intent(
     return preserved and same_model and not explicit_drop
 
 
+def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
+    """True when a request deliberately drops tensor intent: an explicit
+    tensor_parallel field change or a non-tensor --split-mode override -- NOT just
+    any unrelated pass-through extra (e.g. --top-k), which must keep a preserved
+    multi-GPU layer fallback rather than collapse it to one GPU. Shared by the
+    already-loaded dedup and the load carry-forward so the two agree (#6659)."""
+    fields_set = getattr(request, "model_fields_set", set())
+    explicit = "tensor_parallel" in fields_set or (
+        parse_split_mode_override(request.llama_extra_args) is not None
+    )
+    return explicit and not _effective_tensor_parallel(
+        request.llama_extra_args, request.tensor_parallel
+    )
+
+
 def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
@@ -2133,13 +2150,8 @@ def _request_matches_loaded_settings(
     # re-selects instead of keeping the all-GPU mask (#6659). The effective check
     # includes the env, so an env-only tensor (LLAMA_ARG_SPLIT_MODE=tensor) that
     # can't actually be dropped falls through to the env-downgrade match, not a loop.
-    if llama_backend.layer_preserves_tensor_intent:
-        _fields_set = getattr(request, "model_fields_set", set())
-        _explicit_change = "tensor_parallel" in _fields_set or request.llama_extra_args is not None
-        if _explicit_change and not _effective_tensor_parallel(
-            request.llama_extra_args, request.tensor_parallel
-        ):
-            return False
+    if llama_backend.layer_preserves_tensor_intent and _is_explicit_tensor_drop(request):
+        return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
     # the real requested mode -- coercing vision to ``off`` here used to
@@ -2837,13 +2849,11 @@ async def load_model(
             # Tensor intent for this load: the request itself, or a preserved
             # multi-GPU layer fallback carried across a reload of the SAME model that
             # doesn't drop it (e.g. a ctx-only change), so a fitting model doesn't
-            # silently collapse to one GPU. The drop check reads the raw request
-            # extras (a deliberate change), not the inherited ones; the same-model
-            # guard stops a switch-without-unload inheriting the prior model's intent.
-            _fields_set = getattr(request, "model_fields_set", set())
-            _explicit_tensor_drop = (
-                "tensor_parallel" in _fields_set or request.llama_extra_args is not None
-            ) and not _effective_tensor_parallel(request.llama_extra_args, request.tensor_parallel)
+            # silently collapse to one GPU. Only a tensor field change or a --split-mode
+            # override counts as the drop -- an unrelated pass-through extra keeps the
+            # preserved placement; the same-model guard stops a switch-without-unload
+            # inheriting the prior model's intent.
+            _explicit_tensor_drop = _is_explicit_tensor_drop(request)
             _same_model_loaded = (
                 llama_backend.is_loaded
                 and (llama_backend.model_identifier or "").lower()

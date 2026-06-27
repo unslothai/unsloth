@@ -698,6 +698,39 @@ def test_tensor_off_under_env_tensor_does_not_reload_loop(monkeypatch):
     )
 
 
+def test_is_explicit_tensor_drop_truth_table():
+    """Only an explicit tensor_parallel field change or a non-tensor --split-mode
+    override is a drop; an unrelated pass-through extra (e.g. --top-k) is not, so a
+    preserved fallback isn't collapsed to one GPU by it (Codex #6659)."""
+    from models.inference import LoadRequest
+
+    f = _load_inference_routes_module()._is_explicit_tensor_drop
+    assert f(LoadRequest(model_path = "owner/repo", tensor_parallel = False)) is True
+    assert f(LoadRequest(model_path = "owner/repo", tensor_parallel = True)) is False
+    assert (
+        f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "layer"])) is True
+    )
+    assert (
+        f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "tensor"]))
+        is False
+    )
+    # The regression: an unrelated extra must NOT count as a tensor drop.
+    assert f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--top-k", "20"])) is False
+    assert f(LoadRequest(model_path = "owner/repo")) is False
+
+
+def test_explicit_tensor_drop_uses_shared_helper_in_both_readers():
+    """Both the already-loaded dedup and the load carry-forward derive the drop from
+    _is_explicit_tensor_drop, so they agree on what counts as a drop -- a reload for
+    an unrelated extra still carries the preserved intent rather than collapsing to one
+    GPU (Codex #6659)."""
+    src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
+    # Dedup reader (the preserved-fallback reload guard).
+    assert "layer_preserves_tensor_intent and _is_explicit_tensor_drop(request)" in src
+    # Load carry-forward reader feeds the same decision into the carry-forward.
+    assert "_explicit_tensor_drop = _is_explicit_tensor_drop(request)" in src
+
+
 def test_layer_preserves_tensor_intent_set_only_on_preserved_downgrade():
     """load_model latches the flag from _layer_min_gpus (raised only when a tensor
     request is downgraded but kept multi-GPU), and clears it when tensor stays on."""
