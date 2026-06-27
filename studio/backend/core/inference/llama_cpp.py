@@ -3199,9 +3199,10 @@ class LlamaCppBackend:
                         except (ValueError, OSError):
                             # Log file closed under us; tee silently.
                             pass
-        except (ValueError, OSError):
-            # Pipe closed -- process terminating.
-            pass
+        except Exception:
+            # Never let the drain thread die: a full stdout pipe can deadlock
+            # llama-server (Windows). Pipe-closed on exit is the common case.
+            logger.debug("llama-server stdout drain stopped", exc_info = True)
 
     # GGUF KV type sizes for fast skipping
     _GGUF_TYPE_SIZE = {
@@ -5595,6 +5596,15 @@ class LlamaCppBackend:
                     # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
                     "--no-context-shift",
                 ]
+
+                # Report a clean public model id (matching GET /v1/models) rather
+                # than the raw -m path in llama-server's own /v1/models and the
+                # "model" field of its chat/completions responses.
+                from core.inference.model_ids import public_model_id
+
+                _alias = public_model_id(self._model_identifier or model_path)
+                if _alias:
+                    cmd.extend(["--alias", _alias])
 
                 fully_gpu_offloaded = False
                 if use_fit:
