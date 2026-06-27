@@ -534,89 +534,30 @@ def test_list_switch_eligible_ids(monkeypatch):
     ]
 
 
-def test_v1_models_lists_eligible_only_when_enabled(monkeypatch):
-    # Loaded model B (rich fields); eligible models A and B.
-    monkeypatch.setattr(
-        inference_route,
-        "_openai_model_objects",
-        lambda: [
-            {
-                "id": "unsloth/B-GGUF",
-                "object": "model",
-                "created": 1,
-                "owned_by": "local",
-                "context_length": 8192,
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        resolver, "list_switch_eligible_ids", lambda: ["unsloth/A-GGUF", "unsloth/B-GGUF"]
-    )
-
-    # Off: drop-in behavior unchanged — only the loaded model is listed.
-    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
-    data = asyncio.run(inference_route._all_openai_model_objects())
-    assert [m["id"] for m in data] == ["unsloth/B-GGUF"]
-
-    # On: loaded model first (keeps rich fields), then eligible extras with B
-    # deduped and listed minimally.
-    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
-    data = asyncio.run(inference_route._all_openai_model_objects())
-    assert [m["id"] for m in data] == ["unsloth/B-GGUF", "unsloth/A-GGUF"]
-    loaded = next(m for m in data if m["id"] == "unsloth/B-GGUF")
-    extra = next(m for m in data if m["id"] == "unsloth/A-GGUF")
-    assert loaded["context_length"] == 8192
-    assert "context_length" not in extra
-
-
-def test_v1_models_retrieve_eligible_only_when_enabled(monkeypatch):
+def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
+    # The resolver lowercases its index, so a retrieve that differs only in case
+    # from a catalog id must still hit (200), not 404. Guards the .lower() compare
+    # in openai_retrieve_model against a silent revert. (The full local catalog is
+    # main's #6519; only the loaded fast-path is exact, the catalog loop is lenient.)
     from fastapi import HTTPException
 
-    monkeypatch.setattr(
-        inference_route,
-        "_openai_model_objects",
-        lambda: [{"id": "unsloth/B-GGUF", "object": "model", "created": 1, "owned_by": "local"}],
-    )
-    monkeypatch.setattr(
-        resolver, "list_switch_eligible_ids", lambda: ["unsloth/A-GGUF", "unsloth/B-GGUF"]
-    )
+    monkeypatch.setattr(inference_route, "_openai_model_objects", lambda: [])  # nothing loaded
 
-    # Off: an eligible-but-unloaded id is not retrievable (unchanged drop-in behavior).
-    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
-    with pytest.raises(HTTPException) as off:
-        asyncio.run(inference_route.openai_retrieve_model("unsloth/A-GGUF", "tester"))
-    assert off.value.status_code == 404
+    async def _catalog():
+        return [
+            {"id": "unsloth/A-GGUF", "object": "model", "created": 1, "owned_by": "local"},
+            {"id": "unsloth/B-GGUF", "object": "model", "created": 1, "owned_by": "local"},
+        ]
 
-    # On: an eligible id returns a minimal object echoing the requested id...
-    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
-    obj = asyncio.run(inference_route.openai_retrieve_model("unsloth/A-GGUF", "tester"))
-    assert obj["id"] == "unsloth/A-GGUF" and obj["object"] == "model"
-    # ...but a truly unknown id still 404s.
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
+
+    # A catalog id retrieved with different casing still resolves.
+    obj = asyncio.run(inference_route.openai_retrieve_model("unsloth/a-gguf", "tester"))
+    assert obj["id"] == "unsloth/A-GGUF"
+    # A truly unknown id still 404s.
     with pytest.raises(HTTPException) as unknown:
         asyncio.run(inference_route.openai_retrieve_model("totally/unknown", "tester"))
     assert unknown.value.status_code == 404
-
-
-def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
-    # The resolver lowercases its index, so a retrieve that differs only in case
-    # from a listed id must still hit (200), not 404. Guards the .lower() compare
-    # in openai_retrieve_model against a silent revert.
-    monkeypatch.setattr(
-        inference_route,
-        "_openai_model_objects",
-        lambda: [{"id": "unsloth/B-GGUF", "object": "model", "created": 1, "owned_by": "local"}],
-    )
-    monkeypatch.setattr(
-        resolver, "list_switch_eligible_ids", lambda: ["unsloth/A-GGUF", "unsloth/B-GGUF"]
-    )
-    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
-
-    # An eligible id retrieved with different casing still resolves.
-    obj = asyncio.run(inference_route.openai_retrieve_model("unsloth/a-gguf", "tester"))
-    assert obj["id"] == "unsloth/A-GGUF"
-    # The loaded model is also case-insensitively retrievable.
-    loaded = asyncio.run(inference_route.openai_retrieve_model("UNSLOTH/B-GGUF", "tester"))
-    assert loaded["id"] == "unsloth/B-GGUF"
 
 
 # ── hardening: hidden models, idle/enabled coupling, count_tokens keep-warm ──
@@ -1670,7 +1611,8 @@ def test_retrieve_model_tolerates_non_string_id(monkeypatch):
     async def _objs():
         return [{"id": 123, "object": "model"}, {"id": "org/B-GGUF", "object": "model"}]
 
-    monkeypatch.setattr(inference_route, "_all_openai_model_objects", _objs)
+    monkeypatch.setattr(inference_route, "_openai_model_objects", lambda: [])  # nothing loaded
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _objs)
     obj = asyncio.run(inference_route.openai_retrieve_model("org/B-GGUF", "tester"))
     assert obj["id"] == "org/B-GGUF"
     with pytest.raises(HTTPException) as exc:

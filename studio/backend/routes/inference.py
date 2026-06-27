@@ -6857,6 +6857,9 @@ async def serve_sandbox_file(
 # OpenAI-Compatible Models Listing  (/models → /v1/models)
 # =====================================================================
 
+# `owned_by` marker on every /v1/models entry (loaded and available alike).
+_OWNED_BY = "unsloth-studio"
+
 
 def _openai_model_objects() -> list[dict]:
     """The model objects GET /v1/models exposes (one per loaded local backend).
@@ -6879,7 +6882,7 @@ def _openai_model_objects() -> list[dict]:
             "id": _llama_public_model_id(llama_backend),
             "object": "model",
             "created": _created,
-            "owned_by": "local",
+            "owned_by": _OWNED_BY,
         }
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
@@ -6900,7 +6903,7 @@ def _openai_model_objects() -> list[dict]:
             "id": public_model_id(backend.active_model_name),
             "object": "model",
             "created": _created,
-            "owned_by": "local",
+            "owned_by": _OWNED_BY,
         }
         _ctx = _positive_int_or_none(model_info.get("context_length"))
         if _ctx is None:
@@ -6918,46 +6921,86 @@ def _openai_model_objects() -> list[dict]:
     return models
 
 
-async def _auto_switch_extra_model_objects(existing: list[dict]) -> list[dict]:
-    """Model objects for switch-eligible GGUFs not already listed. Empty unless
-    auto-switch is on, so default ``/v1/models`` (loaded model only) is unchanged."""
-    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
-
-    if not get_openai_auto_switch_enabled():
-        return []
-    from core.inference.local_model_resolver import list_switch_eligible_ids
-
-    try:
-        # Off the loop: a cold-cache rebuild walks the models dir + HF cache.
-        ids = await asyncio.to_thread(list_switch_eligible_ids)
-    except Exception:
-        return []
-    loaded = {obj["id"].lower() for obj in existing}
-    created = int(time.time())
-    return [
-        {"id": mid, "object": "model", "created": created, "owned_by": "local"}
-        for mid in ids
-        if mid.lower() not in loaded
-    ]
+# Brief cache for the local-model filesystem scan so repeated /v1/models calls
+# don't rescan the HF cache and models dirs on every request.
+_CATALOG_CACHE: dict = {"at": 0.0, "models": []}
+_CATALOG_TTL_S = 30.0
+_CATALOG_LOCK = asyncio.Lock()
 
 
-async def _all_openai_model_objects() -> list[dict]:
-    """Loaded model(s) plus, when auto-switch is on, every switch-eligible GGUF."""
-    objects = _openai_model_objects()
-    objects += await _auto_switch_extra_model_objects(objects)
-    return objects
+async def _cached_local_catalog() -> list:
+    """Locally available models (models dir + HF caches + LM Studio + scan
+    folders), cached for a few seconds. Returns a list of LocalModelInfo.
+
+    The scan walks several directories and stats many files, so it runs in a
+    worker thread (asyncio.to_thread) -- calling it inline would block the event
+    loop and stall every concurrent request and in-flight inference stream. A
+    lock with a double-check collapses a burst of simultaneous /v1/models calls
+    into a single scan instead of one per request."""
+    # Validity is keyed on "at" (set only after a scan), not on list contents, so
+    # an empty/errored scan is still cached instead of rescanning on every poll.
+    now = time.monotonic()
+    if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+        return _CATALOG_CACHE["models"]
+    async with _CATALOG_LOCK:
+        now = time.monotonic()
+        if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+            return _CATALOG_CACHE["models"]
+        try:
+            from routes.models import collect_local_models
+            _CATALOG_CACHE["models"] = await asyncio.to_thread(
+                collect_local_models, Path("./models").resolve()
+            )
+        except Exception as exc:
+            logger.debug("model catalog scan failed: %s", exc)
+            _CATALOG_CACHE["models"] = []
+        # Stamp after the scan, not the pre-scan "now": a scan slower than the TTL
+        # would otherwise leave the cache already expired, so every waiter rescans.
+        _CATALOG_CACHE["at"] = time.monotonic()
+    return _CATALOG_CACHE["models"]
+
+
+async def _openai_catalog_objects() -> list[dict]:
+    """Every model the server knows about for ``GET /v1/models``: the loaded
+    model(s) plus locally available (downloaded/cached) models discovered by
+    scanning. Loaded entries keep their context fields and are marked
+    ``loaded: true``. All ids are clean public ids (never absolute paths)."""
+    _created = int(time.time())
+    # Loaded models first (clean ids + context fields), marked loaded.
+    by_id: dict[str, dict] = {}
+    for entry in _openai_model_objects():
+        by_id[entry["id"]] = {**entry, "loaded": True}
+
+    # Locally available (downloaded/cached) models that are not already loaded.
+    for info in await _cached_local_catalog():
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        if not cid or cid in by_id:
+            continue
+        obj = {
+            "id": cid,
+            "object": "model",
+            "created": _created,
+            "owned_by": _OWNED_BY,
+            "loaded": False,
+        }
+        display = getattr(info, "display_name", None)
+        if display:
+            obj["display_name"] = display
+        by_id[cid] = obj
+
+    return list(by_id.values())
 
 
 @router.get("/models")
 async def openai_list_models(current_subject: str = Depends(get_current_subject)):
     """
-    OpenAI-compatible model listing endpoint.
+    OpenAI-compatible model listing endpoint (``GET /v1/models``).
 
-    Returns the currently loaded model (and, when auto-switch is enabled, every
-    downloaded GGUF it can swap to) in the format OpenAI-compatible clients
-    expect (``GET /v1/models``).
+    Lists every model available on this server -- the loaded model(s) plus
+    locally available (downloaded/cached) models -- not only what is resident in
+    memory. Each entry carries a clean public id and a ``loaded`` flag.
     """
-    return {"object": "list", "data": await _all_openai_model_objects()}
+    return {"object": "list", "data": await _openai_catalog_objects()}
 
 
 @router.get("/models/{model_id:path}")
@@ -6965,12 +7008,20 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     """
     OpenAI-compatible single-model retrieval endpoint (``GET /v1/models/{id}``).
 
-    Returns the bare model object when ``model_id`` matches a loaded local
-    model (or a switch-eligible GGUF when auto-switch is on), or 404
-    model_not_found otherwise. Defined after the LIST route so it does not
-    shadow it; ``{model_id:path}`` keeps ids with slashes intact.
+    Returns the bare model object when ``model_id`` matches a known model
+    (loaded or locally available), or 404 model_not_found otherwise. Defined
+    after the LIST route so it does not shadow it; ``{model_id:path}`` keeps ids
+    with slashes intact.
     """
-    objects = await _all_openai_model_objects()
+    from core.inference.model_ids import model_id_matches
+
+    # Loaded models resolve without a catalog scan (the common case); only build
+    # the full catalog -- which may hit the filesystem -- for unloaded ids.
+    for entry in _openai_model_objects():
+        if entry["id"] == model_id:
+            return {**entry, "loaded": True}
+
+    objects = await _openai_catalog_objects()
     for model in objects:
         # Case-insensitive to match the resolver, which lowercases its index.
         mid = model.get("id")
@@ -6985,7 +7036,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
         llama_backend.model_identifier if llama_backend.is_loaded else None,
         backend.active_model_name or None,
     ):
-        if raw and model_id == raw:
+        if raw and model_id_matches(model_id, raw):
             clean = public_model_id(raw)
             for model in objects:
                 if model["id"] == clean:
