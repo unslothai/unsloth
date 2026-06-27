@@ -245,3 +245,22 @@ def test_malformed_closed_gemma_span_is_stripped():
         strip_tool_call_markup('before <|tool_call>{"name":"x"}<tool_call|> after')
         == "before  after"
     )
+
+
+def test_valid_call_after_missing_close_is_recovered():
+    # A balanced call missing its own close marker must not swallow a later valid
+    # closed call: nesting is decided by the brace region, not an envelope that
+    # would run to EOF, so the second call is still recovered.
+    text = "<|tool_call>call:a{x:1} <|tool_call>call:b{y:2}<tool_call|>"
+    names_inc = [c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = True)]
+    assert "b" in names_inc, names_inc
+    names_strict = [c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = False)]
+    assert names_strict == ["b"], names_strict
+
+
+def test_strip_non_final_keeps_incomplete_gemma_block():
+    # Non-final must preserve an incomplete Gemma block (matching JSON/function),
+    # while final strips the unclosed remainder to EOF.
+    text = "before <|tool_call>call:t{"
+    assert strip_tool_call_markup(text) == text
+    assert strip_tool_call_markup(text, final = True) == "before"

@@ -11,28 +11,38 @@ import json
 import re
 
 # Tool XML stripping patterns. Hyphen in the name class matches dashed MCP names
-# (mcp__srv__list-issues). The Gemma marker is anchored to (?:<tool_call|>|\Z)
-# (like _TOOL_XML_RE) so an unclosed run strips linearly, not quadratically;
-# strip_tool_call_markup uses the quote-aware _strip_gemma_native_spans instead,
-# leaving this regex as the streaming fallback.
+# (mcp__srv__list-issues). The non-final list uses a closed-only Gemma pattern so
+# an incomplete block is preserved (matching JSON/function); the final list keeps
+# the same pattern order but lets the Gemma span run to its close marker OR EOF,
+# then sweeps any unclosed JSON/function remainder to EOF.
 _TC_JSON_CLOSED_PAT = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
-_TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?(?:<tool_call\|>|\Z)", re.DOTALL)
+_TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL)
+# Final-only variant: an unclosed Gemma run also strips to EOF. The \Z alternative
+# makes the lazy match short-circuit on the first opener, so it stays linear.
+_TC_GEMMA_CLOSED_OR_EOF_PAT = re.compile(r"<\|tool_call>.*?(?:<tool_call\|>|\Z)", re.DOTALL)
 _TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL)
+_TC_GEMMA_END_PAT = re.compile(r"<tool_call\|>")
 _TOOL_CLOSED_PATS = [
     _TC_JSON_CLOSED_PAT,
     _TC_GEMMA_CLOSED_PAT,
-    re.compile(r"<tool_call\|>"),
+    _TC_GEMMA_END_PAT,
     _TC_FUNC_CLOSED_PAT,
 ]
-_TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
+_TOOL_ALL_PATS = [
+    _TC_JSON_CLOSED_PAT,
+    _TC_GEMMA_CLOSED_OR_EOF_PAT,
+    _TC_GEMMA_END_PAT,
+    _TC_FUNC_CLOSED_PAT,
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
 # A lazy closed-pair pattern rescans to EOF from every opener when its close
 # token is absent (O(n^2); O(n^3) re-run per streamed token). Skip the doomed
-# sweep when the token is missing -- identical output, no backtracking.
+# sweep when the token is missing -- identical output, no backtracking. The
+# close-or-EOF variant needs no guard: its \Z short-circuits the first opener.
 _PAT_REQUIRED_TOKEN = {
     _TC_JSON_CLOSED_PAT: "</tool_call>",
+    _TC_GEMMA_CLOSED_PAT: "<tool_call|>",
     _TC_FUNC_CLOSED_PAT: "</function>",
 }
 
@@ -320,39 +330,34 @@ def parse_tool_calls_from_text(
       <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
     """
     tool_calls: list[dict] = []
-    # Collect JSON/Gemma markers with their full envelope [start, env_end): a
-    # balanced call runs to its close marker (searched after the braces, since
-    # junk can sit between } and the marker), an unbalanced/unclosed one runs to
-    # EOF. A marker starting inside another's envelope is that call's argument
-    # data, never its own call. A marker inside an open <function=...><parameter=>
-    # value is that parameter's data, so skip it.
-    markers = []  # (start, brace_end, env_end, kind, match); brace_end < 0 = unclosed
+    # Collect JSON/Gemma markers. Nesting is decided by the brace region only --
+    # [start, brace_end], or [start, EOF) when the braces never close -- so a
+    # marker starting inside another's braces is that call's argument data, while
+    # a later balanced call after one with a missing close is still recovered (not
+    # swallowed to EOF). The XML fallback instead excludes each marker's envelope
+    # (start to its close marker, searched after the braces, or EOF) so trailing
+    # markup before the close cannot escape. A marker inside an open
+    # <function=...><parameter=> value is that parameter's data, so skip it.
+    markers = []  # (start, brace_end, kind, match); brace_end < 0 = unclosed
     for start_re, gemma, kind in (
         (_TC_JSON_START_RE, False, "json"),
         (_TC_GEMMA_START_RE, True, "gemma"),
     ):
-        close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
         for m in start_re.finditer(content):
             if _inside_open_parameter(content, m.start()):
                 continue
             brace_end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = gemma)
-            if brace_end < 0:
-                env_end = len(content)
-            else:
-                cm = close_re.search(content, brace_end + 1)
-                env_end = cm.end() if cm else len(content)
-            markers.append((m.start(), brace_end, env_end, kind, m))
+            markers.append((m.start(), brace_end, kind, m))
     markers.sort(key = lambda c: c[0])
 
-    envelopes = [(s, e) for s, _be, e, _k, _m in markers]
-    for idx, (start, brace_end, env_end, kind, m) in enumerate(markers):
-        # Skip a marker nested in another marker's envelope -- it is the outer
-        # call's argument data (covers an unclosed outer, whose envelope is EOF),
-        # so a nested or post-brace marker is never run as its own call.
-        if any(s <= start < e for j, (s, e) in enumerate(envelopes) if j != idx):
+    brace_regions = [(s, be if be >= 0 else len(content)) for s, be, _k, _m in markers]
+    for idx, (start, brace_end, kind, m) in enumerate(markers):
+        # Skip a marker whose start falls in another marker's brace region: it is
+        # that outer call's argument data, not its own call.
+        if any(s <= start <= e for j, (s, e) in enumerate(brace_regions) if j != idx):
             continue
         if brace_end < 0:
-            continue  # unclosed: not parseable; its envelope still excludes XML below
+            continue  # unclosed: not parseable; the fallback still excludes its XML
         if not allow_incomplete:
             tail = content[brace_end + 1 :].lstrip()
             close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
@@ -379,9 +384,17 @@ def parse_tool_calls_from_text(
         )
 
     if not tool_calls:
-        # Exclude <function=> markers inside any marker's envelope (its argument
-        # data, even if the call failed to parse), so nested XML in a malformed
-        # call cannot escape into an executable tool call.
+        # Exclude <function=> markers inside any marker's envelope -- its data
+        # through the close marker (searched after the braces) or EOF, even if the
+        # call failed to parse -- so nested XML cannot escape as a real call.
+        envelopes = []
+        for s, be, kind, _m in markers:
+            if be < 0:
+                envelopes.append((s, len(content)))
+            else:
+                close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
+                cm = close_re.search(content, be + 1)
+                envelopes.append((s, cm.end() if cm else len(content)))
         func_starts = [
             fm
             for fm in _TC_FUNC_START_RE.finditer(content)
