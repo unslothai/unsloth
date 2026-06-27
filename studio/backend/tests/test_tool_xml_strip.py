@@ -24,6 +24,11 @@ import re as _re
 _src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
+# The lazy ``(.*?)\n\)`` could grab a shorter expression if an arm is ever wrapped;
+# pin the DeepSeek + bare-Kimi arms so a silent truncation fails loudly here.
+assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(1), (
+    "extracted _TOOL_XML_RE is missing expected arms (extraction truncated?)"
+)
 # The regex reuses the parser's shared DeepSeek opener alternation; provide it so
 # the extracted ``_re.compile`` expression resolves the same source.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
@@ -37,6 +42,9 @@ _helper = _re.search(
     _src,
 )
 assert _helper, "could not extract _strip_tool_xml_for_display source"
+# ``(?:    .+\n)+`` stops at the first blank/under-indented line, so confirm the
+# body actually reached the ``_TOOL_XML_RE.sub`` call rather than truncating early.
+assert "_TOOL_XML_RE" in _helper.group(0), "extracted helper body looks truncated"
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 

@@ -375,12 +375,10 @@ def test_strip_tool_markup_handles_deepseek_envelope():
         "<｜tool▁calls▁end｜>"
         " after"
     )
-    assert "tool" not in strip_tool_markup(
-        text, final = True
-    ).lower() or "after" in strip_tool_markup(text, final = True)
     stripped = strip_tool_markup(text, final = True)
     assert "before" in stripped and "after" in stripped
     assert "｜tool▁" not in stripped
+    assert "get_time" not in stripped and "Tokyo" not in stripped
 
 
 def test_strip_tool_markup_handles_kimi_section():
