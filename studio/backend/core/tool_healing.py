@@ -73,9 +73,11 @@ _FUNC_CLOSE_TAG = "</function>"
 # (`meet at 10:00, 11:00 tomorrow`), not a new key.
 _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
 
-# Thinking blocks stripped before any tool-call pattern is matched. Accept an
-# unclosed trailing block during streaming, else a tool call rehearsed inside an
-# open <think> survives this pass and may be executed as a real call.
+# Spans of thinking blocks: a tool-call candidate STARTING inside one is a
+# rehearsal and is skipped (the block is kept, not stripped, so a literal tag in a
+# real argument survives). The trailing ``$`` accepts an unclosed block during
+# streaming, else a call rehearsed inside an open <think> would fall outside every
+# span and could be executed as a real call.
 _THINK_TAG_RE = re.compile(r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL)
 
 # Mistral ``[TOOL_CALLS]name{json}`` prefix. The name char-class includes the
@@ -396,8 +398,8 @@ def parse_tool_calls_from_text(
       [TOOL_CALLS]web_search{"query":"..."}        (Mistral / Devstral fallback)
       web_search[ARGS]{"query":"..."}             (reasoning-model rehearsal)
 
-    ``<think>`` and ``[THINK]`` blocks are stripped first so a rehearsed call
-    inside an open reasoning block is not executed as a real call.
+    A call rehearsed inside a ``<think>`` / ``[THINK]`` block is skipped, not
+    executed; the block is kept so a literal tag in a real argument is preserved.
     """
     # A tool-call marker inside a <think>/[THINK] reasoning block is a rehearsal,
     # not a real call, so skip any candidate that STARTS inside one. We no longer
