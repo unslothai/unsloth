@@ -15,17 +15,37 @@ import re
 # (like _TOOL_XML_RE) so an unclosed run strips linearly, not quadratically;
 # strip_tool_call_markup uses the quote-aware _strip_gemma_native_spans instead,
 # leaving this regex as the streaming fallback.
+_TC_JSON_CLOSED_PAT = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 _TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?(?:<tool_call\|>|\Z)", re.DOTALL)
+_TC_FUNC_CLOSED_PAT = re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL)
 _TOOL_CLOSED_PATS = [
-    re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
+    _TC_JSON_CLOSED_PAT,
     _TC_GEMMA_CLOSED_PAT,
     re.compile(r"<tool_call\|>"),
-    re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
+    _TC_FUNC_CLOSED_PAT,
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
+# A lazy closed-pair pattern rescans to EOF from every opener when its close
+# token is absent (O(n^2); O(n^3) re-run per streamed token). Skip the doomed
+# sweep when the token is missing -- identical output, no backtracking.
+_PAT_REQUIRED_TOKEN = {
+    _TC_JSON_CLOSED_PAT: "</tool_call>",
+    _TC_FUNC_CLOSED_PAT: "</function>",
+}
+
+
+def strip_tool_patterns(text: str, patterns) -> str:
+    """Apply strip ``patterns`` in order, skipping a closed-pair pass whose close
+    token is absent (avoids its quadratic no-match rescan)."""
+    for pat in patterns:
+        token = _PAT_REQUIRED_TOKEN.get(pat)
+        if token is not None and token not in text:
+            continue
+        text = pat.sub("", text)
+    return text
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
@@ -484,6 +504,5 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     # mop up any malformed Gemma span the helper could not match.
     text = _strip_gemma_native_spans(text, final = final)
     patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
-    for pat in patterns:
-        text = pat.sub("", text)
+    text = strip_tool_patterns(text, patterns)
     return text.strip() if final else text

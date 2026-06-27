@@ -42,6 +42,7 @@ from core.tool_healing import (
     _TOOL_ALL_PATS,
     _strip_gemma_native_spans,
     strip_tool_call_markup,
+    strip_tool_patterns,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -7864,9 +7865,7 @@ class LlamaCppBackend:
             # Quote-aware Gemma spans first, else a literal <tool_call|> inside a
             # quoted argument truncates the regex match and leaks the suffix.
             text = _strip_gemma_native_spans(text, final = True)
-            for pat in _TOOL_ALL_PATS:
-                text = pat.sub("", text)
-            return text
+            return strip_tool_patterns(text, _TOOL_ALL_PATS)
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its

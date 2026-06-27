@@ -29,6 +29,7 @@ from core.inference.tool_call_parser import (
     TOOL_XML_SIGNALS,
     parse_tool_calls_from_text,
     strip_tool_markup,
+    strip_tool_patterns,
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
@@ -64,9 +65,7 @@ def strip_tool_markup_streaming(
     # Quote-aware Gemma spans first, else a literal <tool_call|> inside a quoted
     # argument truncates the regex match and leaks the suffix into display.
     text = _strip_gemma_native_spans(text, final = True)
-    for pat in _TOOL_ALL_PATS:
-        text = pat.sub("", text)
-    return text
+    return strip_tool_patterns(text, _TOOL_ALL_PATS)
 
 
 def _strip_tool_markup_final(
