@@ -4049,7 +4049,6 @@ def _unsloth_save_compressed_tensors(
             if datasets:
                 try:
                     from huggingface_hub import metadata_update
-
                     metadata_update(repo_id, {"datasets": datasets}, overwrite = True, token = token)
                 except Exception as meta_err:
                     logger.warning_once(

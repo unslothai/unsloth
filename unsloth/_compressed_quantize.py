@@ -237,7 +237,6 @@ def main():
 
             try:
                 from llmcompressor.core import reset_session
-
                 reset_session()
             except Exception:
                 pass
