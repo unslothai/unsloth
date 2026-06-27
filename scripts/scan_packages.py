@@ -641,6 +641,13 @@ def _hidden_payload_findings(
     removed = "".join(o if o != s else " " for o, s in zip(original, code))
     out = []
 
+    # The visible exec/eval line is what makes the hidden string executable, so
+    # bind it into every finding's evidence: otherwise a reviewed false positive
+    # that keeps the same hidden text but flips a harmless `eval("1+1")` to
+    # `exec(__doc__)` (now running the payload) keeps the same key and stays
+    # suppressed. Taken from `stripped` (real code), where the exec/eval lives.
+    trigger = _extract_evidence(stripped, RE_EXEC_EVAL)
+
     def _hidden(pat):
         # Carrier present in a blanked region but NOT in real code. A carrier in
         # real code is already caught by the normal check, so restricting to
@@ -655,7 +662,7 @@ def _hidden_payload_findings(
                     package,
                     filename,
                     "exec/eval with payload hidden in a docstring/string",
-                    f"{label}: {_extract_evidence(removed, pat)}",
+                    f"exec: {trigger}\n{label}: {_extract_evidence(removed, pat)}",
                 )
             )
     # Fetch-then-run dropper: a network call AND an os/subprocess exec that both
@@ -669,6 +676,7 @@ def _hidden_payload_findings(
                 package,
                 filename,
                 "exec/eval with hidden network+exec payload",
+                f"exec: {trigger}\n"
                 f"network+exec: {_extract_evidence(removed, RE_NETWORK)} | "
                 f"{_extract_evidence(removed, RE_SUBPROCESS)}",
             )
@@ -1158,11 +1166,6 @@ _MAX_MULTILINE_LINES = 12
 # soft cap and cannot swallow unrelated code.
 _MAX_CALL_LINES = 40  # soft cap: how far a NEVER-closing opener is followed
 _MAX_CALL_HARD_LINES = 200  # hard cap: how far a closing call is followed to bind it
-# A span larger than this is a greedy DOTALL match bridging anchors across
-# unrelated code (e.g. ``import socket`` near the top and ``subprocess`` near the
-# bottom of a multi-thousand-line test file), not a single appended payload, so
-# it is not recorded when the per-line pass already bound the signal lines.
-_GIANT_SPAN_LINES = 60
 
 # Cap a single rendered line. A short line is shown verbatim; a long (e.g.
 # minified one-liner) line is shown as a bounded prefix plus a sha256 of the full
@@ -1344,19 +1347,6 @@ def _scan_line_end(view: list[str], start: int) -> int:
     return min(len(view), start + _MAX_CALL_LINES - 1)
 
 
-def _render_anchor_span(lines: list[str], start: int, end: int) -> str:
-    """Evidence for a giant bridged DOTALL span: the head and tail anchor lines
-    plus a digest over just their code (no line numbers, so a pure line shift is
-    stable). Binds the ends of the match -- where an appended cross-line payload
-    adds or moves an anchor -- without digesting the bridged middle, which would
-    drift on unrelated edits. Head/tail are display-capped; the digest fully binds
-    their rstripped code."""
-    head = lines[start - 1].rstrip()
-    tail = lines[end - 1].rstrip()
-    digest = hashlib.sha256((head + "\n" + tail).encode("utf-8", "replace")).hexdigest()
-    return f"L{start}: {_cap_line(head)} .. {_cap_line(tail)} sha256:{digest}"
-
-
 def _logical_line_end(sl_blanked: list[str], ml_blanked: list[str], start: int) -> int:
     """1-based line where the statement opened at ``start`` closes, so a multi-line
     call binds its argument lines (a changed URL/body on a continuation line
@@ -1456,7 +1446,6 @@ def _extract_evidence(
             if max_matches and len(out) >= max_matches:
                 return " | ".join(out)
 
-    had_perline = bool(out)
     # Precompute newline offsets once so mapping a match offset to its 1-based line
     # is O(log n) (bisect) rather than O(n) (content.count) per match; the latter
     # made this fallback quadratic on a minified file with thousands of matches.
@@ -1466,25 +1455,14 @@ def _extract_evidence(
         end = bisect.bisect_left(nl, m.end()) + 1
         if end <= start or (start, end) in seen:
             continue  # single-line matches are already covered by the pass above
-        if had_perline and end - start + 1 > _GIANT_SPAN_LINES:
-            # A giant greedy DOTALL span bridges its anchors across unrelated code,
-            # so digesting the whole middle would drift on any churn there (a dep
-            # bump editing a bridged line). But dropping the match entirely lets an
-            # appended cross-line payload -- a new `/tmp/...` line and a later
-            # `subprocess` line that share no single line, so the per-line pass
-            # never bound them -- ride the unchanged key. Bind only the head and
-            # tail anchor lines (the ends of the bridged match): an added or moved
-            # anchor (e.g. a new `subprocess.run` that becomes the span's tail)
-            # reopens, while churn in the bridged interior stays stable. The digest
-            # is over the anchor code (no line numbers) so a pure line shift does
-            # not reopen.
-            if (start, end) not in seen:
-                if len(out) < _MAX_EVIDENCE_SPANS:
-                    seen.add((start, end))
-                _emit(_render_anchor_span(lines, start, end))
-            if max_matches and len(out) >= max_matches:
-                break
-            continue
+        # A giant greedy DOTALL span is bound by the full digest of its content
+        # (via _render, which renders a >12-line span as a head line plus a sha256
+        # of the whole span). Binding only the anchors leaves the bridged interior
+        # unhashed, so an attacker could insert a new cross-line payload (a `/tmp`
+        # line and a later `subprocess` line, sharing no single line so the
+        # per-line pass never binds them) between unchanged outer anchors and keep
+        # the same key. Digesting the interior reopens on any such change; a pure
+        # line shift stays stable because the digest is over the markerless code.
         if len(out) < _MAX_EVIDENCE_SPANS:
             seen.add((start, end))
         _emit(_render(start, end))
@@ -1582,12 +1560,14 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                 _extract_evidence(content, RE_WORKFLOW_INJECT),
             )
         )
-    if is_large:
-        # Pin the whole bundle's content via a digest. Standalone HIGH when nothing
-        # else fired; otherwise append it to every finding's evidence, so a large
-        # bundle keyed only on an unchanged signature line (e.g. a single _0x...
-        # hex-var match) still reopens when payload code elsewhere in the bundle
-        # changes instead of riding the matched-line evidence.
+    # Pin the whole file's content digest to EVERY JS finding (not just large
+    # bundles). _extract_evidence blanks only Python string forms before counting
+    # brackets, so a JS backtick template literal that contains `)` can close a
+    # call's span early and omit the option/body lines that follow; binding the
+    # full content means a change to those omitted lines still reopens instead of
+    # riding the matched-line evidence. A large bundle with no other heuristic is a
+    # standalone HIGH.
+    if findings or is_large:
         digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
         if findings:
             for f in findings:

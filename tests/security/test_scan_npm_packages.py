@@ -815,6 +815,16 @@ def test_outbound_host_config_reindent_is_stable():
     assert snp._finding_key(_host_finding(tight)) == snp._finding_key(_host_finding(loose))
 
 
+def test_evidence_preserves_intra_string_whitespace():
+    # Whitespace OUTSIDE string literals is normalized (reindent-stable), but
+    # whitespace INSIDE a literal is preserved, so a changed payload body
+    # (body: 'a b' -> 'a  b') reopens the key instead of being erased along with
+    # indentation.
+    a = "request('http://169.254.169.254/x', {\n  body: 'a b',\n});\n"
+    b = "request('http://169.254.169.254/x', {\n  body: 'a    b',\n});\n"
+    assert snp._finding_key(_host_finding(a)) != snp._finding_key(_host_finding(b))
+
+
 def test_outbound_cred_surface_binds_context():
     # The outbound cred-surface host finding records the host WITH its URL path /
     # fetch call, so changing the outbound path or headers reopens the key rather

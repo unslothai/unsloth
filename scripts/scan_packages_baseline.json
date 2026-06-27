@@ -1471,16 +1471,24 @@
       "file": "multiprocess/tests/__init__.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L3355:                     os.dup2(conn.fileno(), i) | L3387:                          \"test needs os.dup2()\") | L3405:             os.dup2(fd, newfd) | L19: import socket ..                                      stderr=subprocess.PIPE) sha256:a5410c8d400eb35bdcdefd23845b7caf59d467b697f602b029e385606510acd6",
-      "evidence_hash": "f494917158f8f19c87d4e1c108c40dccdab915718bab5d0ec8a6921c0c99d32e"
+      "evidence": "L3355:                     os.dup2(conn.fileno(), i) | L3387:                          \"test needs os.dup2()\") | L3405:             os.dup2(fd, newfd) | L19: import socket sha256:26a745abdc7e89da28ab943394234d8ccb415e805477c3cc1f7d4766341a4c4c",
+      "evidence_hash": "a6b9bb85e9bb6682ab0dea4f95fd9266e8802f118c76d86dd87f7ab5864872cf"
     },
     {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", | L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", ..             except subprocess.TimeoutExpired: sha256:faa655f4958f4fe6db5a3edee82aee79f28f85598b3c0f4b82bdad46b3b388a1",
-      "evidence_hash": "0d58e81e3c44882d49c78916d816c605708e50e0d04433294ece875525c6182c"
+      "evidence": "L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", | L308:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", sha256:78268349021e21bedcd2eaaa5b4a71b0de1d52e023ada914dfdc09515ee1aad8",
+      "evidence_hash": "590fe1c96c442fbea5eb8642650257bc0b0199e919b9bacdb11dfa767b6fe839"
+    },
+    {
+      "package": "multiprocess",
+      "file": "multiprocess/tests/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L3521:                     os.dup2(conn.fileno(), i) | L3553:                          \"test needs os.dup2()\") | L3571:             os.dup2(fd, newfd) | L20: import socket sha256:07d2933301c0dbeeb6e42381687827d8dd7cfd7471986c559ca64283d5ae6e24",
+      "evidence_hash": "db1f4ca69865ec3911d7450fe11d212b817139deda21cd7a4ee32d547a8dc452"
     }
   ]
 }
