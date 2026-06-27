@@ -165,7 +165,9 @@ def main():
             )
         tokenizer = None
 
-    recipe = QuantizationModifier(targets = "Linear", scheme = args.scheme, ignore = ["lm_head"])
+    def _make_recipe():
+        return QuantizationModifier(targets = "Linear", scheme = args.scheme, ignore = ["lm_head"])
+
     if args.needs_calibration:
         ds = _build_calibration_dataset(
             tokenizer,
@@ -174,17 +176,36 @@ def main():
             args.num_calibration_samples,
             args.max_seq_length,
         )
-        # "basic" pipeline runs a normal forward (no AST tracing / sequential splitting).
-        oneshot(
-            model = model,
-            dataset = ds,
-            recipe = recipe,
-            max_seq_length = args.max_seq_length,
-            num_calibration_samples = args.num_calibration_samples,
-            pipeline = "basic",
-        )
+        # Let llm-compressor pick its default (sequential) pipeline: it onloads layer-by-layer,
+        # so models that do not fit in memory at once can still calibrate. Running here in a clean
+        # process (Unsloth's attention patches are absent) means tracing works; fall back to the
+        # memory-hungry "basic" pipeline only if tracing fails.
+        try:
+            oneshot(
+                model = model,
+                dataset = ds,
+                recipe = _make_recipe(),
+                max_seq_length = args.max_seq_length,
+                num_calibration_samples = args.num_calibration_samples,
+            )
+        except Exception as e:
+            print(
+                f"Unsloth: sequential calibration pipeline failed ({type(e).__name__}: {e}); "
+                "retrying with the 'basic' pipeline (needs the full model to fit in memory).",
+                flush = True,
+            )
+            model = _from_pretrained(auto_model, args.model, args.trust_remote_code)
+            model.eval()
+            oneshot(
+                model = model,
+                dataset = ds,
+                recipe = _make_recipe(),
+                max_seq_length = args.max_seq_length,
+                num_calibration_samples = args.num_calibration_samples,
+                pipeline = "basic",
+            )
     else:
-        oneshot(model = model, recipe = recipe)
+        oneshot(model = model, recipe = _make_recipe())
 
     os.makedirs(args.out, exist_ok = True)
     model.save_pretrained(args.out, save_compressed = True)

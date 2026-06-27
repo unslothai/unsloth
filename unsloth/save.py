@@ -3859,7 +3859,21 @@ def _unsloth_save_compressed_tensors(
 
     # Wrap the body so the isolated temp dirs are always cleaned up, even when the merge,
     # quantization, validation, or hub upload raises.
+    api = None
     try:
+        # Validate Hub access up front (a bad token / denied repo should fail before the expensive
+        # merge and quantization, matching the normal push path). create_repo is idempotent.
+        if push_to_hub:
+            from huggingface_hub import HfApi
+
+            api = HfApi(token = token)
+            api.create_repo(
+                repo_id = repo_id,
+                repo_type = "model",
+                private = merge_kwargs.get("private", None),
+                exist_ok = True,
+            )
+
         # 3) Merge to 16bit at local_dir (kept for local saves) via unsloth_generic_save, so LoRA
         #    adapters are merged and full-finetuned models written in 16bit consistently. Extra
         #    save kwargs (state_dict, max_shard_size, ...) flow through merge_kwargs.
@@ -3986,17 +4000,9 @@ def _unsloth_save_compressed_tensors(
             )
 
         # 8) Optional hub upload of the compressed artifact (not the intermediate 16bit one).
+        #    The repo was already created/validated up front, so just upload here.
         if push_to_hub:
             print(f"Unsloth: Uploading {scheme} checkpoint to '{repo_id}' ...")
-            from huggingface_hub import HfApi
-
-            api = HfApi(token = token)
-            api.create_repo(
-                repo_id = repo_id,
-                repo_type = "model",
-                private = merge_kwargs.get("private", None),
-                exist_ok = True,
-            )
             api.upload_folder(
                 folder_path = out_dir,
                 repo_id = repo_id,
