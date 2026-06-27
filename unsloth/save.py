@@ -3933,7 +3933,6 @@ def _unsloth_save_compressed_tensors(
                 # row subsample below applies and we do not save every split to the temp dir.
                 try:
                     from datasets import DatasetDict
-
                     if isinstance(ds_to_save, DatasetDict):
                         ds_to_save = ds_to_save.get("train", None) or next(
                             iter(ds_to_save.values())
