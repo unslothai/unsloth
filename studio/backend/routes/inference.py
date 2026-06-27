@@ -2094,17 +2094,19 @@ def _carry_preserved_tensor_intent(
 
 def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     """True when a request deliberately drops tensor intent: an explicit
-    tensor_parallel field change or a non-tensor --split-mode override -- NOT just
-    any unrelated pass-through extra (e.g. --top-k), which must keep a preserved
-    multi-GPU layer fallback rather than collapse it to one GPU. Shared by the
-    already-loaded dedup and the load carry-forward so the two agree (#6659)."""
+    tensor_parallel field change, a non-tensor --split-mode override, or an explicit
+    clear of extras (llama_extra_args=[]) that wipes an extras-driven split mode --
+    NOT an unrelated pass-through extra (e.g. --top-k) or inherit (None), which keep a
+    preserved multi-GPU layer fallback. Shared by the already-loaded dedup and the
+    load carry-forward so the two agree (#6659)."""
     fields_set = getattr(request, "model_fields_set", set())
-    explicit = "tensor_parallel" in fields_set or (
-        parse_split_mode_override(request.llama_extra_args) is not None
+    extras = request.llama_extra_args
+    explicit = (
+        "tensor_parallel" in fields_set
+        or parse_split_mode_override(extras) is not None
+        or ("llama_extra_args" in fields_set and extras is not None and not extras)
     )
-    return explicit and not _effective_tensor_parallel(
-        request.llama_extra_args, request.tensor_parallel
-    )
+    return explicit and not _effective_tensor_parallel(extras, request.tensor_parallel)
 
 
 def _request_matches_loaded_settings(

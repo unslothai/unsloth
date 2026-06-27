@@ -699,9 +699,10 @@ def test_tensor_off_under_env_tensor_does_not_reload_loop(monkeypatch):
 
 
 def test_is_explicit_tensor_drop_truth_table():
-    """Only an explicit tensor_parallel field change or a non-tensor --split-mode
-    override is a drop; an unrelated pass-through extra (e.g. --top-k) is not, so a
-    preserved fallback isn't collapsed to one GPU by it (Codex #6659)."""
+    """A drop is an explicit tensor_parallel change, a non-tensor --split-mode override,
+    or an explicit clear of extras (llama_extra_args=[]); an unrelated pass-through extra
+    (--top-k) or inherit (None) is not, so a preserved fallback isn't collapsed by it,
+    while a clear of extras-driven tensor intent still drops (Codex #6659)."""
     from models.inference import LoadRequest
 
     f = _load_inference_routes_module()._is_explicit_tensor_drop
@@ -714,8 +715,10 @@ def test_is_explicit_tensor_drop_truth_table():
         f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "tensor"]))
         is False
     )
-    # The regression: an unrelated extra must NOT count as a tensor drop.
+    # An unrelated extra must NOT count as a tensor drop (carry the intent).
     assert f(LoadRequest(model_path = "owner/repo", llama_extra_args = ["--top-k", "20"])) is False
+    # An explicit clear of extras wipes an extras-driven split mode -> drop.
+    assert f(LoadRequest(model_path = "owner/repo", llama_extra_args = [])) is True
     assert f(LoadRequest(model_path = "owner/repo")) is False
 
 
