@@ -166,10 +166,13 @@ _LLAMA3_PYTHON_TAG = "<|python_tag|>"
 _LLAMA3_PY_CALL_RE = re.compile(
     r"<\|python_tag\|>\s*([\w\.\-]+)\s*\.\s*call\s*\(",
 )
-_LLAMA3_KV_RE = re.compile(
-    r"""(\w+)\s*=\s*(?:"((?:\\.|[^"\\])*)"|(-?\d+(?:\.\d+)?)|(true|false|null))""",
-    re.VERBOSE,
-)
+# Llama-3 ``.call(k=v, ...)`` kwarg tokens. Scanned by hand below (not finditer)
+# to stay linear on a truncated/unterminated body; finditer retries every offset
+# of a long word run / unterminated quote (quadratic ReDoS).
+_LLAMA3_KEY_RE = re.compile(r"\w+")
+_LLAMA3_WS_RE = re.compile(r"\s*")
+_LLAMA3_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_LLAMA3_LIT_RE = re.compile(r"true|false|null")
 
 # Mistral ``[TOOL_CALLS]`` trigger. v11+ chains them, each followed by a bare name
 # plus ``{json}`` (Magistral) or ``[ARGS]{json}`` (Ministral / Large 3).
@@ -551,6 +554,66 @@ def _parse_function_xml(
     return out
 
 
+def _llama3_kv_value(body: str, p: int, n: int) -> tuple[Any, int | None]:
+    """One ``.call`` value (string/number/true/false/null) at ``body[p:]``.
+    Returns ``(value, consumed_len)`` or ``(None, None)`` if none matches."""
+    if p >= n:
+        return None, None
+    if body[p] == '"':
+        # ``"((?:\\.|[^"\\])*)"`` by hand so an unterminated quote is O(n), not O(n^2).
+        j = p + 1
+        while j < n:
+            c = body[j]
+            if c == "\\":
+                # ``\\.`` needs a following non-newline char; else the body can't match.
+                if j + 1 >= n or body[j + 1] == "\n":
+                    return None, None
+                j += 2
+                continue
+            if c == '"':
+                raw = body[p + 1 : j]
+                # json.loads keeps \n/\uXXXX escapes and literal UTF-8 (emoji/CJK) intact.
+                try:
+                    return json.loads('"' + raw + '"'), j + 1 - p
+                except (json.JSONDecodeError, ValueError):
+                    return raw, j + 1 - p
+            j += 1
+        return None, None  # unterminated
+    nm = _LLAMA3_NUM_RE.match(body, p)
+    if nm:
+        v = nm.group(0)
+        return (float(v) if "." in v else int(v)), nm.end() - p
+    lm = _LLAMA3_LIT_RE.match(body, p)
+    if lm:
+        return {"true": True, "false": False, "null": None}[lm.group(0)], lm.end() - p
+    return None, None
+
+
+def _parse_llama3_kv_args(body: str) -> dict[str, Any]:
+    """``k=v, ...`` kwargs from a ``.call(...)`` body, left to right (later keys win).
+    Linear hand-scan replacing the quadratic ``_LLAMA3_KV_RE.finditer`` walk."""
+    args: dict[str, Any] = {}
+    n = len(body)
+    i = 0
+    while i < n:
+        km = _LLAMA3_KEY_RE.match(body, i)
+        if km is None:
+            i += 1
+            continue
+        p = _LLAMA3_WS_RE.match(body, km.end()).end()
+        if p >= n or body[p] != "=":
+            i = km.end()
+            continue
+        p = _LLAMA3_WS_RE.match(body, p + 1).end()
+        val, length = _llama3_kv_value(body, p, n)
+        if length is None:
+            i = km.end()
+            continue
+        args[km.group(0)] = val
+        i = p + length
+    return args
+
+
 def _parse_llama3_python_tag(
     content: str,
     *,
@@ -595,22 +658,7 @@ def _parse_llama3_python_tag(
         if not allow_incomplete and depth > 0:
             continue
         body = content[m.end() : i]
-        args: dict[str, Any] = {}
-        for kv in _LLAMA3_KV_RE.finditer(body):
-            k = kv.group(1)
-            if kv.group(2) is not None:
-                # ``json.loads`` on a quoted string handles \n/\t/\uXXXX AND keeps
-                # literal UTF-8 (emoji/CJK) intact -- the old
-                # ``bytes.decode('unicode_escape')`` mangled non-ASCII.
-                try:
-                    args[k] = json.loads('"' + kv.group(2) + '"')
-                except (json.JSONDecodeError, ValueError):
-                    args[k] = kv.group(2)
-            elif kv.group(3) is not None:
-                v = kv.group(3)
-                args[k] = float(v) if "." in v else int(v)
-            elif kv.group(4) is not None:
-                args[k] = {"true": True, "false": False, "null": None}[kv.group(4)]
+        args = _parse_llama3_kv_args(body)
         out.append(
             {
                 "id": f"call_{id_offset + len(out)}",
@@ -892,12 +940,19 @@ def _parse_mistral_array(
         if not allow_incomplete:
             return out
 
-    # Healing path for unclosed arrays: walk objects by hand.
-    for m in re.finditer(r"\{", body):
-        end = _balanced_brace_end(body, m.start())
+    # Healing path for unclosed arrays: walk top-level objects, advancing past each
+    # balanced ``{...}`` instead of re-scanning from every ``{`` (quadratic ReDoS).
+    pos = 0
+    blen = len(body)
+    while pos < blen:
+        brace = body.find("{", pos)
+        if brace < 0:
+            break
+        end = _balanced_brace_end(body, brace)
         if end is None:
-            continue
-        _consume_mistral_call(body[m.start() : end + 1], out, id_offset)
+            break  # truncated mid-object: nothing after it can balance
+        _consume_mistral_call(body[brace : end + 1], out, id_offset)
+        pos = end + 1
     return out
 
 

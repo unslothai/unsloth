@@ -235,3 +235,49 @@ class TestKimiStrict:
         text = self._SB + self._KB + "functions.x:0" + self._AB + '{"a":1}' + self._KE
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
         assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
+
+
+class TestParserLinearity:
+    """The Llama-3 ``.call`` kwargs and Mistral-array healing paths must stay
+    linear: both formerly ran a regex per offset and blew up (tens of seconds)
+    on a long truncated body reachable from the agentic loop."""
+
+    def test_llama3_unterminated_call_arg_is_linear(self):
+        import time
+
+        text = '<|python_tag|>upload.call(data="' + "A" * 200_000  # no closing quote/paren
+        t0 = time.perf_counter()
+        parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_llama3_huge_wordrun_call_arg_is_linear(self):
+        import time
+
+        text = "<|python_tag|>upload.call(" + "a" * 200_000  # giant word run, no '='
+        t0 = time.perf_counter()
+        parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_mistral_unclosed_array_open_braces_is_linear(self):
+        import time
+
+        text = "[TOOL_CALLS] [" + "{" * 200_000  # unclosed array, all open braces
+        t0 = time.perf_counter()
+        parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_llama3_call_kwargs_still_parse(self):
+        text = '<|python_tag|>do.call(s="hi 😀", n=42, f=1.5, b=true, z=null)'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        assert json.loads(calls[0]["function"]["arguments"]) == {
+            "s": "hi 😀", "n": 42, "f": 1.5, "b": True, "z": None,
+        }
+
+    def test_mistral_unclosed_array_recovers_top_level_objects(self):
+        text = (
+            '[TOOL_CALLS] [{"name":"a","arguments":{"k":1}},'
+            '{"name":"b","arguments":{"j":2}}'  # missing closing ]
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert [c["function"]["name"] for c in calls] == ["a", "b"]
