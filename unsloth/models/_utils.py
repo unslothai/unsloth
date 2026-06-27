@@ -955,9 +955,14 @@ def _prefetch_ignore_patterns(
         # PyTorch formats. The static list above already keeps the requested h5 / msgpack;
         # drop safetensors and .bin outright so the auto branch does not warm multi-GB of
         # PyTorch weights the load will discard (and risk a disk-full on a mixed-format repo).
-        ignore_patterns.extend((
-            "*.safetensors", "*.safetensors.index.json", "*.bin", "*.bin.index.json",
-        ))
+        ignore_patterns.extend(
+            (
+                "*.safetensors",
+                "*.safetensors.index.json",
+                "*.bin",
+                "*.bin.index.json",
+            )
+        )
     elif use_safetensors is True:
         # Explicit safetensors: the load never reads .bin, so skip it outright -- even
         # for a bin-only repo, where the load fails anyway, do not pull multi-GB of
