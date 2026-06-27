@@ -5205,7 +5205,7 @@ def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
 
 def linux_runtime_dirs(binary_path: Path) -> list[str]:
     # ldd may execute the binary, so probe it with a secret-free env.
-    missing = linux_missing_libraries(binary_path, env = secret_free_environ())
+    missing = linux_missing_libraries(binary_path, env = scrubbed_environ())
     if not missing:
         return []
     return linux_runtime_dirs_for_required_libraries(missing)
@@ -5565,7 +5565,7 @@ def is_secret_env_name(name: str) -> bool:
     )
 
 
-def strip_secret_env(env: dict[str, str]) -> dict[str, str]:
+def scrub_env(env: dict[str, str]) -> dict[str, str]:
     """Drop secret-bearing variables before handing an env to a downloaded binary."""
     return {
         key: value
@@ -5620,10 +5620,10 @@ def isolated_runtime_home() -> str:
     return _isolated_runtime_home_dir
 
 
-def secret_free_environ() -> dict[str, str]:
+def scrubbed_environ() -> dict[str, str]:
     # os.environ minus secrets, with home / credential pointers neutralised. Used for
     # the binary env and any probe (e.g. ldd) that runs the untrusted binary.
-    env = strip_secret_env(os.environ.copy())
+    env = scrub_env(os.environ.copy())
     runtime_home = isolated_runtime_home()
     for pointer in _RUNTIME_HOME_POINTER_VARS:
         env[pointer] = runtime_home
@@ -5642,7 +5642,7 @@ def binary_env(
     *,
     runtime_line: str | None = None,
 ) -> dict[str, str]:
-    env = secret_free_environ()
+    env = scrubbed_environ()
     if host.is_windows:
         path_dirs = [
             str(binary_path.parent),

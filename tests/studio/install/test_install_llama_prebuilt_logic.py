@@ -23,7 +23,7 @@ PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
 extract_archive = INSTALL_LLAMA_PREBUILT.extract_archive
 binary_env = INSTALL_LLAMA_PREBUILT.binary_env
 is_secret_env_name = INSTALL_LLAMA_PREBUILT.is_secret_env_name
-strip_secret_env = INSTALL_LLAMA_PREBUILT.strip_secret_env
+scrub_env = INSTALL_LLAMA_PREBUILT.scrub_env
 isolated_runtime_home = INSTALL_LLAMA_PREBUILT.isolated_runtime_home
 HostInfo = INSTALL_LLAMA_PREBUILT.HostInfo
 AssetChoice = INSTALL_LLAMA_PREBUILT.AssetChoice
@@ -782,7 +782,7 @@ def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
     assert str(install_dir) in ld_dirs
 
 
-def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
+def test_scrub_env_drops_secrets_and_keeps_runtime_vars():
     raw = {
         # secrets
         "HF_TOKEN": "hf_x",
@@ -809,7 +809,7 @@ def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
         "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
     }
 
-    cleaned = strip_secret_env(raw)
+    cleaned = scrub_env(raw)
 
     for secret in (
         "HF_TOKEN",
@@ -846,7 +846,7 @@ def test_strip_secret_env_drops_secrets_and_keeps_runtime_vars():
     assert is_secret_env_name("PATH") is False
 
 
-def test_strip_secret_env_drops_proxy_index_and_embedded_url_credentials():
+def test_scrub_env_drops_proxy_index_and_embedded_url_credentials():
     raw = {
         # proxy / package-index URLs whose values commonly embed credentials
         "HTTPS_PROXY": "https://user:secret@proxy:8080",
@@ -863,7 +863,7 @@ def test_strip_secret_env_drops_proxy_index_and_embedded_url_credentials():
         "SOME_ENDPOINT": "https://example.com:8080/v1",
     }
 
-    cleaned = strip_secret_env(raw)
+    cleaned = scrub_env(raw)
 
     for secret in (
         "HTTPS_PROXY",
@@ -967,12 +967,12 @@ def test_binary_env_redirects_home_away_from_real_credential_stores(
     assert env["HOMEDRIVE"] + env["HOMEPATH"] == env["HOME"]
 
 
-def test_strip_secret_env_drops_token_only_url_userinfo():
+def test_scrub_env_drops_token_only_url_userinfo():
     raw = {
         "GENERIC_REPO": "https://ghp_tokenonly@github.com/org/repo",
         "GENERIC_OK": "https://example.com:8080/v1",
     }
-    cleaned = strip_secret_env(raw)
+    cleaned = scrub_env(raw)
     assert "GENERIC_REPO" not in cleaned
     assert cleaned["GENERIC_OK"] == raw["GENERIC_OK"]
 
