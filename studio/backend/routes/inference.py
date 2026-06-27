@@ -1108,6 +1108,7 @@ from auth.authentication import get_current_subject
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
+from core.inference.model_ids import public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.providers import get_base_url
@@ -2318,10 +2319,12 @@ def _same_request_waiters(key: str) -> int:
 
 def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
     """The id to report for the loaded GGUF in API responses: the advertised repo
-    id from an auto-switch load, never the concrete on-disk load path."""
+    id from an auto-switch load, else the cleaned public id, never the on-disk
+    .gguf path (see core.inference.model_ids.public_model_id)."""
     return (
         getattr(llama_backend, "_openai_advertised_id", None)
-        or getattr(llama_backend, "model_identifier", None)
+        or public_model_id(getattr(llama_backend, "model_identifier", None))
+        or public_model_id(fallback)
         or fallback
     )
 
@@ -4090,6 +4093,8 @@ async def generate_audio(
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
+        # Advertised repo id after an auto-switch load, else a clean public id,
+        # never the absolute .gguf path.
         model_name = _llama_public_model_id(llama_backend)
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
@@ -4108,7 +4113,7 @@ async def generate_audio(
         model_info = backend.models.get(backend.active_model_name, {})
         if not model_info.get("is_audio"):
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
-        model_name = backend.active_model_name
+        model_name = public_model_id(backend.active_model_name)
         gen = lambda: backend.generate_audio_response(
             text = text,
             temperature = payload.temperature,
@@ -4873,6 +4878,14 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            # Surface the failure: a bare EOF (e.g. after a read timeout) is treated
+            # by the chat client as success, saving a partial answer with no error.
+            yield (
+                "data: "
+                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
         finally:
             try:
                 await gen.aclose()
@@ -5286,6 +5299,8 @@ async def openai_chat_completions(
         return response
 
     if using_gguf:
+        # Advertised repo id after an auto-switch load, else a clean public id,
+        # never the absolute .gguf path.
         model_name = _llama_public_model_id(llama_backend, payload.model)
         if getattr(llama_backend, "_is_audio", False):
             if _wants_multiple_choices(payload):
@@ -5301,7 +5316,9 @@ async def openai_chat_completions(
                 status_code = 400,
                 detail = "No model loaded. Call POST /inference/load first.",
             )
-        model_name = backend.active_model_name or payload.model
+        # Clean public id so the response never echoes a local path; the audio
+        # branch below receives this sanitized label too.
+        model_name = public_model_id(backend.active_model_name) or payload.model
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("non-GGUF chat completions")
 
@@ -6857,6 +6874,8 @@ def _openai_model_objects() -> list[dict]:
         # on-disk load path, so /v1/models never leaks a host path or lists a
         # model twice (path plus repo id).
         entry = {
+            # Advertised repo id after an auto-switch load, else a clean public id,
+            # never the absolute .gguf path (which leaks the host filesystem layout).
             "id": _llama_public_model_id(llama_backend),
             "object": "model",
             "created": _created,
@@ -6878,7 +6897,7 @@ def _openai_model_objects() -> list[dict]:
     if backend.active_model_name:
         model_info = backend.models.get(backend.active_model_name, {})
         entry = {
-            "id": backend.active_model_name,
+            "id": public_model_id(backend.active_model_name),
             "object": "model",
             "created": _created,
             "owned_by": "local",
@@ -6951,11 +6970,26 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     model_not_found otherwise. Defined after the LIST route so it does not
     shadow it; ``{model_id:path}`` keeps ids with slashes intact.
     """
-    for model in await _all_openai_model_objects():
+    objects = await _all_openai_model_objects()
+    for model in objects:
         # Case-insensitive to match the resolver, which lowercases its index.
         mid = model.get("id")
         if isinstance(mid, str) and mid.lower() == model_id.lower():
             return model
+    # Backward compatibility: a client may still send the legacy raw identifier
+    # (e.g. an absolute .gguf path cached from an older /v1/models). Resolve it to
+    # the clean object so it keeps working, without ever echoing the path back.
+    llama_backend = get_llama_cpp_backend()
+    backend = get_inference_backend()
+    for raw in (
+        llama_backend.model_identifier if llama_backend.is_loaded else None,
+        backend.active_model_name or None,
+    ):
+        if raw and model_id == raw:
+            clean = public_model_id(raw)
+            for model in objects:
+                if model["id"] == clean:
+                    return model
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(
@@ -7952,6 +7986,15 @@ async def _responses_stream(
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
     async def event_generator():
+        # Clean public id for every response envelope. Prefer the loaded model's
+        # id so the stream agrees with /v1/models, chat/completions and the
+        # non-streaming twin; fall back to a sanitized payload.model (a legacy
+        # raw .gguf path is stripped, never echoed back).
+        _clean_model = (
+            public_model_id(getattr(llama_backend, "model_identifier", None))
+            or public_model_id(payload.model)
+            or payload.model
+        )
         full_text = ""
         full_reasoning = ""
         input_tokens = 0
@@ -8113,7 +8156,7 @@ async def _responses_stream(
                     "object": "response",
                     "created_at": created_at,
                     "status": "failed",
-                    "model": payload.model,
+                    "model": _clean_model,
                     "output": _snapshot_output(),
                     "usage": {
                         "input_tokens": input_tokens,
@@ -8137,7 +8180,7 @@ async def _responses_stream(
                     "object": "response",
                     "created_at": created_at,
                     "status": "in_progress",
-                    "model": payload.model,
+                    "model": _clean_model,
                     "output": [],
                     "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                 },
@@ -8177,7 +8220,7 @@ async def _responses_stream(
                             "object": "response",
                             "created_at": created_at,
                             "status": "failed",
-                            "model": payload.model,
+                            "model": _clean_model,
                             "output": [],
                             "error": {"code": 502, "message": _friendly_error(e)},
                         },
@@ -8203,7 +8246,7 @@ async def _responses_stream(
                             "object": "response",
                             "created_at": created_at,
                             "status": "failed",
-                            "model": payload.model,
+                            "model": _clean_model,
                             "output": [],
                             "error": {
                                 "code": resp.status_code,
@@ -8552,7 +8595,7 @@ async def _responses_stream(
                 "object": "response",
                 "created_at": created_at,
                 "status": "completed",
-                "model": payload.model,
+                "model": _clean_model,
                 "output": _snapshot_output(),
                 "usage": {
                     "input_tokens": input_tokens,
@@ -8889,6 +8932,8 @@ async def anthropic_messages(
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
 
+    # Advertised repo id after an auto-switch load, else a clean public id, never
+    # the local .gguf path (and a legacy raw path in payload.model is sanitized).
     model_name = _llama_public_model_id(llama_backend, payload.model)
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
 

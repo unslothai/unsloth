@@ -1387,14 +1387,18 @@ def test_auto_switch_refuses_when_unsloth_stream_active(monkeypatch):
 
 
 def test_public_model_id_prefers_advertised_over_path():
-    backend = _FakeBackend("/cache/models--org--Repo/snapshots/abc")
+    backend = _FakeBackend("/cache/models--org--Repo/snapshots/abc/model.gguf")
     backend._openai_advertised_id = "org/Repo-GGUF"
+    # The advertised repo id from an auto-switch load wins.
     assert inference_route._llama_public_model_id(backend) == "org/Repo-GGUF"
     backend._openai_advertised_id = None
-    # No advertised id: falls back to the identifier, then the explicit fallback.
-    assert (
-        inference_route._llama_public_model_id(backend) == "/cache/models--org--Repo/snapshots/abc"
-    )
+    # No advertised id: the identifier is cleaned to a public id (delegates to
+    # public_model_id), never the raw on-disk .gguf path.
+    cleaned = inference_route._llama_public_model_id(backend)
+    assert cleaned and "/cache/" not in cleaned and not cleaned.endswith(".gguf")
+    # An already-clean repo id passes through unchanged.
+    backend.model_identifier = "org/Repo-GGUF"
+    assert inference_route._llama_public_model_id(backend) == "org/Repo-GGUF"
     backend.model_identifier = None
     assert inference_route._llama_public_model_id(backend, "req") == "req"
 
