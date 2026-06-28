@@ -1199,13 +1199,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
 
-    # Whole-document mode: a thread-attached file small enough to fit is injected in
-    # full so the model reads everything (summaries, cross-references, etc.). A KB
-    # selection is exclusive (search that corpus), so whole-doc never preempts it. In
-    # a project chat the project sources stay retrieval-ranked: they are retrieved
-    # top-K and appended to the whole attachment under one citation numbering, so
-    # project grounding is preserved. Oversized files (or no thread doc) fall through
-    # to the combined top-K retrieval below.
+    # Whole-document mode: a thread-attached file under budget is injected in full so
+    # the model reads everything. A KB selection is exclusive, so whole-doc never
+    # preempts it; in a project chat the project sources are still retrieved top-K and
+    # appended under one citation numbering. Oversized files (or no thread doc) fall
+    # through to the combined top-K retrieval below.
     thread_id = rag_scope.get("thread_id")
     if thread_id and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope):
         try:

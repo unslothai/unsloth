@@ -104,8 +104,7 @@ def test_all_chunks_for_scope_isolates_scopes(rag_conn):
 
 
 def test_scope_token_estimate_sums_without_hydrating(rag_conn):
-    # Mirrors all_chunks_for_scope + _row_token_count: a stored token_count is summed
-    # directly; a zero/missing count falls back to length/4; non-completed docs are out.
+    # Stored counts sum directly; zero/missing falls back to length/4; non-completed out.
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "a.pdf", "h1", ["alpha", "bravo"], tokens = [10, 20])
     # token_count 0 -> length/4 fallback: a 40-char chunk estimates to 10 tokens.
@@ -116,9 +115,8 @@ def test_scope_token_estimate_sums_without_hydrating(rag_conn):
 
 
 def test_scope_token_estimate_matches_row_sum(rag_conn):
-    # The estimate must agree with the exact per-row sum it short-circuits, so the
-    # pre-check never rejects a doc the full path would have accepted (or vice versa).
-    # One chunk carries a stored count, one is forced onto the length/4 fallback.
+    # Must agree with the exact per-row sum it short-circuits (one stored count, one
+    # length/4 fallback), so the pre-check never disagrees with the full path.
     from core.rag.tool import _row_token_count
 
     scope = store.thread_scope("t1")
@@ -178,8 +176,7 @@ def test_whole_document_context_none_without_scope(rag_conn):
 
 
 def test_whole_document_context_null_token_count_enforces_budget(rag_conn):
-    # A chunk with no stored token_count must not bypass the budget via `or 0`;
-    # fall back to a length estimate so a huge doc still trips the cap.
+    # A missing token_count must not bypass the budget; fall back to a length estimate.
     big = "word " * 20_000  # ~20k tokens by length estimate
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", [big], tokens = [None])
     assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000) is None
@@ -211,8 +208,7 @@ def test_build_rag_autoinject_uses_whole_doc(rag_conn):
     # Both chunks present -> the model receives the entire file, not top-K.
     assert "whole alpha part" in injected
     assert "whole bravo part" in injected
-    # The tool-message content is rendered chunk text only; the citation JSON
-    # tail rides on the internal full_result, not the spliced tool message.
+    # Tool-message content is chunk text only; the citation JSON tail is internal.
     assert inf_tools.RAG_SOURCES_SENTINEL not in injected
 
 
@@ -242,8 +238,7 @@ def test_build_rag_autoinject_whole_doc_disabled_via_override(rag_conn, monkeypa
 
 
 def test_build_rag_autoinject_kb_scope_never_whole_doc(rag_conn, monkeypatch):
-    # A KB-only scope (no thread) must go through retrieval, never whole-doc,
-    # even though completed chunks exist under the KB scope.
+    # A KB-only scope (no thread) goes through retrieval, never whole-doc.
     kb_scope = store.kb_scope("K1")
     _add_doc(rag_conn, kb_scope, "d1", "kb.pdf", "h1", ["kb body one", "kb body two"])
 
@@ -256,8 +251,7 @@ def test_build_rag_autoinject_kb_scope_never_whole_doc(rag_conn, monkeypatch):
 
 
 def test_whole_document_context_thread_scope_only(rag_conn):
-    # A project corpus chunk must never be whole-document injected, even when a
-    # thread attachment exists under the same chat.
+    # A project corpus chunk is never whole-doc injected, even with a thread attachment.
     _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["thread attachment"])
     _add_doc(rag_conn, store.project_scope("p1"), "pd", "project.txt", "h2", ["project corpus"])
     text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
@@ -267,8 +261,7 @@ def test_whole_document_context_thread_scope_only(rag_conn):
 
 
 def test_build_rag_autoinject_appends_project_retrieval(rag_conn, monkeypatch):
-    # Project chat: the thread attachment is whole-doc'd AND the project sources are
-    # kept on top-K retrieval, merged under one sequential citation numbering.
+    # Project chat: thread attachment whole-doc'd AND project sources retrieved, merged.
     _add_doc(
         rag_conn,
         store.thread_scope("t1"),
@@ -315,9 +308,8 @@ def test_build_rag_autoinject_appends_project_retrieval(rag_conn, monkeypatch):
 
 
 def test_build_rag_autoinject_thread_whole_doc_ignores_project_size(rag_conn, monkeypatch):
-    # A large project corpus must not push a small thread attachment over budget:
-    # whole-doc resolves the thread scope alone. The project companion retrieval is
-    # stubbed out (no hits) to keep this focused on the budget.
+    # A large project corpus must not push a small thread attachment over budget;
+    # whole-doc resolves the thread scope alone (companion retrieval stubbed out).
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: None)
     _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["small thread file"])
     _add_doc(
@@ -328,8 +320,7 @@ def test_build_rag_autoinject_thread_whole_doc_ignores_project_size(rag_conn, mo
 
 
 def test_build_rag_autoinject_kb_defers_to_retrieval(rag_conn, monkeypatch):
-    # A KB selection is exclusive: a thread attachment must not preempt it with
-    # whole-doc; the KB goes through retrieval.
+    # A KB selection is exclusive: a thread attachment can't preempt it; KB uses retrieval.
     _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["thread attachment"])
     sentinel = ("KB_RETRIEVAL", [{"citationId": 1, "filename": "kb.pdf", "text": "x"}])
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
@@ -355,9 +346,8 @@ def test_build_rag_autoinject_args_carry_user_query(rag_conn):
 
 
 def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path):
-    """Drive the actual ingestion worker (parse -> chunk -> embed -> store) on a
-    real multi-paragraph file, then confirm whole-doc injection splices the entire
-    document, not just retrieved chunks. Uses the stub embedder (no model)."""
+    """Drive the real ingestion worker on a multi-paragraph file, then confirm whole-doc
+    injection splices the entire document, not just retrieved chunks."""
     from core.rag import ingestion
 
     scope = store.thread_scope("t1")
@@ -388,8 +378,7 @@ def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1"})
     assert result is not None
     injected = _injected_text(result)
-    # Content from both the opening and the very end is present -> the whole file
-    # reached the model, across all of its chunks.
+    # Opening and ending both present -> the whole file reached the model.
     assert "Revenue rose" in injected
     assert "xyzzy-sentinel" in injected
     # Every stored chunk is represented as a numbered block.

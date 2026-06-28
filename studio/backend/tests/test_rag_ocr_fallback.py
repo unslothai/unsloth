@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Scanned-PDF OCR fallback: a PDF page with no extractable text layer is rendered
-and transcribed by the loaded vision model during ingestion, so image-only PDFs
-become searchable and feed whole-document context. The vision call is stubbed, so
-no model is needed."""
+"""Scanned-PDF OCR fallback: a PDF page with no text layer is rendered and transcribed
+by the vision model during ingestion, so image-only PDFs become searchable. The vision
+call is stubbed, so no model is needed."""
 
 import pymupdf
 
@@ -81,8 +80,7 @@ def test_ocr_pages_no_endpoint(monkeypatch):
 
 
 def test_collapse_runaway_caps_repeated_lines():
-    # A vision model looping on a sparse image emits one line hundreds of times;
-    # the guard caps consecutive identical lines while keeping legitimate repeats.
+    # A looping model repeats a line hundreds of times; the guard caps it, keeps repeats.
     text = "\n".join(["TITLE"] * 200 + ["body"] + ["Add & Norm"] * 3)
     out = captioner._collapse_runaway(text)
     lines = out.splitlines()
@@ -92,8 +90,7 @@ def test_collapse_runaway_caps_repeated_lines():
 
 
 def test_collapse_runaway_caps_interleaved_repeats():
-    # Weak models also loop non-consecutively (alternating a few lines); the global
-    # per-line cap must bound those too, not just consecutive runs.
+    # Models also loop non-consecutively; the global per-line cap bounds those too.
     text = "\n".join(["Llion Vaswani Google", "Niki Parmar Google"] * 40)
     out = captioner._collapse_runaway(text)
     lines = [ln for ln in out.splitlines() if ln.strip()]

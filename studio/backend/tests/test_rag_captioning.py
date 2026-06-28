@@ -14,8 +14,7 @@ def _img(page):
 
 
 def test_caption_images_runs_when_images_present(monkeypatch):
-    # Policy now lives in ingestion (_run); caption_images itself no longer checks
-    # config.CAPTION_IMAGES, so with images + an endpoint it captions regardless.
+    # Policy lives in ingestion (_run); caption_images captions given images + endpoint.
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
     monkeypatch.setattr(captioner, "_caption_one", lambda *a: "a chart")
     out = captioner.caption_images([_img(1)], endpoint = ("http://x", "local"))
@@ -43,16 +42,14 @@ def test_caption_images_no_endpoint(monkeypatch):
 
 
 def test_caption_runaway_guard_applied(monkeypatch):
-    # A weak vision model looping on a sparse figure must not flood the index;
-    # captions are passed through _collapse_runaway before storage.
+    # A looping vision model must not flood the index; captions pass _collapse_runaway.
     monkeypatch.setattr(captioner, "_caption_one", lambda *a: "\n".join(["LOOP"] * 40))
     out = captioner.caption_images([_img(1)], endpoint = ("http://x", "local"))
     assert out[1][0].splitlines().count("LOOP") == 3  # 40 -> 3
 
 
 def test_caption_prompt_and_token_budget(monkeypatch):
-    # The caption prompt is chart-aware and the token cap is config-driven; OCR keeps
-    # its own prompt + budget (shared _vision_complete must not cross-contaminate).
+    # Caption and OCR keep separate prompts + token caps over the shared _vision_complete.
     captured: dict = {}
 
     def fake_vision_complete(base_url, model, image_bytes, *, prompt, timeout, max_tokens):
@@ -95,9 +92,8 @@ def test_pages_with_figures_and_tiles(tmp_path):
 
 
 def test_pages_with_figures_skips_scanned_pages(tmp_path):
-    # A figure page with no text layer is a scanned/image-only page that OCR already
-    # transcribes whole; with a min-text gate it must be excluded from figure tiling
-    # so the same pixels are not vision-read twice (and the index is not polluted).
+    # A text-less figure page is scanned (OCR transcribes it whole); the min-text gate
+    # excludes it from tiling so the same pixels are not vision-read twice.
     import pymupdf
 
     from core.rag import parsers
@@ -132,8 +128,7 @@ def test_pages_with_figures_skips_scanned_pages(tmp_path):
 def test_run_skips_figure_work_without_vision_model(
     rag_conn, stub_embeddings, monkeypatch, tmp_path
 ):
-    # No vision model loaded -> the whole figure pass (detection + rasterization, not
-    # just the captioning call) is skipped, so a text-only deployment pays nothing.
+    # No vision model -> the whole figure pass (detection + rasterization) is skipped.
     from core.rag import parsers
 
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
@@ -153,8 +148,7 @@ def test_run_skips_figure_work_without_vision_model(
 
 
 def test_vision_complete_sends_auth_header(monkeypatch):
-    # Direct-stream mode serves llama-server with --api-key; vision ingestion hits the
-    # same endpoint as chat and must carry the same bearer token or it 401s.
+    # Direct-stream serves llama-server with --api-key; vision calls must send the bearer.
     import httpx
 
     monkeypatch.setattr(

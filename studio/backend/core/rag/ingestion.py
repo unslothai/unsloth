@@ -101,18 +101,11 @@ def _ocr_scanned_pages(
     job_id: str,
     ocr: bool | None = None,
 ) -> list:
-    """Replace text on near-empty (scanned/image-only) PDF pages with vision-model
-    OCR, so image PDFs become searchable and readable like any other document.
-
-    ``ocr`` overrides the ``config.OCR_SCANNED`` default per upload (the chat's OCR
-    toggle); ``None`` falls back to the config default. No-op when OCR is disabled, no
-    page looks scanned, or no vision model is loaded (degrades exactly like figure
-    captioning). Returns new ``Page`` objects for the OCR'd pages, the originals
-    otherwise.
-
-    OCR'd pages have no text layer, so they get no PDF highlight regions in the
-    preview (the locator anchors chunk phrases on the original word boxes, which a
-    scanned page lacks); the OCR text is still searchable and readable."""
+    """Replace text on near-empty (scanned/image-only) PDF pages with vision-model OCR
+    so image PDFs become searchable. ``ocr`` overrides ``config.OCR_SCANNED`` per upload
+    (``None`` = config default); no-op without scanned pages or a vision model. OCR'd
+    pages have no text layer, so no preview highlight regions, but stay searchable.
+    Returns new ``Page`` objects for OCR'd pages, originals otherwise."""
     if not (config.OCR_SCANNED if ocr is None else ocr):
         return pages
     scanned = [
@@ -166,12 +159,10 @@ def _run(
         if is_pdf:
             pages = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
         caption_on = config.CAPTION_IMAGES if caption is None else caption
-        # Skip all figure work (PDF rasterization included) unless a vision model is
-        # loaded, so a text-only deployment pays nothing for the detection/render pass.
+        # Skip all figure work (PDF rasterization included) without a vision model.
         if caption_on and is_pdf and captioner.vision_endpoint() is not None:
-            # Tile figure-bearing pages and transcribe+describe each tile, so small
-            # diagram/axis/box labels stay legible and no sub-figure is missed; merge,
-            # dedup, and splice into the page text (no-op without a vision model).
+            # Tile figure pages, transcribe+describe each tile, then merge/dedup/splice
+            # into the page text so small labels and every sub-figure are captured.
             try:
                 fig_pages = parsers.pages_with_figures(
                     stored_path,
@@ -276,10 +267,8 @@ def start_ingestion(
                 doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
             )
             if empty_completed:
-                # A prior ingest of identical bytes produced zero chunks (e.g. a scanned
-                # PDF uploaded before a vision model was loaded, so OCR was skipped and
-                # the page had no text layer). Drop the empty record and re-ingest now
-                # that conditions may differ, instead of deduping to it forever.
+                # A prior ingest of identical bytes yielded zero chunks (e.g. a scanned
+                # PDF uploaded before a vision model loaded). Re-ingest, don't dedupe.
                 store.delete_document(conn, existing)
                 _remove_upload(doc.get("stored_path"), keep_path = stored_path)
             else:

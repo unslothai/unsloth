@@ -71,13 +71,11 @@ export const DEFAULT_RAG_TOP_K = 5;
 export type RagAutoInject = "auto" | "on" | "off";
 export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
-// OCR scanned/image-only PDF pages with the loaded vision model at ingest time.
-// On by default so attaching a scanned doc "just works"; off skips the extra
-// vision pass (and only matters when the loaded chat model has vision).
+// OCR scanned/image-only PDF pages at ingest time. On by default; off skips the
+// extra vision pass (only matters when the loaded chat model has vision).
 export const DEFAULT_RAG_OCR = true;
-// Describe figures/charts/tables in PDFs with the loaded vision model at ingest
-// time so their content becomes searchable. On by default (no-op without a vision
-// model); off skips the per-figure vision calls.
+// Describe figures/charts in PDFs at ingest time so they become searchable. On by
+// default (no-op without a vision model); off skips the per-figure vision calls.
 export const DEFAULT_RAG_CAPTION = true;
 
 function loadRagSource(): RagSource {

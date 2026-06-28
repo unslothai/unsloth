@@ -232,8 +232,7 @@ export function useRagDocuments(
       tempId: string,
     ) => {
       try {
-        // Read the RAG ingest toggles fresh at upload time (they live in the chat
-        // store); non-reactive so they don't widen this callback's deps.
+        // Read the RAG ingest toggles fresh at upload time (non-reactive, off the chat store).
         const { ragOcrScanned: ocr, ragCaptionFigures: caption } =
           useChatRuntimeStore.getState();
         const result =

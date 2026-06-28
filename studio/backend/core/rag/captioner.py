@@ -3,15 +3,10 @@
 
 """Vision-model helpers for ingestion: figure captioning and scanned-page OCR.
 
-Both turn pixels into text the normal FTS5 + dense path can index. Each is a no-op
-(never raises) without a loaded vision model or on failure: captioning is gated by
-``config.CAPTION_IMAGES``, OCR by ``config.OCR_SCANNED``.
-
-These reuse the loaded chat model's vision endpoint, so the model must be served
-with a micro-batch large enough for one image's tokens (llama-server
-``--ubatch-size`` >= image tokens): some vision encoders (e.g. Gemma-family) attend
-non-causally over the whole image and abort the server otherwise. Studio's vision
-chat already requires this, so OCR inherits it."""
+Both turn pixels into indexable text and are a no-op (never raise) without a loaded
+vision model. They reuse the chat model's vision endpoint, so it must be served with
+``--ubatch-size`` >= one image's tokens (some encoders, e.g. Gemma, attend
+non-causally and abort otherwise); Studio's vision chat already requires this."""
 
 from __future__ import annotations
 
@@ -48,12 +43,9 @@ def _collapse_runaway(
     max_repeat: int = 3,
     max_total: int = 8,
 ) -> str:
-    """Bound pathological repetition: some vision models loop on sparse images and
-    emit the same line many times, consecutively or interleaved with others. Cap each
-    distinct non-empty line at ``max_repeat`` in a row and ``max_total`` overall, and
-    collapse blank-line floods, so a degenerate page cannot flood the index.
-    ``max_total`` is generous so legitimate repeats (e.g. a short table column) and
-    short repeats survive; only egregious looping is trimmed."""
+    """Cap runaway repetition: vision models sometimes loop a line many times. Keep
+    each distinct line to ``max_repeat`` in a row and ``max_total`` total, and collapse
+    blank-line floods, so a degenerate page cannot flood the index."""
     out: list[str] = []
     seen: dict[str, int] = {}
     prev: str | None = None
@@ -88,10 +80,8 @@ def vision_endpoint() -> tuple[str, str] | None:
 
 
 def _vision_auth_headers() -> dict | None:
-    """Authorization header for the loaded backend's HTTP API, or None. Vision calls
-    hit the same llama-server endpoint as chat, so in direct-stream mode (the server
-    is started with ``--api-key``) they need the same bearer or they 401. None when no
-    key is set, so unauthenticated servers don't get a spurious header."""
+    """Bearer header for the backend's API, or None. Vision calls share the chat
+    endpoint, so they need the same key under direct-stream (``--api-key``) mode."""
     try:
         from routes.inference import get_llama_cpp_backend
         return get_llama_cpp_backend()._auth_headers or None
@@ -172,12 +162,9 @@ def _ocr_one(base_url: str, model: str, image_bytes: bytes, timeout: float) -> s
 def caption_images(
     images: list, *, endpoint: tuple[str, str] | None = None
 ) -> dict[int, list[str]]:
-    """Caption ``ParsedImage`` objects, keyed by 1-based page number. Returns ``{}``
-    when there are no images or no vision model is loaded. The caller
-    (`ingestion._run`) owns the on/off policy (config default plus the per-upload
-    toggle), so this does not re-check it. Bounded by ``CAPTION_MAX_IMAGES``; each
-    caption is passed through ``_collapse_runaway`` so a looping vision model cannot
-    flood the index."""
+    """Caption ``ParsedImage`` objects, keyed by 1-based page number; ``{}`` when there
+    are no images or no vision model. The caller (`ingestion._run`) owns the on/off
+    policy. Bounded by ``CAPTION_MAX_IMAGES``; each caption passes ``_collapse_runaway``."""
     if not images:
         return {}
     ep = endpoint or vision_endpoint()
@@ -200,10 +187,9 @@ def caption_images(
 def ocr_pages(
     page_pngs: dict[int, bytes], *, endpoint: tuple[str, str] | None = None
 ) -> dict[int, str]:
-    """OCR rendered page PNGs (keyed by 1-based page number) to text via the loaded
-    vision model. Returns ``{}`` when there is no vision model or no pages. The caller
-    (`ingestion._ocr_scanned_pages`) owns the on/off policy (config default plus the
-    per-upload override), so this does not re-check it. Bounded by ``OCR_MAX_PAGES``."""
+    """OCR rendered page PNGs (keyed by 1-based page number) to text; ``{}`` when there
+    is no vision model or no pages. The caller (`ingestion._ocr_scanned_pages`) owns the
+    on/off policy. Bounded by ``OCR_MAX_PAGES``."""
     if not page_pngs:
         return {}
     ep = endpoint or vision_endpoint()
@@ -220,10 +206,9 @@ def ocr_pages(
 
 
 def merge_page_captions(captions: dict[int, list[str]]) -> dict[int, list[str]]:
-    """Combine a page's per-tile captions into one deduped block. Overlapping tiles
-    repeat labels, so identical non-empty lines are dropped (first occurrence kept,
-    order preserved) and the result passes through ``_collapse_runaway``. Returns one
-    merged string per page so ``splice_captions`` adds a single figure block."""
+    """Merge a page's per-tile captions into one deduped block: drop lines repeated
+    across overlapping tiles (first kept, order preserved), then ``_collapse_runaway``,
+    so ``splice_captions`` adds a single figure block per page."""
     out: dict[int, list[str]] = {}
     for page, caps in captions.items():
         seen: set[str] = set()

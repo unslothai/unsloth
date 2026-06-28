@@ -158,15 +158,10 @@ def render_pdf_figures(
     max_figures: int = 8,
     margin_frac: float = 0.06,
 ) -> list[ParsedImage]:
-    """Detect figure regions and render each to a PNG for captioning.
-
-    Academic figures are vector, so raster extraction yields fragments; instead
-    cluster vector drawings + raster placements into boxes, keep the page-spanning
-    ones, and render them. ``dpi`` is high enough to keep small box/axis labels
-    legible; each region is expanded by ``margin_frac`` (clamped to the page) so
-    labels just outside the detected drawing box are not clipped. Any failure
-    yields [], never an exception.
-    """
+    """Detect figure regions and render each to a PNG for captioning. Academic figures
+    are vector, so cluster vector drawings + raster placements into page-spanning boxes
+    rather than extracting rasters; ``margin_frac`` pads each box so edge labels survive.
+    Any failure yields [], never an exception."""
     try:
         import pymupdf
     except Exception:
@@ -206,14 +201,10 @@ def pages_with_figures(
     min_side: float = 40.0,
     min_text_chars: int = 0,
 ) -> list[int]:
-    """1-based page numbers that contain a qualifying figure region, capped at
-    ``max_pages``. Drives figure tiling. Any failure yields [].
-
-    When ``min_text_chars > 0``, pages whose extractable text layer is shorter than
-    that are skipped: those are scanned/image-only pages that whole-page OCR already
-    transcribes, so tiling them too would double the vision work and pollute the
-    index with overlapping transcriptions. The caller passes ``OCR_MIN_CHARS`` only
-    when OCR is enabled, so a scanned figure page still gets tiled when OCR is off."""
+    """1-based page numbers with a qualifying figure region, capped at ``max_pages``;
+    drives figure tiling. Pages with under ``min_text_chars`` of text are skipped as
+    scanned (OCR transcribes those whole, so tiling would double the work); the caller
+    passes ``OCR_MIN_CHARS`` only when OCR is on. Any failure yields []."""
     try:
         import pymupdf
     except Exception:
@@ -251,11 +242,9 @@ def render_pdf_figure_tiles(
     fullpage: bool = True,
     max_tiles: int = 24,
 ) -> list[ParsedImage]:
-    """Render figure-bearing pages as overlapping high-DPI tiles (plus an optional
-    full-page image for global context), each a ``ParsedImage`` keyed by page number.
-    Tiling keeps small diagram/axis/box labels legible and covers every sub-figure
-    without relying on exact region detection, so figure recall generalizes across
-    content density and model strength. Any failure yields [] (or skips a page)."""
+    """Render figure-bearing pages as overlapping high-DPI tiles (plus an optional full
+    page), each a ``ParsedImage`` keyed by page number. Tiling keeps small labels legible
+    and covers every sub-figure without exact region detection. Any failure yields []."""
     wanted = [int(n) for n in page_numbers]
     if not wanted:
         return []

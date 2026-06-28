@@ -84,9 +84,8 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
 
 
 def test_ingestion_reingests_when_existing_has_zero_chunks(rag_home, stub_embeddings, tmp_path):
-    # A prior ingest of identical bytes that produced no chunks (e.g. a scanned PDF
-    # uploaded before a vision model was loaded, so OCR was skipped) must not dedupe
-    # forever: re-uploading drops the empty record and ingests the content fresh.
+    # A prior ingest of identical bytes that yielded no chunks (e.g. a scanned PDF
+    # before a vision model loaded) must re-ingest, not dedupe to the empty record.
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie " * 50)
     sha = ingestion._sha256_file(path)
     scope = store.kb_scope("K1")
