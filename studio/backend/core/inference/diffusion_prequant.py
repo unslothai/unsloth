@@ -33,6 +33,26 @@ from typing import Any, Optional
 # on-disk structure changes so an old/foreign artifact is rejected rather than mis-loaded.
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
+# Loading a checkpoint ends in ``torch.load(weights_only=False)``, which executes arbitrary
+# code embedded in the pickle. A hosted family *repo* checkpoint is first-party and trusted,
+# but a ``source.kind == "path"`` can originate from the ``transformer_prequant_path`` field
+# of a load request -- i.e. an authenticated API caller naming an arbitrary local file.
+# Unpickling that is remote code execution, so the local-path branch is refused unless an
+# operator explicitly opts in via this env var. The trusted hosted-repo path is unaffected.
+ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
+
+
+def _local_prequant_path_allowed() -> bool:
+    """Whether a request-supplied local pre-quant *path* may be unpickled (operator opt-in)."""
+    import os
+
+    return (os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
 
 @dataclass(frozen = True)
 class PrequantSource:
@@ -93,6 +113,21 @@ def load_prequantized_transformer(
     ordinary unavailable artifact.
     """
     try:
+        # weights_only=False (required below) executes pickle code, so a caller-supplied
+        # local path is refused unless an operator opted in. The hosted family repo is
+        # first-party and always allowed.
+        if source.kind == "path" and not _local_prequant_path_allowed():
+            _warn(
+                logger,
+                f"{scheme}:path",
+                RuntimeError(
+                    "request-supplied local pre-quant path refused (unpickling an "
+                    f"arbitrary file is unsafe); set {ALLOW_LOCAL_PREQUANT_PATH_ENV}=1 "
+                    "to allow trusted local checkpoints",
+                ),
+            )
+            return None
+
         path = _resolve_checkpoint_path(source, hf_token)
         if path is None:
             return None
@@ -100,9 +135,8 @@ def load_prequantized_transformer(
         import torch
 
         # torchao weight subclasses are not safetensors-serializable, so the checkpoint is
-        # a torch.save pickle. weights_only=False is required to rebuild those subclasses;
-        # only a configured family repo (first-party) or an explicit local path reaches
-        # here, which is the trust signal -- this never loads an arbitrary remote pickle.
+        # a torch.save pickle. weights_only=False is required to rebuild those subclasses.
+        # The local-path branch is gated above; the repo branch is a first-party artifact.
         ckpt = torch.load(path, weights_only = False, map_location = "cpu")
         if not _validate_checkpoint(ckpt, scheme, base, logger):
             return None

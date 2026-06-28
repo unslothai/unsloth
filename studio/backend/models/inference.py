@@ -1744,7 +1744,9 @@ class DiffusionLoadRequest(BaseModel):
         "scripts/build_prequant_checkpoint.py) for the requested transformer_quant "
         "scheme. Loads the already-quantized weights with the dense bf16 never on the "
         "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
-        "checkpoint if configured, else quantises the dense transformer at load time.",
+        "checkpoint if configured, else quantises the dense transformer at load time. "
+        "Loading a local path unpickles the file (arbitrary code execution), so it is "
+        "ignored unless the operator sets UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH=1.",
     )
 
 
