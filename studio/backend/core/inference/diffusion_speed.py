@@ -80,7 +80,9 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             except Exception:  # noqa: BLE001 — best-effort per-flag restore
                 pass
 
-    _set(getattr(getattr(torch.backends, "cuda", None), "matmul", None), "allow_tf32", "matmul_tf32")
+    _set(
+        getattr(getattr(torch.backends, "cuda", None), "matmul", None), "allow_tf32", "matmul_tf32"
+    )
     cudnn = getattr(torch.backends, "cudnn", None)
     _set(cudnn, "allow_tf32", "cudnn_tf32")
     _set(cudnn, "benchmark", "cudnn_benchmark")
