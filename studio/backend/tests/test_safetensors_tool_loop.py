@@ -728,6 +728,35 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
+def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
+    # A tool call emitted AFTER plain prose has flipped the loop to STREAMING is
+    # caught by the safety-net parser. An unclosed ``<tool_call>`` heals only when
+    # Auto-Heal is on; with it off the safety net must not pass
+    # ``allow_incomplete=True`` and execute a truncated call. (The DRAINING path
+    # already gated this; the safety-net call site previously omitted the flag.)
+    prose = "Sure, let me look that up for you right now. "
+    incomplete = '<tool_call>{"name":"web_search","arguments":{"query":"weather in Sydney"}}'
+
+    loop_off, exec_off = _make_loop(
+        turns = [[prose, incomplete], ["Final answer."]],
+        exec_results = ["RESULT"],
+        auto_heal_tool_calls = False,
+        max_tool_iterations = 3,
+    )
+    events_off = _collect_events(loop_off)
+    assert exec_off.calls == [], "disabled Auto-Heal must not execute a healed incomplete call"
+    assert not [e for e in events_off if e.get("type") == "tool_start"]
+
+    loop_on, exec_on = _make_loop(
+        turns = [[prose, incomplete], ["Final answer."]],
+        exec_results = ["RESULT"],
+        auto_heal_tool_calls = True,
+        max_tool_iterations = 3,
+    )
+    _collect_events(loop_on)
+    assert exec_on.calls == [("web_search", {"query": "weather in Sydney"})], exec_on.calls
+
+
 class TestLoopBasic:
     def test_plain_answer(self):
         # No tool XML; loop should yield content then status="".

@@ -73,6 +73,27 @@ def test_strips_function_only_well_formed():
     assert "Done." in cleaned
 
 
+def test_strips_function_attribute_form():
+    # MiniCPM-5 / MiniMax-M2 emit the attribute form ``<function name="...">``;
+    # the parser handles it (_parse_function_xml) but it previously leaked past
+    # the route strip into the UI. A dotted/hyphenated name must also strip.
+    text = (
+        'Sure.\n<function name="get_weather">\n'
+        "<parameter=city>\nSydney\n</parameter>\n</function>\nDone."
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "<function name=" not in cleaned
+    assert "</function>" not in cleaned
+    assert "Sure." in cleaned and "Done." in cleaned
+
+    dotted = 'A <function name="srv.list-issues">x</function> B'
+    assert _TOOL_XML_RE.sub("", dotted) == "A  B"
+
+    # Auto-Heal-disabled display contract still preserves literal markup.
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
+    assert "<function name=" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+
+
 # ── Orphan openings ───────────────────────────────────────────────
 
 

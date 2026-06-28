@@ -1584,7 +1584,10 @@ _TOOL_XML_RE = _re.compile(
     # (mcp__srv__list-issues) that would otherwise leak past this strip.
     # The Llama-3 ``<|python_tag|>...`` arm runs to the next ``<|`` sentinel or EOF;
     # ``(?:[^<]|<(?!\|))*`` keeps literal ``<``, newlines, and embedded JSON.
-    r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
+    # ``<function=name>`` (Qwen3.5) and the attribute form ``<function name="name">``
+    # (MiniCPM-5 / MiniMax-M2); name class ``[\w.\-]`` mirrors the parser so this
+    # form is stripped from the UI instead of leaking.
+    r'<(?:tool_call|function(?:=[\w.\-]+|\s+name="[\w.\-]+"))>.*?(?:</(?:tool_call|function)>|\Z)'
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"

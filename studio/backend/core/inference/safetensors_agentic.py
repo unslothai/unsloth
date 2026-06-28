@@ -466,6 +466,7 @@ def run_safetensors_tool_loop(
             safety_tc = parse_tool_calls_from_text(
                 content_accum,
                 id_offset = next_call_id,
+                allow_incomplete = auto_heal_tool_calls,
             )
             if not safety_tc:
                 # Re-prompt only when the model planned without acting (intent

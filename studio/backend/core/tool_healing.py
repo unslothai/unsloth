@@ -269,7 +269,10 @@ def _quote_gemma_object_keys(src: str) -> str:
                     json.loads(raw.strip())
                     parts.append(raw)
                 except (json.JSONDecodeError, ValueError):
-                    parts.append(json.dumps(raw.strip()) if raw.strip() else raw)
+                    # Bare value: quote it. An empty value ({k:}) must become ""
+                    # so json.loads sees {"k":""} instead of invalid {"k":}, which
+                    # would drop the whole call.
+                    parts.append(json.dumps(raw.strip()))
         else:
             parts.append(src[key_start:i])
     return "".join(parts)
