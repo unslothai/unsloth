@@ -841,19 +841,22 @@ class FastBaseModel:
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # The tokenizer / processor loads in-process below (auto_processor / AutoTokenizer)
-        # regardless of the vLLM weight path, so a stalled Xet download of its tokenizer /
-        # processor / config files could still hang from_pretrained. Warm that repo's files
-        # through the same killable subprocess. The base prefetch above already covered them
-        # when it warmed model_name itself, so only warm here when the tokenizer / processor
-        # comes from a different repo, or when fast_inference skipped the base warm entirely.
+        # The tokenizer / processor loads in-process below (auto_processor / AutoTokenizer), so a
+        # stalled Xet download of its tokenizer / processor / config files could still hang
+        # from_pretrained. Warm a SEPARATE tokenizer repo (explicit tokenizer_name) through the
+        # killable subprocess. When the tokenizer comes from model_name itself, it is already
+        # covered: the base prefetch above warmed model_name, and on the vLLM path
+        # (_vllm_owns_weights) vLLM downloads its model repo -- including the tokenizer -- before
+        # the in-process tokenizer load. We must NOT warm model_name here on the vLLM path: that
+        # warm runs before fast_inference_setup may rewrite a "*-unsloth-bnb-4bit" name to the
+        # "*-bnb-4bit" repo the load actually reads, so it would warm the wrong (pre-remap) repo.
         _tokenizer_repo = (
             tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
         )
         _warm_tokenizer_repo = (
             isinstance(_tokenizer_repo, str)
             and bool(_tokenizer_repo)
-            and (_tokenizer_repo != model_name or _vllm_owns_weights)
+            and _tokenizer_repo != model_name
         )
         if _warm_tokenizer_repo:
             maybe_prefetch_hf_snapshot(

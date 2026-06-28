@@ -951,10 +951,18 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
     "spiece.model",
     # Additional SentencePiece / vocab files that are real from_pretrained load targets
     # (VOCAB_FILES_NAMES entries) but are NOT covered by the names above: spm.model
-    # (DeBERTa-v2), normalizer.json (Whisper), tokenizer.model.v3 (Mistral versioned SP).
+    # (DeBERTa-v2), normalizer.json (Whisper), tokenizer.model.v3 (Mistral versioned SP),
+    # sentencepiece.bpe.model (XLM-R / mBART / CamemBERT -- Unsloth tries the slow tokenizer
+    # first, which fetches these), source.spm / target.spm (Marian), bpe.codes (FSMT / XLM),
+    # vocab.bpe (GPT-2-style merges asset).
     "spm.model",
     "normalizer.json",
     "tokenizer.model.v3",
+    "sentencepiece.bpe.model",
+    "source.spm",
+    "target.spm",
+    "bpe.codes",
+    "vocab.bpe",
     "chat_template.jinja",
     "chat_template.json",
     # A non-default chat_template="<name>" load fetches additional_chat_templates/<name>.jinja.
@@ -1017,19 +1025,36 @@ def _in_requested_load_scope(filename, subfolder):
     return "/" not in filename
 
 
+# Training-state files that carry a .safetensors suffix but are NOT loadable model weights. A
+# Trainer checkpoint can ship optimizer.safetensors / scheduler.safetensors next to the real
+# pytorch_model.bin, and counting one as "model safetensors present" would drop the needed .bin.
+_NON_MODEL_WEIGHT_STEMS = frozenset({
+    "optimizer", "scheduler", "scaler", "rng_state", "training_args",
+})
+
+
 def _is_model_weight_safetensors(filename):
     """True if a repo-relative *filename* is a model-weights safetensors file rather than
-    a PEFT adapter / sidecar (e.g. ``adapter_model.safetensors``).
+    a PEFT adapter / sidecar (e.g. ``adapter_model.safetensors``) or a trainer-state file
+    (``optimizer.safetensors``).
 
     Only a real model-weights safetensors proves the ``.bin`` full-model weights are
-    redundant. A repo can ship an ``adapter_model.safetensors`` sidecar while its actual
-    weights are ``pytorch_model.bin``; counting the sidecar would wrongly skip the needed
-    ``.bin`` and leave the in-process load to fetch it without the Xet fallback.
+    redundant. A repo can ship an ``adapter_model.safetensors`` sidecar -- or an
+    ``optimizer.safetensors`` training-state file -- while its actual weights are
+    ``pytorch_model.bin``; counting those would wrongly skip the needed ``.bin`` and leave the
+    in-process load to fetch it without the Xet fallback.
     """
     name = filename.replace("\\", "/").rsplit("/", 1)[-1]
     if not name.endswith((".safetensors", ".safetensors.index.json")):
         return False
-    return not name.startswith("adapter_")
+    if name.startswith("adapter_"):
+        return False
+    # Stem before the first dot: "optimizer.safetensors" -> "optimizer", "rng_state_0..." -> caught
+    # by the prefix test; a real weight ("model", "model-00001-of-00002", "consolidated") is kept.
+    stem = name.split(".", 1)[0].lower()
+    if stem in _NON_MODEL_WEIGHT_STEMS or stem.startswith("rng_state"):
+        return False
+    return True
 
 
 def _filename_has_variant(filename, variant):
@@ -1077,7 +1102,6 @@ def _prefetch_ignore_patterns(
     from_tf = False,
     from_flax = False,
     variant = None,
-    skip_format_probe = False,
 ):
     """ignore_patterns for the prewarm snapshot: the static skip list, minus the
     checkpoint guard when loading from a checkpoint-* subfolder, minus the weight
@@ -1128,10 +1152,6 @@ def _prefetch_ignore_patterns(
     elif use_safetensors is False:
         # Explicit .bin: the load never reads safetensors, so skip them.
         ignore_patterns.extend(("*.safetensors", "*.safetensors.index.json"))
-    elif skip_format_probe:
-        # The repo is already cached, so nothing downloads and the format-drop optimization is
-        # moot: skip the model_info network call and leave both formats eligible.
-        pass
     else:
         # Auto (use_safetensors is None): skip .bin only once in-scope safetensors are
         # confirmed to load instead, since Transformers prefers them. Best-effort: any
@@ -1243,26 +1263,12 @@ def maybe_prefetch_hf_snapshot(
     if fast_inference:
         return False
 
-    # Skip the weight-format model_info round-trips below when the repo is already on disk: a cached
-    # repo downloads nothing (the guarded warm short-circuits on the cache regardless of which format
-    # the ignore list would drop), so probing the Hub to choose a format would only add a network hop
-    # to an otherwise offline-capable cached load. try_to_load_from_cache is a cheap LOCAL lookup; a
-    # wrong "cached" guess merely keeps BOTH formats (over-warm, never under-warm). Adapter repos key
-    # off adapter_config.json, everything else off config.json.
-    skip_format_probe = False
-    try:
-        from huggingface_hub import try_to_load_from_cache
-        _probe_name = "adapter_config.json" if adapter_only else "config.json"
-        skip_format_probe = isinstance(
-            try_to_load_from_cache(model_name, _probe_name, cache_dir = cache_dir), str
-        )
-    except Exception:
-        skip_format_probe = False
-
-    # A tokenizer-only warm allow-lists the exact tokenizer / config files below, so the weight-
-    # format ignore list is moot -- and skipping it avoids the model_info network call the auto
-    # branch would otherwise make. (An adapter-only warm sets its own format ignore further down,
-    # gated on skip_format_probe so a cached adapter needs no model_info.)
+    # A tokenizer-only or adapter-only warm allow-lists the exact files the load reads below, so the
+    # weight-format ignore list is moot -- and skipping it avoids the model_info network call the
+    # auto branch would otherwise make. (An adapter-only warm sets its own format ignore further
+    # down.) The format probe keys off an ACTUAL weight file, not config.json: AutoConfig caches
+    # config.json before this helper runs in the Llama / diffusion paths, so a config-based "cached"
+    # guess would skip the .bin-drop even when no weights are cached and over-fetch both formats.
     ignore_patterns = (
         None
         if tokenizer_only or adapter_only
@@ -1275,7 +1281,6 @@ def maybe_prefetch_hf_snapshot(
             from_tf = from_tf,
             from_flax = from_flax,
             variant = variant,
-            skip_format_probe = skip_format_probe,
         )
     )
     # Narrow the warm to exactly what the in-process load reads, so a repo that ships extra
@@ -1306,9 +1311,8 @@ def maybe_prefetch_hf_snapshot(
                 "adapter_model*.safetensors",
                 "adapter_model*.safetensors.index.json",
             ]
-        elif use_safetensors is True or (
-            not skip_format_probe
-            and _adapter_repo_has_safetensors(model_name, token = token, revision = revision)
+        elif use_safetensors is True or _adapter_repo_has_safetensors(
+            model_name, token = token, revision = revision
         ):
             ignore_patterns = ["adapter_model*.bin", "adapter_model*.bin.index.json"]
     elif isinstance(subfolder, str) and subfolder.strip("/"):

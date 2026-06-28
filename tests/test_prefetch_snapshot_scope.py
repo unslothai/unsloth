@@ -278,27 +278,61 @@ def test_tokenizer_only_warms_extra_vocab_files(capture):
     assert set(kept) == set(sample)
 
 
-def test_cached_repo_skips_format_model_info(capture, monkeypatch):
-    """When the repo is already cached (config.json present locally), the weight-format model_info
-    probe is skipped -- a cached, offline-capable load must not add a Hub round-trip. Both formats
-    stay eligible (over-warm is safe; the cached warm downloads nothing) (Codex #6638)."""
+def test_format_probe_runs_even_when_config_cached(capture, monkeypatch):
+    """A cached config.json must NOT skip the weight-format probe: AutoConfig caches config.json
+    before this helper runs (Llama / diffusion), so a config-based "cached" guess would leave both
+    formats eligible and over-fetch both multi-GB weight sets even when no weights are cached. The
+    auto branch still consults model_info and drops the redundant .bin for a safetensors repo
+    (Codex #6638)."""
     import huggingface_hub
 
+    # Pretend config.json is locally cached (the AutoConfig side effect). This must not gate the probe.
     monkeypatch.setattr(
         huggingface_hub, "try_to_load_from_cache", lambda *a, **k: "/cache/config.json"
     )
-    called = {"n": 0}
-
-    class _Api:
-        def model_info(self, *a, **k):
-            called["n"] += 1
-            raise RuntimeError("model_info must not be called for a cached repo")
-
-    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
-    # weights_at_root with use_safetensors=None would normally hit the auto model_info branch.
+    _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.bin"])
     _, st = capture(weights_at_root = True)
-    assert called["n"] == 0
-    assert "*.bin" not in (st["ignore_patterns"] or [])  # auto .bin-drop skipped, both formats kept
+    ig = st["ignore_patterns"] or []
+    assert "*.bin" in ig  # redundant .bin dropped because real model safetensors is present
+
+
+def test_optimizer_safetensors_does_not_drop_bin(monkeypatch):
+    """A training-state optimizer.safetensors sidecar must NOT count as model safetensors: a repo
+    whose real weights are pytorch_model.bin alongside an optimizer.safetensors must keep its .bin,
+    else the in-process load fetches the only weights over Xet without the fallback (Codex #6638)."""
+    _install_fake_model_info(monkeypatch, ["pytorch_model.bin", "optimizer.safetensors"])
+    ig = U._prefetch_ignore_patterns("org/repo")
+    assert "*.bin" not in ig  # .bin is the only real weight -> not dropped
+
+
+def test_model_safetensors_still_drops_bin(monkeypatch):
+    """Control for the optimizer case: a real model.safetensors next to pytorch_model.bin still
+    drops the redundant .bin (the sidecar exclusion must not over-trigger) (Codex #6638)."""
+    _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.bin", "optimizer.safetensors"])
+    ig = U._prefetch_ignore_patterns("org/repo")
+    assert "*.bin" in ig
+
+
+def test_is_model_weight_safetensors_classification():
+    """Direct unit coverage: real model weights count, adapter / trainer-state sidecars do not."""
+    assert U._is_model_weight_safetensors("model.safetensors") is True
+    assert U._is_model_weight_safetensors("model-00001-of-00002.safetensors") is True
+    assert U._is_model_weight_safetensors("model.safetensors.index.json") is True
+    assert U._is_model_weight_safetensors("consolidated.safetensors") is True
+    assert U._is_model_weight_safetensors("adapter_model.safetensors") is False
+    assert U._is_model_weight_safetensors("optimizer.safetensors") is False
+    assert U._is_model_weight_safetensors("scheduler.safetensors") is False
+    assert U._is_model_weight_safetensors("rng_state_0.safetensors") is False
+
+
+def test_tokenizer_only_warms_slow_sentencepiece_vocab(capture):
+    """tokenizer_only must warm the slow-tokenizer SentencePiece / BPE vocab files AutoTokenizer
+    fetches first (sentencepiece.bpe.model for XLM-R / mBART, source.spm / target.spm for Marian,
+    bpe.codes / vocab.bpe), so they are not left to an in-process Xet fetch (Codex #6638)."""
+    _, st = capture(tokenizer_only = True)
+    allow = st["allow_patterns"]
+    for name in ("sentencepiece.bpe.model", "source.spm", "target.spm", "bpe.codes", "vocab.bpe"):
+        assert name in allow, name
 
 
 # ----- Finding Q: adapter weight-format selection -----
