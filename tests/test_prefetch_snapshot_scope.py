@@ -155,6 +155,25 @@ def test_tokenizer_only_warms_only_aux_files(capture):
     assert "adapter_model.safetensors" not in kept
 
 
+def test_aux_warm_covers_arbitrary_remote_code_modules(capture):
+    """A trust_remote_code auto_map can name its module arbitrarily (modeling.py, tokenization.py,
+    my_code.py), not just the transformers modeling_*.py convention, so the aux warm must cover any
+    *.py -- else the load fetches the code file in-process over Xet (Codex #6638)."""
+    _, st = capture(tokenizer_only = True)
+    allow = st["allow_patterns"]
+    assert "*.py" in allow
+    remote_code = [
+        "config.json",
+        "modeling.py",            # auto_map "modeling.Model" -- no underscore suffix
+        "tokenization.py",
+        "my_custom_code.py",
+        "configuration_foo.py",   # the convention still covered by *.py too
+    ]
+    kept = _filter(remote_code, allow, st["ignore_patterns"])
+    for name in ("modeling.py", "tokenization.py", "my_custom_code.py", "configuration_foo.py"):
+        assert name in kept, name
+
+
 def test_subfolder_warms_subfolder_plus_root_aux(capture):
     """A subfolder load warms that subfolder's weights plus the root tokenizer / config; the
     root weights and OTHER subfolders are skipped."""

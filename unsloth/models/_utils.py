@@ -971,16 +971,13 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
     "processor_config.json",
     # Video processors (e.g. Qwen2.5-VL video) read a dedicated video_preprocessor_config.json.
     "video_preprocessor_config.json",
-    # Custom-code entry points a trust_remote_code config / model / tokenizer / processor
-    # load fetches from the repo root. Each carries a literal prefix, so it stays effectively
-    # root-anchored, and matches nothing on a non-remote-code repo (harmless there).
-    "configuration_*.py",
-    "modeling_*.py",
-    "tokenization_*.py",
-    "processing_*.py",
-    "image_processing_*.py",
-    "feature_extraction_*.py",
-    "video_processing_*.py",
+    # Custom-code entry points a trust_remote_code config / model / tokenizer / processor load
+    # fetches via auto_map. The module name is arbitrary: the transformers convention is
+    # modeling_*.py / tokenization_*.py, but an auto_map can point at any module (modeling.py,
+    # tokenization.py, my_code.py), so prefix globs would miss it and leave the .py to an
+    # in-process Xet fetch. Warm every *.py instead -- they are tiny, and a non-remote-code repo
+    # ships none (harmless). HF fnmatch "*" spans "/", so nested helper modules are covered too.
+    "*.py",
     # tiktoken vocab assets (e.g. Qwen's qwen.tiktoken) a custom tokenizer can require.
     "*.tiktoken",
 )
