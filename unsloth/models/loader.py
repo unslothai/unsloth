@@ -470,7 +470,7 @@ class FastLanguageModel(FastLlamaModel):
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # '-bf16' hub repos load bf16; for a local dir keep the requested 4bit/8bit
-        if model_name.lower().endswith("-bf16") and not os.path.isdir(model_name):
+        if model_name.lower().endswith("-bf16") and not os.path.isdir(os.path.expanduser(model_name)):
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
@@ -629,7 +629,7 @@ class FastLanguageModel(FastLlamaModel):
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # '-bf16' hub repos load bf16; for a local dir keep the requested 4bit/8bit
-            if model_name.lower().endswith("-bf16") and not os.path.isdir(model_name):
+            if model_name.lower().endswith("-bf16") and not os.path.isdir(os.path.expanduser(model_name)):
                 load_in_4bit = False
                 load_in_8bit = False
                 load_in_fp8 = False
@@ -1117,7 +1117,7 @@ class FastModel(FastBaseModel):
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
         # '-bf16' hub repos load bf16; for a local dir keep the requested 4bit/8bit
-        if model_name.lower().endswith("-bf16") and not os.path.isdir(model_name):
+        if model_name.lower().endswith("-bf16") and not os.path.isdir(os.path.expanduser(model_name)):
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
@@ -1475,7 +1475,7 @@ class FastModel(FastBaseModel):
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
             # '-bf16' hub repos load bf16; for a local dir keep the requested 4bit/8bit
-            if model_name.lower().endswith("-bf16") and not os.path.isdir(model_name):
+            if model_name.lower().endswith("-bf16") and not os.path.isdir(os.path.expanduser(model_name)):
                 load_in_4bit = False
                 load_in_8bit = False
                 load_in_fp8 = False
