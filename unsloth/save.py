@@ -151,17 +151,44 @@ CURL_FLAG = "-DLLAMA_CURL=ON" if has_curl() else "-DLLAMA_CURL=OFF"
 
 # FP8/FP4 compressed export via llm-compressor (for vLLM).
 # save_method alias -> (llm-compressor scheme, needs_calibration, output dir suffix).
+# alias -> (llm-compressor scheme, needs_calibration, output-dir suffix). needs_calibration is
+# True only for schemes with static activation scales (FP8 static, NVFP4); everything else is
+# weight-only or dynamic-activation and runs data-free. Unsupported schemes in the installed
+# compressed-tensors (e.g. MXFP8 on older stacks) are gated by _scheme_is_available at runtime.
 COMPRESSED_EXPORT_SCHEMES = {
+    # FP8
     "fp8": ("FP8_DYNAMIC", False, "fp8"),
     "fp8_dynamic": ("FP8_DYNAMIC", False, "fp8"),
     "dynamic_fp8": ("FP8_DYNAMIC", False, "fp8"),
     "w8a8_fp8": ("FP8_DYNAMIC", False, "fp8"),
+    "fp8_static": ("FP8", True, "fp8-static"),
+    "static_fp8": ("FP8", True, "fp8-static"),
+    "fp8_block": ("FP8_BLOCK", False, "fp8-block"),
+    "block_fp8": ("FP8_BLOCK", False, "fp8-block"),
+    # INT8 / INT-weight
+    "int8": ("INT8", False, "int8"),
+    "w8a8": ("W8A8", False, "w8a8"),
+    "w8a8_int8": ("W8A8", False, "w8a8"),
+    "w8a16": ("W8A16", False, "w8a16"),
+    "int8_weight": ("W8A16", False, "w8a16"),
+    "w4a16": ("W4A16", False, "w4a16"),
+    "int4": ("W4A16", False, "w4a16"),
+    "int4_weight": ("W4A16", False, "w4a16"),
+    "w4a16_asym": ("W4A16_ASYM", False, "w4a16-asym"),
+    "w4a8": ("W4A8", False, "w4a8"),
+    "w4afp8": ("W4AFP8", False, "w4afp8"),
+    # MXFP (microscaling)
     "mxfp8": ("MXFP8", False, "mxfp8"),
     "w8a8_mxfp8": ("MXFP8", False, "mxfp8"),
     "mxfp4": ("MXFP4", False, "mxfp4"),
     "w4a4_mxfp4": ("MXFP4", False, "mxfp4"),
+    "mxfp4a16": ("MXFP4A16", False, "mxfp4a16"),
+    "w4a16_mxfp4": ("MXFP4A16", False, "mxfp4a16"),
+    # NVFP4
     "nvfp4": ("NVFP4", True, "nvfp4"),
     "w4a4_nvfp4": ("NVFP4", True, "nvfp4"),
+    "nvfp4a16": ("NVFP4A16", False, "nvfp4a16"),
+    "w4a16_nvfp4": ("NVFP4A16", False, "nvfp4a16"),
 }
 
 
@@ -177,12 +204,11 @@ def _normalize_compressed_method(save_method):
     key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
     if key in COMPRESSED_EXPORT_SCHEMES:
         return COMPRESSED_EXPORT_SCHEMES[key]
-    if any(tag in key for tag in ("fp8", "fp4", "mxfp")):
+    if any(tag in key for tag in ("fp8", "fp4", "mxfp", "nvfp", "w4a", "w8a", "int4", "int8")):
         supported = ", ".join(sorted(COMPRESSED_EXPORT_SCHEMES.keys()))
         raise RuntimeError(
             f"Unsloth: save_method='{save_method}' is not a supported compressed export.\n"
-            f"Supported FP8/FP4 export methods: {supported}\n"
-            "(only dynamic FP8, MXFP8, and W4A4 MXFP4/NVFP4 are wired up for now)."
+            f"Supported compressed-tensors export methods: {supported}"
         )
     return None
 
@@ -191,7 +217,7 @@ def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
     print(
-        "\nCompressed-tensors FP8/FP4 export "
+        "\nCompressed-tensors export "
         "(save_pretrained_merged(..., save_method=...), for vLLM):"
     )
     seen = set()
@@ -3086,7 +3112,8 @@ def _unsloth_save_lora_gguf(
         raise ValueError(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."
         )
-    if token is None and push_to_hub:
+    # Resolve a token even for local saves: the converter may fetch a gated/private base config.
+    if token is None:
         token = get_token()
 
     # Resolve the dequantized base id (the adapter usually references a 4bit repo).
@@ -3138,6 +3165,12 @@ def _unsloth_save_lora_gguf(
         if bool(getattr(model.config, "auto_map", None)):
             cmd.append("--trust-remote-code")
 
+        # Expose the token to the converter so it can fetch a gated/private base config from the Hub.
+        env = os.environ.copy()
+        if isinstance(token, str) and token:
+            env["HF_TOKEN"] = token
+            env["HUGGING_FACE_HUB_TOKEN"] = token
+
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
         try:
             with subprocess.Popen(
@@ -3148,6 +3181,7 @@ def _unsloth_save_lora_gguf(
                 universal_newlines = True,
                 encoding = "utf-8",
                 errors = "replace",
+                env = env,
             ) as sp:
                 for line in sp.stdout:
                     print(line, end = "", flush = True)
@@ -3831,7 +3865,8 @@ def _unsloth_save_compressed_tensors(
 
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
-    if token is None and push_to_hub:
+    # Resolve a token for the hub push and/or loading a gated calibration dataset in the subprocess.
+    if token is None:
         token = get_token()
 
     # Only the main process installs deps, merges, quantizes, and uploads (mirrors the non-PEFT
@@ -4018,12 +4053,18 @@ def _unsloth_save_compressed_tensors(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+        # Expose the token so the subprocess can load a gated/private calibration dataset.
+        env = os.environ.copy()
+        if isinstance(token, str) and token:
+            env["HF_TOKEN"] = token
+            env["HUGGING_FACE_HUB_TOKEN"] = token
+
         print(
             f"Unsloth: Quantizing the merged model to {scheme} with llm-compressor "
             "(in a separate process)..."
         )
         try:
-            subprocess.check_call(cmd)
+            subprocess.check_call(cmd, env = env)
         except subprocess.CalledProcessError as e:
             raise RuntimeError(
                 f"Unsloth: {scheme} quantization failed (llm-compressor subprocess exit "

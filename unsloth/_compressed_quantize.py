@@ -106,6 +106,12 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
 
     cols = set(ds.column_names)
     if "input_ids" in cols:
+        # Drop non-model-input columns (e.g. a leftover 'messages' list) so llm-compressor's
+        # collator does not try to batch them.
+        keep = {"input_ids", "attention_mask", "labels", "position_ids"}
+        extra = [c for c in ds.column_names if c not in keep]
+        if extra:
+            ds = ds.remove_columns(extra)
         return ds
     if "messages" in cols:
         # Base / non-chat tokenizers have no chat template; concatenate message contents instead
@@ -231,7 +237,8 @@ def main():
     is_moe = _is_moe(getattr(model, "config", None))
     ignore = ["lm_head"]
     if is_moe:
-        ignore.append("re:.*\\.gate$")
+        # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
+        ignore += ["re:.*\\.gate$", "re:.*\\.shared_expert_gate$"]
     moe_kwargs = {"moe_calibrate_all_experts": True} if is_moe else {}
 
     def _make_recipe():
