@@ -394,3 +394,82 @@ def test_strip_tool_markup_handles_kimi_section():
     stripped = strip_tool_markup(text, final = True)
     assert "before" in stripped and "after" in stripped
     assert "tool_calls_section_begin" not in stripped
+
+
+# ────────────────────────────────────────────────────────────────────
+# Round-2 review findings: GLM quoted-string / unclosed-arg, DeepSeek
+# strict terminator, nested wrapper-less Gemma strip
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_glm_quoted_string_arg_keeps_its_quotes():
+    # A GLM string value emitted verbatim that itself begins with a quote (e.g. a
+    # search query the user wants quoted) must NOT be JSON-decoded, which would
+    # strip the meaningful quotes before the tool runs.
+    text = (
+        "<tool_call>web_search\n"
+        "<arg_key>query</arg_key>\n"
+        '<arg_value>"exact phrase"</arg_value>\n'
+        "</tool_call>"
+    )
+    calls = parse_tool_calls_from_text(text)
+    args = json.loads(calls[0]["function"]["arguments"])
+    assert args["query"] == '"exact phrase"'
+
+
+def test_glm_unclosed_arg_value_is_rejected_in_strict_mode():
+    # Closing </tool_call> present but a value never closes: strict mode must reject
+    # the whole call rather than execute it with the argument silently dropped.
+    text = (
+        "<tool_call>web_search\n"
+        "<arg_key>query</arg_key>\n"
+        "<arg_value>Tokyo weather"  # no </arg_value>
+        "</tool_call>"
+    )
+    assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+    # With Auto-Heal the partial value is kept, not dropped to a no-arg call.
+    healed = parse_tool_calls_from_text(text, allow_incomplete = True)
+    assert len(healed) == 1
+    args = json.loads(healed[0]["function"]["arguments"])
+    assert "Tokyo weather" in args.get("query", "")
+
+
+def test_deepseek_v3_missing_call_terminator_rejected_in_strict_mode():
+    # Envelope closes but the per-call <｜tool▁call▁end｜> is absent. Strict mode
+    # must reject (it is truncated/merged); Auto-Heal still parses it.
+    text = (
+        "<｜tool▁calls▁begin｜>"
+        "<｜tool▁call▁begin｜>get_time"
+        '<｜tool▁sep｜>{"city":"Tokyo"}'
+        "<｜tool▁calls▁end｜>"  # envelope end only, no per-call end
+    )
+    assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+    healed = parse_tool_calls_from_text(text, allow_incomplete = True)
+    assert len(healed) == 1
+    assert healed[0]["function"]["name"] == "get_time"
+
+
+def test_deepseek_v3_with_call_terminator_parses_in_strict_mode():
+    # Sanity: a well-formed V3 call (with the per-call end marker) still parses
+    # under strict mode after the terminator check.
+    text = (
+        "<｜tool▁calls▁begin｜>"
+        "<｜tool▁call▁begin｜>get_time"
+        '<｜tool▁sep｜>{"city":"Tokyo"}'
+        "<｜tool▁call▁end｜>"
+        "<｜tool▁calls▁end｜>"
+    )
+    calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "get_time"
+
+
+def test_strip_tool_markup_removes_nested_wrapperless_gemma_call():
+    # Wrapper-less Gemma call with a NESTED object arg: the [^{}]* cleanup regex
+    # cannot match it, so the balanced helper must remove the whole call instead of
+    # leaving a trailing ``}`` visible after execution.
+    text = "answer: call:f{loc:{city:NYC},n:3} done"
+    stripped = strip_tool_markup(text, final = True)
+    assert "call:f" not in stripped
+    assert "}" not in stripped
+    assert "answer:" in stripped and "done" in stripped

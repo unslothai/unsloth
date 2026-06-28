@@ -21,8 +21,11 @@ from typing import Callable, Generator, Optional
 from loggers import get_logger
 
 from core.inference.tool_call_parser import (
+    _GEMMA_BARE_TC_RE,
     _TOOL_ALL_PATS,
     _balanced_brace_end,
+    _strip_gemma_wrapperless_calls,
+    _strip_mistral_closed_calls,
     BUDGET_EXHAUSTED_NUDGE,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
@@ -100,6 +103,11 @@ def strip_tool_markup_streaming(
     """Strip open-ended tool XML from display text without trimming whitespace."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
+    # Balanced strip first so nested Mistral / Gemma JSON ({"a":{"b":1}},
+    # call:f{a:{b:1}}) is removed whole instead of the non-greedy pattern arms
+    # truncating at the first ``}`` and leaving a trailing brace visible.
+    text = _strip_mistral_closed_calls(text)
+    text = _strip_gemma_wrapperless_calls(text)
     for pat in _TOOL_ALL_PATS:
         text = pat.sub("", text)
     return text
@@ -435,6 +443,23 @@ def run_safetensors_tool_loop(
                     detect_state = _state_draining
                     continue
                 # Closed non-call object (or oversized) -- stream it as ordinary text.
+
+            # Gemma 4 wrapper-less ``call:NAME{...}`` (special tokens stripped) has no
+            # entry in tool_xml_signals, so without this it streams raw and is only
+            # caught by the end-of-turn safety net. The ``(?<!\w)`` guard in
+            # _GEMMA_BARE_TC_RE keeps words like "recall:" out; the safety net still
+            # recovers the text if it turns out not to be a call.
+            if (
+                not is_match
+                and not is_prefix
+                and tool_protocol_active
+                and ("call:".startswith(stripped) or stripped.startswith("call:"))
+            ):
+                if _GEMMA_BARE_TC_RE.match(stripped):
+                    detect_state = _state_draining
+                    continue
+                if len(stripped) < _MAX_BUFFER_CHARS:
+                    continue  # "call:" prefix / "call:partialname" -- keep buffering
 
             if is_match:
                 # Tool signal -- flush any visible prefix before DRAINING

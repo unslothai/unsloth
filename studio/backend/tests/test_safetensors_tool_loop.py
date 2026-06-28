@@ -239,6 +239,25 @@ class TestParser:
             == "before "
         )
 
+    def test_streaming_strip_handles_nested_mistral_json(self):
+        # The non-greedy [TOOL_CALLS]name{...} pattern truncates nested JSON at the
+        # first }; the balanced helper must remove the whole call so no trailing
+        # brace leaks to the streaming client.
+        raw = 'ok [TOOL_CALLS]foo{"a":{"b":1}} tail'
+        out = strip_tool_markup_streaming(raw)
+        assert "[TOOL_CALLS]" not in out
+        assert "}" not in out
+        assert "ok " in out and "tail" in out
+
+    def test_streaming_strip_handles_nested_wrapperless_gemma(self):
+        # Same class of bug for the wrapper-less Gemma call:NAME{...} form with a
+        # nested object argument.
+        raw = "ok call:f{loc:{city:NYC},n:3} tail"
+        out = strip_tool_markup_streaming(raw)
+        assert "call:f" not in out
+        assert "}" not in out
+        assert "ok " in out and "tail" in out
+
 
 class TestParserMultiFormat:
     """Parser coverage for Llama-3 / Mistral / Gemma 4 emission formats.
@@ -1356,6 +1375,20 @@ def test_bare_json_tool_call_split_across_chunks_is_not_streamed():
     assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any('"name"' in t or "web_search" in t for t in contents), contents
+
+
+def test_gemma_wrapperless_call_is_not_streamed_as_content():
+    # Gemma 4 wrapper-less ``call:NAME{...}`` has no XML signal; the loop must hold
+    # it (BUFFERING) and execute it, never streaming the raw call text.
+    loop, exec_fn = _make_loop(
+        turns = [["call:web_search{query:cats}"], ["Found."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("call:web_search" in t for t in contents), contents
 
 
 def test_leading_json_answer_is_not_dropped():
@@ -3177,6 +3210,83 @@ def test_render_with_native_template_returns_render_only_when_tools_emitted():
         )
         is None
     )
+
+
+def test_render_with_native_template_does_not_mutate_shared_tokenizer():
+    # The shared tokenizer must never carry the temporary native template, even
+    # mid-render: this runs outside the generation lock, so a concurrent request
+    # could otherwise render with the wrong template.
+    from types import SimpleNamespace
+
+    from core.inference.inference import InferenceBackend
+
+    shared = SimpleNamespace(chat_template = "OVERRIDE")
+    seen = []
+
+    def capture(tokenizer, msgs, *, tools, **_kw):
+        seen.append((tokenizer is shared, shared.chat_template))
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|T" if tools else "")
+
+    self_ns = SimpleNamespace(
+        active_model_name = "x", _apply_chat_template_for_generation = capture
+    )
+    model_info = {"native_chat_template": "TPL", "tokenizer": shared}
+    InferenceBackend._render_with_native_template(
+        self_ns,
+        model_info,
+        [{"role": "user", "content": "hi"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        None,
+        None,
+        False,
+    )
+    # Rendering happened on a copy, and the shared tokenizer stayed "OVERRIDE"
+    # throughout (never the temporary "TPL").
+    assert seen and all(not is_shared for is_shared, _ in seen)
+    assert all(tpl == "OVERRIDE" for _, tpl in seen)
+    assert shared.chat_template == "OVERRIDE"
+
+
+def test_native_template_loads_from_base_model_for_lora(monkeypatch):
+    # For a LoRA adapter the chat template lives on the base model; active_model_name
+    # is the adapter id and may ship no template. The loader must read base_model.
+    from types import SimpleNamespace
+
+    import transformers
+
+    from core.inference.inference import InferenceBackend
+
+    captured = {}
+
+    def fake_from_pretrained(name, *args, **kwargs):
+        captured["source"] = name
+        return SimpleNamespace(chat_template = "BASE_TPL")
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained)
+
+    def emitting(tokenizer, msgs, *, tools, **_kw):
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|T" if tools else "")
+
+    self_ns = SimpleNamespace(
+        active_model_name = "adapter/path", _apply_chat_template_for_generation = emitting
+    )
+    model_info = {
+        "base_model": "base/model-id",
+        "tokenizer": SimpleNamespace(chat_template = "OVERRIDE"),
+    }
+    out = InferenceBackend._render_with_native_template(
+        self_ns,
+        model_info,
+        [{"role": "user", "content": "hi"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        None,
+        None,
+        False,
+    )
+    assert captured["source"] == "base/model-id"
+    assert out == "hi|T"
 
 
 if __name__ == "__main__":

@@ -376,10 +376,36 @@ def _strip_mistral_closed_calls(text: str) -> str:
     return "".join(out)
 
 
+def _strip_gemma_wrapperless_calls(text: str) -> str:
+    """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace
+    scanning, so a nested object/array argument (``call:f{loc:{city:NYC},n:3}``) is
+    removed whole instead of leaving a trailing ``}`` -- the ``[^{}]*`` cleanup regex
+    only matches brace-free bodies. Unclosed runs are left for the regex tails."""
+    n = len(text)
+    out = []
+    cursor = 0
+    while cursor < n:
+        m = _GEMMA_BARE_TC_RE.search(text, cursor)
+        if not m:
+            out.append(text[cursor:])
+            break
+        brace = m.end() - 1  # _GEMMA_BARE_TC_RE consumes through the opening ``{``
+        _value, next_index, closed = _gemma_parse_mapping(text, brace)
+        if not closed:
+            # Unclosed -- leave from the call onward for the caller / final tails.
+            out.append(text[cursor:])
+            break
+        out.append(text[cursor : m.start()])
+        cursor = next_index  # already past the matching ``}``
+    return "".join(out)
+
+
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
     """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
     ``final=True`` also drops trailing unclosed runs and trims."""
     text = _strip_mistral_closed_calls(text)
+    if final:
+        text = _strip_gemma_wrapperless_calls(text)
     pats = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in pats:
         text = pat.sub("", text)
@@ -1362,6 +1388,16 @@ def _parse_deepseek_tool_calls(
         brace_end = _balanced_brace_end(body, json_start)
         if brace_end is None:
             break
+        # Strict mode (Auto-Heal off): a real V3 call closes with the per-call
+        # terminator <｜tool▁call▁end｜>. Without it the call is truncated or merged
+        # with the next, so reject it instead of executing on a bare balanced
+        # object (the envelope-level <｜tool▁calls▁end｜> alone is not enough).
+        if not allow_incomplete:
+            after = brace_end + 1
+            while after < len(body) and body[after] in " \t\r\n":
+                after += 1
+            if not body.startswith(_DEEPSEEK_CALL_END, after):
+                break
         try:
             args = json.loads(body[json_start : brace_end + 1])
         except (json.JSONDecodeError, ValueError):
@@ -1421,6 +1457,7 @@ def _parse_glm_tool_calls(
         body = content[body_start:body_end]
 
         args: dict[str, Any] = {}
+        valid = True
         # Walk arg_key/arg_value pairs with ``str.find``; a lazy-group ``finditer``
         # is O(N^2) when an unclosed body holds many bare ``<arg_key>`` tokens.
         apos = 0
@@ -1439,17 +1476,28 @@ def _parse_glm_tool_calls(
                 continue
             vs = vstart + len(_GLM_ARG_VAL_OPEN)
             ve = body.find(_GLM_ARG_VAL_CLOSE, vs)
-            if ve < 0:
-                break
             key = body[ks + len(_GLM_ARG_KEY_OPEN) : ke].strip()
+            if ve < 0:
+                # Unclosed <arg_value>: strict mode rejects the whole call instead
+                # of executing it with the argument silently dropped; with Auto-Heal
+                # keep the partial value (a truncated query must not become a no-arg
+                # call). Either way stop -- nothing valid follows an unclosed value.
+                if not allow_incomplete:
+                    valid = False
+                else:
+                    args[key] = body[vs:].rstrip()
+                break
             raw_val = body[vs:ve]
             apos = ve + len(_GLM_ARG_VAL_CLOSE)
             # Template emits non-strings via ``tojson``, strings verbatim. Probe for
             # an unambiguous JSON literal; else keep the value RAW so whitespace in
-            # string args (code, diffs) survives -- matches vLLM glm4_moe.
+            # string args (code, diffs) survives -- matches vLLM glm4_moe. A value
+            # that starts with ``"`` is a verbatim string whose quotes are
+            # meaningful (e.g. a search query); leaving ``"`` out of the probe keeps
+            # those quotes instead of decoding them away.
             probe = raw_val.strip()
             if (
-                probe[:1] in '{["'
+                probe[:1] in "{["
                 or probe in ("true", "false", "null")
                 or _GLM_JSON_NUMERIC_RE.fullmatch(probe)
             ):
@@ -1460,7 +1508,7 @@ def _parse_glm_tool_calls(
                     pass
             args[key] = raw_val
 
-        if name:
+        if name and valid:
             out.append(
                 {
                     "id": f"call_{id_offset + len(out)}",

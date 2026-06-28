@@ -8,6 +8,7 @@ from unsloth.chat_templates import get_chat_template
 from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
+import copy
 import json
 import sys
 import torch
@@ -235,14 +236,17 @@ class InferenceBackend:
         """
         native_tpl = model_info.get("native_chat_template")
         if native_tpl is None:
+            # For a LoRA adapter the native chat template lives on the base model;
+            # active_model_name is the adapter id/path and often ships no template.
+            template_source = model_info.get("base_model") or self.active_model_name
             try:
                 from transformers import AutoTokenizer
-                nt = AutoTokenizer.from_pretrained(self.active_model_name)
+                nt = AutoTokenizer.from_pretrained(template_source)
                 native_tpl = nt.chat_template or False
             except Exception as exc:
                 logger.warning(
                     "Could not load native chat template for '%s': %s",
-                    self.active_model_name,
+                    template_source,
                     exc,
                 )
                 native_tpl = False
@@ -254,11 +258,23 @@ class InferenceBackend:
         if tokenizer is None:
             return None
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
-        saved = getattr(tokenizer, "chat_template", None)
+        # Render on a shallow copy carrying the native template. Mutating the shared
+        # tokenizer.chat_template here races concurrent requests (this runs outside
+        # the generation lock), which could make another request render with the
+        # native template or restore over its saved value.
         try:
-            tokenizer.chat_template = native_tpl
+            render_tokenizer = copy.copy(tokenizer)
+            render_tokenizer.chat_template = native_tpl
+        except Exception as exc:
+            logger.warning(
+                "Could not clone tokenizer for native-template render of '%s': %s",
+                self.active_model_name,
+                exc,
+            )
+            return None
+        try:
             with_tools = self._apply_chat_template_for_generation(
-                tokenizer,
+                render_tokenizer,
                 messages,
                 tools = tools,
                 enable_thinking = enable_thinking,
@@ -266,7 +282,7 @@ class InferenceBackend:
                 preserve_thinking = preserve_thinking,
             )
             no_tools = self._apply_chat_template_for_generation(
-                tokenizer,
+                render_tokenizer,
                 messages,
                 tools = None,
                 enable_thinking = enable_thinking,
@@ -280,8 +296,6 @@ class InferenceBackend:
                 exc,
             )
             return None
-        finally:
-            tokenizer.chat_template = saved
         return with_tools if with_tools != no_tools else None
 
     def load_model(
