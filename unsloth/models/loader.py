@@ -469,9 +469,9 @@ class FastLanguageModel(FastLlamaModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-        # '-bf16' hub repos load bf16; for a local dir keep the requested 4bit/8bit
-        if model_name.lower().endswith("-bf16") and not os.path.isdir(
-            os.path.expanduser(model_name)
+        # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+        if model_name.lower().endswith("-bf16") and (
+            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
             load_in_4bit = False
             load_in_8bit = False
@@ -630,9 +630,9 @@ class FastLanguageModel(FastLlamaModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-            # '-bf16' hub repos load bf16; for a local dir keep the requested 4bit/8bit
-            if model_name.lower().endswith("-bf16") and not os.path.isdir(
-                os.path.expanduser(model_name)
+            # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+            if model_name.lower().endswith("-bf16") and (
+                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1120,9 +1120,9 @@ class FastModel(FastBaseModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-        # '-bf16' hub repos load bf16; for a local dir keep the requested 4bit/8bit
-        if model_name.lower().endswith("-bf16") and not os.path.isdir(
-            os.path.expanduser(model_name)
+        # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+        if model_name.lower().endswith("-bf16") and (
+            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
             load_in_4bit = False
             load_in_8bit = False
@@ -1480,9 +1480,9 @@ class FastModel(FastBaseModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-            # '-bf16' hub repos load bf16; for a local dir keep the requested 4bit/8bit
-            if model_name.lower().endswith("-bf16") and not os.path.isdir(
-                os.path.expanduser(model_name)
+            # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+            if model_name.lower().endswith("-bf16") and (
+                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
                 load_in_4bit = False
                 load_in_8bit = False
