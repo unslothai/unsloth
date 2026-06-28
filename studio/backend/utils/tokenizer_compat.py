@@ -50,7 +50,8 @@ def install_extra_special_tokens_compat() -> bool:
             logger.warning(
                 "Coercing malformed extra_special_tokens to {} (%s=%r); "
                 "tokenizer_config.json should use an object, not an array.",
-                type(special_tokens).__name__, entries,
+                type(special_tokens).__name__,
+                entries,
             )
         try:
             self.extra_special_tokens = {}
