@@ -2119,3 +2119,12 @@ def check_dataset_for_missing_videos(
         warnings.warn(error_msg, stacklevel = 2)
 
     return missing
+
+
+# Auto-enable grouped-GEMM MoE (transformers<5 ModuleList experts); see llama.py.
+try:
+    from unsloth_zoo.temporary_patches.moe_grouped_modulelist import wrap_loader_for_grouped_moe
+    FastBaseModel.from_pretrained = staticmethod(wrap_loader_for_grouped_moe(FastBaseModel.from_pretrained))
+    FastBaseModel.get_peft_model  = staticmethod(wrap_loader_for_grouped_moe(FastBaseModel.get_peft_model))
+except Exception:
+    pass
