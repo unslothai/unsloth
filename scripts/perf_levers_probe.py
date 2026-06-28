@@ -25,7 +25,7 @@ import numpy as np
 
 BASE = "Tongyi-MAI/Z-Image-Turbo"
 PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed"
-OUT = Path("/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research/perf_levers_images")
+OUT = Path(__file__).resolve().parent.parent / "outputs" / "quant_research" / "perf_levers_images"
 
 
 _LP = {"fn": None}

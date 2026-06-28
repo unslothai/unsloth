@@ -1750,6 +1750,7 @@ class DiffusionLoadRequest(BaseModel):
         Literal[
             "auto",
             "native",
+            "sdpa",
             "cudnn",
             "flash",
             "flash2",
@@ -1764,7 +1765,7 @@ class DiffusionLoadRequest(BaseModel):
         description = "Attention kernel via the diffusers dispatcher. auto picks the best "
         "exact backend for the device (cuDNN fused attention on NVIDIA, ~1.18x and "
         "near-lossless, when a speed profile is active; native SDPA elsewhere and when "
-        "speed=off). native forces default SDPA; cudnn/flash/flash3/flash4 are exact "
+        "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
         "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
         "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
         "unavailable kernel falls back to the default.",

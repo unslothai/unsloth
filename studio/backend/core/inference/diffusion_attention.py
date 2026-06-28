@@ -55,7 +55,7 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
     Raises ValueError for an unsupported alias so a bad request is rejected cheaply."""
     if value is None:
         return ATTN_AUTO
-    normalized = str(value).strip().lower().replace("-", "_")
+    normalized = str(value).strip().lower()
     if not normalized:
         return ATTN_AUTO
     if normalized not in ATTN_ALIASES:
@@ -63,6 +63,43 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
             f"Unsupported attention_backend '{value}'. Use one of: {', '.join(ATTN_ALIASES)}."
         )
     return normalized
+
+
+# Backends diffusers validates only by *package* at set time (``_check_attention_backend_
+# requirements`` checks the ``kernels`` install, not the GPU), but whose kernels need a
+# specific CUDA arch at run time -- so an explicit request on the wrong card loads/sets fine
+# and then crashes mid-generation. Gate them up front: minimum (major, minor) compute
+# capability per dispatcher backend name.
+_MIN_CUDA_CAPABILITY: dict[str, tuple[int, int]] = {
+    "_flash_3_hub": (9, 0),   # FlashAttention 3 -> Hopper (SM90)
+    "flash_4_hub": (10, 0),   # FlashAttention 4 -> Blackwell (SM100)
+}
+
+
+def _cuda_capability() -> Optional[tuple[int, int]]:
+    """(major, minor) compute capability of the active CUDA device, or None if unknown."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return None
+        return tuple(torch.cuda.get_device_capability())  # type: ignore[return-value]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _backend_arch_supported(backend: str) -> bool:
+    """False only when ``backend`` needs a known-higher CUDA arch than this device has.
+
+    Unknown capability (no CUDA / detection failure) returns True so we never block on a
+    guess -- diffusers' own set-time check still guards the package, and a genuine run-time
+    failure falls back to native."""
+    required = _MIN_CUDA_CAPABILITY.get(backend)
+    if required is None:
+        return True
+    have = _cuda_capability()
+    if have is None:
+        return True
+    return have >= required
 
 
 def _is_cuda_nvidia(target: Any) -> bool:
@@ -87,7 +124,13 @@ def select_attention_backend(
     alias = normalize_attention_backend(requested)
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
-        return None if backend == "native" else backend
+        if backend == "native":
+            return None
+        # An arch-gated kernel (flash3/flash4) on a card that can't run it would set fine
+        # then crash mid-generation, so drop it to the native default up front.
+        if not _backend_arch_supported(backend):
+            return None
+        return backend
     # auto
     if speed_active and _is_cuda_nvidia(target):
         return "_native_cudnn"
@@ -102,23 +145,51 @@ def apply_attention_backend(
 ) -> Optional[str]:
     """Set ``backend`` on ``pipe.transformer`` via the diffusers dispatcher.
 
-    Returns the backend actually engaged, or None when left at the default (either because
-    ``backend`` was None or because the requested kernel was unavailable -> graceful
-    fallback to the diffusers default, never a load failure). Best-effort."""
-    if backend is None:
-        return None
+    Returns the backend actually engaged, or None when left at the native default (either
+    because ``backend`` was None or because the requested kernel was unavailable -> graceful
+    fallback, never a load failure).
+
+    diffusers keeps a *process-wide* active attention backend that ``set_attention_backend``
+    also updates, and a fresh transformer's processors follow it (their ``_attention_backend``
+    defaults to None). So a load that wants native must restore it explicitly: otherwise it
+    silently inherits a backend an earlier load pinned (e.g. cuDNN under a speed profile),
+    breaking the bit-identical/``off`` guarantee. Best-effort throughout."""
     transformer = getattr(pipe, "transformer", None)
     fn = getattr(transformer, "set_attention_backend", None)
     if not callable(fn):
         return None
+    if backend is not None:
+        try:
+            fn(backend)
+            if logger is not None:
+                logger.info("diffusion.attention: backend=%s", backend)
+            return backend
+        except Exception as exc:  # noqa: BLE001 — unavailable kernel -> restore native below
+            _warn(logger, backend, exc)
+    # No backend requested, or the requested one failed: pin the native default so a stale
+    # process-wide backend from a previous load can't leak into this one.
+    _restore_native_backend(fn, logger)
+    return None
+
+
+def _active_attention_backend() -> Optional[str]:
+    """The diffusers process-wide active attention backend name, or None if undeterminable."""
     try:
-        fn(backend)
-        if logger is not None:
-            logger.info("diffusion.attention: backend=%s", backend)
-        return backend
-    except Exception as exc:  # noqa: BLE001 — unavailable kernel -> diffusers default
-        _warn(logger, backend, exc)
+        from diffusers.models.attention_dispatch import _AttentionBackendRegistry
+        name, _ = _AttentionBackendRegistry.get_active_backend()
+        return getattr(name, "value", str(name))
+    except Exception:  # noqa: BLE001
         return None
+
+
+def _restore_native_backend(set_backend_fn: Any, logger: Any) -> None:
+    """Force the native default when the global active backend isn't already native."""
+    if _active_attention_backend() == ATTN_NATIVE:
+        return  # already native -> avoid redundant work and an extra dispatcher warning
+    try:
+        set_backend_fn(ATTN_NATIVE)
+    except Exception as exc:  # noqa: BLE001 — best-effort restore
+        _warn(logger, ATTN_NATIVE, exc)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

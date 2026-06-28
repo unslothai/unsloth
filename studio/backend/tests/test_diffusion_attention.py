@@ -32,11 +32,20 @@ def test_normalize_defaults_and_aliases():
     assert normalize_attention_backend("auto") == ATTN_AUTO
     assert normalize_attention_backend("CuDNN") == "cudnn"
     assert normalize_attention_backend("FLASH3") == "flash3"
+    assert normalize_attention_backend("sdpa") == "sdpa"
 
 
 def test_normalize_rejects_unknown():
     with pytest.raises(ValueError):
         normalize_attention_backend("bogus")
+    # dashes are no longer silently rewritten to underscores -> a dashed alias is rejected.
+    with pytest.raises(ValueError):
+        normalize_attention_backend("flash-3")
+
+
+def test_sdpa_alias_maps_to_native():
+    # sdpa is an alias for native -> nothing to set on the dispatcher.
+    assert select_attention_backend(_target(), "sdpa", speed_active = True) is None
 
 
 # ── select policy ─────────────────────────────────────────────────────────────────
@@ -58,6 +67,8 @@ def test_auto_stays_native_off_nvidia(monkeypatch):
 
 def test_explicit_backend_honored_regardless_of_speed(monkeypatch):
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
+    # Pin a high capability so the arch-gated flash4 isn't dropped by the runtime check.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (10, 0))
     assert select_attention_backend(_target(), "sage", speed_active = False) == "sage"
     assert select_attention_backend(_target(), "flash4", speed_active = False) == "flash_4_hub"
     assert select_attention_backend(_target(), "cudnn", speed_active = False) == "_native_cudnn"
@@ -66,6 +77,25 @@ def test_explicit_backend_honored_regardless_of_speed(monkeypatch):
 def test_explicit_native_returns_none():
     # native is the default -> nothing to set.
     assert select_attention_backend(_target(), "native", speed_active = True) is None
+
+
+# ── arch gating (flash3/flash4 need a specific CUDA capability) ─────────────────────
+def test_flash3_dropped_below_hopper(monkeypatch):
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (8, 9))  # Ada / consumer
+    assert select_attention_backend(_target(), "flash3", speed_active = False) is None
+
+
+def test_flash4_dropped_below_blackwell(monkeypatch):
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (9, 0))  # Hopper, but FA4 needs SM100
+    assert select_attention_backend(_target(), "flash4", speed_active = False) is None
+    # flash3 still allowed on Hopper.
+    assert select_attention_backend(_target(), "flash3", speed_active = False) == "_flash_3_hub"
+
+
+def test_arch_gate_does_not_block_when_capability_unknown(monkeypatch):
+    # Unknown capability (e.g. no CUDA) must not block -> diffusers' set-time check still guards.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: None)
+    assert select_attention_backend(_target(), "flash4", speed_active = False) == "flash_4_hub"
 
 
 # ── apply ─────────────────────────────────────────────────────────────────────────
@@ -84,8 +114,21 @@ def _pipe(transformer):
     return types.SimpleNamespace(transformer = transformer)
 
 
-def test_apply_none_is_noop():
-    assert apply_attention_backend(_pipe(_FakeTransformer()), None) is None
+def test_apply_none_leaves_native_when_global_already_native(monkeypatch):
+    # Global already native -> no redundant set call, returns None.
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
+    t = _FakeTransformer()
+    assert apply_attention_backend(_pipe(t), None) is None
+    assert t.set_to is None
+
+
+def test_apply_none_restores_native_when_global_polluted(monkeypatch):
+    # A previous load pinned cuDNN process-wide; a native load must reset it so it can't
+    # silently inherit cuDNN (the bit-identical/off guarantee).
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: "_native_cudnn")
+    t = _FakeTransformer()
+    assert apply_attention_backend(_pipe(t), None) is None
+    assert t.set_to == "native"
 
 
 def test_apply_sets_backend():
@@ -94,10 +137,29 @@ def test_apply_sets_backend():
     assert engaged == "_native_cudnn" and t.set_to == "_native_cudnn"
 
 
-def test_apply_falls_back_on_unavailable_kernel():
+def test_apply_falls_back_on_unavailable_kernel(monkeypatch):
     # an unavailable kernel must not fail the load -> returns None (diffusers default).
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
     t = _FakeTransformer(fail = True)
     assert apply_attention_backend(_pipe(t), "sage") is None
+
+
+def test_apply_failed_kernel_restores_native_when_polluted(monkeypatch):
+    # Requested kernel fails AND the global is polluted: restore native before returning.
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: "_native_cudnn")
+
+    class _FailOnceTransformer:
+        def __init__(self):
+            self.calls = []
+
+        def set_attention_backend(self, name):
+            self.calls.append(name)
+            if name != "native":
+                raise RuntimeError(f"{name} kernel unavailable")
+
+    t = _FailOnceTransformer()
+    assert apply_attention_backend(_pipe(t), "sage") is None
+    assert t.calls == ["sage", "native"]
 
 
 def test_apply_handles_missing_method():
