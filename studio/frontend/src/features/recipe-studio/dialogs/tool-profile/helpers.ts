@@ -51,6 +51,7 @@ export function toApiProvider(
         .filter(([key, value]) => key && value),
     );
     return {
+      // biome-ignore lint/style/useNamingConvention: api schema
       provider_type: "stdio",
       name: provider.name.trim(),
       command: provider.command?.trim() ?? "",
@@ -59,10 +60,13 @@ export function toApiProvider(
     };
   }
   return {
+    // biome-ignore lint/style/useNamingConvention: api schema
     provider_type: "streamable_http",
     name: provider.name.trim(),
     endpoint: provider.endpoint?.trim() ?? "",
+    // biome-ignore lint/style/useNamingConvention: api schema
     api_key: provider.api_key?.trim() || undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
     api_key_env: provider.api_key_env?.trim() || undefined,
   };
 }

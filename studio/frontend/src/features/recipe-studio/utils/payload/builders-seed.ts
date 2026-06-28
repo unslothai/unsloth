@@ -53,12 +53,14 @@ export function buildSeedConfig(
       errors.push(`Seed ${config.name}: selection partition invalid.`);
       return undefined;
     }
+    // biome-ignore lint/style/useNamingConvention: api schema
     selectionStrategy = { index, num_partitions: numPartitions };
   }
 
   let source: Record<string, unknown>;
   if (seedSourceType === "hf") {
     source = {
+      // biome-ignore lint/style/useNamingConvention: api schema
       seed_type: "hf",
       path,
       token,
@@ -67,9 +69,12 @@ export function buildSeedConfig(
   } else if (seedSourceType === "unstructured") {
     const { chunkSize, chunkOverlap } = resolveChunking(config);
     source = {
+      // biome-ignore lint/style/useNamingConvention: api schema
       seed_type: "unstructured",
       paths: config.resolved_paths?.length ? config.resolved_paths : [config.hf_path],
+      // biome-ignore lint/style/useNamingConvention: api schema
       chunk_size: chunkSize,
+      // biome-ignore lint/style/useNamingConvention: api schema
       chunk_overlap: chunkOverlap,
     };
   } else if (seedSourceType === "github_repo") {
@@ -113,16 +118,21 @@ export function buildSeedConfig(
       return undefined;
     }
     source = {
+      // biome-ignore lint/style/useNamingConvention: api schema
       seed_type: "github_repo",
       repos,
       token: (config.github_token ?? "").trim(),
+      // biome-ignore lint/style/useNamingConvention: api schema
       item_types: itemTypes,
       limit: limitNum,
+      // biome-ignore lint/style/useNamingConvention: api schema
       include_comments: config.github_include_comments ?? true,
+      // biome-ignore lint/style/useNamingConvention: api schema
       max_comments_per_item: maxCommentsNum,
     };
   } else {
     source = {
+      // biome-ignore lint/style/useNamingConvention: api schema
       seed_type: "local",
       path,
     };
@@ -130,7 +140,9 @@ export function buildSeedConfig(
 
   return {
     source,
+    // biome-ignore lint/style/useNamingConvention: api schema
     sampling_strategy: config.sampling_strategy,
+    // biome-ignore lint/style/useNamingConvention: api schema
     selection_strategy: selectionStrategy,
   };
 }
@@ -180,8 +192,10 @@ export function buildSeedDropProcessor(
     return null;
   }
   return {
+    // biome-ignore lint/style/useNamingConvention: api schema
     processor_type: "drop_columns",
     name: "drop_seed_columns",
+    // biome-ignore lint/style/useNamingConvention: api schema
     column_names: cols,
   };
 }

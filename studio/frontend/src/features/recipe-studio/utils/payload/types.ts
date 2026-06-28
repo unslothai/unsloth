@@ -3,10 +3,15 @@
 
 export type RecipePayload = {
   recipe: {
+    // biome-ignore lint/style/useNamingConvention: api schema
     model_providers: Record<string, unknown>[];
+    // biome-ignore lint/style/useNamingConvention: api schema
     mcp_providers: Record<string, unknown>[];
+    // biome-ignore lint/style/useNamingConvention: api schema
     model_configs: Record<string, unknown>[];
+    // biome-ignore lint/style/useNamingConvention: api schema
     seed_config?: Record<string, unknown>;
+    // biome-ignore lint/style/useNamingConvention: api schema
     tool_configs: Record<string, unknown>[];
     columns: Record<string, unknown>[];
     processors: Record<string, unknown>[];
@@ -15,12 +20,19 @@ export type RecipePayload = {
   run: {
     rows: number;
     preview: boolean;
+    // biome-ignore lint/style/useNamingConvention: api schema
     output_formats: string[];
+    // biome-ignore lint/style/useNamingConvention: backend schema
     execution_type?: "preview" | "full";
+    // biome-ignore lint/style/useNamingConvention: backend schema
     run_config?: Record<string, unknown>;
+    // biome-ignore lint/style/useNamingConvention: backend schema
     dataset_name?: string;
+    // biome-ignore lint/style/useNamingConvention: backend schema
     artifact_path?: string;
+    // biome-ignore lint/style/useNamingConvention: backend schema
     merge_batches?: boolean;
+    // biome-ignore lint/style/useNamingConvention: backend schema
     run_name?: string | null;
   };
   ui: {
@@ -59,10 +71,15 @@ export type RecipePayload = {
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
     local_file_name?: string;
+    // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_file_ids?: string[];
+    // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_file_names?: string[];
+    // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_file_sizes?: number[];
+    // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_chunk_size?: string;
+    // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_chunk_overlap?: string;
     // ui-only: per-node advanced accordion state
     advanced_open_by_node?: Record<string, boolean>;

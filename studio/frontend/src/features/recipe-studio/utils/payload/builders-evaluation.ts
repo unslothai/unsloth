@@ -30,13 +30,19 @@ export function buildEvaluationDocumentScoreProcessor(
   const breakdownColumn = config.breakdown_column.trim();
   const scoreColumn = config.score_column.trim() || "doc_score";
   return {
+    // biome-ignore lint/style/useNamingConvention: api schema
     evaluation_type: "json_document_score",
     name,
+    // biome-ignore lint/style/useNamingConvention: api schema
     prediction_column: predictionColumn,
+    // biome-ignore lint/style/useNamingConvention: api schema
     reference_column: referenceColumn,
     schema: schemaValue,
+    // biome-ignore lint/style/useNamingConvention: api schema
     default_comparator: config.default_comparator || "string",
+    // biome-ignore lint/style/useNamingConvention: api schema
     score_column: scoreColumn,
+    // biome-ignore lint/style/useNamingConvention: api schema
     breakdown_column: breakdownColumn || null,
   };
 }

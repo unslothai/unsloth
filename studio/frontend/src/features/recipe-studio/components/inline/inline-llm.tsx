@@ -82,6 +82,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
             value={config.model_alias || null}
             onValueChange={(value) =>
               onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
                 model_alias: value ?? "",
               })
             }
@@ -98,6 +99,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
                 const next = aliasInputRef.current;
                 if (next !== config.model_alias) {
                   onUpdate({
+                    // biome-ignore lint/style/useNamingConvention: api schema
                     model_alias: next,
                   });
                 }
@@ -125,6 +127,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
             value={config.tool_alias || null}
             onValueChange={(value) =>
               onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
                 tool_alias: value ?? "",
               })
             }
@@ -138,6 +141,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
                 const next = event.target.value;
                 if (next !== (config.tool_alias ?? "")) {
                   onUpdate({
+                    // biome-ignore lint/style/useNamingConvention: api schema
                     tool_alias: next,
                   });
                 }
@@ -162,6 +166,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
             value={config.code_lang?.trim() || "python"}
             onValueChange={(value) =>
               onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
                 code_lang: value,
               })
             }

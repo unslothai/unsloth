@@ -16,9 +16,13 @@ export function buildModelProvider(
     return {
       name: config.name,
       endpoint: "",
+      // biome-ignore lint/style/useNamingConvention: api schema
       provider_type: "openai",
+      // biome-ignore lint/style/useNamingConvention: api schema
       extra_headers: {},
+      // biome-ignore lint/style/useNamingConvention: api schema
       extra_body: {},
+      // biome-ignore lint/style/useNamingConvention: api schema
       is_local: true,
     };
   }
@@ -37,10 +41,15 @@ export function buildModelProvider(
   return {
     name: config.name,
     endpoint: config.endpoint,
+    // biome-ignore lint/style/useNamingConvention: api schema
     provider_type: providerType,
+    // biome-ignore lint/style/useNamingConvention: api schema
     api_key_env: config.api_key_env?.trim() || undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
     api_key: config.api_key?.trim() || undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
     extra_headers: extraHeaders ?? {},
+    // biome-ignore lint/style/useNamingConvention: api schema
     extra_body: extraBody ?? {},
   };
 }
@@ -99,10 +108,13 @@ export function buildModelConfig(
   return {
     alias: config.name,
     model: config.model,
+    // biome-ignore lint/style/useNamingConvention: api schema
     gguf_variant: ggufVariant || undefined,
     provider: config.provider || undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
     inference_parameters:
       Object.keys(inference).length > 0 ? inference : undefined,
+    // biome-ignore lint/style/useNamingConvention: api schema
     skip_health_check: config.skip_health_check || undefined,
   };
 }

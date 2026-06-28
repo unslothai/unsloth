@@ -13,6 +13,7 @@ export const DATA_DESIGNER_API_BASE =
   import.meta.env.VITE_DATA_DESIGNER_API ?? DEFAULT_BASE;
 
 export type JobCreateResponse = {
+  // biome-ignore lint/style/useNamingConvention: api schema
   job_id: string;
 };
 
@@ -36,21 +37,30 @@ export type SourceProgressResponse = {
   repo?: string | null;
   resource?: string | null;
   page?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   page_items?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   fetched_items?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   estimated_total?: number | null;
   percent?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   rate_remaining?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   retry_after_sec?: number | null;
   message?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   updated_at?: number | null;
 };
 
 export type JobStatusResponse = {
+  // biome-ignore lint/style/useNamingConvention: api schema
   job_id: string;
   status: string;
   stage?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   current_column?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   completed_columns?: string[] | null;
   batch?: {
     idx?: number | null;
@@ -60,29 +70,39 @@ export type JobStatusResponse = {
     done?: number | null;
     total?: number | null;
     percent?: number | null;
+    // biome-ignore lint/style/useNamingConvention: api schema
     eta_sec?: number | null;
     rate?: number | null;
     ok?: number | null;
     failed?: number | null;
   };
+  // biome-ignore lint/style/useNamingConvention: api schema
   column_progress?: {
     done?: number | null;
     total?: number | null;
     percent?: number | null;
+    // biome-ignore lint/style/useNamingConvention: api schema
     eta_sec?: number | null;
     rate?: number | null;
     ok?: number | null;
     failed?: number | null;
   };
+  // biome-ignore lint/style/useNamingConvention: api schema
   source_progress?: SourceProgressResponse | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   model_usage?: Record<string, unknown>;
   rows?: number | null;
   cols?: number | null;
   error?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   has_analysis?: boolean;
+  // biome-ignore lint/style/useNamingConvention: api schema
   dataset_rows?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   artifact_path?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   started_at?: number | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   finished_at?: number | null;
 };
 
@@ -100,35 +120,50 @@ export type JobEvent = {
 };
 
 export type SeedInspectRequest = {
+  // biome-ignore lint/style/useNamingConvention: api schema
   dataset_name: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
   hf_token?: string;
   subset?: string;
   split?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
   preview_size?: number;
 };
 
 export type SeedInspectUploadRequest = {
   // Legacy single-file
   filename?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
   content_base64?: string;
   // Multi-file
+  // biome-ignore lint/style/useNamingConvention: api schema
   block_id?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
   file_ids?: string[];
+  // biome-ignore lint/style/useNamingConvention: api schema
   file_names?: string[];
   // Shared
+  // biome-ignore lint/style/useNamingConvention: api schema
   preview_size?: number;
+  // biome-ignore lint/style/useNamingConvention: api schema
   seed_source_type?: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
   unstructured_chunk_size?: number;
+  // biome-ignore lint/style/useNamingConvention: api schema
   unstructured_chunk_overlap?: number;
 };
 
 export type SeedInspectResponse = {
+  // biome-ignore lint/style/useNamingConvention: api schema
   dataset_name: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
   resolved_path: string;
   columns: string[];
+  // biome-ignore lint/style/useNamingConvention: api schema
   preview_rows: Record<string, unknown>[];
   split?: string | null;
   subset?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   resolved_paths?: string[] | null;
 };
 
@@ -141,11 +176,14 @@ export type ValidateError = {
 export type ValidateResponse = {
   valid: boolean;
   errors: ValidateError[];
+  // biome-ignore lint/style/useNamingConvention: api schema
   raw_detail?: string | null;
 };
 
 export type McpToolsListRequest = {
+  // biome-ignore lint/style/useNamingConvention: api schema
   mcp_providers: Record<string, unknown>[];
+  // biome-ignore lint/style/useNamingConvention: api schema
   timeout_sec?: number;
 };
 
@@ -157,6 +195,7 @@ export type McpToolsProviderResult = {
 
 export type McpToolsListResponse = {
   providers: McpToolsProviderResult[];
+  // biome-ignore lint/style/useNamingConvention: api schema
   duplicate_tools: Record<string, string[]>;
 };
 
@@ -169,6 +208,7 @@ async function parseErrorResponse(response: Response): Promise<string> {
     const parsed = JSON.parse(text) as {
       detail?: unknown;
       message?: string;
+      // biome-ignore lint/style/useNamingConvention: api schema
       raw_detail?: string;
     };
     // Use ||, not ??: an array detail is truthy but not nullish, and
@@ -312,6 +352,7 @@ export async function inspectSeedUpload(
   return postJson<SeedInspectResponse>("/seed/inspect-upload", payload);
 }
 
+// biome-ignore lint/style/useNamingConvention: api schema
 export type GithubEnvTokenStatus = { has_token: boolean };
 
 export async function getGithubEnvTokenStatus(): Promise<GithubEnvTokenStatus> {
@@ -397,8 +438,10 @@ export async function streamRecipeJobEvents(options: {
 // NOTE: preview endpoints removed from harness.
 
 type UnstructuredFileUploadResponse = {
+  // biome-ignore lint/style/useNamingConvention: api schema
   file_id: string;
   filename: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
   size_bytes: number;
   status: "ok" | "error";
   error?: string;

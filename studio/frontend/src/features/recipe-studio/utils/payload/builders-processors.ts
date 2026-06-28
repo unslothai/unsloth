@@ -12,6 +12,7 @@ export function buildExpressionColumn(
     errors.push(`Expression ${config.name}: expr required.`);
   }
   return {
+    // biome-ignore lint/style/useNamingConvention: api schema
     column_type: "expression",
     name: config.name,
     drop: config.drop ?? false,
@@ -43,6 +44,7 @@ export function buildProcessors(
       continue;
     }
     output.push({
+      // biome-ignore lint/style/useNamingConvention: api schema
       processor_type: "schema_transform",
       name,
       template,

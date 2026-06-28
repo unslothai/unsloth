@@ -69,6 +69,7 @@ export function ModelConfigDialog({
       onUpdate({
         provider: selectedProvider,
         model: "",
+        // biome-ignore lint/style/useNamingConvention: api schema
         gguf_variant: undefined,
       });
       return;
@@ -76,6 +77,7 @@ export function ModelConfigDialog({
     if (!nextIsLocal) {
       onUpdate({
         provider: selectedProvider,
+        // biome-ignore lint/style/useNamingConvention: api schema
         gguf_variant: undefined,
       });
       return;
@@ -167,6 +169,7 @@ export function ModelConfigDialog({
             onChange={(model, variant) =>
               onUpdate({
                 model,
+                // biome-ignore lint/style/useNamingConvention: api schema
                 gguf_variant: variant ?? undefined,
               })
             }
@@ -180,6 +183,7 @@ export function ModelConfigDialog({
             onChange={(event) =>
               onUpdate({
                 model: event.target.value,
+                // biome-ignore lint/style/useNamingConvention: api schema
                 gguf_variant: undefined,
               })
             }

@@ -411,10 +411,15 @@ export function buildRecipePayload(
     errors,
     payload: {
       recipe: {
+        // biome-ignore lint/style/useNamingConvention: api schema
         model_providers: modelProviders,
+        // biome-ignore lint/style/useNamingConvention: api schema
         mcp_providers: mcpProviders,
+        // biome-ignore lint/style/useNamingConvention: api schema
         model_configs: modelConfigs,
+        // biome-ignore lint/style/useNamingConvention: api schema
         seed_config: seedConfig,
+        // biome-ignore lint/style/useNamingConvention: api schema
         tool_configs: toolConfigs,
         columns,
         processors: recipeProcessors,
@@ -423,6 +428,7 @@ export function buildRecipePayload(
       run: {
         rows: 5,
         preview: true,
+        // biome-ignore lint/style/useNamingConvention: api schema
         output_formats: ["jsonl"],
       },
       ui: {
@@ -457,6 +463,7 @@ export function buildRecipePayload(
             unstructured_chunk_overlap: firstSeed.unstructured_chunk_overlap,
           }),
         ...(Object.keys(uiAdvancedOpenByNode).length > 0 && {
+          // biome-ignore lint/style/useNamingConvention: ui schema
           advanced_open_by_node: uiAdvancedOpenByNode,
         }),
       },

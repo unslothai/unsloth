@@ -45,6 +45,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
             value={props.config.api_key ?? ""}
             onChange={(event) =>
               props.onUpdate({
+                // biome-ignore lint/style/useNamingConvention: api schema
                 api_key: event.target.value,
               })
             }
@@ -66,6 +67,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
       props.onUpdate({
         provider: nextProvider,
         model: "",
+        // biome-ignore lint/style/useNamingConvention: api schema
         gguf_variant: undefined,
       });
       return;
@@ -75,6 +77,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
       ...(nextIsLocal
         ? {}
         : {
+            // biome-ignore lint/style/useNamingConvention: api schema
             gguf_variant: undefined,
           }),
     });
@@ -104,6 +107,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
             onChange={(model, variant) =>
               props.onUpdate({
                 model,
+                // biome-ignore lint/style/useNamingConvention: api schema
                 gguf_variant: variant ?? undefined,
               })
             }
@@ -116,6 +120,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
             onChange={(event) =>
               props.onUpdate({
                 model: event.target.value,
+                // biome-ignore lint/style/useNamingConvention: api schema
                 gguf_variant: undefined,
               })
             }
@@ -130,6 +135,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
           value={modelConfig.inference_temperature ?? ""}
           onChange={(event) =>
             props.onUpdate({
+              // biome-ignore lint/style/useNamingConvention: api schema
               inference_temperature: event.target.value,
             })
           }

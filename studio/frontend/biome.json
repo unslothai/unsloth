@@ -38,14 +38,6 @@
   },
   "overrides": [
     {
-      "include": ["src/features/recipe-studio/**"],
-      "linter": {
-        "rules": {
-          "style": { "useNamingConvention": "off" }
-        }
-      }
-    },
-    {
       "include": ["vite.config.ts", "eslint.config.js"],
       "linter": {
         "rules": {

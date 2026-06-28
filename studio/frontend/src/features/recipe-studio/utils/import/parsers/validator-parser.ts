@@ -61,8 +61,10 @@ export function parseValidator(
     kind: "validator",
     name,
     drop: column.drop === true,
+    // biome-ignore lint/style/useNamingConvention: api schema
     target_columns: targetColumns,
     validator_type: isOxc ? "oxc" : "code",
+    // biome-ignore lint/style/useNamingConvention: api schema
     code_lang: normalizeValidatorCodeLang(
       isOxc ? marker.codeLang || "javascript" : params.code_lang,
     ),

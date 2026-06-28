@@ -57,6 +57,7 @@ export function parseLlm(
 
   let imageContext: LlmConfig["image_context"] = {
     enabled: false,
+    // biome-ignore lint/style/useNamingConvention: api schema
     column_name: "",
   };
   if (Array.isArray(column.multi_modal_context)) {
@@ -67,6 +68,7 @@ export function parseLlm(
       if (modality === "image" && columnName) {
         imageContext = {
           enabled: true,
+          // biome-ignore lint/style/useNamingConvention: api schema
           column_name: columnName,
         };
       }
@@ -79,18 +81,27 @@ export function parseLlm(
   return {
     id,
     kind: "llm",
+    // biome-ignore lint/style/useNamingConvention: api schema
     llm_type: llmType,
     name,
     drop: column.drop === true,
+    // biome-ignore lint/style/useNamingConvention: api schema
     model_alias: readString(column.model_alias) ?? "",
     prompt: readString(column.prompt) ?? "",
+    // biome-ignore lint/style/useNamingConvention: api schema
     system_prompt: readString(column.system_prompt) ?? "",
+    // biome-ignore lint/style/useNamingConvention: api schema
     code_lang: readString(column.code_lang) ?? "",
+    // biome-ignore lint/style/useNamingConvention: api schema
     output_format: normalizeOutputFormat(column.output_format),
+    // biome-ignore lint/style/useNamingConvention: api schema
     tool_alias: readString(column.tool_alias) ?? "",
+    // biome-ignore lint/style/useNamingConvention: api schema
     with_trace: withTrace,
+    // biome-ignore lint/style/useNamingConvention: api schema
     extract_reasoning_content: extractReasoningContent,
     scores: llmType === "judge" ? scores : undefined,
+    // biome-ignore lint/style/useNamingConvention: ui schema
     image_context: imageContext,
   };
 }
