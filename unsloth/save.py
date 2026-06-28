@@ -217,8 +217,7 @@ def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
     print(
-        "\nCompressed-tensors export "
-        "(save_pretrained_merged(..., save_method=...), for vLLM):"
+        "\nCompressed-tensors export (save_pretrained_merged(..., save_method=...), for vLLM):"
     )
     seen = set()
     for key, (scheme, needs_calib, _suffix) in COMPRESSED_EXPORT_SCHEMES.items():
