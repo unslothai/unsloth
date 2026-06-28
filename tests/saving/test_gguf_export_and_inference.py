@@ -147,7 +147,9 @@ def exported_gguf(tmp_path_factory):
         processing_class = tokenizer,
         train_dataset = dataset,
         args = SFTConfig(
-            max_length = 1024,
+            # max_length is left unset: newer TRL enables padding-free training (without packing)
+            # by default, where SFTConfig(max_length=...) raises because length is not enforced.
+            max_length = None,
             dataset_text_field = "text",
             per_device_train_batch_size = 4,
             max_steps = 80,

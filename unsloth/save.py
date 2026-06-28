@@ -1332,7 +1332,20 @@ def install_llm_compressor():
     except Exception:
         pass
 
-    cmd = [sys.executable, "-m", "pip", "install", "llmcompressor"]
+    # Prefer pip, but fall back to uv when this interpreter has no pip seeded (common in
+    # uv-created / relocatable venvs), so the export does not hard-fail with "No module named pip".
+    import importlib.util
+
+    if importlib.util.find_spec("pip") is not None:
+        cmd = [sys.executable, "-m", "pip", "install", "llmcompressor"]
+    elif shutil.which("uv") is not None:
+        cmd = ["uv", "pip", "install", "--python", sys.executable, "llmcompressor"]
+    else:
+        raise RuntimeError(
+            "Unsloth: cannot install llm-compressor because this environment has neither pip nor "
+            f"uv. Install it manually with:\n    uv pip install --python {sys.executable} llmcompressor\n"
+            "(pin torch and transformers to your current versions to avoid upgrading them)."
+        )
     cpath = None
     if constraints:
         with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
@@ -1344,7 +1357,8 @@ def install_llm_compressor():
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
             "Unsloth: Failed to install llm-compressor. Install it manually with:\n"
-            f"    {sys.executable} -m pip install llmcompressor\n"
+            f"    uv pip install --python {sys.executable} llmcompressor\n"
+            f"or, if pip is available:\n    {sys.executable} -m pip install llmcompressor\n"
             "(pin torch and transformers to your current versions to avoid upgrading them).\n"
             f"Underlying error: {e}"
         )
@@ -2774,6 +2788,8 @@ def unsloth_push_to_hub_gguf(
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
     if save_method is not None and str(save_method).lower() == "lora":
+        if not is_main_process:
+            return None  # only the main rank converts and uploads, like the local lora branch
         _qm = quantization_method
         if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
             _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
@@ -3147,9 +3163,17 @@ def _unsloth_save_lora_gguf(
         install_llama_cpp(just_clone_repo = True)
         converter = os.path.join(LLAMA_CPP_DEFAULT_DIR, "convert_lora_to_gguf.py")
         if not os.path.exists(converter):
+            # A prebuilt llama.cpp install (or a reused CWD copy) carries binaries but not the
+            # converter script, so force a dedicated source checkout that ships it.
+            source_dir = os.path.join(
+                os.path.dirname(os.path.normpath(LLAMA_CPP_DEFAULT_DIR)), "llama.cpp-source"
+            )
+            install_llama_cpp(llama_cpp_folder = source_dir, just_clone_repo = True)
+            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
+        if not os.path.exists(converter):
             raise RuntimeError(
-                f"Unsloth: convert_lora_to_gguf.py not found in '{LLAMA_CPP_DEFAULT_DIR}'. "
-                "A full llama.cpp checkout is required for LoRA GGUF export."
+                "Unsloth: convert_lora_to_gguf.py not found after installing a llama.cpp source "
+                "checkout. A full llama.cpp source checkout is required for LoRA GGUF export."
             )
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
@@ -3938,14 +3962,16 @@ def _unsloth_save_compressed_tensors(
         )
         unsloth_generic_save(**merge_args)
 
-        # 4) Detect VLM + trust_remote_code from the in-memory model config.
+        # 4) Detect VLM + trust_remote_code from the in-memory model config. A vision/multimodal
+        #    model exposes a vision_config or an explicitly vision-named architecture; a bare
+        #    *ForConditionalGeneration also matches text seq2seq models (T5/BART/Whisper), so it
+        #    is not treated as a VLM on its own.
         is_vlm = False
-        if hasattr(model, "config") and hasattr(model.config, "architectures"):
-            is_vlm = any(
-                x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-                for x in (model.config.architectures or [])
+        if hasattr(model, "config"):
+            archs = getattr(model.config, "architectures", None) or []
+            is_vlm = hasattr(model.config, "vision_config") or any(
+                x.endswith("ForVisionText2Text") for x in archs
             )
-            is_vlm = is_vlm or hasattr(model.config, "vision_config")
         if is_vlm:
             logger.warning(
                 "Unsloth: FP8/FP4 compressed export for vision / multimodal models is "
