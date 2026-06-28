@@ -27,6 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -232,8 +233,14 @@ class SdCppEngine:
             errors = "replace",
             env = run_env,
         )
+        # Drain stdout on a background thread and wait on the PROCESS, not the stream:
+        # iterating proc.stdout directly blocks until the stream closes, so a sd-cli that
+        # hangs without producing output (or closing stdout) would never reach proc.wait
+        # and the timeout would be silently bypassed. With the reader on its own thread the
+        # main thread always enforces the wall-clock timeout and kills a hung process.
         tail: list[str] = []
-        try:
+
+        def _drain() -> None:
             assert proc.stdout is not None
             for line in proc.stdout:
                 line = line.rstrip("\n")
@@ -242,13 +249,20 @@ class SdCppEngine:
                     tail.pop(0)
                 if on_log is not None:
                     on_log(line)
+
+        reader = threading.Thread(target = _drain, daemon = True)
+        reader.start()
+        try:
             ret = proc.wait(timeout = timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
+            reader.join(timeout = 5.0)
             raise RuntimeError(f"sd-cli timed out after {timeout}s")
         finally:
             if proc.poll() is None:
                 proc.kill()
+        # The process has exited; let the reader finish draining the buffered output.
+        reader.join(timeout = 5.0)
 
         if ret != 0:
             raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + "\n".join(tail[-12:]))

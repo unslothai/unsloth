@@ -77,7 +77,10 @@ def test_find_returns_none_when_absent(tmp_path, monkeypatch):
 # ── availability / version ──────────────────────────────────────────────────
 
 
-def test_engine_unavailable_when_no_binary():
+def test_engine_unavailable_when_no_binary(monkeypatch):
+    # Hermetic: force discovery to find nothing so a real sd-cli installed on the host
+    # (e.g. ~/.unsloth) can't leak in and make binary=None resolve to a real binary.
+    monkeypatch.setattr(eng, "find_sd_cpp_binary", lambda: None)
     e = SdCppEngine(binary = None)
     assert e.is_available() is False
     assert e.version() is None
@@ -240,6 +243,62 @@ def test_generate_raises_when_binary_missing():
             SdCppGenParams(prompt = "x"),
             output_path = "/tmp/x.png",
         )
+
+
+def test_generate_times_out_even_when_stdout_blocks(tmp_path, monkeypatch):
+    # A sd-cli that hangs WITHOUT closing stdout must still hit the wall-clock timeout:
+    # the reader drains on a thread while the main thread waits on the PROCESS, so the
+    # timeout can no longer be bypassed by an unending stdout stream.
+    import subprocess as _sp
+    import threading as _threading
+
+    released = _threading.Event()
+
+    class _Block:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            # Models a hung stream that only ends once the process is killed.
+            if not released.wait(5.0):
+                raise AssertionError("stdout was never released by kill()")
+            raise StopIteration
+
+    class _HangingPopen:
+        def __init__(self, cmd, **kw):
+            self.killed = False
+
+        @property
+        def stdout(self):
+            return _Block()
+
+        def wait(self, timeout = None):
+            raise _sp.TimeoutExpired(cmd = "sd-cli", timeout = timeout)
+
+        def poll(self):
+            return 0 if self.killed else None
+
+        def kill(self):
+            self.killed = True
+            released.set()  # killing closes the pipe, so the reader unblocks
+
+    holder: dict = {}
+
+    def _factory(cmd, **kw):
+        holder["proc"] = _HangingPopen(cmd, **kw)
+        return holder["proc"]
+
+    monkeypatch.setattr(eng.subprocess, "Popen", _factory)
+
+    e = _engine(tmp_path)
+    with pytest.raises(RuntimeError, match = "timed out"):
+        e.generate(
+            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+            SdCppGenParams(prompt = "x"),
+            output_path = str(tmp_path / "o.png"),
+            timeout = 0.01,
+        )
+    assert holder["proc"].killed is True
 
 
 # ── engine routing ──────────────────────────────────────────────────────────
