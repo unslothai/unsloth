@@ -227,12 +227,16 @@ def whole_document_context(
     chunks, or the total exceeds ``max_tokens``."""
     if not scope_thread_id:
         return None
+    # A non-positive budget means "never inject" (disable whole-doc via
+    # RAG_THREAD_WHOLE_DOC=0), not "inject the whole corpus unbounded".
+    if max_tokens <= 0:
+        return None
     scope = thread_scope(scope_thread_id)
     conn = rag_db.get_connection()
     try:
         # Cheap budget pre-check (SUM, no text hydration): reject an oversized attachment
         # before loading the whole corpus; all_chunks_for_scope runs only once it fits.
-        if max_tokens > 0 and scope_token_estimate(conn, scope) > max_tokens:
+        if scope_token_estimate(conn, scope) > max_tokens:
             return None
         rows = all_chunks_for_scope(conn, scope)
     finally:
@@ -240,7 +244,7 @@ def whole_document_context(
     if not rows:
         return None
     total = sum(_row_token_count(r) for r in rows)
-    if max_tokens > 0 and total > max_tokens:
+    if total > max_tokens:
         return None
 
     sources: list[dict] = [

@@ -170,6 +170,15 @@ def test_whole_document_context_none_when_empty(rag_conn):
     assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000) is None
 
 
+def test_whole_document_context_non_positive_budget_returns_none(rag_conn):
+    # A non-positive budget disables whole-doc (RAG_WHOLE_DOC_MAX_TOKENS=0 footgun)
+    # rather than injecting the whole corpus unbounded.
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "d1", "a.pdf", "h1", ["tiny body"])
+    assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 0) is None
+    assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = -5) is None
+
+
 def test_whole_document_context_none_without_scope(rag_conn):
     # No thread scope -> None (whole-doc is thread-attachment only).
     assert tool.whole_document_context(max_tokens = 6000) is None

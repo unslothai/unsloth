@@ -149,50 +149,6 @@ def _figure_boxes(
     return keep
 
 
-def render_pdf_figures(
-    path: str,
-    *,
-    dpi: int = 200,
-    min_area_frac: float = 0.04,
-    min_side: float = 40.0,
-    max_figures: int = 8,
-    margin_frac: float = 0.06,
-) -> list[ParsedImage]:
-    """Detect figure regions and render each to a PNG for captioning. Academic figures
-    are vector, so cluster vector drawings + raster placements into page-spanning boxes
-    rather than extracting rasters; ``margin_frac`` pads each box so edge labels survive.
-    Any failure yields [], never an exception."""
-    try:
-        import pymupdf
-    except Exception:
-        return []
-
-    out: list[ParsedImage] = []
-    try:
-        doc = pymupdf.open(path)
-    except Exception:
-        return []
-    try:
-        for i, page in enumerate(doc):
-            for box in _figure_boxes(page, min_area_frac = min_area_frac, min_side = min_side):
-                try:
-                    mx, my = box.width * margin_frac, box.height * margin_frac
-                    clip = (
-                        pymupdf.Rect(box.x0 - mx, box.y0 - my, box.x1 + mx, box.y1 + my) & page.rect
-                    )
-                    pix = page.get_pixmap(dpi = dpi, clip = clip)
-                    out.append(
-                        ParsedImage(image_bytes = pix.tobytes("png"), page_number = i + 1, xref = 0)
-                    )
-                except Exception:
-                    continue
-                if len(out) >= max_figures:
-                    return out
-        return out
-    finally:
-        doc.close()
-
-
 def pages_with_figures(
     path: str,
     *,
@@ -245,6 +201,7 @@ def render_pdf_figure_tiles(
     wanted = [int(n) for n in page_numbers]
     if not wanted:
         return []
+    rows, cols = max(1, int(rows)), max(1, int(cols))  # never divide by zero
     try:
         import pymupdf
     except Exception:

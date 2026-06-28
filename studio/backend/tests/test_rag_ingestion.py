@@ -238,6 +238,41 @@ def test_delete_document_route_removes_stored_upload(rag_home):
         conn.close()
 
 
+def test_get_job_status_includes_num_chunks(rag_home, stub_embeddings, tmp_path):
+    # The poll/reconcile path reads num_chunks from get_job_status (the SSE complete
+    # frame carries it, but a client that falls back to polling needs it here too).
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie " * 50)
+    scope = store.kb_scope("K1")
+    _doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
+    _drain(job_id)
+    _wait_completed(job_id)
+    status = ingestion.get_job_status(job_id)
+    assert status["status"] == "completed"
+    assert status["num_chunks"] and status["num_chunks"] > 0
+
+
+def test_save_upload_rejects_oversize_file(rag_home, monkeypatch):
+    # A file over the cap is rejected (413) and its partial bytes are cleaned up.
+    import io
+
+    from fastapi import HTTPException
+
+    from core.rag import config
+    from routes import rag as rag_routes
+    from utils.paths import rag_uploads_root
+
+    monkeypatch.setattr(config, "MAX_UPLOAD_BYTES", 1024)
+
+    class _Up:
+        filename = "big.txt"
+        file = io.BytesIO(b"x" * 4096)
+
+    with pytest.raises(HTTPException) as ei:
+        rag_routes._save_upload(_Up())
+    assert ei.value.status_code == 413
+    assert list(rag_uploads_root().glob("*.txt")) == []  # partial upload removed
+
+
 def test_ingestion_delete_removes_all_rows(rag_home, stub_embeddings, tmp_path):
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie delta")
     scope = store.kb_scope("K1")

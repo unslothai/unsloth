@@ -91,6 +91,22 @@ def test_pages_with_figures_and_tiles(tmp_path):
     assert len(capped) == 3  # max_tiles budget honored
 
 
+def test_render_pdf_figure_tiles_zero_grid_no_crash(tmp_path):
+    # A misconfigured rows/cols=0 must clamp to 1, not raise ZeroDivisionError.
+    import pymupdf
+
+    from core.rag import parsers
+
+    pdf = tmp_path / "blank.pdf"
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.save(str(pdf))
+    doc.close()
+
+    out = parsers.render_pdf_figure_tiles(str(pdf), [1], rows = 0, cols = 0, fullpage = True)
+    assert len(out) == 2  # full page + a single 1x1 tile, no crash
+
+
 def test_pages_with_figures_excludes_given_pages(tmp_path):
     # Pages OCR already transcribed (passed as exclude_pages) are skipped; every other
     # figure page is still returned for tiling.
@@ -212,29 +228,6 @@ def test_splice_captions_noop_when_empty():
     assert captioner.splice_captions(pages, {}) is pages
 
 
-def test_render_pdf_figures_detects_drawing(tmp_path):
-    import pymupdf
-
-    from core.rag.parsers import render_pdf_figures
-
-    pdf = tmp_path / "fig.pdf"
-    doc = pymupdf.open()
-    page = doc.new_page()
-    shape = page.new_shape()
-    shape.draw_rect(pymupdf.Rect(60, 60, 540, 460))
-    for i in range(8):
-        shape.draw_line((80, 80 + i * 40), (520, 80 + i * 40))
-    shape.finish(color = (0, 0, 0), fill = (0.8, 0.8, 0.9))
-    shape.commit()
-    doc.save(str(pdf))
-    doc.close()
-
-    figs = render_pdf_figures(str(pdf))
-    assert figs, "expected at least one rendered figure region"
-    assert figs[0].image_bytes[:8] == b"\x89PNG\r\n\x1a\n"
-    assert figs[0].page_number == 1
-
-
 def test_captioned_text_is_searchable(rag_home, stub_embeddings, monkeypatch):
     from core.rag import retrieval, store
     from storage import rag_db
@@ -267,7 +260,7 @@ def test_captioned_text_is_searchable(rag_home, stub_embeddings, monkeypatch):
 
 def _figure_pdf(path):
     """A born-digital PDF: a page with real text (so it is not treated as scanned)
-    plus a vector drawing region that render_pdf_figures detects as a figure."""
+    plus a vector drawing region that figure detection picks up as a figure."""
     import pymupdf
 
     doc = pymupdf.open()

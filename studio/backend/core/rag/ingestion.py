@@ -192,7 +192,7 @@ def _run(
                 logger.warning("figure tiling failed for job %s", job_id, exc_info = True)
                 tiles = []
             if tiles:
-                _progress(conn, job_id, "captioning", 0.2)
+                _progress(conn, job_id, "captioning", 0.28)
                 captions = captioner.merge_page_captions(captioner.caption_images(tiles))
                 pages = captioner.splice_captions(pages, captions)
 
@@ -357,10 +357,16 @@ def job_events(job_id: str):
 
 
 def get_job_status(job_id: str) -> dict | None:
-    """Read the persisted ingestion job row (status / stage / progress / error)."""
+    """Read the persisted ingestion job row (status / stage / progress / error), plus
+    the document's ``num_chunks`` so a client polling to completion learns the chunk
+    count (the SSE ``complete`` frame carries it, but the poll/reconcile path does not)."""
     conn = rag_db.get_connection()
     try:
-        row = conn.execute("SELECT * FROM ingestion_jobs WHERE id=?", (job_id,)).fetchone()
+        row = conn.execute(
+            "SELECT j.*, d.num_chunks AS num_chunks FROM ingestion_jobs j "
+            "LEFT JOIN documents d ON d.id = j.document_id WHERE j.id=?",
+            (job_id,),
+        ).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

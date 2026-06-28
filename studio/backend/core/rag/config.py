@@ -23,6 +23,9 @@ THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"
 WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
 
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+# Reject uploads larger than this, so one pathological file can't drive unbounded parse
+# + vision work at ingest. 0 disables the cap. Default 200 MB.
+MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
 # Figure captioning via the loaded vision model: detected figures are transcribed +
 # described so they become searchable. On by default, a no-op without a vision model;
@@ -31,12 +34,10 @@ CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "1") == "1"
 # Total per-document tile budget (figure-bearing pages are tiled, see below).
 CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "24"))
 CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "60"))
-# Larger than a one-line caption since captions transcribe every label. FIGURE_DPI/
-# MARGIN render figure regions: high DPI keeps small labels legible, margin keeps
-# labels just outside the detected box.
+# Larger than a one-line caption since captions transcribe every label. FIGURE_DPI is
+# high enough to keep small box/axis labels legible when tiles are rendered.
 CAPTION_MAX_TOKENS = int(os.environ.get("RAG_CAPTION_MAX_TOKENS", "768"))
 FIGURE_DPI = int(os.environ.get("RAG_FIGURE_DPI", "200"))
-FIGURE_MARGIN_FRAC = float(os.environ.get("RAG_FIGURE_MARGIN_FRAC", "0.06"))
 # Figure pages are tiled into an overlapping ROWS x COLS grid of high-DPI tiles (plus
 # an optional full page), so small labels and every sub-figure are covered without
 # exact region detection. MAX_PAGES bounds figure pages; MAX_IMAGES bounds total tiles.

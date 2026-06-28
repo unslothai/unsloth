@@ -62,13 +62,24 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
     size = 0
+    cap = config.MAX_UPLOAD_BYTES
+    too_big = False
     with open(stored_path, "wb") as out:
         while True:
             block = file.file.read(1 << 20)
             if not block:
                 break
             size += len(block)
+            if cap and size > cap:
+                too_big = True
+                break
             out.write(block)
+    if too_big:
+        os.remove(stored_path)
+        raise HTTPException(
+            status_code = 413,
+            detail = f"File exceeds the {cap // (1024 * 1024)} MB upload limit.",
+        )
     if size == 0:
         os.remove(stored_path)
         raise HTTPException(status_code = 400, detail = "Uploaded file is empty.")
@@ -335,6 +346,7 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
         "stage": row.get("stage"),
         "progress": row.get("progress") or 0.0,
         "error": row.get("error"),
+        "numChunks": row.get("num_chunks") or 0,
     }
 
 

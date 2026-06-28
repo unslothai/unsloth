@@ -123,7 +123,7 @@ export function useRagDocuments(
                 progress: ev.progress ?? null,
               });
             } else if (ev.type === "complete") {
-              finish("completed", null, (ev as { num_chunks?: number | null }).num_chunks);
+              finish("completed", null, ev.num_chunks);
               return;
             } else if (ev.type === "error") {
               finish("failed", ev.error ?? "Indexing failed");
@@ -139,6 +139,7 @@ export function useRagDocuments(
                 ? "failed"
                 : "completed",
             job.error,
+            job.numChunks,
           );
         } catch {
           if (controller.signal.aborted) {
@@ -150,7 +151,8 @@ export function useRagDocuments(
             for (let i = 0; i < 600; i++) {
               if (controller.signal.aborted) break;
               const job = await getJob(jobId);
-              if (job.status === "completed") return finish("completed");
+              if (job.status === "completed")
+                return finish("completed", null, job.numChunks);
               if (job.status === "failed") {
                 return finish("failed", job.error ?? "Indexing failed");
               }
