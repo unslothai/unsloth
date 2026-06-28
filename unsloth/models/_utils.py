@@ -1031,7 +1031,12 @@ def _filename_has_variant(filename, variant):
     return f".{variant}." in base
 
 
-def _adapter_repo_has_safetensors(model_name, *, token = None, revision = None):
+def _adapter_repo_has_safetensors(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+):
     """Best-effort: does the adapter repo ship a safetensors adapter weight
     (``adapter_model.safetensors`` or a sharded ``adapter_model*.safetensors``)?
     PeftModel.from_pretrained prefers safetensors, so when one is present the ``.bin`` form is
@@ -1039,9 +1044,7 @@ def _adapter_repo_has_safetensors(model_name, *, token = None, revision = None):
     eligible -- never under-warm a ``.bin``-only adapter into an in-process Xet fetch."""
     try:
         from huggingface_hub import HfApi
-        siblings = (
-            HfApi().model_info(model_name, revision = revision, token = token).siblings or []
-        )
+        siblings = HfApi().model_info(model_name, revision = revision, token = token).siblings or []
         return any(
             sibling.rfilename.replace("\\", "/").rsplit("/", 1)[-1].startswith("adapter_model")
             and sibling.rfilename.endswith(".safetensors")
@@ -1263,7 +1266,10 @@ def maybe_prefetch_hf_snapshot(
         # explicit use_safetensors wins; otherwise prefer safetensors when the repo ships it
         # (best-effort model_info; any failure keeps both, never under-warming a .bin-only adapter).
         if use_safetensors is False:
-            ignore_patterns = ["adapter_model*.safetensors", "adapter_model*.safetensors.index.json"]
+            ignore_patterns = [
+                "adapter_model*.safetensors",
+                "adapter_model*.safetensors.index.json",
+            ]
         elif use_safetensors is True or _adapter_repo_has_safetensors(
             model_name, token = token, revision = revision
         ):

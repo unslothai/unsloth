@@ -207,6 +207,7 @@ def _install_fake_model_info(monkeypatch, filenames):
 
 # ----- Finding P: variant-aware weight-format selection -----
 
+
 def test_variant_keeps_bin_when_only_default_safetensors(monkeypatch):
     """With variant='fp16' requested, a DEFAULT model.safetensors must not prove the variant
     pytorch_model.fp16.bin redundant: dropping it would leave the variant load to fetch the .bin
@@ -229,6 +230,7 @@ def test_variant_drops_bin_when_variant_safetensors_present(monkeypatch):
 
 # ----- Finding Q: adapter weight-format selection -----
 
+
 def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):
     """A mixed-format adapter repo (adapter_model.safetensors AND adapter_model.bin) warms only
     the safetensors PeftModel.from_pretrained reads, not both formats (Codex #6638)."""
@@ -240,7 +242,8 @@ def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):
     assert ig is not None and "adapter_model*.bin" in ig
     kept = _filter(
         ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"],
-        st["allow_patterns"], ig,
+        st["allow_patterns"],
+        ig,
     )
     assert "adapter_model.safetensors" in kept
     assert "adapter_model.bin" not in kept
@@ -264,7 +267,8 @@ def test_adapter_only_explicit_use_safetensors_false_keeps_bin(capture):
     assert ig is not None and "adapter_model*.safetensors" in ig
     kept = _filter(
         ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"],
-        st["allow_patterns"], ig,
+        st["allow_patterns"],
+        ig,
     )
     assert "adapter_model.bin" in kept
     assert "adapter_model.safetensors" not in kept
