@@ -164,10 +164,10 @@ def test_aux_warm_covers_arbitrary_remote_code_modules(capture):
     assert "*.py" in allow
     remote_code = [
         "config.json",
-        "modeling.py",            # auto_map "modeling.Model" -- no underscore suffix
+        "modeling.py",  # auto_map "modeling.Model" -- no underscore suffix
         "tokenization.py",
         "my_custom_code.py",
-        "configuration_foo.py",   # the convention still covered by *.py too
+        "configuration_foo.py",  # the convention still covered by *.py too
     ]
     kept = _filter(remote_code, allow, st["ignore_patterns"])
     for name in ("modeling.py", "tokenization.py", "my_custom_code.py", "configuration_foo.py"):
