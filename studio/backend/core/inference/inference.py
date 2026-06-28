@@ -240,6 +240,13 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
+
+            # Tolerate malformed (list) extra_special_tokens so transformers does
+            # not raise "'list' object has no attribute 'keys'" during load.
+            from utils.tokenizer_compat import install_extra_special_tokens_compat
+
+            install_extra_special_tokens_compat()
+
             device_map = get_device_map(gpu_ids)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"

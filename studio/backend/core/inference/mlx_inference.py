@@ -143,6 +143,12 @@ class MLXInferenceBackend:
                 "(unsloth_zoo.mlx.loader). Reinstall via install.sh on Apple Silicon."
             ) from e
 
+        # Tolerate malformed (list) extra_special_tokens before mlx-lm builds the
+        # tokenizer; else transformers raises "'list' has no attribute 'keys'".
+        from utils.tokenizer_compat import install_extra_special_tokens_compat
+
+        install_extra_special_tokens_compat()
+
         model, tokenizer_or_processor = FastMLXModel.from_pretrained(
             model_name,
             max_seq_length = max_seq_length,
