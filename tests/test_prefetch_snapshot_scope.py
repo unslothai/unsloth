@@ -474,5 +474,5 @@ def test_from_tf_root_load_ignores_nested_h5(capture):
     ig = st["ignore_patterns"]
     assert "*/*.h5" in ig and "*/*.msgpack" in ig
     kept = _filter(["model.h5", "checkpoint-1/model.h5", "config.json"], st["allow_patterns"], ig)
-    assert "model.h5" in kept                    # root TF weight warmed
-    assert "checkpoint-1/model.h5" not in kept   # nested TF checkpoint ignored
+    assert "model.h5" in kept  # root TF weight warmed
+    assert "checkpoint-1/model.h5" not in kept  # nested TF checkpoint ignored
