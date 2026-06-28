@@ -91,9 +91,9 @@ def test_pages_with_figures_and_tiles(tmp_path):
     assert len(capped) == 3  # max_tiles budget honored
 
 
-def test_pages_with_figures_skips_scanned_pages(tmp_path):
-    # A text-less figure page is scanned (OCR transcribes it whole); the min-text gate
-    # excludes it from tiling so the same pixels are not vision-read twice.
+def test_pages_with_figures_excludes_given_pages(tmp_path):
+    # Pages OCR already transcribed (passed as exclude_pages) are skipped; every other
+    # figure page is still returned for tiling.
     import pymupdf
 
     from core.rag import parsers
@@ -106,23 +106,16 @@ def test_pages_with_figures_skips_scanned_pages(tmp_path):
         shape.finish(color = (0, 0, 0), fill = (0.8, 0.8, 0.9))
         shape.commit()
 
-    pdf = tmp_path / "mixed.pdf"
+    pdf = tmp_path / "charts.pdf"
     doc = pymupdf.open()
-    p1 = doc.new_page()  # born-digital: real text + a chart
-    p1.insert_textbox(
-        pymupdf.Rect(40, 40, 550, 120),
-        "Born-digital page with plenty of real text and a chart below.",
-        fontsize = 11,
-    )
-    _draw_chart(p1)
-    _draw_chart(doc.new_page())  # scanned-like: a chart but no text layer
+    _draw_chart(doc.new_page())
+    _draw_chart(doc.new_page())
     doc.save(str(pdf))
     doc.close()
 
-    # No gate -> both figure pages qualify.
     assert parsers.pages_with_figures(str(pdf), max_pages = 4) == [1, 2]
-    # With the gate (as ingestion passes when OCR is on), the text-less page 2 is skipped.
-    assert parsers.pages_with_figures(str(pdf), max_pages = 4, min_text_chars = 16) == [1]
+    assert parsers.pages_with_figures(str(pdf), max_pages = 4, exclude_pages = {1}) == [2]
+    assert parsers.pages_with_figures(str(pdf), max_pages = 4, exclude_pages = {2}) == [1]
 
 
 def test_run_skips_figure_work_without_vision_model(

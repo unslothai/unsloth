@@ -46,13 +46,19 @@ export function useRagDocuments(
   }, [documents]);
   // documentId -> signature; forgotten on delete, cleared on scope change.
   const sigByDocId = useRef<Map<string, string>>(new Map());
-  const sigAttached = useCallback(
-    (sig: string) => {
-      for (const s of sigByDocId.current.values()) if (s === sig) return true;
-      return false;
-    },
-    [],
-  );
+  // Skip a re-selected file only if a matching doc is healthy or still indexing. A doc
+  // that completed with 0 chunks is re-ingestable (e.g. a scan attached before a vision
+  // model loaded); the backend re-ingests on the same hash, so let it through.
+  const sigBlocksReupload = useCallback((sig: string) => {
+    const ids = new Set<string>();
+    for (const [id, s] of sigByDocId.current) if (s === sig) ids.add(id);
+    if (ids.size === 0) return false;
+    const docs = documentsRef.current.filter((d) => ids.has(d.id));
+    if (docs.length === 0) return false; // sig tracked but doc gone -> allow re-upload
+    return docs.some(
+      (d) => d.status !== "completed" || (d.numChunks ?? 0) > 0,
+    );
+  }, []);
   // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
   const uploadInFlightRef = useRef(false);
@@ -83,7 +89,11 @@ export function useRagDocuments(
       const controller = new AbortController();
       trackedJobs.current.set(jobId, controller);
 
-      const finish = (status: DocumentStatus, error?: string | null) => {
+      const finish = (
+        status: DocumentStatus,
+        error?: string | null,
+        numChunks?: number | null,
+      ) => {
         if (status === "failed") {
           // Drop the chip rather than show "Failed"; warn via toast.
           sigByDocId.current.delete(documentId);
@@ -92,7 +102,14 @@ export function useRagDocuments(
             description: error ?? "Indexing failed",
           });
         } else {
-          patchDoc(documentId, { status, error: null, progress: 1 });
+          // Record numChunks so re-selecting this file dedups (vs a 0-chunk doc, which
+          // stays re-ingestable); the SSE "complete" frame carries it.
+          patchDoc(documentId, {
+            status,
+            error: null,
+            progress: 1,
+            ...(numChunks != null ? { numChunks } : {}),
+          });
         }
         trackedJobs.current.delete(jobId);
       };
@@ -106,7 +123,7 @@ export function useRagDocuments(
                 progress: ev.progress ?? null,
               });
             } else if (ev.type === "complete") {
-              finish("completed");
+              finish("completed", null, (ev as { num_chunks?: number | null }).num_chunks);
               return;
             } else if (ev.type === "error") {
               finish("failed", ev.error ?? "Indexing failed");
@@ -290,7 +307,7 @@ export function useRagDocuments(
         // one look like nothing happened. Dedup re-selections up front.
         const fresh: Array<{ tempId: string; file: File }> = [];
         for (const file of Array.from(files)) {
-          if (sigAttached(fileSignature(file))) {
+          if (sigBlocksReupload(fileSignature(file))) {
             toast.info(`${file.name} is already indexed - skipping`);
             continue;
           }
@@ -336,7 +353,7 @@ export function useRagDocuments(
         uploadInFlightRef.current = false;
       }
     },
-    [scope, uploadOne, sigAttached],
+    [scope, uploadOne, sigBlocksReupload],
   );
 
   const remove = useCallback(

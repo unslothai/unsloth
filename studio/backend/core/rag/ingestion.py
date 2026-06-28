@@ -100,21 +100,22 @@ def _ocr_scanned_pages(
     conn,
     job_id: str,
     ocr: bool | None = None,
-) -> list:
+) -> tuple[list, set[int]]:
     """Replace text on near-empty (scanned/image-only) PDF pages with vision-model OCR
     so image PDFs become searchable. ``ocr`` overrides ``config.OCR_SCANNED`` per upload
     (``None`` = config default); no-op without scanned pages or a vision model. OCR'd
     pages have no text layer, so no preview highlight regions, but stay searchable.
-    Returns new ``Page`` objects for OCR'd pages, originals otherwise."""
+    Returns ``(pages, ocred)``: new ``Page`` objects for OCR'd pages (originals
+    otherwise) and the set of page numbers actually transcribed."""
     if not (config.OCR_SCANNED if ocr is None else ocr):
-        return pages
+        return pages, set()
     scanned = [
         p.page_number
         for p in pages
         if p.page_number is not None and len((p.text or "").strip()) < config.OCR_MIN_CHARS
     ]
     if not scanned or captioner.vision_endpoint() is None:
-        return pages
+        return pages, set()
     if len(scanned) > config.OCR_MAX_PAGES:
         logger.warning(
             "OCR: %d scanned pages exceed OCR_MAX_PAGES=%d; pages past the cap stay "
@@ -127,18 +128,20 @@ def _ocr_scanned_pages(
     page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
     texts = captioner.ocr_pages(page_pngs)
     if not texts:
-        return pages
+        return pages, set()
 
     from .parsers import Page
 
     out: list = []
+    ocred: set[int] = set()
     for page in pages:
         text = texts.get(page.page_number)
         if text:
             out.append(Page(text = text, page_number = page.page_number, char_count = len(text)))
+            ocred.add(page.page_number)
         else:
             out.append(page)
-    return out
+    return out, ocred
 
 
 def _run(
@@ -155,9 +158,9 @@ def _run(
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         is_pdf = stored_path.lower().endswith(".pdf")
-        ocr_on = config.OCR_SCANNED if ocr is None else ocr
+        ocred: set[int] = set()
         if is_pdf:
-            pages = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
+            pages, ocred = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
         caption_on = config.CAPTION_IMAGES if caption is None else caption
         # Skip all figure work (PDF rasterization included) without a vision model.
         if caption_on and is_pdf and captioner.vision_endpoint() is not None:
@@ -167,8 +170,9 @@ def _run(
                 fig_pages = parsers.pages_with_figures(
                     stored_path,
                     max_pages = config.CAPTION_MAX_PAGES,
-                    # When OCR runs, it owns scanned pages; don't also tile them.
-                    min_text_chars = config.OCR_MIN_CHARS if ocr_on else 0,
+                    # Skip only pages OCR actually transcribed (it covers them whole); a
+                    # scanned figure page past the OCR cap or with empty OCR still tiles.
+                    exclude_pages = ocred,
                 )
                 tiles = (
                     parsers.render_pdf_figure_tiles(

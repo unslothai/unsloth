@@ -145,6 +145,29 @@ def test_scanned_pdf_is_ocred_into_chunks(rag_conn, stub_embeddings, monkeypatch
     assert "zebra-42" in text
 
 
+def test_scanned_page_past_ocr_cap_is_still_captioned(
+    rag_conn, stub_embeddings, monkeypatch, tmp_path
+):
+    # OCR is capped to one page, so page 2 is scanned but never transcribed. Figure
+    # captioning must still cover it (we exclude only the pages OCR actually handled),
+    # so a chart on an un-OCR'd scanned page is not silently dropped.
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
+    monkeypatch.setattr(captioner.config, "OCR_MAX_PAGES", 1)
+    monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
+    monkeypatch.setattr(captioner, "_ocr_one", lambda *a: "scanned page alpha")
+    monkeypatch.setattr(captioner, "_caption_one", lambda *a: "figure caption bravo")
+
+    pdf = tmp_path / "scan2.pdf"
+    _image_only_pdf(pdf, pages = 2)
+    doc = _ingest(rag_conn, "t1", "scan2.pdf", pdf)
+
+    assert doc["status"] == "completed"
+    text, _ = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert "scanned page alpha" in text  # page 1 OCR'd, within the cap
+    assert "figure caption bravo" in text  # page 2 past the cap -> captioned, not dropped
+
+
 def test_born_digital_pdf_skips_ocr(rag_conn, stub_embeddings, monkeypatch, tmp_path):
     called = []
     monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
