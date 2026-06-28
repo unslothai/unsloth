@@ -1598,10 +1598,14 @@ def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str
         return text
     # Strip bracket-tag calls with the parser's balanced-brace scan first so a
     # two-level-nested JSON arg is removed whole instead of the catch-all eating
-    # the trailing prose after it.
-    from core.tool_healing import _strip_bracket_tag_calls
+    # the trailing prose after it. Preserve <think>/[THINK] reasoning verbatim
+    # (same contract as strip_tool_call_markup) so a rehearsed call inside a
+    # reasoning block does not corrupt the visible block.
+    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
 
-    return _TOOL_XML_RE.sub("", _strip_bracket_tag_calls(text))
+    return strip_outside_think(
+        text, lambda seg, _is_last: _TOOL_XML_RE.sub("", _strip_bracket_tag_calls(seg))
+    )
 
 
 logger = get_logger(__name__)

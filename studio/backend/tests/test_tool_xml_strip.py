@@ -46,6 +46,17 @@ def test_route_display_strip_respects_disabled_auto_heal_contract():
     assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
 
 
+def test_route_display_strip_preserves_rehearsal_inside_think():
+    # A rehearsed bracket call inside <think> is reasoning, not markup to strip; the
+    # route display strip must preserve the block (consistent with
+    # strip_tool_call_markup) while still stripping a real call outside it.
+    text = '<think>plan: search[ARGS]{"q":"x"}</think> answer [TOOL_CALLS]web_search{"q":"y"} tail'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert '<think>plan: search[ARGS]{"q":"x"}</think>' in out
+    assert "[TOOL_CALLS]web_search" not in out
+    assert "answer" in out and "tail" in out
+
+
 def test_strips_well_formed_tool_call():
     text = (
         "Let me search.\n"

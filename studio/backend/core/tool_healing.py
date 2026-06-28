@@ -684,6 +684,29 @@ def _strip_bracket_tag_calls(text: str) -> str:
     return "".join(out)
 
 
+def strip_outside_think(text: str, strip_segment) -> str:
+    """Apply ``strip_segment(segment, is_last)`` to the visible text around
+    ``<think>`` / ``[THINK]`` blocks, preserving the blocks verbatim.
+
+    Tool-looking text inside a reasoning block is the model rehearsing (the parser
+    skips it too), so stripping it would corrupt visible reasoning. ``is_last`` is
+    True only for the segment after the final block, so a caller can apply its
+    trailing-tail patterns only there. Shared by every strip path (this module's
+    ``strip_tool_call_markup``, the route display strip, and the GGUF streaming
+    strip) so they stay consistent."""
+    think_spans = [m.span() for m in _THINK_TAG_RE.finditer(text)]
+    if not think_spans:
+        return strip_segment(text, True)
+    pieces: list[str] = []
+    prev = 0
+    for s, e in think_spans:
+        pieces.append(strip_segment(text[prev:s], False))
+        pieces.append(text[s:e])
+        prev = e
+    pieces.append(strip_segment(text[prev:], True))
+    return "".join(pieces)
+
+
 def _strip_markup_segment(text: str, *, final: bool) -> str:
     # Balanced-brace strip for bracket-tag calls first (handles any JSON nesting
     # depth); the regex patterns then cover the XML forms and truncated tails.
@@ -701,21 +724,11 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     When ``final`` is True, trailing incomplete tool-call blocks are removed
     too, and the result is stripped of surrounding whitespace.
 
-    ``<think>`` / ``[THINK]`` reasoning is preserved verbatim: tool-looking text
-    inside it is the model rehearsing (the parser skips it too), so stripping it
-    would corrupt visible reasoning. Only the visible text around the blocks is
-    stripped, and the trailing-tail patterns apply only after the last block.
+    ``<think>`` / ``[THINK]`` reasoning is preserved verbatim (see
+    ``strip_outside_think``); the trailing-tail patterns apply only after the
+    last block.
     """
-    think_spans = [m.span() for m in _THINK_TAG_RE.finditer(text)]
-    if not think_spans:
-        result = _strip_markup_segment(text, final = final)
-        return result.strip() if final else result
-    pieces: list[str] = []
-    prev = 0
-    for s, e in think_spans:
-        pieces.append(_strip_markup_segment(text[prev:s], final = False))
-        pieces.append(text[s:e])
-        prev = e
-    pieces.append(_strip_markup_segment(text[prev:], final = final))
-    result = "".join(pieces)
+    result = strip_outside_think(
+        text, lambda seg, is_last: _strip_markup_segment(seg, final = final and is_last)
+    )
     return result.strip() if final else result

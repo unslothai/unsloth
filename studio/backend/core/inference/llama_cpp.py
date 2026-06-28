@@ -41,6 +41,7 @@ from core.inference.llama_server_args import (
 from core.tool_healing import (
     _TOOL_ALL_PATS,
     _strip_bracket_tag_calls,
+    strip_outside_think,
     strip_tool_call_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -7861,13 +7862,19 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            # Balanced-brace strip first (handles any JSON nesting depth) so a
-            # nested-arg bracket call does not leak or eat the trailing prose, then
-            # the regex patterns cover the XML forms and truncated tails.
-            text = _strip_bracket_tag_calls(text)
-            for pat in _TOOL_ALL_PATS:
-                text = pat.sub("", text)
-            return text
+
+            def _seg(segment: str, _is_last: bool) -> str:
+                # Balanced-brace strip first (handles any JSON nesting depth) so a
+                # nested-arg bracket call does not leak or eat the trailing prose,
+                # then the regex patterns cover the XML forms and truncated tails.
+                segment = _strip_bracket_tag_calls(segment)
+                for pat in _TOOL_ALL_PATS:
+                    segment = pat.sub("", segment)
+                return segment
+
+            # Preserve <think>/[THINK] reasoning verbatim (a rehearsed call inside a
+            # reasoning block must not be deleted from the streamed text).
+            return strip_outside_think(text, _seg)
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
