@@ -588,7 +588,10 @@ class DiffusionBackend:
                     pipe,
                     mode = transformer_cache,
                     threshold = transformer_cache_threshold,
-                    quant_active = transformer_quant_engaged is not None,
+                    # GGUF transformers are quantized too (the default Studio path), so the
+                    # cache needs the higher quantized threshold to still trigger -- not just
+                    # the dense-quant fast path.
+                    quant_active = transformer_quant_engaged is not None or bool(gguf_filename),
                     logger = logger,
                 )
                 speed_applied = apply_speed_optims(
