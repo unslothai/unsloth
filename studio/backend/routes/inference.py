@@ -1596,7 +1596,10 @@ _TOOL_XML_RE = _re.compile(
     # ``(?:[^<]|<(?!\|))*`` keeps literal ``<``, newlines, embedded JSON. The last
     # arms strip DeepSeek envelopes (every opener variant), Kimi section blocks, and
     # a bare (section-less) Kimi call.
-    r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
+    # ``<function=name>`` (Qwen3.5) and the attribute form ``<function name="name">``
+    # (MiniCPM-5 / MiniMax-M2); name class ``[\w.\-]`` mirrors the parser so this
+    # form is stripped from the UI instead of leaking.
+    r'<(?:tool_call|function(?:=[\w.\-]+|\s+name="[\w.\-]+"))>.*?(?:</(?:tool_call|function)>|\Z)'
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"

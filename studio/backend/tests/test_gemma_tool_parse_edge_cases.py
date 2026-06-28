@@ -45,6 +45,19 @@ def test_normal_multi_key_arguments_still_split():
     assert _args(calls[0]) == {"a": 1, "b": "hello", "c": "x,y"}
 
 
+def test_empty_bare_value_becomes_empty_string_not_dropped():
+    # An empty bare value (``{query:}``) must serialise as ``""`` so json.loads
+    # sees ``{"query":""}``; emitting bare ``{"query":}`` is invalid JSON and
+    # silently dropped the whole call.
+    calls = parse_tool_calls_from_text("<|tool_call>call:search{query:,unit:celsius}<tool_call|>")
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {"query": "", "unit": "celsius"}
+
+    only = parse_tool_calls_from_text("<|tool_call>call:get{q:}<tool_call|>")
+    assert len(only) == 1, only
+    assert _args(only[0]) == {"q": ""}
+
+
 def test_bare_value_with_timestamps_after_comma_is_kept():
     # A comma followed by digits-then-colon (a timestamp/ratio) is value text,
     # not a new key, so the whole query must be preserved as one argument.

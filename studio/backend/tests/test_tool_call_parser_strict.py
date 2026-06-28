@@ -271,7 +271,11 @@ class TestParserLinearity:
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert json.loads(calls[0]["function"]["arguments"]) == {
-            "s": "hi 😀", "n": 42, "f": 1.5, "b": True, "z": None,
+            "s": "hi 😀",
+            "n": 42,
+            "f": 1.5,
+            "b": True,
+            "z": None,
         }
 
     def test_mistral_unclosed_array_recovers_top_level_objects(self):
