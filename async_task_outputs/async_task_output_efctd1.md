@@ -1,4 +1,0 @@
-- Resolved #5704 using main’s shim plus 5704 `[TOOL_CALLS]`/`[ARGS]`; pushed all PRs fast-forward.
-- Commits: `22627f75c` #5620, `b360e6ad4` #5624, `1d0a2a1b1` #5704.
-- Verified GitHub: #5620/#5624/#5704 `mergeable=MERGEABLE`.
-- Tests: 220 parser/tool tests pass; full-suite failures pre-existing vs `origin/main`.

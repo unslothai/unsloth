@@ -1,6 +1,0 @@
-- Decision: posted both review trigger comments on PRs `5620`, `5624`, `5704` because user wanted Gemini and Codex reviews started.
-- Command run: `cd /mnt/disks/unslothai/ubuntu/workspace_38/unsloth; for pr in 5620 5624 5704; do ... gh pr comment "$pr" --repo unslothai/unsloth --body "/gemini review" ... gh pr comment ... --body "@codex review" ... done`; exit status not shown, key output was six GitHub comment URLs.
-- Created comments: PR `#5620` `/gemini review` `https://github.com/unslothai/unsloth/pull/5620#issuecomment-4808707390`, `@codex review` `https://github.com/unslothai/unsloth/pull/5620#issuecomment-4808707485`.
-- Created comments: PR `#5624` `/gemini review` `https://github.com/unslothai/unsloth/pull/5624#issuecomment-4808707596`, `@codex review` `https://github.com/unslothai/unsloth/pull/5624#issuecomment-4808707690`.
-- Created comments: PR `#5704` `/gemini review` `https://github.com/unslothai/unsloth/pull/5704#issuecomment-4808707782`, `@codex review` `https://github.com/unslothai/unsloth/pull/5704#issuecomment-4808707871`.
-- COMPLETED: six review-trigger comments posted. PENDING: check back later and summarize review findings once they land.
