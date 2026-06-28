@@ -265,7 +265,9 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
             return MXDynamicActivationMXWeightConfig(
                 activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn
             )
-        except TypeError:
+        except (TypeError, AttributeError):
+            # TypeError: older torchao without the explicit dtype knobs.
+            # AttributeError: a torch build without torch.float8_e4m3fn.
             return MXDynamicActivationMXWeightConfig()
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 
