@@ -135,10 +135,23 @@ ALLOWED_QUANTS = {
     "q5_1": "Even higher accuracy, resource usage and slower inference.",
     "q5_k_s": "Uses Q5_K for all tensors",
     "q6_k": "Uses Q8_K for all tensors",
-    # "iq2_xxs" : "2.06 bpw quantization", # Not supported sadly
-    # "iq2_xs"  : "2.31 bpw quantization",
-    # "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs": "3-bit extra small quantization",
+}
+
+# IQ (importance-matrix) quants. llama.cpp refuses these without an imatrix, so they are only
+# accepted when imatrix_file=... is supplied to save_pretrained_gguf / push_to_hub_gguf.
+IMATRIX_QUANTS = {
+    "iq1_s": "1.56 bpw. Smallest, lowest quality. Needs an imatrix.",
+    "iq1_m": "1.75 bpw. Very small. Needs an imatrix.",
+    "iq2_xxs": "2.06 bpw. Needs an imatrix.",
+    "iq2_xs": "2.31 bpw. Needs an imatrix.",
+    "iq2_s": "2.5 bpw. Needs an imatrix.",
+    "iq2_m": "2.7 bpw. Needs an imatrix.",
+    "iq3_xxs": "3.06 bpw. Needs an imatrix.",
+    "iq3_s": "3.44 bpw. Needs an imatrix.",
+    "iq3_m": "3.66 bpw. Needs an imatrix.",
+    "iq4_nl": "4.5 bpw non-linear. Benefits from an imatrix.",
+    "iq4_xs": "4.25 bpw. Benefits from an imatrix.",
 }
 
 
@@ -216,6 +229,9 @@ def _normalize_compressed_method(save_method):
 def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
+    print("\nIQ low-bit quants (save_pretrained_gguf(..., imatrix_file=True or '...path')):")
+    for key, value in IMATRIX_QUANTS.items():
+        print(f'"{key}"  ==> {value}')
     print("\nCompressed-tensors export (save_pretrained_merged(..., save_method=...), for vLLM):")
     seen = set()
     for key, (scheme, needs_calib, _suffix) in COMPRESSED_EXPORT_SCHEMES.items():
@@ -232,11 +248,13 @@ def _quantize_q2_k_l(
     quantizer_location: Union[str, os.PathLike],
     n_threads: int,
     print_output: bool = True,
+    imatrix = None,
 ):
     # "Q2_K_L" is an Unsloth preset, not a native llama.cpp ftype: q2_k with
     # output/token-embedding tensors kept at q8_0 for higher precision.
     command = [
         str(quantizer_location),
+        *(["--imatrix", str(imatrix)] if imatrix else []),
         "--output-tensor-type",
         "q8_0",
         "--token-embedding-type",
@@ -1536,10 +1554,13 @@ def save_to_gguf(
     first_conversion: str = None,
     is_vlm: bool = False,
     is_gpt_oss: bool = False,
+    imatrix = None,
 ):
     """
     Orchestrates the complete GGUF conversion process.
     Handles installation, conversion, and quantization.
+    `imatrix` is a local importance-matrix path (already resolved); it is forwarded to
+    llama-quantize and is required for the IQ low-bit quant types.
     """
     # print_output True only if UNSLOTH_ENABLE_LOGGING=1
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
@@ -1575,11 +1596,15 @@ def save_to_gguf(
     if first_conversion is None:
         first_conversion = model_dtype
 
-    # Check I quants
-    for quant_method in quantization_method:
-        if quant_method.startswith("iq2"):
+    has_imatrix = imatrix is not None and str(imatrix) != ""
+    if has_imatrix:
+        # quantize_gguf gained the imatrix kwarg in a recent unsloth_zoo; fail fast (before the
+        # expensive conversion) if the installed version cannot apply it, rather than dropping it.
+        import inspect
+        if "imatrix" not in inspect.signature(quantize_gguf).parameters:
             raise RuntimeError(
-                "Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!"
+                "Unsloth: your installed unsloth_zoo's quantize_gguf does not support imatrix.\n"
+                "Please upgrade it:  uv pip install --upgrade unsloth_zoo"
             )
 
     # Map quant methods
@@ -1594,11 +1619,20 @@ def save_to_gguf(
         elif quant_method is None:
             quant_method = "q8_0"
 
-        # Check if wrong method
-        if quant_method not in ALLOWED_QUANTS.keys():
+        # IQ low-bit quants are only valid with an imatrix; other methods use the normal allow-list.
+        if quant_method in IMATRIX_QUANTS:
+            if not has_imatrix:
+                raise RuntimeError(
+                    f"Unsloth: quant method '{quant_method}' is an IQ low-bit quant that requires an "
+                    "importance matrix. Pass imatrix_file=True (to fetch the upstream Unsloth imatrix) "
+                    "or imatrix_file='/path/to/imatrix' to save_pretrained_gguf / push_to_hub_gguf."
+                )
+        elif quant_method not in ALLOWED_QUANTS.keys():
             error = f"Unsloth: Quant method = [{quant_method}] not supported. Choose from below:\n"
             for key, value in ALLOWED_QUANTS.items():
                 error += f"[{key}] => {value}\n"
+            for key, value in IMATRIX_QUANTS.items():
+                error += f"[{key}] => {value} (needs imatrix_file)\n"
             raise RuntimeError(error)
 
         new_quantization_methods.append(quant_method)
@@ -1752,16 +1786,22 @@ def save_to_gguf(
                             quantizer_location = quantizer_location,
                             n_threads = n_cpus,
                             print_output = print_output,
+                            imatrix = imatrix,
                         )
                     else:
-                        # Use unsloth-zoo's standard quantization for all other methods
-                        quantized_file = quantize_gguf(
+                        # Use unsloth-zoo's standard quantization for all other methods. Only pass
+                        # imatrix when set so older unsloth_zoo (no imatrix kwarg) still works for
+                        # plain quants; an imatrix that cannot be applied was rejected above.
+                        quant_kwargs = dict(
                             input_gguf = base_gguf,
                             output_gguf = output_location,
                             quant_type = quant_method,
                             quantizer_location = quantizer_location,
                             print_output = print_output,
                         )
+                        if has_imatrix:
+                            quant_kwargs["imatrix"] = imatrix
+                        quantized_file = quantize_gguf(**quant_kwargs)
                     all_saved_locations.append(quantized_file)
                     quants_created = True
                 except Exception as e:
@@ -2410,10 +2450,15 @@ def unsloth_save_pretrained_gguf(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
     save_method: str = None,
+    imatrix_file = None,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
     converted to float16 then converted to GGUF / llama.cpp format.
+
+    imatrix_file: importance matrix for llama-quantize. None = off; a path = use that file
+    (a *.gguf_file is renamed to *.gguf); True = download the upstream unsloth/<base>-GGUF
+    imatrix. Required for the IQ low-bit quants (iq2_xxs, iq4_xs, ...).
 
     Choose for `quantization_method` to be:
     "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
@@ -2537,6 +2582,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["model_name"]
     del arguments["base_model_name"]
     del arguments["is_processor"]
+    del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
 
     # Step 3: Fix tokenizer BOS token if needed
     if is_processor:
@@ -2648,6 +2694,10 @@ def unsloth_save_pretrained_gguf(
     except Exception as e:
         logger.warning(f"Unsloth: fix_sentencepiece_gguf skipped ({type(e).__name__}): {e}")
 
+    # Resolve the importance matrix once (download upstream / validate path / rename *.gguf_file)
+    # before quantization, so a failed auto-resolution never reaches the IQ-quant gate.
+    imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
+
     try:
         all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
             model_name = model_name,
@@ -2659,6 +2709,7 @@ def unsloth_save_pretrained_gguf(
             first_conversion = first_conversion,
             is_vlm = is_vlm,  # Pass VLM flag
             is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
+            imatrix = imatrix_path,
         )
     except Exception as e:
         if IS_KAGGLE_ENVIRONMENT:
@@ -2756,10 +2807,14 @@ def unsloth_push_to_hub_gguf(
     maximum_memory_usage: float = 0.85,
     datasets: Optional[List[str]] = None,
     save_method: str = None,
+    imatrix_file = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
     converted to float16 then converted to GGUF / llama.cpp format.
+
+    imatrix_file: importance matrix for llama-quantize (None = off; a path; or True to download
+    the upstream unsloth/<base>-GGUF imatrix). Required for the IQ low-bit quants.
 
     Choose for `quantization_method` to be:
     "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
@@ -2842,11 +2897,12 @@ def unsloth_push_to_hub_gguf(
             quantization_method = quantization_method,
             first_conversion = first_conversion,
             push_to_hub = False,  # Never push from here
-            token = None,  # Don't need token for local save
+            token = token,  # forwarded so imatrix_file=True can read a gated/private upstream
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
+            imatrix_file = imatrix_file,
         )
 
         # Extract results
@@ -3095,6 +3151,95 @@ def _lora_base_model_id(model):
     if not base:
         base = getattr(getattr(model, "config", None), "_name_or_path", None)
     return os.fspath(base) if base else ""
+
+
+# Upstream Unsloth GGUF repos ship a calibration imatrix under one of these names; the GGUF-format
+# one is suffixed .gguf_file so the Hub does not list it as a model GGUF (renamed to .gguf locally).
+_IMATRIX_UPSTREAM_NAMES = ("imatrix_unsloth.dat", "imatrix_unsloth.gguf_file")
+
+
+def _gguf_repo_candidates(model):
+    """Ordered, de-duplicated unsloth/<base>-GGUF repo ids to search for an upstream imatrix."""
+    candidates = []
+    raw_names = [
+        _lora_base_model_id(model),
+        getattr(getattr(model, "config", None), "_name_or_path", None),
+    ]
+    for raw in raw_names:
+        if not raw:
+            continue
+        name = os.fspath(raw)
+        if os.path.isdir(name):
+            continue  # a local checkpoint has no upstream GGUF repo
+        try:
+            name = get_model_name(name, load_in_4bit = False)
+        except Exception:
+            pass
+        if not name or "/" not in name:
+            continue
+        repo = name if name.endswith("-GGUF") else f"{name}-GGUF"
+        if repo not in candidates:
+            candidates.append(repo)
+    return candidates
+
+
+def _materialize_imatrix(path, dest_dir):
+    """Copy an imatrix into dest_dir (never mutate the HF cache) and rename *.gguf_file -> *.gguf."""
+    os.makedirs(dest_dir, exist_ok = True)
+    base = os.path.basename(path)
+    if base.endswith(".gguf_file"):
+        base = base[: -len(".gguf_file")] + ".gguf"
+    local = os.path.join(dest_dir, base)
+    shutil.copyfile(path, local)
+    return local
+
+
+def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
+    """Turn the public imatrix_file value into a local imatrix path (or None).
+
+    None/False -> None. A path -> that file (a *.gguf_file is renamed to *.gguf). True -> find and
+    download the upstream unsloth/<base>-GGUF imatrix, raising a clear error if none exists.
+    """
+    if imatrix_file is None or imatrix_file is False:
+        return None
+
+    if imatrix_file is not True and isinstance(imatrix_file, (str, os.PathLike)):
+        path = os.path.expanduser(os.fspath(imatrix_file))
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Unsloth: imatrix_file '{path}' does not exist.")
+        return _materialize_imatrix(path, dest_dir) if path.endswith(".gguf_file") else path
+
+    if imatrix_file is not True:
+        raise TypeError(
+            "Unsloth: imatrix_file must be None, a path string, or True "
+            f"(got {type(imatrix_file).__name__})."
+        )
+
+    # imatrix_file=True: auto-resolve from the upstream Unsloth GGUF repo. HfApi is the module-level
+    # import (save.py top); hf_hub_download is imported here as it is not needed elsewhere.
+    from huggingface_hub import hf_hub_download
+
+    if token is None:
+        token = get_token()
+    api = HfApi(token = token)
+    repos = _gguf_repo_candidates(model)
+    for repo in repos:
+        try:
+            files = set(api.list_repo_files(repo))
+        except Exception:
+            continue
+        for name in _IMATRIX_UPSTREAM_NAMES:
+            if name in files:
+                downloaded = hf_hub_download(repo_id = repo, filename = name, token = token)
+                local = _materialize_imatrix(downloaded, dest_dir)
+                print(f"Unsloth: Using imatrix '{name}' from '{repo}' -> '{local}'")
+                return local
+    raise RuntimeError(
+        "Unsloth: imatrix_file=True but no upstream Unsloth imatrix was found.\n"
+        f"  Searched repos: {repos or '(none derived from the base model)'}\n"
+        f"  Searched files: {list(_IMATRIX_UPSTREAM_NAMES)}\n"
+        "Pass imatrix_file='/path/to/imatrix.(dat|gguf)' to use your own."
+    )
 
 
 def _unsloth_save_lora_gguf(
