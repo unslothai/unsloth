@@ -585,7 +585,7 @@ def _parse_llama3_python_tag(
             if not allow_incomplete and depth > 0:
                 truncated = True
                 break
-            body = content[open_idx : i]
+            body = content[open_idx:i]
             out.append(
                 {
                     "id": f"call_{id_offset + len(out)}",
