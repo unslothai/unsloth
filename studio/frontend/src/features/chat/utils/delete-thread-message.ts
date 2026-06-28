@@ -126,7 +126,7 @@ export async function deleteThreadMessage(args: {
           .map(({ message }) => message.id)
       : [];
 
-  // Delete the prompt first; that relinks its replies up to the prompt'sparent
+  // Delete the prompt first; that relinks its replies up to the prompt's parent
   repo.deleteMessage(messageId);
   for (const replyId of assistantReplyIds) {
     repo.deleteMessage(replyId);
