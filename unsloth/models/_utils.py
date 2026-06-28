@@ -998,11 +998,18 @@ _ADAPTER_PREFETCH_PATTERNS = (
 # unread; ignoring them keeps a repo's alternate-precision / experimental weight dirs (fp16/,
 # experimental/) from being pulled by the otherwise-unfiltered warm. Hugging Face's fnmatch "*"
 # spans "/", so "*/*.safetensors" matches any nested .safetensors while a root "model.safetensors"
-# (no "/") is kept. Only applied when the caller asserts a root-only load (weights_at_root), never
-# to a diffusion pipeline warm whose component weights DO live in subfolders.
+# (no "/") is kept. Every weight format is covered -- including .h5 / .msgpack, which a
+# from_tf / from_flax root load keeps at the root (the format filter does NOT drop them), so without
+# the nested forms a TF / Flax root load would still pull alternate .h5 / .msgpack checkpoints under
+# subdirectories. Only applied when the caller asserts a root-only load (weights_at_root), never to a
+# diffusion pipeline warm whose component weights DO live in subfolders.
 _SUBDIR_WEIGHT_IGNORE_PATTERNS = (
     "*/*.safetensors",
     "*/*.bin",
+    "*/*.h5",
+    "*/*.msgpack",
+    "*/*.pt",
+    "*/*.pth",
 )
 
 
@@ -1302,8 +1309,14 @@ def maybe_prefetch_hf_snapshot(
         # from_pretrained(model_name, gguf_file=NAME) reads exactly that GGUF from the repo
         # (Transformers de-quantizes it on load). The static ignore list drops *.gguf, so without
         # this the file would never be warmed and the load would fetch it in-process over Xet. Warm
-        # exactly that file (plus root aux) -- not every other quant the repo may also publish.
-        allow_patterns = [gguf_file, *_ROOT_AUX_PREFETCH_PATTERNS]
+        # exactly that file (plus root aux) -- not every other quant the repo may also publish. When
+        # a subfolder is set, the load resolves <subfolder>/<gguf_file>, so warm THAT path.
+        _gguf_path = (
+            f"{subfolder.strip('/')}/{gguf_file}"
+            if isinstance(subfolder, str) and subfolder.strip("/")
+            else gguf_file
+        )
+        allow_patterns = [_gguf_path, *_ROOT_AUX_PREFETCH_PATTERNS]
     elif tokenizer_only:
         # A distinct tokenizer repo: warm only its tokenizer / config / vocab files. Restrict
         # to those exact root filenames so we never pull weights, even if that repo also

@@ -454,3 +454,25 @@ def test_adapter_only_explicit_use_safetensors_false_keeps_bin(capture):
     )
     assert "adapter_model.bin" in kept
     assert "adapter_model.safetensors" not in kept
+
+
+def test_gguf_file_with_subfolder_warms_subfolder_path(capture):
+    """gguf_file + subfolder: the load resolves <subfolder>/<gguf_file>, so the warm must allow-list
+    that subfolder path, not the bare root name (Codex #6638)."""
+    _, st = capture(weights_at_root = True, gguf_file = "model-Q4_K_M.gguf", subfolder = "gguf")
+    allow = st["allow_patterns"]
+    assert "gguf/model-Q4_K_M.gguf" in allow
+    kept = _filter(["gguf/model-Q4_K_M.gguf", "config.json"], allow, st["ignore_patterns"])
+    assert "gguf/model-Q4_K_M.gguf" in kept and "config.json" in kept
+
+
+def test_from_tf_root_load_ignores_nested_h5(capture):
+    """A from_tf root load reads the ROOT .h5; nested .h5 / .msgpack checkpoints under subdirs are
+    unread, so the root-only subdir ignore must drop them (it covers every weight format, not only
+    safetensors / bin) (Codex #6638)."""
+    _, st = capture(weights_at_root = True, from_tf = True)
+    ig = st["ignore_patterns"]
+    assert "*/*.h5" in ig and "*/*.msgpack" in ig
+    kept = _filter(["model.h5", "checkpoint-1/model.h5", "config.json"], st["allow_patterns"], ig)
+    assert "model.h5" in kept                    # root TF weight warmed
+    assert "checkpoint-1/model.h5" not in kept   # nested TF checkpoint ignored
