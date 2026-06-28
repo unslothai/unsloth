@@ -1025,7 +1025,11 @@ def test_write_pi_config_fresh(tmp_path):
     assert provider["api"] == "openai-completions"
     assert provider["baseUrl"] == f"{BASE}/v1"
     assert provider["apiKey"] == "sk-unsloth-abc"
-    assert provider["models"] == [{"id": MODEL["id"]}]
+    # Pin the loaded window (and a sane output cap) so Pi compacts instead of
+    # overflowing; without it Pi assumes its 128000 default.
+    assert provider["models"] == [
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+    ]
 
 
 def test_write_pi_config_preserves_and_idempotent(tmp_path):
@@ -1051,5 +1055,61 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
     assert f"pi --provider unsloth --model {MODEL['id']}" in result.output
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
     assert config["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
-    assert config["providers"]["unsloth"]["models"] == [{"id": MODEL["id"]}]
+    assert config["providers"]["unsloth"]["models"] == [
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+    ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
+    # On native Windows Node resolves ~/.pi via USERPROFILE, not HOME, so the session
+    # must point USERPROFILE at the relocated home or Pi reads the user's real ~/.pi.
+    monkeypatch.setattr(start.os, "name", "nt")
+    result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    home = tmp_path / "agents" / "pi"
+    assert f'$env:HOME = "{home}"' in result.output
+    assert f'$env:USERPROFILE = "{home}"' in result.output
+
+
+# ── WSLENV path translation + PowerShell quoting (helper units) ──
+
+
+def test_wsl_bridge_names_flags_paths_not_scalars():
+    # WSLENV only translates a var to a Windows path when its entry carries /p.
+    # Path-valued vars must get it; scalar knobs and URLs must not, or WSLENV would
+    # mangle them when handing off to a Windows shim under /mnt.
+    env = {
+        "CODEX_HOME": "/tmp/sess/codex",
+        "HOME": "/tmp/sess/pi",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "4096",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8888",
+        "USERPROFILE": r"C:\Users\x",
+    }
+    names = start._wsl_bridge_names(env, ("ANTHROPIC_API_KEY",))
+    assert "CODEX_HOME/p" in names
+    assert "HOME/p" in names
+    assert "USERPROFILE/p" in names  # drive-qualified Windows path
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" in names  # scalar: no /p
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW/p" not in names
+    assert "ANTHROPIC_BASE_URL" in names  # URL is not a filesystem path
+    assert "ANTHROPIC_API_KEY" in names  # cleared var carries no value to translate
+
+
+def test_merge_wslenv_dedups_on_base_name():
+    # An already-shared var must not be appended again just because the flag differs.
+    merged = start._merge_wslenv("CODEX_HOME/p:FOO", ("CODEX_HOME/p", "BAR/p"))
+    parts = merged.split(":")
+    assert parts.count("CODEX_HOME/p") == 1
+    assert "FOO" in parts and "BAR/p" in parts
+
+
+def test_powershell_quote_single_quotes_json():
+    # Bare flags/paths pass through; JSON payloads get single-quoted so PowerShell
+    # keeps the embedded double quotes literal (list2cmdline's backslashes would not).
+    assert start._powershell_quote("--settings") == "--settings"
+    assert start._powershell_quote("unsloth/gemma-4-26B") == "unsloth/gemma-4-26B"
+    quoted = start._powershell_quote(start._CLAUDE_SETTINGS_OVERLAY)
+    assert quoted == "'" + start._CLAUDE_SETTINGS_OVERLAY + "'"
+    assert "\\" not in quoted  # no cmd.exe backslash escaping
+    assert start._powershell_quote("a'b") == "'a''b'"  # embedded quote doubled

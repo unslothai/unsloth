@@ -472,11 +472,43 @@ def _wsl_windows_executable(command: list) -> Optional[str]:
     return None
 
 
+def _looks_like_path(value: str) -> bool:
+    # A var only wants the WSLENV /p flag if its value is a filesystem path: an
+    # absolute POSIX path (/...), a UNC path (\\...), or a drive-qualified Windows
+    # path (C:...). Scalar knobs (e.g. a numeric context window) must pass through
+    # untranslated, so they get no flag.
+    return bool(value) and (
+        value.startswith(("/", "\\")) or (len(value) >= 2 and value[1] == ":")
+    )
+
+
+def _wsl_bridge_names(env: dict, unset_env: tuple) -> tuple:
+    # Build the WSLENV share list for a Windows shim reached from WSL. Path-valued
+    # vars get /p so WSLENV translates them to the Windows path the /mnt shim can
+    # actually open; a cleared var carries no value to translate.
+    names = [name + ("/p" if _looks_like_path(value) else "") for name, value in env.items()]
+    names.extend(unset_env)
+    return tuple(dict.fromkeys(names))
+
+
 def _merge_wslenv(current: str, names: tuple) -> str:
     entries = [entry for entry in current.split(":") if entry]
     existing = {entry.split("/", 1)[0] for entry in entries}
-    entries.extend(name for name in names if name not in existing)
+    for name in names:
+        base = name.split("/", 1)[0]  # dedup on the bare name, ignoring any /p flag
+        if base not in existing:
+            entries.append(name)
+            existing.add(base)
     return ":".join(entries)
+
+
+def _powershell_quote(arg: str) -> str:
+    # PowerShell reads single-quoted strings literally (an embedded ' is doubled), so
+    # JSON args such as `--settings {"env":...}` survive intact. list2cmdline's
+    # backslash-escaped double quotes are cmd.exe syntax and PowerShell mis-parses them.
+    if arg and re.fullmatch(r"[A-Za-z0-9_./:=+-]+", arg):
+        return arg
+    return "'" + arg.replace("'", "''") + "'"
 
 
 def _print_env(
@@ -492,7 +524,7 @@ def _print_env(
             # PowerShell: ` is the escape char, and $ triggers expansion inside "".
             escaped = value.replace("`", "``").replace('"', '`"').replace("$", "`$")
             typer.echo(f'$env:{name} = "{escaped}"')
-        typer.echo(subprocess.list2cmdline(command))
+        typer.echo(" ".join(_powershell_quote(arg) for arg in command))
         return
     for name in unset_env:
         typer.echo(f"export {name}=" if wsl_env_bridge else f"unset {name}")
@@ -514,9 +546,7 @@ def _launch(
     executable = shutil.which(command[0])
     if executable is None:
         _fail(f"`{command[0]}` not found on PATH. Install it with: {install_hint}")
-    wsl_env_bridge = (
-        tuple(dict.fromkeys((*env.keys(), *unset_env))) if _wsl_windows_executable(command) else ()
-    )
+    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
     child_env = dict(os.environ)
     if wsl_env_bridge:
         child_env["WSLENV"] = _merge_wslenv(child_env.get("WSLENV", ""), wsl_env_bridge)
@@ -557,9 +587,7 @@ def _run(
     unset_env: tuple = (),
 ) -> None:
     typer.echo(f"Studio {base} · model {entry['id']}")
-    wsl_env_bridge = (
-        tuple(dict.fromkeys((*env.keys(), *unset_env))) if _wsl_windows_executable(command) else ()
-    )
+    wsl_env_bridge = _wsl_bridge_names(env, unset_env) if _wsl_windows_executable(command) else ()
     if not launch:
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
         return
@@ -732,11 +760,20 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
     # Pi reads custom providers from ~/.pi/agent/models.json (HOME-relocated for the
     # session). Studio is a generic OpenAI-compatible /v1 endpoint, and the key lives
     # in the config rather than the env (matching openclaw/opencode).
+    provider_model = {"id": model["id"]}
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        # An unspecified model defaults to contextWindow 128000 / maxTokens 16384,
+        # far larger than a small Studio context, so Pi compacts too late and overflows
+        # the server. Pin the real window and a sane output cap (mirrors OpenCode).
+        provider_model["contextWindow"] = window
+        provider_model["maxTokens"] = min(window // 4, 8192)
     _subdict(config, "providers")[_PI_PROVIDER] = {
         "api": "openai-completions",
         "baseUrl": f"{base}/v1",
         "apiKey": key,
-        "models": [{"id": model["id"]}],
+        "models": [provider_model],
     }
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
@@ -936,4 +973,13 @@ def pi(
         # The key rides in the config, so HOME is the only env var needed.
         write_pi_config(base, key, entry, home / ".pi" / "agent" / "models.json")
         env = {"HOME": str(home)}
+        if os.name == "nt":
+            # On native Windows Node resolves ~/.pi via USERPROFILE (then HOMEDRIVE +
+            # HOMEPATH), not HOME, so without these it would read the user's real
+            # ~/.pi. splitdrive yields no drive off a POSIX path, so HOMEDRIVE/HOMEPATH
+            # are only set when there is one.
+            env["USERPROFILE"] = str(home)
+            drive, tail = os.path.splitdrive(str(home))
+            if drive:
+                env["HOMEDRIVE"], env["HOMEPATH"] = drive, tail
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
