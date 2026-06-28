@@ -340,3 +340,40 @@ def test_route_strip_two_level_nested_rehearsal_keeps_trailing_prose():
     cleaned = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
     assert cleaned == "note  done"
     assert "[ARGS]" not in cleaned
+
+
+def test_route_strip_removes_call_with_literal_think_in_argument():
+    # A literal <think>...</think> inside a tool-call argument must be stripped with
+    # the call, not preserved as reasoning (which would split the call span).
+    text = (
+        '<tool_call>{"name":"write","arguments":'
+        '{"text":"compare <think> and </think> tags"}}</tool_call>'
+    )
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "<tool_call>" not in out and '"name"' not in out
+
+
+def test_route_strip_removes_truncated_mistral_array():
+    # A canonical array truncated by EOS (no closing ``]``) cannot be removed by the
+    # balanced scan; the route fallback must strip its tail like other orphans.
+    text = 'before [TOOL_CALLS] [{"name":"a","arguments":{"x":1}}'  # missing ]
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[TOOL_CALLS]" not in out and "{" not in out
+    assert "before" in out
+
+
+def test_route_strip_keeps_prose_mentioning_args_marker():
+    # ``foo[ARGS] in a sentence`` is prose (no JSON body); the rehearsal arm must
+    # not truncate the rest of the line.
+    text = "Please pass foo[ARGS] to the template and continue reading."
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert out == text
+
+
+def test_route_strip_handles_mistral_v11_call_id_args_shape():
+    # [TOOL_CALLS]name[CALL_ID]id[ARGS]{json} (Mistral Small 3.2) -- arms aligned
+    # with the parser regexes must strip it whole.
+    text = 'before [TOOL_CALLS]web_search[CALL_ID]abc123[ARGS]{"q":"x"} after'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[TOOL_CALLS]" not in out and "[CALL_ID]" not in out and "[ARGS]" not in out
+    assert "before" in out and "after" in out

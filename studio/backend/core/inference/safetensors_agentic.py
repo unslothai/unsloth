@@ -366,6 +366,17 @@ def run_safetensors_tool_loop(
                 if sig.startswith(stripped):
                     is_prefix = True
                     break
+                # Bracket-tag forms arrive mid-buffer (``name[ARGS]{...}``,
+                # ``[TOOL_CALLS]...``), so also do a substring check -- mirrors the
+                # GGUF loop. ``[ARGS]`` must be the rehearsal shape ``name[ARGS]``;
+                # a bare ``[ARGS]`` in prose is not a call start.
+                if sig == "[ARGS]":
+                    if re.search(r"[\w-]\[ARGS\]", stripped):
+                        is_match = True
+                        break
+                elif sig.startswith("[") and sig in stripped:
+                    is_match = True
+                    break
 
             if is_match:
                 # Tool signal -- flush any visible prefix before DRAINING

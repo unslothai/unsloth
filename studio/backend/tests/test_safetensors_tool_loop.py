@@ -369,6 +369,41 @@ class TestParser:
         assert strip_tool_markup(text, final = False) == "before  after"
         assert strip_tool_markup(text, final = True) == "before  after"
 
+    def test_strip_removes_call_with_literal_think_in_argument(self):
+        # A tool call whose argument text contains a literal <think>...</think> must
+        # be stripped whole; the literal must not be treated as a reasoning block
+        # (which would split the call span and leak the raw call after execution).
+        text = (
+            '<tool_call>{"name":"write","arguments":'
+            '{"text":"compare <think> and </think> tags"}}</tool_call>'
+        )
+        assert strip_tool_markup(text, final = True) == ""
+
+    def test_strip_preserves_real_think_but_strips_call_with_literal_think(self):
+        text = (
+            "<think>planning</think> ok "
+            '<tool_call>{"name":"w","arguments":{"t":"<think>x</think>"}}</tool_call> done'
+        )
+        out = strip_tool_markup(text, final = True)
+        assert "<think>planning</think>" in out
+        assert "<tool_call>" not in out and '"name"' not in out
+        assert "ok" in out and "done" in out
+
+    def test_prose_mentioning_args_marker_is_not_truncated(self):
+        # `foo[ARGS] to the template` is prose (no JSON body), not a rehearsal call,
+        # so the trailing catch-all must not delete the rest of the sentence.
+        text = "Please pass foo[ARGS] to the template and continue reading."
+        assert strip_tool_markup(text, final = True) == text
+
+    def test_streaming_strip_handles_mistral_v11_call_id_args(self):
+        # The safetensors streaming strip uses the regex patterns directly (no
+        # balanced scan), so they must cover the v11 [CALL_ID]/[ARGS] metadata after
+        # the name -- aligned with the parser regexes.
+        raw = 'before [TOOL_CALLS]web_search[CALL_ID]abc123[ARGS]{"q":"x"} after'
+        out = strip_tool_markup_streaming(raw)
+        assert "[TOOL_CALLS]" not in out and "[CALL_ID]" not in out and "[ARGS]" not in out
+        assert "before" in out and "after" in out
+
     # <think> pre-strip.
 
     def test_think_block_stripped_before_xml(self):
@@ -667,6 +702,21 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
     assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
     assert captured_tool_names == [["render_html", "web_search"], ["web_search"]]
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+
+
+def test_rehearsal_call_name_is_not_streamed_before_args():
+    # A rehearsal ``name[ARGS]{json}`` whose name and [ARGS] arrive together must
+    # drain (mirroring the GGUF [ARGS] substring special-case) instead of streaming
+    # the bare tool name to the client before the call is recognised.
+    loop, exec_fn = _make_loop(
+        turns = [['web_search[ARGS]{"query":"cats"}'], ["Found."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("web_search" in t for t in contents), contents
 
 
 class TestLoopBasic:

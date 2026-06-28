@@ -38,18 +38,28 @@ _TOOL_CLOSED_PATS = [
     re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
     re.compile(r"<tool_call\|>"),
     re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
-    re.compile(r"\[TOOL_CALLS\][\w-]+\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
-    re.compile(r"\b[\w-]+\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
+    # Aligned with the parser regexes (_MISTRAL_BRACKET_RE / _REHEARSAL_RE):
+    # tolerate whitespace after [TOOL_CALLS] and the v11 [CALL_ID]/[ARGS] metadata,
+    # and keep the (?<!\[CALL_ID\]) guard so the call-id token is never taken as a
+    # rehearsal name.
+    re.compile(
+        r"\[TOOL_CALLS\]\s*[\w-]+(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*"
+        + _BRACKETED_JSON_ONE_LEVEL,
+        re.DOTALL,
+    ),
+    re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
 ]
 # Trailing-unclosed patterns. The bracket-tag open forms match the bare marker
 # (no `{`), so a partial `[TOOL_CALLS]web_search` / `python[ARGS]` streamed before
 # its brace is stripped instead of leaking, like `<tool_call>.*$` strips a bare open.
+# The rehearsal tail requires a following `{` or end-of-text so prose that merely
+# mentions ``foo[ARGS] to the template`` is not truncated as a phantom call.
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
     re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
-    re.compile(r"\b[\w-]+\[ARGS\].*$", re.DOTALL),
+    re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*(?:\{.*)?$", re.DOTALL),
 ]
 
 # Pre-compiled patterns for tool-call XML parsing.
@@ -684,6 +694,15 @@ def _strip_bracket_tag_calls(text: str) -> str:
     return "".join(out)
 
 
+def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
+    """Spans of complete tool-call markup. A literal ``<think>`` / ``[THINK]`` inside
+    a call's arguments lives within one of these spans and must be stripped WITH the
+    call, not preserved as a reasoning block."""
+    spans = [m.span() for pat in _TOOL_CLOSED_PATS for m in pat.finditer(text)]
+    spans.extend((start, end) for start, end, _kind, _m in _iter_bracket_spans(text))
+    return spans
+
+
 def strip_outside_think(text: str, strip_segment) -> str:
     """Apply ``strip_segment(segment, is_last)`` to the visible text around
     ``<think>`` / ``[THINK]`` blocks, preserving the blocks verbatim.
@@ -695,6 +714,18 @@ def strip_outside_think(text: str, strip_segment) -> str:
     ``strip_tool_call_markup``, the route display strip, and the GGUF streaming
     strip) so they stay consistent."""
     think_spans = [m.span() for m in _THINK_TAG_RE.finditer(text)]
+    if think_spans:
+        # A ``<think>`` / ``[THINK]`` literal that sits INSIDE a complete tool call
+        # is argument text, not reasoning. Excluding it lets the segment stripper see
+        # the whole call (the split would otherwise hide the open/close pair and leak
+        # the raw call after execution).
+        call_spans = _tool_call_markup_spans(text)
+        if call_spans:
+            think_spans = [
+                (s, e)
+                for (s, e) in think_spans
+                if not any(cs <= s and e <= ce for cs, ce in call_spans)
+            ]
     if not think_spans:
         return strip_segment(text, True)
     pieces: list[str] = []

@@ -1586,8 +1586,16 @@ _TOOL_XML_RE = _re.compile(
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
     r"|</parameter>\s*\Z"
-    r"|\[TOOL_CALLS\][\w-]+\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
-    r"|\b[\w-]+\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)",
+    # Truncated canonical array ``[TOOL_CALLS] [{...`` (closing ``]`` lost to EOS):
+    # the balanced scan can't remove an unbalanced array, so strip its tail here.
+    r"|\[TOOL_CALLS\]\s*\[.*\Z"
+    # Named / v11 ``[TOOL_CALLS]name([CALL_ID]id)?([ARGS])?{json}`` and bare
+    # rehearsal ``name[ARGS]{json}``; arms aligned with the parser regexes.
+    r"|\[TOOL_CALLS\]\s*[\w-]+(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
+    # Rehearsal: only a balanced JSON body, a truncated ``{...`` to EOS, or the bare
+    # marker at EOS -- NOT arbitrary trailing prose, so ``foo[ARGS] in a sentence`` is
+    # left intact instead of being truncated as a phantom call.
+    r"|(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)",
     _re.DOTALL,
 )
 
