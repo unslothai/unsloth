@@ -707,9 +707,7 @@ def test_validate_load_request(tmp_path):
             )
     # A bare "org/name" HF id is still treated as remote (not rejected as a local path).
     assert (
-        backend.validate_load_request(
-            "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf"
-        ).name
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf").name
         == "z-image"
     )
 

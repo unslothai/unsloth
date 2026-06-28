@@ -221,9 +221,7 @@ class DiffusionBackend:
             # POSIX path-shaped, a "."/".." prefix (covers ./ ../ and their Windows .\ ..\
             # forms), a Windows separator anywhere (never present in a bare "org/name" HF
             # id), or an absolute path on this OS.
-            repo_id.startswith(("/", "\\", "~", "."))
-            or "\\" in repo_id
-            or local_root.is_absolute()
+            repo_id.startswith(("/", "\\", "~", ".")) or "\\" in repo_id or local_root.is_absolute()
         ):
             raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
         return fam
