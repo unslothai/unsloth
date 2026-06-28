@@ -15,13 +15,10 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from ..evaluations import score_dataframe, score_parquet_dir
 from ..jsonable import to_jsonable, to_preview_jsonable
-from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
-from ..post_processors import (
-    apply_studio_post_processors,
-    apply_studio_post_processors_to_dataframe,
-)
 from ..service import build_config_builder, create_data_designer
+from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from utils.paths import ensure_dir, recipe_datasets_root
 
 _ARTIFACT_ROOT = recipe_datasets_root()
@@ -145,10 +142,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
 
             preview_df = results.dataset
             if preview_df is not None:
-                preview_df = apply_studio_post_processors_to_dataframe(
-                    df = preview_df,
-                    evaluations = recipe.get("evaluations") or [],
-                )
+                score_dataframe(preview_df, recipe.get("evaluations") or [])
 
             dataset = (
                 []
@@ -177,9 +171,9 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             if merge_batches:
                 _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
 
-            apply_studio_post_processors(
-                base_dataset_path = results.artifact_storage.base_dataset_path,
-                evaluations = recipe.get("evaluations") or [],
+            score_parquet_dir(
+                results.artifact_storage.base_dataset_path / "parquet-files",
+                recipe.get("evaluations") or [],
             )
 
             artifact_path = str(results.artifact_storage.base_dataset_path)
