@@ -807,6 +807,9 @@ def claude(
         # llama-server's KV-cache slots, so turn off everything nonessential.
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+        # A local server streams in bursts; disable the full-screen TUI redraw so the
+        # terminal doesn't flicker between tokens.
+        "CLAUDE_CODE_NO_FLICKER": "1",
     }
     # Claude Code auto-compacts against its native (~600k token) window; a local
     # model's context is usually far smaller, so size the window to the loaded

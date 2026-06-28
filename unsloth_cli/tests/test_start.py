@@ -171,6 +171,8 @@ def test_connect_claude_no_launch(fake_studio):
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
     _assert_env_set(result.output, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
     _assert_env_set(result.output, "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "1")
+    # Suppress the full-screen TUI redraw so a bursty local server doesn't flicker.
+    _assert_env_set(result.output, "CLAUDE_CODE_NO_FLICKER", "1")
     # Attribution header is suppressed for the session via env + --settings, never
     # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
