@@ -22,6 +22,7 @@ Handles these serializations (see ``parse_tool_calls_from_text``):
 * ``name[ARGS]{json}`` (reasoning-model rehearsal)
 """
 
+import bisect
 import json
 import re
 
@@ -80,12 +81,28 @@ _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
 # span and could be executed as a real call.
 _THINK_TAG_RE = re.compile(r"<think>.*?(?:</think>|$)|\[THINK\].*?(?:\[/THINK\]|$)", re.DOTALL)
 
-# Mistral ``[TOOL_CALLS]name{json}`` prefix. The name char-class includes the
-# hyphen so dashed MCP function names (mcp__srv__list-issues) are captured whole.
-_MISTRAL_BRACKET_RE = re.compile(r"\[TOOL_CALLS\]([\w-]+)\s*(?=\{)")
+# Mistral ``[TOOL_CALLS] [{...}, ...]`` canonical array form: ``[TOOL_CALLS]``
+# followed by a JSON list of ``{"name","arguments"}`` objects.
+_MISTRAL_ARRAY_RE = re.compile(r"\[TOOL_CALLS\]\s*(?=\[)")
 
-# Rehearsal ``name[ARGS]{json}`` prefix.
-_REHEARSAL_RE = re.compile(r"\b([\w-]+)\[ARGS\]\s*(?=\{)")
+# Mistral name form: ``[TOOL_CALLS]name{json}`` and the v11 shapes
+# ``[TOOL_CALLS]name[ARGS]{json}`` / ``[TOOL_CALLS]name[CALL_ID]<id>[ARGS]{json}``.
+# The opaque ``[CALL_ID]`` token is metadata, never the function name; the name is
+# the token right after ``[TOOL_CALLS]``. Hyphens are kept so dashed MCP names
+# (mcp__srv__list-issues) are captured whole.
+_MISTRAL_BRACKET_RE = re.compile(
+    r"\[TOOL_CALLS\]\s*([\w-]+)(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?=\{)"
+)
+
+# Rehearsal ``name[ARGS]{json}`` prefix (no ``[TOOL_CALLS]``). The lookbehind
+# rejects the call-id token in ``[CALL_ID]<id>[ARGS]`` so the id is never taken as
+# the function name (that shape is handled by ``_MISTRAL_BRACKET_RE`` instead).
+_REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
+
+# Defensive cap: above this many chars, skip the balanced bracket scan and let the
+# linear regex catch-all handle stripping (the scan is linear, but this bounds the
+# worst case on pathological untrusted output).
+_MAX_BRACKET_SCAN_CHARS = 1_000_000
 
 
 def _balanced_json_span(text: str, start: int) -> int | None:
@@ -181,6 +198,51 @@ def _balanced_bracket_end(src: str, start: int) -> int:
                 return i
         i += 1
     return -1
+
+
+def _iter_bracket_spans(text: str, start: int = 0):
+    """Yield ``(span_start, span_end, kind, match)`` for each balanced bracket-tag
+    tool call from ``start`` on, in document order. ``kind`` is ``"array"``
+    (``[TOOL_CALLS] [..]``), ``"name"`` (``[TOOL_CALLS]name{..}`` incl. the v11
+    ``[CALL_ID]`` / ``[ARGS]`` shapes) or ``"rehearsal"`` (``name[ARGS]{..}``).
+    ``span_end`` is exclusive.
+
+    Balance-based only (does not validate JSON) so the strip path (drop the span)
+    and the parse path (``json.loads`` the body) share one scan. Forward scan: the
+    cursor jumps past each consumed span, so a marker inside an already-consumed
+    JSON string is never re-matched, and each regex is re-searched only once its
+    cached match falls behind the cursor -- which keeps the whole scan linear
+    instead of re-scanning the tail per match."""
+    n = len(text)
+    specs = (
+        ("array", _MISTRAL_ARRAY_RE),
+        ("name", _MISTRAL_BRACKET_RE),
+        ("rehearsal", _REHEARSAL_RE),
+    )
+    nexts = {kind: rx.search(text, start) for kind, rx in specs}
+    cursor = start
+    while cursor < n:
+        for kind, rx in specs:
+            m = nexts[kind]
+            if m is not None and m.start() < cursor:
+                nexts[kind] = rx.search(text, cursor)
+        live = [(kind, m) for kind, m in nexts.items() if m is not None]
+        if not live:
+            return
+        kind, m = min(live, key = lambda km: km[1].start())
+        if kind == "array":
+            end = _balanced_bracket_end(text, m.end())
+            end = None if end < 0 else end
+        else:
+            end = _balanced_json_span(text, m.end())
+        if end is None:
+            # Unbalanced / truncated body: skip just this marker and keep scanning
+            # (a later call may still be complete); the caller's catch-all strips
+            # the truncated tail.
+            cursor = m.end()
+            continue
+        yield (m.start(), end + 1, kind, m)
+        cursor = end + 1
 
 
 def _split_top_level_commas(src: str) -> list:
@@ -406,9 +468,14 @@ def parse_tool_calls_from_text(
     # delete the blocks from ``content``: a real tool argument may legitimately
     # contain a ``<think>`` / ``[THINK]`` literal, and stripping corrupted it.
     _think_spans = [(t.start(), t.end()) for t in _THINK_TAG_RE.finditer(content)]
+    _think_starts = [s for s, _e in _think_spans]
 
     def _in_think(pos: int) -> bool:
-        return any(s <= pos < e for s, e in _think_spans)
+        # Think spans are non-overlapping and in document order, so the only span
+        # that can contain ``pos`` is the one with the greatest start <= pos.
+        # bisect keeps this O(log M) per candidate instead of a linear scan.
+        i = bisect.bisect_right(_think_starts, pos) - 1
+        return i >= 0 and _think_spans[i][0] <= pos < _think_spans[i][1]
 
     tool_calls: list[dict] = []
     # Collect JSON- and Gemma-format candidates with their byte spans, then
@@ -546,87 +613,85 @@ def parse_tool_calls_from_text(
             }
             tool_calls.append(tc)
 
-    # Pattern 3: Mistral bracket-tag [TOOL_CALLS]name{json}.
+    # Patterns 3 + 4: Mistral bracket-tag and rehearsal forms, walked in document
+    # order via one balanced scan: ``[TOOL_CALLS] [..]`` (canonical array),
+    # ``[TOOL_CALLS]name{..}`` (incl. the v11 ``[CALL_ID]`` / ``[ARGS]`` shapes) and
+    # bare ``name[ARGS]{..}``. Gated behind the XML / JSON / Gemma forms (those are
+    # canonical and win), but unified so a Mistral call AND a rehearsal call in one
+    # message both parse instead of the second being dropped yet still stripped.
     if not tool_calls:
-        for m in _MISTRAL_BRACKET_RE.finditer(content):
-            if _in_think(m.start()):
-                continue
-            tool_name = m.group(1)
-            args_start = m.end()
-            args_end = _balanced_json_span(content, args_start)
-            if args_end is None:
+        for start, end, kind, m in _iter_bracket_spans(content):
+            if _in_think(start):
                 continue
             try:
-                args = json.loads(content[args_start : args_end + 1])
+                payload = json.loads(content[m.end() : end])
             except (json.JSONDecodeError, ValueError):
                 continue
-            if not isinstance(args, dict):
-                continue
-            tool_calls.append(
-                {
-                    "id": f"call_{id_offset + len(tool_calls)}",
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": json.dumps(args),
-                    },
-                }
-            )
-
-    # Pattern 4: Rehearsal name[ARGS]{json}.
-    if not tool_calls:
-        for m in _REHEARSAL_RE.finditer(content):
-            if _in_think(m.start()):
-                continue
-            tool_name = m.group(1)
-            args_start = m.end()
-            args_end = _balanced_json_span(content, args_start)
-            if args_end is None:
-                continue
-            try:
-                args = json.loads(content[args_start : args_end + 1])
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(args, dict):
-                continue
-            tool_calls.append(
-                {
-                    "id": f"call_{id_offset + len(tool_calls)}",
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": json.dumps(args),
-                    },
-                }
-            )
+            if kind == "array":
+                if not isinstance(payload, list):
+                    continue
+                for item in payload:
+                    if not isinstance(item, dict) or "name" not in item:
+                        continue
+                    args = item.get("arguments", {})
+                    if isinstance(args, str):
+                        # ``arguments`` may itself be a JSON string (OpenAI spec).
+                        try:
+                            args = json.loads(args)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    tool_calls.append(
+                        {
+                            "id": f"call_{id_offset + len(tool_calls)}",
+                            "type": "function",
+                            "function": {
+                                "name": item.get("name", ""),
+                                "arguments": json.dumps(args),
+                            },
+                        }
+                    )
+            else:
+                if not isinstance(payload, dict):
+                    continue
+                tool_calls.append(
+                    {
+                        "id": f"call_{id_offset + len(tool_calls)}",
+                        "type": "function",
+                        "function": {
+                            "name": m.group(1),
+                            "arguments": json.dumps(payload),
+                        },
+                    }
+                )
 
     return tool_calls
 
 
 def _strip_bracket_tag_calls(text: str) -> str:
-    """Remove complete ``[TOOL_CALLS]name{json}`` / ``name[ARGS]{json}`` calls with a
-    balanced-brace scan, so arbitrarily nested JSON args are stripped whole. A
-    fixed-depth regex left two-level args un-stripped (markup leaked) or ate the
-    trailing prose after them. A truncated tail (bare marker / unbalanced JSON) is
-    left for the caller's catch-all patterns."""
+    """Remove complete ``[TOOL_CALLS] [..]`` arrays and ``[TOOL_CALLS]name{json}`` /
+    ``name[ARGS]{json}`` calls with one balanced forward scan, so arbitrarily nested
+    JSON args are stripped whole (a fixed-depth regex left two-level args un-stripped
+    or ate the trailing prose after them). A truncated tail (bare marker / unbalanced
+    JSON) is left for the caller's catch-all patterns. Linear in ``len(text)``."""
+    if len(text) > _MAX_BRACKET_SCAN_CHARS:
+        return text
     out: list[str] = []
     cursor = 0
-    n = len(text)
-    while cursor < n:
-        mb = _MISTRAL_BRACKET_RE.search(text, cursor)
-        mr = _REHEARSAL_RE.search(text, cursor)
-        cands = [m for m in (mb, mr) if m is not None]
-        if not cands:
-            out.append(text[cursor:])
-            break
-        m = min(cands, key = lambda x: x.start())
-        end = _balanced_json_span(text, m.end())
-        if end is None:
-            out.append(text[cursor:])
-            break
-        out.append(text[cursor : m.start()])
-        cursor = end + 1
+    for start, end, _kind, _m in _iter_bracket_spans(text):
+        out.append(text[cursor:start])
+        cursor = end
+    out.append(text[cursor:])
     return "".join(out)
+
+
+def _strip_markup_segment(text: str, *, final: bool) -> str:
+    # Balanced-brace strip for bracket-tag calls first (handles any JSON nesting
+    # depth); the regex patterns then cover the XML forms and truncated tails.
+    text = _strip_bracket_tag_calls(text)
+    patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
+    for pat in patterns:
+        text = pat.sub("", text)
+    return text
 
 
 def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
@@ -635,11 +700,22 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     When ``final`` is False, only fully closed tool-call blocks are removed.
     When ``final`` is True, trailing incomplete tool-call blocks are removed
     too, and the result is stripped of surrounding whitespace.
+
+    ``<think>`` / ``[THINK]`` reasoning is preserved verbatim: tool-looking text
+    inside it is the model rehearsing (the parser skips it too), so stripping it
+    would corrupt visible reasoning. Only the visible text around the blocks is
+    stripped, and the trailing-tail patterns apply only after the last block.
     """
-    # Balanced-brace strip for bracket-tag calls first (handles any JSON nesting
-    # depth); the regex patterns then cover the XML forms and truncated tails.
-    text = _strip_bracket_tag_calls(text)
-    patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
-    for pat in patterns:
-        text = pat.sub("", text)
-    return text.strip() if final else text
+    think_spans = [m.span() for m in _THINK_TAG_RE.finditer(text)]
+    if not think_spans:
+        result = _strip_markup_segment(text, final = final)
+        return result.strip() if final else result
+    pieces: list[str] = []
+    prev = 0
+    for s, e in think_spans:
+        pieces.append(_strip_markup_segment(text[prev:s], final = False))
+        pieces.append(text[s:e])
+        prev = e
+    pieces.append(_strip_markup_segment(text[prev:], final = final))
+    result = "".join(pieces)
+    return result.strip() if final else result

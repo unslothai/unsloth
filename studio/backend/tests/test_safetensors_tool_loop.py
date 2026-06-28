@@ -475,6 +475,67 @@ class TestParser:
         assert "TOOL_CALLS" not in cleaned
         assert cleaned == "before"
 
+    # Canonical Mistral array, v11 [CALL_ID], unified multi-call (PR review fixes).
+
+    def test_mistral_canonical_array_is_parsed(self):
+        # ``[TOOL_CALLS] [{...}, {...}]`` is Mistral's canonical multi-call form; it
+        # must parse every call (it was dropped, then deleted to end-of-string).
+        text = '[TOOL_CALLS] [{"name":"a","arguments":{"x":1}},{"name":"b","arguments":{"y":2}}]'
+        result = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in result] == ["a", "b"]
+        assert json.loads(result[0]["function"]["arguments"]) == {"x": 1}
+        assert json.loads(result[1]["function"]["arguments"]) == {"y": 2}
+
+    def test_mistral_array_string_arguments_are_decoded(self):
+        # OpenAI-spec arguments arrive as a JSON string; decode to an object.
+        text = '[TOOL_CALLS] [{"name":"a","arguments":"{\\"x\\":1}"}]'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {"x": 1}
+
+    def test_mistral_array_strip_keeps_trailing_prose(self):
+        # The array form must be removed whole, not deleted to end-of-string.
+        text = 'answer [TOOL_CALLS] [{"name":"a","arguments":{}}] tail'
+        assert strip_tool_markup(text, final = True) == "answer  tail"
+
+    def test_mistral_and_rehearsal_in_one_message_both_parse(self):
+        # A Mistral call and a rehearsal call together: both must parse, not just
+        # the first (the second was dropped yet still stripped from display).
+        text = '[TOOL_CALLS]a{"x":1} then b[ARGS]{"y":2}'
+        result = parse_tool_calls_from_text(text)
+        assert [c["function"]["name"] for c in result] == ["a", "b"]
+
+    def test_mistral_v11_call_id_is_not_the_function_name(self):
+        # ``[TOOL_CALLS]name[CALL_ID]<id>[ARGS]{...}``: the function name is ``name``,
+        # never the opaque call-id token.
+        result = parse_tool_calls_from_text('[TOOL_CALLS]get_weather[CALL_ID]abc123[ARGS]{"q":"x"}')
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_weather"
+        assert json.loads(result[0]["function"]["arguments"]) == {"q": "x"}
+        # v11 without a call-id parses the same name.
+        r2 = parse_tool_calls_from_text('[TOOL_CALLS]get_weather[ARGS]{"q":"y"}')
+        assert r2[0]["function"]["name"] == "get_weather"
+
+    def test_strip_preserves_rehearsal_inside_think(self):
+        # A rehearsal inside <think> is the model reasoning; strip must keep it
+        # verbatim (the parser skips it too) instead of corrupting the reasoning.
+        text = '<think>plan: search[ARGS]{"q":"x"}</think> A'
+        out = strip_tool_markup(text, final = True)
+        assert out == text
+        assert "search[ARGS]" in out
+
+    def test_strip_bracket_calls_is_linear(self):
+        # Many complete bracket calls must strip in ~linear time (the scan formerly
+        # re-searched the whole tail per match -> O(n^2) on untrusted output).
+        import time
+
+        text = '[TOOL_CALLS]f{"a":1}' * 4000  # ~80KB, 4000 complete calls
+        t0 = time.perf_counter()
+        out = strip_tool_markup(text, final = True)
+        elapsed = time.perf_counter() - t0
+        assert "[TOOL_CALLS]" not in out
+        assert elapsed < 1.0, f"strip took {elapsed * 1000:.0f}ms on 4000 bracket calls"
+
 
 # ────────────────────────────────────────────────────────────────────
 # run_safetensors_tool_loop

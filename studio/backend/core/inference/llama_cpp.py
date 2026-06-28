@@ -40,6 +40,7 @@ from core.inference.llama_server_args import (
 )
 from core.tool_healing import (
     _TOOL_ALL_PATS,
+    _strip_bracket_tag_calls,
     strip_tool_call_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -7860,6 +7861,10 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
+            # Balanced-brace strip first (handles any JSON nesting depth) so a
+            # nested-arg bracket call does not leak or eat the trailing prose, then
+            # the regex patterns cover the XML forms and truncated tails.
+            text = _strip_bracket_tag_calls(text)
             for pat in _TOOL_ALL_PATS:
                 text = pat.sub("", text)
             return text
@@ -8216,10 +8221,13 @@ class LlamaCppBackend:
                                             continue
 
                                         # Most signals start a tool call, so
-                                        # `startswith` fits; bracket tags like
-                                        # `[ARGS]` arrive mid-buffer
-                                        # (`web_search[ARGS]{...}`), so also do a
-                                        # substring check so BUFFERING catches them.
+                                        # `startswith` fits; bracket tags arrive
+                                        # mid-buffer (`web_search[ARGS]{...}`), so
+                                        # also do a substring check. ``[ARGS]`` must
+                                        # be the rehearsal shape ``name[ARGS]`` (a
+                                        # bare ``[ARGS]`` in prose is not a call), so
+                                        # match it via the rehearsal regex rather
+                                        # than a bare substring.
                                         is_prefix = False
                                         is_match = False
                                         for sig in _tool_xml_signals:
@@ -8229,7 +8237,14 @@ class LlamaCppBackend:
                                             if sig.startswith(stripped_buf):
                                                 is_prefix = True
                                                 break
-                                            if sig.startswith("[") and sig in stripped_buf:
+                                            if sig == "[ARGS]":
+                                                # Rehearsal shape ``name[ARGS]`` only;
+                                                # a bare ``[ARGS]`` in prose is not a
+                                                # call start (re caches the pattern).
+                                                if re.search(r"[\w-]\[ARGS\]", stripped_buf):
+                                                    is_match = True
+                                                    break
+                                            elif sig.startswith("[") and sig in stripped_buf:
                                                 is_match = True
                                                 break
 
