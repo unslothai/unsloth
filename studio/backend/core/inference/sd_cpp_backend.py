@@ -41,7 +41,13 @@ from core.inference.diffusion_families import (
     resolve_base_repo,
     resolve_local_gguf_child,
 )
-from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles
+from core.inference.diffusion_memory import (
+    OFFLOAD_GROUP,
+    OFFLOAD_MODEL,
+    OFFLOAD_NONE,
+    OFFLOAD_SEQUENTIAL,
+)
+from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles, offload_flags
 from core.inference.sd_cpp_engine import (
     SdCppCancelled,
     SdCppEngine,
@@ -110,6 +116,26 @@ class _SdState:
     native_speed: str = "off"
     offload_flags: tuple[str, ...] = ()
     threads: Optional[int] = None
+    sampling_method: Optional[str] = None
+    flow_shift: Optional[float] = None
+
+
+def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
+    """Map the diffusers memory knobs onto an sd-cli offload policy. Only meaningful
+    off-CPU (forced sd_cpp / MPS); on CPU everything is resident in RAM anyway."""
+    mode = (memory_mode or "").strip().lower()
+    if mode == "low_vram":
+        return OFFLOAD_SEQUENTIAL
+    if mode == "balanced":
+        return OFFLOAD_GROUP
+    if cpu_offload and mode in ("", "auto"):
+        return OFFLOAD_MODEL
+    return OFFLOAD_NONE
+
+
+def _native_speed_for(speed_mode: Optional[str]) -> str:
+    mode = (speed_mode or "off").strip().lower()
+    return mode if mode in ("default", "max") else "off"
 
 
 @dataclass
@@ -235,6 +261,9 @@ class SdCppDiffusionBackend:
                 base = base,
                 fam = fam,
                 hf_token = hf_token,
+                cpu_offload = cpu_offload,
+                memory_mode = memory_mode,
+                speed_mode = speed_mode,
                 _load_token = token,
             ),
             daemon = True,
@@ -249,6 +278,9 @@ class SdCppDiffusionBackend:
         base: str,
         fam: DiffusionFamily,
         hf_token: Optional[str],
+        cpu_offload: bool = False,
+        memory_mode: Optional[str] = None,
+        speed_mode: Optional[str] = None,
         _load_token: int,
     ) -> None:
         try:
@@ -271,6 +303,12 @@ class SdCppDiffusionBackend:
                 qwen2vl = paths.get("qwen2vl"),
             )
             device = resolve_diffusion_device_target().device
+            # Honor the requested speed everywhere; offload only off-CPU (forced
+            # sd_cpp / MPS), since on CPU sd-cli is resident in RAM and the offload
+            # flags are no-ops.
+            offload: tuple[str, ...] = ()
+            if device != "cpu":
+                offload = tuple(offload_flags(_memory_policy(memory_mode, cpu_offload)))
             state = _SdState(
                 repo_id = repo_id,
                 base_repo = base,
@@ -278,12 +316,17 @@ class SdCppDiffusionBackend:
                 device = device,
                 files = files,
                 vae_format = fam.sd_cpp_vae_format,
-                native_speed = "off",
-                offload_flags = (),
+                native_speed = _native_speed_for(speed_mode),
+                offload_flags = offload,
                 threads = None,
+                sampling_method = fam.sd_cpp_sampling_method,
+                flow_shift = fam.sd_cpp_flow_shift,
             )
-            # Probe the binary version (cheap) so a broken install fails the load.
-            engine.version()
+            # Probe the binary: version() returns None when the present binary cannot
+            # run (bad permissions / missing shared libs), so fail the load now rather
+            # than commit a "ready" state that crashes on the first generation.
+            if engine.version() is None:
+                raise RuntimeError("sd-cli binary is present but not runnable.")
             with self._lock:
                 if self._load_token != _load_token:
                     return  # superseded / cancelled
@@ -319,8 +362,10 @@ class SdCppDiffusionBackend:
         try:
             from huggingface_hub import HfApi
             api = HfApi(token = hf_token)
-            for repo, fn, _ in assets:
-                if Path(repo).expanduser().exists():
+            for repo, fn, kind in assets:
+                # Only the transformer can be a local path; for the others ``repo`` is
+                # an HF id (a same-named local dir must not skip the size estimate).
+                if kind == "diffusion_model" and Path(repo).expanduser().exists():
                     continue
                 try:
                     info = api.get_paths_info(repo, paths = [fn], expand = False)
@@ -405,10 +450,15 @@ class SdCppDiffusionBackend:
                 else:
                     seed = int(seed)
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
-                vae_extra = ["--vae-format", state.vae_format] if state.vae_format else None
+                extra_args: list[str] = []
+                if state.vae_format:
+                    extra_args += ["--vae-format", state.vae_format]
+                if state.flow_shift is not None:
+                    extra_args += ["--flow-shift", repr(float(state.flow_shift))]
 
                 self._gen = _SdGen(total_steps = int(steps))
                 images = []
+                seeds: list[int] = []
                 with tempfile.TemporaryDirectory(prefix = "sdcpp_gen_") as tmpdir:
                     for index in range(max(1, int(batch_size))):
                         if cancel.is_set():
@@ -426,6 +476,7 @@ class SdCppDiffusionBackend:
                             cfg_scale = cfg_scale,
                             guidance = flux_guidance,
                             seed = seed_i,
+                            sampling_method = state.sampling_method,
                             batch_count = 1,
                         )
                         engine.generate(
@@ -435,15 +486,18 @@ class SdCppDiffusionBackend:
                             offload = list(state.offload_flags) or None,
                             native_speed = state.native_speed,
                             threads = state.threads,
-                            extra_args = vae_extra,
+                            extra_args = extra_args or None,
                             on_log = self._on_log,
                             cancel_event = cancel,
                         )
                         with Image.open(out_path) as im:
                             images.append(im.copy())
+                        seeds.append(seed_i)
                 if cancel.is_set():
                     raise RuntimeError("Diffusion generation was cancelled.")
-                return {"images": images, "seed": int(seed), "repo_id": state.repo_id}
+                # ``seeds`` is the per-image seed (each sd-cli run used seed+index), so
+                # the route can persist the real seed for every image in the batch.
+                return {"images": images, "seed": int(seed), "seeds": seeds, "repo_id": state.repo_id}
             except SdCppCancelled as exc:
                 raise RuntimeError("Diffusion generation was cancelled.") from exc
             finally:

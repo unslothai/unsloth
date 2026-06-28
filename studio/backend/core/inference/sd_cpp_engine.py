@@ -189,7 +189,10 @@ class SdCppEngine:
         return bool(self.binary) and Path(self.binary).is_file()
 
     def version(self, *, timeout: float = 10.0) -> Optional[str]:
-        """First line of ``sd-cli --version``, cached. None if it can't run."""
+        """First line of ``sd-cli --version``, cached on success. ``None`` when the
+        binary is absent OR present-but-unrunnable (exec error / nonzero exit, e.g.
+        missing shared libraries / bad permissions), so callers can fail a load early
+        instead of committing a "ready" state that crashes on first generation."""
         if not self.is_available():
             return None
         if self._version is not None:
@@ -204,10 +207,12 @@ class SdCppEngine:
                 check = False,
                 env = runtime_env(self.binary),
             )
-            text = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
-            self._version = text.splitlines()[0] if text else ""
         except (OSError, subprocess.SubprocessError):
-            self._version = ""
+            return None
+        if res.returncode != 0:
+            return None
+        text = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
+        self._version = text.splitlines()[0] if text else ""
         return self._version
 
     def generate(

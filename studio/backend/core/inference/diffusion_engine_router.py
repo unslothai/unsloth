@@ -69,6 +69,14 @@ def active_engine_name() -> str:
 def _activate(name: str, reason: Optional[str]) -> Any:
     global _active_engine_name, _fallback_reason
     with _lock:
+        # Switching engines: unload the one being deactivated first, or its model
+        # stays resident but unreachable (the arbiter evictor only targets the active
+        # engine), leaking 10+ GB and defeating the chat<->diffusion handoff.
+        if name != _active_engine_name:
+            try:
+                get_active_diffusion_engine().unload()
+            except Exception as exc:  # noqa: BLE001 -- best-effort; never block the switch
+                logger.warning("failed to unload previous engine %s: %s", _active_engine_name, exc)
         _active_engine_name = name
         _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
     if name == ENGINE_SD_CPP:

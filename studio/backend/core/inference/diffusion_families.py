@@ -58,6 +58,12 @@ class DiffusionFamily:
     # autoencoder, None (auto) otherwise.
     sd_cpp_vae_format: Optional[str] = None
     sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Family-specific sd-cli sampler settings, applied on the native path so the
+    # output matches the model's supported invocation (e.g. Qwen-Image needs
+    # --sampling-method euler --flow-shift 3 per stable-diffusion.cpp's docs). None
+    # leaves sd-cli's defaults (correct for the distilled flux/z-image families).
+    sd_cpp_sampling_method: Optional[str] = None
+    sd_cpp_flow_shift: Optional[float] = None
 
 
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
@@ -114,6 +120,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 "qwen2vl",
             ),
         ),
+        # Qwen-Image's supported sd.cpp invocation (docs/qwen_image.md).
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_flow_shift = 3.0,
     ),
     DiffusionFamily(
         name = "z-image",

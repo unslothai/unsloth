@@ -95,7 +95,9 @@ def test_engine_version_parsed_and_cached(tmp_path, monkeypatch):
 
     def _fake_run(*_a, **_k):
         calls["n"] += 1
-        return types.SimpleNamespace(stdout = "stable-diffusion.cpp version master-721\n", stderr = "")
+        return types.SimpleNamespace(
+            stdout = "stable-diffusion.cpp version master-721\n", stderr = "", returncode = 0
+        )
 
     monkeypatch.setattr(eng.subprocess, "run", _fake_run)
     assert e.version() == "stable-diffusion.cpp version master-721"

@@ -10127,20 +10127,28 @@ async def generate_diffusion_image(
             batch_size = request.batch_size,
         )
     except RuntimeError as exc:
-        # No model loaded (or unloaded mid-flight) — a client-state problem.
-        raise HTTPException(status_code = 409, detail = str(exc))
+        # Only "no model loaded" / cancelled are client-state (409). The native
+        # sd.cpp engine also raises RuntimeError for execution failures (nonzero
+        # exit, timeout, missing output), which are server errors (500).
+        msg = str(exc)
+        if "No diffusion model is loaded" in msg or "cancelled" in msg.lower():
+            raise HTTPException(status_code = 409, detail = msg)
+        logger.error("diffusion.generate_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Image generation failed.")
     except Exception as exc:
         logger.error("diffusion.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
-    # Persist each image with its full recipe embedded. The whole batch shares
-    # one seed (drawn sequentially from one generator) and one timestamp (the
-    # images are generated together), so their gallery order is stable on reload.
+    # Persist each image with its full recipe embedded. The diffusers batch shares
+    # one seed (drawn sequentially from one generator); the native sd.cpp batch uses a
+    # distinct seed per image and returns them in ``seeds`` so each is reproducible.
     created_at = time.time()
+    per_image_seeds = result.get("seeds")
 
     def _persist() -> list[dict]:
         records = []
         for index, image in enumerate(result["images"]):
+            seed = per_image_seeds[index] if per_image_seeds and index < len(per_image_seeds) else result["seed"]
             records.append(
                 image_gallery.save(
                     image,
@@ -10151,9 +10159,9 @@ async def generate_diffusion_image(
                         "height": request.height,
                         "steps": request.steps,
                         "guidance": request.guidance,
-                        "seed": result["seed"],
-                        # Position within the batch: images here share a seed + timestamp,
-                        # so the export filename needs this to stay unique.
+                        "seed": seed,
+                        # Position within the batch: shared timestamp, so the export
+                        # filename needs this to stay unique.
                         "batch_index": index,
                         "model": result.get("repo_id"),
                         "created_at": created_at,

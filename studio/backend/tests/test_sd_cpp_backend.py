@@ -74,6 +74,8 @@ def _loaded_backend(fam_name = "z-image", engine = None):
             diffusion_model = "/m/z.gguf", vae = "/m/vae.safetensors", llm = "/m/llm.safetensors"
         ),
         vae_format = fam.sd_cpp_vae_format,
+        sampling_method = fam.sd_cpp_sampling_method,
+        flow_shift = fam.sd_cpp_flow_shift,
     )
     return b
 
@@ -153,6 +155,17 @@ def test_generate_returns_images_and_seed():
     assert len(eng.calls) == 2
     seeds = [params.seed for _, params, _, _ in eng.calls]
     assert seeds == [123, 124]
+    # The per-image seeds are returned so the route can persist each one.
+    assert out["seeds"] == [123, 124]
+
+
+def test_generate_qwen_passes_sampling_args():
+    eng = _FakeEngine()
+    b = _loaded_backend(fam_name = "qwen-image", engine = eng)
+    b.generate(prompt = "x", steps = 20, guidance = 4.0, seed = 1)
+    _, params, _, kw = eng.calls[0]
+    assert params.sampling_method == "euler"  # Qwen's supported sd.cpp sampler
+    assert "--flow-shift" in (kw.get("extra_args") or [])
 
 
 def test_generate_raises_when_not_loaded():
