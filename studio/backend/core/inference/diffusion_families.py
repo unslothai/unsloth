@@ -108,7 +108,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # The Qwen2.5-VL text encoder as a Q4_K_M GGUF keeps the CPU RAM win (the
         # bf16 safetensors encoder is ~15 GB). sd-cli's --qwen2vl is an alias of --llm.
         sd_cpp_text_encoders = (
-            ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", "qwen2vl"),
+            (
+                "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+                "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+                "qwen2vl",
+            ),
         ),
     ),
     DiffusionFamily(

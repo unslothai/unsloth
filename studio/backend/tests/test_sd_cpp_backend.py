@@ -24,7 +24,12 @@ from core.inference.sd_cpp_engine import SdCppCancelled
 class _FakeEngine:
     """Stands in for SdCppEngine: writes a 1x1 PNG and records the args."""
 
-    def __init__(self, *, fail=None, cancel_on_call=False):
+    def __init__(
+        self,
+        *,
+        fail = None,
+        cancel_on_call = False,
+    ):
         self.calls = []
         self.fail = fail
         self.cancel_on_call = cancel_on_call
@@ -35,7 +40,15 @@ class _FakeEngine:
     def version(self, **_):
         return "fake sd-cli"
 
-    def generate(self, files, params, *, output_path, cancel_event=None, **kw):
+    def generate(
+        self,
+        files,
+        params,
+        *,
+        output_path,
+        cancel_event = None,
+        **kw,
+    ):
         self.calls.append((files, params, output_path, kw))
         if self.cancel_on_call and cancel_event is not None:
             cancel_event.set()
@@ -49,7 +62,7 @@ class _FakeEngine:
         return Path(output_path)
 
 
-def _loaded_backend(fam_name="z-image", engine=None):
+def _loaded_backend(fam_name = "z-image", engine = None):
     b = SdCppDiffusionBackend(engine = engine or _FakeEngine())
     fam = detect_family(fam_name)
     b._state = bk._SdState(
@@ -57,7 +70,9 @@ def _loaded_backend(fam_name="z-image", engine=None):
         base_repo = fam.base_repo,
         family = fam,
         device = "cpu",
-        files = SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/vae.safetensors", llm = "/m/llm.safetensors"),
+        files = SdCppModelFiles(
+            diffusion_model = "/m/z.gguf", vae = "/m/vae.safetensors", llm = "/m/llm.safetensors"
+        ),
         vae_format = fam.sd_cpp_vae_format,
     )
     return b

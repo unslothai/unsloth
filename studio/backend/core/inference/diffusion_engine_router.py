@@ -56,7 +56,6 @@ def get_active_diffusion_engine() -> Any:
     """The engine object the active selection points at (defaults to diffusers)."""
     if _active_engine_name == ENGINE_SD_CPP:
         from core.inference.sd_cpp_backend import get_sd_cpp_backend
-
         return get_sd_cpp_backend()
     from core.inference.diffusion import get_diffusion_backend
 

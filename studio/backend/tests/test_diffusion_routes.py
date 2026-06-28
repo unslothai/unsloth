@@ -123,11 +123,13 @@ def client(monkeypatch, tmp_path):
     # Delegate to whatever get_diffusion_backend currently returns, so per-test
     # re-patches of the backend still flow through the routes.
     monkeypatch.setattr(
-        engine_router, "select_and_activate_engine",
+        engine_router,
+        "select_and_activate_engine",
         lambda fam, **kw: diffusion_module.get_diffusion_backend(),
     )
     monkeypatch.setattr(
-        engine_router, "get_active_diffusion_engine",
+        engine_router,
+        "get_active_diffusion_engine",
         lambda: diffusion_module.get_diffusion_backend(),
     )
     monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
@@ -450,8 +452,10 @@ def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
     import core.inference.sd_cpp_backend as sd_backend
 
     for e in (
-        "UNSLOTH_DIFFUSION_ENGINE", "UNSLOTH_DIFFUSION_SD_CPP",
-        "UNSLOTH_DIFFUSION_SD_CPP_MPS", "UNSLOTH_DIFFUSION_SD_CPP_INSTALL",
+        "UNSLOTH_DIFFUSION_ENGINE",
+        "UNSLOTH_DIFFUSION_SD_CPP",
+        "UNSLOTH_DIFFUSION_SD_CPP_MPS",
+        "UNSLOTH_DIFFUSION_SD_CPP_INSTALL",
     ):
         monkeypatch.delenv(e, raising = False)
 
@@ -459,7 +463,8 @@ def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: validator)
     # Force the router's decision inputs: CPU device + an available binary.
     monkeypatch.setattr(
-        engine_router, "resolve_diffusion_device_target",
+        engine_router,
+        "resolve_diffusion_device_target",
         lambda: SimpleNamespace(backend = "cpu", device = "cpu"),
     )
     monkeypatch.setattr(engine_router, "ensure_sd_cpp_binary", lambda **_: "/x/sd-cli")

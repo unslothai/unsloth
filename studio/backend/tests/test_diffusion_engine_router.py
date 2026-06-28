@@ -28,7 +28,8 @@ def _clean_env_and_state(monkeypatch):
     # A light status-capable stub so neither selection nor active_status() imports the
     # heavy diffusers/sd.cpp backends; the active engine NAME comes from module state.
     monkeypatch.setattr(
-        r, "get_active_diffusion_engine",
+        r,
+        "get_active_diffusion_engine",
         lambda: SimpleNamespace(status = lambda: {"loaded": False, "repo_id": None}),
     )
     yield
@@ -36,7 +37,8 @@ def _clean_env_and_state(monkeypatch):
 
 def _set_device(monkeypatch, backend):
     monkeypatch.setattr(
-        r, "resolve_diffusion_device_target",
+        r,
+        "resolve_diffusion_device_target",
         lambda: SimpleNamespace(backend = backend, device = backend),
     )
 

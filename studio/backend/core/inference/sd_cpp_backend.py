@@ -141,7 +141,9 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
-def _map_guidance(fam: DiffusionFamily, guidance: Optional[float]) -> tuple[Optional[float], Optional[float]]:
+def _map_guidance(
+    fam: DiffusionFamily, guidance: Optional[float]
+) -> tuple[Optional[float], Optional[float]]:
     """(cfg_scale, guidance) for sd-cli from the single diffusers ``guidance`` value.
 
     FLUX families take a distilled embedded ``--guidance``; everyone else uses real
@@ -309,12 +311,13 @@ class SdCppDiffusionBackend:
             specs.append((terepo, tefile, kind))
         return specs
 
-    def _set_expected_bytes(self, assets: list[tuple[str, str, str]], hf_token: Optional[str]) -> None:
+    def _set_expected_bytes(
+        self, assets: list[tuple[str, str, str]], hf_token: Optional[str]
+    ) -> None:
         """Best-effort total download size for the progress bar (0 if unknown)."""
         total = 0
         try:
             from huggingface_hub import HfApi
-
             api = HfApi(token = hf_token)
             for repo, fn, _ in assets:
                 if Path(repo).expanduser().exists():
@@ -402,9 +405,7 @@ class SdCppDiffusionBackend:
                 else:
                     seed = int(seed)
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
-                vae_extra = (
-                    ["--vae-format", state.vae_format] if state.vae_format else None
-                )
+                vae_extra = ["--vae-format", state.vae_format] if state.vae_format else None
 
                 self._gen = _SdGen(total_steps = int(steps))
                 images = []
@@ -461,14 +462,18 @@ class SdCppDiffusionBackend:
                 gen.step = min(int(a), gen.total_steps)
                 if gen.first_step_at == 0.0:
                     gen.first_step_at = now
-                gen.eta_seconds = _estimate_eta(
-                    gen.total_steps, gen.step, gen.first_step_at, now
-                )
+                gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
 
     def generate_progress(self) -> dict[str, Any]:
         gen = self._gen
         if gen is None or gen.total_steps <= 0:
-            return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
+            return {
+                "active": False,
+                "step": 0,
+                "total_steps": 0,
+                "fraction": 0.0,
+                "eta_seconds": None,
+            }
         return {
             "active": True,
             "step": gen.step,
@@ -493,11 +498,23 @@ class SdCppDiffusionBackend:
         state = self._state
         if state is None:
             return {
-                "loaded": False, "repo_id": None, "family": None, "base_repo": None,
-                "device": None, "dtype": None, "cpu_offload": False, "offload_policy": None,
-                "vae_tiling": False, "memory_mode": None, "speed_mode": None, "speed_optims": [],
-                "text_encoder_quant": None, "transformer_quant": None, "attention_backend": None,
-                "transformer_cache": None, "engine": "sd_cpp",
+                "loaded": False,
+                "repo_id": None,
+                "family": None,
+                "base_repo": None,
+                "device": None,
+                "dtype": None,
+                "cpu_offload": False,
+                "offload_policy": None,
+                "vae_tiling": False,
+                "memory_mode": None,
+                "speed_mode": None,
+                "speed_optims": [],
+                "text_encoder_quant": None,
+                "transformer_quant": None,
+                "attention_backend": None,
+                "transformer_cache": None,
+                "engine": "sd_cpp",
             }
         return {
             "loaded": True,

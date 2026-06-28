@@ -10076,9 +10076,7 @@ async def load_diffusion_model(
         # Pick the engine for this host (diffusers on GPU, native sd.cpp with no GPU),
         # installing the sd-cli binary if needed -- all BEFORE evicting chat, so a
         # native fallback never strands a half-loaded state.
-        engine = await asyncio.to_thread(
-            select_and_activate_engine, fam, hf_token = request.hf_token
-        )
+        engine = await asyncio.to_thread(select_and_activate_engine, fam, hf_token = request.hf_token)
         # Now take the GPU from the chat backend, then kick the (slow) load onto a
         # background thread and return at once — the client polls images/load-progress.
         await asyncio.to_thread(acquire_for, DIFFUSION)

@@ -1904,9 +1904,7 @@ class DiffusionStatusResponse(BaseModel):
         "_native_cudnn), or null for the default SDPA",
     )
     transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
-    engine: Optional[str] = Field(
-        None, description = "Active diffusion engine: diffusers | sd_cpp"
-    )
+    engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
     fallback_reason: Optional[str] = Field(
         None,
         description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",

@@ -250,7 +250,11 @@ class SdCppEngine:
             extra_args = merged_extra,
         )
         return self._run(
-            cmd, output_path, timeout = timeout, env = env, on_log = on_log,
+            cmd,
+            output_path,
+            timeout = timeout,
+            env = env,
+            on_log = on_log,
             cancel_event = cancel_event,
         )
 
@@ -275,7 +279,11 @@ class SdCppEngine:
             extra_args = extra_args,
         )
         return self._run(
-            cmd, output_path, timeout = timeout, env = env, on_log = on_log,
+            cmd,
+            output_path,
+            timeout = timeout,
+            env = env,
+            on_log = on_log,
             cancel_event = cancel_event,
         )
 
