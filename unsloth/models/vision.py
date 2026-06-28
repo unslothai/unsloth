@@ -835,6 +835,9 @@ class FastBaseModel:
             # format auto-pick keeps the variant .bin instead of dropping it for a default
             # safetensors the variant load never reads.
             variant = kwargs.get("variant"),
+            # A gguf_file load reads exactly that GGUF; forward it so the warm fetches it instead of
+            # dropping every *.gguf (the static ignore list otherwise excludes it).
+            gguf_file = kwargs.get("gguf_file"),
         )
         # The killable child already did the forced download; clear the flag so the
         # in-process load reuses that warm cache instead of re-forcing over Xet.

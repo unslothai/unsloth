@@ -1078,16 +1078,20 @@ def _adapter_repo_has_safetensors(
     token = None,
     revision = None,
 ):
-    """Best-effort: does the adapter repo ship a safetensors adapter weight
+    """Best-effort: does the adapter repo ship a ROOT safetensors adapter weight
     (``adapter_model.safetensors`` or a sharded ``adapter_model*.safetensors``)?
     PeftModel.from_pretrained prefers safetensors, so when one is present the ``.bin`` form is
-    redundant and can be dropped from the warm. Any failure returns False so BOTH formats stay
-    eligible -- never under-warm a ``.bin``-only adapter into an in-process Xet fetch."""
+    redundant and can be dropped from the warm. Scoped to repo-ROOT files because the adapter warm
+    only pulls root ``adapter_model*``: an unrelated ``checkpoint-*/adapter_model.safetensors`` in a
+    subdirectory must NOT make us drop the root ``.bin`` the load actually reads. Any failure returns
+    False so BOTH formats stay eligible -- never under-warm a ``.bin``-only adapter into an
+    in-process Xet fetch."""
     try:
         from huggingface_hub import HfApi
         siblings = HfApi().model_info(model_name, revision = revision, token = token).siblings or []
         return any(
-            sibling.rfilename.replace("\\", "/").rsplit("/", 1)[-1].startswith("adapter_model")
+            "/" not in sibling.rfilename.replace("\\", "/")  # root files only
+            and sibling.rfilename.startswith("adapter_model")
             and sibling.rfilename.endswith(".safetensors")
             for sibling in siblings
         )
@@ -1210,6 +1214,7 @@ def maybe_prefetch_hf_snapshot(
     adapter_only = False,
     weights_at_root = False,
     variant = None,
+    gguf_file = None,
 ):
     """Warm the Hugging Face cache for a remote repo before the in-process load.
 
@@ -1274,7 +1279,7 @@ def maybe_prefetch_hf_snapshot(
     # guess would skip the .bin-drop even when no weights are cached and over-fetch both formats.
     ignore_patterns = (
         None
-        if tokenizer_only or adapter_only
+        if tokenizer_only or adapter_only or gguf_file
         else _prefetch_ignore_patterns(
             model_name,
             token = token,
@@ -1293,7 +1298,13 @@ def maybe_prefetch_hf_snapshot(
     # an unprotected in-process download. The root patterns are exact filenames or literal-prefixed
     # globs (e.g. modeling_*.py), so they stay anchored to repo-root files in practice.
     allow_patterns = None
-    if tokenizer_only:
+    if gguf_file:
+        # from_pretrained(model_name, gguf_file=NAME) reads exactly that GGUF from the repo
+        # (Transformers de-quantizes it on load). The static ignore list drops *.gguf, so without
+        # this the file would never be warmed and the load would fetch it in-process over Xet. Warm
+        # exactly that file (plus root aux) -- not every other quant the repo may also publish.
+        allow_patterns = [gguf_file, *_ROOT_AUX_PREFETCH_PATTERNS]
+    elif tokenizer_only:
         # A distinct tokenizer repo: warm only its tokenizer / config / vocab files. Restrict
         # to those exact root filenames so we never pull weights, even if that repo also
         # happens to ship them (the weights are not what the tokenizer load reads).

@@ -356,6 +356,56 @@ def test_tokenizer_only_warms_slow_sentencepiece_vocab(capture):
         assert name in allow, name
 
 
+def test_adapter_safetensors_check_scoped_to_root(monkeypatch):
+    """_adapter_repo_has_safetensors must only count a ROOT adapter_model*.safetensors: a repo with
+    a root adapter_model.bin plus an unrelated checkpoint-5/adapter_model.safetensors must NOT drop
+    the root .bin (the adapter warm only pulls root adapter_model*) (Codex #6638)."""
+    import huggingface_hub
+
+    class _Sib:
+        def __init__(self, name):
+            self.rfilename = name
+
+    class _Api:
+        def __init__(self, names):
+            self._names = names
+
+        def model_info(self, *a, **k):
+            return type("MI", (), {"siblings": [_Sib(n) for n in self._names]})()
+
+    # Subdir safetensors only -> not at root -> must NOT report safetensors present.
+    monkeypatch.setattr(
+        huggingface_hub, "HfApi",
+        lambda: _Api(["adapter_config.json", "adapter_model.bin", "checkpoint-5/adapter_model.safetensors"]),
+    )
+    assert U._adapter_repo_has_safetensors("org/repo") is False
+    # Root safetensors -> reported present.
+    monkeypatch.setattr(
+        huggingface_hub, "HfApi",
+        lambda: _Api(["adapter_config.json", "adapter_model.safetensors"]),
+    )
+    assert U._adapter_repo_has_safetensors("org/repo") is True
+
+
+def test_gguf_file_warm_keeps_gguf(capture):
+    """A gguf_file load reads exactly that GGUF, so the warm must allow-list it (not drop *.gguf via
+    the static ignore list) while not pulling other quants the repo may publish (Codex #6638)."""
+    _, st = capture(weights_at_root = True, gguf_file = "model-Q4_K_M.gguf")
+    allow = st["allow_patterns"]
+    ig = st["ignore_patterns"]
+    assert allow is not None and "model-Q4_K_M.gguf" in allow
+    sample = [
+        "model-Q4_K_M.gguf",
+        "model-Q8_0.gguf",   # a different quant the load does not read
+        "config.json",
+        "tokenizer.json",
+    ]
+    kept = _filter(sample, allow, ig)
+    assert "model-Q4_K_M.gguf" in kept          # the requested GGUF is warmed
+    assert "config.json" in kept                # root aux warmed
+    assert "model-Q8_0.gguf" not in kept        # other quants are not pulled
+
+
 # ----- Finding Q: adapter weight-format selection -----
 
 
