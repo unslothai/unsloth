@@ -311,3 +311,22 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
         list(scopes),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def scope_token_estimate(conn: sqlite3.Connection, scope) -> int:
+    """Upper-bound token total for a scope's completed-document chunks WITHOUT
+    hydrating chunk text. Mirrors ``all_chunks_for_scope``'s WHERE clause and the
+    ``tool._row_token_count`` fallback (stored count when present, else length/4) so
+    the whole-document budget can be checked before loading every chunk's text."""
+    scopes = _scopes(scope)
+    if not scopes:
+        return 0
+    placeholders = ",".join("?" * len(scopes))
+    row = conn.execute(
+        f"SELECT COALESCE(SUM(CASE WHEN c.token_count > 0 THEN c.token_count "
+        f"ELSE MAX(1, length(COALESCE(c.text, '')) / 4) END), 0) AS total "
+        f"FROM chunks c JOIN documents d ON d.id=c.document_id "
+        f"WHERE c.scope IN ({placeholders}) AND d.status='completed'",
+        list(scopes),
+    ).fetchone()
+    return int(row["total"] or 0)

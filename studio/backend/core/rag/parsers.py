@@ -204,9 +204,16 @@ def pages_with_figures(
     max_pages: int = 4,
     min_area_frac: float = 0.04,
     min_side: float = 40.0,
+    min_text_chars: int = 0,
 ) -> list[int]:
     """1-based page numbers that contain a qualifying figure region, capped at
-    ``max_pages``. Drives figure tiling. Any failure yields []."""
+    ``max_pages``. Drives figure tiling. Any failure yields [].
+
+    When ``min_text_chars > 0``, pages whose extractable text layer is shorter than
+    that are skipped: those are scanned/image-only pages that whole-page OCR already
+    transcribes, so tiling them too would double the vision work and pollute the
+    index with overlapping transcriptions. The caller passes ``OCR_MIN_CHARS`` only
+    when OCR is enabled, so a scanned figure page still gets tiled when OCR is off."""
     try:
         import pymupdf
     except Exception:
@@ -218,6 +225,12 @@ def pages_with_figures(
     pages: list[int] = []
     try:
         for i, page in enumerate(doc):
+            if min_text_chars > 0:
+                try:
+                    if len((page.get_text("text") or "").strip()) < min_text_chars:
+                        continue  # scanned/image-only page -> handled by OCR, not tiling
+                except Exception:
+                    pass
             if _figure_boxes(page, min_area_frac = min_area_frac, min_side = min_side):
                 pages.append(i + 1)
                 if len(pages) >= max_pages:

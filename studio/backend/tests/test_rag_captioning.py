@@ -94,6 +94,116 @@ def test_pages_with_figures_and_tiles(tmp_path):
     assert len(capped) == 3  # max_tiles budget honored
 
 
+def test_pages_with_figures_skips_scanned_pages(tmp_path):
+    # A figure page with no text layer is a scanned/image-only page that OCR already
+    # transcribes whole; with a min-text gate it must be excluded from figure tiling
+    # so the same pixels are not vision-read twice (and the index is not polluted).
+    import pymupdf
+
+    from core.rag import parsers
+
+    def _draw_chart(page):
+        shape = page.new_shape()
+        shape.draw_rect(pymupdf.Rect(60, 140, 540, 520))
+        for i in range(8):
+            shape.draw_line((80, 160 + i * 40), (520, 160 + i * 40))
+        shape.finish(color = (0, 0, 0), fill = (0.8, 0.8, 0.9))
+        shape.commit()
+
+    pdf = tmp_path / "mixed.pdf"
+    doc = pymupdf.open()
+    p1 = doc.new_page()  # born-digital: real text + a chart
+    p1.insert_textbox(
+        pymupdf.Rect(40, 40, 550, 120),
+        "Born-digital page with plenty of real text and a chart below.",
+        fontsize = 11,
+    )
+    _draw_chart(p1)
+    _draw_chart(doc.new_page())  # scanned-like: a chart but no text layer
+    doc.save(str(pdf))
+    doc.close()
+
+    # No gate -> both figure pages qualify.
+    assert parsers.pages_with_figures(str(pdf), max_pages = 4) == [1, 2]
+    # With the gate (as ingestion passes when OCR is on), the text-less page 2 is skipped.
+    assert parsers.pages_with_figures(str(pdf), max_pages = 4, min_text_chars = 16) == [1]
+
+
+def test_run_skips_figure_work_without_vision_model(
+    rag_conn, stub_embeddings, monkeypatch, tmp_path
+):
+    # No vision model loaded -> the whole figure pass (detection + rasterization, not
+    # just the captioning call) is skipped, so a text-only deployment pays nothing.
+    from core.rag import parsers
+
+    monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: None)
+    touched: list[str] = []
+    monkeypatch.setattr(
+        parsers, "pages_with_figures", lambda *a, **k: touched.append("detect") or []
+    )
+    monkeypatch.setattr(
+        parsers, "render_pdf_figure_tiles", lambda *a, **k: touched.append("render") or []
+    )
+
+    pdf = tmp_path / "fig.pdf"
+    _figure_pdf(pdf)
+    _ingest_with_caption(rag_conn, "t1", pdf, None)  # follow config (ON), but no model
+    assert touched == []  # neither figure detection nor tiling ran
+
+
+def test_vision_complete_sends_auth_header(monkeypatch):
+    # Direct-stream mode serves llama-server with --api-key; vision ingestion hits the
+    # same endpoint as chat and must carry the same bearer token or it 401s.
+    import httpx
+
+    monkeypatch.setattr(
+        captioner, "_vision_auth_headers", lambda: {"Authorization": "Bearer secret"}
+    )
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    def fake_post(url, *, json, timeout, headers):
+        captured.update(url = url, headers = headers)
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    out = captioner._vision_complete(
+        "http://x", "local", b"img", prompt = "p", timeout = 5.0, max_tokens = 8
+    )
+    assert out == "ok"
+    assert captured["headers"] == {"Authorization": "Bearer secret"}
+
+
+def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
+    # No api-key configured -> no spurious Authorization header on plain llama-server.
+    import httpx
+
+    monkeypatch.setattr(captioner, "_vision_auth_headers", lambda: None)
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    def fake_post(url, *, json, timeout, headers):
+        captured["headers"] = headers
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    captioner._vision_complete("http://x", "local", b"i", prompt = "p", timeout = 5.0, max_tokens = 8)
+    assert captured["headers"] is None
+
+
 def test_merge_page_captions_dedups():
     out = captioner.merge_page_captions({1: ["MatMul\nScale", "Scale\nSoftMax"]})
     text = out[1][0]

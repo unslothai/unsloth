@@ -83,6 +83,35 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
         conn.close()
 
 
+def test_ingestion_reingests_when_existing_has_zero_chunks(rag_home, stub_embeddings, tmp_path):
+    # A prior ingest of identical bytes that produced no chunks (e.g. a scanned PDF
+    # uploaded before a vision model was loaded, so OCR was skipped) must not dedupe
+    # forever: re-uploading drops the empty record and ingests the content fresh.
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie " * 50)
+    sha = ingestion._sha256_file(path)
+    scope = store.kb_scope("K1")
+    conn = rag_db.get_connection()
+    try:
+        empty_id = store.create_document(conn, scope = scope, filename = "old.txt", sha256 = sha)
+        store.set_document_status(conn, empty_id, "completed", num_chunks = 0)
+    finally:
+        conn.close()
+
+    doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
+    events = _drain(job_id)
+    _wait_completed(job_id)
+
+    assert not any(e.get("deduped") for e in events)  # not a dedupe -> real ingest
+    assert doc_id != empty_id
+    conn = rag_db.get_connection()
+    try:
+        docs = store.list_documents(conn, scope)
+        assert len(docs) == 1  # the empty record was removed, replaced by the new one
+        assert docs[0]["num_chunks"] > 0
+    finally:
+        conn.close()
+
+
 def test_ingestion_dedupe_removes_duplicate_upload(rag_home, stub_embeddings):
     from utils.paths import ensure_dir, rag_uploads_root
 

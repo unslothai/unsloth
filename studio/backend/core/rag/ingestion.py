@@ -161,16 +161,23 @@ def _run(
     try:
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
-        if stored_path.lower().endswith(".pdf"):
+        is_pdf = stored_path.lower().endswith(".pdf")
+        ocr_on = config.OCR_SCANNED if ocr is None else ocr
+        if is_pdf:
             pages = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
         caption_on = config.CAPTION_IMAGES if caption is None else caption
-        if caption_on and stored_path.lower().endswith(".pdf"):
+        # Skip all figure work (PDF rasterization included) unless a vision model is
+        # loaded, so a text-only deployment pays nothing for the detection/render pass.
+        if caption_on and is_pdf and captioner.vision_endpoint() is not None:
             # Tile figure-bearing pages and transcribe+describe each tile, so small
             # diagram/axis/box labels stay legible and no sub-figure is missed; merge,
             # dedup, and splice into the page text (no-op without a vision model).
             try:
                 fig_pages = parsers.pages_with_figures(
-                    stored_path, max_pages = config.CAPTION_MAX_PAGES
+                    stored_path,
+                    max_pages = config.CAPTION_MAX_PAGES,
+                    # When OCR runs, it owns scanned pages; don't also tile them.
+                    min_text_chars = config.OCR_MIN_CHARS if ocr_on else 0,
                 )
                 tiles = (
                     parsers.render_pdf_figure_tiles(
@@ -264,13 +271,25 @@ def start_ingestion(
     try:
         existing = store.document_by_hash(conn, scope, sha)
         if existing is not None:
-            job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
-            _remove_upload(stored_path)
-            with _jobs_lock:
-                _jobs[job_id] = queue.Queue()
-            _emit(job_id, {"type": "complete", "num_chunks": 0, "deduped": True})
-            _emit(job_id, None)
-            return existing, job_id
+            doc = store.get_document(conn, existing)
+            empty_completed = (
+                doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
+            )
+            if empty_completed:
+                # A prior ingest of identical bytes produced zero chunks (e.g. a scanned
+                # PDF uploaded before a vision model was loaded, so OCR was skipped and
+                # the page had no text layer). Drop the empty record and re-ingest now
+                # that conditions may differ, instead of deduping to it forever.
+                store.delete_document(conn, existing)
+                _remove_upload(doc.get("stored_path"), keep_path = stored_path)
+            else:
+                job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
+                _remove_upload(stored_path)
+                with _jobs_lock:
+                    _jobs[job_id] = queue.Queue()
+                _emit(job_id, {"type": "complete", "num_chunks": 0, "deduped": True})
+                _emit(job_id, None)
+                return existing, job_id
         for failed in store.failed_documents_by_hash(conn, scope, sha):
             store.delete_document(conn, failed["id"])
             _remove_upload(failed.get("stored_path"), keep_path = stored_path)

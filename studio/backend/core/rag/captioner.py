@@ -87,6 +87,18 @@ def vision_endpoint() -> tuple[str, str] | None:
     return None
 
 
+def _vision_auth_headers() -> dict | None:
+    """Authorization header for the loaded backend's HTTP API, or None. Vision calls
+    hit the same llama-server endpoint as chat, so in direct-stream mode (the server
+    is started with ``--api-key``) they need the same bearer or they 401. None when no
+    key is set, so unauthenticated servers don't get a spurious header."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+        return get_llama_cpp_backend()._auth_headers or None
+    except Exception:  # noqa: BLE001 - auth discovery must never break ingestion
+        return None
+
+
 def _vision_complete(
     base_url: str,
     model: str,
@@ -121,7 +133,12 @@ def _vision_complete(
         "chat_template_kwargs": {"enable_thinking": False},
     }
     try:
-        r = httpx.post(f"{base_url}/v1/chat/completions", json = payload, timeout = timeout)
+        r = httpx.post(
+            f"{base_url}/v1/chat/completions",
+            json = payload,
+            timeout = timeout,
+            headers = _vision_auth_headers(),
+        )
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
         return text.strip() or None

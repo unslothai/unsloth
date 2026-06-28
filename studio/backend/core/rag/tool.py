@@ -16,7 +16,13 @@ from xml.sax.saxutils import quoteattr
 from storage import rag_db
 
 from . import config, retrieval
-from .store import all_chunks_for_scope, kb_scope, project_scope, thread_scope
+from .store import (
+    all_chunks_for_scope,
+    kb_scope,
+    project_scope,
+    scope_token_estimate,
+    thread_scope,
+)
 
 SEARCH_KNOWLEDGE_BASE_TOOL = {
     "type": "function",
@@ -230,6 +236,11 @@ def whole_document_context(
     scope = thread_scope(scope_thread_id)
     conn = rag_db.get_connection()
     try:
+        # Cheap budget pre-check first: a SUM over token_count (no text hydration) so an
+        # attachment that cannot fit is rejected without loading the whole corpus into
+        # memory. all_chunks_for_scope only runs once we know it fits.
+        if max_tokens > 0 and scope_token_estimate(conn, scope) > max_tokens:
+            return None
         rows = all_chunks_for_scope(conn, scope)
     finally:
         conn.close()

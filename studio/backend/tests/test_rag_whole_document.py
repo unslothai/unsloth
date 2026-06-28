@@ -100,6 +100,35 @@ def test_all_chunks_for_scope_isolates_scopes(rag_conn):
     assert [r["text"] for r in rows] == ["mine"]
 
 
+# ── store.scope_token_estimate (cheap whole-doc budget pre-check) ─────
+
+
+def test_scope_token_estimate_sums_without_hydrating(rag_conn):
+    # Mirrors all_chunks_for_scope + _row_token_count: a stored token_count is summed
+    # directly; a zero/missing count falls back to length/4; non-completed docs are out.
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "d1", "a.pdf", "h1", ["alpha", "bravo"], tokens = [10, 20])
+    # token_count 0 -> length/4 fallback: a 40-char chunk estimates to 10 tokens.
+    _add_doc(rag_conn, scope, "d2", "b.pdf", "h2", ["x" * 40], tokens = [0])
+    _add_doc(rag_conn, scope, "d3", "c.pdf", "h3", ["pending"], status = "pending", tokens = [99])
+    assert store.scope_token_estimate(rag_conn, scope) == 10 + 20 + 10
+    assert store.scope_token_estimate(rag_conn, store.thread_scope("none")) == 0
+
+
+def test_scope_token_estimate_matches_row_sum(rag_conn):
+    # The estimate must agree with the exact per-row sum it short-circuits, so the
+    # pre-check never rejects a doc the full path would have accepted (or vice versa).
+    # One chunk carries a stored count, one is forced onto the length/4 fallback.
+    from core.rag.tool import _row_token_count
+
+    scope = store.thread_scope("t1")
+    _add_doc(
+        rag_conn, scope, "d1", "a.pdf", "h1", ["a long-ish chunk body here", "tail"], tokens = [0, 5]
+    )
+    rows = store.all_chunks_for_scope(rag_conn, scope)
+    assert store.scope_token_estimate(rag_conn, scope) == sum(_row_token_count(r) for r in rows)
+
+
 # ── tool.whole_document_context ──────────────────────────────────────
 
 
