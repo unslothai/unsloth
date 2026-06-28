@@ -55,6 +55,17 @@ def capture(monkeypatch):
     fake_module.DownloadStallError = type("DownloadStallError", (RuntimeError,), {})
     monkeypatch.setitem(sys.modules, "unsloth_zoo.hf_xet_fallback", fake_module)
 
+    # Neutralize the model_info network call (adapter format selection / use_safetensors auto
+    # branch) by default so the pure-CPU tests never reach the Hub. A best-effort failure leaves
+    # both weight formats eligible; tests that exercise format selection install their own.
+    import huggingface_hub
+
+    class _NoNetworkApi:
+        def model_info(self, *a, **k):
+            raise RuntimeError("no network in test")
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _NoNetworkApi)
+
     def run(**call_kwargs):
         state.clear()
         ok = U.maybe_prefetch_hf_snapshot("some-org/some-repo", **call_kwargs)
@@ -173,3 +184,87 @@ def test_local_dir_is_not_warmed(capture, tmp_path):
     d.mkdir()
     ok = U.maybe_prefetch_hf_snapshot(str(d), weights_at_root = True)
     assert ok is False
+
+
+def _install_fake_model_info(monkeypatch, filenames):
+    """Make HfApi().model_info(...).siblings report *filenames*, with no network."""
+    import huggingface_hub
+
+    class _Sib:
+        def __init__(self, name):
+            self.rfilename = name
+
+    class _Info:
+        def __init__(self, names):
+            self.siblings = [_Sib(n) for n in names]
+
+    class _Api:
+        def model_info(self, *a, **k):
+            return _Info(filenames)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+
+
+# ----- Finding P: variant-aware weight-format selection -----
+
+def test_variant_keeps_bin_when_only_default_safetensors(monkeypatch):
+    """With variant='fp16' requested, a DEFAULT model.safetensors must not prove the variant
+    pytorch_model.fp16.bin redundant: dropping it would leave the variant load to fetch the .bin
+    in-process over Xet. The .bin stays warmed (Codex #6638)."""
+    _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.fp16.bin"])
+    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16")
+    assert "*.bin" not in ig
+    # No variant: the default safetensors DOES make .bin redundant (existing behavior).
+    ig_default = U._prefetch_ignore_patterns("org/repo")
+    assert "*.bin" in ig_default
+
+
+def test_variant_drops_bin_when_variant_safetensors_present(monkeypatch):
+    """When a variant-matching safetensors (model.fp16.safetensors) is shipped, the variant load
+    reads it and the variant .bin is redundant, so .bin is dropped from the warm."""
+    _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.fp16.bin"])
+    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16")
+    assert "*.bin" in ig
+
+
+# ----- Finding Q: adapter weight-format selection -----
+
+def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):
+    """A mixed-format adapter repo (adapter_model.safetensors AND adapter_model.bin) warms only
+    the safetensors PeftModel.from_pretrained reads, not both formats (Codex #6638)."""
+    _install_fake_model_info(
+        monkeypatch, ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"]
+    )
+    _, st = capture(adapter_only = True)
+    ig = st["ignore_patterns"]
+    assert ig is not None and "adapter_model*.bin" in ig
+    kept = _filter(
+        ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"],
+        st["allow_patterns"], ig,
+    )
+    assert "adapter_model.safetensors" in kept
+    assert "adapter_model.bin" not in kept
+
+
+def test_adapter_only_bin_only_keeps_bin(capture, monkeypatch):
+    """A .bin-only adapter repo must keep adapter_model.bin -- never under-warm it into an
+    in-process Xet fetch (best-effort: no safetensors found -> both formats eligible)."""
+    _install_fake_model_info(monkeypatch, ["adapter_config.json", "adapter_model.bin"])
+    _, st = capture(adapter_only = True)
+    kept = _filter(
+        ["adapter_config.json", "adapter_model.bin"], st["allow_patterns"], st["ignore_patterns"]
+    )
+    assert "adapter_model.bin" in kept
+
+
+def test_adapter_only_explicit_use_safetensors_false_keeps_bin(capture):
+    """An explicit use_safetensors=False forces the .bin form without a model_info call."""
+    _, st = capture(adapter_only = True, use_safetensors = False)
+    ig = st["ignore_patterns"]
+    assert ig is not None and "adapter_model*.safetensors" in ig
+    kept = _filter(
+        ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"],
+        st["allow_patterns"], ig,
+    )
+    assert "adapter_model.bin" in kept
+    assert "adapter_model.safetensors" not in kept

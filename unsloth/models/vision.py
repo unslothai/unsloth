@@ -831,6 +831,10 @@ class FastBaseModel:
             # weights nested in subdirs (fp16/, experimental/) the load never reads. Ignored
             # when a subfolder is set (that branch narrows the warm to the subfolder instead).
             weights_at_root = True,
+            # A variant load (variant="fp16") reads model.fp16.* -- forward it so the warm's
+            # format auto-pick keeps the variant .bin instead of dropping it for a default
+            # safetensors the variant load never reads.
+            variant = kwargs.get("variant"),
         )
         # The killable child already did the forced download; clear the flag so the
         # in-process load reuses that warm cache instead of re-forcing over Xet.
@@ -1316,6 +1320,7 @@ class FastBaseModel:
                             padding_side = "left",
                             token = token,
                             trust_remote_code = trust_remote_code,
+                            cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
                         )
                     except Exception:

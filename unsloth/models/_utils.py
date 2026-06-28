@@ -1022,6 +1022,35 @@ def _is_model_weight_safetensors(filename):
     return not name.startswith("adapter_")
 
 
+def _filename_has_variant(filename, variant):
+    """True if a weight *filename* belongs to the requested *variant* (variant="fp16" matches
+    ``model.fp16.safetensors`` / ``model-00001-of-00002.fp16.safetensors``). Transformers inserts
+    the variant token right before the file extension, so the basename carries ``.{variant}.`` as
+    an infix. Only meaningful when a variant is requested; callers gate on *variant* being truthy."""
+    base = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    return f".{variant}." in base
+
+
+def _adapter_repo_has_safetensors(model_name, *, token = None, revision = None):
+    """Best-effort: does the adapter repo ship a safetensors adapter weight
+    (``adapter_model.safetensors`` or a sharded ``adapter_model*.safetensors``)?
+    PeftModel.from_pretrained prefers safetensors, so when one is present the ``.bin`` form is
+    redundant and can be dropped from the warm. Any failure returns False so BOTH formats stay
+    eligible -- never under-warm a ``.bin``-only adapter into an in-process Xet fetch."""
+    try:
+        from huggingface_hub import HfApi
+        siblings = (
+            HfApi().model_info(model_name, revision = revision, token = token).siblings or []
+        )
+        return any(
+            sibling.rfilename.replace("\\", "/").rsplit("/", 1)[-1].startswith("adapter_model")
+            and sibling.rfilename.endswith(".safetensors")
+            for sibling in siblings
+        )
+    except Exception:
+        return False
+
+
 def _prefetch_ignore_patterns(
     model_name,
     *,
@@ -1031,6 +1060,7 @@ def _prefetch_ignore_patterns(
     use_safetensors = None,
     from_tf = False,
     from_flax = False,
+    variant = None,
 ):
     """ignore_patterns for the prewarm snapshot: the static skip list, minus the
     checkpoint guard when loading from a checkpoint-* subfolder, minus the weight
@@ -1102,10 +1132,14 @@ def _prefetch_ignore_patterns(
             # (same subfolder / root, and not an adapter / sidecar), so a .bin-only
             # subfolder is not stripped of its weights because some other path in the
             # repo ships safetensors, nor because an adapter_model.safetensors sidecar
-            # sits next to real pytorch_model.bin weights.
+            # sits next to real pytorch_model.bin weights. When a variant is requested
+            # (variant="fp16"), only a variant-matching safetensors (model.fp16.safetensors)
+            # proves the variant's .bin (pytorch_model.fp16.bin) is redundant: counting the
+            # default-format safetensors would drop the variant .bin the load actually reads.
             has_safetensors = any(
                 _is_model_weight_safetensors(sibling.rfilename)
                 and _in_requested_load_scope(sibling.rfilename, subfolder)
+                and (not variant or _filename_has_variant(sibling.rfilename, variant))
                 for sibling in siblings
             )
             if has_safetensors:
@@ -1131,6 +1165,7 @@ def maybe_prefetch_hf_snapshot(
     tokenizer_only = False,
     adapter_only = False,
     weights_at_root = False,
+    variant = None,
 ):
     """Warm the Hugging Face cache for a remote repo before the in-process load.
 
@@ -1201,6 +1236,7 @@ def maybe_prefetch_hf_snapshot(
             use_safetensors = use_safetensors,
             from_tf = from_tf,
             from_flax = from_flax,
+            variant = variant,
         )
     )
     # Narrow the warm to exactly what the in-process load reads, so a repo that ships extra
@@ -1221,6 +1257,17 @@ def maybe_prefetch_hf_snapshot(
         # publishes merged / full-model weights does not pull multi-GB of weights PeftModel never
         # reads (and risk filling disk before a small adapter loads).
         allow_patterns = [*_ADAPTER_PREFETCH_PATTERNS, *_ROOT_AUX_PREFETCH_PATTERNS]
+        # An adapter ships its weights in ONE format and PeftModel.from_pretrained reads ONE
+        # (safetensors when present), so an adapter repo carrying both adapter_model.safetensors
+        # and adapter_model.bin must not warm both. Pick the format the load will read: an
+        # explicit use_safetensors wins; otherwise prefer safetensors when the repo ships it
+        # (best-effort model_info; any failure keeps both, never under-warming a .bin-only adapter).
+        if use_safetensors is False:
+            ignore_patterns = ["adapter_model*.safetensors", "adapter_model*.safetensors.index.json"]
+        elif use_safetensors is True or _adapter_repo_has_safetensors(
+            model_name, token = token, revision = revision
+        ):
+            ignore_patterns = ["adapter_model*.bin", "adapter_model*.bin.index.json"]
     elif isinstance(subfolder, str) and subfolder.strip("/"):
         # Loading from a subfolder: a from_pretrained(..., subfolder=X) resolves every weight
         # file under X/, so warm that subfolder (plus the root aux files) and skip the rest.

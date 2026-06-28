@@ -200,6 +200,9 @@ class FastDiffusionModel:
             fast_inference = False,
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
+            # Diffusion variants (variant="fp16") are common: forward it so the warm's format
+            # auto-pick keeps the variant weights the pipeline load actually reads.
+            variant = kwargs.get("variant"),
         )
 
         load_kwargs = dict(
