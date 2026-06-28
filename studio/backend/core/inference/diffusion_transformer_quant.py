@@ -104,15 +104,22 @@ _DATACENTER_GPU_TOKENS = frozenset(
 )
 
 
+# Professional parts the rest of the backend treats as datacenter-class (see llama_cpp.py
+# _DATACENTER_GPU_RE, which applies the same FP32-accum tuning to them). Matched as phrases
+# because the marker spans tokens ("RTX PRO 6000", "RTX 6000 ADA"), so they must not be
+# misread as consumer (which would put int8 ahead of fp8 and pick fast accumulate).
+_PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
+
+
 def _is_consumer_gpu(device: Any = None) -> bool:
-    """Whether the active GPU is consumer / workstation class (GDDR), where fp8 FP32
-    accumulate is throughput-halved so fast (FP16) accumulate is a ~2x win. Data-center
-    HBM parts (recognised by name token) are not nerfed and return False, so they keep
-    the higher-precision default accumulate for free. Heuristic on the device name: a
-    GeForce / TITAN name is always consumer; a recognised data-center token is not;
-    anything else (workstation RTX, unknown) defaults to consumer -- the safe choice,
-    since fast accumulate is free on data-center and a win on consumer. Best-effort:
-    True on any probe failure."""
+    """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is
+    throughput-halved so fast (FP16) accumulate is a ~2x win. Data-center HBM parts and
+    professional parts (recognised by name) are not nerfed and return False, so they keep
+    the higher-precision default accumulate and fp8 first. Heuristic on the device name: a
+    GeForce / TITAN name is always consumer; a recognised data-center token or professional
+    marker is not; anything else (unknown) defaults to consumer -- the safe choice, since
+    fast accumulate is free on data-center and a win on consumer. Best-effort: True on any
+    probe failure."""
     try:
         import re
 
@@ -122,6 +129,8 @@ def _is_consumer_gpu(device: Any = None) -> bool:
         return True
     if "GEFORCE" in name or "TITAN" in name:
         return True
+    if any(marker in name for marker in _PROFESSIONAL_GPU_MARKERS):
+        return False
     tokens = set(re.split(r"[^A-Z0-9]+", name))
     return not (tokens & _DATACENTER_GPU_TOKENS)
 
