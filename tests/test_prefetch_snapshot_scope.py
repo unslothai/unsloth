@@ -375,13 +375,17 @@ def test_adapter_safetensors_check_scoped_to_root(monkeypatch):
 
     # Subdir safetensors only -> not at root -> must NOT report safetensors present.
     monkeypatch.setattr(
-        huggingface_hub, "HfApi",
-        lambda: _Api(["adapter_config.json", "adapter_model.bin", "checkpoint-5/adapter_model.safetensors"]),
+        huggingface_hub,
+        "HfApi",
+        lambda: _Api(
+            ["adapter_config.json", "adapter_model.bin", "checkpoint-5/adapter_model.safetensors"]
+        ),
     )
     assert U._adapter_repo_has_safetensors("org/repo") is False
     # Root safetensors -> reported present.
     monkeypatch.setattr(
-        huggingface_hub, "HfApi",
+        huggingface_hub,
+        "HfApi",
         lambda: _Api(["adapter_config.json", "adapter_model.safetensors"]),
     )
     assert U._adapter_repo_has_safetensors("org/repo") is True
@@ -396,14 +400,14 @@ def test_gguf_file_warm_keeps_gguf(capture):
     assert allow is not None and "model-Q4_K_M.gguf" in allow
     sample = [
         "model-Q4_K_M.gguf",
-        "model-Q8_0.gguf",   # a different quant the load does not read
+        "model-Q8_0.gguf",  # a different quant the load does not read
         "config.json",
         "tokenizer.json",
     ]
     kept = _filter(sample, allow, ig)
-    assert "model-Q4_K_M.gguf" in kept          # the requested GGUF is warmed
-    assert "config.json" in kept                # root aux warmed
-    assert "model-Q8_0.gguf" not in kept        # other quants are not pulled
+    assert "model-Q4_K_M.gguf" in kept  # the requested GGUF is warmed
+    assert "config.json" in kept  # root aux warmed
+    assert "model-Q8_0.gguf" not in kept  # other quants are not pulled
 
 
 # ----- Finding Q: adapter weight-format selection -----
