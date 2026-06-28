@@ -80,6 +80,25 @@ class TestFunctionStyleTrailingText:
         text = "<function=web_search><parameter=query>weather london</function>"
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
+    def test_attribute_form_literal_close_tag_is_preserved(self):
+        # The attribute form <function name="..."> (MiniCPM-5 / MiniMax-M2) must
+        # also end at the LAST </function>, so a literal close tag inside a code
+        # argument survives instead of truncating the call.
+        text = (
+            '<function name="python"><param name="code">'
+            'print("</function>")'
+            "</param></function> all done"
+        )
+        call = _only(text)
+        assert call == {"name": "python", "arguments": {"code": 'print("</function>")'}}
+
+    def test_closed_zero_param_attribute_call_is_accepted_in_strict_mode(self):
+        # A closed call with no parameters is a valid zero-argument call; strict
+        # mode must not treat the empty parameter list as a truncated call.
+        assert _only('<function name="ping"></function>') == {"name": "ping", "arguments": {}}
+        # A no-arg call that never closes is still rejected as truncated.
+        assert parse_tool_calls_from_text('<function name="ping">', allow_incomplete = False) == []
+
 
 class TestParityWithJsonStyle:
     def test_json_tool_call_with_trailing_prose_is_accepted(self):

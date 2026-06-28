@@ -505,10 +505,15 @@ def _parse_function_xml(
         func_name = fm.group(1) or fm.group(2)
         body_start = fm.end()
         next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
-        end_tag = _TC_END_TAG_RE.search(content[body_start:])
-        has_close = end_tag is not None and (body_start + end_tag.start()) < next_func
+        # Use the LAST </function> / </tool_call> within this call's window: a
+        # literal close tag inside a code/search argument (e.g. print("</function>"))
+        # appears before the real close, so first-match would truncate the argument.
+        close_match = None
+        for cm in _TC_END_TAG_RE.finditer(content, body_start, next_func):
+            close_match = cm
+        has_close = close_match is not None
         if has_close:
-            body_end = body_start + end_tag.start()
+            body_end = close_match.start()
         else:
             body_end = min(len(content), next_func)
         # Strict mode: a function call that never reached its ``</function>`` /
@@ -540,8 +545,10 @@ def _parse_function_xml(
                 args[pm.group(1) or pm.group(2)] = _trim_param_value(val)
 
         # Strict mode: every parameter must close with ``</parameter>`` /
-        # ``</param>``; a dangling parameter means the call was cut off.
-        if not allow_incomplete and (param_unclosed or not param_starts):
+        # ``</param>``; a dangling parameter means the call was cut off. A closed
+        # call with no parameters is a valid zero-argument call (the function close
+        # was already required above), so do not reject it.
+        if not allow_incomplete and param_unclosed:
             continue
 
         out.append(
