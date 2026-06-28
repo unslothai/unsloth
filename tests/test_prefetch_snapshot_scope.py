@@ -228,6 +228,66 @@ def test_variant_drops_bin_when_variant_safetensors_present(monkeypatch):
     assert "*.bin" in ig
 
 
+def test_filename_has_variant_matches_single_and_sharded():
+    """The variant detector matches both the single-file (.fp16.) and SHARDED (.fp16-) infixes and
+    rejects the default (non-variant) names (gemini #6638)."""
+    assert U._filename_has_variant("model.fp16.safetensors", "fp16") is True
+    assert U._filename_has_variant("model.fp16-00001-of-00002.safetensors", "fp16") is True
+    assert U._filename_has_variant("diffusion_pytorch_model.fp16.safetensors", "fp16") is True
+    assert U._filename_has_variant("model.safetensors", "fp16") is False
+    assert U._filename_has_variant("model-00001-of-00002.safetensors", "fp16") is False
+
+
+def test_variant_drops_bin_for_sharded_variant_safetensors(monkeypatch):
+    """A SHARDED variant safetensors (model.fp16-00001-of-00002.safetensors) is recognized, so its
+    redundant variant .bin is dropped rather than both formats warmed (gemini #6638)."""
+    _install_fake_model_info(monkeypatch, [
+        "model.fp16-00001-of-00002.safetensors",
+        "model.fp16-00002-of-00002.safetensors",
+        "pytorch_model.fp16-00001-of-00002.bin",
+    ])
+    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16")
+    assert "*.bin" in ig
+
+
+def test_tokenizer_only_warms_extra_vocab_files(capture):
+    """tokenizer_only must warm the SentencePiece / vocab / processor files real tokenizers load
+    (spm.model, normalizer.json, video_preprocessor_config.json, tokenizer.model.v3, and a named
+    additional_chat_templates/<name>.jinja) so a separate-repo tokenizer / processor load does not
+    fetch them in-process over Xet (Codex #6638)."""
+    _, st = capture(tokenizer_only = True)
+    allow = st["allow_patterns"]
+    for name in ("spm.model", "normalizer.json", "video_preprocessor_config.json", "tokenizer.model.v3"):
+        assert name in allow, name
+    sample = ["spm.model", "normalizer.json", "video_preprocessor_config.json",
+              "tokenizer.model.v3", "additional_chat_templates/custom.jinja"]
+    kept = _filter(sample, allow, st["ignore_patterns"])
+    assert set(kept) == set(sample)
+
+
+def test_cached_repo_skips_format_model_info(capture, monkeypatch):
+    """When the repo is already cached (config.json present locally), the weight-format model_info
+    probe is skipped -- a cached, offline-capable load must not add a Hub round-trip. Both formats
+    stay eligible (over-warm is safe; the cached warm downloads nothing) (Codex #6638)."""
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub, "try_to_load_from_cache", lambda *a, **k: "/cache/config.json"
+    )
+    called = {"n": 0}
+
+    class _Api:
+        def model_info(self, *a, **k):
+            called["n"] += 1
+            raise RuntimeError("model_info must not be called for a cached repo")
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    # weights_at_root with use_safetensors=None would normally hit the auto model_info branch.
+    _, st = capture(weights_at_root = True)
+    assert called["n"] == 0
+    assert "*.bin" not in (st["ignore_patterns"] or [])  # auto .bin-drop skipped, both formats kept
+
+
 # ----- Finding Q: adapter weight-format selection -----
 
 

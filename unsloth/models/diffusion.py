@@ -200,8 +200,10 @@ class FastDiffusionModel:
             fast_inference = False,
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
-            # Diffusion variants (variant="fp16") are common: forward it so the warm's format
-            # auto-pick keeps the variant weights the pipeline load actually reads.
+            # Diffusion variants (variant="fp16") are common: forward it so the warm never drops a
+            # variant .bin for a non-variant safetensors. (When component weights live in
+            # subfolders the auto branch finds no root safetensors and keeps both formats anyway;
+            # forwarding variant simply makes that correct rather than incidental.)
             variant = kwargs.get("variant"),
         )
 

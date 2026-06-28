@@ -949,10 +949,20 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
     "vocab.txt",
     "merges.txt",
     "spiece.model",
+    # Additional SentencePiece / vocab files that are real from_pretrained load targets
+    # (VOCAB_FILES_NAMES entries) but are NOT covered by the names above: spm.model
+    # (DeBERTa-v2), normalizer.json (Whisper), tokenizer.model.v3 (Mistral versioned SP).
+    "spm.model",
+    "normalizer.json",
+    "tokenizer.model.v3",
     "chat_template.jinja",
     "chat_template.json",
+    # A non-default chat_template="<name>" load fetches additional_chat_templates/<name>.jinja.
+    "additional_chat_templates/*.jinja",
     "preprocessor_config.json",
     "processor_config.json",
+    # Video processors (e.g. Qwen2.5-VL video) read a dedicated video_preprocessor_config.json.
+    "video_preprocessor_config.json",
     # Custom-code entry points a trust_remote_code config / model / tokenizer / processor
     # load fetches from the repo root. Each carries a literal prefix, so it stays effectively
     # root-anchored, and matches nothing on a non-remote-code repo (harmless there).
@@ -1023,12 +1033,15 @@ def _is_model_weight_safetensors(filename):
 
 
 def _filename_has_variant(filename, variant):
-    """True if a weight *filename* belongs to the requested *variant* (variant="fp16" matches
-    ``model.fp16.safetensors`` / ``model-00001-of-00002.fp16.safetensors``). Transformers inserts
-    the variant token right before the file extension, so the basename carries ``.{variant}.`` as
-    an infix. Only meaningful when a variant is requested; callers gate on *variant* being truthy."""
+    """True if a weight *filename* belongs to the requested *variant* (variant="fp16"). Transformers
+    inserts the variant token right before the extension, so a single-file weight carries it as a
+    ``.{variant}.`` infix (``model.fp16.safetensors``), while a SHARDED weight carries it as a
+    ``.{variant}-`` infix before the ``-NNNNN-of-NNNNN`` suffix
+    (``model.fp16-00001-of-00002.safetensors``). Both shapes are matched so a sharded variant
+    safetensors is recognized -- else its redundant ``.bin`` would not be dropped. Only meaningful
+    when a variant is requested; callers gate on *variant* being truthy."""
     base = filename.replace("\\", "/").rsplit("/", 1)[-1]
-    return f".{variant}." in base
+    return f".{variant}." in base or f".{variant}-" in base
 
 
 def _adapter_repo_has_safetensors(
@@ -1064,6 +1077,7 @@ def _prefetch_ignore_patterns(
     from_tf = False,
     from_flax = False,
     variant = None,
+    skip_format_probe = False,
 ):
     """ignore_patterns for the prewarm snapshot: the static skip list, minus the
     checkpoint guard when loading from a checkpoint-* subfolder, minus the weight
@@ -1114,6 +1128,10 @@ def _prefetch_ignore_patterns(
     elif use_safetensors is False:
         # Explicit .bin: the load never reads safetensors, so skip them.
         ignore_patterns.extend(("*.safetensors", "*.safetensors.index.json"))
+    elif skip_format_probe:
+        # The repo is already cached, so nothing downloads and the format-drop optimization is
+        # moot: skip the model_info network call and leave both formats eligible.
+        pass
     else:
         # Auto (use_safetensors is None): skip .bin only once in-scope safetensors are
         # confirmed to load instead, since Transformers prefers them. Best-effort: any
@@ -1225,9 +1243,26 @@ def maybe_prefetch_hf_snapshot(
     if fast_inference:
         return False
 
-    # A tokenizer-only or adapter-only warm allow-lists the exact files the load reads below, so
-    # the weight-format ignore list is moot -- and skipping it avoids the model_info network call
-    # its auto branch would otherwise make for a repo whose full weights we never fetch.
+    # Skip the weight-format model_info round-trips below when the repo is already on disk: a cached
+    # repo downloads nothing (the guarded warm short-circuits on the cache regardless of which format
+    # the ignore list would drop), so probing the Hub to choose a format would only add a network hop
+    # to an otherwise offline-capable cached load. try_to_load_from_cache is a cheap LOCAL lookup; a
+    # wrong "cached" guess merely keeps BOTH formats (over-warm, never under-warm). Adapter repos key
+    # off adapter_config.json, everything else off config.json.
+    skip_format_probe = False
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        _probe_name = "adapter_config.json" if adapter_only else "config.json"
+        skip_format_probe = isinstance(
+            try_to_load_from_cache(model_name, _probe_name, cache_dir = cache_dir), str
+        )
+    except Exception:
+        skip_format_probe = False
+
+    # A tokenizer-only warm allow-lists the exact tokenizer / config files below, so the weight-
+    # format ignore list is moot -- and skipping it avoids the model_info network call the auto
+    # branch would otherwise make. (An adapter-only warm sets its own format ignore further down,
+    # gated on skip_format_probe so a cached adapter needs no model_info.)
     ignore_patterns = (
         None
         if tokenizer_only or adapter_only
@@ -1240,6 +1275,7 @@ def maybe_prefetch_hf_snapshot(
             from_tf = from_tf,
             from_flax = from_flax,
             variant = variant,
+            skip_format_probe = skip_format_probe,
         )
     )
     # Narrow the warm to exactly what the in-process load reads, so a repo that ships extra
@@ -1270,8 +1306,9 @@ def maybe_prefetch_hf_snapshot(
                 "adapter_model*.safetensors",
                 "adapter_model*.safetensors.index.json",
             ]
-        elif use_safetensors is True or _adapter_repo_has_safetensors(
-            model_name, token = token, revision = revision
+        elif use_safetensors is True or (
+            not skip_format_probe
+            and _adapter_repo_has_safetensors(model_name, token = token, revision = revision)
         ):
             ignore_patterns = ["adapter_model*.bin", "adapter_model*.bin.index.json"]
     elif isinstance(subfolder, str) and subfolder.strip("/"):
