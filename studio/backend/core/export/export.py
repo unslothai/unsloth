@@ -400,16 +400,26 @@ class ExportBackend:
             )
 
         output_path: Optional[str] = None
+        # compressed-tensors formats run save_pretrained_merged with an FP8/FP4 save_method and
+        # write to a sibling "<dir>-<suffix>" directory (for vLLM).
+        _COMPRESSED = {
+            "FP8 (compressed-tensors)": ("fp8", "fp8"),
+            "NVFP4 (compressed-tensors)": ("nvfp4", "nvfp4"),
+        }
+        is_compressed = format_type in _COMPRESSED
         try:
             if _IS_MLX:
+                if is_compressed:
+                    return False, "Compressed-tensors export is not supported on macOS/MLX.", None
                 mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
+            elif is_compressed:
+                save_method = _COMPRESSED[format_type][0]
+            elif format_type == "4-bit (FP4)":
+                save_method = "merged_4bit_forced"
+            elif self._audio_type == "whisper":
+                save_method = None
             else:
-                if format_type == "4-bit (FP4)":
-                    save_method = "merged_4bit_forced"
-                elif self._audio_type == "whisper":
-                    save_method = None
-                else:
-                    save_method = "merged_16bit"
+                save_method = "merged_16bit"
 
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
@@ -427,9 +437,15 @@ class ExportBackend:
                         save_directory, self.current_tokenizer, save_method = save_method
                     )
 
-                self._write_export_metadata(save_directory)
-                logger.info(f"Model saved successfully to {save_directory}")
-                output_path = str(Path(save_directory).resolve())
+                # Compressed export writes to the "<dir>-<suffix>" sibling; report that as output.
+                final_dir = (
+                    f"{save_directory}-{_COMPRESSED[format_type][1]}"
+                    if is_compressed
+                    else save_directory
+                )
+                self._write_export_metadata(final_dir)
+                logger.info(f"Model saved successfully to {final_dir}")
+                output_path = str(Path(final_dir).resolve())
 
             if push_to_hub:
                 if not repo_id or not hf_token:
@@ -621,6 +637,7 @@ class ExportBackend:
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
+        imatrix_file = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
@@ -691,6 +708,7 @@ class ExportBackend:
                     _model_tmp,
                     self.current_tokenizer,
                     quantization_method = quant_method,
+                    imatrix_file = imatrix_file,
                 )
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
@@ -757,6 +775,7 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     token = hf_token,
+                    imatrix_file = imatrix_file,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 

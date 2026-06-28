@@ -3,6 +3,7 @@
 
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   Combobox,
   ComboboxContent,
@@ -61,6 +62,8 @@ import {
   EXPORT_METHODS,
   type ExportMethod,
   GUIDE_STEPS,
+  MERGED_FORMATS,
+  type MergedFormat,
   buildQuantSizeLabels,
   getEstimatedSize,
 } from "./constants";
@@ -154,6 +157,10 @@ export function ExportPage() {
       ? s.summary.quantLevels
       : [];
   });
+  // GGUF importance matrix (required for the IQ quants) and merged-export precision.
+  const [useImatrix, setUseImatrix] = useState(false);
+  const [mergedFormat, setMergedFormat] = useState<MergedFormat>("16-bit (FP16)");
+
   // Whether the inline export panel is expanded. The panel also shows itself
   // whenever a run is active/terminal (see `panelActive`), so it survives
   // navigation even though this local flag resets on remount.
@@ -595,6 +602,8 @@ export function ExportPage() {
       exportMethod,
       isAdapter: adapterExport,
       quantLevels,
+      useImatrix,
+      mergedFormat,
       saveDirectory,
       destination,
       repoId,
@@ -621,6 +630,8 @@ export function ExportPage() {
     exportMethod,
     isAdapter,
     quantLevels,
+    useImatrix,
+    mergedFormat,
     destination,
     saveDirectory,
     hfUsername,
@@ -1148,12 +1159,52 @@ export function ExportPage() {
                 }
               />
 
+              {exportMethod === "merged" && isAdapter && (
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Precision</div>
+                  <div className="flex flex-wrap gap-2">
+                    {MERGED_FORMATS.map((f) => (
+                      <Button
+                        key={f.value}
+                        type="button"
+                        variant={mergedFormat === f.value ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setMergedFormat(f.value)}
+                        title={f.hint}
+                      >
+                        {f.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {MERGED_FORMATS.find((f) => f.value === mergedFormat)?.hint}
+                  </div>
+                </div>
+              )}
+
               {exportMethod === "gguf" && (
-                <QuantPicker
-                  value={quantLevels}
-                  onChange={setQuantLevels}
-                  sizes={quantSizeLabels}
-                />
+                <>
+                  <QuantPicker
+                    value={quantLevels}
+                    onChange={setQuantLevels}
+                    sizes={quantSizeLabels}
+                  />
+                  <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                    <div className="space-y-0.5">
+                      <div className="text-sm font-medium">
+                        Importance matrix (imatrix)
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Improves quant quality and unlocks the IQ low-bit quants.
+                        Auto-downloads the upstream Unsloth imatrix for the base model.
+                      </div>
+                    </div>
+                    <Switch
+                      checked={useImatrix}
+                      onCheckedChange={setUseImatrix}
+                    />
+                  </div>
+                </>
               )}
               {estimatedSize && (
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
