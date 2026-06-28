@@ -31,9 +31,26 @@ UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 # (worst case MAX_IMAGES model calls). The chat's "Describe figures & charts" toggle
 # overrides this per upload.
 CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "1") == "1"
-CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "8"))
-CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "30"))
-CAPTION_MAX_TOKENS = int(os.environ.get("RAG_CAPTION_MAX_TOKENS", "320"))
+# Total per-document tile budget (figure-bearing pages are tiled, see below).
+CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "24"))
+CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "60"))
+# Captions now transcribe every visible label (for search recall) then describe, so
+# the budget is larger than a one-line caption. FIGURE_DPI/MARGIN control how figure
+# regions are rendered: higher DPI keeps small box/axis labels legible, the margin
+# keeps labels that sit just outside the detected drawing box.
+CAPTION_MAX_TOKENS = int(os.environ.get("RAG_CAPTION_MAX_TOKENS", "768"))
+FIGURE_DPI = int(os.environ.get("RAG_FIGURE_DPI", "200"))
+FIGURE_MARGIN_FRAC = float(os.environ.get("RAG_FIGURE_MARGIN_FRAC", "0.06"))
+# Figure pages are split into an overlapping ROWS x COLS grid of high-DPI tiles (plus
+# an optional full-page image for global context). Tiling keeps small labels legible
+# and covers every sub-figure without relying on exact region detection, generalizing
+# across diagram/chart/table density and model strength. CAPTION_MAX_PAGES bounds how
+# many figure pages are processed; CAPTION_MAX_IMAGES bounds total tiles per document.
+FIGURE_TILE_ROWS = int(os.environ.get("RAG_FIGURE_TILE_ROWS", "2"))
+FIGURE_TILE_COLS = int(os.environ.get("RAG_FIGURE_TILE_COLS", "2"))
+FIGURE_TILE_OVERLAP = float(os.environ.get("RAG_FIGURE_TILE_OVERLAP", "0.12"))
+FIGURE_FULLPAGE = os.environ.get("RAG_FIGURE_FULLPAGE", "1") == "1"
+CAPTION_MAX_PAGES = int(os.environ.get("RAG_CAPTION_MAX_PAGES", "4"))
 
 # Scanned-PDF OCR: a page with little or no extractable text (an image-only/scanned
 # page) is rendered and transcribed by the loaded vision model so it becomes

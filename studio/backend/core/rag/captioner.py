@@ -23,14 +23,15 @@ from . import config
 logger = logging.getLogger(__name__)
 
 _CAPTION_PROMPT = (
-    "Describe this document figure for search indexing. If it is a chart, plot, or "
-    "graph, name the chart type and report the title, the x and y axis labels with "
-    "units, the legend or series names, and the salient trends, maxima, minima, "
-    "outliers, and clearly readable values. If it is a table, give its topic, the "
-    "column headers, and the key rows or values. If it is a diagram, map, or photo, "
-    "state what it depicts and read any labels. Quote short visible text verbatim. "
-    "Report only what is visible; do not infer missing labels or invent numbers. "
-    "Keep it concise."
+    "Read this figure or image from a document for search indexing.\n"
+    "First, on a line 'TEXT:', transcribe every piece of visible text exactly as "
+    "written, in reading order: the title, axis labels and units, legend and series "
+    "names, EVERY box / node / arrow label, table headers and cells, equations, and "
+    "footnotes. List each distinct label even if it is small.\n"
+    "Then, on a line 'SUMMARY:', add one or two sentences on what it shows (chart "
+    "type and trend, diagram subject, table topic, or photo content).\n"
+    "Report only what is visible. Transcribe exactly; do not invent or guess any "
+    "text, label, or number."
 )
 
 _OCR_PROMPT = (
@@ -87,7 +88,14 @@ def vision_endpoint() -> tuple[str, str] | None:
 
 
 def _vision_complete(
-    base_url: str, model: str, image_bytes: bytes, *, prompt: str, timeout: float, max_tokens: int
+    base_url: str,
+    model: str,
+    image_bytes: bytes,
+    *,
+    prompt: str,
+    timeout: float,
+    max_tokens: int,
+    temperature: float = 0.0,
 ) -> str | None:
     """One image-in / text-out call to the loaded vision model's OpenAI-compatible
     endpoint. Returns the stripped text or ``None`` on empty/failure (non-fatal)."""
@@ -106,7 +114,8 @@ def _vision_complete(
             }
         ],
         "max_tokens": max_tokens,
-        "temperature": 0.2,
+        # Deterministic by default: transcription must not randomly drop labels.
+        "temperature": temperature,
         "stream": False,
         # Off: thinking models would spend the budget reasoning, returning "".
         "chat_template_kwargs": {"enable_thinking": False},
@@ -190,6 +199,29 @@ def ocr_pages(
         text = _ocr_one(base_url, model, page_pngs[page_num], config.OCR_TIMEOUT_S)
         if text:
             out[int(page_num)] = _collapse_runaway(text)
+    return out
+
+
+def merge_page_captions(captions: dict[int, list[str]]) -> dict[int, list[str]]:
+    """Combine a page's per-tile captions into one deduped block. Overlapping tiles
+    repeat labels, so identical non-empty lines are dropped (first occurrence kept,
+    order preserved) and the result passes through ``_collapse_runaway``. Returns one
+    merged string per page so ``splice_captions`` adds a single figure block."""
+    out: dict[int, list[str]] = {}
+    for page, caps in captions.items():
+        seen: set[str] = set()
+        lines: list[str] = []
+        for cap in caps:
+            for line in (cap or "").splitlines():
+                stripped = line.strip()
+                key = stripped.lower()
+                if not stripped or key in seen:
+                    continue
+                seen.add(key)
+                lines.append(stripped)
+        merged = _collapse_runaway("\n".join(lines))
+        if merged.strip():
+            out[page] = [merged]
     return out
 
 

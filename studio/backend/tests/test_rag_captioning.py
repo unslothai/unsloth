@@ -64,8 +64,10 @@ def test_caption_prompt_and_token_budget(monkeypatch):
 
     captioner._caption_one("http://x", "local", b"img", 12.0)
     prompt = captured["prompt"].lower()
+    # Unified prompt: transcribe every label (recall) + axis/legend coverage + describe.
+    assert "transcribe" in prompt
     assert ("axis" in prompt or "axes" in prompt) and "legend" in prompt
-    assert "do not infer missing labels or invent numbers" in prompt
+    assert "do not invent" in prompt
     assert captured["max_tokens"] == 277
     assert captured["timeout"] == 12.0
 
@@ -74,6 +76,29 @@ def test_caption_prompt_and_token_budget(monkeypatch):
     captioner._ocr_one("http://x", "local", b"img", 5.0)
     assert captured["max_tokens"] == 999
     assert "transcribe" in captured["prompt"].lower()
+
+
+def test_pages_with_figures_and_tiles(tmp_path):
+    from core.rag import parsers
+
+    pdf = tmp_path / "fig.pdf"
+    _figure_pdf(pdf)
+    pgs = parsers.pages_with_figures(str(pdf), max_pages = 4)
+    assert pgs == [1]
+    tiles = parsers.render_pdf_figure_tiles(str(pdf), pgs, rows = 2, cols = 2, fullpage = True)
+    assert len(tiles) == 5  # full page + 2x2 grid
+    assert all(t.image_bytes[:8] == b"\x89PNG\r\n\x1a\n" and t.page_number == 1 for t in tiles)
+    capped = parsers.render_pdf_figure_tiles(
+        str(pdf), pgs, rows = 2, cols = 2, fullpage = True, max_tiles = 3
+    )
+    assert len(capped) == 3  # max_tiles budget honored
+
+
+def test_merge_page_captions_dedups():
+    out = captioner.merge_page_captions({1: ["MatMul\nScale", "Scale\nSoftMax"]})
+    text = out[1][0]
+    assert text.lower().count("scale") == 1  # repeated label from overlapping tiles dropped
+    assert "MatMul" in text and "SoftMax" in text
 
 
 def test_splice_captions_appends_to_right_page():

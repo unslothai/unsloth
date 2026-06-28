@@ -165,17 +165,33 @@ def _run(
             pages = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
         caption_on = config.CAPTION_IMAGES if caption is None else caption
         if caption_on and stored_path.lower().endswith(".pdf"):
-            # Caption figures, splice into page text (no-op without a vision model).
+            # Tile figure-bearing pages and transcribe+describe each tile, so small
+            # diagram/axis/box labels stay legible and no sub-figure is missed; merge,
+            # dedup, and splice into the page text (no-op without a vision model).
             try:
-                figures = parsers.render_pdf_figures(
-                    stored_path, max_figures = config.CAPTION_MAX_IMAGES
+                fig_pages = parsers.pages_with_figures(
+                    stored_path, max_pages = config.CAPTION_MAX_PAGES
+                )
+                tiles = (
+                    parsers.render_pdf_figure_tiles(
+                        stored_path,
+                        fig_pages,
+                        dpi = config.FIGURE_DPI,
+                        rows = config.FIGURE_TILE_ROWS,
+                        cols = config.FIGURE_TILE_COLS,
+                        overlap = config.FIGURE_TILE_OVERLAP,
+                        fullpage = config.FIGURE_FULLPAGE,
+                        max_tiles = config.CAPTION_MAX_IMAGES,
+                    )
+                    if fig_pages
+                    else []
                 )
             except Exception:
-                logger.warning("figure rendering failed for job %s", job_id, exc_info = True)
-                figures = []
-            if figures:
+                logger.warning("figure tiling failed for job %s", job_id, exc_info = True)
+                tiles = []
+            if tiles:
                 _progress(conn, job_id, "captioning", 0.2)
-                captions = captioner.caption_images(figures)
+                captions = captioner.merge_page_captions(captioner.caption_images(tiles))
                 pages = captioner.splice_captions(pages, captions)
 
         _progress(conn, job_id, "chunking", 0.3)

@@ -118,19 +118,54 @@ def _merge_rects(boxes: list) -> list:
     return merged
 
 
+def _figure_boxes(
+    page,
+    *,
+    min_area_frac: float = 0.04,
+    min_side: float = 40.0,
+) -> list:
+    """Qualifying figure-region rectangles on a page: cluster vector drawings + raster
+    placements, merge overlaps, keep the page-spanning ones (area/side filtered)."""
+    boxes: list = []
+    try:
+        boxes.extend(info["bbox"] for info in page.get_image_info())
+    except Exception:
+        pass
+    try:
+        boxes.extend(page.cluster_drawings())
+    except Exception:
+        pass
+    if not boxes:
+        return []
+    page_area = page.rect.width * page.rect.height
+    keep: list = []
+    for box in _merge_rects(boxes):
+        if (
+            box.get_area() >= min_area_frac * page_area
+            and box.width >= min_side
+            and box.height >= min_side
+        ):
+            keep.append(box)
+    return keep
+
+
 def render_pdf_figures(
     path: str,
     *,
-    dpi: int = 130,
+    dpi: int = 200,
     min_area_frac: float = 0.04,
     min_side: float = 40.0,
     max_figures: int = 8,
+    margin_frac: float = 0.06,
 ) -> list[ParsedImage]:
     """Detect figure regions and render each to a PNG for captioning.
 
     Academic figures are vector, so raster extraction yields fragments; instead
     cluster vector drawings + raster placements into boxes, keep the page-spanning
-    ones, and render them. Any failure yields [], never an exception.
+    ones, and render them. ``dpi`` is high enough to keep small box/axis labels
+    legible; each region is expanded by ``margin_frac`` (clamped to the page) so
+    labels just outside the detected drawing box are not clipped. Any failure
+    yields [], never an exception.
     """
     try:
         import pymupdf
@@ -144,37 +179,110 @@ def render_pdf_figures(
         return []
     try:
         for i, page in enumerate(doc):
-            boxes: list = []
-            try:
-                boxes.extend(info["bbox"] for info in page.get_image_info())
-            except Exception:
-                pass
-            try:
-                boxes.extend(page.cluster_drawings())
-            except Exception:
-                pass
-            if not boxes:
+            for box in _figure_boxes(page, min_area_frac = min_area_frac, min_side = min_side):
+                try:
+                    mx, my = box.width * margin_frac, box.height * margin_frac
+                    clip = (
+                        pymupdf.Rect(box.x0 - mx, box.y0 - my, box.x1 + mx, box.y1 + my) & page.rect
+                    )
+                    pix = page.get_pixmap(dpi = dpi, clip = clip)
+                    out.append(
+                        ParsedImage(image_bytes = pix.tobytes("png"), page_number = i + 1, xref = 0)
+                    )
+                except Exception:
+                    continue
+                if len(out) >= max_figures:
+                    return out
+        return out
+    finally:
+        doc.close()
+
+
+def pages_with_figures(
+    path: str,
+    *,
+    max_pages: int = 4,
+    min_area_frac: float = 0.04,
+    min_side: float = 40.0,
+) -> list[int]:
+    """1-based page numbers that contain a qualifying figure region, capped at
+    ``max_pages``. Drives figure tiling. Any failure yields []."""
+    try:
+        import pymupdf
+    except Exception:
+        return []
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return []
+    pages: list[int] = []
+    try:
+        for i, page in enumerate(doc):
+            if _figure_boxes(page, min_area_frac = min_area_frac, min_side = min_side):
+                pages.append(i + 1)
+                if len(pages) >= max_pages:
+                    break
+        return pages
+    finally:
+        doc.close()
+
+
+def render_pdf_figure_tiles(
+    path: str,
+    page_numbers,
+    *,
+    dpi: int = 200,
+    rows: int = 2,
+    cols: int = 2,
+    overlap: float = 0.12,
+    fullpage: bool = True,
+    max_tiles: int = 24,
+) -> list[ParsedImage]:
+    """Render figure-bearing pages as overlapping high-DPI tiles (plus an optional
+    full-page image for global context), each a ``ParsedImage`` keyed by page number.
+    Tiling keeps small diagram/axis/box labels legible and covers every sub-figure
+    without relying on exact region detection, so figure recall generalizes across
+    content density and model strength. Any failure yields [] (or skips a page)."""
+    wanted = [int(n) for n in page_numbers]
+    if not wanted:
+        return []
+    try:
+        import pymupdf
+    except Exception:
+        return []
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return []
+    out: list[ParsedImage] = []
+    try:
+        for num in wanted:
+            if num < 1 or num > doc.page_count:
                 continue
-            page_area = page.rect.width * page.rect.height
-            for box in _merge_rects(boxes):
-                if (
-                    box.get_area() >= min_area_frac * page_area
-                    and box.width >= min_side
-                    and box.height >= min_side
-                ):
-                    try:
-                        pix = page.get_pixmap(dpi = dpi, clip = box)
-                        out.append(
-                            ParsedImage(
-                                image_bytes = pix.tobytes("png"),
-                                page_number = i + 1,
-                                xref = 0,
-                            )
+            page = doc[num - 1]
+            rect = page.rect
+            clips: list = [rect] if fullpage else []
+            cw, ch = rect.width / cols, rect.height / rows
+            ox, oy = cw * overlap, ch * overlap
+            for r in range(rows):
+                for c in range(cols):
+                    clips.append(
+                        pymupdf.Rect(
+                            rect.x0 + c * cw - ox,
+                            rect.y0 + r * ch - oy,
+                            rect.x0 + (c + 1) * cw + ox,
+                            rect.y0 + (r + 1) * ch + oy,
                         )
-                    except Exception:
-                        continue
-                    if len(out) >= max_figures:
-                        return out
+                        & rect
+                    )
+            for clip in clips:
+                try:
+                    pix = page.get_pixmap(dpi = dpi, clip = clip)
+                    out.append(ParsedImage(image_bytes = pix.tobytes("png"), page_number = num, xref = 0))
+                except Exception:
+                    continue
+                if len(out) >= max_tiles:
+                    return out
         return out
     finally:
         doc.close()
