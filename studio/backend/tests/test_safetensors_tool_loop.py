@@ -3228,9 +3228,7 @@ def test_render_with_native_template_does_not_mutate_shared_tokenizer():
         body = "".join(m["content"] for m in msgs)
         return body + ("|T" if tools else "")
 
-    self_ns = SimpleNamespace(
-        active_model_name = "x", _apply_chat_template_for_generation = capture
-    )
+    self_ns = SimpleNamespace(active_model_name = "x", _apply_chat_template_for_generation = capture)
     model_info = {"native_chat_template": "TPL", "tokenizer": shared}
     InferenceBackend._render_with_native_template(
         self_ns,
