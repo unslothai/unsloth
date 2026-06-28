@@ -166,6 +166,12 @@ _LLAMA3_PYTHON_TAG = "<|python_tag|>"
 _LLAMA3_PY_CALL_RE = re.compile(
     r"<\|python_tag\|>\s*([\w\.\-]+)\s*\.\s*call\s*\(",
 )
+# ``NAME.call(`` anchored at a given offset (the char after ``<|python_tag|>``), and
+# the ``; NAME.call(`` separator that chains additional built-in calls in one
+# emission. Matching from a fixed offset (not a free scan) is what keeps a literal
+# ``<|python_tag|>x.call(...)`` inside a JSON string argument from being parsed.
+_LLAMA3_PY_CALL_HEAD_RE = re.compile(r"\s*([\w\.\-]+)\s*\.\s*call\s*\(")
+_LLAMA3_CALL_CHAIN_RE = re.compile(r"\s*;\s*([\w\.\-]+)\s*\.\s*call\s*\(")
 # Llama-3 ``.call(k=v, ...)`` kwarg tokens. Scanned by hand below (not finditer)
 # to stay linear on a truncated/unterminated body; finditer retries every offset
 # of a long word run / unterminated quote (quadratic ReDoS).
@@ -363,6 +369,10 @@ def _strip_mistral_closed_calls(text: str) -> str:
             out.append(text[idx:])
             break
         cursor = end + 1
+        # Consume the optional EOS marker too, mirroring the array shape, so a
+        # ``[TOOL_CALLS]name{json}</s>`` tail doesn't leave ``</s>`` as content.
+        if text.startswith("</s>", cursor):
+            cursor += len("</s>")
     return "".join(out)
 
 
@@ -634,45 +644,69 @@ def _parse_llama3_python_tag(
     if _LLAMA3_PYTHON_TAG not in content:
         return out
 
-    # 1. ``NAME.call(...)`` built-in form.
-    for m in _LLAMA3_PY_CALL_RE.finditer(content):
-        name = m.group(1)
-        i = m.end()
-        depth = 1
-        in_string = False
-        esc = False
-        while i < len(content) and depth > 0:
-            ch = content[i]
-            if in_string:
-                if esc:
-                    esc = False
-                elif ch == "\\":
-                    esc = True
-                elif ch == '"':
-                    in_string = False
-            else:
-                if ch == '"':
-                    in_string = True
-                elif ch == "(":
-                    depth += 1
-                elif ch == ")":
-                    depth -= 1
-                    if depth == 0:
-                        break
-            i += 1
-        # Truncated ``.call(...)`` with no closing paren (depth > 0 at EOF):
-        # reject in strict mode (Auto-Heal off) instead of executing a partial.
-        if not allow_incomplete and depth > 0:
-            continue
-        body = content[m.end() : i]
-        args = _parse_llama3_kv_args(body)
-        out.append(
-            {
-                "id": f"call_{id_offset + len(out)}",
-                "type": "function",
-                "function": {"name": name, "arguments": json.dumps(args)},
-            }
-        )
+    # 1. ``NAME.call(...)`` built-in form, anchored to ``<|python_tag|>`` and
+    #    optionally ``; ``-chained within one emission. Anchoring each call to the
+    #    tag boundary (not a free scan over the whole text) keeps a literal
+    #    ``<|python_tag|>x.call(...)`` embedded in a JSON string argument of the
+    #    custom form from being mistaken for a real built-in call.
+    pos = content.find(_LLAMA3_PYTHON_TAG)
+    truncated = False
+    while pos >= 0 and not truncated:
+        head = _LLAMA3_PY_CALL_HEAD_RE.match(content, pos + len(_LLAMA3_PYTHON_TAG))
+        if head is None:
+            # Tag is the custom JSON form (``{...}``) or noise -- leave it to step 2.
+            break
+        name = head.group(1)
+        open_idx = head.end()
+        i = open_idx
+        while True:
+            i = open_idx
+            depth = 1
+            in_string = False
+            esc = False
+            while i < len(content) and depth > 0:
+                ch = content[i]
+                if in_string:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_string = False
+                else:
+                    if ch == '"':
+                        in_string = True
+                    elif ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                i += 1
+            # Truncated ``.call(...)`` with no closing paren (depth > 0 at EOF):
+            # reject in strict mode (Auto-Heal off) instead of executing a partial.
+            if not allow_incomplete and depth > 0:
+                truncated = True
+                break
+            body = content[open_idx : i]
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(_parse_llama3_kv_args(body)),
+                    },
+                }
+            )
+            # ``)`` then optional ``; NAME.call(`` chains the next built-in call.
+            chain = _LLAMA3_CALL_CHAIN_RE.match(content, i + 1)
+            if chain is None:
+                break
+            name = chain.group(1)
+            open_idx = chain.end()
+        # Past the consumed region: a second ``<|python_tag|>`` may carry more calls.
+        pos = content.find(_LLAMA3_PYTHON_TAG, i + 1)
 
     # 2. ``<|python_tag|>{"name":..., "parameters":...}``. ``raw_decode``
     #    peels multiple ``; ``-separated objects from one emission.

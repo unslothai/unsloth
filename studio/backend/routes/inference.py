@@ -1109,6 +1109,7 @@ from state.tool_approvals import resolve_tool_decision
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
+from core.inference.tool_call_parser import _strip_mistral_closed_calls
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -1274,6 +1275,7 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     _PARSER_MARKERS = (
         "<tool_call>",
         "<function=",
+        "<function name=",
         "<|python_tag|>",
         "[TOOL_CALLS]",
         "<|tool_call>",
@@ -1613,10 +1615,7 @@ _TOOL_XML_RE = _re.compile(
 
 
 def _strip_tool_xml(text: str) -> str:
-    """Apply the Mistral balanced-brace helper, then ``_TOOL_XML_RE``."""
-    from core.inference.tool_call_parser import (
-        _strip_mistral_closed_calls,
-    )
+    """Combine the Mistral balanced-brace helper with ``_TOOL_XML_RE``."""
     return _TOOL_XML_RE.sub("", _strip_mistral_closed_calls(text))
 
 

@@ -38,13 +38,11 @@ from core.inference.llama_server_args import (
     strip_shadowing_flags,
     strip_split_mode_only,
 )
-from core.tool_healing import (
-    _TOOL_ALL_PATS,
-)
-
 # Share strip / signal constants with the multi-format parser so BUFFERING also
 # catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
+    _TOOL_ALL_PATS,
+    _strip_mistral_closed_calls,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
@@ -7872,6 +7870,12 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
+            # Use the shared parser patterns (not the legacy tool_healing set) so a
+            # textual GGUF Mistral ``[TOOL_CALLS]`` / Llama ``<|python_tag|>`` call
+            # entering DRAINING is stripped instead of leaking the marker (and any
+            # same-chunk args) to streaming clients. Balanced Mistral blocks go
+            # first; no final trim so incremental length comparisons still hold.
+            text = _strip_mistral_closed_calls(text)
             for pat in _TOOL_ALL_PATS:
                 text = pat.sub("", text)
             return text

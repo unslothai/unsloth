@@ -1208,6 +1208,68 @@ def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatc
     )
 
 
+def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch):
+    # A textual Mistral ``[TOOL_CALLS]`` call sharing a chunk with visible preface
+    # exercises the DRAINING streaming flush. The flush must use the shared parser
+    # patterns (which know ``[TOOL_CALLS]``); the legacy tool_healing set did not,
+    # so the marker (and args) leaked to OpenAI streaming clients.
+    streams = [
+        [_sse({"content": 'Let me search. [TOOL_CALLS]web_search{"query":"cats"}'}), _done()],
+        [_sse({"content": "done"}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})]
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("[TOOL_CALLS]" not in t for t in content_texts), content_texts
+    assert any("Let me search." in t for t in content_texts)
+
+
+def test_textual_llama_python_tag_marker_not_leaked(monkeypatch):
+    # Same leak class for the Llama-3 built-in ``<|python_tag|>NAME.call(...)`` form.
+    streams = [
+        [_sse({"content": '<|python_tag|>web_search.call(query="cats")'}), _done()],
+        [_sse({"content": "done"}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})]
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("<|python_tag|>" not in t for t in content_texts), content_texts
+
+
 def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
     """Suppression ends once a forced re-prompt actually calls a tool."""
 
