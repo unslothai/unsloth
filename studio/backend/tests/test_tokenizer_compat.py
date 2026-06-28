@@ -91,7 +91,17 @@ def test_patched_coerces_non_empty_list(recording_logger):
     d = _make_mixin()
     d._set_model_specific_special_tokens(["<extra>"])  # must not raise
     assert d.extra_special_tokens == {}
+    # Dropped entries are named in the warning so the loss is not silent.
     assert len(recording_logger.warnings) == 1
+    assert "<extra>" in recording_logger.warnings[0]
+
+
+def test_patched_coerces_none_quietly(recording_logger):
+    install_extra_special_tokens_compat()
+    d = _make_mixin()
+    d._set_model_specific_special_tokens(None)  # null == absent; must not raise
+    assert d.extra_special_tokens == {}
+    assert recording_logger.warnings == []  # no false-positive warning for null
 
 
 def test_patched_preserves_valid_dict(recording_logger):

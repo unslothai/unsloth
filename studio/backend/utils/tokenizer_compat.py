@@ -36,18 +36,27 @@ def install_extra_special_tokens_compat() -> bool:
         return True
 
     def _patched(self, special_tokens):
-        if not isinstance(special_tokens, dict):
-            logger.warning(
-                "Coercing malformed extra_special_tokens (%s) to {}; "
-                "tokenizer_config.json should use an object, not an array.",
-                type(special_tokens).__name__,
+        if isinstance(special_tokens, dict):
+            return orig(self, special_tokens)
+        # A non-dict value (a JSON array, or null) crashes vanilla transformers on
+        # .keys(); coerce to {} so the model still loads. null is treated as absent;
+        # for a populated list we log the dropped entries so the loss is not silent.
+        if special_tokens is not None:
+            entries = (
+                list(special_tokens)
+                if isinstance(special_tokens, (list, tuple, set))
+                else special_tokens
             )
-            special_tokens = {}
-            try:
-                self.extra_special_tokens = {}
-            except Exception:
-                pass
-        return orig(self, special_tokens)
+            logger.warning(
+                "Coercing malformed extra_special_tokens to {} (%s=%r); "
+                "tokenizer_config.json should use an object, not an array.",
+                type(special_tokens).__name__, entries,
+            )
+        try:
+            self.extra_special_tokens = {}
+        except Exception:
+            pass
+        return orig(self, {})
 
     _patched.__wrapped__ = orig  # keep original reachable
     mixin._set_model_specific_special_tokens = _patched
