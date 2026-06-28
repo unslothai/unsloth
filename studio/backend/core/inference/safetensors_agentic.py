@@ -22,6 +22,7 @@ from loggers import get_logger
 
 from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
+    _balanced_brace_end,
     BUDGET_EXHAUSTED_NUDGE,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
@@ -50,6 +51,10 @@ logger = get_logger(__name__)
 # Buffer cap while disambiguating a possible tool-call prefix.
 _MAX_BUFFER_CHARS = 32
 
+# Hard cap for holding a leading bare-JSON object ({"name":..,"parameters":..})
+# while we wait for it to close. Bounds memory if a top-level "{" never balances.
+_MAX_BARE_JSON_BUFFER = 16384
+
 # Forward-looking intent ("I'll", "First,", "Step 1:") => model is planning, not
 # answering; used to nudge a tool call. Excludes "I can/should/want", "let's"
 # (they also appear in plain answers). Mirrors GGUF.
@@ -62,10 +67,22 @@ _INTENT_SIGNAL = re.compile(
 )
 _MAX_REPROMPTS = 3
 _REPROMPT_MAX_CHARS = 2000
-_REPROMPT_INSTRUCTION = (
+# Templated so the nudge names the tools the caller actually enabled. Hardcoding
+# web_search/python pushed the model toward calls that are rejected when only a
+# subset (or custom/MCP tools) is active. Mirrors the GGUF path's tool_hint.
+_REPROMPT_INSTRUCTION_TEMPLATE = (
     "STOP. Do NOT write code or explain. You MUST call a tool NOW. "
-    "Call web_search or python immediately."
+    "Call {tool_hint} immediately."
 )
+
+
+def _active_tool_names(active_tools: list[dict]) -> list[str]:
+    names = [
+        (tool.get("function") or {}).get("name")
+        for tool in active_tools
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    ]
+    return [name for name in names if name]
 
 
 def strip_tool_markup_streaming(
@@ -387,6 +404,32 @@ def run_safetensors_tool_loop(
                     is_prefix = True
                     break
 
+            # Llama-3.2 ``custom_tools`` emits a bare ``{"name":..,"parameters":..}``
+            # object with no XML signal. Without this, the loop streams that raw JSON
+            # to the client before the end-of-turn safety net recognises it as a call.
+            # Hold a leading ``{`` until its top-level object closes: drain silently if
+            # it parses as a tool call, else fall through and stream it as content
+            # (the DRAINING/ STREAMING resolvers both recover non-call text, so this
+            # can never drop a plain JSON answer).
+            if (
+                not is_match
+                and not is_prefix
+                and tool_protocol_active
+                and stripped.startswith("{")
+            ):
+                if _balanced_brace_end(stripped, 0) is None:
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue  # object still open -- keep buffering
+                elif parse_tool_calls_from_text(
+                    content_buffer,
+                    id_offset = next_call_id,
+                    allow_incomplete = auto_heal_tool_calls,
+                ):
+                    # Closed object that parses as a bare-JSON call -- drain silently.
+                    detect_state = _state_draining
+                    continue
+                # Closed non-call object (or oversized) -- stream it as ordinary text.
+
             if is_match:
                 # Tool signal -- flush any visible prefix before DRAINING
                 # so the route sends it before tool_start.
@@ -474,6 +517,7 @@ def run_safetensors_tool_loop(
                 _stripped = content_accum.strip()
                 if (
                     tools
+                    and auto_heal_tool_calls
                     and reprompt_count < _MAX_REPROMPTS
                     and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
                     and _INTENT_SIGNAL.search(_stripped)
@@ -487,8 +531,12 @@ def run_safetensors_tool_loop(
                         _MAX_REPROMPTS,
                         len(_stripped),
                     )
+                    tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
                     conversation.append({"role": "assistant", "content": _stripped})
-                    conversation.append({"role": "user", "content": _REPROMPT_INSTRUCTION})
+                    conversation.append({
+                        "role": "user",
+                        "content": _REPROMPT_INSTRUCTION_TEMPLATE.format(tool_hint = tool_hint),
+                    })
                     yield {"type": "status", "text": ""}
                     continue
 

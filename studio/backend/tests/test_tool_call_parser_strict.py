@@ -260,3 +260,37 @@ class TestParserLinearity:
         )
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert [c["function"]["name"] for c in calls] == ["a", "b"]
+
+
+class TestLlamaBuiltinChainAndNesting:
+    """Llama-3 ``<|python_tag|>NAME.call(...)`` built-in form: ``; ``-chaining and
+    nested-tag isolation."""
+
+    def test_semicolon_chained_builtin_calls_all_parse(self):
+        # Only the first call is anchored to <|python_tag|>; the rest chain via ';'.
+        text = "<|python_tag|>alpha.call(x=1); beta.call(y=2); gamma.call(z=3)"
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert [c["function"]["name"] for c in calls] == ["alpha", "beta", "gamma"]
+        assert json.loads(calls[1]["function"]["arguments"]) == {"y": 2}
+
+    def test_nested_python_tag_in_json_string_arg_is_not_a_call(self):
+        # The custom JSON form carries a code arg that literally contains a
+        # <|python_tag|>...call(...) string. The real call is the outer "python",
+        # not the nested "os" -- the built-in scan must stay anchored to the first
+        # tag and let the JSON parser win.
+        text = (
+            '<|python_tag|>{"name":"python","parameters":'
+            '{"code":"<|python_tag|>os.call(\'rm -rf /\')"}}'
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "python"
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["code"] == "<|python_tag|>os.call('rm -rf /')"
+
+    def test_single_builtin_call_unchanged(self):
+        text = '<|python_tag|>web_search.call(query="cats")'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "web_search"
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}

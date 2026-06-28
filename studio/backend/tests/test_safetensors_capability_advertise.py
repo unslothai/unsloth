@@ -228,6 +228,28 @@ def test_detect_safetensors_features_llama3_2_bare_json_keeps_tools_on():
     assert flags["supports_tools"] is True
 
 
+MINICPM5_ATTRIBUTE_TEMPLATE = """
+{%- if tools %}
+  {{- 'Available tools. Emit calls as ' }}
+  {{- '<function name="NAME"><parameter name="key">value</parameter></function>' }}
+  {%- for tool in tools %}
+    {{- tool | tojson }}
+  {%- endfor %}
+{%- endif %}
+"""
+
+
+def test_detect_safetensors_features_attribute_function_form_keeps_tools_on():
+    """MiniCPM-5 / MiniMax-M2 emit the attribute form ``<function name="...">``;
+    the parser supports it, so the marker whitelist must include that form (not
+    only the legacy ``<function=``) or the pill is wrongly suppressed."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "openbmb/MiniCPM-5")
+    flags = _detect_safetensors_features(backend, MINICPM5_ATTRIBUTE_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
 def test_detect_safetensors_features_unknown_format_suppresses_tools():
     """A template that advertises tools but uses no known marker must
     be suppressed so the UI does not enable an unsupported pill."""

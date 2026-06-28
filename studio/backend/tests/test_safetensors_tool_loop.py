@@ -205,6 +205,15 @@ class TestParser:
         text = 'before <|tool_call>call:terminal{command:"ls"}<tool_call|> after'
         assert strip_tool_markup(text) == "before  after"
 
+    def test_strip_named_mistral_call_consumes_trailing_eos(self):
+        # The named ``[TOOL_CALLS]name{json}`` shape must eat the optional
+        # trailing ``</s>`` like the array shape, so the EOS marker is not left
+        # behind as visible content.
+        text = '[TOOL_CALLS]web_search{"query":"cats"}</s>'
+        assert strip_tool_markup(text) == ""
+        text = '[TOOL_CALLS]web_search{"query":"cats"}</s> and then'
+        assert strip_tool_markup(text) == " and then"
+
     def test_strip_markup_unclosed_final(self):
         text = "before <tool_call>{partial"
         # final=True drops the trailing run.
@@ -755,6 +764,103 @@ def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
     )
     _collect_events(loop_on)
     assert exec_on.calls == [("web_search", {"query": "weather in Sydney"})], exec_on.calls
+
+
+def test_bare_json_tool_call_is_not_streamed_as_content():
+    # Llama-3.2 ``custom_tools`` bare form ``{"name":..,"parameters":..}`` carries no
+    # XML signal. The loop must BUFFER it until the object closes and execute it via
+    # the safety net, never leaking the raw JSON to streaming clients as content.
+    bare = '{"name":"web_search","parameters":{"query":"cats"}}'
+    loop, exec_fn = _make_loop(
+        turns = [[bare], ["Here are the results."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any('"name"' in t or "web_search" in t for t in contents), contents
+    assert any("Here are the results." in t for t in contents)
+
+
+def test_bare_json_tool_call_split_across_chunks_is_not_streamed():
+    # Same as above but the bare object arrives split mid-key, so the buffer is
+    # held open across chunks before it balances.
+    loop, exec_fn = _make_loop(
+        turns = [
+            ['{"name":"web_', 'search","parameters":{"query":"cats"}}'],
+            ["Done."],
+        ],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any('"name"' in t or "web_search" in t for t in contents), contents
+
+
+def test_leading_json_answer_is_not_dropped():
+    # A leading ``{...}`` that is NOT a tool call must still surface as content:
+    # the bare-JSON hold can only ever delay it to end-of-object, never drop it.
+    obj = '{"answer": 42, "note": "done"}'
+    loop, exec_fn = _make_loop(
+        turns = [[obj]],
+        exec_results = [],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == []
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert any('"answer"' in t for t in contents), contents
+
+
+def _reprompt_loop(*, auto_heal_tool_calls):
+    """Drive a single restricted tool (search_knowledge_base) with an intent-only
+    first turn so the plan-without-action nudge is exercised. Returns the captured
+    per-turn conversations and the collected events."""
+    captured: list[list] = []
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        if len(captured) == 1:
+            yield "I'll search for that now."  # forward-looking intent, no call
+        else:
+            yield "Final answer."
+
+    exec_fn = FakeExecuteTool([])
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "find X"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = auto_heal_tool_calls,
+            max_tool_iterations = 3,
+        )
+    )
+    return captured, events
+
+
+def test_reprompt_names_only_active_tools_not_hardcoded():
+    # The plan-without-action nudge must name the tools actually enabled, never the
+    # old hardcoded ``web_search``/``python`` (which a restricted set would reject).
+    captured, _events = _reprompt_loop(auto_heal_tool_calls = True)
+    assert len(captured) >= 2, "intent prose should have triggered a re-prompt turn"
+    reprompt = captured[1][-1]
+    assert reprompt["role"] == "user"
+    assert "search_knowledge_base" in reprompt["content"]
+    assert "web_search" not in reprompt["content"]
+    assert "python" not in reprompt["content"]
+
+
+def test_reprompt_suppressed_when_auto_heal_disabled():
+    # With Auto-Heal off the safetensors nudge must stay silent for backend parity
+    # with the GGUF loop, so only the single initial generation runs.
+    captured, events = _reprompt_loop(auto_heal_tool_calls = False)
+    assert len(captured) == 1, captured
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert any("search for that" in t for t in contents)
 
 
 class TestLoopBasic:
