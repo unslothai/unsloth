@@ -351,6 +351,10 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
         assert keep(big(), fqn) is True, fqn
     # Without the exclusion (fp8 path), the modulation layer is kept.
     assert make_filter_fn(512)(big(), "transformer_blocks.0.norm1.linear") is True
+    # A None / empty fqn must not crash the exclusion check (defensive against the callback
+    # passing no name); with no name nothing matches the exclusion tokens -> kept.
+    assert keep(big(), None) is True
+    assert keep(big(), "") is True
 
 
 # ── apply ───────────────────────────────────────────────────────────────────────

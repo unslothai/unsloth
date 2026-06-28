@@ -324,7 +324,7 @@ def make_filter_fn(min_features: int, exclude_name_tokens: tuple[str, ...] = ())
         if in_features < min_features or out_features < min_features:
             return False
         if exclude_name_tokens:
-            name = fqn.lower()
+            name = fqn.lower() if fqn else ""
             if any(tok in name for tok in exclude_name_tokens):
                 return False
         return True
