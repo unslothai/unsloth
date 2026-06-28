@@ -2739,6 +2739,29 @@ class TestGuardrails:
             and event.get("type") in {"tool_start", "tool_end"}
         ]
 
+    def test_same_turn_distinct_calls_are_capped(self):
+        # >_MAX_TOOL_CALLS_PER_TURN DISTINCT calls in one turn must be capped so a
+        # runaway turn cannot fan out into many executions (the GGUF path is held
+        # back by llama-server's lazy grammar; safetensors caps explicitly).
+        from core.inference.safetensors_agentic import _MAX_TOOL_CALLS_PER_TURN
+
+        n = _MAX_TOOL_CALLS_PER_TURN + 4
+        turn = "".join(
+            '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+            for i in range(n)
+        )
+        loop, exec_fn = _make_loop(
+            turns = [[turn], ["final"]],
+            exec_results = ["r"] * n,
+            max_tool_iterations = 2,
+        )
+        _collect_events(loop)
+        assert len(exec_fn.calls) == _MAX_TOOL_CALLS_PER_TURN
+        # The first N distinct queries executed, in document order.
+        assert [a["query"] for _name, a in exec_fn.calls] == [
+            "q%d" % i for i in range(_MAX_TOOL_CALLS_PER_TURN)
+        ]
+
     def test_coerce_string_args_python_uses_code_key(self):
         assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}
 
@@ -2997,6 +3020,43 @@ class TestParserRobustness:
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+
+def test_render_with_native_template_returns_render_only_when_tools_emitted():
+    # The native-template fallback re-renders with the model's repo template when
+    # an override drops the tools schema. It must return the rendered prompt only
+    # when the native template actually emits tools (render differs with vs
+    # without tools); otherwise None, so the caller keeps the override render.
+    from types import SimpleNamespace
+
+    from core.inference.inference import InferenceBackend
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    model_info = {"native_chat_template": "TPL", "tokenizer": SimpleNamespace(chat_template = "OVERRIDE")}
+
+    def emitting(tokenizer, msgs, *, tools, **_kw):
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|TOOLS=" + ",".join(t["function"]["name"] for t in tools) if tools else "")
+
+    def ignoring(tokenizer, msgs, *, tools, **_kw):
+        return "".join(m["content"] for m in msgs)  # never reflects tools
+
+    emit_self = SimpleNamespace(active_model_name = "x", _apply_chat_template_for_generation = emitting)
+    out = InferenceBackend._render_with_native_template(
+        emit_self, dict(model_info), messages, tools, None, None, False
+    )
+    assert out == "hi|TOOLS=web_search"
+    # The native template must be restored on the live tokenizer after probing.
+    assert model_info["tokenizer"].chat_template == "OVERRIDE"
+
+    ignore_self = SimpleNamespace(active_model_name = "x", _apply_chat_template_for_generation = ignoring)
+    assert (
+        InferenceBackend._render_with_native_template(
+            ignore_self, dict(model_info), messages, tools, None, None, False
+        )
+        is None
+    )
 
 
 if __name__ == "__main__":

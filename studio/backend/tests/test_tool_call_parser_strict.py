@@ -266,6 +266,30 @@ class TestParserLinearity:
         parse_tool_calls_from_text(text, allow_incomplete = True)
         assert time.perf_counter() - t0 < 2.0
 
+    def test_gemma_wrapperless_deep_nesting_is_linear(self):
+        # Wrapper-less Gemma ``call:f{a:{a:{...}}}`` formerly pre-scanned each
+        # subtree with a balanced-brace walk and then re-parsed it, so doubling
+        # the nesting depth ~quadrupled the time (O(n^2)). The single-pass parser
+        # is ~linear, so 2x depth should be well under 3x time.
+        import time
+
+        def nested(d):
+            return "call:f{a:" + "{a:" * d + "x:1" + "}" * d + "}"
+
+        def best_ms(depth):
+            text = nested(depth)
+            best = float("inf")
+            for _ in range(5):
+                t0 = time.perf_counter()
+                calls = parse_tool_calls_from_text(text)
+                best = min(best, time.perf_counter() - t0)
+            assert calls and json.loads(calls[0]["function"]["arguments"]), "nested args dropped"
+            return best
+
+        t200 = best_ms(200)
+        t400 = best_ms(400)
+        assert t400 < t200 * 3.0, (t200, t400)
+
     def test_llama3_call_kwargs_still_parse(self):
         text = '<|python_tag|>do.call(s="hi 😀", n=42, f=1.5, b=true, z=null)'
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)

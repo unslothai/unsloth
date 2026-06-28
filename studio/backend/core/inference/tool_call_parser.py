@@ -1056,90 +1056,60 @@ def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
     return None
 
 
-def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:
-    """Like ``_balanced_brace_end`` but skips ``<|"|>`` strings and matches {}/[] symmetrically."""
-    if brace_pos >= len(text) or text[brace_pos] != "{":
-        return None
-    depth = 0
-    i = brace_pos
-    while i < hard_stop:
-        if text.startswith(_GEMMA_STR_BEGIN, i):
-            close = text.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
-            if close < 0:
-                return None
-            i = close + len(_GEMMA_STR_END)
-            continue
-        ch = text[i]
-        if ch == "{" or ch == "[":
-            depth += 1
-        elif ch == "}" or ch == "]":
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return None
-
-
 def _gemma_parse_value(text: str, i: int):
-    """Parse one Gemma arg value at ``i``; returns ``(value, next_index)``."""
+    """Parse one Gemma arg value at ``i``; returns ``(value, next_index, closed)``.
+
+    Single forward pass: ``{}``/``[]`` are parsed in place (no separate
+    balanced-brace pre-scan + re-walk), so nested values stay O(n) instead of
+    re-scanning each subtree per level. ``closed`` is False when a string /
+    object / array runs off the end of ``text`` without its terminator, so the
+    caller can fall back to the raw scalar."""
     if text.startswith(_GEMMA_STR_BEGIN, i):
         close = text.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
         if close < 0:
-            return text[i + len(_GEMMA_STR_BEGIN) :], len(text)
-        return text[i + len(_GEMMA_STR_BEGIN) : close], close + len(_GEMMA_STR_END)
+            return text[i + len(_GEMMA_STR_BEGIN) :], len(text), False
+        return text[i + len(_GEMMA_STR_BEGIN) : close], close + len(_GEMMA_STR_END), True
     if text[i] == "{":
-        end = _gemma_balanced_brace_end(text, i, len(text))
-        if end is None:
-            return {}, len(text)
-        return _gemma_parse_mapping_body(text[i + 1 : end]), end + 1
+        return _gemma_parse_mapping(text, i)
     if text[i] == "[":
-        j, depth = i, 0
-        while j < len(text):
-            if text.startswith(_GEMMA_STR_BEGIN, j):
-                k = text.find(_GEMMA_STR_END, j + len(_GEMMA_STR_BEGIN))
-                if k < 0:
-                    j = len(text)
-                    break
-                j = k + len(_GEMMA_STR_END)
-                continue
-            ch = text[j]
-            if ch == "[":
-                depth += 1
-            elif ch == "]":
-                depth -= 1
-                if depth == 0:
-                    break
-            j += 1
-        body = text[i + 1 : j]
-        items: list[Any] = []
-        k = 0
-        while k < len(body):
-            if body[k] in " \t\n\r,":
-                k += 1
-                continue
-            v, k = _gemma_parse_value(body, k)
-            items.append(v)
-        return items, j + 1
+        return _gemma_parse_array(text, i)
     # Primitive: number / true/false/null / bare identifier.
     end = i
     while end < len(text) and text[end] not in ",}]" and not text.startswith(_GEMMA_STR_BEGIN, end):
         end += 1
     raw = text[i:end].strip()
     if raw == "true":
-        return True, end
+        return True, end, True
     if raw == "false":
-        return False, end
+        return False, end, True
     if raw == "null":
-        return None, end
+        return None, end, True
     try:
-        return int(raw), end
+        return int(raw), end, True
     except ValueError:
         pass
     try:
-        return float(raw), end
+        return float(raw), end, True
     except ValueError:
         pass
-    return raw, end
+    return raw, end, True
+
+
+def _gemma_parse_array(text: str, start: int):
+    """Parse a Gemma ``[...]`` array at ``text[start] == '['`` in one forward
+    pass; returns ``(list, next_index, closed)``."""
+    items: list[Any] = []
+    i, n = start + 1, len(text)
+    while i < n:
+        while i < n and text[i] in " \t\n\r,":
+            i += 1
+        if i < n and text[i] == "]":
+            return items, i + 1, True
+        if i >= n:
+            break
+        v, i, _closed = _gemma_parse_value(text, i)
+        items.append(v)
+    return items, i, False
 
 
 def _gemma_coerce_scalar(raw: str) -> Any:
@@ -1193,15 +1163,12 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
             i += 1
         raw_val = body[vstart:i].strip()
         if raw_val[:1] in "{[":
-            # Nested object/array in the wrapper-less stream: parse recursively,
-            # but accept only when it consumes the whole balanced value so a
-            # truncated / malformed value falls back to the raw string.
-            parsed, end = _gemma_parse_value(raw_val, 0)
-            balanced = end == len(raw_val) and (
-                raw_val[0] != "{"
-                or _gemma_balanced_brace_end(raw_val, 0, len(raw_val)) == len(raw_val) - 1
-            )
-            out[key] = parsed if balanced else _gemma_coerce_scalar(raw_val)
+            # Nested object/array in the wrapper-less stream: parse in one pass,
+            # accepting it only when the single-pass parser both closed the value
+            # and consumed all of it, so a truncated / malformed value falls back
+            # to the raw string.
+            parsed, end, closed = _gemma_parse_value(raw_val, 0)
+            out[key] = parsed if (closed and end == len(raw_val)) else _gemma_coerce_scalar(raw_val)
         else:
             out[key] = _gemma_coerce_scalar(raw_val)
         if i < n and body[i] == ",":
@@ -1209,39 +1176,45 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
     return out
 
 
-def _gemma_parse_mapping_body(body: str) -> dict[str, Any]:
-    """Parse a Gemma argument mapping (content between `{` and `}`)."""
+def _gemma_parse_mapping(text: str, start: int):
+    """Parse a Gemma ``{key:value, ...}`` mapping at ``text[start] == '{'`` in one
+    forward pass; returns ``(dict, next_index, closed)`` (``closed`` True iff the
+    matching ``}`` was reached)."""
     out: dict[str, Any] = {}
-    i = 0
-    n = len(body)
+    i, n = start + 1, len(text)
     while i < n:
-        while i < n and body[i] in " \t\n\r,":
+        while i < n and text[i] in " \t\n\r,":
             i += 1
+        if i < n and text[i] == "}":
+            return out, i + 1, True
         if i >= n:
             break
-        if body.startswith(_GEMMA_STR_BEGIN, i):
-            close = body.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
+        if text.startswith(_GEMMA_STR_BEGIN, i):
+            close = text.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
             if close < 0:
                 break
-            key = body[i + len(_GEMMA_STR_BEGIN) : close]
+            key = text[i + len(_GEMMA_STR_BEGIN) : close]
             i = close + len(_GEMMA_STR_END)
         else:
             kstart = i
-            while i < n and body[i] != ":":
+            while i < n and text[i] not in ":}":
                 i += 1
-            key = body[kstart:i].strip()
-        while i < n and body[i] in " \t\n\r":
+            key = text[kstart:i].strip()
+        while i < n and text[i] in " \t\n\r":
             i += 1
-        if i < n and body[i] == ":":
+        if i < n and text[i] == ":":
             i += 1
-        while i < n and body[i] in " \t\n\r":
+        while i < n and text[i] in " \t\n\r":
             i += 1
         if i >= n:
             out[key] = None
             break
-        v, i = _gemma_parse_value(body, i)
+        if text[i] == "}":
+            out[key] = None
+            return out, i + 1, True
+        v, i, _closed = _gemma_parse_value(text, i)
         out[key] = v
-    return out
+    return out, i, False
 
 
 # ── DeepSeek R1 / V3 / V3.1 ─────────────────────────────────────────
@@ -1258,9 +1231,8 @@ def _parse_deepseek_tool_calls(
     R1:    ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`<｜tool▁call▁end｜>...``
     V3.x:  ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜>...``
 
-    Ports llama.cpp ``common_chat_parse_deepseek_r1`` / ``_v3_1`` at
-    commit ``51fa458a92d6`` (pre-autoparser refactor); tolerates the 5
-    opener variants llama.cpp keeps.
+    Mirrors llama.cpp's pre-autoparser ``common_chat_parse_deepseek_r1`` /
+    ``_v3_1`` handling; tolerates the 5 opener variants llama.cpp keeps.
     """
     out: list[dict] = []
     begin = _DEEPSEEK_BEGIN_RE.search(content)
@@ -1383,7 +1355,8 @@ def _parse_glm_tool_calls(
 
     ``<tool_call>NAME[\\n]<arg_key>K</arg_key>[\\n]<arg_value>V</arg_value>
     ...</tool_call>``. Multi-call is back-to-back blocks, no envelope.
-    Ports llama.cpp ``common_chat_parse_glm_4_5`` at ``51fa458a92d6``.
+    Mirrors llama.cpp's GLM 4.x tool-call handling (``common_chat_params_init_glm_4_5``
+    plus its generalized XML-style parser, llama.cpp PRs #15904 / #16932).
     """
     out: list[dict] = []
     pos = 0
@@ -1471,8 +1444,8 @@ def _parse_kimi_tool_calls(
     <|tool_call_argument_begin|>{json}<|tool_call_end|>...
     <|tool_calls_section_end|>``. Full id is preserved on ``tool_calls
     [i].id`` for round-trip through the chat template. Outer loop walks
-    every section in the stream (vLLM / SGLang parity); ports llama.cpp
-    ``common_chat_parse_kimi_k2`` at ``51fa458a92d6``.
+    every section in the stream (vLLM / SGLang parity); mirrors llama.cpp's
+    Kimi K2 handling via its generalized XML-style parser (llama.cpp PR #16932).
     """
     out: list[dict] = []
     outer_pos = 0

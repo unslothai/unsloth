@@ -187,3 +187,17 @@ def test_wrapperless_array_argument_is_parsed():
     calls = parse_tool_calls_from_text("call:label{labels:[bug,ui],n:2}")
     assert len(calls) == 1
     assert _args(calls[0]) == {"labels": ["bug", "ui"], "n": 2}
+
+
+def test_wrapperless_deeply_nested_object_and_array_are_preserved():
+    # The single-pass parser must keep multi-level nesting (objects inside
+    # objects, arrays inside arrays) intact, not flatten or drop it.
+    calls = parse_tool_calls_from_text(
+        "call:f{loc:{city:NYC,geo:{lat:1,lng:2}},tags:[a,b,[c,d]],n:3}"
+    )
+    assert len(calls) == 1
+    assert _args(calls[0]) == {
+        "loc": {"city": "NYC", "geo": {"lat": 1, "lng": 2}},
+        "tags": ["a", "b", ["c", "d"]],
+        "n": 3,
+    }
