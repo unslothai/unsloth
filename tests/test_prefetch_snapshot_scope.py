@@ -308,7 +308,9 @@ def test_optimizer_safetensors_does_not_drop_bin(monkeypatch):
 def test_model_safetensors_still_drops_bin(monkeypatch):
     """Control for the optimizer case: a real model.safetensors next to pytorch_model.bin still
     drops the redundant .bin (the sidecar exclusion must not over-trigger) (Codex #6638)."""
-    _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.bin", "optimizer.safetensors"])
+    _install_fake_model_info(
+        monkeypatch, ["model.safetensors", "pytorch_model.bin", "optimizer.safetensors"]
+    )
     ig = U._prefetch_ignore_patterns("org/repo")
     assert "*.bin" in ig
 

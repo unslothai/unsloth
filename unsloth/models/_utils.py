@@ -1028,9 +1028,15 @@ def _in_requested_load_scope(filename, subfolder):
 # Training-state files that carry a .safetensors suffix but are NOT loadable model weights. A
 # Trainer checkpoint can ship optimizer.safetensors / scheduler.safetensors next to the real
 # pytorch_model.bin, and counting one as "model safetensors present" would drop the needed .bin.
-_NON_MODEL_WEIGHT_STEMS = frozenset({
-    "optimizer", "scheduler", "scaler", "rng_state", "training_args",
-})
+_NON_MODEL_WEIGHT_STEMS = frozenset(
+    {
+        "optimizer",
+        "scheduler",
+        "scaler",
+        "rng_state",
+        "training_args",
+    }
+)
 
 
 def _is_model_weight_safetensors(filename):
