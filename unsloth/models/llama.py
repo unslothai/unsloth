@@ -3735,11 +3735,9 @@ class FastLlamaModel:
 
 from .rl import PatchFastRL
 
-PatchFastRL(FastLanguageModel = FastLlamaModel)
-
-
 # Auto-enable grouped-GEMM MoE (transformers<5 ModuleList experts) on built / PEFT'd
-# models. Wraps the loader leaves once; guarded so it never breaks model loading.
+# models. Wrap the loader leaves before PatchFastRL so any patcher that captures these
+# entry points sees the wrapped versions. Guarded so it never breaks model loading.
 try:
     from unsloth_zoo.temporary_patches.moe_grouped_modulelist import wrap_loader_for_grouped_moe
     FastLlamaModel.from_pretrained = staticmethod(
@@ -3750,3 +3748,5 @@ try:
     )
 except Exception:
     pass
+
+PatchFastRL(FastLanguageModel = FastLlamaModel)
