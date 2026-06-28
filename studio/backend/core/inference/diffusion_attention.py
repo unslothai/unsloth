@@ -71,8 +71,8 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
 # and then crashes mid-generation. Gate them up front: minimum (major, minor) compute
 # capability per dispatcher backend name.
 _MIN_CUDA_CAPABILITY: dict[str, tuple[int, int]] = {
-    "_flash_3_hub": (9, 0),   # FlashAttention 3 -> Hopper (SM90)
-    "flash_4_hub": (10, 0),   # FlashAttention 4 -> Blackwell (SM100)
+    "_flash_3_hub": (9, 0),  # FlashAttention 3 -> Hopper (SM90)
+    "flash_4_hub": (10, 0),  # FlashAttention 4 -> Blackwell (SM100)
 }
 
 
