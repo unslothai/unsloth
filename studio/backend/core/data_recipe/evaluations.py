@@ -114,9 +114,7 @@ def _apply_json_document_score(
         )
         scores.append(float(score))
         if want_breakdown:
-            breakdown = (
-                dataclasses.asdict(node) if dataclasses.is_dataclass(node) else node
-            )
+            breakdown = dataclasses.asdict(node) if dataclasses.is_dataclass(node) else node
             breakdowns.append(json.dumps(breakdown))
 
     df[score_column] = scores
