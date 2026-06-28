@@ -698,6 +698,20 @@ def test_validate_load_request(tmp_path):
             gguf_filename = "m.gguf",
             family_override = "z-image",
         )
+    # Windows-shaped local paths (backslash separator / .\ ..\ prefixes) are also caught
+    # here, so a mistyped local pick on Windows can't be mistaken for a remote HF repo.
+    for missing in (r".\models\z-image", r"..\z-image", r"models\z-image", r"C:\models\z"):
+        with pytest.raises(FileNotFoundError):
+            backend.validate_load_request(
+                missing, gguf_filename = "m.gguf", family_override = "z-image"
+            )
+    # A bare "org/name" HF id is still treated as remote (not rejected as a local path).
+    assert (
+        backend.validate_load_request(
+            "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf"
+        ).name
+        == "z-image"
+    )
 
 
 def test_replacement_load_waits_for_inflight_generation(fake_runtime, tmp_path):
@@ -761,3 +775,62 @@ def test_replacement_load_waits_for_inflight_generation(fake_runtime, tmp_path):
     assert "exc" in gen_out and "cancelled" in str(gen_out["exc"]).lower()
     assert backend.status()["loaded"] is True
     assert backend.status()["repo_id"] == str(tmp_path)
+
+
+def test_superseded_load_does_not_cancel_unrelated_generation(fake_runtime, tmp_path):
+    # A stale worker (its _load_token already bumped by unload/a newer load) must bail on
+    # the token check BEFORE touching the current model's in-flight generation -- otherwise
+    # it would abort an unrelated denoise on its way out.
+    import threading
+
+    backend = DiffusionBackend()
+    started = threading.Event()
+    release = threading.Event()
+
+    class _BlockingPipe:
+        def __call__(self, **kwargs):
+            started.set()
+            release.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    backend._state = _LoadState(
+        pipe = _BlockingPipe(),
+        family = fam,
+        repo_id = "current",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+    backend._load_token = 7  # the "current" token
+
+    gen_out: dict = {}
+
+    def _gen():
+        try:
+            backend.generate(prompt = "p", steps = 4)
+        except Exception as exc:  # noqa: BLE001
+            gen_out["exc"] = exc
+
+    gt = threading.Thread(target = _gen)
+    gt.start()
+    assert started.wait(5)  # generation in flight
+    cancel_event = backend._active_generate_cancel
+    assert cancel_event is not None
+
+    # A superseded load arrives with a STALE token -> must raise without cancelling.
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.load_pipeline(
+            str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", _load_token = 1
+        )
+    # The in-flight generation's cancel must NOT have been signalled by the stale worker.
+    assert not cancel_event.is_set()
+
+    release.set()
+    gt.join(5)
+    # The generation completed normally (not cancelled).
+    assert "exc" not in gen_out
+    # The stale load did not replace the current model.
+    assert backend.status()["repo_id"] == "current"

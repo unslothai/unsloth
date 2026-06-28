@@ -217,7 +217,14 @@ class DiffusionBackend:
         local_root = Path(repo_id).expanduser()
         if local_root.exists():
             resolve_local_gguf_child(local_root, gguf_filename)
-        elif repo_id.startswith(("/", "~", "./", "../")) or local_root.is_absolute():
+        elif (
+            # POSIX path-shaped, a "."/".." prefix (covers ./ ../ and their Windows .\ ..\
+            # forms), a Windows separator anywhere (never present in a bare "org/name" HF
+            # id), or an absolute path on this OS.
+            repo_id.startswith(("/", "\\", "~", "."))
+            or "\\" in repo_id
+            or local_root.is_absolute()
+        ):
             raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
         return fam
 
@@ -397,12 +404,18 @@ class DiffusionBackend:
         # The cancel makes that wait ~one step (or the rest of the denoise for a
         # pipeline that ignores the step callback).
         with self._lock:
+            # Check the token BEFORE cancelling: a superseded/cancelled worker (its
+            # token already bumped by unload or a newer load) must not abort the
+            # current model's unrelated in-flight generation on its way out.
+            if _load_token is not None and _load_token != self._load_token:
+                raise RuntimeError("Diffusion load was cancelled.")
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
         with self._generate_lock:
             with self._lock:
-                # Bail before the (slow, VRAM-heavy) build if an unload/eviction or a
-                # newer load superseded this one while we were resolving/downloading.
+                # Re-check under the lock (we dropped it to wait on _generate_lock): an
+                # unload/eviction or a newer load may have superseded this one while we
+                # waited, and the slow VRAM-heavy build below must not run if so.
                 if _load_token is not None and _load_token != self._load_token:
                     raise RuntimeError("Diffusion load was cancelled.")
 
