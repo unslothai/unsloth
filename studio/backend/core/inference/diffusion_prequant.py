@@ -45,7 +45,6 @@ ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 def _local_prequant_path_allowed() -> bool:
     """Whether a request-supplied local pre-quant *path* may be unpickled (operator opt-in)."""
     import os
-
     return (os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV) or "").strip().lower() in {
         "1",
         "true",
