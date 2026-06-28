@@ -477,9 +477,7 @@ def _looks_like_path(value: str) -> bool:
     # absolute POSIX path (/...), a UNC path (\\...), or a drive-qualified Windows
     # path (C:...). Scalar knobs (e.g. a numeric context window) must pass through
     # untranslated, so they get no flag.
-    return bool(value) and (
-        value.startswith(("/", "\\")) or (len(value) >= 2 and value[1] == ":")
-    )
+    return bool(value) and (value.startswith(("/", "\\")) or (len(value) >= 2 and value[1] == ":"))
 
 
 def _wsl_bridge_names(env: dict, unset_env: tuple) -> tuple:
