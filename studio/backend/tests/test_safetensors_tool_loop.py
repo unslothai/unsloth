@@ -3033,7 +3033,10 @@ def test_render_with_native_template_returns_render_only_when_tools_emitted():
 
     messages = [{"role": "user", "content": "hi"}]
     tools = [{"type": "function", "function": {"name": "web_search"}}]
-    model_info = {"native_chat_template": "TPL", "tokenizer": SimpleNamespace(chat_template = "OVERRIDE")}
+    model_info = {
+        "native_chat_template": "TPL",
+        "tokenizer": SimpleNamespace(chat_template = "OVERRIDE"),
+    }
 
     def emitting(tokenizer, msgs, *, tools, **_kw):
         body = "".join(m["content"] for m in msgs)
@@ -3050,7 +3053,9 @@ def test_render_with_native_template_returns_render_only_when_tools_emitted():
     # The native template must be restored on the live tokenizer after probing.
     assert model_info["tokenizer"].chat_template == "OVERRIDE"
 
-    ignore_self = SimpleNamespace(active_model_name = "x", _apply_chat_template_for_generation = ignoring)
+    ignore_self = SimpleNamespace(
+        active_model_name = "x", _apply_chat_template_for_generation = ignoring
+    )
     assert (
         InferenceBackend._render_with_native_template(
             ignore_self, dict(model_info), messages, tools, None, None, False
