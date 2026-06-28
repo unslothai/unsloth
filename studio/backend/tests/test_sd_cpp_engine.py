@@ -78,7 +78,10 @@ def test_find_returns_none_when_absent(tmp_path, monkeypatch):
 # ── availability / version ──────────────────────────────────────────────────
 
 
-def test_engine_unavailable_when_no_binary():
+def test_engine_unavailable_when_no_binary(monkeypatch):
+    # Force the "no binary anywhere" condition so the test is hermetic even on a host
+    # that happens to have sd-cli installed.
+    monkeypatch.setattr(eng, "find_sd_cpp_binary", lambda: None)
     e = SdCppEngine(binary = None)
     assert e.is_available() is False
     assert e.version() is None
@@ -350,12 +353,13 @@ def test_upscale_runs_and_returns_path(tmp_path, monkeypatch):
     assert "--upscale-model" in _FakePopen.captured_cmd
 
 
-def test_upscale_raises_when_binary_missing():
+def test_upscale_raises_when_binary_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(eng, "find_sd_cpp_binary", lambda: None)
     e = SdCppEngine(binary = None)
     with pytest.raises(RuntimeError, match = "not found"):
         e.upscale(
             SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth"),
-            output_path = "/tmp/x.png",
+            output_path = str(tmp_path / "x.png"),
         )
 
 

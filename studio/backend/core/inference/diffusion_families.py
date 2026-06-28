@@ -44,6 +44,20 @@ class DiffusionFamily:
     # materialising the dense bf16 transformer on the GPU (much lower load VRAM + a
     # smaller download). Empty until checkpoints are hosted -> behaviour is unchanged.
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Native (stable-diffusion.cpp) single-file assets, used only when the no-GPU
+    # sd.cpp engine is selected (CPU / Apple). The transformer GGUF is shared with
+    # the diffusers path; sd-cli additionally needs a single-file VAE and text
+    # encoder(s), because the diffusers base repo ships those sharded and sd-cli
+    # cannot read that layout. Each asset is a hashable (repo_id, filename) the
+    # backend fetches with hf_hub_download. ``sd_cpp_text_encoders`` carries a
+    # trailing SdCppModelFiles field name (clip_l / t5xxl / llm / qwen2vl / clip_g)
+    # so the backend maps each file onto the right sd-cli flag. Empty -> the family
+    # has no native mapping and the sd.cpp route falls back to diffusers.
+    sd_cpp_vae: Optional[tuple[str, str]] = None
+    # VAE latent-format override for sd-cli (--vae-format): "flux2" for the FLUX.2
+    # autoencoder, None (auto) otherwise.
+    sd_cpp_vae_format: Optional[str] = None
+    sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
 
 
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
@@ -59,6 +73,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
         aliases = ("flux1", "flux-1"),
+        sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        sd_cpp_text_encoders = (
+            ("comfyanonymous/flux_text_encoders", "clip_l.safetensors", "clip_l"),
+            ("comfyanonymous/flux_text_encoders", "t5xxl_fp16.safetensors", "t5xxl"),
+        ),
     ),
     # FLUX.2-klein is a distinct pipeline (Flux2KleinPipeline) with a Qwen3 text
     # encoder, not the Mistral-based Flux2Pipeline; it must precede a generic
@@ -69,6 +88,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
         aliases = ("flux2-klein",),
+        # FLUX.2 uses a distinct 32-channel autoencoder; sd-cli needs the latent
+        # format override. The single-file VAE ships in Comfy-Org/flux2-dev (the
+        # klein-4B repo only has a sharded diffusers VAE). Shares Qwen3-4B with z-image.
+        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        sd_cpp_vae_format = "flux2",
+        sd_cpp_text_encoders = (
+            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
+        ),
     ),
     DiffusionFamily(
         name = "qwen-image",
@@ -77,6 +104,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Qwen/Qwen-Image",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
+        sd_cpp_vae = ("Comfy-Org/Qwen-Image_ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        # The Qwen2.5-VL text encoder as a Q4_K_M GGUF keeps the CPU RAM win (the
+        # bf16 safetensors encoder is ~15 GB). sd-cli's --qwen2vl is an alias of --llm.
+        sd_cpp_text_encoders = (
+            ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", "qwen2vl"),
+        ),
     ),
     DiffusionFamily(
         name = "z-image",
@@ -86,6 +119,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("zimage", "z_image"),
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
         fp16_incompatible = True,
+        sd_cpp_vae = ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors"),
+        sd_cpp_text_encoders = (
+            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
+        ),
     ),
 )
 
@@ -128,6 +165,13 @@ def family_prequant_repo(fam: DiffusionFamily, scheme: str) -> Optional[str]:
         if entry_scheme == scheme:
             return repo_id
     return None
+
+
+def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
+    """True when the family has the single-file VAE + text-encoder mapping the
+    native sd.cpp engine needs. A family without it can only run on diffusers, so
+    the no-GPU route falls back rather than routing to sd-cli."""
+    return bool(fam.sd_cpp_vae and fam.sd_cpp_text_encoders)
 
 
 def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:

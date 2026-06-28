@@ -10058,24 +10058,32 @@ async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_engine_router import annotate_status, select_and_activate_engine
     from core.inference.gpu_arbiter import acquire_for, DIFFUSION
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
     try:
         # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family,
-        # missing local GGUF) must not evict a working chat model and then 400.
-        await asyncio.to_thread(
+        # missing local GGUF) must not evict a working chat model and then 400. The
+        # validated family also drives engine selection below.
+        fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
         )
+        # Pick the engine for this host (diffusers on GPU, native sd.cpp with no GPU),
+        # installing the sd-cli binary if needed -- all BEFORE evicting chat, so a
+        # native fallback never strands a half-loaded state.
+        engine = await asyncio.to_thread(
+            select_and_activate_engine, fam, hf_token = request.hf_token
+        )
         # Now take the GPU from the chat backend, then kick the (slow) load onto a
         # background thread and return at once — the client polls images/load-progress.
         await asyncio.to_thread(acquire_for, DIFFUSION)
         status_dict = await asyncio.to_thread(
-            backend.begin_load,
+            engine.begin_load,
             request.model_path,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
@@ -10092,7 +10100,7 @@ async def load_diffusion_model(
             transformer_cache = request.transformer_cache,
             transformer_cache_threshold = request.transformer_cache_threshold,
         )
-        return DiffusionStatusResponse(**status_dict)
+        return DiffusionStatusResponse(**annotate_status(status_dict))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except RuntimeError as exc:
@@ -10105,9 +10113,9 @@ async def generate_diffusion_image(
     request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference import image_gallery
-    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-    backend = get_diffusion_backend()
+    backend = get_active_diffusion_engine()
     try:
         result = await asyncio.to_thread(
             backend.generate,
@@ -10221,27 +10229,27 @@ async def clear_gallery_images(current_subject: str = Depends(get_current_subjec
 
 @studio_router.post("/images/unload", response_model = DiffusionStatusResponse)
 async def unload_diffusion_model(current_subject: str = Depends(get_current_subject)):
-    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from core.inference.gpu_arbiter import release, DIFFUSION
 
-    status_dict = await asyncio.to_thread(get_diffusion_backend().unload)
+    status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
     release(DIFFUSION)
-    return DiffusionStatusResponse(**status_dict)
+    return DiffusionStatusResponse(**annotate_status(status_dict))
 
 
 @studio_router.get("/images/status", response_model = DiffusionStatusResponse)
 async def diffusion_status(current_subject: str = Depends(get_current_subject)):
-    from core.inference.diffusion import get_diffusion_backend
-    return DiffusionStatusResponse(**get_diffusion_backend().status())
+    from core.inference.diffusion_engine_router import active_status
+    return DiffusionStatusResponse(**active_status())
 
 
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
 async def diffusion_load_progress(current_subject: str = Depends(get_current_subject)):
-    from core.inference.diffusion import get_diffusion_backend
-    return DiffusionLoadProgressResponse(**get_diffusion_backend().load_progress())
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    return DiffusionLoadProgressResponse(**get_active_diffusion_engine().load_progress())
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
-    from core.inference.diffusion import get_diffusion_backend
-    return DiffusionGenerateProgressResponse(**get_diffusion_backend().generate_progress())
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    return DiffusionGenerateProgressResponse(**get_active_diffusion_engine().generate_progress())

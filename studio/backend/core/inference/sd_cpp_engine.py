@@ -26,6 +26,7 @@ import logging
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -48,6 +49,30 @@ logger = logging.getLogger(__name__)
 # target is ``sd-cli``; older builds shipped ``sd`` -- both are probed on PATH.
 _BINARY_STEM = "sd-cli"
 _LEGACY_STEM = "sd"
+
+
+class SdCppCancelled(RuntimeError):
+    """A generation was cancelled via its ``cancel_event`` (unload / superseding load
+    / arbiter eviction). Distinct from a generation *failure* so the caller can keep
+    cancellation semantics (no diffusers fallback, no error surfaced as a crash)."""
+
+
+def _terminate(proc: "subprocess.Popen") -> None:
+    """Hard-stop an sd-cli process (and any children). On POSIX the process is its
+    own session leader (``start_new_session``), so kill the whole group; otherwise
+    fall back to killing just the process."""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+    except Exception:  # noqa: BLE001 -- killpg can miss (no pgid / already gone); fall back
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001 -- best-effort teardown
+            pass
 
 
 def _binary_name(stem: str) -> str:
@@ -199,6 +224,7 @@ class SdCppEngine:
         timeout: Optional[float] = 1800.0,
         env: Optional[dict[str, str]] = None,
         on_log: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Path:
         """Run one ``sd-cli`` generation; return the written image path.
 
@@ -206,7 +232,9 @@ class SdCppEngine:
         (``--diffusion-fa`` etc.), de-duplicated against the offload flags that may
         already include them. Raises ``RuntimeError`` if the binary is missing, the
         process exits nonzero, or no output file is produced. ``on_log`` (if given)
-        receives each line of sd-cli's progress output as it arrives.
+        receives each line of sd-cli's progress output as it arrives. ``cancel_event``
+        (if given) is polled while the child runs; when set, the process tree is
+        killed and ``SdCppCancelled`` is raised.
         """
         offload = list(offload or [])
         speed = [f for f in native_speed_flags(native_speed) if f not in offload]
@@ -221,7 +249,10 @@ class SdCppEngine:
             verbose = verbose,
             extra_args = merged_extra,
         )
-        return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
+        return self._run(
+            cmd, output_path, timeout = timeout, env = env, on_log = on_log,
+            cancel_event = cancel_event,
+        )
 
     def upscale(
         self,
@@ -233,6 +264,7 @@ class SdCppEngine:
         timeout: Optional[float] = 1800.0,
         env: Optional[dict[str, str]] = None,
         on_log: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Path:
         """Upscale an image with an ESRGAN model; return the written path."""
         cmd = build_sd_cpp_upscale_command(
@@ -242,7 +274,10 @@ class SdCppEngine:
             verbose = verbose,
             extra_args = extra_args,
         )
-        return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
+        return self._run(
+            cmd, output_path, timeout = timeout, env = env, on_log = on_log,
+            cancel_event = cancel_event,
+        )
 
     # ── internals ─────────────────────────────────────────────────────────────
 
@@ -268,11 +303,13 @@ class SdCppEngine:
         timeout: Optional[float],
         env: Optional[dict[str, str]],
         on_log: Optional[Callable[[str], None]],
+        cancel_event: Optional[threading.Event] = None,
     ) -> Path:
         """Run an sd-cli argv, stream output, and return the produced image path.
 
-        Raises ``RuntimeError`` on nonzero exit, timeout, or a missing output.
-        Shared by ``generate`` and ``upscale``.
+        Raises ``RuntimeError`` on nonzero exit, timeout, or a missing output, and
+        ``SdCppCancelled`` when ``cancel_event`` fires. Shared by ``generate`` and
+        ``upscale``.
         """
         out = Path(output_path)
         base = dict(os.environ)
@@ -289,6 +326,9 @@ class SdCppEngine:
             text = True,
             errors = "replace",
             env = run_env,
+            # Own session/process group so cancellation/timeout can kill the whole
+            # tree, not just the parent (POSIX only; harmless flag elsewhere).
+            start_new_session = (os.name == "posix"),
         )
         # Drain stdout on a reader thread so the timeout is enforced even when the
         # child hangs WITHOUT printing (e.g. stuck in model load / GPU init): a plain
@@ -313,8 +353,13 @@ class SdCppEngine:
         stdout_done = False
         try:
             while True:
+                # Cancellation (unload / superseding load / arbiter eviction): kill the
+                # process tree and signal the caller it was cancelled, not a failure.
+                if cancel_event is not None and cancel_event.is_set() and proc.poll() is None:
+                    _terminate(proc)
+                    raise SdCppCancelled("sd-cli generation was cancelled.")
                 if deadline is not None and time.monotonic() >= deadline and proc.poll() is None:
-                    proc.kill()
+                    _terminate(proc)
                     raise RuntimeError(f"sd-cli timed out after {timeout}s")
                 try:
                     line = line_q.get(timeout = 0.1)
@@ -335,7 +380,7 @@ class SdCppEngine:
             ret = proc.wait(timeout = 5.0)
         finally:
             if proc.poll() is None:
-                proc.kill()
+                _terminate(proc)
 
         if ret != 0:
             raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + "\n".join(tail[-12:]))

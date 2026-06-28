@@ -114,6 +114,24 @@ def _unloaded_status():
 def client(monkeypatch, tmp_path):
     backend = _FakeBackend()
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    # Neutralise the engine router so the routes deterministically drive this fake
+    # (diffusers) backend regardless of the host's real device, and never attempt a
+    # native sd.cpp install/download. The router's selection logic is covered in
+    # test_diffusion_engine_router.py; one route-level sd_cpp test lives below.
+    import core.inference.diffusion_engine_router as engine_router
+
+    # Delegate to whatever get_diffusion_backend currently returns, so per-test
+    # re-patches of the backend still flow through the routes.
+    monkeypatch.setattr(
+        engine_router, "select_and_activate_engine",
+        lambda fam, **kw: diffusion_module.get_diffusion_backend(),
+    )
+    monkeypatch.setattr(
+        engine_router, "get_active_diffusion_engine",
+        lambda: diffusion_module.get_diffusion_backend(),
+    )
+    monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
+    monkeypatch.setattr(engine_router, "_fallback_reason", None)
     # Isolate from the real GPU arbiter: reset ownership and stub the evictors so
     # the load route's acquire_for() never touches live backend singletons.
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
@@ -421,6 +439,54 @@ def test_out_of_range_cache_threshold_returns_422(client):
         },
     )
     assert resp.status_code == 422
+
+
+def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
+    """End-to-end through the REAL router: a CPU host with an available binary routes
+    the load to the native sd.cpp engine and the response reports engine=sd_cpp."""
+    from types import SimpleNamespace
+
+    import core.inference.diffusion_engine_router as engine_router
+    import core.inference.sd_cpp_backend as sd_backend
+
+    for e in (
+        "UNSLOTH_DIFFUSION_ENGINE", "UNSLOTH_DIFFUSION_SD_CPP",
+        "UNSLOTH_DIFFUSION_SD_CPP_MPS", "UNSLOTH_DIFFUSION_SD_CPP_INSTALL",
+    ):
+        monkeypatch.delenv(e, raising = False)
+
+    validator = _FakeBackend()  # supplies validate_load_request (and is the diffusers fallback)
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: validator)
+    # Force the router's decision inputs: CPU device + an available binary.
+    monkeypatch.setattr(
+        engine_router, "resolve_diffusion_device_target",
+        lambda: SimpleNamespace(backend = "cpu", device = "cpu"),
+    )
+    monkeypatch.setattr(engine_router, "ensure_sd_cpp_binary", lambda **_: "/x/sd-cli")
+    monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
+    monkeypatch.setattr(engine_router, "_fallback_reason", None)
+    # The native backend the router will activate.
+    sd_fake = _FakeBackend()
+    monkeypatch.setattr(sd_backend, "get_sd_cpp_backend", lambda: sd_fake)
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
+
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "z.gguf"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["engine"] == "sd_cpp"
+    assert body["fallback_reason"] is None
+    assert sd_fake.loaded is True  # the native engine actually received the load
 
 
 def test_invalid_transformer_quant_returns_422_without_eviction(client):
