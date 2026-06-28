@@ -482,55 +482,67 @@ class DiffusionBackend:
                 # first so unload can restore them: TF32 / cudnn.benchmark are global,
                 # and a later `off` load must not inherit this load's settings.
                 backend_flags_before = snapshot_backend_flags()
-                speed_applied = apply_speed_optims(
-                    pipe,
-                    target,
-                    is_gguf = bool(gguf_filename),
-                    family = fam,
-                    speed_mode = effective_speed,
-                    logger = logger,
-                )
-                # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
-                # also before placement so the offload hooks move the smaller weights.
-                te_quant = quantize_text_encoders(
-                    pipe,
-                    target,
-                    mode = text_encoder_quant,
-                    logger = logger,
-                )
+                # apply_speed_optims mutates PROCESS-WIDE flags (TF32 / cudnn.benchmark);
+                # they are only restored via _LoadState.backend_flags_before on unload. If
+                # the build fails after this but before _state commits (e.g. an OOM in
+                # apply_memory_plan / pipe.to), nothing would restore them and a later `off`
+                # generation would be contaminated, so restore on any non-committed exit.
+                committed = False
+                try:
+                    speed_applied = apply_speed_optims(
+                        pipe,
+                        target,
+                        is_gguf = bool(gguf_filename),
+                        family = fam,
+                        speed_mode = effective_speed,
+                        logger = logger,
+                    )
+                    # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
+                    # also before placement so the offload hooks move the smaller weights.
+                    te_quant = quantize_text_encoders(
+                        pipe,
+                        target,
+                        mode = text_encoder_quant,
+                        logger = logger,
+                    )
 
-                # Decide placement from MEASURED free device memory vs the model's
-                # estimated resident size (transformer GGUF dequantised + the
-                # companion text-encoder / VAE already cached for `base`), then
-                # apply it. Computed here, after the build but before placement,
-                # because the weights are still on CPU so free VRAM is the real
-                # budget. `cpu_offload=True` stays an explicit override.
-                plan = self._plan_memory(
-                    target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
-                )
-                # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
-                # may fall back to whole-module offload, and tiling is a no-op on a
-                # pipeline with no tiling control), so status stays honest.
-                effective_policy, effective_tiling = apply_memory_plan(
-                    pipe, plan, device = device, logger = logger
-                )
+                    # Decide placement from MEASURED free device memory vs the model's
+                    # estimated resident size (transformer GGUF dequantised + the
+                    # companion text-encoder / VAE already cached for `base`), then
+                    # apply it. Computed here, after the build but before placement,
+                    # because the weights are still on CPU so free VRAM is the real
+                    # budget. `cpu_offload=True` stays an explicit override.
+                    plan = self._plan_memory(
+                        target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
+                    )
+                    # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
+                    # may fall back to whole-module offload, and tiling is a no-op on a
+                    # pipeline with no tiling control), so status stays honest.
+                    effective_policy, effective_tiling = apply_memory_plan(
+                        pipe, plan, device = device, logger = logger
+                    )
 
-                self._state = _LoadState(
-                    pipe = pipe,
-                    family = fam,
-                    repo_id = repo_id,
-                    base_repo = base,
-                    device = device,
-                    dtype = str(dtype).replace("torch.", ""),
-                    cpu_offload = effective_policy != OFFLOAD_NONE,
-                    offload_policy = effective_policy,
-                    vae_tiling = effective_tiling,
-                    memory_mode = plan.requested_mode,
-                    speed_mode = effective_speed,
-                    speed_optims = tuple(k for k, v in speed_applied.items() if v),
-                    backend_flags_before = backend_flags_before,
-                    text_encoder_quant = te_quant,
-                )
+                    self._state = _LoadState(
+                        pipe = pipe,
+                        family = fam,
+                        repo_id = repo_id,
+                        base_repo = base,
+                        device = device,
+                        dtype = str(dtype).replace("torch.", ""),
+                        cpu_offload = effective_policy != OFFLOAD_NONE,
+                        offload_policy = effective_policy,
+                        vae_tiling = effective_tiling,
+                        memory_mode = plan.requested_mode,
+                        speed_mode = effective_speed,
+                        speed_optims = tuple(k for k, v in speed_applied.items() if v),
+                        backend_flags_before = backend_flags_before,
+                        text_encoder_quant = te_quant,
+                    )
+                    committed = True
+                finally:
+                    if not committed:
+                        restore_backend_flags(backend_flags_before)
+                        clear_gpu_cache()
 
         logger.info(
             "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s",

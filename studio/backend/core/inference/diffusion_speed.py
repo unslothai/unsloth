@@ -42,30 +42,48 @@ SPEED_MODES = (SPEED_OFF, SPEED_DEFAULT, SPEED_MAX)
 
 def snapshot_backend_flags() -> Optional[dict]:
     """Capture the process-wide torch backend flags this layer may mutate, so the
-    caller can restore them on unload. None if torch is unavailable."""
+    caller can restore them on unload. None if torch is unavailable. Each flag is read
+    defensively so a build/platform missing one (e.g. no cuda.matmul on CPU/MPS) still
+    captures the rest -- otherwise a single missing attribute would skip the whole
+    snapshot and a real mutated flag would leak."""
     try:
         import torch
-        return {
-            "matmul_tf32": bool(torch.backends.cuda.matmul.allow_tf32),
-            "cudnn_tf32": bool(torch.backends.cudnn.allow_tf32),
-            "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
-        }
-    except Exception:  # noqa: BLE001 — best-effort; no snapshot -> no restore
+    except Exception:  # noqa: BLE001 — no torch -> nothing to snapshot/restore
         return None
+    state: dict[str, bool] = {}
+    matmul = getattr(getattr(torch.backends, "cuda", None), "matmul", None)
+    if matmul is not None and hasattr(matmul, "allow_tf32"):
+        state["matmul_tf32"] = bool(matmul.allow_tf32)
+    cudnn = getattr(torch.backends, "cudnn", None)
+    if cudnn is not None:
+        if hasattr(cudnn, "allow_tf32"):
+            state["cudnn_tf32"] = bool(cudnn.allow_tf32)
+        if hasattr(cudnn, "benchmark"):
+            state["cudnn_benchmark"] = bool(cudnn.benchmark)
+    return state
 
 
 def restore_backend_flags(state: Optional[dict]) -> None:
-    """Restore the flags captured by ``snapshot_backend_flags``. No-op on None."""
+    """Restore the flags captured by ``snapshot_backend_flags``. No-op on None. Each
+    flag is restored independently so one failure can't leave the others leaked."""
     if not state:
         return
     try:
         import torch
-
-        torch.backends.cuda.matmul.allow_tf32 = state["matmul_tf32"]
-        torch.backends.cudnn.allow_tf32 = state["cudnn_tf32"]
-        torch.backends.cudnn.benchmark = state["cudnn_benchmark"]
-    except Exception:  # noqa: BLE001 — best-effort restore
+    except Exception:  # noqa: BLE001 — no torch -> nothing to restore
         return
+
+    def _set(obj: Any, attr: str, key: str) -> None:
+        if obj is not None and key in state and hasattr(obj, attr):
+            try:
+                setattr(obj, attr, state[key])
+            except Exception:  # noqa: BLE001 — best-effort per-flag restore
+                pass
+
+    _set(getattr(getattr(torch.backends, "cuda", None), "matmul", None), "allow_tf32", "matmul_tf32")
+    cudnn = getattr(torch.backends, "cudnn", None)
+    _set(cudnn, "allow_tf32", "cudnn_tf32")
+    _set(cudnn, "benchmark", "cudnn_benchmark")
 
 
 def normalize_speed_mode(value: Optional[str]) -> str:
