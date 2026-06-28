@@ -497,7 +497,12 @@ class SdCppDiffusionBackend:
                     raise RuntimeError("Diffusion generation was cancelled.")
                 # ``seeds`` is the per-image seed (each sd-cli run used seed+index), so
                 # the route can persist the real seed for every image in the batch.
-                return {"images": images, "seed": int(seed), "seeds": seeds, "repo_id": state.repo_id}
+                return {
+                    "images": images,
+                    "seed": int(seed),
+                    "seeds": seeds,
+                    "repo_id": state.repo_id,
+                }
             except SdCppCancelled as exc:
                 raise RuntimeError("Diffusion generation was cancelled.") from exc
             finally:

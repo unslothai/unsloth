@@ -10148,7 +10148,11 @@ async def generate_diffusion_image(
     def _persist() -> list[dict]:
         records = []
         for index, image in enumerate(result["images"]):
-            seed = per_image_seeds[index] if per_image_seeds and index < len(per_image_seeds) else result["seed"]
+            seed = (
+                per_image_seeds[index]
+                if per_image_seeds and index < len(per_image_seeds)
+                else result["seed"]
+            )
             records.append(
                 image_gallery.save(
                     image,
