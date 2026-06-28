@@ -3919,6 +3919,10 @@ def _unsloth_save_compressed_tensors(
         # 3) Merge to 16bit at local_dir (kept for local saves) via unsloth_generic_save, so LoRA
         #    adapters are merged and full-finetuned models written in 16bit consistently. Extra
         #    save kwargs (state_dict, max_shard_size, ...) flow through merge_kwargs.
+        # The intermediate 16bit checkpoint is internal staging that the converter subprocess
+        # reloads with default weight filenames, so never write variant-named shards here; the
+        # user's variant (if any) is applied to the final compressed checkpoint in the subprocess.
+        variant = merge_kwargs.pop("variant", None)
         print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
         merge_args = dict(merge_kwargs)
         merge_args.update(
@@ -4026,6 +4030,8 @@ def _unsloth_save_compressed_tensors(
             cmd.append("--is-vlm")
         if trust_remote_code:
             cmd.append("--trust-remote-code")
+        if variant:
+            cmd += ["--variant", variant]
 
         # Free the in-memory model's CUDA memory before the subprocess loads its own copy from
         # disk, so a single GPU need not hold both at once. Best-effort and restored in finally;

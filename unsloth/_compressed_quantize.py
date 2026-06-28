@@ -195,6 +195,7 @@ def main():
     ap.add_argument("--max-seq-length", type = int, default = 2048)
     ap.add_argument("--is-vlm", action = "store_true")
     ap.add_argument("--trust-remote-code", action = "store_true")
+    ap.add_argument("--variant", default = "", help = "weight-filename variant for the output shards")
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -304,7 +305,8 @@ def main():
         oneshot(model = model, recipe = _make_recipe())
 
     os.makedirs(args.out, exist_ok = True)
-    model.save_pretrained(args.out, save_compressed = True)
+    save_kwargs = {"variant": args.variant} if args.variant else {}
+    model.save_pretrained(args.out, save_compressed = True, **save_kwargs)
     if tokenizer is not None:
         tokenizer.save_pretrained(args.out)
 
