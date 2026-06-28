@@ -3063,6 +3063,15 @@ def test_render_with_native_template_returns_render_only_when_tools_emitted():
         is None
     )
 
+    # No tokenizer and no processor -> return None instead of an AttributeError.
+    no_tok = {"native_chat_template": "TPL"}
+    assert (
+        InferenceBackend._render_with_native_template(
+            emit_self, no_tok, messages, tools, None, None, False
+        )
+        is None
+    )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

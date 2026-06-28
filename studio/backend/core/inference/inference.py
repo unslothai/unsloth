@@ -251,6 +251,8 @@ class InferenceBackend:
             return None
 
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
+        if tokenizer is None:
+            return None
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         saved = getattr(tokenizer, "chat_template", None)
         try:

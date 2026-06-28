@@ -201,3 +201,13 @@ def test_wrapperless_deeply_nested_object_and_array_are_preserved():
         "tags": ["a", "b", ["c", "d"]],
         "n": 3,
     }
+
+
+def test_gemma_parse_array_advances_on_stray_brace():
+    # Regression: a stray '}' / ']' / ',' where an array element is expected must
+    # not stall _gemma_parse_value at the same index (it looped forever before).
+    from core.inference.tool_call_parser import _gemma_parse_array
+
+    items, end, closed = _gemma_parse_array("[a,}]", 0)
+    assert end == 5 and closed is True  # consumed through the closing ']'
+    assert items[0] == "a"

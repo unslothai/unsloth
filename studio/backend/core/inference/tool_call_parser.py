@@ -1077,6 +1077,11 @@ def _gemma_parse_value(text: str, i: int):
     end = i
     while end < len(text) and text[end] not in ",}]" and not text.startswith(_GEMMA_STR_BEGIN, end):
         end += 1
+    if end == i:
+        # Stray ``}`` / ``]`` / ``,`` where a value was expected: consume one char
+        # so every caller (e.g. _gemma_parse_array) always advances and can never
+        # loop forever on malformed input.
+        return "", i + 1, True
     raw = text[i:end].strip()
     if raw == "true":
         return True, end, True
