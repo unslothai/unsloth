@@ -365,7 +365,6 @@ def test_int8_exclude_name_tokens_shared_by_runtime_and_builder():
         _INT8_EXCLUDE_NAME_TOKENS,
         int8_exclude_name_tokens,
     )
-
     assert int8_exclude_name_tokens(TQ_INT8) == _INT8_EXCLUDE_NAME_TOKENS
     for scheme in (TQ_FP8, TQ_NVFP4, TQ_MXFP8):
         assert int8_exclude_name_tokens(scheme) == ()

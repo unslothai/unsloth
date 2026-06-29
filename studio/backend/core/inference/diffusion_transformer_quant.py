@@ -71,6 +71,7 @@ def int8_exclude_name_tokens(scheme: str) -> tuple[str, ...]:
     quantised-layer set matches the runtime exactly (no reintroduced M=1 crash)."""
     return _INT8_EXCLUDE_NAME_TOKENS if scheme == TQ_INT8 else ()
 
+
 # Per-architecture preference order for ``auto`` -- best (fastest, in-bar) first, with
 # the lower-precision schemes listed as fallbacks for that arch tier. On Blackwell, fp8
 # leads: measured on a B200, plain fp8 dynamic is both faster AND more accurate than the
