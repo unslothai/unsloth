@@ -106,6 +106,16 @@ def info_has_local_gguf(info) -> bool:
     HF-cache scanner leaves model_format unset for GGUF snapshots, so a
     model_format filter would drop every cached GGUF. Lets /v1/models advertise
     exactly what /v1 can serve."""
+    from pathlib import Path
+
+    path = getattr(info, "path", None)
+    # Ollama-link entries come from a scanner _build_index intentionally skips (it
+    # creates symlinks on the request path), so their advertised ids never resolve.
+    # Don't report them as servable, or /v1/models would list unswitchable models.
+    if isinstance(path, str) and any(
+        seg in (".studio_links", "ollama_links") for seg in Path(path).parts
+    ):
+        return False
     return _local_gguf_entry(getattr(info, "id", "") or "", info) is not None
 
 

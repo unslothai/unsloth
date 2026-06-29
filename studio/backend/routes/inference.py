@@ -8760,6 +8760,23 @@ async def openai_responses(
                     param = "tools",
                 ),
             )
+    # Reject a forcing-function tool_choice with no name before the switch (mirror
+    # chat), so a malformed request can't evict the model. Responses forces with
+    # {"type": "function", "name": "X"}; the streaming path would otherwise forward
+    # the bad choice and the non-streaming path only 400s after the swap.
+    _tc = payload.tool_choice
+    if isinstance(_tc, dict) and _tc.get("type") == "function":
+        _tc_name = _tc.get("name")
+        if not isinstance(_tc_name, str) or not _tc_name.strip():
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "Invalid 'tool_choice': the forced function must have a 'name'.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "tool_choice",
+                ),
+            )
     # After input validation so a 400 never triggers a load. Switches the
     # streaming path; non-streaming re-checks via the idempotent chat handler.
     # require_vision rejects a swap to a text-only target before it runs, so an
@@ -9042,6 +9059,25 @@ async def anthropic_messages(
     # invalid request never evicts the loaded model.
     _validate_anthropic_client_tools(payload.tools)
 
+    # Mixing Anthropic server tools with custom client tools is unsupported (the
+    # server-tool loop can't relay client functions back to the caller). Reject
+    # before the switch too -- it depends only on the payload -- so an invalid
+    # request never evicts the loaded model. Reused below for tool routing.
+    requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    _has_client_tool = any(
+        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        for t in payload.tools or []
+    )
+    if requested_studio_tools and _has_client_tool:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Mixing Anthropic server tools (e.g. web_search_20250305) "
+                "with custom client tools in a single request is not "
+                "supported. Send them in separate requests."
+            ),
+        )
+
     # require_vision rejects a swap to a text-only target before it runs, so an
     # image request can't evict the resident vision model only to hit the vision
     # guard (_normalize_anthropic_openai_images) below after the load.
@@ -9106,30 +9142,8 @@ async def anthropic_messages(
     # 2. tools=[...] only  → client-side pass-through (standard Anthropic behavior)
     # 3. neither           → plain chat
     # The server-side agentic loop doesn't support multimodal input -- matches
-    # the `not image_b64` gate in /v1/chat/completions.
-    requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
-
-    # Detect client tools from the raw payload (presence of input_schema) so the
-    # mixed-mode check below isn't fooled by a name collision with a server-tool
-    # alias that the post-filter would silently drop.
-    _has_client_tool = any(
-        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
-        for t in payload.tools or []
-    )
-
-    # The server-tool agentic loop executes tools in-process and can't relay
-    # unknown client functions back to the caller, so mixed requests would
-    # silently drop the client tools. Reject explicitly instead.
-    if requested_studio_tools and _has_client_tool:
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "Mixing Anthropic server tools (e.g. web_search_20250305) "
-                "with custom client tools in a single request is not "
-                "supported. Send them in separate requests."
-            ),
-        )
-
+    # the `not image_b64` gate in /v1/chat/completions. requested_studio_tools and
+    # the mixed-mode rejection were computed before the switch above.
     openai_client_tools = [
         tool
         for tool in anthropic_tools_to_openai(payload.tools or [])

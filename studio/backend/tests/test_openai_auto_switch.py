@@ -1734,6 +1734,25 @@ def test_info_has_local_gguf_reads_files_not_model_format(tmp_path):
     assert resolver.info_has_local_gguf(SimpleNamespace(id = str(st), path = str(st))) is False
 
 
+def test_info_has_local_gguf_excludes_ollama_links(tmp_path):
+    # Codex P2: Ollama entries come from a scanner _build_index skips, so their
+    # advertised ids never resolve; the catalog must not report them as servable.
+    from types import SimpleNamespace
+
+    links = tmp_path / ".studio_links"
+    links.mkdir()
+    ollama_gguf = links / "model-Q4_K_M.gguf"
+    ollama_gguf.write_bytes(b"x" * 32)
+    assert (
+        resolver.info_has_local_gguf(SimpleNamespace(id = "ollama/foo:latest", path = str(ollama_gguf)))
+        is False
+    )
+    # The same GGUF outside an ollama-link dir is still servable.
+    plain = tmp_path / "model-Q4_K_M.gguf"
+    plain.write_bytes(b"x" * 32)
+    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(plain), path = str(plain))) is True
+
+
 def test_embeddings_input_present_helper():
     f = inference_route._embeddings_input_present
     assert f({"input": "hi"}) is True
@@ -2105,6 +2124,33 @@ def test_anthropic_validates_tools_before_auto_switch():
         assert src.index("_validate_anthropic_client_tools") < src.index("_maybe_auto_switch_model")
 
 
+def test_anthropic_mixed_tools_rejected_before_switch(monkeypatch):
+    # Codex P2: combining an Anthropic server tool (type) with a custom client tool
+    # (input_schema) is unsupported and must 400 before the switch, so the request
+    # can't evict the loaded model only to be rejected after the load.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    payload = _anthropic_payload_with_tools(
+        [
+            {"type": "web_search_20250305"},  # server tool
+            {"name": "my_func", "input_schema": {"type": "object"}},  # client tool
+        ]
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # rejected before the model load
+
+
 # ── codex review (round 2): schema-default model, Responses tool validation ──
 
 
@@ -2223,6 +2269,29 @@ def test_responses_validates_tools_before_auto_switch():
     assert src.index("each function tool must have a 'name'") < src.index(
         "_maybe_auto_switch_model"
     )
+
+
+def test_responses_forcing_tool_choice_without_name_rejected_before_switch(monkeypatch):
+    # Codex P2: a forcing-function tool_choice with no name (Responses shape
+    # {"type": "function"}) must 400 before the switch, so the streaming path can't
+    # forward a bad choice and an invalid request can't evict the model.
+    from fastapi import HTTPException
+    from models.inference import ResponsesRequest
+
+    async def _boom(*a, **k):
+        raise AssertionError("must not switch on an invalid tool_choice")
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _boom)
+    payload = ResponsesRequest(model = "org/B-GGUF", input = "hi", tool_choice = {"type": "function"})
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    # A named forcing choice is accepted (reaches the switch, which is mocked to raise).
+    ok = ResponsesRequest(
+        model = "org/B-GGUF", input = "hi", tool_choice = {"type": "function", "name": "f"}
+    )
+    with pytest.raises(AssertionError):
+        asyncio.run(inference_route.openai_responses(ok, object(), "tester"))
 
 
 # ── codex review (round 3): process-wide swap gate across event loops ──
