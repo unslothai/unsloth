@@ -306,6 +306,26 @@ def test_llama_unload_skips_cpu_only_server(monkeypatch):
     assert killed["n"] == 1
 
 
+def test_llama_unload_skips_when_lifecycle_busy(monkeypatch):
+    # unload() must not stall the model load behind an in-flight spawn/restart that
+    # holds the lifecycle lock (a cold start can take up to EMBED_STARTUP_TIMEOUT_S).
+    # It skips (returns False) rather than block.
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    b._started_on_gpu = True
+    monkeypatch.setattr(b, "_process_alive", lambda: True)
+    killed = {"n": 0}
+    monkeypatch.setattr(b, "_kill_process", lambda: killed.__setitem__("n", killed["n"] + 1))
+
+    b._lifecycle_lock.acquire()
+    try:
+        assert b.unload() is False  # lock held -> skip, don't block the load
+        assert killed["n"] == 0
+    finally:
+        b._lifecycle_lock.release()
+
+
 def test_llama_post_no_respawn_when_unloaded_midflight(monkeypatch):
     # If a model load unloads us mid-POST (epoch moves), the kill is deliberate, so
     # the dropped connection must NOT respawn the embedder back into model VRAM.

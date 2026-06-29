@@ -61,11 +61,11 @@ class LlamaServerBackend:
         self._binary: str | None = None
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
-        # Whether the live child was started on GPU. A CPU-only embedder holds no
-        # VRAM, so a model load leaves it running instead of killing it.
+        # Whether the live child was started on GPU (CPU-only holds no VRAM, so
+        # unload() leaves it running).
         self._started_on_gpu = False
-        # Bumped by unload() so a POST whose connection drops because *we* killed
-        # the child (not the reaper) doesn't respawn it back into the model's VRAM.
+        # Bumped by unload() so a POST that drops because we killed the child (not
+        # the reaper) doesn't respawn it into the model's VRAM.
         self._unload_epoch = 0
         # Pooled client; requests pass full URLs, so a respawn's new port needs
         # no rebuild.
@@ -367,13 +367,19 @@ class LlamaServerBackend:
         concurrent in-flight POST won't respawn us on the kill-induced error. A
         CPU-only child holds no VRAM, so it is left running. Returns True when a GPU
         child was killed, so the caller waits for the driver's async reclaim before
-        probing; False otherwise."""
-        with self._lifecycle_lock:
+        probing; False otherwise. Non-blocking on the lifecycle lock: if the
+        embedder is mid spawn/restart, skip rather than stall the load behind a cold
+        start (returns False)."""
+        if not self._lifecycle_lock.acquire(blocking = False):
+            return False
+        try:
             if not self._process_alive() or not self._started_on_gpu:
                 return False
             self._unload_epoch += 1
             self._kill_process()
-        return True
+            return True
+        finally:
+            self._lifecycle_lock.release()
 
     def _shutdown(self) -> None:
         try:
