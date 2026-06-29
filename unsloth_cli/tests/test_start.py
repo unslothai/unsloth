@@ -1191,8 +1191,22 @@ def test_no_yolo_opencode_has_no_permission_block(fake_studio, tmp_path):
 def test_yolo_openclaw_writes_exec_policy(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["openclaw", "--yolo", "--no-launch"])
     assert result.exit_code == 0, result.output
-    config = json.loads((tmp_path / "agents" / "openclaw" / "openclaw.json").read_text())
+    state = tmp_path / "agents" / "openclaw"
+    config = json.loads((state / "openclaw.json").read_text())
     assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
+    # Both layers: the host approvals file in OPENCLAW_STATE_DIR must also be set, or
+    # OpenClaw can still prompt/deny despite the config.
+    approvals = json.loads((state / "exec-approvals.json").read_text())
+    assert approvals["defaults"] == {"security": "full", "ask": "off", "askFallback": "full"}
+
+
+def test_no_yolo_openclaw_has_no_exec_policy(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    state = tmp_path / "agents" / "openclaw"
+    config = json.loads((state / "openclaw.json").read_text())
+    assert "exec" not in config.get("tools", {})  # no auto-approve policy without --yolo
+    assert not (state / "exec-approvals.json").exists()
 
 
 def test_write_opencode_config_yolo_unit(tmp_path):
@@ -1207,6 +1221,11 @@ def test_write_openclaw_config_yolo_unit(tmp_path):
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     config = json.loads(path.read_text())
     assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
+    approvals = json.loads((path.parent / "exec-approvals.json").read_text())
+    assert approvals == {
+        "version": 1,
+        "defaults": {"security": "full", "ask": "off", "askFallback": "full"},
+    }
 
 
 def test_yolo_command_flags_unmapped_agent_is_empty():

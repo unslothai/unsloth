@@ -693,13 +693,22 @@ def write_openclaw_config(
     gateway.setdefault("mode", "local")
     _subdict(gateway, "auth").setdefault("mode", "none")
     if yolo:
-        # OpenClaw has no --yolo flag; the exec policy is config-driven. On a gateway
-        # host, security=full + ask=off runs tools without prompting (the session's
-        # fresh OPENCLAW_STATE_DIR has no stricter approvals file to override it).
+        # OpenClaw has no --yolo flag, and it gates tool execution on BOTH the
+        # tools.exec config AND a host-local approvals file (the stricter wins), so
+        # setting only the config still lets the agent prompt/deny. Set both, mirroring
+        # `openclaw exec-policy preset yolo`.
         exec_policy = _subdict(_subdict(config, "tools"), "exec")
         exec_policy["host"] = "gateway"
         exec_policy["security"] = "full"
         exec_policy["ask"] = "off"
+        # Approvals file in OPENCLAW_STATE_DIR (== this config's dir). ask=off means
+        # nothing is ever prompted, so the runtime socket block is unnecessary here.
+        approvals = path.parent / "exec-approvals.json"
+        _write_private_json(
+            approvals,
+            {"version": 1, "defaults": {"security": "full", "ask": "off", "askFallback": "full"}},
+        )
+        typer.echo(f"Updated {approvals}")
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")

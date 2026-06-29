@@ -24,11 +24,9 @@
 #       the documented `unsloth start` flow produced no/garbled output.
 #
 # Agents covered (6): claude, codex, hermes, openclaw, opencode, pi.
-#   - claude/codex/hermes/openclaw/opencode have a start.py recipe.
-#   - pi has NO `unsloth start pi` command in start.py at HEAD; it is
-#     driven by a hand-written recipe and the matrix cell asserts that the
-#     missing connect recipe is the (known) reason, so the day start.py
-#     grows a `pi` command this cell flips to the self-updating path.
+#   - All six have a `unsloth start <agent>` recipe, so each cell obtains its
+#     env + command from `unsloth start <agent> --no-launch` and runs THAT
+#     (self-updating: a recipe change is exercised automatically).
 
 name: Local Agent Guides CI
 

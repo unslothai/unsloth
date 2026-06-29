@@ -8,10 +8,10 @@
 # already installed, so a failure here means the documented recipe in
 # unsloth_cli/commands/start.py no longer produces a working flow.
 #
-# Self-updating: for the 5 agents with a start.py recipe we obtain the
-# exact env + command from `unsloth start <agent> --no-launch` and run
-# THAT, so a recipe change is exercised automatically. Pi (no start.py
-# command at HEAD) is driven by a hand-written recipe.
+# Self-updating: for all six agents (claude, codex, hermes, openclaw,
+# opencode, pi) we obtain the exact env + command from
+# `unsloth start <agent> --no-launch` and run THAT, so a recipe change is
+# exercised automatically.
 #
 # Every agent invocation is wrapped in `timeout` so a headless-TTY prompt
 # can never hang the runner -- a timeout is reported as guide drift with a
