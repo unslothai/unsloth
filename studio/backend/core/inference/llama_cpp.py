@@ -8253,14 +8253,11 @@ class LlamaCppBackend:
                                         # XML-signal path which may carry a prefix.
                                         _drain_silently = False
                                         if not is_match and not is_prefix:
-                                            _bare = strip_llama3_leading_sentinels(
-                                                stripped_buf
-                                            )
+                                            _bare = strip_llama3_leading_sentinels(stripped_buf)
                                             if _bare.startswith("{"):
                                                 if _balanced_brace_end(_bare, 0) is None:
                                                     _hold_buffer = (
-                                                        len(stripped_buf)
-                                                        < _MAX_BARE_JSON_BUFFER
+                                                        len(stripped_buf) < _MAX_BARE_JSON_BUFFER
                                                     )
                                                 elif self._parse_tool_calls_from_text(
                                                     content_buffer,
@@ -8325,9 +8322,7 @@ class LlamaCppBackend:
                     # JSON to the user.
                     _bare_eos = strip_llama3_leading_sentinels(stripped_buf)
                     _is_bare_tc = (
-                        bool(active_tools)
-                        and _bare_eos.startswith("{")
-                        and '"name"' in _bare_eos
+                        bool(active_tools) and _bare_eos.startswith("{") and '"name"' in _bare_eos
                     )
                     if stripped_buf and any(s in stripped_buf for s in _tool_xml_signals):
                         detect_state = _S_DRAINING

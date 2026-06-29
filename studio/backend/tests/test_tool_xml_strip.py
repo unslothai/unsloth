@@ -38,9 +38,9 @@ _xml_helper = _re.search(
     _src,
 )
 assert _xml_helper, "could not extract _strip_tool_xml source"
-assert "_strip_mistral_closed_calls" in _xml_helper.group(0), (
-    "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
-)
+assert "_strip_mistral_closed_calls" in _xml_helper.group(
+    0
+), "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
 exec(_xml_helper.group(0), _ns)
 
 _helper = _re.search(
