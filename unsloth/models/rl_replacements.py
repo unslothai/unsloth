@@ -1459,7 +1459,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             flush = True,
                         )
                     _pk_result = None
-            if _pk_result is not None and getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", False):
+            if _pk_result is not None and getattr(
+                unwrapped_model, "_unsloth_seq_packing_nograd_ok", False
+            ):
                 logprobs = _pk_result  # already verified equal to padded -> skip the loop
                 zipped_inputs = []
 
