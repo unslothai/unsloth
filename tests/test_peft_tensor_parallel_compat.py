@@ -18,7 +18,12 @@ def _load_import_fixes():
     return module
 
 
-def _install_fake_module(name, *, is_package = False, attrs = None):
+def _install_fake_module(
+    name,
+    *,
+    is_package = False,
+    attrs = None,
+):
     module = types.ModuleType(name)
     module.__spec__ = importlib.machinery.ModuleSpec(name, loader = None, is_package = is_package)
     if is_package:
@@ -105,6 +110,7 @@ def test_missing_tensor_parallel_symbol_import_succeeds_after_fix(monkeypatch):
     assert module.fix_peft_transformers_tensor_parallel_import_compat() is True
 
     import transformers.integrations.tensor_parallel as patched
+
     all_parallel_styles, _, embedding_parallel, _ = _fake_peft_shard_state_dict_for_tp()
 
     assert patched == sys.modules["transformers.integrations.tensor_parallel"]
@@ -149,6 +155,7 @@ def test_missing_tensor_parallel_module_is_not_created(monkeypatch):
     previous_tp_module = sys.modules.pop("transformers.integrations.tensor_parallel", None)
 
     original_find_spec = module.importlib.util.find_spec
+
     def fake_find_spec(name):
         if name == "transformers.integrations.tensor_parallel":
             return None

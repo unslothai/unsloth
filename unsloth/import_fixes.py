@@ -1592,16 +1592,13 @@ def fix_peft_transformers_tensor_parallel_import_compat():
         }:
             raise
         return None
-    missing = [
-        symbol
-        for symbol in required_symbols
-        if not hasattr(tp_mod, symbol)
-    ]
+    missing = [symbol for symbol in required_symbols if not hasattr(tp_mod, symbol)]
     if not missing:
         return False
 
     def _install_symbol_placeholder(symbol_name):
         if symbol_name == "ALL_PARALLEL_STYLES":
+
             class _UnslothTensorParallelStyles(dict):
                 def __getitem__(self, key):
                     _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
@@ -1620,6 +1617,7 @@ def fix_peft_transformers_tensor_parallel_import_compat():
 
             value = _UnslothTensorParallelStyles()
         else:
+
             class _UnslothTensorParallelPlaceholder:
                 def __init__(self, *args, **kwargs):
                     _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
