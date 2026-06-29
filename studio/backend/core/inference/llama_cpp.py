@@ -4879,10 +4879,13 @@ class LlamaCppBackend:
                     # pinning: a resident embedder shrinks free VRAM and pushes the
                     # auto-context pick past the driver's system-memory spill
                     # threshold, costing ~18% throughput. It reloads lazily on the
-                    # next RAG use, after this model's memory is already placed.
+                    # next RAG use, after this model's memory is already placed. When
+                    # the embedder ran as a GPU subprocess, the driver reclaims its
+                    # VRAM asynchronously, so wait for that before probing free VRAM.
                     try:
                         from core.rag import embeddings as _rag_embeddings
-                        _rag_embeddings.unload()
+                        if _rag_embeddings.unload():
+                            self._wait_for_vram_settle(since_kill = time.monotonic())
                     except Exception:  # noqa: BLE001 - RAG is optional
                         pass
                     # 2-tuple gpus for existing logic + a total map for the absolute

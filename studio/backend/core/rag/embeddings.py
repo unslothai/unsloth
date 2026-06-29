@@ -147,9 +147,13 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
 
 
 def _st_unload() -> None:
-    """Drop the cached ST model and free its GPU memory. The empty_cache call only
-    runs when a model was loaded (a CUDA context already exists), so it never
-    creates one on a process that never embedded."""
+    """Drop the cached ST model and empty_cache the device it ran on. This frees
+    the weight tensors, not torch's CUDA/XPU primary context (cuBLAS/cuDNN handles,
+    hundreds of MiB), which empty_cache can't reclaim and which lives until the
+    process exits. So once ST ran on the inference GPU this is a partial reclaim;
+    not creating the context (no startup warm) is the real win. empty_cache runs
+    only when a model was loaded, so it never creates a context on a process that
+    never embedded."""
     global _model, _name
     with _lock:
         had_model = _model is not None
@@ -159,10 +163,14 @@ def _st_unload() -> None:
         return
     import gc
     gc.collect()  # drop the model now so the freed VRAM is visible to callers
+    # Clear the cache for the device ST ran on (cuda or xpu); a CUDA-only clear
+    # leaks the XPU reservation.
     try:
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        elif hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
     except Exception:  # noqa: BLE001 - torch may be missing or broken
         pass
 
@@ -197,9 +205,11 @@ class _SentenceTransformersBackend:
     def warm(self, *, model_name = None):
         _get(model_name)
 
-    def unload(self):
-        """Drop the cached ST model and free its GPU memory (see module unload)."""
+    def unload(self) -> bool:
+        """Drop the cached ST model (see module unload). Frees in process, so no
+        async driver reclaim to wait on: returns False."""
         _st_unload()
+        return False
 
 
 _backend_lock = threading.Lock()
@@ -320,18 +330,20 @@ def warm(model_name: str | None = None) -> None:
     _get_backend().warm(model_name = model_name)
 
 
-def unload() -> None:
-    """Free the active embedder's GPU memory so a GGUF inference model can allocate
-    with full VRAM (a resident embedder otherwise pushes the auto-context pick past
-    the driver's spill threshold). Dispatches to the backend: sentence-transformers
-    drops its cached model, the llama-server embedder kills its subprocess. A no-op
-    when no backend is built; the embedder reloads lazily on the next embed/warm. A
-    concurrent in-flight encode keeps its own reference, so its VRAM frees once that
-    call returns."""
+def unload() -> bool:
+    """Free the active embedder's GPU memory before a GGUF model is sized, so a
+    resident embedder can't push the auto-context pick past the driver's spill
+    threshold. Dispatches to the backend: the llama-server embedder kills its
+    subprocess (full reclaim), ST drops its weights but not its torch context (a
+    partial reclaim, see ``_st_unload``). Returns True when an external GPU process
+    was killed, so the caller waits for the async reclaim before probing; False
+    otherwise, including when no backend is built. Reloads lazily on next use; a
+    concurrent in-flight encode frees its own reference once it returns."""
     with _backend_lock:
         backend = _backend
-    if backend is not None:
-        backend.unload()
+    if backend is None:
+        return False
+    return bool(backend.unload())
 
 
 def encode(

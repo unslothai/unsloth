@@ -61,6 +61,10 @@ class LlamaServerBackend:
         self._binary: str | None = None
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
+        # Set while a model load unloads us, so an in-flight encode whose POST
+        # fails on the kill does not respawn back into the model's VRAM. Cleared
+        # by the next deliberate encode.
+        self._unloading = False
         # Pooled client; requests pass full URLs, so a respawn's new port needs
         # no rebuild.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S)
@@ -318,12 +322,16 @@ class LlamaServerBackend:
 
     def _ensure_ready(self) -> None:
         """Guarantee a live server, (re)spawning if needed. Double-checked so the
-        alive path takes no lock; self-heals after the chat reaper kills us."""
+        alive path takes no lock; self-heals after the chat reaper kills us. Refuses
+        to respawn while a model load is unloading us, so the kill actually frees
+        VRAM for sizing instead of an in-flight retry bringing the embedder back."""
         if self._process_alive():
             return
         with self._lifecycle_lock:
             if self._process_alive():
                 return
+            if self._unloading:
+                raise RuntimeError("embedder unloaded for model load")
             self._kill_process()
             self._spawn()
 
@@ -354,11 +362,16 @@ class LlamaServerBackend:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
 
-    def unload(self) -> None:
-        """Kill the embedding subprocess to free its VRAM (encode() respawns it).
-        Lets a GGUF inference model load with the embedder's VRAM reclaimed."""
+    def unload(self) -> bool:
+        """Kill the embedding subprocess to free its VRAM (the next encode respawns
+        it). Lets a GGUF inference model load with the embedder's VRAM reclaimed.
+        Sets ``_unloading`` so a concurrent in-flight POST can't respawn us on the
+        kill-induced error. Returns True: the caller waits for the driver's async
+        VRAM reclaim before probing."""
         with self._lifecycle_lock:
+            self._unloading = True
             self._kill_process()
+        return True
 
     def _shutdown(self) -> None:
         try:
@@ -401,6 +414,8 @@ class LlamaServerBackend:
     ):
         """Embed texts -> (N, dim) float32. ``model_name`` is ignored (the GGUF is
         fixed by config). Normalizes in Python to match the ST backend."""
+        # A deliberate encode after an unload-for-load: allow respawn again.
+        self._unloading = False
         n = len(texts)
         if n == 0:
             return np.zeros((0, self.dim()), dtype = np.float32)

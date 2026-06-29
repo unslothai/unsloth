@@ -223,33 +223,46 @@ def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
 
 
 class _RecordingBackend:
-    """A backend that just records that unload() was dispatched to it."""
+    """A backend that records unload() and reports whether it killed a GPU process."""
 
-    def __init__(self):
+    def __init__(self, killed_gpu_process = False):
         self.unloaded = False
+        self._killed = killed_gpu_process
 
     def unload(self):
         self.unloaded = True
+        return self._killed
 
 
 def test_unload_noop_when_no_backend_built():
     # The common no-RAG path: load_model calls unload() on every GGUF load, and
-    # with no backend resolved it must be a safe no-op (no build, no error).
+    # with no backend resolved it must be a safe no-op (no build, no error) and
+    # report no GPU-process kill so the caller skips the VRAM-settle wait.
     embeddings._reset_backend()
     assert embeddings._backend is None
-    embeddings.unload()  # must not raise or build a backend
+    assert embeddings.unload() is False  # must not raise or build a backend
     assert embeddings._backend is None
 
 
-def test_unload_dispatches_to_active_backend():
-    # unload() frees whatever backend is live (ST model drop or llama-server kill).
-    rec = _RecordingBackend()
-    embeddings._backend = rec
+def test_unload_dispatches_and_reports_gpu_kill():
+    # unload() frees whatever backend is live and propagates whether an external
+    # GPU process was killed (True for llama-server) so load_model waits for the
+    # driver's async reclaim; False for the in-process ST drop.
+    st_like = _RecordingBackend(killed_gpu_process = False)
+    embeddings._backend = st_like
     try:
-        embeddings.unload()
+        assert embeddings.unload() is False
     finally:
         embeddings._reset_backend()
-    assert rec.unloaded is True
+    assert st_like.unloaded is True
+
+    llama_like = _RecordingBackend(killed_gpu_process = True)
+    embeddings._backend = llama_like
+    try:
+        assert embeddings.unload() is True
+    finally:
+        embeddings._reset_backend()
+    assert llama_like.unloaded is True
 
 
 def test_st_unload_drops_cached_model(monkeypatch):
@@ -271,3 +284,27 @@ def test_st_unload_noop_when_nothing_loaded(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", None)  # any torch use would raise
     embeddings._st_unload()  # must early-return before importing torch
     assert embeddings._model is None
+
+
+def test_llama_embedder_unload_suppresses_respawn(monkeypatch):
+    # When a model load unloads the llama-server embedder, an in-flight encode's
+    # POST fails on the kill and retries via _ensure_ready. That retry must NOT
+    # respawn the embedder back into the model's VRAM; the next deliberate encode
+    # clears the guard so normal lazy reload resumes.
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    monkeypatch.setattr(b, "_process_alive", lambda: False)
+    monkeypatch.setattr(b, "_kill_process", lambda: None)
+    spawned = {"n": 0}
+    monkeypatch.setattr(b, "_spawn", lambda: spawned.__setitem__("n", spawned["n"] + 1))
+
+    assert b.unload() is True  # killed a GPU process -> caller waits for reclaim
+    assert b._unloading is True
+    with pytest.raises(RuntimeError, match = "unloaded for model load"):
+        b._ensure_ready()  # in-flight retry must not bring it back
+    assert spawned["n"] == 0
+
+    b._unloading = False  # a deliberate encode resets the guard
+    b._ensure_ready()
+    assert spawned["n"] == 1  # normal lazy respawn resumes
