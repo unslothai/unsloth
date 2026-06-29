@@ -1190,7 +1190,14 @@ def install_llama_cpp_make_non_blocking():
     else:
         # Uses new CMAKE
         n_jobs = max(int(psutil.cpu_count() or 1), 1)  # Use less CPUs since 1.5x faster
-        cmake_args = ["cmake", "llama.cpp", "-B", "llama.cpp/build", "-DBUILD_SHARED_LIBS=OFF", "-DGGML_CUDA=OFF"]
+        cmake_args = [
+            "cmake",
+            "llama.cpp",
+            "-B",
+            "llama.cpp/build",
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DGGML_CUDA=OFF",
+        ]
         if CURL_FLAG:
             cmake_args += CURL_FLAG.split()
         check = subprocess.run(cmake_args).returncode
