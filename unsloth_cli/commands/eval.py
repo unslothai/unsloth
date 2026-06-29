@@ -14,6 +14,22 @@ import yaml
 
 
 @contextlib.contextmanager
+def _spinner(console, text):
+    from rich.live import Live
+    from rich.spinner import Spinner
+
+    with Live(
+        Spinner("dots", text = text, style = "cyan"),
+        console = console,
+        transient = True,
+        refresh_per_second = 12,
+        redirect_stdout = False,
+        redirect_stderr = False,
+    ):
+        yield
+
+
+@contextlib.contextmanager
 def _silence():
     from rich.console import Console
 
@@ -263,7 +279,7 @@ def evaluate(
             args = [f"pretrained={model}"]
         if load_in_4bit and device and device.startswith("cuda"):
             args.append("load_in_4bit=True")
-        with _silence() as ui, ui.status(f"[cyan]Evaluating {', '.join(task_names)}…"):
+        with _silence() as ui, _spinner(ui, f"Evaluating {', '.join(task_names)}…"):
             results = lm_eval.simple_evaluate(
                 model = "hf",
                 model_args = ",".join(args),
@@ -300,7 +316,7 @@ def evaluate(
                     model_name = model, **load_kwargs
                 )
 
-        with _silence() as ui, ui.status(f"[cyan]Evaluating {', '.join(task_names)}…"):
+        with _silence() as ui, _spinner(ui, f"Evaluating {', '.join(task_names)}…"):
             FastLanguageModel.for_inference(lmodel)
             lm = HFLM(pretrained = lmodel, tokenizer = tokenizer, batch_size = bs)
             results = lm_eval.simple_evaluate(
