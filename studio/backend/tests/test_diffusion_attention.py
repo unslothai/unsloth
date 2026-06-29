@@ -107,6 +107,28 @@ def test_arch_gate_does_not_block_when_capability_unknown(monkeypatch):
     assert select_attention_backend(_target(), "flash4", speed_active = False) == "flash_4_hub"
 
 
+def test_flash3_dropped_on_blackwell(monkeypatch):
+    # FlashAttention 3 is a Hopper-SM90 rewrite with no Blackwell kernel: an explicit
+    # flash3 on a B200 (SM100) must drop to native rather than set fine then crash.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (10, 0))
+    assert select_attention_backend(_target(), "flash3", speed_active = False) is None
+    # FA4 is still honored on Blackwell.
+    assert select_attention_backend(_target(), "flash4", speed_active = False) == "flash_4_hub"
+    # flash3 is allowed exactly on Hopper SM90.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (9, 0))
+    assert select_attention_backend(_target(), "flash3", speed_active = False) == "_flash_3_hub"
+
+
+def test_explicit_cudnn_dropped_below_sm80(monkeypatch):
+    # An explicit cuDNN request on pre-Ampere (T4 SM75 / V100 SM70) must drop to native,
+    # not set fine and crash at first generation -- the same gate the auto path applies.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (7, 5))
+    assert select_attention_backend(_target(), "cudnn", speed_active = False) is None
+    # Ampere+ still honors it.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (8, 0))
+    assert select_attention_backend(_target(), "cudnn", speed_active = False) == "_native_cudnn"
+
+
 # ── apply ─────────────────────────────────────────────────────────────────────────
 class _FakeTransformer:
     def __init__(self, *, fail = False):
@@ -174,3 +196,30 @@ def test_apply_failed_kernel_restores_native_when_polluted(monkeypatch):
 def test_apply_handles_missing_method():
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
     assert apply_attention_backend(pipe, "_native_cudnn") is None
+
+
+def test_apply_resets_global_registry_after_success(monkeypatch):
+    # After a successful per-transformer set, the process-wide registry must be reset to
+    # native so a later component (unconfigured processors) can't inherit this kernel --
+    # while the transformer's own backend stays the engaged one.
+    called = {"reset": False}
+    monkeypatch.setattr(
+        att, "_reset_global_backend_to_native", lambda logger: called.__setitem__("reset", True)
+    )
+    t = _FakeTransformer()
+    engaged = apply_attention_backend(_pipe(t), "_native_cudnn")
+    assert engaged == "_native_cudnn" and t.set_to == "_native_cudnn"
+    assert called["reset"] is True
+
+
+def test_active_attention_backend_reads_tuple_return():
+    # get_active_backend() returns a (AttentionBackendName, fn) tuple; the helper must read
+    # the name's .value, not stringify the tuple (which never compares equal to a name).
+    pytest.importorskip("diffusers")
+    from diffusers.models.attention_dispatch import (
+        AttentionBackendName,
+        _AttentionBackendRegistry,
+    )
+
+    _AttentionBackendRegistry.set_active_backend(AttentionBackendName.NATIVE)
+    assert att._active_attention_backend() == "native"

@@ -68,11 +68,13 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
 # Backends diffusers validates only by *package* at set time (``_check_attention_backend_
 # requirements`` checks the ``kernels`` install, not the GPU), but whose kernels need a
 # specific CUDA arch at run time -- so an explicit request on the wrong card loads/sets fine
-# and then crashes mid-generation. Gate them up front: minimum (major, minor) compute
-# capability per dispatcher backend name.
-_MIN_CUDA_CAPABILITY: dict[str, tuple[int, int]] = {
-    "_flash_3_hub": (9, 0),  # FlashAttention 3 -> Hopper (SM90)
-    "flash_4_hub": (10, 0),  # FlashAttention 4 -> Blackwell (SM100)
+# and then crashes mid-generation. Gate them up front by a (min, max-exclusive) compute
+# capability range. FlashAttention 3 is a Hopper-SM90 rewrite with no Blackwell kernel, so it
+# needs an upper bound: an explicit flash3 on a B200 (SM100) must drop to native instead of
+# setting fine then crashing at generation. FlashAttention 4 is Blackwell+ (no upper bound).
+_ARCH_CAPABILITY: dict[str, tuple[tuple[int, int], Optional[tuple[int, int]]]] = {
+    "_flash_3_hub": ((9, 0), (10, 0)),  # FlashAttention 3 -> Hopper (SM90) only
+    "flash_4_hub": ((10, 0), None),  # FlashAttention 4 -> Blackwell (SM100)+
 }
 
 
@@ -88,18 +90,19 @@ def _cuda_capability() -> Optional[tuple[int, int]]:
 
 
 def _backend_arch_supported(backend: str) -> bool:
-    """False only when ``backend`` needs a known-higher CUDA arch than this device has.
+    """False only when ``backend`` needs a CUDA arch outside this device's supported range.
 
     Unknown capability (no CUDA / detection failure) returns True so we never block on a
     guess -- diffusers' own set-time check still guards the package, and a genuine run-time
     failure falls back to native."""
-    required = _MIN_CUDA_CAPABILITY.get(backend)
-    if required is None:
+    bounds = _ARCH_CAPABILITY.get(backend)
+    if bounds is None:
         return True
     have = _cuda_capability()
     if have is None:
         return True
-    return have >= required
+    low, high = bounds
+    return have >= low and (high is None or have < high)
 
 
 def _is_cuda_nvidia(target: Any) -> bool:
@@ -129,6 +132,11 @@ def select_attention_backend(
         # An arch-gated kernel (flash3/flash4) on a card that can't run it would set fine
         # then crash mid-generation, so drop it to the native default up front.
         if not _backend_arch_supported(backend):
+            return None
+        # cuDNN fused SDPA needs Ampere+ (SM80); diffusers accepts it on pre-SM80 cards
+        # (T4/V100) then fails at the first generation, so apply the same gate to an
+        # explicit cuDNN request as the auto path already does.
+        if backend == "_native_cudnn" and not _cudnn_attention_supported():
             return None
         return backend
     # auto
@@ -170,6 +178,12 @@ def apply_attention_backend(
     if backend is not None:
         try:
             fn(backend)
+            # set_attention_backend also pins the backend in diffusers' process-wide
+            # registry. This transformer's own processors keep it locally (their
+            # _attention_backend is now explicit), so reset the global default back to
+            # native -- otherwise a later component whose processors are unconfigured
+            # (backend None) silently inherits this kernel.
+            _reset_global_backend_to_native(logger)
             if logger is not None:
                 logger.info("diffusion.attention: backend=%s", backend)
             return backend
@@ -186,15 +200,35 @@ def _active_attention_backend() -> Optional[str]:
     try:
         from diffusers.models.attention_dispatch import _AttentionBackendRegistry
 
-        # get_active_backend() returns an AttentionBackend enum (or None), NOT a tuple:
-        # unpacking it as `name, _` raises ValueError (swallowed below), so this always
-        # returned None and the native-restore short-circuit never fired.
-        backend = _AttentionBackendRegistry.get_active_backend()
-        if backend is None:
+        # get_active_backend() returns a (AttentionBackendName, fn) tuple (or None), so
+        # take element 0 and read its .value (e.g. "native"); reading .value off the
+        # tuple itself would yield a junk string that never compares equal to a name.
+        active = _AttentionBackendRegistry.get_active_backend()
+        if active is None:
             return None
-        return getattr(backend, "value", str(backend))
+        name = active[0] if isinstance(active, tuple) else active
+        return getattr(name, "value", str(name))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _reset_global_backend_to_native(logger: Any) -> None:
+    """Reset diffusers' process-wide active attention backend to native after a
+    successful per-transformer set, so a later component whose processors are
+    unconfigured (backend None) does not inherit this transformer's kernel. The
+    transformer's own processors keep the backend just set. Best-effort and silent:
+    if the diffusers internals move, the prior (leaking) behavior is unchanged."""
+    if _active_attention_backend() == ATTN_NATIVE:
+        return
+    try:
+        from diffusers.models.attention_dispatch import (
+            AttentionBackendName,
+            _AttentionBackendRegistry,
+        )
+
+        _AttentionBackendRegistry.set_active_backend(AttentionBackendName.NATIVE)
+    except Exception:  # noqa: BLE001 — best-effort; leave the global as-is on any change
+        pass
 
 
 def _restore_native_backend(set_backend_fn: Any, logger: Any) -> None:
