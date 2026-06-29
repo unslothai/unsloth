@@ -2,6 +2,7 @@ import errno
 import importlib.util
 import io
 import json
+import re
 import os
 import sys
 import subprocess
@@ -49,6 +50,14 @@ linux_missing_libraries = INSTALL_LLAMA_PREBUILT.linux_missing_libraries
 ValidationLaunchPlan = INSTALL_LLAMA_PREBUILT._ValidationLaunchPlan
 run_validation_capture = INSTALL_LLAMA_PREBUILT._run_validation_capture
 run_validation_popen = INSTALL_LLAMA_PREBUILT._run_validation_popen
+run_validation_ldd_probe = INSTALL_LLAMA_PREBUILT._run_validation_ldd_probe
+LinuxLibraryProbeResult = INSTALL_LLAMA_PREBUILT.LinuxLibraryProbeResult
+LINUX_LDD_PROBE_OK = INSTALL_LLAMA_PREBUILT._LINUX_LDD_PROBE_OK
+LINUX_LDD_PROBE_SKIPPED = INSTALL_LLAMA_PREBUILT._LINUX_LDD_PROBE_SKIPPED
+LINUX_LDD_PROBE_ERROR = INSTALL_LLAMA_PREBUILT._LINUX_LDD_PROBE_ERROR
+preflight_linux_installed_binaries = (
+    INSTALL_LLAMA_PREBUILT.preflight_linux_installed_binaries
+)
 
 
 def linux_host() -> HostInfo:
@@ -1070,11 +1079,15 @@ def test_binary_env_drops_explicit_credential_file_pointers(
 def test_linux_runtime_dirs_probes_with_secret_free_env(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
-    def fake_missing(binary_path, *, env = None):
+    def fake_probe(binary_path, *, env = None):
         captured["env"] = env
-        return []
+        return LinuxLibraryProbeResult(
+            status = LINUX_LDD_PROBE_OK,
+            missing = [],
+            output = "",
+        )
 
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_missing_libraries", fake_missing)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_ldd_probe", fake_probe)
     monkeypatch.setenv("HF_TOKEN", "hf_secret")
     monkeypatch.setenv("GITHUB_TOKEN", "gh_secret")
 
@@ -1084,6 +1097,13 @@ def test_linux_runtime_dirs_probes_with_secret_free_env(monkeypatch: pytest.Monk
     assert probe_env is not None
     assert "HF_TOKEN" not in probe_env
     assert "GITHUB_TOKEN" not in probe_env
+
+
+def _command_contains_path(plan: ValidationLaunchPlan, path_fragment: str) -> bool:
+    return any(
+        path_fragment in command_part or path_fragment in command_part.replace("\\", "/")
+        for command_part in plan.command
+    )
 
 
 def test_install_prebuilt_falls_back_to_older_release_plan(
@@ -3150,8 +3170,9 @@ def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch):
     assert plan.command[:5] == ["bwrap", "--unshare-all", "--share-net", "--die-with-parent", "--new-session"]
     assert "ldd" in plan.command[-1] or "--help" in plan.command[-1]
     assert "--ro-bind" in plan.command
-    assert "--dev" in plan.command
     assert "--bind" in plan.command
+    assert "--dev" in plan.command
+    assert "/dev/nvidiactl" not in plan.command
 
 
 def test_build_validation_sandbox_plan_linux_quantize_binds_probe_and_output(monkeypatch, tmp_path):
@@ -3176,6 +3197,135 @@ def test_build_validation_sandbox_plan_linux_quantize_binds_probe_and_output(mon
     assert plan.command.count("--bind") >= 2
     assert str(probe_dir) in plan.command
     assert str(out_dir) in plan.command
+
+
+def test_build_validation_sandbox_plan_linux_server_binds_gpu_nodes_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    existing_nodes = {
+        "/dev/nvidiactl",
+        "/dev/nvidia-uvm",
+        "/dev/nvidia-uvm-tools",
+        "/dev/nvidia-modeset",
+        "/dev/nvidia0",
+        "/dev/kfd",
+        "/dev/dxg",
+        "/dev/dri/card0",
+        "/dev/dri/renderD128",
+        "/sys/class/drm",
+        "/sys/bus/pci",
+        "/sys/dev/char",
+        "/sys/devices",
+        "/proc/driver/nvidia",
+    }
+    original_exists = Path.exists
+    original_glob = Path.glob
+
+    def _norm(path: Path) -> str:
+        text = str(path).replace("\\", "/")
+        if re.match(r"^[A-Za-z]:/", text):
+            text = "/" + text.split(":", 1)[1].lstrip("/")
+        return text
+
+    def fake_exists(path: Path) -> bool:
+        if _norm(path) in existing_nodes:
+            return True
+        return original_exists(path)
+
+    def fake_glob(path: Path, pattern: str):
+        normalized = _norm(path)
+        if normalized == "/dev" and pattern == "nvidia*":
+            return [Path(node) for node in existing_nodes if str(node).startswith("/dev/nvidia") and "*" not in node]
+        if normalized == "/dev/dri" and pattern == "card*":
+            return [Path("/dev/dri/card0")]
+        if normalized == "/dev/dri" and pattern == "renderD*":
+            return [Path("/dev/dri/renderD128")]
+        return original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    monkeypatch.setattr(Path, "glob", fake_glob)
+
+    plan = build_validation_sandbox_plan(
+        ["llama-server", "--help"],
+        binary_path = Path("/tmp/bin/llama-server"),
+        install_dir = Path("/tmp/install"),
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {},
+        enable_gpu_layers = True,
+        gpu_backend = "cuda",
+    )
+    assert plan.is_runnable
+    assert "--dev-bind-try" in plan.command
+    assert any("nvidiactl" in part for part in plan.command)
+    assert any("nvidia0" in part for part in plan.command)
+    assert not any("dxg" in part for part in plan.command)
+    assert not _command_contains_path(plan, "dri/card0")
+    assert not _command_contains_path(plan, "dri/renderD128")
+    assert not any("kfd" in part for part in plan.command)
+    assert _command_contains_path(plan, "sys/class/drm")
+    assert _command_contains_path(plan, "proc/driver/nvidia")
+
+
+def test_build_validation_sandbox_plan_linux_server_binds_rocm_nodes_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    existing_nodes = {
+        "/dev/kfd",
+        "/dev/dxg",
+        "/dev/dri/card0",
+        "/dev/dri/renderD128",
+        "/sys/class/drm",
+        "/sys/bus/pci",
+        "/sys/dev/char",
+        "/sys/devices",
+        "/proc/driver/nvidia",
+    }
+    original_exists = Path.exists
+    original_glob = Path.glob
+
+    def _norm(path: Path) -> str:
+        text = str(path).replace("\\", "/")
+        if re.match(r"^[A-Za-z]:/", text):
+            text = "/" + text.split(":", 1)[1].lstrip("/")
+        return text
+
+    def fake_exists(path: Path) -> bool:
+        if _norm(path) in existing_nodes:
+            return True
+        return original_exists(path)
+
+    def fake_glob(path: Path, pattern: str):
+        normalized = _norm(path)
+        if normalized == "/dev" and pattern == "nvidia*":
+            return []
+        if normalized == "/dev/dri" and pattern == "card*":
+            return [Path("/dev/dri/card0")]
+        if normalized == "/dev/dri" and pattern == "renderD*":
+            return [Path("/dev/dri/renderD128")]
+        return original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    monkeypatch.setattr(Path, "glob", fake_glob)
+
+    plan = build_validation_sandbox_plan(
+        ["llama-server", "--help"],
+        binary_path = Path("/tmp/bin/llama-server"),
+        install_dir = Path("/tmp/install"),
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {},
+        enable_gpu_layers = True,
+        gpu_backend = "rocm",
+    )
+    assert plan.is_runnable
+    assert "--dev-bind-try" in plan.command
+    assert any("kfd" in part for part in plan.command)
+    assert any("dxg" in part for part in plan.command)
+    assert _command_contains_path(plan, "dri/card0")
+    assert _command_contains_path(plan, "dri/renderD128")
+    assert not any("nvidiactl" in part for part in plan.command)
+    assert not _command_contains_path(plan, "proc/driver/nvidia")
 
 
 def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monkeypatch):
@@ -3259,13 +3409,15 @@ def test_build_validation_sandbox_plan_windows_is_unsupported(monkeypatch):
         runtime_line = None,
         env = {},
     )
-    assert plan.is_fallback
-    assert "unsupported" in (plan.reason or "").lower()
+    assert plan.is_runnable
+    assert plan.sandbox_kind == "windows_direct_validation"
+    assert "running validation directly" in (plan.reason or "").lower()
 
 
 def test_linux_missing_libraries_skips_ldd_without_sandbox_adapter(monkeypatch, tmp_path):
     binary_path = tmp_path / "server"
     binary_path.write_text("")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
 
     captured: dict[str, bool] = {"run": False}
@@ -3278,6 +3430,17 @@ def test_linux_missing_libraries_skips_ldd_without_sandbox_adapter(monkeypatch, 
     missing = linux_missing_libraries(binary_path, env = {"LD_LIBRARY_PATH": ""})
     assert missing == []
     assert captured["run"] is False
+
+
+def test_run_validation_ldd_probe_reports_skipped_status_without_sandbox_adapter(monkeypatch, tmp_path):
+    binary_path = tmp_path / "server"
+    binary_path.write_text("")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+    result = run_validation_ldd_probe(binary_path, env = {"LD_LIBRARY_PATH": ""})
+    assert result.status == LINUX_LDD_PROBE_SKIPPED
+    assert result.missing == []
+    assert result.reason is not None
 
 
 def test_linux_missing_libraries_uses_bwrap_plan(monkeypatch, tmp_path):
@@ -3308,11 +3471,85 @@ def test_linux_missing_libraries_tolerates_probe_errors(monkeypatch, tmp_path):
     binary_path = tmp_path / "server"
     binary_path.write_text("")
 
-    def fake_probe(_binary_path: Path, *, env: dict[str, str]) -> str:
-        raise RuntimeError("probe failed")
+    def fake_probe(_binary_path: Path, *, env: dict[str, str]) -> LinuxLibraryProbeResult:
+        return LinuxLibraryProbeResult(
+            status = LINUX_LDD_PROBE_ERROR,
+            missing = [],
+            reason = "probe crashed",
+        )
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_ldd_probe", fake_probe)
     assert linux_missing_libraries(binary_path, env = {"LD_LIBRARY_PATH": ""}) == []
+
+
+def test_preflight_linux_installed_binaries_skips_unknown_when_probe_skipped(monkeypatch, tmp_path):
+    host = linux_host()
+    binary = tmp_path / "llama-server"
+    binary.write_text("")
+
+    def fake_probe(_binary_path: Path, *, env: dict[str, str]) -> LinuxLibraryProbeResult:
+        return LinuxLibraryProbeResult(
+            status = LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = "no sandbox adapter",
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_ldd_probe", fake_probe)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "binary_env",
+        lambda binary_path, install_dir, host: {"LD_LIBRARY_PATH": ""},
+    )
+    preflight_linux_installed_binaries((binary,), tmp_path, host)
+
+
+def test_preflight_linux_installed_binaries_rejects_skipped_probe_for_reuse(monkeypatch, tmp_path):
+    host = linux_host()
+    binary = tmp_path / "llama-server"
+    binary.write_text("")
+
+    def fake_probe(_binary_path: Path, *, env: dict[str, str]) -> LinuxLibraryProbeResult:
+        return LinuxLibraryProbeResult(
+            status = LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = "no sandbox adapter",
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_ldd_probe", fake_probe)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "binary_env",
+        lambda binary_path, install_dir, host: {"LD_LIBRARY_PATH": ""},
+    )
+    with pytest.raises(PrebuiltFallback, match = "linux ldd probe skipped"):
+        preflight_linux_installed_binaries(
+            (binary,),
+            tmp_path,
+            host,
+            allow_skipped_probe = False,
+        )
+
+
+def test_preflight_linux_installed_binaries_errors_on_probe_exception(monkeypatch, tmp_path):
+    host = linux_host()
+    binary = tmp_path / "llama-server"
+    binary.write_text("")
+
+    def fake_probe(_binary_path: Path, *, env: dict[str, str]) -> LinuxLibraryProbeResult:
+        return LinuxLibraryProbeResult(
+            status = LINUX_LDD_PROBE_ERROR,
+            missing = [],
+            reason = "probe crashed",
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_ldd_probe", fake_probe)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "binary_env",
+        lambda binary_path, install_dir, host: {"LD_LIBRARY_PATH": ""},
+    )
+    with pytest.raises(PrebuiltFallback, match = "linux extracted binary ldd probe errored"):
+        preflight_linux_installed_binaries((binary,), tmp_path, host)
 
 
 def test_validate_quantize_routes_through_sandbox_plan(monkeypatch, tmp_path):
@@ -3334,6 +3571,8 @@ def test_validate_quantize_routes_through_sandbox_plan(monkeypatch, tmp_path):
         env: dict[str, str],
         host = None,
         runtime_line = None,
+        enable_gpu_layers: bool = False,
+        gpu_backend = None,
     ) -> ValidationLaunchPlan:
         recorded["command"] = command
         recorded["purpose"] = purpose
@@ -3381,6 +3620,8 @@ def test_validate_quantize_falls_back_without_linux_sandbox(monkeypatch, tmp_pat
         env: dict[str, str],
         host = None,
         runtime_line = None,
+        enable_gpu_layers: bool = False,
+        gpu_backend = None,
     ) -> ValidationLaunchPlan:
         return ValidationLaunchPlan(
             command = command,
@@ -3421,9 +3662,13 @@ def test_validate_server_routes_through_sandbox_plan(monkeypatch, tmp_path):
         env: dict[str, str],
         host = None,
         runtime_line = None,
+        enable_gpu_layers: bool = False,
+        gpu_backend = None,
     ) -> ValidationLaunchPlan:
         recorded["command"] = command
         recorded["purpose"] = purpose
+        recorded["enable_gpu_layers"] = enable_gpu_layers
+        recorded["gpu_backend"] = gpu_backend
         return ValidationLaunchPlan(
             command = command,
             env = env,
@@ -3483,6 +3728,8 @@ def test_validate_server_routes_through_sandbox_plan(monkeypatch, tmp_path):
     command = recorded["command"]
     assert command[:3] == [str(server_path), "-m", str(probe_path)]
     assert "--n-gpu-layers" in command
+    assert recorded["enable_gpu_layers"] is True
+    assert recorded["gpu_backend"] == "cuda"
 
 
 def test_validate_server_falls_back_without_linux_sandbox(monkeypatch, tmp_path):
@@ -3500,6 +3747,8 @@ def test_validate_server_falls_back_without_linux_sandbox(monkeypatch, tmp_path)
         env: dict[str, str],
         host = None,
         runtime_line = None,
+        enable_gpu_layers: bool = False,
+        gpu_backend = None,
     ) -> ValidationLaunchPlan:
         return ValidationLaunchPlan(
             command = command,
@@ -3515,11 +3764,84 @@ def test_validate_server_falls_back_without_linux_sandbox(monkeypatch, tmp_path)
         validate_server(
             server_path,
             probe_path,
-            windows_host(),
+            linux_host(),
             tmp_path,
             runtime_line = None,
             install_kind = None,
         )
+
+
+def test_validate_server_uses_windows_direct_validation_plan(monkeypatch, tmp_path):
+    server_path = tmp_path / "llama-server.exe"
+    server_path.write_text("")
+    probe_path = tmp_path / "probe.gguf"
+    probe_path.write_text("")
+    recorded: dict[str, object] = {}
+
+    def fake_build_plan(
+        command: list[str],
+        *,
+        binary_path: Path,
+        install_dir: Path,
+        purpose: str,
+        env: dict[str, str],
+        host = None,
+        runtime_line = None,
+        enable_gpu_layers: bool = False,
+        gpu_backend = None,
+    ) -> ValidationLaunchPlan:
+        recorded["plan"] = ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = "run",
+            purpose = purpose,
+            sandbox_kind = "windows_direct_validation",
+        )
+        return recorded["plan"]
+
+    class _FakeProcess:
+        def poll(self):
+            return None
+
+        def wait(self, timeout: float | None = None):
+            return 0
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "build_validation_sandbox_plan", fake_build_plan)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "binary_env", lambda *_a, **_k: {"PATH": str(tmp_path)})
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_popen", lambda plan, *, stdout: _FakeProcess())
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "free_local_port", lambda: 7777)
+
+    class _FakeResponse:
+        status = 200
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.urllib.request, "urlopen", lambda *a, **k: _FakeResponse())
+
+    validate_server(
+        server_path,
+        probe_path,
+        windows_host(),
+        tmp_path,
+        runtime_line = None,
+        install_kind = "windows-cuda",
+    )
+    plan = recorded["plan"]
+    assert isinstance(plan, ValidationLaunchPlan)
+    assert plan.sandbox_kind == "windows_direct_validation"
 
 
 def test_runtime_inference_path_stays_outside_installer_sandbox_owner():
@@ -3560,6 +3882,8 @@ def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
         env: dict[str, str],
         host = None,
         runtime_line = None,
+        enable_gpu_layers: bool = False,
+        gpu_backend = None,
     ) -> ValidationLaunchPlan:
         plans.append(purpose)
         return ValidationLaunchPlan(

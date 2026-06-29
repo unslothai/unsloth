@@ -39,7 +39,7 @@ except ImportError:
     FileLock = None
     FileLockTimeout = None
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Literal
 
 
 EXIT_SUCCESS = 0
@@ -5130,6 +5130,9 @@ _VALIDATION_LAUNCH_FALLBACK = "fallback"
 _VALIDATION_PURPOSE_LDD = "ldd"
 _VALIDATION_PURPOSE_QUANTIZE = "quantize"
 _VALIDATION_PURPOSE_SERVER = "server"
+_LINUX_LDD_PROBE_OK = "ok"
+_LINUX_LDD_PROBE_SKIPPED = "skipped"
+_LINUX_LDD_PROBE_ERROR = "error"
 
 
 @dataclass(frozen = True)
@@ -5138,6 +5141,7 @@ class _ValidationLaunchPlan:
     env: dict[str, str]
     action: str
     purpose: str
+    sandbox_kind: str | None = None
     reason: str | None = None
 
     @property
@@ -5151,6 +5155,14 @@ class _ValidationLaunchPlan:
     @property
     def is_fallback(self) -> bool:
         return self.action == _VALIDATION_LAUNCH_FALLBACK
+
+
+@dataclass(frozen = True)
+class LinuxLibraryProbeResult:
+    status: Literal["ok", "skipped", "error"]
+    missing: list[str]
+    output: str = ""
+    reason: str | None = None
 
 
 def _has_command(command: str) -> bool:
@@ -5187,6 +5199,8 @@ def _linux_validation_bwrap_prefix(
     install_dir: Path,
     purpose: str,
     env: dict[str, str],
+    enable_gpu_layers: bool = False,
+    gpu_backend: Literal["cuda", "rocm"] | None = None,
 ) -> list[str]:
     runtime_home = isolated_runtime_home()
     command_path = Path(command[0])
@@ -5224,6 +5238,11 @@ def _linux_validation_bwrap_prefix(
     elif purpose == _VALIDATION_PURPOSE_SERVER and len(command) >= 3 and command[1] == "-m":
         readonly_targets.append(Path(command[2]).parent)
 
+    enable_gpu_devices = (
+        purpose == _VALIDATION_PURPOSE_SERVER
+        and enable_gpu_layers
+        and gpu_backend in {"cuda", "rocm"}
+    )
     args = [
         "bwrap",
         "--unshare-all",
@@ -5247,6 +5266,42 @@ def _linux_validation_bwrap_prefix(
     )
 
     seen: set[str] = set()
+    if enable_gpu_devices:
+        dev_nodes: list[str] = []
+        readonly_gpu_targets = [
+            "/sys/class/drm",
+            "/sys/bus/pci",
+            "/sys/dev/char",
+            "/sys/devices",
+        ]
+        if gpu_backend == "cuda":
+            dev_nodes.extend(
+                [
+                    "/dev/nvidiactl",
+                    "/dev/nvidia-modeset",
+                    "/dev/nvidia-uvm",
+                    "/dev/nvidia-uvm-tools",
+                ]
+            )
+            for path in Path("/dev").glob("nvidia*"):
+                if re.match(r"^nvidia[0-9]+$", path.name):
+                    dev_nodes.append(str(path))
+            readonly_gpu_targets.append("/proc/driver/nvidia")
+        elif gpu_backend == "rocm":
+            dev_nodes.extend(["/dev/kfd", "/dev/dxg"])
+            dev_nodes.extend(str(node) for node in Path("/dev/dri").glob("card*"))
+            dev_nodes.extend(str(node) for node in Path("/dev/dri").glob("renderD*"))
+
+        for node in dev_nodes:
+            node_path = Path(node)
+            if str(node_path) in seen:
+                continue
+            if not node_path.exists():
+                continue
+            seen.add(str(node_path))
+            args.extend(["--dev-bind-try", str(node_path), str(node_path)])
+
+        readonly_targets.extend(readonly_gpu_targets)
     for target in readonly_targets:
         target_path = Path(target)
         if str(target_path) in write_targets:
@@ -5377,6 +5432,8 @@ def build_validation_sandbox_plan(
     install_dir: Path,
     purpose: str,
     env: dict[str, str],
+    enable_gpu_layers: bool = False,
+    gpu_backend: Literal["cuda", "rocm"] | None = None,
     host: HostInfo | None = None,
     runtime_line: str | None = None,
 ) -> _ValidationLaunchPlan:
@@ -5390,6 +5447,8 @@ def build_validation_sandbox_plan(
                         install_dir = install_dir,
                         purpose = purpose,
                         env = env,
+                        enable_gpu_layers = enable_gpu_layers,
+                        gpu_backend = gpu_backend,
                     ),
                     *command,
                 ],
@@ -5442,9 +5501,10 @@ def build_validation_sandbox_plan(
         return _ValidationLaunchPlan(
             command = command,
             env = env,
-            action = _VALIDATION_LAUNCH_FALLBACK,
+            action = _VALIDATION_LAUNCH_RUN,
             purpose = purpose,
-            reason = "Windows validation sandboxing is unsupported in this install slice",
+            sandbox_kind = "windows_direct_validation",
+            reason = "Running validation directly on Windows host",
         )
 
     return _ValidationLaunchPlan(
@@ -5470,10 +5530,26 @@ def _run_validation_capture(
     return run_capture(plan.command, timeout = timeout, env = plan.env)
 
 
-def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> str:
+def _parse_ldd_missing_libraries(output: str) -> list[str]:
+    missing: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if "=> not found" not in line:
+            continue
+        library = line.split("=>", 1)[0].strip()
+        if library and library not in missing:
+            missing.append(library)
+    return missing
+
+
+def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> LinuxLibraryProbeResult:
     ldd_path = shutil.which("ldd")
     if ldd_path is None:
-        return ""
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = "ldd executable was not found",
+        )
     plan = build_validation_sandbox_plan(
         [ldd_path, str(binary_path)],
         binary_path = binary_path,
@@ -5482,15 +5558,31 @@ def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> str:
         env = env,
     )
     if plan.is_skipped:
-        log("Skipping ldd probe because no Linux sandbox adapter was available")
-        return ""
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = "ldd probe was skipped by validation policy",
+        )
     if plan.is_fallback:
-        # Keep compatibility: compatibility checks tolerate probe skip/fallback by
-        # treating missing entries as unknown and letting downstream metadata checks
-        # handle it.
-        return ""
-    result = _run_validation_capture(plan, timeout = 20)
-    return result.stdout + result.stderr
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = plan.reason or "ldd probe did not run",
+        )
+    try:
+        result = _run_validation_capture(plan, timeout = 20)
+    except Exception as exc:
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_ERROR,
+            missing = [],
+            reason = f"ldd probe failed: {exc}",
+        )
+    output = result.stdout + result.stderr
+    return LinuxLibraryProbeResult(
+        status = _LINUX_LDD_PROBE_OK,
+        missing = _parse_ldd_missing_libraries(output),
+        output = output,
+    )
 
 
 def _run_validation_popen(
@@ -5522,19 +5614,11 @@ def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = N
         probe_output = _run_validation_ldd_probe(binary_path, env = env)
     except Exception:
         return []
-    if not probe_output:
+    if probe_output.status != _LINUX_LDD_PROBE_OK:
         return []
-    result = subprocess.CompletedProcess(binary_path, 0, stdout = probe_output)
-
-    missing: list[str] = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if "=> not found" not in line:
-            continue
-        library = line.split("=>", 1)[0].strip()
-        if library and library not in missing:
-            missing.append(library)
-    return missing
+    if not probe_output.output:
+        return []
+    return probe_output.missing
 
 
 def python_runtime_dirs() -> list[str]:
@@ -5601,7 +5685,12 @@ def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
 
 def linux_runtime_dirs(binary_path: Path) -> list[str]:
     # ldd may execute the binary, so probe it with a secret-free env.
-    missing = linux_missing_libraries(binary_path, env = scrubbed_environ())
+    probe_result = _run_validation_ldd_probe(binary_path, env = scrubbed_environ())
+    if probe_result.status != _LINUX_LDD_PROBE_OK:
+        if probe_result.reason:
+            log(f"Skipping Linux runtime dirs probe because {probe_result.reason}")
+        return []
+    missing = probe_result.missing
     if not missing:
         return []
     return linux_runtime_dirs_for_required_libraries(missing)
@@ -5783,7 +5872,11 @@ def preflight_macos_installed_binaries(
 
 
 def preflight_linux_installed_binaries(
-    binaries: Iterable[Path], install_dir: Path, host: HostInfo
+    binaries: Iterable[Path],
+    install_dir: Path,
+    host: HostInfo,
+    *,
+    allow_skipped_probe: bool = True,
 ) -> None:
     if not host.is_linux:
         return
@@ -5791,7 +5884,25 @@ def preflight_linux_installed_binaries(
     issues: list[str] = []
     for binary_path in binaries:
         env = binary_env(binary_path, install_dir, host)
-        missing = linux_missing_libraries(binary_path, env = env)
+        probe_result = _run_validation_ldd_probe(binary_path, env = env)
+        if probe_result.status == _LINUX_LDD_PROBE_ERROR:
+            raise PrebuiltFallback(
+                f"linux extracted binary ldd probe errored for {binary_path.name}: "
+                f"{probe_result.reason}"
+            )
+        if probe_result.status == _LINUX_LDD_PROBE_SKIPPED:
+            if allow_skipped_probe:
+                log(
+                    f"linux extracted binary ldd probe skipped for {binary_path.name}"
+                    + (f": {probe_result.reason}" if probe_result.reason else "")
+                )
+                continue
+            issues.append(
+                f"{binary_path.name}: linux ldd probe skipped"
+                + (f" ({probe_result.reason})" if probe_result.reason else "")
+            )
+            continue
+        missing = probe_result.missing
         if not missing:
             continue
         runtime_dirs = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
@@ -6109,6 +6220,7 @@ def validate_server(
     install_kind: str | None = None,
 ) -> None:
     last_failure: PrebuiltFallback | None = None
+    gpu_backend: Literal["cuda", "rocm"] | None = None
     for port_attempt in range(1, SERVER_PORT_BIND_ATTEMPTS + 1):
         port = free_local_port()
         env = binary_env(server_path, install_dir, host, runtime_line = runtime_line)
@@ -6149,6 +6261,10 @@ def validate_server(
         }
         if install_kind is not None:
             _enable_gpu_layers = install_kind in _gpu_kinds
+            if install_kind in {"linux-cuda", "linux-arm64-cuda"}:
+                gpu_backend = "cuda"
+            elif install_kind == "linux-rocm":
+                gpu_backend = "rocm"
         else:
             # Older call sites that don't pass install_kind: keep ROCm
             # hosts in the GPU-validation path so an AMD-only Linux host
@@ -6157,6 +6273,10 @@ def validate_server(
             _enable_gpu_layers = (
                 host.has_usable_nvidia or host.has_rocm or (host.is_macos and host.is_arm64)
             )
+            if host.is_linux and host.has_usable_nvidia:
+                gpu_backend = "cuda"
+            elif host.is_linux and host.has_rocm:
+                gpu_backend = "rocm"
         if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
         plan = build_validation_sandbox_plan(
@@ -6167,6 +6287,8 @@ def validate_server(
             runtime_line = runtime_line,
             purpose = _VALIDATION_PURPOSE_SERVER,
             env = env,
+            enable_gpu_layers = _enable_gpu_layers,
+            gpu_backend = gpu_backend,
         )
 
         log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")
@@ -6295,10 +6417,17 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
         server_binary = install_dir / "llama-server"
         if server_binary.exists():
             server_env = binary_env(server_binary, install_dir, host)
+            ldd_probe = _run_validation_ldd_probe(server_binary, env = server_env)
             lines.append(
-                "linux_missing_libs="
-                + (",".join(linux_missing_libraries(server_binary, env = server_env)) or "none")
+                "linux_missing_libs_probe=" + ldd_probe.status
             )
+            if ldd_probe.reason:
+                lines.append("linux_missing_libs_probe_reason=" + ldd_probe.reason)
+            if ldd_probe.status == _LINUX_LDD_PROBE_OK:
+                lines.append(
+                    "linux_missing_libs="
+                    + (",".join(ldd_probe.missing) if ldd_probe.missing else "none")
+                )
             lines.append(
                 "linux_runtime_dirs="
                 + (
@@ -6313,9 +6442,11 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
                 )
             )
             try:
-                ldd_output = _run_validation_ldd_probe(server_binary, env = server_env)
-                lines.append("ldd llama-server:")
-                lines.append((ldd_output or "none").strip())
+                if ldd_probe.status == _LINUX_LDD_PROBE_OK:
+                    lines.append("ldd llama-server:")
+                    lines.append((ldd_probe.output or "none").strip())
+                else:
+                    lines.append("ldd llama-server: skipped")
             except Exception as exc:
                 lines.append(f"ldd error: {exc}")
     elif host.is_windows:
@@ -6844,6 +6975,7 @@ def existing_install_matches_choice(
                 [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
                 install_dir,
                 host,
+                allow_skipped_probe = False,
             )
         except Exception:
             return False
