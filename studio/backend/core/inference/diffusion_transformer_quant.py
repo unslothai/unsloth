@@ -63,12 +63,13 @@ _INT8_EXCLUDE_NAME_TOKENS = (
 )
 
 
-def int8_exclude_name_tokens(scheme: str) -> tuple[str, ...]:
-    """Filter exclusions for ``scheme``: the M=1 AdaLN-modulation / conditioning-embedder
-    linears for int8 (they crash ``torch._int_mm``, which needs M > 16), empty for every
-    other scheme (fp8 / fp4 / mx use ``scaled_mm``, no M limit). The single source of truth
-    shared by the runtime quantiser and the offline prequant builder, so a prequant artifact's
-    quantised-layer set matches the runtime exactly (no reintroduced M=1 crash)."""
+def exclude_tokens_for_scheme(scheme: str) -> tuple[str, ...]:
+    """Name tokens to exclude from quantisation for ``scheme``. int8 (torch._int_mm, M>16)
+    skips the M=1 modulation / conditioning-embedder projections (see _INT8_EXCLUDE_NAME_TOKENS);
+    every other scheme uses scaled_mm (no M limit) and excludes nothing. Shared by the runtime
+    quantise path and the offline prequant-checkpoint builder so the two never drift -- an int8
+    checkpoint built offline must skip exactly the layers the runtime path skips, or it bakes the
+    M=1 projections as int8 and crashes at the first denoise step on Flux / Qwen."""
     return _INT8_EXCLUDE_NAME_TOKENS if scheme == TQ_INT8 else ()
 
 
@@ -369,7 +370,7 @@ def quantize_transformer(
 
         # int8 (torch._int_mm, M>16) additionally skips the M=1 modulation / conditioning-embedder
         # projections; fp8 / fp4 / mx (scaled_mm) have no such limit and quantise everything.
-        exclude = int8_exclude_name_tokens(scheme)
+        exclude = exclude_tokens_for_scheme(scheme)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),

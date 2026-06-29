@@ -357,17 +357,18 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
     assert keep(big(), "") is True
 
 
-def test_int8_exclude_name_tokens_shared_by_runtime_and_builder():
+def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
     # The runtime quantiser and the offline prequant builder must apply the SAME int8
     # exclusion, or an int8 prequant artifact quantises the M=1 modulation/embedder linears
     # and reintroduces the torch._int_mm crash. int8 gets the exclusion; others get none.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
-        int8_exclude_name_tokens,
+        exclude_tokens_for_scheme,
     )
-    assert int8_exclude_name_tokens(TQ_INT8) == _INT8_EXCLUDE_NAME_TOKENS
+
+    assert exclude_tokens_for_scheme(TQ_INT8) == _INT8_EXCLUDE_NAME_TOKENS
     for scheme in (TQ_FP8, TQ_NVFP4, TQ_MXFP8):
-        assert int8_exclude_name_tokens(scheme) == ()
+        assert exclude_tokens_for_scheme(scheme) == ()
 
 
 # ── apply ───────────────────────────────────────────────────────────────────────
