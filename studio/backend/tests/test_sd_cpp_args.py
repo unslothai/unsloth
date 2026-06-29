@@ -221,6 +221,47 @@ def test_build_edit_repeats_ref_image():
     assert [cmd[i + 1] for i in idxs] == ["/r/a.png", "/r/b.png"]
 
 
+def test_img2img_unset_dims_lets_sdcpp_derive_from_source():
+    # img2img/inpaint/edit with dims left unset must NOT force --width/--height,
+    # so sd.cpp derives the size from the input image instead of resizing it to 1024.
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli",
+        files,
+        SdCppGenParams(prompt = "x", init_img = "/in/src.png"),
+        output_path = "/o.png",
+    )
+    assert "--width" not in cmd and "--height" not in cmd
+    # an edit (ref-image) run derives its size too
+    cmd2 = build_sd_cpp_command(
+        "/bin/sd-cli",
+        files,
+        SdCppGenParams(prompt = "x", ref_images = ("/r/a.png",)),
+        output_path = "/o.png",
+    )
+    assert "--width" not in cmd2 and "--height" not in cmd2
+
+
+def test_img2img_explicit_dims_are_emitted():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli",
+        files,
+        SdCppGenParams(prompt = "x", init_img = "/in/src.png", width = 768, height = 512),
+        output_path = "/o.png",
+    )
+    assert _pair(cmd, "--width") == "768" and _pair(cmd, "--height") == "512"
+
+
+def test_txt2img_unset_dims_keep_1024_default():
+    # A plain txt2img run with no dims keeps the prior 1024x1024 default.
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_command(
+        "/bin/sd-cli", files, SdCppGenParams(prompt = "x"), output_path = "/o.png"
+    )
+    assert _pair(cmd, "--width") == "1024" and _pair(cmd, "--height") == "1024"
+
+
 def test_build_lora_dir_and_apply_mode():
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     params = SdCppGenParams(
@@ -259,6 +300,25 @@ def test_build_upscale_command():
     assert _pair(cmd, "--output") == "/out/big.png"
     # no prompt / text-encoder flags in upscale mode
     assert "--prompt" not in cmd and "--llm" not in cmd
+
+
+def test_build_upscale_rejects_non_positive_repeats():
+    # repeats=0 must not be silently swallowed into sd-cli's default of one pass.
+    with pytest.raises(ValueError, match = "repeats"):
+        build_sd_cpp_upscale_command(
+            "/bin/sd-cli",
+            SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth", repeats = 0),
+            output_path = "/o.png",
+        )
+
+
+def test_build_upscale_default_repeats_omits_flag():
+    cmd = build_sd_cpp_upscale_command(
+        "/bin/sd-cli",
+        SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth"),  # repeats=1
+        output_path = "/o.png",
+    )
+    assert "--upscale-repeats" not in cmd
 
 
 def test_build_upscale_requires_input_and_model():
