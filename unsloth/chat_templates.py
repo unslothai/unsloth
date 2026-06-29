@@ -1804,20 +1804,17 @@ CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False
 DEFAULT_SYSTEM_MESSAGE["yi-chat"] = None
 
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
-    system_message_pattern = r"\{system_message\}"
-
     # For predefined templates, check if default system message exists
     default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
-    has_placeholder = re.search(system_message_pattern, template) is not None
 
     # Custom templates have no predefined default, but may still carry a
-    # {system_message} placeholder that must be filled. Handle that before the
-    # no-default early return below, otherwise the literal "{system_message}" is
-    # left in the template (or silently ignored when none is provided).
-    if default_system_message is None and has_placeholder:
+    # {system_message} placeholder. Handle it before the no-default early return
+    # below, which would otherwise leave the literal "{system_message}" in the
+    # template. A placeholder with no system message is an error, not a no-op.
+    if default_system_message is None and "{system_message}" in template:
         if system_message is None:
             raise ValueError("Unsloth: You need to provide a system message for custom templates.")
-        new_template = re.sub(system_message_pattern, system_message, template)
+        new_template = template.replace("{system_message}", system_message)
         return new_template, system_message
 
     if default_system_message is None:
@@ -1831,7 +1828,7 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
 
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
-    new_template = re.sub(system_message_pattern, message_to_use, template)
+    new_template = template.replace("{system_message}", message_to_use)
 
     return new_template, message_to_use
 

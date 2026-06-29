@@ -41,6 +41,17 @@ def test_custom_template_fills_placeholder():
     assert used == "You are a pirate"
 
 
+def test_custom_template_preserves_backslashes():
+    # Why str.replace and not re.sub: a system message with backslashes (Windows
+    # paths, LaTeX, group-like text) must be inserted verbatim. re.sub treats the
+    # replacement specially -- r"C:\Users" raises bad-escape, r"\1" is a group ref.
+    fn = _load_change_system_message()
+    for msg in (r"C:\Users\me", r"\frac{a}{b}", r"see \1 here"):
+        template, used = fn("System: {system_message}", CUSTOM, msg)
+        assert template == f"System: {msg}"
+        assert used == msg
+
+
 def test_custom_template_requires_system_message():
     # A custom template with a placeholder but no system message must raise,
     # rather than silently leaving the placeholder in.
