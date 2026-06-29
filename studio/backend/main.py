@@ -441,8 +441,6 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
-
-
 def _warm_rag_embedder() -> None:
     """Warm RAG embeddings without blocking backend readiness."""
     try:
@@ -496,7 +494,6 @@ async def lifespan(app: FastAPI):
     # Reap workers/runs orphaned by a previous crash before new work starts.
     try:
         from storage.studio_db import cleanup_orphaned_runs
-
         cleanup_orphaned_runs()
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
@@ -519,7 +516,6 @@ async def lifespan(app: FastAPI):
         reconcile_orphaned_ingestion_jobs()
     except Exception as exc:
         _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
-
 
     _start_helper_precache_if_enabled()
     threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
