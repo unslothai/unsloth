@@ -262,19 +262,6 @@ function NavItem({
   );
 }
 
-// TEMP DEV override: preview the update card on installs with no real update
-// (e.g. an editable checkout). In the browser console run
-// `localStorage.setItem("unsloth_force_update_card", "1")` and reload. Remove
-// before merge.
-function devForceUpdateCard(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem("unsloth_force_update_card") === "1";
-  } catch {
-    return false;
-  }
-}
-
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
@@ -291,13 +278,10 @@ export function AppSidebar() {
 
   // Web update detection: `webUpdate` is non-null only when the installed
   // (PyPI) version is behind the latest release, so the card is hidden by
-  // default. `forceUpdateCard` is a TEMP dev override to preview it on installs
-  // with no real update (e.g. an editable checkout); remove before merge.
+  // default.
   const { status: webUpdate } = useWebUpdateCheck();
-  const [forceUpdateCard] = useState(devForceUpdateCard);
-  const showUpdateCard = Boolean(webUpdate) || forceUpdateCard;
-  const updateVersion =
-    webUpdate?.latestVersion ?? (forceUpdateCard ? "0.0.0" : null);
+  const showUpdateCard = Boolean(webUpdate);
+  const updateVersion = webUpdate?.latestVersion ?? null;
 
   // Auto-close mobile Sheet after navigation
   const closeMobileIfOpen = () => {
