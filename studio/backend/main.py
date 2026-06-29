@@ -443,16 +443,19 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
 
 def _start_background_maintenance() -> None:
     """Run non-critical startup maintenance after the API is live."""
+
     def _run() -> None:
         import time as _time
+
         _started = _time.perf_counter()
         try:
             from storage.studio_db import cleanup_orphaned_runs
-
             cleanup_orphaned_runs()
         except Exception as exc:
             import structlog
-            structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
+            structlog.get_logger(__name__).warning(
+                "cleanup_orphaned_runs failed at startup: %s", exc
+            )
 
         try:
             from storage.rag_db import reconcile_orphaned_ingestion_jobs
@@ -464,6 +467,7 @@ def _start_background_maintenance() -> None:
             )
 
         import structlog as _structlog
+
         _structlog.get_logger(__name__).info(
             "background startup maintenance completed in %.1fms",
             (_time.perf_counter() - _started) * 1000,
@@ -491,8 +495,10 @@ async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
 
     import time as _time
+
     _lifespan_started = _time.perf_counter()
     import structlog as _structlog
+
     _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
 
