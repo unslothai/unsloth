@@ -24,9 +24,10 @@ from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, TYPE_CHECKING
 
-import matplotlib.pyplot as plt
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 from utils.hardware import prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
@@ -35,6 +36,30 @@ from utils.native_path_leases import (
 from utils.paths import outputs_root
 
 logger = get_logger(__name__)
+
+_pyplot = None
+_pyplot_failed = False
+
+
+def _load_pyplot():
+    """Lazily import matplotlib.pyplot (headless Agg); return it, or None if
+    matplotlib is unavailable. Deferred so a blocked native wheel (e.g. Windows
+    Smart App Control) never breaks server startup, only loss plotting.
+    """
+    global _pyplot, _pyplot_failed
+    if _pyplot is not None or _pyplot_failed:
+        return _pyplot
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")  # headless backend
+        import matplotlib.pyplot as plt
+
+        _pyplot = plt
+    except Exception as e:
+        _pyplot_failed = True
+        logger.warning("matplotlib unavailable; loss plots disabled", error = str(e))
+    return _pyplot
 
 
 def _coerce_seed(value, default = 3407) -> int:
@@ -191,6 +216,9 @@ class TrainingBackend:
         self._event_queue: Any = None
         self._stop_queue: Any = None
         self._pump_thread: Optional[threading.Thread] = None
+        # True while a pump thread should be running; cleared on intended exits.
+        # Left True after an abnormal death so _ensure_pump_alive spots a crash.
+        self._pump_running: bool = False
         self._lock = threading.Lock()
 
         # Progress state (updated by pump thread from subprocess events)
@@ -264,6 +292,9 @@ class TrainingBackend:
                 logger.warning("Previous pump thread did not exit within 5s — refusing to start")
                 return False
         self._pump_thread = None
+        # Clear a stale crash flag from a prior died pump so the watchdog can't
+        # treat this fresh setup as a recoverable death.
+        self._pump_running = False
 
         # Build config dict for the subprocess
         config = {
@@ -447,16 +478,21 @@ class TrainingBackend:
         self._xet_fallback_used = False
         self._needs_xet_respawn = False
 
-        # Assign subprocess handles after state reset.
-        self._event_queue = event_queue
-        self._stop_queue = stop_queue
-        self._proc = proc
-
-        # Eagerly create DB run row so it appears in history during model loading.
+        # Create the DB run row before the pump can consume events, so it appears
+        # in history during model loading and a fast terminal worker can't race the
+        # pump into a duplicate create/finalize. From here the pump only finalizes.
         self._ensure_db_run_created()
 
-        self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
-        self._pump_thread.start()
+        # Assign handles and start the pump together under the lock so a concurrent
+        # poll can't see a live _proc with no pump and spawn a duplicate.
+        new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+        with self._lock:
+            self._pump_running = False
+            self._event_queue = event_queue
+            self._stop_queue = stop_queue
+            self._proc = proc
+            self._pump_thread = new_pump
+            new_pump.start()
 
         return True
 
@@ -581,6 +617,9 @@ class TrainingBackend:
         except Exception:
             logger.error("Failed to respawn training subprocess", exc_info = True)
             with self._lock:
+                # No replacement pump will run; clear the flag so a later run can't
+                # inherit a stale _pump_running=True and spawn a duplicate.
+                self._pump_running = False
                 self._progress.is_training = False
                 self._progress.error = "Failed to recover stalled model download"
             self._ensure_db_run_created()
@@ -598,10 +637,44 @@ class TrainingBackend:
             self._stop_queue = stop_queue
             self._proc = new_proc
             self._pump_thread = new_pump
-        new_pump.start()
+            # Start under the lock so _ensure_pump_alive can never observe the
+            # new pump as a not-yet-started (dead) thread and spawn a duplicate.
+            new_pump.start()
+
+    def _ensure_pump_alive(self) -> bool:
+        """Restart the event pump if it crashed, even after the worker exited.
+
+        Defence in depth behind _pump_loop's guards. _pump_running stays True only
+        after an abnormal exit (the loop clears it on intended exits), so a True
+        flag plus a dead thread is an unambiguous crash. Restarts even after worker
+        exit so a fresh pump can drain the terminal events and finalize; otherwise
+        the run looks stuck "running" forever. Returns True if restarted.
+        """
+        with self._lock:
+            if not self._pump_running:
+                return False
+            # A restarted pump needs the worker handle and queue to drain/finalize;
+            # their absence means nothing is left to recover.
+            if self._proc is None or self._event_queue is None:
+                return False
+            if self._pump_thread is not None and self._pump_thread.is_alive():
+                return False
+            logger.error(
+                "Training event pump thread died while the worker is still running; "
+                "restarting it so progress updates resume."
+            )
+            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            self._pump_thread = new_pump
+            # Start under the lock so a concurrent _ensure_pump_alive can't see
+            # this thread as not-yet-started and spawn yet another pump.
+            new_pump.start()
+        return True
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
+        # Self-heal a crashed pump first: a dead pump must never leave the worker
+        # training invisibly behind a frozen UI. Cheap enough for per-second polls.
+        self._ensure_pump_alive()
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 return True
@@ -655,7 +728,7 @@ class TrainingBackend:
         plot = self._create_loss_plot(progress, theme)
         return (plot, progress)
 
-    def refresh_plot_for_theme(self, theme: str) -> Optional[plt.Figure]:
+    def refresh_plot_for_theme(self, theme: str) -> "Optional[plt.Figure]":
         """Refresh plot with new theme."""
         if theme and isinstance(theme, str) and theme in ["light", "dark"]:
             self.current_theme = theme
@@ -702,51 +775,87 @@ class TrainingBackend:
     # Event pump (background thread)
     # ------------------------------------------------------------------
 
+    def _safe_handle_event(self, event: dict) -> None:
+        """Apply one event, swallowing any handler error.
+
+        The pump is the only writer of the progress state every status surface
+        reads, so a malformed event must never propagate and kill it.
+        """
+        try:
+            self._handle_event(event)
+        except Exception:
+            etype = event.get("type") if isinstance(event, dict) else type(event).__name__
+            logger.exception("Training event pump: failed to handle %s event; skipping", etype)
+
     def _pump_loop(self) -> None:
-        """Background thread: consume events from subprocess → update state."""
+        """Background thread: consume subprocess events and update state.
+
+        Sole writer of the in-memory progress state that /progress, /status,
+        /metrics and DB history read. If it exited while the worker still ran, the
+        run would burn GPU with events piling up while every surface froze. So no
+        single bad event or transient queue/DB error may end it; it returns only
+        through intended exits (worker gone, respawn handed off, finalized).
+        """
+        self._pump_running = True
         while True:
             if self._proc is None or self._event_queue is None:
+                self._pump_running = False
                 return
 
-            event = self._read_queue(self._event_queue, timeout_sec = 0.25)
+            try:
+                event = self._read_queue(self._event_queue, timeout_sec = 0.25)
+            except Exception:
+                # If a read keeps raising after the worker died, fall through to
+                # finalize instead of spinning; only retry while the worker lives.
+                logger.exception("Training event pump: queue read failed; continuing")
+                if self._proc is not None and self._proc.is_alive():
+                    time.sleep(0.1)
+                    continue
+                event = None
+
             if event is not None:
-                self._handle_event(event)
+                self._safe_handle_event(event)
                 continue
 
             if self._proc.is_alive():
                 continue
 
-            # Process exited — drain remaining events.
-            for e in self._drain_queue(self._event_queue):
-                self._handle_event(e)
+            # Worker exited. Drain the backlog and finalize, guarded so a slow or
+            # failing DB write can't strand the thread; we return either way.
+            try:
+                for e in self._drain_queue(self._event_queue):
+                    self._safe_handle_event(e)
 
-            # Model-load stall: respawn over HTTP instead of finalizing as failure.
-            # Runs on THIS exiting pump thread and starts a fresh pump (never joins
-            # the current thread); DB run-state is preserved.
-            if self._needs_xet_respawn:
-                self._needs_xet_respawn = False
-                self._respawn_worker_disable_xet()
-                return
+                # Model-load stall: respawn over HTTP instead of finalizing as failure.
+                # Starts a fresh pump on this thread (no self-join); it takes over
+                # _pump_running, so this exit leaves the flag set.
+                if self._needs_xet_respawn:
+                    self._needs_xet_respawn = False
+                    self._respawn_worker_disable_xet()
+                    return
 
-            # Mark done if no explicit complete/error was received.
-            with self._lock:
-                if self._progress.is_training:
-                    if self._should_stop:
-                        self._progress.is_training = False
-                        self._progress.status_message = "Training stopped."
-                    else:
-                        self._progress.is_training = False
-                        self._progress.error = (
-                            self._progress.error or "Training process exited unexpectedly"
-                        )
+                # Mark done if no explicit complete/error was received.
+                with self._lock:
+                    if self._progress.is_training:
+                        if self._should_stop:
+                            self._progress.is_training = False
+                            self._progress.status_message = "Training stopped."
+                        else:
+                            self._progress.is_training = False
+                            self._progress.error = (
+                                self._progress.error or "Training process exited unexpectedly"
+                            )
 
-            self._ensure_db_run_created()
-            self._finalize_run_in_db(
-                status = "stopped" if self._should_stop else "error",
-                error_message = None
-                if self._should_stop
-                else "Training process terminated unexpectedly",
-            )
+                self._ensure_db_run_created()
+                self._finalize_run_in_db(
+                    status = "stopped" if self._should_stop else "error",
+                    error_message = None
+                    if self._should_stop
+                    else "Training process terminated unexpectedly",
+                )
+            except Exception:
+                logger.exception("Training event pump: finalization after worker exit failed")
+            self._pump_running = False
             return
 
     def _handle_event(self, event: dict) -> None:
@@ -1069,6 +1178,8 @@ class TrainingBackend:
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
+            # A closed/broken queue reads as "no event"; any other error is left to
+            # _pump_loop's guarded block, which logs and backs off.
             return None
 
     @staticmethod
@@ -1079,7 +1190,12 @@ class TrainingBackend:
                 events.append(q.get_nowait())
             except queue.Empty:
                 return events
-            except (EOFError, OSError, ValueError):
+            except Exception:
+                # A drain error must not abort finalization: return what we have so
+                # the run finalizes rather than wedging "active" behind a dead worker.
+                logger.exception(
+                    "Training event pump: queue drain failed; finalizing with drained events"
+                )
                 return events
 
     # ------------------------------------------------------------------
@@ -1090,8 +1206,14 @@ class TrainingBackend:
         self,
         progress: TrainingProgress,
         theme: str = "light",
-    ) -> plt.Figure:
-        """Create training loss plot with theme-aware styling."""
+    ) -> "Optional[plt.Figure]":
+        """Create training loss plot with theme-aware styling.
+
+        matplotlib is loaded lazily; returns None if it is unavailable.
+        """
+        plt = _load_pyplot()
+        if plt is None:
+            return None
         plt.close("all")
 
         LIGHT_STYLE = {

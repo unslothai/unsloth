@@ -1221,6 +1221,8 @@ _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "work
 _EXPORT_WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "export" / "worker.py"
 # Shared torchao Windows-ROCm stub used by both workers.
 _TORCHAO_STUB_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
+# RAG embedder -- runs in the main backend process and also needs the stub.
+_EMBEDDINGS_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "rag" / "embeddings.py"
 # Wheel-probe script literal lives in wheel_utils after the resolver refactor.
 _WHEEL_UTILS_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
 
@@ -2327,6 +2329,13 @@ class TestWorkerWindowsRocmPatches:
     def test_export_worker_calls_shared_torchao_stub(self):
         """export/worker.py must invoke the same shared torchao stub entrypoint."""
         source = _EXPORT_WORKER_PATH.read_text(encoding = "utf-8")
+        assert "install_torchao_windows_rocm_stub()" in source
+
+    def test_embedder_calls_shared_torchao_stub(self):
+        """embeddings.py must install the stub before importing sentence-transformers:
+        it runs in the main process (not a stubbed worker), so otherwise transformers
+        -> torchao crashes on Windows ROCm and the embedder drops to llama-server."""
+        source = _EMBEDDINGS_PATH.read_text(encoding = "utf-8")
         assert "install_torchao_windows_rocm_stub()" in source
 
     def test_torchao_stub_uses_stub_type_meta(self):

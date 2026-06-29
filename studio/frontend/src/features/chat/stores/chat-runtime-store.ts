@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { cancelStagedModelDownload } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
@@ -770,6 +771,10 @@ type ChatRuntimeStore = {
    *  start each deferred-staging session clean so one staged pick's settings
    *  don't leak onto the next. */
   resetModelSettingsToLoaded: () => void;
+  /** Seed the editable load knobs from a model's remembered settings. Shared by
+   *  the settings sheet's restore effect and the "Load on selection" paths,
+   *  which skip the sheet but must still honor a saved config. */
+  applyRememberedLoadSettings: (settings: RememberedLoadSettings) => void;
   setTensorParallel: (value: boolean) => void;
   setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
@@ -832,6 +837,7 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
   "maxSeqLength",
   "maxTokens",
   "systemPrompt",
+  "systemVariables",
   "trustRemoteCode",
   "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];
@@ -1528,6 +1534,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
+  applyRememberedLoadSettings: (settings) =>
+    // Coalesce every field: a blob persisted by an older/newer build can omit
+    // keys, and a raw spread would push `undefined` into fields typed non-null.
+    set({
+      customContextLength: settings.contextLength ?? null,
+      kvCacheDtype: settings.kvCacheDtype ?? null,
+      speculativeType: settings.speculativeType ?? "auto",
+      specDraftNMax: settings.specDraftNMax ?? null,
+      tensorParallel: settings.tensorParallel ?? false,
+    }),
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
     set({ loadOnSelection });

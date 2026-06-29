@@ -74,6 +74,62 @@ verbose_substep() {
     return 0
 }
 
+# ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
+# studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
+# lock. A project-level pin overrides a corporate user's ~/.npmrc proxy, so the install
+# hits npmjs.org directly and a firewall returns 403. UNSLOTH_NPM_REGISTRY is a
+# deliberate opt-in: when set we thread it as `--registry <url>` into every npm/bun
+# install. `--registry` is the highest-precedence override for BOTH tools and leaves
+# min-release-age / save-exact in force. Empty array (the default) expands to nothing
+# under `set -u`, so normal installs are unchanged.
+_NPM_REGISTRY_ARGS=()
+if [ -n "${UNSLOTH_NPM_REGISTRY:-}" ]; then
+    _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
+fi
+# Failure-path capture log consumed by _suggest_npm_registry. Set to a temp file
+# around the npm/bun installs; "" elsewhere so unrelated run_quiet calls don't capture.
+_CAPTURE_LOG=""
+
+# Print actionable guidance when a frontend/OXC npm/bun install fails and the registry
+# lock is the likely cause (corporate firewall/proxy). No-op once the user has opted in
+# via UNSLOTH_NPM_REGISTRY. We never switch registries automatically -- we only guide.
+# $1 = path to a captured install log (may be empty/missing).
+_suggest_npm_registry() {
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
+    local _log="${1:-}"
+    # If we captured output and it does NOT look like a registry/network problem, stay
+    # quiet -- the raw error already shown is more useful than a misleading hint.
+    if [ -n "$_log" ] && [ -s "$_log" ] \
+        && ! grep -Eqi '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)' "$_log"; then
+        return 0
+    fi
+    # Best-effort: surface a mirror the user already configured (env or ~/.npmrc).
+    # Read npm config from / (a dir with no project .npmrc) so the frontend's pinned
+    # registry= does not mask the user's ~/.npmrc / global mirror -- the caller is
+    # still inside studio/frontend when this runs.
+    local _mirror="${NPM_CONFIG_REGISTRY:-${npm_config_registry:-}}"
+    if [ -z "$_mirror" ] && command -v npm >/dev/null 2>&1; then
+        _mirror="$( (cd / 2>/dev/null && npm config get registry) 2>/dev/null || true )"
+    fi
+    case "$_mirror" in
+        ""|undefined|null|https://registry.npmjs.org|https://registry.npmjs.org/) _mirror="" ;;
+    esac
+    printf '\n' >&2
+    step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "$C_WARN" >&2
+    if [ -n "$_mirror" ]; then
+        substep "Studio pins the public npm registry; your mirror is being ignored." >&2
+        substep "Detected a registry in your npm config:" >&2
+        substep "  $_mirror" >&2
+        substep "Re-run pointing Studio at it:" >&2
+        substep "  UNSLOTH_NPM_REGISTRY=$_mirror ./install.sh --local" >&2
+    else
+        substep "If you use a private mirror/proxy, point Studio at it and re-run:" >&2
+        substep "  UNSLOTH_NPM_REGISTRY=https://your-mirror.example/api/npm/ ./install.sh --local" >&2
+    fi
+    substep "(min-release-age and save-exact stay enforced.)" >&2
+    return 0
+}
+
 run_maybe_quiet() {
     if _is_verbose; then
         "$@"
@@ -113,6 +169,7 @@ _run_quiet() {
         local exit_code=$?
         step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
         cat "$tmplog" >&2
+        if [ -n "${_CAPTURE_LOG:-}" ]; then cat "$tmplog" >> "$_CAPTURE_LOG" 2>/dev/null || true; fi
         rm -f "$tmplog"
 
         if [ "$on_fail" = "exit" ]; then
@@ -647,7 +704,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     substep "installing bun..."
     # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
     # postinstall fetches its binary; without it the install is a broken stub.
-    if run_maybe_quiet npm install -g bun --allow-scripts=bun && command -v bun &>/dev/null; then
+    if run_maybe_quiet npm install -g bun --allow-scripts=bun "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" && command -v bun &>/dev/null; then
         substep "bun installed ($(bun --version))"
     else
         substep "bun install skipped (npm will be used instead)"
@@ -690,7 +747,7 @@ trap _restore_gitignores EXIT
 _try_bun_install() {
     local _log _exit_code=0
     _log=$(mktemp)
-    bun install >"$_log" 2>&1 || _exit_code=$?
+    bun install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" >"$_log" 2>&1 || _exit_code=$?
 
     # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
     if [ "$_exit_code" -eq 0 ] \
@@ -707,11 +764,15 @@ _try_bun_install() {
         echo "   bun install exited 0 but critical binaries are missing:"
     fi
     sed 's/^/   | /' "$_log" >&2
+    if [ -n "${_CAPTURE_LOG:-}" ]; then cat "$_log" >> "$_CAPTURE_LOG" 2>/dev/null || true; fi
     rm -f "$_log"
     rm -rf node_modules
     return 1
 }
 
+# Capture install output (bun + npm fallback) so we can detect a registry block.
+_FRONTEND_INSTALL_LOG=$(mktemp)
+_CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
 _bun_install_ok=false
 if command -v bun &>/dev/null; then
     substep "using bun for package install (faster)"
@@ -728,12 +789,19 @@ if command -v bun &>/dev/null; then
     fi
 fi
 if [ "$_bun_install_ok" = false ]; then
-    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error
-    _npm_install_rc=$?
+    # `|| _npm_install_rc=$?` keeps this off `set -e`'s exit path (run_quiet_no_exit
+    # returns non-zero on failure) so the hint branch is reachable; it also captures
+    # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
+    _npm_install_rc=0
+    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
     if [ "$_npm_install_rc" -ne 0 ]; then
+        _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
+        rm -f "$_FRONTEND_INSTALL_LOG"
         exit "$_npm_install_rc"
     fi
 fi
+_CAPTURE_LOG=""
+rm -f "$_FRONTEND_INSTALL_LOG"
 run_quiet "npm run build" npm run build
 
 _restore_gitignores
@@ -759,11 +827,19 @@ fi  # end frontend build check
 # Node, so do not run npm install against an unsuitable/absent system Node.
 if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
     cd "$_OXC_DIR"
-    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
-    _oxc_install_rc=$?
+    _OXC_INSTALL_LOG=$(mktemp)
+    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
+    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
+    # below is reachable; it also captures the exact exit code.
+    _oxc_install_rc=0
+    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    _CAPTURE_LOG=""
     if [ "$_oxc_install_rc" -ne 0 ]; then
+        _suggest_npm_registry "$_OXC_INSTALL_LOG"
+        rm -f "$_OXC_INSTALL_LOG"
         exit "$_oxc_install_rc"
     fi
+    rm -f "$_OXC_INSTALL_LOG"
     cd "$SCRIPT_DIR"
 elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     # No npm on PATH: skip rather than abort; the backend Node resolver degrades
@@ -1822,6 +1898,7 @@ else
         printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
     printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
 fi
 echo ""
 

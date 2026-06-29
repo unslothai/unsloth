@@ -36,6 +36,7 @@ from backend.utils.wheel_utils import (
     probe_torch_wheel_env,
     url_exists,
 )
+from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -1374,25 +1375,7 @@ def _ensure_rocm_torch() -> None:
             )
 
 
-def _uv_safe_path(path: object) -> str:
-    # uv 0.11.x: `-c <path with space>` truncates at the space; use 8.3 short form.
-    s = str(path)
-    if not IS_WINDOWS or " " not in s:
-        return s
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        get_short = ctypes.windll.kernel32.GetShortPathNameW
-        get_short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
-        get_short.restype = wintypes.DWORD
-        buf = ctypes.create_unicode_buffer(32768)
-        rc = get_short(s, buf, 32768)
-        if 0 < rc < 32768 and " " not in buf.value:
-            return buf.value
-    except Exception:
-        pass
-    return s
+# _uv_safe_path is imported from backend.utils.uv_path_safety (shared with mlx_repair).
 
 
 def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
@@ -1481,9 +1464,10 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
 LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
 
 # Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides).
+# _uv_safe_path: uv truncates UV_OVERRIDE at the first space too (issue #6503).
 _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
-if IS_MAC_ARM and _MLX_OVERRIDES.is_file():
-    os.environ.setdefault("UV_OVERRIDE", str(_MLX_OVERRIDES))
+if IS_MAC_ARM and _MLX_OVERRIDES.is_file() and "UV_OVERRIDE" not in os.environ:
+    os.environ["UV_OVERRIDE"] = _uv_safe_path(_MLX_OVERRIDES)
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the console encoding may be a legacy code page (e.g. CP1252)
@@ -1658,7 +1642,7 @@ def run(
 
 
 # Packages to skip on Windows (require special build steps)
-WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
+WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
 
 # Packages to skip when torch is unavailable (Intel Mac GGUF-only mode).
 # These either *are* torch extensions or have unconditional
@@ -1675,7 +1659,6 @@ NO_TORCH_SKIP_PACKAGES = {
     "torchcodec",
     "torch-c-dlpack-ext",
     "openai-whisper",
-    "transformers-cfg",
     "librosa",
 }
 
@@ -2234,25 +2217,25 @@ def install_python_stack() -> int:
     # 4. Overrides (torchao) -- force-reinstall. The torchao version is chosen to
     #    match the torch installed in the venv so its C++ extensions load (see
     #    _select_torchao_spec). Skip when torch is unavailable (e.g. Intel Mac
-    #    GGUF-only mode): torchao requires torch.
+    #    GGUF-only mode): torchao requires torch. Also skipped on Windows ROCm
+    #    (no working build; see below).
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
+    elif _rocm_windows_torch_installed:
+        # No working Windows ROCm torchao build: it imports an absent c10d backend
+        # and crashes transformers.quantizers. Studio stubs it at runtime, so
+        # installing it only ships a package that crashes on import -- skip it.
+        _progress("dependency overrides (skipped, Windows ROCm)")
+        _safe_print("   Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
     else:
         _progress("dependency overrides")
         _torch_ver = _probe_installed_torch_version()
         _torchao_spec = _select_torchao_spec(_torch_ver)
         _safe_print(f"   torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
-        _override_extra_args: tuple[str, ...] = ()
-        if _rocm_windows_torch_installed:
-            # torchao declares torch as a dependency; without --no-deps uv would
-            # install CPU torch from PyPI, overwriting the AMD ROCm wheels we just
-            # installed.
-            _override_extra_args = ("--no-deps",)
         pip_install(
             "Installing dependency overrides",
             "--force-reinstall",
             "--no-cache-dir",
-            *_override_extra_args,
             _torchao_spec,
         )
 

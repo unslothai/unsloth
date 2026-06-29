@@ -2595,6 +2595,7 @@ exit 0
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
             Write-Host ""
         }
     } else {
@@ -2615,6 +2616,7 @@ exit 0
             substep "unsloth studio -p 8888"
         }
         substep "(add -H 0.0.0.0 to allow network / cloud access)"
+        substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
         Write-Host ""
     }
 }

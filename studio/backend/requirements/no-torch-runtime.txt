@@ -56,7 +56,7 @@ httpx
 httpcore
 certifi
 idna
-anyio>=3.0,<4.14.0  # one consistent <4.14: 4.14's TaskHandle importers over a stale 4.13 _core/_tasks -> ImportError (#6483)
+anyio>=3.0,<4.14.0  # 4.14 asyncio cancel-scope RuntimeError on Py3.13 streaming (#6483); 4.13 unaffected
 sniffio
 h11
 

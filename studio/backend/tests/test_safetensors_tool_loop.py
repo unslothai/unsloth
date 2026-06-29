@@ -10,6 +10,7 @@ calls, tool-result feedback, bad-JSON heal, duplicate-call short-circuit,
 ``__IMAGES__`` sentinel stripping, executor errors, cancel, and the iteration cap.
 """
 
+import json
 import threading
 from typing import cast
 
@@ -61,6 +62,51 @@ class TestParser:
         text = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}'
         assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
+    def test_gemma_native_tool_call(self):
+        text = '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "terminal"
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"command": "ls -la", "workdir": "."}
+
+    def test_gemma_native_tool_call_template_quotes(self):
+        text = '<|tool_call>call:web_search{query:<|"|>openai news<|"|>}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        assert json.loads(result[0]["function"]["arguments"]) == {"query": "openai news"}
+
+    def test_gemma_native_tool_call_template_quotes_escape_backslashes(self):
+        text = r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "ls"
+        assert json.loads(result[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
+
+    def test_gemma_native_tool_call_hyphenated_argument_name(self):
+        text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "mcp__srv__create-issue"
+        assert json.loads(result[0]["function"]["arguments"]) == {"issue-title": "Bug report"}
+
+    def test_gemma_native_tool_call_keeps_braces_inside_string_value(self):
+        text = '<|tool_call>call:terminal{command:"echo {foo:bar}"}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "terminal"
+        assert json.loads(result[0]["function"]["arguments"]) == {"command": "echo {foo:bar}"}
+
+    def test_gemma_native_tool_call_bare_string_values(self):
+        text = "<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "location": "Tokyo",
+            "unit": "celsius",
+        }
 
     def test_xml_function_call(self):
         text = "<function=python><parameter=code>print('hi')</parameter></function>"
@@ -121,6 +167,7 @@ class TestParser:
 
     def test_has_tool_signal(self):
         assert has_tool_signal("blah <tool_call> x")
+        assert has_tool_signal("blah <|tool_call>call:terminal")
         assert has_tool_signal("hi <function=foo>...")
         assert not has_tool_signal("hello world")
 
@@ -139,6 +186,8 @@ class TestParser:
     def test_strip_markup_closed(self):
         text = "before <tool_call>{}</tool_call> after"
         assert strip_tool_markup(text) == "before  after"
+        text = 'before <|tool_call>call:terminal{command:"ls"}<tool_call|> after'
+        assert strip_tool_markup(text) == "before  after"
 
     def test_strip_markup_unclosed_final(self):
         text = "before <tool_call>{partial"
@@ -146,6 +195,7 @@ class TestParser:
         assert strip_tool_markup(text, final = True) == "before"
         # Without final=True the unclosed run is preserved.
         assert "partial" in strip_tool_markup(text)
+        assert strip_tool_markup("before <|tool_call>call:terminal{", final = True) == "before"
 
     def test_streaming_strip_respects_disabled_healing(self):
         raw = 'before <tool_call>{"name":"web_search"'

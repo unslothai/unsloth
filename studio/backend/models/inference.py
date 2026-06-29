@@ -106,8 +106,7 @@ class LoadRequest(BaseModel):
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
             "Studio-managed flags (model identity, port, context length, GPU placement, "
-            "auth, --flash-attn, --no-context-shift, --jinja) are rejected. Ignored for "
-            "non-GGUF models."
+            "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
 
@@ -1102,6 +1101,8 @@ class ChoiceDelta(BaseModel):
 
     role: Optional[str] = None
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
 
 
 OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
@@ -1137,6 +1138,8 @@ class CompletionMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str
     refusal: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[list[dict]] = None
 
 
 class CompletionChoice(BaseModel):
