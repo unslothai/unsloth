@@ -185,6 +185,7 @@ def _active_attention_backend() -> Optional[str]:
     """The diffusers process-wide active attention backend name, or None if undeterminable."""
     try:
         from diffusers.models.attention_dispatch import _AttentionBackendRegistry
+
         # get_active_backend() returns an AttentionBackend enum (or None), NOT a tuple:
         # unpacking it as `name, _` raises ValueError (swallowed below), so this always
         # returned None and the native-restore short-circuit never fired.
