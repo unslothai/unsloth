@@ -6048,10 +6048,14 @@ class LlamaCppBackend:
                         except Exception:
                             _numa_footprint = _resident
                     _numa = decide_interleave(_numa_footprint, cpu_only = _cpu_only)
-                    if _numa.interleave:
+                    if _numa.interleave and _extra_args_set_any_flag(extra_args, {"--numa"}):
+                        # User set an explicit --numa policy: respect it. The numactl wrap
+                        # is an argv prefix they can't override, so skip it (and --numa
+                        # distribute) rather than force interleaving over their choice.
+                        logger.info("NUMA: user --numa set; leaving auto-interleave off")
+                    elif _numa.interleave:
                         self._numa_prefix = list(_numa.prefix)
-                        if not _extra_args_set_any_flag(extra_args, {"--numa"}):
-                            cmd.extend(["--numa", "distribute"])
+                        cmd.extend(["--numa", "distribute"])
                         logger.info("NUMA: %s", _numa.reason)
                     elif _cpu_only and (
                         "numactl` is not installed" in _numa.reason

@@ -182,6 +182,14 @@ def test_numa_surfaces_total_ram_failure():
     assert '"interleave cannot help" in _numa.reason' in src
 
 
+def test_explicit_user_numa_skips_auto_interleave_prefix():
+    """An explicit user --numa must skip the numactl argv prefix (which user extra args
+    can't override), not just the --numa distribute flag (PR review fix)."""
+    src = _load_model_src()
+    assert 'if _numa.interleave and _extra_args_set_any_flag(extra_args, {"--numa"}):' in src
+    assert "leaving auto-interleave off" in src
+
+
 def test_extra_args_forces_cpu_offload_helper():
     """The zero-offload detector: -ngl 0 / --n-gpu-layers 0 / --gpu-layers 0 (last wins)."""
     from core.inference.llama_cpp import _extra_args_forces_cpu_offload as f

@@ -135,6 +135,16 @@ def decide_interleave(
             f"(~{largest} MiB); keeping local placement",
         )
 
+    # Impossible across all nodes regardless of numactl: surface the smaller-quant /
+    # free-memory path before the numactl hint, so a too-big model is not told to
+    # install numactl when interleaving could never make it fit.
+    if model_mib > total:
+        return InterleaveDecision(
+            False,
+            f"model ~{model_mib} MiB exceeds total free RAM across all nodes "
+            f"(~{total} MiB); interleave cannot help -- free memory or use a smaller quant",
+        )
+
     avail = numactl_available() if has_numactl is None else has_numactl
     if not avail:
         # Needed but unavailable: surface it; caller decides whether to block.
@@ -144,13 +154,6 @@ def decide_interleave(
             f"(~{largest} MiB) and needs interleaving across {topo.node_count} nodes, "
             f"but `numactl` is not installed. Install numactl (e.g. `apt install "
             f"numactl`) or the model may fail to fit a single node.",
-        )
-
-    if model_mib > total:
-        return InterleaveDecision(
-            False,
-            f"model ~{model_mib} MiB exceeds total free RAM across all nodes "
-            f"(~{total} MiB); interleave cannot help -- free memory or use a smaller quant",
         )
 
     return InterleaveDecision(

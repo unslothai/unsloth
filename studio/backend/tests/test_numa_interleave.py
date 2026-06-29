@@ -87,6 +87,15 @@ def test_numactl_missing_surfaces_actionable_warning():
     assert "numactl` is not installed" in d.reason
 
 
+def test_too_big_and_numactl_missing_prefers_total_ram_message():
+    # Impossible across all nodes AND no numactl: the total-RAM guidance must win, so the
+    # user is not told to install numactl when interleaving could never help (PR review fix).
+    d = decide_interleave(800 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = False)
+    assert d.interleave is False
+    assert "exceeds total free RAM" in d.reason
+    assert "numactl` is not installed" not in d.reason
+
+
 def test_unknown_model_size_does_not_force_interleave():
     for size in (None, 0, -1):
         d = decide_interleave(size, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
