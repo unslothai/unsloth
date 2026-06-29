@@ -612,6 +612,12 @@ export function SharedComposer({
   const isEffort =
     effectiveReasoningStyle === "reasoning_effort" ||
     effectiveReasoningStyle === "enable_thinking_effort";
+  // GLM-5.2's effort menu (Off, high, max) has short rows, so it can sit a
+  // touch skinnier. Skip the narrower floor when a Preserve thinking row is
+  // present, since that longer label needs the wider width to stay one line.
+  const narrowEffortMenu =
+    effectiveReasoningStyle === "enable_thinking_effort" &&
+    !supportsPreserveThinking;
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
@@ -1785,7 +1791,10 @@ export function SharedComposer({
                 <DropdownMenuContent
                   side="top"
                   align="end"
-                  className="unsloth-plus-menu min-w-44"
+                  className={cn(
+                    "unsloth-plus-menu",
+                    narrowEffortMenu ? "min-w-40" : "min-w-44",
+                  )}
                 >
                   {isEffort ? (
                     <>

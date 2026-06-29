@@ -338,3 +338,22 @@ def test_attempts_only_once_per_process(monkeypatch):
     second = mr.start_mlx_autorepair_if_needed()
     assert first is True
     assert second is False  # guard prevents a second concurrent attempt
+
+
+def test_mlx_install_env_routes_uv_override_through_safe_path(monkeypatch):
+    # uv truncates UV_OVERRIDE at the first space (issue #6503).
+    seen = {}
+
+    def _spy(path):
+        seen["path"] = path
+        return "/space free/marker.txt".replace(" ", "_")
+
+    monkeypatch.setattr(mr, "uv_safe_path", _spy)
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+
+    env = mr._mlx_install_env()
+
+    # The override file ships in the repo, so the helper must have run.
+    assert "path" in seen
+    assert str(seen["path"]).endswith("overrides-darwin-arm64.txt")
+    assert env["UV_OVERRIDE"] == "/space_free/marker.txt"

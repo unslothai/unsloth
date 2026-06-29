@@ -497,6 +497,17 @@ def _is_qwen3_5_vlm(model):
     ) or getattr(config, "model_type", None) in ("qwen3_5", "qwen3_5_moe")
 
 
+def _is_gpt_oss(model):
+    config = getattr(model, "config", None)
+    if config is None:
+        return False
+    architectures = getattr(config, "architectures", None) or ()
+    return "GptOssForCausalLM" in architectures or getattr(config, "model_type", None) in (
+        "gpt-oss",
+        "gpt_oss",
+    )
+
+
 def _qwen3_5_vlm_state_dict_for_save(state_dict):
     remapped_state_dict = {}
     for key, value in state_dict.items():
@@ -2276,15 +2287,7 @@ def unsloth_save_pretrained_gguf(
 
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
-    is_gpt_oss = (
-        True
-        if (
-            hasattr(self.config, "architectures")
-            and self.config.architectures == "GptOssForCausalLM"
-        )
-        or (hasattr(self.config, "model_type") and self.config.model_type in ["gpt-oss", "gpt_oss"])
-        else False
-    )
+    is_gpt_oss = _is_gpt_oss(self)
     # Step 2: Prepare arguments for model saving
     arguments = dict(locals())
     arguments["model"] = self

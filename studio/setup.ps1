@@ -37,6 +37,18 @@ $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
 $DefaultLlamaForceCompileRef = "master"
 
+# Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491).
+# studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
+# lock, which overrides a corporate user's ~/.npmrc proxy and causes 403s behind a
+# firewall. UNSLOTH_NPM_REGISTRY is a deliberate opt-in: when set we splat it as
+# `--registry <url>` into every npm/bun install. `--registry` is the highest-precedence
+# override for BOTH tools and leaves min-release-age / save-exact in force. Empty array
+# (the default) splats to nothing, so normal installs are unchanged.
+$NpmRegistryArgs = @()
+if ($env:UNSLOTH_NPM_REGISTRY) {
+    $NpmRegistryArgs = @('--registry', $env:UNSLOTH_NPM_REGISTRY)
+}
+
 # Verbose can be enabled either by CLI flag or by UNSLOTH_VERBOSE=1.
 $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq '1')
 foreach ($a in $args) {
@@ -875,6 +887,41 @@ function substep {
         Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
     }
     Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)
+}
+
+function Show-NpmRegistryHint {
+    # Print actionable guidance when a frontend/OXC npm/bun install fails and the
+    # registry lock is the likely cause (corporate firewall/proxy). No-op once the
+    # user has opted in via UNSLOTH_NPM_REGISTRY. We never switch registries
+    # automatically -- we only guide.
+    if ($env:UNSLOTH_NPM_REGISTRY) { return }
+    $mirror = $env:NPM_CONFIG_REGISTRY
+    if (-not $mirror) {
+        # Read npm config from a dir with no project .npmrc so the frontend's pinned
+        # registry= does not mask the user's ~/.npmrc / global mirror.
+        $pushed = $false
+        try {
+            Push-Location ([System.IO.Path]::GetTempPath()) -ErrorAction Stop
+            $pushed = $true
+            $mirror = (& npm config get registry 2>$null | Out-String).Trim()
+        } catch { $mirror = "" } finally { if ($pushed) { Pop-Location } }
+    }
+    if ($mirror -in @("", "undefined", "null", "https://registry.npmjs.org", "https://registry.npmjs.org/")) {
+        $mirror = ""
+    }
+    Write-Host ""
+    step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "Yellow"
+    if ($mirror) {
+        substep "Studio pins the public npm registry; your mirror is being ignored."
+        substep "Detected a registry in your npm config:"
+        substep "  $mirror"
+        substep "Re-run pointing Studio at it:"
+        substep "  `$env:UNSLOTH_NPM_REGISTRY='$mirror'; .\install.ps1 --local"
+    } else {
+        substep "If you use a private mirror/proxy, point Studio at it and re-run:"
+        substep "  `$env:UNSLOTH_NPM_REGISTRY='https://your-mirror.example/api/npm/'; .\install.ps1 --local"
+    }
+    substep "(min-release-age and save-exact stay enforced.)"
 }
 
 # ─────────────────────────────────────────────
@@ -2113,7 +2160,7 @@ if ($NeedNodeForSetup) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
+            Invoke-SetupCommand { npm install -g bun --allow-scripts=bun @NpmRegistryArgs } | Out-Null
             $ErrorActionPreference = $prevEAP_bun
             Refresh-Environment
             # Refresh-Environment rebuilds PATH (Machine;User;current), demoting the
@@ -2173,7 +2220,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     # the cache + retry once before falling back to npm.
     if ($UseBun) {
         Write-Host "   Using bun for package install (faster)" -ForegroundColor DarkGray
-        $bunExit = Invoke-SetupCommand { bun install }
+        $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
         # On Windows, .bin/ entries vary by package manager:
         #   npm  → tsc, tsc.cmd, tsc.ps1
         #   bun  → tsc.exe, tsc.bunx
@@ -2187,7 +2234,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
-            $bunExit = Invoke-SetupCommand { bun install }
+            $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
             $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
             $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
@@ -2206,13 +2253,14 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
     if (-not $UseBun) {
-        $npmExit = Invoke-SetupCommand { npm install }
+        $npmExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
             Write-Host "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
             Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+            Show-NpmRegistryHint
             exit 1
         }
     }
@@ -2249,11 +2297,12 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
-    $oxcInstallExit = Invoke-SetupCommand { npm install }
+    $oxcInstallExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
     if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
         Write-Host "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
+        Show-NpmRegistryHint
         exit 1
     }
     Pop-Location
