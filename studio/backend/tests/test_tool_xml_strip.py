@@ -358,9 +358,9 @@ def test_python_tag_strip_stops_at_real_sentinel(sentinel):
     # assistant text is preserved (the arm must not swallow past it).
     text = f'<|python_tag|>{{"name": "x", "parameters": {{}}}}{sentinel}visible answer'
     cleaned = _TOOL_XML_RE.sub("", text)
-    assert cleaned == f"{sentinel}visible answer", (
-        f"strip did not stop at real sentinel {sentinel!r}: {cleaned!r}"
-    )
+    assert (
+        cleaned == f"{sentinel}visible answer"
+    ), f"strip did not stop at real sentinel {sentinel!r}: {cleaned!r}"
 
 
 def test_python_tag_strip_restarts_on_second_python_tag():
