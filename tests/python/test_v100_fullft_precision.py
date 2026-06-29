@@ -44,6 +44,15 @@ def _extract_mixed_precision_code() -> str:
 CODE = _extract_mixed_precision_code()
 
 
+def _restore(mapping, saved):
+    """Restore a dict-like to its saved snapshot: pop keys that were absent."""
+    for k, v in saved.items():
+        if v is None:
+            mapping.pop(k, None)
+        else:
+            mapping[k] = v
+
+
 def _decide(
     dtype,
     *,
@@ -54,41 +63,52 @@ def _decide(
     fp16,
     bf16,
 ):
-    """Run the template block; return (args.fp16, args.bf16, ACCELERATE_MP, raised)."""
-    uz = types.ModuleType("unsloth_zoo")
+    """Run the template block; return (args.fp16, args.bf16, ACCELERATE_MP, raised).
+
+    Stubs (sys.modules, env vars, torch.cuda.is_bf16_supported) are restored on
+    exit so a decision can't leak into later tests in the same process.
+    """
     uzu = types.ModuleType("unsloth_zoo.utils")
     uzu._get_dtype = lambda x: x
     uzd = types.ModuleType("unsloth_zoo.device_type")
     uzd.device_is_bf16_supported = lambda: bf16_supported  # device-aware signal stub
-    sys.modules.setdefault("unsloth_zoo", uz)
-    sys.modules["unsloth_zoo.utils"] = uzu
-    sys.modules["unsloth_zoo.device_type"] = uzd
-    for k in (
+
+    env_keys = (
         "UNSLOTH_FORCE_FLOAT32",
         "UNSLOTH_ENABLE_FULL_FINETUNING",
         "UNSLOTH_MIXED_PRECISION",
         "ACCELERATE_MIXED_PRECISION",
-    ):
-        os.environ.pop(k, None)
-    os.environ["UNSLOTH_FORCE_FLOAT32"] = "1" if force_float32 else "0"
-    os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1" if full_finetuning else "0"
-    os.environ["UNSLOTH_MIXED_PRECISION"] = mixed_precision
-    orig = torch.cuda.is_bf16_supported
-    torch.cuda.is_bf16_supported = lambda *a, **k: bf16_supported
-    args = types.SimpleNamespace(fp16 = fp16, bf16 = bf16, mixed_precision = None)
-    emb = types.SimpleNamespace(weight = types.SimpleNamespace(dtype = dtype))
-    model = types.SimpleNamespace(
-        config = types.SimpleNamespace(dtype = dtype, torch_dtype = dtype),
-        get_input_embeddings = lambda: emb,
     )
-    raised = None
+    mod_keys = ("unsloth_zoo", "unsloth_zoo.utils", "unsloth_zoo.device_type")
+    saved_env = {k: os.environ.get(k) for k in env_keys}
+    saved_mods = {k: sys.modules.get(k) for k in mod_keys}
+    orig_bf16 = torch.cuda.is_bf16_supported
     try:
-        exec(CODE, {"torch": torch, "os": os}, {"args": args, "model": model})
-    except TypeError:
-        raised = "TypeError"
+        sys.modules.setdefault("unsloth_zoo", types.ModuleType("unsloth_zoo"))
+        sys.modules["unsloth_zoo.utils"] = uzu
+        sys.modules["unsloth_zoo.device_type"] = uzd
+        for k in env_keys:
+            os.environ.pop(k, None)
+        os.environ["UNSLOTH_FORCE_FLOAT32"] = "1" if force_float32 else "0"
+        os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1" if full_finetuning else "0"
+        os.environ["UNSLOTH_MIXED_PRECISION"] = mixed_precision
+        torch.cuda.is_bf16_supported = lambda *a, **k: bf16_supported
+        args = types.SimpleNamespace(fp16 = fp16, bf16 = bf16, mixed_precision = None)
+        emb = types.SimpleNamespace(weight = types.SimpleNamespace(dtype = dtype))
+        model = types.SimpleNamespace(
+            config = types.SimpleNamespace(dtype = dtype, torch_dtype = dtype),
+            get_input_embeddings = lambda: emb,
+        )
+        raised = None
+        try:
+            exec(CODE, {"torch": torch, "os": os}, {"args": args, "model": model})
+        except TypeError:
+            raised = "TypeError"
+        return args.fp16, args.bf16, os.environ.get("ACCELERATE_MIXED_PRECISION"), raised
     finally:
-        torch.cuda.is_bf16_supported = orig
-    return args.fp16, args.bf16, os.environ.get("ACCELERATE_MIXED_PRECISION"), raised
+        torch.cuda.is_bf16_supported = orig_bf16
+        _restore(os.environ, saved_env)
+        _restore(sys.modules, saved_mods)
 
 
 def test_v100_normal_fullft_fp16_explicit():
