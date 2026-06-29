@@ -21,7 +21,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import type {
   CapabilityFilter,
-  GpuFitFilter,
   ModelFormatFilter,
   ModelsTab,
   ResourceTypeFilter,
@@ -29,7 +28,6 @@ import type {
 import {
   CAPABILITY_FILTER_OPTIONS,
   FORMAT_FILTER_OPTIONS,
-  GPU_FIT_FILTER_OPTIONS,
 } from "../lib/view-models";
 import { HubOptionMenu, type HubOption } from "./hub-option-menu";
 import {
@@ -70,8 +68,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange,
   capabilityFilter,
   onCapabilityFilterChange,
-  gpuFitFilter,
-  onGpuFitFilterChange,
   onManageLocalFolders,
   onOpenFineTune,
 }: {
@@ -88,8 +84,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange: (value: ModelFormatFilter) => void;
   capabilityFilter: CapabilityFilter;
   onCapabilityFilterChange: (value: CapabilityFilter) => void;
-  gpuFitFilter: GpuFitFilter;
-  onGpuFitFilterChange: (value: GpuFitFilter) => void;
   onManageLocalFolders: () => void;
   /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
    *  format-dropdown option rather than a standalone feed section. */
@@ -154,14 +148,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   const capabilityOptions = useMemo<HubOption<CapabilityFilter>[]>(
     () =>
       CAPABILITY_FILTER_OPTIONS.map((option) => ({
-        value: option.value,
-        label: option.label,
-      })),
-    [],
-  );
-  const gpuFitOptions = useMemo<HubOption<GpuFitFilter>[]>(
-    () =>
-      GPU_FIT_FILTER_OPTIONS.map((option) => ({
         value: option.value,
         label: option.label,
       })),
@@ -353,16 +339,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             options={capabilityOptions}
             onValueChange={onCapabilityFilterChange}
             ariaLabel="Capability filter"
-            className={cn(triggerBase, "w-[128px]")}
-          />
-        )}
-
-        {tab === "discover" && !isDataset && (
-          <HubOptionMenu
-            value={gpuFitFilter}
-            options={gpuFitOptions}
-            onValueChange={onGpuFitFilterChange}
-            ariaLabel="GPU fit filter"
             className={cn(triggerBase, "w-[128px]")}
           />
         )}
