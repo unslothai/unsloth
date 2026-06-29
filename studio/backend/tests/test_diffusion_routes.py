@@ -359,6 +359,19 @@ def test_transformer_prequant_path_threads_through(client, monkeypatch):
     assert backend.last_load_kwargs.get("transformer_prequant_path") == "/data/zimage_fp8.pt"
 
 
+def test_prequant_path_doc_describes_allowlist_not_toggle():
+    # The field help must match the code: UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH is a
+    # directory allowlist, not a =1 toggle (diffusion_prequant._allowed_prequant_roots
+    # drops bare on/off tokens), so operators following the doc don't get every
+    # request silently refused.
+    from models.inference import DiffusionLoadRequest
+
+    desc = DiffusionLoadRequest.model_fields["transformer_prequant_path"].description
+    assert "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH" in desc
+    assert "=1" not in desc
+    assert "allowlist" in desc.lower() or "director" in desc.lower()
+
+
 def test_invalid_transformer_quant_returns_422_without_eviction(client):
     # An unsupported transformer_quant is rejected by the request schema (Literal), so
     # the GPU is never acquired and no chat model is evicted.
