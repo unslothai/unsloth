@@ -5958,15 +5958,19 @@ class LlamaCppBackend:
                     cmd.extend(str(a) for a in extra_args)
                     logger.info(f"Appending user extra args to llama-server: {list(extra_args)}")
 
-                # NUMA auto-interleave: wrap with `numactl --interleave=all` when the
-                # model overflows one node but fits across all (else first-touch
-                # thrashes/OOMs). Applied at the Popen sites; decided before any spawn.
+                # NUMA auto-interleave: when the model overflows one node but fits
+                # across all (else first-touch thrashes/OOMs), wrap with
+                # `numactl --interleave=all` (applied at the Popen sites) AND pass
+                # `--numa distribute` -- both are needed, numactl alone doesn't spread
+                # pages evenly (llama.cpp #19102). User --numa wins.
                 self._numa_prefix = []
                 try:
                     from core.inference.numa import decide_interleave
                     _numa = decide_interleave(model_size, cpu_only = _cpu_only)
                     if _numa.interleave:
                         self._numa_prefix = list(_numa.prefix)
+                        if not _extra_args_set_any_flag(extra_args, {"--numa"}):
+                            cmd.extend(["--numa", "distribute"])
                         logger.info("NUMA: %s", _numa.reason)
                     elif _cpu_only and "numactl` is not installed" in _numa.reason:
                         logger.warning("NUMA: %s", _numa.reason)
