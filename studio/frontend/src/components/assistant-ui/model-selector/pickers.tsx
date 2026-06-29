@@ -1639,18 +1639,16 @@ export function HubModelPicker({
       .filter((r) => !isMobileVariant(r.id));
     // Drop models Studio can't run for chat (diffusion / image / video / etc.).
     rows = rows.filter(isChatSupported);
+    // Images (task set) loads single-file GGUF only, so never surface non-GGUF
+    // rows regardless of the format dropdown (mirrors hfIds and the empty
+    // Recommended view); selecting a non-GGUF row is a silent no-op.
+    if (task) rows = rows.filter((r) => r.isGguf);
     // With no explicit format, show the device-recommended formats (GGUF, plus
     // MLX on Mac). When the user picks a format, honor it instead so Safetensors
     // is not dropped by the recommendation default.
     rows =
       formatFilter === "all"
-        ? rows.filter((r) =>
-            // Images (task set) loads single-file GGUF only, so don't surface
-            // non-GGUF text-to-image rows (e.g. safetensors on Mac, which
-            // isRecommendableFormat admits) that the page can't load —
-            // selecting one is a silent no-op.
-            task ? r.isGguf : isRecommendableFormat(r.id, r.isGguf, isMac),
-          )
+        ? rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac))
         : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
     if (recommendedSort !== "recommended") return rows;
     return rows.filter((r) => {
