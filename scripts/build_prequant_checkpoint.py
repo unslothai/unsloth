@@ -57,6 +57,7 @@ def main(argv = None) -> int:
     from core.inference.diffusion_transformer_quant import (
         TQ_SCHEMES,
         _make_quant_config,
+        int8_exclude_name_tokens,
         make_filter_fn,
     )
     from torchao.quantization import quantize_
@@ -78,7 +79,17 @@ def main(argv = None) -> int:
         args.base, subfolder = "transformer", torch_dtype = torch.bfloat16, token = args.hf_token
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
-    quantize_(transformer, _make_quant_config(scheme), filter_fn = make_filter_fn(args.min_features))
+    # Use the SAME int8 M=1 exclusion as the runtime quantiser (single source of truth):
+    # otherwise an int8 prequant checkpoint quantises the AdaLN modulation / conditioning
+    # embedders and reintroduces the torch._int_mm M=1 crash when loaded via
+    # transformer_prequant_path. fp8/fp4/mx get an empty exclusion (artifacts unchanged).
+    quantize_(
+        transformer,
+        _make_quant_config(scheme),
+        filter_fn = make_filter_fn(
+            args.min_features, exclude_name_tokens = int8_exclude_name_tokens(scheme)
+        ),
+    )
 
     # Move the state dict to CPU for a portable, GPU-free artifact.
     state_dict = {

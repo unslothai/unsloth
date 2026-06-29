@@ -62,6 +62,15 @@ _INT8_EXCLUDE_NAME_TOKENS = (
     "pooled",
 )
 
+
+def int8_exclude_name_tokens(scheme: str) -> tuple[str, ...]:
+    """Filter exclusions for ``scheme``: the M=1 AdaLN-modulation / conditioning-embedder
+    linears for int8 (they crash ``torch._int_mm``, which needs M > 16), empty for every
+    other scheme (fp8 / fp4 / mx use ``scaled_mm``, no M limit). The single source of truth
+    shared by the runtime quantiser and the offline prequant builder, so a prequant artifact's
+    quantised-layer set matches the runtime exactly (no reintroduced M=1 crash)."""
+    return _INT8_EXCLUDE_NAME_TOKENS if scheme == TQ_INT8 else ()
+
 # Per-architecture preference order for ``auto`` -- best (fastest, in-bar) first, with
 # the lower-precision schemes listed as fallbacks for that arch tier. On Blackwell, fp8
 # leads: measured on a B200, plain fp8 dynamic is both faster AND more accurate than the
@@ -359,7 +368,7 @@ def quantize_transformer(
 
         # int8 (torch._int_mm, M>16) additionally skips the M=1 modulation / conditioning-embedder
         # projections; fp8 / fp4 / mx (scaled_mm) have no such limit and quantise everything.
-        exclude = _INT8_EXCLUDE_NAME_TOKENS if scheme == TQ_INT8 else ()
+        exclude = int8_exclude_name_tokens(scheme)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
