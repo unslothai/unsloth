@@ -193,6 +193,78 @@ def test_variant_update_check_no_update_when_blob_matches(tmp_path, patch_hub_gg
     assert q4.update_available is False
 
 
+@pytest.mark.parametrize(
+    ("companion_path", "has_vision"),
+    [
+        ("mmproj-F16.gguf", True),
+        ("mtp-drafter-Q8_0.gguf", False),
+    ],
+)
+def test_variant_update_check_detects_companion_only_update(
+    monkeypatch, tmp_path, patch_hub_gguf, companion_path, has_vision
+):
+    repo_id = "unsloth/gemma-4-GGUF"
+    with GV._VARIANT_HASH_LOCK:
+        GV._VARIANT_HASH_CACHE.clear()
+        GV._VARIANT_REQUIREMENT_CACHE.clear()
+        GV._VARIANT_REQUIREMENT_NEG_CACHE.clear()
+    repo, snap, _blobs = _seed_cache(
+        tmp_path,
+        repo_id,
+        blob_ids = ["mainsha", "old-companion"],
+        gguf_files = {
+            "model-Q4_K_M.gguf": 1000,
+            companion_path: 100,
+        },
+    )
+    siblings = [
+        patch_hub_gguf.sibling("model-Q4_K_M.gguf", 1000, "mainsha"),
+        patch_hub_gguf.sibling(companion_path, 100, "new-companion"),
+    ]
+    monkeypatch.setattr(
+        GV,
+        "list_gguf_variants",
+        lambda r, hf_token = None: (_variants(), has_vision, siblings),
+        raising = True,
+    )
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+    monkeypatch.setattr(
+        CI,
+        "all_hf_cache_scans",
+        lambda: [
+            SimpleNamespace(
+                repos = [
+                    SimpleNamespace(
+                        repo_id = repo_id,
+                        repo_type = "model",
+                        repo_path = repo,
+                        revisions = [
+                            SimpleNamespace(
+                                files = [
+                                    SimpleNamespace(
+                                        file_name = "model-Q4_K_M.gguf",
+                                        blob_path = str(repo / "blobs" / "mainsha"),
+                                    ),
+                                    SimpleNamespace(
+                                        file_name = companion_path,
+                                        blob_path = str(repo / "blobs" / "old-companion"),
+                                    ),
+                                ]
+                            )
+                        ],
+                    )
+                ]
+            )
+        ],
+    )
+
+    resp = _call(GV.get_gguf_variants_response(repo_id))
+    q4 = next(v for v in resp.variants if v.quant == "Q4_K_M")
+
+    assert q4.downloaded is True
+    assert q4.update_available is True
+
+
 def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(tmp_path, patch_hub_gguf):
     repo = "unsloth/gemma-3-4b-it-GGUF"
     patch_hub_gguf.apply(
@@ -222,6 +294,48 @@ def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(tmp_path, pa
     )
     resp = _call(GV.get_gguf_variants_response(repo))
     assert next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
+
+
+def test_cached_model_scan_keeps_local_safetensors_repo(monkeypatch, tmp_path):
+    repo_path = tmp_path / "models--Org--SafeTensorRepo"
+    repo = SimpleNamespace(
+        repo_id = "Org/SafeTensorRepo",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "config.json",
+                        size_on_disk = 10,
+                        blob_path = None,
+                    ),
+                    SimpleNamespace(
+                        file_name = "model.safetensors",
+                        size_on_disk = 100,
+                        blob_path = str(repo_path / "blobs" / "modelsha"),
+                    ),
+                ]
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        CI,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo])],
+    )
+    monkeypatch.setattr(
+        CI.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *args, **kwargs: False,
+    )
+
+    rows = CI._scan_cached_models()
+
+    assert len(rows) == 1
+    assert rows[0]["repo_id"] == "Org/SafeTensorRepo"
+    assert rows[0]["model_format"] == "safetensors"
+    assert rows[0]["size_bytes"] == 100
 
 
 # ── hf_hub_download_with_xet_fallback force_download bypass (X2/F2) ───

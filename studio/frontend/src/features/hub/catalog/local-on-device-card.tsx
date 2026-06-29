@@ -260,6 +260,13 @@ export function LocalOnDeviceCard({
     enabled: needsVariantSelection,
     errorFallback: "Failed to load quantizations",
   });
+  const remoteVariantState = useGgufVariantFetchState({
+    repoId: repoId ?? modelId,
+    hfToken,
+    enabled:
+      online && source === "hf_cache" && needsVariantSelection && !!repoId,
+    errorFallback: "Failed to check for updates",
+  });
   const variantKey = currentVariantState.key;
   const [selectedVariantState, setSelectedVariantState] = useState<{
     key: string;
@@ -271,7 +278,23 @@ export function LocalOnDeviceCard({
 
   const canDelete =
     source === "hf_cache" && !!repoId && !isActive && !isLoading;
-  const variants = currentVariantState.variants;
+  const variants = useMemo(() => {
+    const localVariants = currentVariantState.variants;
+    const remoteVariants = remoteVariantState.variants;
+    if (!localVariants || !remoteVariants) return localVariants;
+    return localVariants.map((variant) => {
+      const remoteVariant = remoteVariants.find((remote) =>
+        ggufVariantsMatch(remote.quant, variant.quant),
+      );
+      if (!remoteVariant) return variant;
+      return {
+        ...variant,
+        download_size_bytes:
+          remoteVariant.download_size_bytes || variant.download_size_bytes,
+        update_available: remoteVariant.update_available === true,
+      };
+    });
+  }, [currentVariantState.variants, remoteVariantState.variants]);
   const sortedVariants = useMemo(
     () =>
       variants
@@ -357,6 +380,7 @@ export function LocalOnDeviceCard({
         setUpdateConflictKey(jobKeyOf("model", repoId, updateTargetVariant));
       }
       void currentVariantState.refresh();
+      void remoteVariantState.refresh();
     });
   };
   const selectedVariantIsActive =

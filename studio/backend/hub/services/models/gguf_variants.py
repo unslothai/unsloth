@@ -292,8 +292,13 @@ def _partial_transport_for_variant(repo_id: str, variant: str) -> Optional[str]:
 
 
 def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str]]]:
-    """Map quant -> repo-relative main GGUF filename -> cached blob hashes."""
+    """Map quant -> repo-relative expected GGUF filename -> cached blob hashes.
+
+    Shared companions are copied into each main-quant bucket so update checks can
+    detect mmproj/MTP-only upstream changes without a separate remote call.
+    """
     result: dict[str, dict[str, set[str]]] = {}
+    companion_blobs: dict[str, set[str]] = {}
     try:
         from hub.services.models import cache_inventory
         scans = cache_inventory.all_hf_cache_scans()
@@ -308,15 +313,27 @@ def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str
                 continue
             if str(getattr(repo_info, "repo_id", "")).lower() != target_lower:
                 continue
-            for path, hashes in cache_inventory._repo_gguf_blob_map(repo_info).items():
+            for path, hashes in cache_inventory._repo_gguf_blob_map(
+                repo_info,
+                include_companions = True,
+            ).items():
                 normalized = str(path).replace("\\", "/")
                 if not hashes:
+                    continue
+                if _is_mmproj_filename(normalized) or _is_mtp_drafter_path(normalized):
+                    companion_blobs.setdefault(normalized, set()).update(
+                        str(blob) for blob in hashes if blob
+                    )
                     continue
                 quant = extract_quant_label(normalized).lower()
                 if is_big_endian_gguf_path(normalized, quant):
                     continue
                 bucket = result.setdefault(quant, {}).setdefault(normalized, set())
                 bucket.update(str(blob) for blob in hashes if blob)
+    if companion_blobs:
+        for local_blobs in result.values():
+            for path, hashes in companion_blobs.items():
+                local_blobs.setdefault(path, set()).update(hashes)
     return result
 
 
@@ -328,7 +345,11 @@ def _variant_update_available_from_requirement(
     local_by_posix = {path.replace("\\", "/"): blobs for path, blobs in local_blobs.items()}
     for expected in requirement.expected_files:
         path = str(expected.path).replace("\\", "/")
-        if not is_main_gguf_variant_path(path, variant):
+        if not (
+            is_main_gguf_variant_path(path, variant)
+            or _is_mmproj_filename(path)
+            or _is_mtp_drafter_path(path)
+        ):
             continue
         remote_blob = expected.sha256
         if not remote_blob:

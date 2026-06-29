@@ -27,6 +27,8 @@ from hub.services.models.common import (
     _capabilities_for_format,
     _classify_non_gguf_model_format,
     _gguf_variant_state_summary,
+    _is_adapter_weight_name,
+    _is_checkpoint_weight_name,
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_transformers_safetensors_weight_name,
@@ -133,8 +135,8 @@ def _cached_repo_file_name(file_obj) -> str:
     return str(getattr(file_obj, "file_name", "")).replace("\\", "/")
 
 
-def _repo_gguf_blob_map(repo_info) -> dict[str, set[str]]:
-    """Map each cached MAIN gguf file's repo-relative name to the SET of its local
+def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[str, set[str]]:
+    """Map each cached GGUF file's repo-relative name to the SET of its local
     blob hashes across all cached revisions.
 
     HF names each local cache blob FILE by the file's etag (lfs.sha256 else
@@ -144,11 +146,18 @@ def _repo_gguf_blob_map(repo_info) -> dict[str, set[str]]:
     just the first one seen, since ``repo_info.revisions`` is a frozenset and
     yields them in arbitrary order) lets the remote-vs-local diff treat the file
     as current when the remote (``main``) blob is present in any cached revision.
-    Mirrors the ``cached_blob_ids`` membership test in routes/models.py."""
+    Mirrors the ``cached_blob_ids`` membership test in routes/models.py.
+
+    By default this keeps the historical MAIN-GGUF-only behavior. GGUF update
+    checks opt into companions so a shared mmproj/MTP blob can be compared too.
+    """
     blob_map: dict[str, set[str]] = {}
     for revision in repo_info.revisions:
         for f in revision.files:
-            if not _is_main_gguf_filename(f.file_name):
+            if include_companions:
+                if not _is_gguf_filename(f.file_name):
+                    continue
+            elif not _is_main_gguf_filename(f.file_name):
                 continue
             blob_path = getattr(f, "blob_path", None)
             if not blob_path:
