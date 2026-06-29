@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sys
+import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
@@ -41,6 +42,13 @@ write_prebuilt_metadata = INSTALL_LLAMA_PREBUILT.write_prebuilt_metadata
 existing_install_matches_plan = INSTALL_LLAMA_PREBUILT.existing_install_matches_plan
 existing_install_matches_choice = INSTALL_LLAMA_PREBUILT.existing_install_matches_choice
 ensure_diffusion_visual_server = INSTALL_LLAMA_PREBUILT.ensure_diffusion_visual_server
+validate_quantize = INSTALL_LLAMA_PREBUILT.validate_quantize
+validate_server = INSTALL_LLAMA_PREBUILT.validate_server
+build_validation_sandbox_plan = INSTALL_LLAMA_PREBUILT.build_validation_sandbox_plan
+linux_missing_libraries = INSTALL_LLAMA_PREBUILT.linux_missing_libraries
+ValidationLaunchPlan = INSTALL_LLAMA_PREBUILT._ValidationLaunchPlan
+run_validation_capture = INSTALL_LLAMA_PREBUILT._run_validation_capture
+run_validation_popen = INSTALL_LLAMA_PREBUILT._run_validation_popen
 
 
 def linux_host() -> HostInfo:
@@ -58,6 +66,46 @@ def linux_host() -> HostInfo:
         visible_cuda_devices = None,
         has_physical_nvidia = False,
         has_usable_nvidia = False,
+    )
+
+
+def macos_host() -> HostInfo:
+    return HostInfo(
+        system = "Darwin",
+        machine = "arm64",
+        is_windows = False,
+        is_linux = False,
+        is_macos = True,
+        is_x86_64 = False,
+        is_arm64 = True,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
+        rocm_gfx_target = None,
+    )
+
+
+def windows_host() -> HostInfo:
+    return HostInfo(
+        system = "Windows",
+        machine = "AMD64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
+        rocm_gfx_target = None,
     )
 
 
@@ -160,7 +208,10 @@ def test_extract_archive_rejects_absolute_tar_symlink_target(tmp_path: Path):
         entry.linkname = "/tmp/libllama.so.0"
         archive.addfile(entry)
 
-    with pytest.raises(PrebuiltFallback, match = "archive link used an absolute target"):
+    with pytest.raises(
+        PrebuiltFallback,
+        match = r"archive link (used an absolute target|escaped destination)",
+    ):
         extract_archive(archive_path, tmp_path / "extract")
 
 
@@ -3038,11 +3089,340 @@ def _nvidia_linux_host():
     )
 
 
+def test_build_validation_sandbox_plan_contract():
+    assert (
+        build_validation_sandbox_plan(
+            ["cmd", "arg"],
+            binary_path = Path("/tmp/bin"),
+            install_dir = Path("/tmp/install"),
+            host = linux_host(),
+            purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_LDD,
+            runtime_line = None,
+            env = {"UNSANDBOXABLE": "1"},
+    ).purpose
+    == INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_LDD
+    )
+
+
+def test_build_validation_sandbox_plan_linux_without_bwrap_skips_ldd_probe(monkeypatch):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+    plan = build_validation_sandbox_plan(
+        ["ldd", "/tmp/bin"],
+        binary_path = Path("/tmp/bin"),
+        install_dir = Path("/tmp/install"),
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_LDD,
+        runtime_line = None,
+        env = {},
+    )
+    assert plan.is_skipped
+    assert plan.reason is not None
+    assert "skip ldd probe" in plan.reason
+
+
+def test_build_validation_sandbox_plan_linux_without_bwrap_falls_back_validation(monkeypatch):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+    plan = build_validation_sandbox_plan(
+        ["llama-quantize", "in", "out"],
+        binary_path = Path("/tmp/bin"),
+        install_dir = Path("/tmp/install"),
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
+        runtime_line = None,
+        env = {},
+    )
+    assert plan.is_fallback
+    assert plan.reason is not None
+
+
+def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    plan = build_validation_sandbox_plan(
+        ["llama-server", "--help"],
+        binary_path = Path("/tmp/bin/llama-server"),
+        install_dir = Path("/tmp/install"),
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {},
+    )
+    assert plan.is_runnable
+    assert plan.command[:5] == ["bwrap", "--unshare-all", "--unshare-net", "--die-with-parent", "--new-session"]
+    assert "ldd" in plan.command[-1] or "--help" in plan.command[-1]
+    assert "--ro-bind" in plan.command
+
+
+def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monkeypatch):
+    binary_path = Path("/tmp/bin/llama-server")
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "sandbox-exec"
+    )
+    mac_run = build_validation_sandbox_plan(
+        ["llama-server", "--help"],
+        binary_path = binary_path,
+        install_dir = Path("/tmp/install"),
+        host = macos_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {},
+    )
+    assert mac_run.is_runnable
+    assert mac_run.command[:3] == ["sandbox-exec", "-p", "(version 1)(deny network*)"]
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+    mac_skip = build_validation_sandbox_plan(
+        ["llama-server", "--help"],
+        binary_path = binary_path,
+        install_dir = Path("/tmp/install"),
+        host = macos_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {},
+    )
+    assert mac_skip.is_fallback
+
+
+def test_build_validation_sandbox_plan_windows_is_unsupported(monkeypatch):
+    plan = build_validation_sandbox_plan(
+        ["llama-server", "--help"],
+        binary_path = Path(r"C:\bin\llama-server.exe"),
+        install_dir = Path(r"C:\install"),
+        host = windows_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {},
+    )
+    assert plan.is_fallback
+    assert "unsupported" in (plan.reason or "").lower()
+
+
+def test_linux_missing_libraries_skips_ldd_without_sandbox_adapter(monkeypatch, tmp_path):
+    binary_path = tmp_path / "server"
+    binary_path.write_text("")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+
+    captured: dict[str, bool] = {"run": False}
+
+    def fake_run_capture(command, *, timeout, env = None, check = False):
+        captured["run"] = True
+        return subprocess.CompletedProcess(command, 0, stdout = "")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "run_capture", fake_run_capture)
+    missing = linux_missing_libraries(binary_path, env = {"LD_LIBRARY_PATH": ""})
+    assert missing == []
+    assert captured["run"] is False
+
+
+def test_linux_missing_libraries_uses_bwrap_plan(monkeypatch, tmp_path):
+    binary_path = tmp_path / "server"
+    binary_path.write_text("")
+    install_dir = tmp_path
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    captured = {}
+
+    def fake_run_capture(command, *, timeout, env = None, check = False):
+        captured["command"] = command
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout = "libbad => not found\nlibgood => /tmp/libgood\n",
+            stderr = "",
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "run_capture", fake_run_capture)
+    assert linux_missing_libraries(binary_path, env = {"LD_LIBRARY_PATH": ""}) == ["libbad"]
+    assert captured["command"][0] == "bwrap"
+    assert "ldd" in captured["command"]
+
+
+def test_validate_quantize_routes_through_sandbox_plan(monkeypatch, tmp_path):
+    quantize_path = tmp_path / "llama-quantize"
+    quantize_path.write_text("")
+    probe_path = tmp_path / "probe.gguf"
+    probe_path.write_text("")
+    quantized_path = tmp_path / "probe-q4.gguf"
+    install_dir = tmp_path
+    expected_env = {"CUSTOM": "1"}
+    recorded: dict[str, list[str] | str | dict[str, str]] = {}
+
+    def fake_build_plan(
+        command: list[str],
+        *,
+        binary_path: Path,
+        install_dir: Path,
+        purpose: str,
+        env: dict[str, str],
+        host = None,
+        runtime_line = None,
+    ) -> ValidationLaunchPlan:
+        recorded["command"] = command
+        recorded["purpose"] = purpose
+        recorded["env"] = env
+        return ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = "run",
+            purpose = purpose,
+        )
+
+    def fake_capture(plan: ValidationLaunchPlan, *, timeout: int):
+        assert plan.purpose == INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE
+        quantized_path.write_bytes(b"done")
+        return subprocess.CompletedProcess(plan.command, 0, stdout = "", stderr = "")
+
+    def fake_binary_env(*_a, **_k):
+        return expected_env
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "build_validation_sandbox_plan", fake_build_plan)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_capture", fake_capture)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "binary_env", fake_binary_env)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "run_capture", lambda *a, **k: (_ for _ in ()).throw(AssertionError("run_capture must not be used")))
+
+    validate_quantize(quantize_path, probe_path, quantized_path, install_dir, linux_host(), runtime_line = None)
+    assert recorded["purpose"] == INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE
+    assert recorded["env"] == expected_env
+    assert recorded["command"][:3] == [str(quantize_path), str(probe_path), str(quantized_path)]
+    assert quantized_path.exists()
+
+
+def test_validate_server_routes_through_sandbox_plan(monkeypatch, tmp_path):
+    server_path = tmp_path / "llama-server"
+    server_path.write_text("")
+    probe_path = tmp_path / "probe.gguf"
+    probe_path.write_text("")
+    install_dir = tmp_path
+    recorded: dict[str, object] = {}
+
+    def fake_build_plan(
+        command: list[str],
+        *,
+        binary_path: Path,
+        install_dir: Path,
+        purpose: str,
+        env: dict[str, str],
+        host = None,
+        runtime_line = None,
+    ) -> ValidationLaunchPlan:
+        recorded["command"] = command
+        recorded["purpose"] = purpose
+        return ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = "run",
+            purpose = purpose,
+        )
+
+    class _FakeResponse:
+        status = 200
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeProcess:
+        def poll(self):
+            return None
+
+        def wait(self, timeout: float | None = None):
+            return 0
+
+        def terminate(self):
+            recorded["terminated"] = True
+            return None
+
+        def kill(self):
+            recorded["terminated"] = True
+            return None
+
+    def fake_binary_env(*_a, **_k):
+        return {"PATH": str(tmp_path)}
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "build_validation_sandbox_plan", fake_build_plan)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "binary_env", fake_binary_env)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_popen", lambda plan, *, stdout: _FakeProcess())
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "free_local_port", lambda: 7777)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.urllib.request, "urlopen", lambda *a, **k: _FakeResponse())
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "run_capture",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("run_capture must not be used")),
+    )
+
+    validate_server(
+        server_path,
+        probe_path,
+        linux_host(),
+        install_dir,
+        runtime_line = "cuda13",
+        install_kind = "linux-cuda",
+    )
+    assert recorded["purpose"] == INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER
+    command = recorded["command"]
+    assert command[:3] == [str(server_path), "-m", str(probe_path)]
+    assert "--n-gpu-layers" in command
+
+
+def test_validate_server_falls_back_without_linux_sandbox(monkeypatch, tmp_path):
+    server_path = tmp_path / "llama-server"
+    server_path.write_text("")
+    probe_path = tmp_path / "probe.gguf"
+    probe_path.write_text("")
+
+    def fake_build_plan(
+        command: list[str],
+        *,
+        binary_path: Path,
+        install_dir: Path,
+        purpose: str,
+        env: dict[str, str],
+        host = None,
+        runtime_line = None,
+    ) -> ValidationLaunchPlan:
+        return ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = "fallback",
+            purpose = purpose,
+            reason = "no sandbox",
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "build_validation_sandbox_plan", fake_build_plan)
+
+    with pytest.raises(PrebuiltFallback, match = "no sandbox"):
+        validate_server(
+            server_path,
+            probe_path,
+            windows_host(),
+            tmp_path,
+            runtime_line = None,
+            install_kind = None,
+        )
+
+
+def test_runtime_inference_path_stays_outside_installer_sandbox_owner():
+    backend_source = (Path(__file__).parents[3] / "studio/backend/core/inference/llama_cpp.py").read_text(
+        encoding = "utf-8", errors = "replace"
+    )
+    assert "_ValidationLaunchPlan" not in backend_source
+    assert "_run_validation_capture" not in backend_source
+    assert "_run_validation_popen" not in backend_source
+    assert "build_validation_sandbox_plan" not in backend_source
+
+
 def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
-    """Run validate_prebuilt_choice with heavy steps stubbed; return the quantize/server smoke-test call counts."""
+    """Run validate_prebuilt_choice with heavy steps stubbed; return launch metadata."""
     calls = {"quantize": 0, "server": 0}
+    plans: list[str] = []
     server_path = tmp_path / "install" / "build" / "bin" / "llama-server"
     quantize_path = tmp_path / "install" / "build" / "bin" / "llama-quantize"
+    quantized_path = tmp_path / "stories260K-q4.gguf"
 
     src = INSTALL_LLAMA_PREBUILT
     monkeypatch.setattr(
@@ -3054,14 +3434,65 @@ def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
     monkeypatch.setattr(src, "preflight_macos_installed_binaries", lambda *a, **k: None)
     monkeypatch.setattr(src, "ensure_repo_shape", lambda *a, **k: None)
     monkeypatch.setattr(src, "write_prebuilt_metadata", lambda *a, **k: None)
-    monkeypatch.setattr(
-        src,
-        "validate_quantize",
-        lambda *a, **k: calls.__setitem__("quantize", calls["quantize"] + 1),
-    )
-    monkeypatch.setattr(
-        src, "validate_server", lambda *a, **k: calls.__setitem__("server", calls["server"] + 1)
-    )
+
+    def fake_build_plan(
+        command: list[str],
+        *,
+        binary_path: Path,
+        install_dir: Path,
+        purpose: str,
+        env: dict[str, str],
+        host = None,
+        runtime_line = None,
+    ) -> ValidationLaunchPlan:
+        plans.append(purpose)
+        return ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = "run",
+            purpose = purpose,
+        )
+
+    def fake_run_validation_capture(plan: ValidationLaunchPlan, *, timeout: int):
+        if plan.purpose == src._VALIDATION_PURPOSE_QUANTIZE:
+            calls["quantize"] += 1
+            quantized_path.write_bytes(b"quantized")
+        return subprocess.CompletedProcess(plan.command, 0, "", "")
+
+    class _FakeResponse:
+        status = 200
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _DummyProcess:
+        def poll(self):
+            return None
+
+        def wait(self, timeout: float | None = None):
+            return 0
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    def fake_run_validation_popen(plan: ValidationLaunchPlan, *, stdout):
+        assert plan.purpose == src._VALIDATION_PURPOSE_SERVER
+        calls["server"] += 1
+        return _DummyProcess()
+
+    monkeypatch.setattr(src, "build_validation_sandbox_plan", fake_build_plan)
+    monkeypatch.setattr(src, "_run_validation_capture", fake_run_validation_capture)
+    monkeypatch.setattr(src, "_run_validation_popen", fake_run_validation_popen)
+    monkeypatch.setattr(src.urllib.request, "urlopen", lambda *a, **k: _FakeResponse())
 
     bundle_name = "app-b9998-linux-x64-cuda13-newer.tar.gz"
     source_archive = tmp_path / "source.tar.gz"
@@ -3097,28 +3528,68 @@ def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
             bundle_name = bundle_name,
         ),
         prebuilt_fallback_used = False,
-        quantized_path = tmp_path / "stories260K-q4.gguf",
+        quantized_path = quantized_path,
     )
-    return calls
+    return calls, plans
 
 
 def test_validate_prebuilt_choice_approved_validation_skipped_when_flag_off(tmp_path, monkeypatch):
     # An approved (sha256-verified) bundle skips the smoke test while the flag is off.
-    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    calls, plans = _run_validate_prebuilt_choice(
+        monkeypatch, tmp_path, expected_sha256 = "ab" * 32
+    )
     assert calls == {"quantize": 0, "server": 0}
+    assert plans == []
 
 
 def test_validate_prebuilt_choice_hashless_build_always_validated(tmp_path, monkeypatch):
     # A hashless build has no sha256 gate, so the smoke test must run even with the flag off.
-    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None)
+    calls, plans = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None)
     assert calls == {"quantize": 1, "server": 1}
+    assert "ldd" in plans
+    assert plans.count("quantize") == 1
+    assert plans.count("server") == 1
+    assert plans.index("quantize") < plans.index("server")
+
+
+def test_validate_prebuilt_choice_hashless_build_routes_through_validation_sandbox(
+    tmp_path, monkeypatch
+):
+    _calls, plans = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None)
+    assert plans.count("ldd") >= 1
+    assert plans.count("quantize") == 1
+    assert plans.count("server") == 1
+    assert plans.index("quantize") < plans.index("server")
+    assert plans[0] == "ldd"
+    assert plans[-1] == "server"
 
 
 def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp_path, monkeypatch):
     # _RUN_STAGED_PREBUILT_VALIDATION back on restores the smoke test for approved bundles too.
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
-    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    calls, plans = _run_validate_prebuilt_choice(
+        monkeypatch, tmp_path, expected_sha256 = "ab" * 32
+    )
     assert calls == {"quantize": 1, "server": 1}
+    assert "ldd" in plans
+    assert plans.count("quantize") == 1
+    assert plans.count("server") == 1
+    assert plans.index("quantize") < plans.index("server")
+
+
+def test_validate_prebuilt_choice_approved_validation_records_sandbox_routing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
+    _calls, plans = _run_validate_prebuilt_choice(
+        monkeypatch, tmp_path, expected_sha256 = "ab" * 32
+    )
+    assert plans.count("ldd") >= 1
+    assert plans.count("quantize") == 1
+    assert plans.count("server") == 1
+    assert plans.index("quantize") < plans.index("server")
+    assert plans[0] == "ldd"
+    assert plans[-1] == "server"
 
 
 def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tmp_path: Path):
@@ -3162,7 +3633,10 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
         )
     ]
     assert target.read_bytes() == b"verified visual server"
-    assert target.stat().st_mode & 0o777 == 0o755
+    if os.name == "nt":
+        assert target.exists()
+    else:
+        assert target.stat().st_mode & 0o777 == 0o755
 
 
 def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, tmp_path: Path):

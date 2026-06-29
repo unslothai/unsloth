@@ -5124,14 +5124,226 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
+_VALIDATION_LAUNCH_RUN = "run"
+_VALIDATION_LAUNCH_SKIP = "skip"
+_VALIDATION_LAUNCH_FALLBACK = "fallback"
+_VALIDATION_PURPOSE_LDD = "ldd"
+_VALIDATION_PURPOSE_QUANTIZE = "quantize"
+_VALIDATION_PURPOSE_SERVER = "server"
+
+
+@dataclass(frozen = True)
+class _ValidationLaunchPlan:
+    command: list[str]
+    env: dict[str, str]
+    action: str
+    purpose: str
+    reason: str | None = None
+
+    @property
+    def is_runnable(self) -> bool:
+        return self.action == _VALIDATION_LAUNCH_RUN
+
+    @property
+    def is_skipped(self) -> bool:
+        return self.action == _VALIDATION_LAUNCH_SKIP
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.action == _VALIDATION_LAUNCH_FALLBACK
+
+
+def _has_command(command: str) -> bool:
+    return shutil.which(command) is not None
+
+
+def _linux_validation_bwrap_prefix(binary_path: Path, install_dir: Path) -> list[str]:
+    runtime_home = isolated_runtime_home()
+    return [
+        "bwrap",
+        "--unshare-all",
+        "--unshare-net",
+        "--die-with-parent",
+        "--new-session",
+        "--tmpfs",
+        "/tmp",
+        "--proc",
+        "/proc",
+        "--setenv",
+        "HOME",
+        runtime_home,
+        "--ro-bind",
+        str(install_dir),
+        str(install_dir),
+        "--ro-bind",
+        str(binary_path.parent),
+        str(binary_path.parent),
+    ]
+
+
+def _macos_validation_sandbox_prefix() -> list[str]:
+    return [
+        "sandbox-exec",
+        "-p",
+        "(version 1)(deny network*)",
+    ]
+
+
+def _host_is_linux(host: HostInfo | None = None) -> bool:
+    if host is not None:
+        return host.is_linux
+    return platform.system() == "Linux"
+
+
+def _host_is_macos(host: HostInfo | None = None) -> bool:
+    if host is not None:
+        return host.is_macos
+    return platform.system() == "Darwin"
+
+
+def _host_is_windows(host: HostInfo | None = None) -> bool:
+    if host is not None:
+        return host.is_windows
+    return platform.system() == "Windows"
+
+
+def build_validation_sandbox_plan(
+    command: list[str],
+    *,
+    binary_path: Path,
+    install_dir: Path,
+    purpose: str,
+    env: dict[str, str],
+    host: HostInfo | None = None,
+    runtime_line: str | None = None,
+) -> _ValidationLaunchPlan:
+    if _host_is_linux(host):
+        if _has_command("bwrap"):
+            return _ValidationLaunchPlan(
+                command = [
+                    *_linux_validation_bwrap_prefix(binary_path, install_dir),
+                    *command,
+                ],
+                env = env,
+                action = _VALIDATION_LAUNCH_RUN,
+                purpose = purpose,
+            )
+        if purpose == _VALIDATION_PURPOSE_LDD:
+            return _ValidationLaunchPlan(
+                command = command,
+                env = env,
+                action = _VALIDATION_LAUNCH_SKIP,
+                purpose = purpose,
+                reason = "No Linux sandbox adapter was available; skip ldd probe",
+            )
+        return _ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = _VALIDATION_LAUNCH_FALLBACK,
+            purpose = purpose,
+            reason = "No Linux sandbox adapter was available for downloaded-binary validation",
+        )
+
+    if _host_is_macos(host):
+        if _has_command("sandbox-exec"):
+            return _ValidationLaunchPlan(
+                command = [*_macos_validation_sandbox_prefix(), *command],
+                env = env,
+                action = _VALIDATION_LAUNCH_RUN,
+                purpose = purpose,
+            )
+        return _ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = _VALIDATION_LAUNCH_FALLBACK,
+            purpose = purpose,
+            reason = "No macOS sandbox-exec adapter was available for downloaded-binary validation",
+        )
+
+    if _host_is_windows(host):
+        return _ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = _VALIDATION_LAUNCH_FALLBACK,
+            purpose = purpose,
+            reason = "Windows validation sandboxing is unsupported in this install slice",
+        )
+
+    return _ValidationLaunchPlan(
+        command = command,
+        env = env,
+        action = _VALIDATION_LAUNCH_FALLBACK,
+        purpose = purpose,
+        reason = f"Unsupported platform for validation sandboxing: {platform.system()}",
+    )
+
+
+def _run_validation_capture(
+    plan: _ValidationLaunchPlan,
+    *,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    if plan.is_skipped:
+        raise PrebuiltFallback(f"{plan.purpose} launch was skipped by sandbox policy")
+    if plan.is_fallback:
+        if plan.reason is None:
+            raise PrebuiltFallback("validation launch skipped due to missing sandbox")
+        raise PrebuiltFallback(plan.reason)
+    return run_capture(plan.command, timeout = timeout, env = plan.env)
+
+
+def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> str:
+    plan = build_validation_sandbox_plan(
+        ["ldd", str(binary_path)],
+        binary_path = binary_path,
+        install_dir = binary_path.parent,
+        purpose = _VALIDATION_PURPOSE_LDD,
+        env = env,
+    )
+    if plan.is_skipped:
+        log("Skipping ldd probe because no Linux sandbox adapter was available")
+        return ""
+    if plan.is_fallback:
+        # Keep compatibility: compatibility checks tolerate probe skip/fallback by
+        # treating missing entries as unknown and letting downstream metadata checks
+        # handle it.
+        return ""
+    result = _run_validation_capture(plan, timeout = 20)
+    return result.stdout + result.stderr
+
+
+def _run_validation_popen(
+    plan: _ValidationLaunchPlan,
+    *,
+    stdout,
+    timeout: int | None = None,  # kept for parity with current validate_server call shape
+) -> subprocess.Popen[str]:
+    if plan.is_skipped:
+        raise PrebuiltFallback(f"{plan.purpose} launch was skipped by sandbox policy")
+    if plan.is_fallback:
+        if plan.reason is None:
+            raise PrebuiltFallback("validation launch skipped due to missing sandbox")
+        raise PrebuiltFallback(plan.reason)
+    return subprocess.Popen(
+        plan.command,
+        stdout = stdout,
+        stderr = subprocess.STDOUT,
+        text = True,
+        env = plan.env,
+        **windows_hidden_subprocess_kwargs(),
+    )
+
+
 def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = None) -> list[str]:
-    try:
-        result = run_capture(["ldd", str(binary_path)], timeout = 20, env = env)
-    except Exception:
+    if env is None:
+        env = scrubbed_environ()
+    probe_output = _run_validation_ldd_probe(binary_path, env = env)
+    if not probe_output:
         return []
+    result = subprocess.CompletedProcess(binary_path, 0, stdout = probe_output)
 
     missing: list[str] = []
-    for line in (result.stdout + result.stderr).splitlines():
+    for line in result.stdout.splitlines():
         line = line.strip()
         if "=> not found" not in line:
             continue
@@ -5679,15 +5891,17 @@ def validate_quantize(
     *,
     runtime_line: str | None = None,
 ) -> None:
-    command = [str(quantize_path), str(probe_path), str(quantized_path), "Q6_K", "2"]
-    result = subprocess.run(
-        command,
-        capture_output = True,
-        text = True,
-        timeout = 120,
-        env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
-        **windows_hidden_subprocess_kwargs(),
+    env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line)
+    plan = build_validation_sandbox_plan(
+        [str(quantize_path), str(probe_path), str(quantized_path), "Q6_K", "2"],
+        binary_path = quantize_path,
+        install_dir = install_dir,
+        host = host,
+        runtime_line = runtime_line,
+        purpose = _VALIDATION_PURPOSE_QUANTIZE,
+        env = env,
     )
+    result = _run_validation_capture(plan, timeout = 120)
     if result.returncode != 0 or not quantized_path.exists() or quantized_path.stat().st_size == 0:
         combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
         # Backstop for prebuilts the static minos scan could not read: a dyld
@@ -5713,6 +5927,7 @@ def validate_server(
     last_failure: PrebuiltFallback | None = None
     for port_attempt in range(1, SERVER_PORT_BIND_ATTEMPTS + 1):
         port = free_local_port()
+        env = binary_env(server_path, install_dir, host, runtime_line = runtime_line)
         command = [
             str(server_path),
             "-m",
@@ -5760,6 +5975,15 @@ def validate_server(
             )
         if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
+        plan = build_validation_sandbox_plan(
+            command,
+            binary_path = server_path,
+            install_dir = install_dir,
+            host = host,
+            runtime_line = runtime_line,
+            purpose = _VALIDATION_PURPOSE_SERVER,
+            env = env,
+        )
 
         log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")
         os.close(log_fd)
@@ -5767,13 +5991,9 @@ def validate_server(
         process: subprocess.Popen[str] | None = None
         try:
             with log_path.open("w", encoding = "utf-8", errors = "replace") as log_handle:
-                process = subprocess.Popen(
-                    command,
+                process = _run_validation_popen(
+                    plan,
                     stdout = log_handle,
-                    stderr = subprocess.STDOUT,
-                    text = True,
-                    env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
-                    **windows_hidden_subprocess_kwargs(),
                 )
                 deadline = time.time() + 60
                 startup_started = time.time()
@@ -5909,9 +6129,9 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
                 )
             )
             try:
-                ldd = run_capture(["ldd", str(server_binary)], timeout = 20, env = server_env)
+                ldd_output = _run_validation_ldd_probe(server_binary, env = server_env)
                 lines.append("ldd llama-server:")
-                lines.append((ldd.stdout + ldd.stderr).strip())
+                lines.append((ldd_output or "none").strip())
             except Exception as exc:
                 lines.append(f"ldd error: {exc}")
     elif host.is_windows:
