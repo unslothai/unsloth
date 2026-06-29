@@ -550,7 +550,7 @@ def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, t
 # Lock split + mid-denoise cancellation
 
 
-def test_generate_lock_split_keeps_status_and_unload_responsive(fake_runtime):
+def test_generate_lock_split_keeps_status_responsive_and_unload_waits(fake_runtime):
     import threading
 
     backend = DiffusionBackend()
@@ -584,21 +584,30 @@ def test_generate_lock_split_keeps_status_and_unload_responsive(fake_runtime):
 
     t = threading.Thread(target = _run)
     t.start()
-    assert started.wait(5)  # the denoise is in flight, holding only _generate_lock
+    assert started.wait(5)  # the denoise is in flight, holding _generate_lock
 
-    # status() / generate_progress() must NOT block behind the denoise.
+    # status() / generate_progress() read _state lock-free, so they must NOT block
+    # behind the denoise.
     assert backend.status()["loaded"] is True
     assert backend.generate_progress()["active"] is True
 
-    # unload() must return promptly (it does not wait on _generate_lock) and signal
-    # THIS in-flight generation's cancel event.
-    backend.unload()
+    # unload() signals THIS generation's cancel, then WAITS on _generate_lock for it
+    # to exit before freeing _state -- so when the GPU arbiter hands the card to chat
+    # the moment unload returns, the old pipeline is already gone (no dual-allocation
+    # OOM). Run it on a thread to observe that it blocks behind the live denoise.
+    unload_done = threading.Event()
+    threading.Thread(
+        target = lambda: (backend.unload(), unload_done.set()), daemon = True
+    ).start()
+    assert not unload_done.wait(0.5)  # blocked behind the live denoise
+    assert backend._state is not None  # not freed while the pipeline is still live
     assert backend._active_generate_cancel is not None
-    assert backend._active_generate_cancel.is_set()
-    assert backend.status()["loaded"] is False
+    assert backend._active_generate_cancel.is_set()  # cancel was signalled up front
 
-    release.set()
+    release.set()  # denoise returns and releases _generate_lock
     t.join(5)
+    assert unload_done.wait(5)  # only now does unload free _state and return
+    assert backend.status()["loaded"] is False
     # The cancelled generation raised rather than returning a now-evicted image.
     assert "exc" in out and "cancelled" in str(out["exc"]).lower()
 
@@ -832,3 +841,22 @@ def test_superseded_load_does_not_cancel_unrelated_generation(fake_runtime, tmp_
     assert "exc" not in gen_out
     # The stale load did not replace the current model.
     assert backend.status()["repo_id"] == "current"
+
+
+def test_detect_family_from_local_gguf_filename(tmp_path):
+    # A direct local .gguf pick splits into (parent dir, basename); the family
+    # keyword can live only in the filename, so validate must scan it too.
+    (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"w")
+    backend = DiffusionBackend()
+    fam = backend.validate_load_request(
+        str(tmp_path), gguf_filename = "z-image-turbo-Q4_K_M.gguf"
+    )
+    assert fam.name == "z-image"
+    # An edit-checkpoint filename is still rejected even via the filename path.
+    (tmp_path / "FLUX.1-Kontext-dev-Q4.gguf").write_bytes(b"w")
+    with pytest.raises(ValueError):
+        backend.validate_load_request(
+            str(tmp_path), gguf_filename = "FLUX.1-Kontext-dev-Q4.gguf"
+        )
+    # A bare parent dir whose name DOES carry the keyword still works (unchanged).
+    assert backend._detect_family_for_pick("unsloth/Z-Image-GGUF", "x.gguf", None).name == "z-image"

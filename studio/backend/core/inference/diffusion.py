@@ -188,6 +188,24 @@ class DiffusionBackend:
                 base, rfilename, hf_token, cancel_event = self._cancel_event
             )
 
+    @staticmethod
+    def _detect_family_for_pick(
+        repo_id: str,
+        gguf_filename: Optional[str],
+        family_override: Optional[str],
+    ) -> Optional[DiffusionFamily]:
+        """Detect the family from the repo id, falling back to the combined
+        path/filename for a direct local .gguf pick. The frontend splits such a
+        pick into (parent dir, basename), so the family keyword can live only in
+        the filename (e.g. /models/z-image-turbo-Q4_K_M.gguf) while the parent
+        directory carries none; scan it too when the directory alone is
+        undetectable. Only used as a fallback, so remote 'org/name' picks and
+        explicit overrides behave exactly as before."""
+        fam = detect_family(repo_id, family_override)
+        if fam is None and gguf_filename and not family_override:
+            fam = detect_family(f"{repo_id}/{gguf_filename}", family_override)
+        return fam
+
     def validate_load_request(
         self,
         repo_id: str,
@@ -204,7 +222,7 @@ class DiffusionBackend:
             raise ValueError(
                 "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
             )
-        fam = detect_family(repo_id, family_override)
+        fam = self._detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
             raise ValueError(
                 f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
@@ -277,7 +295,9 @@ class DiffusionBackend:
             # Resolve the base repo and estimate sizes on this thread (both network
             # calls) so begin_load returns instantly; the bar shows raw bytes until
             # the total lands. This is the only writer of _loading's fields here.
-            fam = detect_family(kwargs["repo_id"], kwargs.get("family_override"))
+            fam = self._detect_family_for_pick(
+                kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
+            )
             base = _resolve_base_repo(
                 kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
             )
@@ -591,19 +611,22 @@ class DiffusionBackend:
         # Abort an in-flight download so unload/an eviction returns promptly instead
         # of waiting it out (the download runs without _lock and checks this event).
         self._cancel_event.set()
+        # Signal an in-flight denoise, then WAIT on _generate_lock for it to exit
+        # before freeing _state. The GPU arbiter releases diffusion ownership and
+        # hands the card to chat the instant this returns, so chat must not start
+        # allocating VRAM while the old pipeline is still resident — that transient
+        # overlap is an OOM risk. The cancel bounds the wait to ~one step (the same
+        # bound the replacement-load path in load_pipeline already relies on).
         with self._lock:
-            # Abort an in-flight denoise too by setting ITS cancel event, so the step
-            # callback stops it. unload does NOT take _generate_lock — it must return
-            # promptly; the running generate keeps its own pipe reference, so freeing
-            # _state here can't crash it, and its VRAM is reclaimed when it returns
-            # (within ~one step thanks to the cancel).
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
-            self._unload_locked()
-            # Cancel any in-flight load (its worker checks this token before
-            # committing) and drop the marker so the next load starts clean.
-            self._load_token += 1
-            self._loading = None
+        with self._generate_lock:
+            with self._lock:
+                self._unload_locked()
+                # Cancel any in-flight load (its worker checks this token before
+                # committing) and drop the marker so the next load starts clean.
+                self._load_token += 1
+                self._loading = None
         return self.status()
 
     def _unload_locked(self) -> None:
