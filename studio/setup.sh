@@ -1261,7 +1261,18 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         exit 1
     fi
     _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
-    if [ "$_RESOLVED_LOCAL" = "$LLAMA_CPP_DIR" ]; then
+    # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
+    # is fully resolved, but LLAMA_CPP_DIR is textual ($UNSLOTH_HOME/llama.cpp). If
+    # $HOME (or UNSLOTH_HOME) contains a symlink, the two never match even when the
+    # user pointed the flag at the canonical install itself -- and the rm -rf below
+    # would then wipe the very tree they asked to reuse. Resolve via the parent so
+    # this works whether or not the leaf currently exists.
+    _CANON_LLAMA_CPP_DIR="$LLAMA_CPP_DIR"
+    _LLAMA_CPP_PARENT="$(dirname "$LLAMA_CPP_DIR")"
+    if [ -d "$_LLAMA_CPP_PARENT" ]; then
+        _CANON_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" && pwd -P)/$(basename "$LLAMA_CPP_DIR")"
+    fi
+    if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then
         substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location; ignoring"
     else
         # A stale link from a previous --with-llama-cpp-dir run isn't Studio-owned
@@ -1281,7 +1292,11 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # (llama-server) works off the linked tree directly and needs nothing.
         if [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ] && \
            [ ! -e "$LLAMA_CPP_DIR/llama-quantize" ]; then
-            ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+            # Best-effort: this writes through the link into the user's tree, which
+            # may be read-only (a shared/CI cache). Under `set -e` a failed ln would
+            # abort an otherwise-good reuse, so don't make the shim fatal.
+            ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize" 2>/dev/null || \
+                substep "could not create llama-quantize shim in linked dir (read-only?); GGUF export may be unavailable"
         fi
         step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
         _LOCAL_LLAMA_CPP_LINKED=true

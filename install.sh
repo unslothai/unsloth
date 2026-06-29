@@ -266,6 +266,10 @@ if [ "$_next_is_python" = true ]; then
     echo "❌ ERROR: --python requires a version argument (e.g. --python 3.12)." >&2
     exit 1
 fi
+if [ "$_next_is_llama_cpp_dir" = true ]; then
+    echo "❌ ERROR: --with-llama-cpp-dir requires a path argument." >&2
+    exit 1
+fi
 
 # Validate --package to prevent injection into shell/Python commands.
 # Must start with a letter/digit (rejects leading dashes that uv would parse as flags).

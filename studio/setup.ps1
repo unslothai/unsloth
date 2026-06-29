@@ -3174,11 +3174,13 @@ if ($LocalLlamaCppSrc) {
         # Remove-Item -Recurse -Force on a reparse point can traverse the link and
         # wipe the user's real llama.cpp directory on PowerShell 5.1. Dropping the
         # stale link here also keeps the custom-home ownership check below idempotent.
-        if (Test-Path -LiteralPath $LlamaCppDir) {
-            $existing = Get-Item -LiteralPath $LlamaCppDir -Force
-            if ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                $existing.Delete()
-            }
+        # Use Get-Item -Force (not Test-Path): a *broken* junction whose target was
+        # moved/deleted makes Test-Path return false, which would leave the dangling
+        # link in place and make mklink below fail; Get-Item still resolves it so we
+        # can remove it and relink to a new valid directory.
+        $existing = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
+        if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            $existing.Delete()
         }
         if ($StudioHomeIsCustom) {
             Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
@@ -3189,7 +3191,7 @@ if ($LocalLlamaCppSrc) {
         cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             substep "Could not create directory junction; copying instead..." "Yellow"
-            Copy-Item -Recurse -Path $ResolvedLocal -Destination $LlamaCppDir
+            Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir
         }
         Write-Host ""
         step "llama.cpp" "linked local directory: $ResolvedLocal"

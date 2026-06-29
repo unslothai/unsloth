@@ -118,7 +118,7 @@ assert_contains \
     "$SETUP_PS1" "mklink /J"
 assert_contains \
     "setup.ps1: falls back to a copy when the junction can't be created" \
-    "$SETUP_PS1" "Copy-Item -Recurse -Path \$ResolvedLocal -Destination \$LlamaCppDir"
+    "$SETUP_PS1" "Copy-Item -Recurse -LiteralPath \$ResolvedLocal -Destination \$LlamaCppDir"
 assert_contains \
     "setup.ps1: disables the source build when the local dir is linked" \
     "$SETUP_PS1" '$NeedLlamaSourceBuild = $false'
@@ -139,7 +139,7 @@ echo "=== both setup scripts: a local dir pointing at the canonical path is a no
 # dir itself, neither script should delete-then-link it onto itself.
 assert_contains \
     "setup.sh: ignores a local dir equal to the canonical install location" \
-    "$SETUP_SH" 'if [ "$_RESOLVED_LOCAL" = "$LLAMA_CPP_DIR" ]; then'
+    "$SETUP_SH" 'if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then'
 assert_contains \
     "setup.ps1: ignores a local dir equal to the canonical install location" \
     "$SETUP_PS1" 'if ($ResolvedLocal -eq $LlamaCppDir) {'
