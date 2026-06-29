@@ -234,6 +234,10 @@ class SdCppDiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
+        # An empty / whitespace token is "no token": passing "" verbatim to HfApi /
+        # hf_hub_download is treated as an explicit (invalid) credential and breaks the
+        # anonymous fallback for public repos.
+        hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
         if not gguf_filename:
             raise ValueError(
                 "gguf_filename is required: the native engine loads single-file GGUF checkpoints only."
@@ -248,6 +252,11 @@ class SdCppDiffusionBackend:
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
+            # A superseding load must stop any in-flight generation, or the old sd-cli
+            # keeps running against the previous model and can still return / persist an
+            # image after the new load has started (matches unload()'s cancel).
+            if self._active_generate_cancel is not None:
+                self._active_generate_cancel.set()
             self._load_token += 1
             token = self._load_token
             self._cancel_event.clear()
@@ -465,7 +474,12 @@ class SdCppDiffusionBackend:
                             raise RuntimeError("Diffusion generation was cancelled.")
                         # Distinct seed per batch image (sd-cli is one image/run here),
                         # so a batch is reproducible image-by-image from the base seed.
-                        seed_i = (seed + index) & ((1 << 53) - 1)
+                        # Mask to sd-cli's int64 range, NOT 53 bits: the request model and
+                        # the diffusers backend both accept large explicit seeds, so a tight
+                        # 2**53 mask would silently truncate them (2**53 -> 0) and collide
+                        # distinct requested seeds onto the same image. Randomly-drawn seeds
+                        # above are already 53-bit (JS-safe); explicit seeds pass through.
+                        seed_i = (seed + index) & ((1 << 63) - 1)
                         out_path = str(Path(tmpdir) / f"img_{index}.png")
                         params = SdCppGenParams(
                             prompt = prompt,

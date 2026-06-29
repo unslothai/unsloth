@@ -47,6 +47,12 @@ def _set_binary(monkeypatch, path):
     monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: path)
 
 
+def _set_runnable(monkeypatch, version = "sd-cli v0"):
+    """Stub the runnability probe so a stubbed binary path is treated as executable
+    (the router now probes ``SdCppEngine(...).version()`` before committing to native)."""
+    monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: version))
+
+
 def _select(fam_name = "z-image"):
     """Activate the engine for a family and return which engine was chosen."""
     r.select_and_activate_engine(detect_family(fam_name))
@@ -59,8 +65,19 @@ def _select(fam_name = "z-image"):
 def test_cpu_with_binary_and_supported_family_picks_sd_cpp(monkeypatch):
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
     assert _select() == ENGINE_SD_CPP
     assert r.active_engine_name() == ENGINE_SD_CPP
+
+
+def test_present_but_not_runnable_binary_falls_back(monkeypatch):
+    # A binary that exists but cannot run (version() -> None) must fall back to
+    # diffusers at selection, not commit native and fail inside the load.
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
+    assert _select() == ENGINE_DIFFUSERS
+    assert "binary unavailable" in (r.active_status()["fallback_reason"] or "")
 
 
 @pytest.mark.parametrize("gpu", ["cuda", "rocm", "xpu"])
@@ -90,6 +107,7 @@ def test_sd_cpp_disabled_uses_diffusers(monkeypatch):
 def test_mps_default_diffusers_but_optin_sd_cpp(monkeypatch):
     _set_device(monkeypatch, "mps")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
     # Default: MPS is not native-eligible -> diffusers.
     assert _select() == ENGINE_DIFFUSERS
     # Opt in: MPS routes to sd.cpp.
@@ -115,6 +133,7 @@ def test_missing_binary_falls_back(monkeypatch):
 def test_force_sd_cpp_on_gpu_when_binary_present(monkeypatch):
     _set_device(monkeypatch, "cuda")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
     assert _select() == ENGINE_SD_CPP
 

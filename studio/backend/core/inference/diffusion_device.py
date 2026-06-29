@@ -59,8 +59,24 @@ def resolve_diffusion_device_target() -> DiffusionDeviceTarget:
     (CUDA -> XPU -> MPS -> CPU). On Apple Silicon Studio reports MLX/CPU when its
     product backend is gated on the ``mlx`` package, but diffusers runs on
     PyTorch's MPS backend, so those cases still fall through to the MPS probe.
+
+    Torch is optional here: on a CPU-only install without PyTorch the native
+    stable-diffusion.cpp engine still runs (it shells out to sd-cli), so a missing
+    torch reports a torch-free CPU target instead of crashing the whole
+    ``/images/load`` before the engine router can select the native backend.
     """
-    import torch
+    try:
+        import torch
+    except Exception:
+        return DiffusionDeviceTarget(
+            device = "cpu",
+            dtype = None,
+            backend = "cpu",
+            vendor = None,
+            supports_model_cpu_offload = False,
+            supports_default_torch_compile = False,
+            supports_pinned_transfer = False,
+        )
 
     try:
         from utils.hardware import DeviceType, get_device

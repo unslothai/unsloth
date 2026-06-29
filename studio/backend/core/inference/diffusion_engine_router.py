@@ -30,7 +30,12 @@ from typing import Any, Optional
 from core.inference.diffusion_device import resolve_diffusion_device_target
 from core.inference.diffusion_families import DiffusionFamily, family_sd_cpp_supported
 from core.inference.sd_cpp_backend import _install_allowed, ensure_sd_cpp_binary
-from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP, select_diffusion_engine
+from core.inference.sd_cpp_engine import (
+    ENGINE_DIFFUSERS,
+    ENGINE_SD_CPP,
+    SdCppEngine,
+    select_diffusion_engine,
+)
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -68,17 +73,25 @@ def active_engine_name() -> str:
 
 def _activate(name: str, reason: Optional[str]) -> Any:
     global _active_engine_name, _fallback_reason
+    # Switching engines: unload the one being deactivated first, or its model
+    # stays resident but unreachable (the arbiter evictor only targets the active
+    # engine), leaking 10+ GB and defeating the chat<->diffusion handoff. The unload
+    # itself (freeing 10+ GB / syncing CUDA) is slow, so resolve the engine under the
+    # lock but run unload() OUTSIDE it -- holding _lock across a slow unload would
+    # block every other selection caller.
+    engine_to_unload = None
+    old_name = None
     with _lock:
-        # Switching engines: unload the one being deactivated first, or its model
-        # stays resident but unreachable (the arbiter evictor only targets the active
-        # engine), leaking 10+ GB and defeating the chat<->diffusion handoff.
         if name != _active_engine_name:
-            try:
-                get_active_diffusion_engine().unload()
-            except Exception as exc:  # noqa: BLE001 -- best-effort; never block the switch
-                logger.warning("failed to unload previous engine %s: %s", _active_engine_name, exc)
+            engine_to_unload = get_active_diffusion_engine()
+            old_name = _active_engine_name
         _active_engine_name = name
         _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
+    if engine_to_unload is not None:
+        try:
+            engine_to_unload.unload()
+        except Exception as exc:  # noqa: BLE001 -- best-effort; never block the switch
+            logger.warning("failed to unload previous engine %s: %s", old_name, exc)
     if name == ENGINE_SD_CPP:
         logger.info("diffusion engine: sd_cpp")
     else:
@@ -113,6 +126,13 @@ def select_and_activate_engine(fam: DiffusionFamily, *, hf_token: Optional[str] 
     binary = None
     if policy_eligible and fam_ok:
         binary = ensure_sd_cpp_binary(allow_install = _install_allowed())
+        # Probe runnability here, before committing the route to native: a present but
+        # non-runnable binary (wrong arch, missing shared libs, no execute bit) would
+        # otherwise pass as available and only fail inside the background load, instead
+        # of falling back to diffusers now.
+        if binary and SdCppEngine(binary = binary).version() is None:
+            logger.warning("sd-cli at %s is present but not runnable; using diffusers", binary)
+            binary = None
 
     native_available = bool(binary) and policy_eligible and fam_ok
     choice = select_diffusion_engine(

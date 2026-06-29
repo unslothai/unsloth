@@ -468,6 +468,11 @@ def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
         lambda: SimpleNamespace(backend = "cpu", device = "cpu"),
     )
     monkeypatch.setattr(engine_router, "ensure_sd_cpp_binary", lambda **_: "/x/sd-cli")
+    # The router now probes runnability before committing to native; treat the stub
+    # binary as executable.
+    monkeypatch.setattr(
+        engine_router, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "sd-cli v0")
+    )
     monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
     monkeypatch.setattr(engine_router, "_fallback_reason", None)
     # The native backend the router will activate.
