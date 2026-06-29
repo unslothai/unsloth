@@ -305,7 +305,9 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     return designer
 
 
-def _build_evaluation_artifacts(df, evaluations: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+def _build_evaluation_artifacts(
+    df, evaluations: list[dict[str, Any]]
+) -> list[dict[str, Any]] | None:
     """Per-evaluation summary attached to results.evaluation_artifacts so the
     preview UI can show a score column + basic stats alongside the dataset."""
     artifacts: list[dict[str, Any]] = []
@@ -347,7 +349,12 @@ def _attach_studio_evaluations(designer: Any, evaluations: list[dict[str, Any]])
         results.evaluation_artifacts = artifacts
         return results
 
-    def patched_create(config_builder, *, num_records, dataset_name = "dataset"):
+    def patched_create(
+        config_builder,
+        *,
+        num_records,
+        dataset_name = "dataset",
+    ):
         results = original_create(
             config_builder, num_records = num_records, dataset_name = dataset_name
         )
