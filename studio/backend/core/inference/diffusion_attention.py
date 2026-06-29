@@ -132,9 +132,18 @@ def select_attention_backend(
             return None
         return backend
     # auto
-    if speed_active and _is_cuda_nvidia(target):
+    if speed_active and _is_cuda_nvidia(target) and _cudnn_attention_supported():
         return "_native_cudnn"
     return None
+
+
+def _cudnn_attention_supported() -> bool:
+    """cuDNN fused SDPA needs Ampere+ (SM80). On pre-SM80 NVIDIA cards (T4 SM75 /
+    V100 SM70) diffusers accepts ``_native_cudnn`` at set time but the kernel fails at
+    the first generation, so gate the auto-cuDNN upgrade on capability. Unknown
+    capability allows it (diffusers' set-time check + the run-time fallback still guard)."""
+    have = _cuda_capability()
+    return have is None or have >= (8, 0)
 
 
 def apply_attention_backend(
@@ -176,8 +185,13 @@ def _active_attention_backend() -> Optional[str]:
     """The diffusers process-wide active attention backend name, or None if undeterminable."""
     try:
         from diffusers.models.attention_dispatch import _AttentionBackendRegistry
-        name, _ = _AttentionBackendRegistry.get_active_backend()
-        return getattr(name, "value", str(name))
+        # get_active_backend() returns an AttentionBackend enum (or None), NOT a tuple:
+        # unpacking it as `name, _` raises ValueError (swallowed below), so this always
+        # returned None and the native-restore short-circuit never fired.
+        backend = _AttentionBackendRegistry.get_active_backend()
+        if backend is None:
+            return None
+        return getattr(backend, "value", str(backend))
     except Exception:  # noqa: BLE001
         return None
 

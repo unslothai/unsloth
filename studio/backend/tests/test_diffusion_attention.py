@@ -51,7 +51,16 @@ def test_sdpa_alias_maps_to_native():
 # ── select policy ─────────────────────────────────────────────────────────────────
 def test_auto_upgrades_to_cudnn_on_nvidia_when_speed_active(monkeypatch):
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (8, 0))  # Ampere+: cuDNN ok
     assert select_attention_backend(_target(), "auto", speed_active = True) == "_native_cudnn"
+
+
+def test_auto_does_not_pin_cudnn_below_sm80(monkeypatch):
+    # cuDNN fused SDPA fails at run time on pre-SM80 (T4 SM75 / V100 SM70); auto must stay
+    # on the native default there rather than pin a backend that crashes on first generation.
+    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (7, 5))  # Turing T4
+    assert select_attention_backend(_target(), "auto", speed_active = True) is None
 
 
 def test_auto_stays_native_when_speed_off(monkeypatch):
