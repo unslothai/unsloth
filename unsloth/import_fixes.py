@@ -1494,6 +1494,123 @@ def disable_broken_wandb():
 _UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
 
 
+def _extract_peft_tensor_parallel_imported_symbols():
+    """Return names PEFT expects from ``transformers.integrations.tensor_parallel``.
+
+    The supported PEFT import line is the one in
+    ``peft.utils.save_and_load._maybe_shard_state_dict_for_tp`` for fast
+    LoRA adapter checkpoints. Parse that source to avoid stale hard-coded
+    symbol lists.
+    """
+    try:
+        import peft.utils.save_and_load as _save_and_load
+    except Exception:
+        return ()
+    try:
+        sharding_fn = _save_and_load._maybe_shard_state_dict_for_tp
+    except AttributeError:
+        return ()
+
+    try:
+        source = inspect.getsource(sharding_fn)
+    except (TypeError, OSError, IOError):
+        return ()
+
+    import_pattern = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s*\((.*?)\)",
+        re.S,
+    )
+    import_pattern_single = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s+([A-Za-z_][A-Za-z0-9_\\s,]*)",
+        re.S,
+    )
+    matches = import_pattern.findall(source)
+    if not matches:
+        matches = import_pattern_single.findall(source)
+
+    symbols = []
+    seen = set()
+    for match in matches:
+        pieces = re.split(r"[,\n]", match)
+        for piece in pieces:
+            candidate = piece.strip()
+            if not candidate:
+                continue
+            if candidate.endswith(")"):
+                candidate = candidate[:-1].strip()
+            if not candidate.isidentifier():
+                continue
+            if candidate in seen:
+                continue
+            symbols.append(candidate)
+            seen.add(candidate)
+    return tuple(symbols)
+
+
+def _raise_on_peft_tensor_parallel_symbol_use(symbol_name):
+    raise NotImplementedError(
+        f"Unsloth: cannot use unsupported "
+        f"`transformers.integrations.tensor_parallel.{symbol_name}` on this "
+        f"transformers installation. Please upgrade transformers before "
+        f"using PEFT tensor-parallel adapter sharding features."
+    )
+
+
+def fix_peft_transformers_tensor_parallel_import_compat():
+    """Preserve existing ``transformers.integrations.tensor_parallel`` objects, then add
+    lightweight placeholders for symbols that PEFT expects but this transformers
+    build omits.
+
+    Returns ``True`` when patched, ``False`` when no patch is needed, and
+    ``None`` when transformers / PEFT context is absent.
+    """
+    try:
+        tensor_parallel_spec = importlib.util.find_spec("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError:
+        return None
+    if tensor_parallel_spec is None:
+        return None
+
+    required_symbols = _extract_peft_tensor_parallel_imported_symbols()
+    if not required_symbols:
+        return None
+
+    tp_mod = importlib.import_module("transformers.integrations.tensor_parallel")
+    missing = [
+        symbol
+        for symbol in required_symbols
+        if not hasattr(tp_mod, symbol)
+    ]
+    if not missing:
+        return False
+
+    def _install_symbol_placeholder(symbol_name):
+        if symbol_name == "ALL_PARALLEL_STYLES":
+            class _UnslothTensorParallelStyles(dict):
+                def __getitem__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def get(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelStyles()
+        else:
+            class _UnslothTensorParallelPlaceholder:
+                def __init__(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelPlaceholder
+            value.__name__ = f"UnslothTensorParallelPlaceholder{symbol_name}"
+
+        setattr(value, _UNSLOTH_STUB_SENTINEL, True)
+        setattr(tp_mod, symbol_name, value)
+
+    for symbol in missing:
+        _install_symbol_placeholder(symbol)
+
+    return True
+
+
 def _peft_stub_module_importable(name):
     """True iff ``import {name}`` would succeed without side effects."""
     if name in sys.modules and sys.modules[name] is not None:
