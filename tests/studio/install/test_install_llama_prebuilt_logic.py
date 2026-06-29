@@ -3286,6 +3286,7 @@ def test_linux_missing_libraries_uses_bwrap_plan(monkeypatch, tmp_path):
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "which", lambda name: f"/usr/bin/{name}")
     captured = {}
 
     def fake_run_capture(command, *, timeout, env = None, check = False):
