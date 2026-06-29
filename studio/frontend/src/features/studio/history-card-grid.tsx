@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/button";
 import type { TrainingRunSummary } from "@/features/training";
 import {
   deleteTrainingRun,
+  getTrainingRunDisplayTitle,
+  getTrainingRunModelSubtitle,
   emitTrainingRunDeleted,
   listTrainingRuns,
   onTrainingRunDeleted,
@@ -362,6 +364,12 @@ export function HistoryCardGrid({
           const isRunning = run.status === "running";
           const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
+
+          const title = getTrainingRunDisplayTitle(run);
+          const modelSubtitle = getTrainingRunModelSubtitle(run);
+
+          const projectSubtitle =
+            run.project_name && title !== run.project_name ? run.project_name : null;
           return (
             <div
               role="button"
@@ -414,16 +422,16 @@ export function HistoryCardGrid({
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-medium"
-                  title={run.display_name ?? run.model_name}
+                  title={title}
                 >
-                  {run.display_name ?? run.model_name}
+                  {title}
                 </p>
-                {run.display_name && (
+                {modelSubtitle && (
                   <p
                     className="truncate text-xs text-muted-foreground"
-                    title={run.model_name}
+                    title={modelSubtitle}
                   >
-                    {run.model_name}
+                    {modelSubtitle}
                   </p>
                 )}
                 <p
@@ -432,12 +440,12 @@ export function HistoryCardGrid({
                 >
                   {run.dataset_name}
                 </p>
-                {run.project_name && (
+                {projectSubtitle && (
                   <p
                     className="truncate text-xs text-muted-foreground/80"
-                    title={run.project_name}
+                    title={projectSubtitle}
                   >
-                    {run.project_name}
+                    {projectSubtitle}
                   </p>
                 )}
               </div>

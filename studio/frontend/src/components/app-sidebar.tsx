@@ -118,6 +118,7 @@ import {
   deleteTrainingRun,
   emitTrainingRunDeleted,
   emitTrainingRunUpdated,
+  getTrainingRunDisplayTitle,
   removeTrainingUnloadGuard,
   renameTrainingRun,
   useTrainingCompletionWatch,
@@ -580,7 +581,7 @@ export function AppSidebar() {
     setRenamingTarget({ kind: "chat", item, current: item.title });
   }
   function openRenameRun(run: TrainingRunSummary) {
-    const current = run.display_name ?? run.model_name;
+    const current = getTrainingRunDisplayTitle(run);
     setRenameDraft(current);
     setRenamingTarget({ kind: "run", run, current });
   }
@@ -1318,7 +1319,7 @@ export function AppSidebar() {
                               aria-hidden
                             />
                             <span className="truncate">
-                              {run.display_name ?? run.model_name}
+                              {getTrainingRunDisplayTitle(run)}
                             </span>
                             <span className="ml-auto mr-0.5 shrink-0 text-[10px] text-muted-foreground">
                               {formatRelativeShort(run.started_at)}
@@ -1578,8 +1579,7 @@ export function AppSidebar() {
               renderEmphasizedTranslation(
                 t,
                 "shell.dialog.deleteRun.description",
-                confirmingDelete.run.display_name ??
-                  confirmingDelete.run.model_name,
+                getTrainingRunDisplayTitle(confirmingDelete.run),
               )
             ) : confirmingDelete?.kind === "chat" ? (
               renderEmphasizedTranslation(
