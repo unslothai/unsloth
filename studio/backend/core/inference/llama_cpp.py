@@ -4882,7 +4882,6 @@ class LlamaCppBackend:
                     # next RAG use, after this model's memory is already placed.
                     try:
                         from core.rag import embeddings as _rag_embeddings
-
                         _rag_embeddings.unload()
                     except Exception:  # noqa: BLE001 - RAG is optional
                         pass
