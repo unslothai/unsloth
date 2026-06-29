@@ -6486,13 +6486,18 @@ class LlamaCppBackend:
                     # mmproj fallback is ruled out, so a VLM that recovers text-only is not
                     # blocked by the fail-fast guard on its next load. Wider slice as the
                     # GGML_ASSERT line can scroll past the [New LWP] dump.
-                    _was_sched_abort = not self._cancel_event.is_set() and (
-                        # A scheduler abort captured before the no-spec fallback reset stdout,
-                        _pre_fallback_sched_abort
-                        # or one still visible in the current tail.
-                        or (
-                            (self._is_signal_crash(_crash_rc) or self._is_abort_exit(_crash_rc))
-                            and self._is_sched_reserve_abort("\n".join(self._stdout_lines[-200:]))
+                    _was_sched_abort = (
+                        not self._cancel_event.is_set()
+                        and (
+                            # A scheduler abort captured before the no-spec fallback reset stdout,
+                            _pre_fallback_sched_abort
+                            # or one still visible in the current tail.
+                            or (
+                                (self._is_signal_crash(_crash_rc) or self._is_abort_exit(_crash_rc))
+                                and self._is_sched_reserve_abort(
+                                    "\n".join(self._stdout_lines[-200:])
+                                )
+                            )
                         )
                     )
                     self._kill_process()
