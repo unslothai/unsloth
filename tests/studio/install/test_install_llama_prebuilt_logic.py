@@ -3238,6 +3238,17 @@ def test_linux_missing_libraries_uses_bwrap_plan(monkeypatch, tmp_path):
     assert "ldd" in captured["command"]
 
 
+def test_linux_missing_libraries_tolerates_probe_errors(monkeypatch, tmp_path):
+    binary_path = tmp_path / "server"
+    binary_path.write_text("")
+
+    def fake_probe(_binary_path: Path, *, env: dict[str, str]) -> str:
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_ldd_probe", fake_probe)
+    assert linux_missing_libraries(binary_path, env = {"LD_LIBRARY_PATH": ""}) == []
+
+
 def test_validate_quantize_routes_through_sandbox_plan(monkeypatch, tmp_path):
     quantize_path = tmp_path / "llama-quantize"
     quantize_path.write_text("")
