@@ -164,7 +164,10 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
         free, total = torch.cuda.mem_get_info()
         kind = "discrete_vram"
         try:
-            props = torch.cuda.get_device_properties(0)
+            # Query the CURRENT device, not device 0: mem_get_info() above already
+            # reports the active device, so hardcoding 0 would inspect the wrong GPU
+            # (and misclassify discrete vs unified) when the active device isn't 0.
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
             if bool(getattr(props, "integrated", False) or getattr(props, "is_integrated", False)):
                 kind = "unified_memory"  # e.g. Jetson / integrated SoC
         except Exception:
@@ -393,9 +396,19 @@ def plan_diffusion_memory(
         policy = OFFLOAD_MODEL
         reasons.append("companions exceed budget; whole-module offload of every component")
 
-    if explicit_offload and policy == OFFLOAD_NONE and can_offload and not device_memory.is_unified:
+    # Legacy cpu_offload=True means whole-module offload. Honor it over the AUTO plan
+    # whenever auto chose something lighter (resident OR streamed group offload), so the
+    # flag keeps its historical meaning on a tight card instead of silently degrading to
+    # group offload. An explicit memory_mode (fast/balanced/low_vram) still wins.
+    if (
+        explicit_offload
+        and mode == MEMORY_MODE_AUTO
+        and policy != OFFLOAD_MODEL
+        and can_offload
+        and not device_memory.is_unified
+    ):
         policy = OFFLOAD_MODEL
-        reasons.append("explicit cpu_offload overrides resident placement")
+        reasons.append("explicit cpu_offload requests whole-module offload")
 
     # VAE tiling/slicing decode the image in chunks, capping the decode-time spike
     # that often dominates peak VRAM at high resolution. Turn it on whenever weights

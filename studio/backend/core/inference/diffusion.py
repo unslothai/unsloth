@@ -395,6 +395,47 @@ class DiffusionBackend:
             return 0  # repo not in cache yet
         return total
 
+    @staticmethod
+    def _cache_bytes_loaded(repo_id: str) -> int:
+        """Cached bytes of only the base-repo files the GGUF pipeline actually loads.
+
+        Walks the snapshot dir (filename -> blob symlinks) and keeps the files
+        ``_base_file_downloaded`` accepts, so the companion-memory estimate counts just
+        the VAE + text encoders. The raw ``_cache_bytes`` blob sum would also include any
+        dense ``transformer/`` shards left in the cache by a previous diffusers run, which
+        the GGUF path never loads -- inflating companion memory and pushing the auto plan
+        toward needless offload/tiling. Falls back to ``_cache_bytes`` if no snapshot
+        layout is present."""
+        from huggingface_hub import constants
+
+        snaps = Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+        total = 0
+        counted: set = set()
+        try:
+            snap_dirs = list(snaps.iterdir())
+        except OSError:
+            return 0  # repo not in cache yet
+        if not snap_dirs:
+            return 0
+        for snap in snap_dirs:
+            try:
+                for f in snap.rglob("*"):
+                    if not f.is_file():
+                        continue
+                    if not _base_file_downloaded(f.relative_to(snap).as_posix()):
+                        continue
+                    try:
+                        blob = f.resolve()
+                        if blob in counted:  # same blob shared across snapshots
+                            continue
+                        counted.add(blob)
+                        total += blob.stat().st_size
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+        return total
+
     # ── Synchronous load / generate / unload ───────────────────────────────
 
     def load_pipeline(
@@ -543,8 +584,9 @@ class DiffusionBackend:
             file_size_mib(gguf_path), infer_gguf_quant_label(gguf_filename)
         )
         # The companion components (VAE + text encoders) load near their on-disk
-        # size; sum whatever the prefetch already placed in the base-repo cache.
-        companion = self._cache_bytes(base)
+        # size; sum only the base-repo files the GGUF pipeline actually loads (NOT any
+        # leftover dense transformer/ shards), so the plan isn't skewed toward offload.
+        companion = self._cache_bytes_loaded(base)
         companion_mib = int(companion // (1024 * 1024)) if companion else None
         model_dense_mib = None
         if transformer_dense is not None:

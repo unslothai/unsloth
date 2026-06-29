@@ -187,6 +187,37 @@ def test_auto_group_offload_when_transformer_overflows_but_companions_fit():
     assert plan.offload_policy == OFFLOAD_GROUP
 
 
+def test_legacy_cpu_offload_forces_whole_module_over_auto_group():
+    # Legacy cpu_offload=True (no explicit memory_mode) must keep its historical
+    # whole-module meaning even when auto would otherwise pick the lighter group
+    # offload on a tight card.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(8000, 8000),
+        model_dense_mib = 40000,
+        companion_dense_mib = 1500,
+        runtime_headroom_mib = 1000,
+        base_overhead_mib = 1000,
+        explicit_offload = True,
+    )
+    assert plan.offload_policy == OFFLOAD_MODEL
+
+
+def test_explicit_balanced_mode_still_honored_over_legacy_cpu_offload():
+    # An explicit memory_mode wins over the legacy flag: balanced stays group offload.
+    plan = plan_diffusion_memory(
+        target = _target(),
+        device_memory = _discrete(8000, 8000),
+        model_dense_mib = 40000,
+        companion_dense_mib = 1500,
+        runtime_headroom_mib = 1000,
+        base_overhead_mib = 1000,
+        explicit_offload = True,
+        requested_mode = "balanced",
+    )
+    assert plan.offload_policy == OFFLOAD_GROUP
+
+
 def test_auto_model_offload_when_companions_exceed_budget():
     # The text encoder itself is too big to stay resident -> offload everything.
     plan = plan_diffusion_memory(
