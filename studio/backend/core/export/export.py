@@ -38,6 +38,26 @@ logger = get_logger(__name__)
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 
+def _supports_kwarg(fn, name):
+    """True if `fn` accepts keyword `name` directly or via **kwargs."""
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _compressed_export_supported():
+    """True if the installed unsloth build can do FP8/NVFP4 compressed-tensors export."""
+    try:
+        import unsloth.save as _us
+        return hasattr(_us, "_normalize_compressed_method")
+    except Exception:
+        return False
+
+
 def _hf_offline(timeout = 3):
     """True if export should avoid the Hub: honors the HF offline env vars, else does one
     cheap TCP reachability probe so a network-down load uses local files / the HF cache
@@ -413,6 +433,13 @@ class ExportBackend:
                     return False, "Compressed-tensors export is not supported on macOS/MLX.", None
                 mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
             elif is_compressed:
+                if not _compressed_export_supported():
+                    return (
+                        False,
+                        "Compressed-tensors (FP8/NVFP4) export requires an Unsloth build with "
+                        "compressed-tensors support. Upgrade unsloth, or choose 16-bit.",
+                        None,
+                    )
                 save_method = _COMPRESSED[format_type][0]
             elif format_type == "4-bit (FP4)":
                 save_method = "merged_4bit_forced"
@@ -655,6 +682,19 @@ class ExportBackend:
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
+        # Only forward imatrix_file to an unsloth build that accepts it; otherwise even a plain
+        # no-imatrix export would fail with an unexpected-keyword error against an older unsloth.
+        if imatrix_file is not None and not _supports_kwarg(
+            self.current_model.save_pretrained_gguf, "imatrix_file"
+        ):
+            return (
+                False,
+                "This Unsloth build does not support GGUF imatrix export. "
+                "Upgrade unsloth and unsloth_zoo, or disable the imatrix option.",
+                None,
+            )
+        imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}
+
         output_path: Optional[str] = None
         model_tmp_to_cleanup: Optional[str] = None
         try:
@@ -708,7 +748,7 @@ class ExportBackend:
                     _model_tmp,
                     self.current_tokenizer,
                     quantization_method = quant_method,
-                    imatrix_file = imatrix_file,
+                    **imatrix_kw,
                 )
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
@@ -775,7 +815,7 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     token = hf_token,
-                    imatrix_file = imatrix_file,
+                    **imatrix_kw,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 

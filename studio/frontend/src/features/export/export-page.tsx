@@ -64,6 +64,7 @@ import {
   GUIDE_STEPS,
   MERGED_FORMATS,
   type MergedFormat,
+  QUANT_OPTIONS,
   buildQuantSizeLabels,
   getEstimatedSize,
 } from "./constants";
@@ -160,6 +161,12 @@ export function ExportPage() {
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
   const [mergedFormat, setMergedFormat] = useState<MergedFormat>("16-bit (FP16)");
+  // IQ quants are imatrix-only, so force it on when one is selected; otherwise we would submit
+  // an IQ quant with no imatrix and llama.cpp would reject it.
+  const requiresImatrix = quantLevels.some(
+    (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
+  );
+  const effectiveImatrix = useImatrix || requiresImatrix;
 
   // Whether the inline export panel is expanded. The panel also shows itself
   // whenever a run is active/terminal (see `panelActive`), so it survives
@@ -602,7 +609,7 @@ export function ExportPage() {
       exportMethod,
       isAdapter: adapterExport,
       quantLevels,
-      useImatrix,
+      useImatrix: effectiveImatrix,
       mergedFormat,
       saveDirectory,
       destination,
@@ -630,7 +637,7 @@ export function ExportPage() {
     exportMethod,
     isAdapter,
     quantLevels,
-    useImatrix,
+    effectiveImatrix,
     mergedFormat,
     destination,
     saveDirectory,
@@ -1195,13 +1202,15 @@ export function ExportPage() {
                         Importance matrix (imatrix)
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        Improves quant quality and unlocks the IQ low-bit quants.
-                        Auto-downloads the upstream Unsloth imatrix for the base model.
+                        {requiresImatrix
+                          ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
+                          : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
                       </div>
                     </div>
                     <Switch
-                      checked={useImatrix}
+                      checked={effectiveImatrix}
                       onCheckedChange={setUseImatrix}
+                      disabled={requiresImatrix}
                     />
                   </div>
                 </>

@@ -54,10 +54,44 @@ def test_merged_request_rejects_unknown_format():
 
 
 def test_export_gguf_threads_imatrix_to_save_and_push():
-    # imatrix_file must reach both save_pretrained_gguf and push_to_hub_gguf.
-    assert (
-        _func_src("core/export/export.py", "export_gguf").count("imatrix_file = imatrix_file") >= 2
-    )
+    # imatrix_file must reach both save_pretrained_gguf and push_to_hub_gguf, but only via the
+    # conditional **imatrix_kw so a no-imatrix export never sends an unsupported keyword.
+    g = _func_src("core/export/export.py", "export_gguf")
+    assert g.count("**imatrix_kw") >= 2
+    assert 'imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}' in g
+    # Unconditional pass-through (the old wiring) must be gone.
+    assert "imatrix_file = imatrix_file" not in g
+
+
+def test_export_gguf_guards_unsupported_imatrix_build():
+    # An older unsloth without imatrix_file support gets a clean error, not a TypeError.
+    g = _func_src("core/export/export.py", "export_gguf")
+    assert "_supports_kwarg(" in g and '"imatrix_file"' in g
+
+
+def test_export_merged_guards_unsupported_compressed_build():
+    m = _func_src("core/export/export.py", "export_merged_model")
+    assert "_compressed_export_supported()" in m
+
+
+def test_supports_kwarg_helper():
+    # exec just the helper source so the test stays free of export.py's heavy import chain.
+    ns = {}
+    exec(_func_src("core/export/export.py", "_supports_kwarg"), ns)
+    supports = ns["_supports_kwarg"]
+
+    def has_it(a, imatrix_file = None):
+        pass
+
+    def lacks_it(a):
+        pass
+
+    def via_kwargs(a, **kw):
+        pass
+
+    assert supports(has_it, "imatrix_file") is True
+    assert supports(lacks_it, "imatrix_file") is False
+    assert supports(via_kwargs, "imatrix_file") is True
 
 
 def test_orchestrator_and_worker_pass_imatrix():
