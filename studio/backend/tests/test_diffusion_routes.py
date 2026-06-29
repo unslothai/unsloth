@@ -535,3 +535,48 @@ def test_in_progress_returns_409_after_validation_passes(client, monkeypatch):
     assert resp.status_code == 409
     # Validation passed first, so the GPU WAS acquired before begin_load reported busy.
     assert gpu_arbiter._owner == gpu_arbiter.DIFFUSION
+
+
+def _force_engine(monkeypatch, backend, *, engine_name, device):
+    """Pin engine selection + device so the load route's arbiter gating is deterministic."""
+    import types as _types
+
+    import core.inference.diffusion_device as devmod
+    import core.inference.diffusion_engine_router as router
+
+    monkeypatch.setattr(router, "select_and_activate_engine", lambda fam, **kw: backend)
+    monkeypatch.setattr(router, "active_engine_name", lambda: engine_name)
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = device)
+    )
+    acquired: list = []
+    monkeypatch.setattr(gpu_arbiter, "acquire_for", lambda role: acquired.append(role))
+    return acquired
+
+
+def test_cpu_native_load_skips_gpu_arbiter(client, monkeypatch):
+    # A native sd.cpp load on a pure-CPU host never touches the GPU, so the route must NOT
+    # evict the resident chat model -- the arbiter handoff is skipped.
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cpu")
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
+    assert resp.status_code == 200
+    assert acquired == []  # no arbiter handoff for a CPU native load
+
+
+def test_gpu_native_load_takes_arbiter(client, monkeypatch):
+    # A force-native sd.cpp load on a GPU box DOES use the GPU, so the arbiter is acquired
+    # (same as the always-GPU diffusers path).
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cuda")
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
+    assert resp.status_code == 200
+    assert acquired == [gpu_arbiter.DIFFUSION]

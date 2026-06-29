@@ -10058,8 +10058,14 @@ async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference.diffusion import get_diffusion_backend
-    from core.inference.diffusion_engine_router import annotate_status, select_and_activate_engine
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_engine_router import (
+        active_engine_name,
+        annotate_status,
+        select_and_activate_engine,
+    )
     from core.inference.gpu_arbiter import acquire_for, DIFFUSION
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -10077,9 +10083,16 @@ async def load_diffusion_model(
         # installing the sd-cli binary if needed -- all BEFORE evicting chat, so a
         # native fallback never strands a half-loaded state.
         engine = await asyncio.to_thread(select_and_activate_engine, fam, hf_token = request.hf_token)
-        # Now take the GPU from the chat backend, then kick the (slow) load onto a
-        # background thread and return at once — the client polls images/load-progress.
-        await asyncio.to_thread(acquire_for, DIFFUSION)
+        # Take the GPU from the chat backend only when this load will actually use it.
+        # diffusers always does; a *force-native* sd.cpp load on a CUDA/XPU/MPS box does
+        # too. But a native sd.cpp load on a pure-CPU host never touches the GPU, so
+        # acquiring would evict the resident chat model for nothing -- skip the handoff.
+        device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+        needs_gpu = active_engine_name() != ENGINE_SD_CPP or device != "cpu"
+        if needs_gpu:
+            # Then kick the (slow) load onto a background thread and return at once --
+            # the client polls images/load-progress.
+            await asyncio.to_thread(acquire_for, DIFFUSION)
         status_dict = await asyncio.to_thread(
             engine.begin_load,
             request.model_path,

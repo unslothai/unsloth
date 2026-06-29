@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import threading
+import types
 
 import pytest
 from PIL import Image
@@ -236,3 +237,74 @@ def test_unload_clears_state_and_signals_cancel():
     assert st["loaded"] is False
     assert cancel.is_set()
     assert b._cancel_event.is_set()
+
+
+def test_status_reports_offload_when_flags_active():
+    # status must reflect the offload flags actually passed to sd-cli, not always "none",
+    # so a balanced/low_vram (or cpu_offload) load is verifiable.
+    b = _loaded_backend()
+    # No flags (CPU default) -> none.
+    assert b.status()["offload_policy"] == "none" and b.status()["cpu_offload"] is False
+    # Flags present (off-CPU offload) -> reported active.
+    s = b._state
+    b._state = bk._SdState(
+        repo_id = s.repo_id,
+        base_repo = s.base_repo,
+        family = s.family,
+        device = "cuda",
+        files = s.files,
+        offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
+    )
+    st = b.status()
+    assert st["cpu_offload"] is True and st["offload_policy"] == "active"
+
+
+def test_run_load_cancels_and_waits_for_inflight_generation(monkeypatch):
+    # A generation that started during the asset download is still running against the OLD
+    # model. _run_load must cancel it AND wait on _generate_lock before committing the new
+    # state, or a stale sd-cli run finishes afterward and persists an image from the previous
+    # model once the new load reports ready.
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    fam = detect_family("z-image")
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        b,
+        "_fetch_assets",
+        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+    )
+    # Avoid importing torch from the worker thread (its first import deadlocks off the main
+    # thread -- a test artifact, not a production path); the device only needs to be CPU here.
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+
+    b._load_token = 5
+    cancel = threading.Event()
+    b._active_generate_cancel = cancel  # a generation is "in flight"
+
+    committed = threading.Event()
+
+    def _load():
+        b._run_load(
+            repo_id = "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z.gguf",
+            base = fam.base_repo,
+            fam = fam,
+            hf_token = None,
+            _load_token = 5,
+        )
+        committed.set()
+
+    b._generate_lock.acquire()  # simulate the live denoise holding _generate_lock
+    try:
+        threading.Thread(target = _load, daemon = True).start()
+        # The commit must block behind the live generation and not publish the new state,
+        # but must already have signalled the in-flight cancel.
+        assert not committed.wait(0.5)
+        assert b._state is None
+        assert cancel.is_set()
+    finally:
+        b._generate_lock.release()
+    assert committed.wait(5)  # only now does the commit run
+    assert b._state is not None and b._state.repo_id == "unsloth/Z-Image-Turbo-GGUF"

@@ -336,11 +336,25 @@ class SdCppDiffusionBackend:
             # than commit a "ready" state that crashes on the first generation.
             if engine.version() is None:
                 raise RuntimeError("sd-cli binary is present but not runnable.")
+            # A generation that started during the (slow) asset download is still running
+            # against the OLD model. Abort it, then WAIT on _generate_lock for it to exit
+            # before publishing the new state -- otherwise that stale sd-cli run can finish
+            # afterward and persist an image from the previous model once this load reports
+            # ready (mirrors the diffusers load_pipeline commit). _generate_lock is taken
+            # only here, not during the download, so the long fetch never serialises against
+            # generation; the inner token re-check guards an unload/newer load arriving while
+            # we waited.
             with self._lock:
                 if self._load_token != _load_token:
                     return  # superseded / cancelled
-                self._state = state
-                self._loading = None
+                if self._active_generate_cancel is not None:
+                    self._active_generate_cancel.set()
+            with self._generate_lock:
+                with self._lock:
+                    if self._load_token != _load_token:
+                        return  # superseded / cancelled while waiting
+                    self._state = state
+                    self._loading = None
         except SdCppCancelled:
             return
         except Exception as exc:  # noqa: BLE001 -- surfaced via load_progress
@@ -596,8 +610,12 @@ class SdCppDiffusionBackend:
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": "gguf",
-            "cpu_offload": False,
-            "offload_policy": "none",
+            # Reflect the offload flags actually passed to sd-cli, so a balanced/low_vram
+            # (or cpu_offload) load is verifiable from status instead of always reading
+            # "none". On CPU _run_load leaves offload_flags empty (the flags are no-ops),
+            # so this correctly stays "none" there.
+            "cpu_offload": bool(state.offload_flags),
+            "offload_policy": "active" if state.offload_flags else "none",
             "vae_tiling": False,
             "memory_mode": None,
             "speed_mode": state.native_speed,
