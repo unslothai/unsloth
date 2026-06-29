@@ -48,15 +48,26 @@ try:
 except ImportError:
     _httpx_stub = _types.ModuleType("httpx")
     for _exc in (
-        "ConnectError", "TimeoutException", "ReadTimeout", "ReadError",
-        "RemoteProtocolError", "CloseError", "HTTPError", "RequestError",
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+        "HTTPError",
+        "RequestError",
     ):
         setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
     _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
     _httpx_stub.Response = type("Response", (), {})
     _httpx_stub.Client = type(
-        "C", (),
-        {"__init__": lambda s, **kw: None, "__enter__": lambda s: s, "__exit__": lambda s, *a: None},
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
     )
     sys.modules["httpx"] = _httpx_stub
 
@@ -101,6 +112,7 @@ _CLEAN_OUTPUT = "main: server is listening on http://127.0.0.1:8080 - starting t
 
 # ---- matcher ---------------------------------------------------------------
 
+
 def test_matcher_fires_on_full_abort_and_short_tail():
     assert LlamaCppBackend._is_sched_reserve_abort(_FULL_ABORT)
     # The headline guarantee: the matcher survives the [New LWP] scroll.
@@ -124,10 +136,13 @@ def test_matcher_requires_both_a_ggml_marker_and_a_scheduler_marker():
 
 # ---- classifier ------------------------------------------------------------
 
+
 def test_classifier_surfaces_actionable_message():
     msg = LlamaCppBackend._classify_llama_start_failure(
-        _ABORT_TAIL, gguf_path="/x/GLM-5.2-UD-Q6_K-00001-of-00014.gguf",
-        model_identifier="unsloth/GLM-5.2-GGUF", returncode=-6,
+        _ABORT_TAIL,
+        gguf_path = "/x/GLM-5.2-UD-Q6_K-00001-of-00014.gguf",
+        model_identifier = "unsloth/GLM-5.2-GGUF",
+        returncode = -6,
     )
     assert msg == LlamaCppBackend._sched_reserve_abort_message()
     # The message names the real cause, not the generic invalid-GGUF/OOM fallback.
@@ -137,12 +152,16 @@ def test_classifier_surfaces_actionable_message():
 
 def test_classifier_generic_fallback_unchanged_for_unknown_crash():
     msg = LlamaCppBackend._classify_llama_start_failure(
-        "some unrelated failure", gguf_path=None, model_identifier=None, returncode=-6,
+        "some unrelated failure",
+        gguf_path = None,
+        model_identifier = None,
+        returncode = -6,
     )
     assert "failed to start" in msg and "enough memory" in msg
 
 
 # ---- memo round-trip / invalidation ---------------------------------------
+
 
 def test_memo_round_trip_and_isolation(tmp_path):
     binary = tmp_path / "llama-server"
@@ -169,7 +188,7 @@ def test_memo_invalidated_by_binary_mtime_change(tmp_path):
     assert LlamaCppBackend._sched_reserve_aborts(b, model)
     # Bump mtime to a distinct ns value (simulate a rebuilt binary).
     st = binary.stat()
-    os.utime(binary, ns=(st.st_atime_ns + 10**9, st.st_mtime_ns + 10**9))
+    os.utime(binary, ns = (st.st_atime_ns + 10**9, st.st_mtime_ns + 10**9))
     assert not LlamaCppBackend._sched_reserve_aborts(b, model)
     LlamaCppBackend._sched_reserve_abort_keys.clear()
 
@@ -182,6 +201,7 @@ def test_memo_safe_with_missing_binary_or_model():
 
 
 # ---- load_model wiring (source-level, no GPU/network needed) ---------------
+
 
 def _load_model_src() -> str:
     return textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
@@ -196,14 +216,20 @@ def test_load_model_fails_fast_on_memoed_abort():
     # The guard must precede the model download (the expensive reload it prevents).
     fn = ast.parse(src).body[0]
     guard_line = next(
-        node.lineno for node in ast.walk(fn)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
         and node.func.attr == "_sched_reserve_aborts"
     )
     download_line = next(
-        (node.lineno for node in ast.walk(fn)
-         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-         and node.func.attr == "_download_gguf"),
+        (
+            node.lineno
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_download_gguf"
+        ),
         None,
     )
     assert download_line is None or guard_line < download_line

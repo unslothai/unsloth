@@ -65,10 +65,7 @@ def test_fit_disabled_on_cpu_only():
         if (
             isinstance(node, ast.If)
             and isinstance(node.test, ast.BoolOp)
-            and any(
-                isinstance(v, ast.Name) and v.id == "_cpu_only"
-                for v in ast.walk(node.test)
-            )
+            and any(isinstance(v, ast.Name) and v.id == "_cpu_only" for v in ast.walk(node.test))
         ):
             for n in node.body:
                 if (
@@ -88,6 +85,7 @@ def test_gpu_path_still_emits_fit_on():
 
 
 # ---- Phase 3: CPU context cap + RAM preflight ------------------------------
+
 
 def test_cpu_context_ceiling_constant_is_sane():
     from core.inference import llama_cpp as m

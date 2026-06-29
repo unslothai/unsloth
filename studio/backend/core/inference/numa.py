@@ -18,11 +18,11 @@ from pathlib import Path
 _NODE_ROOT = Path("/sys/devices/system/node")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class NumaTopology:
     """Per-node free memory (MemFree, matching `numactl --hardware`'s 'node N free')."""
 
-    node_free_mib: dict[int, int] = field(default_factory=dict)
+    node_free_mib: dict[int, int] = field(default_factory = dict)
 
     @property
     def node_count(self) -> int:
@@ -34,7 +34,7 @@ class NumaTopology:
 
     @property
     def largest_node_free_mib(self) -> int:
-        return max(self.node_free_mib.values(), default=0)
+        return max(self.node_free_mib.values(), default = 0)
 
 
 def _parse_online(spec: str) -> list[int]:
@@ -89,14 +89,14 @@ def read_numa_topology() -> NumaTopology:
         mib = _node_memfree_mib(node)
         if mib is not None:
             free[node] = mib
-    return NumaTopology(node_free_mib=free)
+    return NumaTopology(node_free_mib = free)
 
 
 def numactl_available() -> bool:
     return shutil.which("numactl") is not None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class InterleaveDecision:
     interleave: bool
     reason: str
@@ -156,5 +156,5 @@ def decide_interleave(
         f"model ~{model_mib} MiB exceeds the largest NUMA node's free RAM "
         f"(~{largest} MiB) but fits across {topo.node_count} nodes (~{total} MiB total "
         f"free); wrapping with numactl --interleave=all",
-        prefix=("numactl", "--interleave=all"),
+        prefix = ("numactl", "--interleave=all"),
     )

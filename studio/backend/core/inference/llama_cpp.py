@@ -4948,6 +4948,7 @@ class LlamaCppBackend:
                 # below since no GPU/Apple fit branch runs. Bound before the try (the
                 # --fit except path needs it); refined once gpus is known.
                 from utils.hardware import is_apple_silicon as _is_apple_silicon
+
                 _cpu_only = False
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
@@ -5963,8 +5964,7 @@ class LlamaCppBackend:
                 self._numa_prefix = []
                 try:
                     from core.inference.numa import decide_interleave
-
-                    _numa = decide_interleave(model_size, cpu_only=_cpu_only)
+                    _numa = decide_interleave(model_size, cpu_only = _cpu_only)
                     if _numa.interleave:
                         self._numa_prefix = list(_numa.prefix)
                         logger.info("NUMA: %s", _numa.reason)

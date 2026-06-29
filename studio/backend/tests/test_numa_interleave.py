@@ -29,8 +29,8 @@ _GiB = 1024**3
 _MiB = 1024**2
 
 # The user's box, in MiB free per node (from `numactl --hardware`).
-_USER_TOPO = NumaTopology(node_free_mib={0: 465594, 1: 223814})
-_SINGLE = NumaTopology(node_free_mib={0: 900_000})
+_USER_TOPO = NumaTopology(node_free_mib = {0: 465594, 1: 223814})
+_SINGLE = NumaTopology(node_free_mib = {0: 900_000})
 
 
 def test_parse_online_ranges():
@@ -48,9 +48,7 @@ def test_topology_aggregates():
 
 def test_interleaves_when_model_exceeds_largest_node_but_fits_across():
     # 583 GB model: > 465 GB (node 0) but < ~689 GB total.
-    d = decide_interleave(
-        583 * _GiB, cpu_only=True, topology=_USER_TOPO, has_numactl=True
-    )
+    d = decide_interleave(583 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
     assert d.interleave is True
     assert d.prefix == ("numactl", "--interleave=all")
     assert "interleave=all" in d.reason
@@ -58,42 +56,40 @@ def test_interleaves_when_model_exceeds_largest_node_but_fits_across():
 
 def test_no_interleave_when_model_fits_largest_node():
     # A 200 GB model fits node 0's 465 GB free -> keep local placement.
-    d = decide_interleave(
-        200 * _GiB, cpu_only=True, topology=_USER_TOPO, has_numactl=True
-    )
+    d = decide_interleave(200 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
     assert d.interleave is False
     assert d.prefix == ()
     assert "fits" in d.reason
 
 
 def test_no_interleave_on_gpu_host():
-    d = decide_interleave(583 * _GiB, cpu_only=False, topology=_USER_TOPO, has_numactl=True)
+    d = decide_interleave(583 * _GiB, cpu_only = False, topology = _USER_TOPO, has_numactl = True)
     assert d.interleave is False
     assert "not cpu-only" in d.reason
 
 
 def test_no_interleave_single_node():
-    d = decide_interleave(583 * _GiB, cpu_only=True, topology=_SINGLE, has_numactl=True)
+    d = decide_interleave(583 * _GiB, cpu_only = True, topology = _SINGLE, has_numactl = True)
     assert d.interleave is False
     assert "single NUMA node" in d.reason
 
 
 def test_model_too_big_for_all_nodes_blocks_with_message():
     # 800 GB > ~689 GB total free across both nodes -> interleave can't help.
-    d = decide_interleave(800 * _GiB, cpu_only=True, topology=_USER_TOPO, has_numactl=True)
+    d = decide_interleave(800 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
     assert d.interleave is False
     assert "exceeds total free RAM" in d.reason
 
 
 def test_numactl_missing_surfaces_actionable_warning():
-    d = decide_interleave(583 * _GiB, cpu_only=True, topology=_USER_TOPO, has_numactl=False)
+    d = decide_interleave(583 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = False)
     assert d.interleave is False
     assert "numactl` is not installed" in d.reason
 
 
 def test_unknown_model_size_does_not_force_interleave():
     for size in (None, 0, -1):
-        d = decide_interleave(size, cpu_only=True, topology=_USER_TOPO, has_numactl=True)
+        d = decide_interleave(size, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
         assert d.interleave is False
 
 
