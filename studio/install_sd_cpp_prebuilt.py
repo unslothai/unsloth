@@ -140,10 +140,16 @@ def _locate_sd_cli(root: Path) -> Optional[Path]:
     return None
 
 
-def _download(url: str, dest: Path, *, timeout: float = 300.0) -> None:
+def _download(
+    url: str,
+    dest: Path,
+    *,
+    timeout: float = 300.0,
+) -> None:
     """Stream ``url`` to ``dest`` with an explicit timeout. ``urlretrieve`` takes no
     timeout and can hang forever on a stalled socket."""
     import shutil
+
     req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
     with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
         shutil.copyfileobj(resp, f)
