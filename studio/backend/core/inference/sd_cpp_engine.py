@@ -37,6 +37,7 @@ from core.inference.sd_cpp_args import (
     SdCppModelFiles,
     build_sd_cpp_command,
 )
+from utils.process_lifetime import child_popen_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -122,8 +123,12 @@ def find_sd_cpp_binary() -> Optional[str]:
         if hit:
             return hit
 
-    # 3. Default install root (sibling of ~/.unsloth/llama.cpp).
-    hit = _first_file(_layout_candidates(Path.home() / ".unsloth" / "stable-diffusion.cpp"))
+    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME exactly like the
+    #    installer's default_install_dir(), so a binary installed under a custom Studio root
+    #    is found without also having to set UNSLOTH_SD_CPP_PATH.
+    studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    default_base = Path(studio_home).parent if studio_home else Path.home() / ".unsloth"
+    hit = _first_file(_layout_candidates(default_base / "stable-diffusion.cpp"))
     if hit:
         return hit
 
@@ -232,6 +237,9 @@ class SdCppEngine:
             text = True,
             errors = "replace",
             env = run_env,
+            # Bind the child to the backend's lifetime (PR_SET_PDEATHSIG on Linux), so a
+            # long sd-cli denoise is SIGKILLed if the backend dies instead of orphaning.
+            **child_popen_kwargs(),
         )
         # Drain stdout on a background thread and wait on the PROCESS, not the stream:
         # iterating proc.stdout directly blocks until the stream closes, so a sd-cli that
@@ -261,6 +269,12 @@ class SdCppEngine:
         finally:
             if proc.poll() is None:
                 proc.kill()
+                # Reap the SIGKILLed child, or it lingers as a zombie until this process
+                # exits (the cancel/timeout branches kill without waiting otherwise).
+                try:
+                    proc.wait(timeout = 5.0)
+                except Exception:  # noqa: BLE001
+                    pass
         # The process has exited; let the reader finish draining the buffered output.
         reader.join(timeout = 5.0)
 

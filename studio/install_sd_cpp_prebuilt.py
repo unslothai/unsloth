@@ -140,6 +140,54 @@ def _locate_sd_cli(root: Path) -> Optional[Path]:
     return None
 
 
+def _download(url: str, dest: Path, *, timeout: float = 300.0) -> None:
+    """Stream ``url`` to ``dest`` with an explicit timeout. ``urlretrieve`` takes no
+    timeout and can hang forever on a stalled socket."""
+    import shutil
+    req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
+    with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
+        shutil.copyfileobj(resp, f)
+
+
+def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
+    """``extractall`` with a per-member containment check, so an archive carrying an
+    absolute path or a ``..`` entry can't write outside ``target`` (Zip-Slip)."""
+    base = target.resolve()
+    for member in zf.infolist():
+        dest = (base / member.filename).resolve()
+        if dest != base and base not in dest.parents:
+            raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
+    zf.extractall(target)
+
+
+def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> None:
+    """On Windows + a CUDA build, also fetch the separate CUDA-runtime DLL archive.
+
+    Upstream ships the runtime as ``cudart-sd-...-win-cu12-...zip`` (which
+    ``resolve_release_asset`` filters out); without those DLLs ``sd-cli.exe`` cannot start
+    on a machine that does not already have the CUDA runtime installed."""
+    if platform.system().lower() != "windows" or "cuda" not in chosen.lower():
+        return
+    cudart = next(
+        (
+            a
+            for a in release.get("assets", [])
+            if a["name"].lower().startswith("cudart") and "win" in a["name"].lower()
+        ),
+        None,
+    )
+    if cudart is None:
+        return
+    dest = target / cudart["name"]
+    print(f"downloading CUDA runtime {cudart['name']} ...", flush = True)
+    try:
+        _download(cudart["browser_download_url"], dest)
+        with zipfile.ZipFile(dest) as zf:
+            _safe_extractall(zf, target)
+    finally:
+        dest.unlink(missing_ok = True)
+
+
 def install(
     *,
     install_dir: Optional[Path] = None,
@@ -170,11 +218,13 @@ def install(
     target.mkdir(parents = True, exist_ok = True)
     archive = target / chosen
     print(f"downloading {chosen} -> {archive}", flush = True)
-    urllib.request.urlretrieve(url, archive)  # noqa: S310 (github release URL)
+    _download(url, archive)
     print("extracting ...", flush = True)
     with zipfile.ZipFile(archive) as zf:
-        zf.extractall(target)
+        _safe_extractall(zf, target)
     archive.unlink(missing_ok = True)
+    # Windows CUDA builds need the separately-published cudart runtime DLLs.
+    _maybe_fetch_windows_cudart(release, chosen, target)
     sd_cli = _locate_sd_cli(target)
     if not sd_cli:
         raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
@@ -209,7 +259,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         install(
-            install_dir = Path(args.install_dir) if args.install_dir else None,
+            install_dir = Path(args.install_dir).expanduser() if args.install_dir else None,
             accelerator = args.accelerator,
         )
     except RuntimeError as exc:
