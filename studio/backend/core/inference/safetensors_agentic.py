@@ -60,17 +60,69 @@ def _active_tool_names(active_tools: list[dict]) -> list[str]:
     return [name for name in names if name]
 
 
-def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
-    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
-    active tool, e.g. ``web_search`` arrives in one chunk and ``[ARGS]{...}`` in the
-    next. Without this the bare tool name streams as visible content before the
-    rehearsal call drains. A space means it is prose, not a split call."""
+# Unrestricted mode ships no tool list, so any bare identifier may be the NAME of
+# a ``NAME[ARGS]`` rehearsal (optionally part-way into ``[ARGS``); the complete
+# ``NAME[ARGS]`` is caught as a match before this prefix check runs.
+_UNRESTRICTED_REHEARSAL_RE = re.compile(r"[\w-]+(?:\[A(?:R(?:G(?:S)?)?)?)?")
+
+
+def _is_rehearsal_prefix(
+    stripped: str, active_tools: list[dict], *, unrestricted: bool = False
+) -> bool:
+    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]``, e.g.
+    ``web_search`` arrives in one chunk and ``[ARGS]{...}`` in the next. Without this
+    the bare tool name streams as visible content before the rehearsal call drains.
+    A space means it is prose, not a split call. In ``unrestricted`` mode (no
+    declared tool list) any leading identifier qualifies; otherwise it must match an
+    active tool name."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
+    if unrestricted:
+        return _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is not None
     for name in _active_tool_names(active_tools):
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True
     return False
+
+
+def _held_rehearsal_tail_len(
+    text: str, active_tools: list[dict], *, unrestricted: bool = False
+) -> int:
+    """Length of a trailing bare tool-name token in ``text`` that may be a split
+    rehearsal call (``...prose web_search`` with ``[ARGS]{...}`` still to arrive).
+
+    The BUFFERING state holds such a prefix; once the loop is STREAMING plain
+    content it has no equivalent guard, so the trailing name would stream as
+    visible text before the next chunk reveals ``[ARGS]``. Returns 0 when the
+    trailing token is not a rehearsal prefix, so ordinary prose is never held."""
+    i = len(text)
+    while i > 0 and not text[i - 1].isspace():
+        i -= 1
+    tail = text[i:]
+    return (
+        len(tail)
+        if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
+        else 0
+    )
+
+
+def _rehearsal_name_start(
+    candidate: str, signal_pos: int, active_tools: list[dict], *, unrestricted: bool = False
+) -> int:
+    """For an ``[ARGS]`` signal at ``signal_pos``, return the index where the
+    rehearsal call truly starts -- the beginning of the bare tool-name token
+    immediately preceding ``[ARGS]`` (``NAME[ARGS]``). Returns ``signal_pos``
+    unchanged when the signal is not ``[ARGS]`` or (in restricted mode) the
+    preceding token is not an active tool name, so only genuine rehearsal names are
+    pulled out of display."""
+    if not candidate.startswith("[ARGS]", signal_pos):
+        return signal_pos
+    j = signal_pos
+    while j > 0 and (candidate[j - 1].isalnum() or candidate[j - 1] in "_-"):
+        j -= 1
+    if j < signal_pos and (unrestricted or candidate[j:signal_pos] in _active_tool_names(active_tools)):
+        return j
+    return signal_pos
 
 
 def strip_tool_markup_streaming(
@@ -332,6 +384,12 @@ def run_safetensors_tool_loop(
                     if p >= 0 and (signal_pos < 0 or p < signal_pos):
                         signal_pos = p
                 if signal_pos >= 0:
+                    # A rehearsal call NAME[ARGS] really starts at NAME, not at the
+                    # [ARGS] signal; pull the boundary back so the bare tool name is
+                    # not flushed as visible content before the call drains.
+                    signal_pos = _rehearsal_name_start(
+                        candidate, signal_pos, active_tools, unrestricted = unrestricted_tools
+                    )
                     before_tool = candidate[:signal_pos]
                     cleaned_before = strip_tool_markup_streaming(
                         before_tool,
@@ -368,9 +426,20 @@ def run_safetensors_tool_loop(
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
                 )
-                if len(cleaned) > len(last_emitted):
-                    last_emitted = cleaned
-                    yield {"type": "content", "text": cleaned}
+                # Hold a trailing bare active-tool-name (a split rehearsal NAME
+                # whose [ARGS] has not arrived yet) so it is not streamed before the
+                # call drains; it is released here once more prose follows, or by
+                # the end-of-stream flush if the turn was a plain answer.
+                if tool_protocol_active:
+                    _hold = _held_rehearsal_tail_len(
+                        cleaned, active_tools, unrestricted = unrestricted_tools
+                    )
+                    emit = cleaned[: len(cleaned) - _hold] if _hold else cleaned
+                else:
+                    emit = cleaned
+                if len(emit) > len(last_emitted):
+                    last_emitted = emit
+                    yield {"type": "content", "text": emit}
                 continue
 
             # BUFFERING: hold until we know it is not a tool call.
@@ -403,13 +472,15 @@ def run_safetensors_tool_loop(
             # Rehearsal call split across chunks: ``web_search`` then ``[ARGS]{...}``.
             # Hold the bare active-tool-name prefix so it is not streamed before the
             # ``[ARGS]`` arm arrives and flips this to a match (above).
+            is_rehearsal_prefix = False
             if (
                 not is_match
                 and not is_prefix
                 and tool_protocol_active
-                and _is_rehearsal_prefix(stripped, active_tools)
+                and _is_rehearsal_prefix(stripped, active_tools, unrestricted = unrestricted_tools)
             ):
                 is_prefix = True
+                is_rehearsal_prefix = True
 
             if is_match:
                 # Tool signal -- flush any visible prefix before DRAINING
@@ -442,7 +513,11 @@ def run_safetensors_tool_loop(
                         "arguments": {},
                         "provenance": _tool_event_provenance(provisional = True),
                     }
-            elif is_prefix and len(stripped) < _MAX_BUFFER_CHARS:
+            elif is_prefix and (is_rehearsal_prefix or len(stripped) < _MAX_BUFFER_CHARS):
+                # A rehearsal prefix is bounded by the active tool-name length (it
+                # stops matching once it grows past ``NAME[ARGS]``), so the
+                # _MAX_BUFFER_CHARS cap -- which guards generic signal prefixes -- must
+                # not cut it short for realistic MCP names longer than 31 chars.
                 continue
             else:
                 detect_state = _state_streaming
@@ -502,6 +577,18 @@ def run_safetensors_tool_loop(
                 # still apply the Auto-Heal display policy.
                 if saw_tool_signal and content_accum:
                     yield {"type": "content", "text": content_accum}
+                else:
+                    # Release any rehearsal tail held during streaming: the turn
+                    # ended as a plain answer (``...I will search`` where ``search``
+                    # is a tool name but no ``[ARGS]`` followed), so the held token
+                    # is real prose and must not be dropped.
+                    final_clean = strip_tool_markup_streaming(
+                        cumulative_display,
+                        auto_heal_tool_calls = auto_heal_tool_calls,
+                        tool_protocol_active = tool_protocol_active,
+                    )
+                    if len(final_clean) > len(last_emitted):
+                        yield {"type": "content", "text": final_clean}
                 yield {"type": "status", "text": ""}
                 return
             tool_calls = safety_tc

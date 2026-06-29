@@ -1850,3 +1850,107 @@ def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert all("web_search" not in t for t in content_texts), content_texts
     assert all("[ARGS]" not in t for t in content_texts), content_texts
+
+
+def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch):
+    """Finding 9: the BUFFERING guard only covers a rehearsal at the turn start.
+    When prose has already streamed (STREAMING state) and the model then emits the
+    tool name and ``[ARGS]{...}`` in later deltas, the bare name must still be held,
+    not flushed as visible content before the call drains."""
+
+    first_stream = [
+        _sse({"content": "Let me think. "}),
+        _sse({"content": "I will search "}),
+        _sse({"content": "web_search"}),
+        _sse({"content": '[ARGS]{"query":"cats"}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("web_search" not in t for t in content_texts), content_texts
+
+
+def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
+    """End-of-stream flush: a plain answer that ENDS on a tool-name word with no
+    ``[ARGS]`` following is real prose and must not be dropped by the streaming
+    rehearsal hold."""
+
+    first_stream = [
+        _sse({"content": "I think "}),
+        _sse({"content": "you should "}),
+        _sse({"content": "web_search"}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "advise"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any(t.rstrip().endswith("web_search") for t in content_texts), content_texts
+
+
+def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypatch):
+    """Finding 11: a realistic MCP name longer than the 32-char buffer cap split as
+    NAME then [ARGS]{...} must still be held (a rehearsal prefix is self-bounding),
+    so the name does not leak and the call executes."""
+    name = "mcp__github__create_pull_request"
+    assert len(name) >= 32, len(name)
+
+    first_stream = [
+        _sse({"content": name}),
+        _sse({"content": '[ARGS]{"x":1}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "done"}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [(name, {"x": 1})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert not any(name in t for t in content_texts), content_texts

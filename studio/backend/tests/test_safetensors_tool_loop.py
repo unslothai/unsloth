@@ -747,6 +747,131 @@ def test_plain_word_matching_no_tool_still_streams():
     assert "weather is nice today." in contents, contents
 
 
+def test_rehearsal_name_after_prose_in_streaming_is_not_streamed():
+    # The BUFFERING guard only covers a rehearsal at the turn start. When prose has
+    # already streamed (STREAMING state) and the model then emits ``web_search``
+    # (name) and ``[ARGS]{...}`` in later chunks, the bare name must still be held,
+    # not flushed as visible content before the call drains.
+    loop, exec_fn = _make_loop(
+        turns = [
+            # _make_loop accumulates these deltas into cumulative snapshots.
+            ["Let me think. ", "I will search ", "web_search", '[ARGS]{"query":"cats"}'],
+            ["Found."],
+        ],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("web_search" in t for t in contents), contents
+
+
+def test_rehearsal_name_after_prose_same_chunk_in_streaming_is_not_streamed():
+    # Prose already streamed, then ``... web_search[ARGS]{...}`` arrives in one
+    # chunk: the [ARGS] boundary must be pulled back over the tool name so the name
+    # is not emitted as the visible prefix before draining.
+    loop, exec_fn = _make_loop(
+        turns = [
+            ["Sure. ", 'now web_search[ARGS]{"query":"cats"}'],
+            ["Found."],
+        ],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("web_search" in t for t in contents), contents
+
+
+def test_plain_answer_ending_with_tool_name_word_is_preserved():
+    # End-of-stream flush: a plain answer that happens to END on a tool-name word
+    # (``...you should web_search``) with no ``[ARGS]`` following is real prose and
+    # must not be dropped by the streaming rehearsal hold.
+    loop, exec_fn = _make_loop(
+        turns = [["I think ", "you should ", "web_search"]],
+        max_tool_iterations = 1,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert any(t.rstrip().endswith("web_search") for t in contents), contents
+
+
+def test_long_tool_name_split_rehearsal_is_not_capped_and_executes():
+    # Finding 10/11: a realistic MCP name longer than _MAX_BUFFER_CHARS (32) split as
+    # NAME then [ARGS]{...} must still be held (a rehearsal prefix is self-bounding,
+    # so the generic char cap must not cut it short) -- the name must not leak and
+    # the call must execute.
+    from core.inference.safetensors_agentic import _MAX_BUFFER_CHARS
+
+    name = "mcp__github__create_pull_request"
+    assert len(name) >= _MAX_BUFFER_CHARS, len(name)
+    exec_fn = FakeExecuteTool(["RESULT"])
+    _turns = iter([[name, name + '[ARGS]{"x":1}'], ["done"]])
+
+    def st(_messages, active_tools = None):
+        yield from next(_turns)
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = st,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            execute_tool = exec_fn,
+            max_tool_iterations = 2,
+        )
+    )
+    assert exec_fn.calls == [(name, {"x": 1})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any(name in t for t in contents), contents
+
+
+def test_unrestricted_mode_split_rehearsal_name_is_not_streamed():
+    # Finding 6: with tools=[] (unrestricted mode) there is no declared tool list, so
+    # _is_rehearsal_prefix must treat any bare identifier as a possible NAME[ARGS]
+    # rehearsal; otherwise the split name leaks before the call drains.
+    exec_fn = FakeExecuteTool(["RESULT"])
+    _turns = iter([["web_search", 'web_search[ARGS]{"q":"x"}'], ["done"]])
+
+    def st(_messages, active_tools = None):
+        yield from next(_turns)
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = st,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [],  # unrestricted
+            execute_tool = exec_fn,
+            max_tool_iterations = 2,
+        )
+    )
+    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("web_search" in t for t in contents), contents
+
+
+def test_unrestricted_mode_plain_prose_still_streams():
+    # The unrestricted rehearsal hold must not corrupt or drop ordinary prose: a
+    # held leading identifier is released once the rest of the sentence follows.
+    def st(_messages, active_tools = None):
+        for snap in ("Hello", "Hello there friend."):
+            yield snap
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = st,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [],
+            execute_tool = FakeExecuteTool([]),
+            max_tool_iterations = 1,
+        )
+    )
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert "Hello there friend." in contents, contents
+
+
 class TestLoopBasic:
     def test_plain_answer(self):
         # No tool XML; loop should yield content then status="".

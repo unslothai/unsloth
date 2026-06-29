@@ -265,6 +265,22 @@ def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
     return False
 
 
+def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
+    """Length of a trailing bare tool-name token in ``text`` that may be a split
+    rehearsal call (``...prose web_search`` with ``[ARGS]{...}`` still to arrive).
+
+    The BUFFERING state holds such a prefix; once the loop is STREAMING plain
+    content it has no equivalent guard, so the trailing name would stream as
+    visible text before the next chunk reveals ``[ARGS]``. Returns 0 when the
+    trailing token is not a rehearsal prefix, so ordinary prose is never held.
+    Mirrors the safetensors loop."""
+    i = len(text)
+    while i > 0 and not text[i - 1].isspace():
+        i -= 1
+    tail = text[i:]
+    return len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
+
+
 def _is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
     return 0 < len(stripped) < _REPROMPT_MAX_CHARS and _INTENT_SIGNAL.search(stripped) is not None
@@ -8234,12 +8250,19 @@ class LlamaCppBackend:
                                             in_thinking = False
                                         cumulative_display += token
                                         cleaned = _strip_tool_markup_streaming(cumulative_display)
-                                        if len(cleaned) > len(_last_emitted):
-                                            _last_emitted = cleaned
+                                        # Hold a trailing bare active-tool-name (a
+                                        # split rehearsal NAME whose [ARGS] has not
+                                        # arrived yet) so it is not streamed before
+                                        # the call drains. Released once more prose
+                                        # follows or by the end-of-stream flush.
+                                        _hold = _held_rehearsal_tail_len(cleaned, active_tools)
+                                        _emit = cleaned[: len(cleaned) - _hold] if _hold else cleaned
+                                        if len(_emit) > len(_last_emitted):
+                                            _last_emitted = _emit
                                             if not _suppress_visible_output:
                                                 yield {
                                                     "type": "content",
-                                                    "text": cleaned,
+                                                    "text": _emit,
                                                 }
 
                                     elif detect_state == _S_BUFFERING:
@@ -8281,12 +8304,14 @@ class LlamaCppBackend:
                                         # bare active-tool-name prefix so it is not
                                         # streamed before the ``[ARGS]`` arm arrives
                                         # and flips this to a match (above).
+                                        is_rehearsal_prefix = False
                                         if (
                                             not is_match
                                             and not is_prefix
                                             and _is_rehearsal_prefix(stripped_buf, active_tools)
                                         ):
                                             is_prefix = True
+                                            is_rehearsal_prefix = True
 
                                         if is_match:
                                             # Tool signal -- flush any visible
@@ -8305,7 +8330,14 @@ class LlamaCppBackend:
                                                         "text": cleaned,
                                                     }
                                             detect_state = _S_DRAINING
-                                        elif is_prefix and len(stripped_buf) < _MAX_BUFFER_CHARS:
+                                        elif is_prefix and (
+                                            is_rehearsal_prefix
+                                            or len(stripped_buf) < _MAX_BUFFER_CHARS
+                                        ):
+                                            # A rehearsal prefix is bounded by the active
+                                            # tool-name length, so the _MAX_BUFFER_CHARS cap
+                                            # (for generic signal prefixes) must not cut it
+                                            # short for MCP names longer than 31 chars.
                                             pass  # keep buffering
                                         else:
                                             # Not a tool -- flush buffer
@@ -8457,6 +8489,14 @@ class LlamaCppBackend:
                                         "type": "content",
                                         "text": forced_visible_text,
                                     }
+                        elif not _suppress_visible_output:
+                            # Release any rehearsal tail held during streaming: the
+                            # turn ended as a plain answer (``...I will search`` where
+                            # ``search`` is a tool name but no ``[ARGS]`` followed), so
+                            # the held token is real prose and must not be dropped.
+                            _final_clean = _strip_tool_markup_streaming(cumulative_display)
+                            if len(_final_clean) > len(_last_emitted):
+                                yield {"type": "content", "text": _final_clean}
 
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
