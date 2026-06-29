@@ -97,7 +97,7 @@ def _exact_backward_kernel(
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
-    # Break e_row away for re-use
+    # Break e_row away for reuse
     # f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
     f_partial_row = 0.5 * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
     f_row = f_partial_row * e_row
