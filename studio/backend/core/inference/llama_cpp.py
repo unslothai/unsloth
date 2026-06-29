@@ -6486,7 +6486,9 @@ class LlamaCppBackend:
                             self._kill_process()
                             # Fallback exhausted: now memo the original scheduler abort.
                             if _was_sched_abort:
-                                LlamaCppBackend._record_sched_reserve_abort(binary, _abort_memo_model)
+                                LlamaCppBackend._record_sched_reserve_abort(
+                                    binary, _abort_memo_model
+                                )
                             raise RuntimeError(
                                 "Vision projector incompatible with this llama.cpp "
                                 "build, and the text-only retry also failed: "
