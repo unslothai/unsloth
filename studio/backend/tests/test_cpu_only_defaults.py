@@ -32,6 +32,41 @@ except ImportError:
     _s.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
     _s.BoundLogger = type("BoundLogger", (), {})
     sys.modules["structlog"] = _s
+# Importing core.inference.* runs core/inference/__init__.py (orchestrator + loggers +
+# httpx); stub those when absent so a dependency-light run can still collect this file.
+try:
+    import loggers  # noqa: F401
+except ImportError:
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules["loggers"] = _loggers_stub
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+        "HTTPError",
+        "RequestError",
+    ):
+        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
+    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
@@ -126,7 +161,7 @@ def test_cpu_context_fit_accounts_for_mtp():
     """mtp_engaged alone is a no-op once budget_frac is set, so the CPU fit must pass the
     byte-accurate MTP overhead fn to actually reserve MTP KV (PR review fix)."""
     src = _load_model_src()
-    assert "mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage else None)" in src
+    assert "mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None)" in src
 
 
 def test_cpu_context_cap_reuses_fit_helper_against_ram():
@@ -169,7 +204,7 @@ def test_numa_decision_uses_footprint_not_just_weights():
     # Footprint = fitted weights (incl. compute buffer) + KV + MTP reserve.
     assert "_resident = model_size_fit or model_size" in src
     # MTP is recomputed at the post-cap context, not the stale pre-cap reserve.
-    assert "_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0" in src
+    assert "_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0" in src
     # KV must be sized for the launched --parallel slots, not the n_parallel=1 default.
     assert "effective_ctx, cache_type_kv, n_parallel = n_parallel" in src
 
@@ -191,7 +226,7 @@ def test_explicit_user_numa_skips_auto_interleave_prefix():
 
 
 def test_extra_args_forces_cpu_offload_helper():
-    """The zero-offload detector: -ngl 0 / --n-gpu-layers 0 / --gpu-layers 0 (last wins)."""
+    """The CPU-force detector: zero GPU layers or --device none (PR review fixes)."""
     from core.inference.llama_cpp import _extra_args_forces_cpu_offload as f
 
     assert f(["-ngl", "0"])
@@ -202,9 +237,35 @@ def test_extra_args_forces_cpu_offload_helper():
     assert not f([])
     assert not f(None)
     assert not f(["--flash-attn", "on"])
-    # Last occurrence wins, matching llama-server's own parsing.
+    # Each flag's last occurrence wins, matching llama-server's own parsing.
     assert f(["-ngl", "99", "-ngl", "0"])
     assert not f(["-ngl", "0", "-ngl", "99"])
+    # --device/-dev none also forces CPU, independently of -ngl.
+    assert f(["--device", "none"])
+    assert f(["-dev", "none"])
+    assert f(["--device=none"])
+    assert not f(["--device", "CUDA0"])
+    # The two controls are independent: -ngl 0 stays CPU even with a device named.
+    assert f(["-ngl", "0", "--device", "CUDA0"])
+    assert f(["--device", "none", "-ngl", "99"])
+
+
+def test_cpu_cap_lowers_advertised_ceiling():
+    """When the CPU cap reduces the launched context, max_available_ctx must drop too,
+    so /status and the UI safe-zone reflect the real window, not native (PR review fix)."""
+    src = _load_model_src()
+    assert "max_available_ctx = min(max_available_ctx, _cpu_cap)" in src
+
+
+def test_cpu_fit_skips_mtp_reserve_when_mla_auto_drops():
+    """Auto drops embedded MTP for MLA models, so the CPU cap / NUMA footprint must not
+    reserve a target-KV copy for a drafter that won't launch (PR review fix)."""
+    src = _load_model_src()
+    assert "_mtp_will_engage_cpu = _mtp_will_engage and not (" in src
+    assert "not _mla_mtp_auto_enabled()" in src
+    # The CPU cap and NUMA recompute use the gated flag, not the raw _mtp_will_engage.
+    assert "mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None)" in src
+    assert "_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0" in src
 
 
 def test_zero_offload_folds_into_cpu_only():

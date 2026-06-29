@@ -12,11 +12,55 @@ injected, so these are deterministic on any host (no /sys, no numactl needed).
 from __future__ import annotations
 
 import sys
+import types as _types
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
+
+# Importing core.inference.numa runs core/inference/__init__.py (orchestrator + structlog
+# + loggers + httpx); stub those when absent so a dependency-light run can collect this.
+try:
+    import structlog  # noqa: F401
+except ImportError:
+    _s = _types.ModuleType("structlog")
+    _s.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
+    _s.BoundLogger = type("BoundLogger", (), {})
+    sys.modules["structlog"] = _s
+try:
+    import loggers  # noqa: F401
+except ImportError:
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules["loggers"] = _loggers_stub
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+        "HTTPError",
+        "RequestError",
+    ):
+        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
+    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 from core.inference.numa import (  # noqa: E402
     InterleaveDecision,

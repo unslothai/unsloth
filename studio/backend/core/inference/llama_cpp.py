@@ -1115,21 +1115,23 @@ def _extra_args_n_ubatch(
 
 
 def _extra_args_forces_cpu_offload(extra_args: Optional[Iterable[str]]) -> bool:
-    """True when extras pin GPU offload to zero (-ngl 0 / --n-gpu-layers 0 /
-    --gpu-layers 0): the launch runs fully on CPU despite a visible GPU, so the
-    CPU-only safe defaults apply. Last occurrence wins, as llama-server parses it."""
+    """True when extras run the launch fully on CPU despite a visible GPU, so the
+    CPU-only safe defaults apply: zero GPU layers (-ngl 0 / --n-gpu-layers 0 /
+    --gpu-layers 0) or no device (--device/-dev none). Each flag's last occurrence
+    wins (as llama-server parses it); the two controls are independent."""
     args = [str(a) for a in extra_args] if extra_args else []
-    forced = False
+    ngl_zero = device_none = False
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
-        if flag not in ("-ngl", "--n-gpu-layers", "--gpu-layers"):
-            continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-        try:
-            forced = int(value) == 0
-        except (TypeError, ValueError):
-            continue
-    return forced
+        if flag in ("-ngl", "--n-gpu-layers", "--gpu-layers"):
+            try:
+                ngl_zero = int(value) == 0
+            except (TypeError, ValueError):
+                continue
+        elif flag in ("--device", "-dev"):
+            device_none = value.strip().lower() == "none"
+    return ngl_zero or device_none
 
 
 def _build_ngram_mod_flags(
@@ -5107,6 +5109,16 @@ class LlamaCppBackend:
                     _mtp_will_engage = bool(
                         _user_mtp_via_extras or _user_draft_via_extras or _auto_studio_mtp
                     )
+                    # Auto drops embedded MTP for MLA models (GLM-5.2/DeepSeek/Kimi) unless
+                    # forced; mirror that gate so the CPU cap / NUMA footprint don't reserve
+                    # a target-KV copy for a drafter the launch will not start.
+                    _mtp_will_engage_cpu = _mtp_will_engage and not (
+                        _auto_studio_mtp
+                        and bool(self._nextn_predict_layers)
+                        and self._kv_lora_rank is not None
+                        and not bool(mtp_draft_path)
+                        and not _mla_mtp_auto_enabled()
+                    )
                     # The duplicated full target-KV copy (ctx_tgt) is an MTP-only
                     # cost: the MTP head runs a second context over the target
                     # model's own KV geometry. The separate-drafter spec modes
@@ -5752,8 +5764,8 @@ class LlamaCppBackend:
                                         kv_on_gpu = True,  # KV lives in the RAM budget we fit
                                         # mtp_engaged alone is a no-op once budget_frac is set;
                                         # pass the byte-accurate overhead so MTP KV is reserved.
-                                        mtp_engaged = _mtp_will_engage,
-                                        mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage else None),
+                                        mtp_engaged = _mtp_will_engage_cpu,
+                                        mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None),
                                         budget_frac = _CPU_RAM_BUDGET_FRAC,
                                     )
                                     _cpu_cap = max(4096, min(_ctx_ceiling, _fit))
@@ -5766,6 +5778,9 @@ class LlamaCppBackend:
                                 _cpu_cap,
                             )
                             effective_ctx = _cpu_cap
+                            # Advertise the capped window as the ceiling too, so /status and
+                            # the UI safe-zone don't steer back to the unlaunched native size.
+                            max_available_ctx = min(max_available_ctx, _cpu_cap)
 
                 cmd = [
                     binary,
@@ -6037,7 +6052,7 @@ class LlamaCppBackend:
                         try:
                             # Recompute MTP at the post-cap context; the pre-cap
                             # _mtp_reserve_bytes would overstate a capped million-token load.
-                            _numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
+                            _numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0
                             _numa_footprint = (
                                 _resident
                                 + self._estimate_kv_cache_bytes(
