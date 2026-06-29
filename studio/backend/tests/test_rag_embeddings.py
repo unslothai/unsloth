@@ -220,3 +220,54 @@ def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
     embeddings._reset_backend()
     with pytest.raises(RuntimeError, match = "CUDA error during encode"):
         embeddings.encode(["alpha", "beta"])
+
+
+class _RecordingBackend:
+    """A backend that just records that unload() was dispatched to it."""
+
+    def __init__(self):
+        self.unloaded = False
+
+    def unload(self):
+        self.unloaded = True
+
+
+def test_unload_noop_when_no_backend_built():
+    # The common no-RAG path: load_model calls unload() on every GGUF load, and
+    # with no backend resolved it must be a safe no-op (no build, no error).
+    embeddings._reset_backend()
+    assert embeddings._backend is None
+    embeddings.unload()  # must not raise or build a backend
+    assert embeddings._backend is None
+
+
+def test_unload_dispatches_to_active_backend():
+    # unload() frees whatever backend is live (ST model drop or llama-server kill).
+    rec = _RecordingBackend()
+    embeddings._backend = rec
+    try:
+        embeddings.unload()
+    finally:
+        embeddings._reset_backend()
+    assert rec.unloaded is True
+
+
+def test_st_unload_drops_cached_model(monkeypatch):
+    # _st_unload clears the cached ST model so its VRAM is released; the next
+    # encode/warm reloads lazily.
+    monkeypatch.setattr(embeddings, "_model", object(), raising = False)
+    monkeypatch.setattr(embeddings, "_name", "some-model", raising = False)
+    embeddings._st_unload()
+    assert embeddings._model is None
+    assert embeddings._name is None
+
+
+def test_st_unload_noop_when_nothing_loaded(monkeypatch):
+    # No model loaded -> _st_unload must not touch torch (it would otherwise
+    # create a CUDA context on a process that never embedded).
+    monkeypatch.setattr(embeddings, "_model", None, raising = False)
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", None)  # any torch use would raise
+    embeddings._st_unload()  # must early-return before importing torch
+    assert embeddings._model is None

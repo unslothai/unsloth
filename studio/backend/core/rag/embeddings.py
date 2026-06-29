@@ -146,6 +146,29 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     return _count
 
 
+def _st_unload() -> None:
+    """Drop the cached ST model and free its GPU memory. The empty_cache call only
+    runs when a model was loaded (a CUDA context already exists), so it never
+    creates one on a process that never embedded."""
+    global _model, _name
+    with _lock:
+        had_model = _model is not None
+        _model = None
+        _name = None
+    if not had_model:
+        return
+    import gc
+
+    gc.collect()  # drop the model now so the freed VRAM is visible to callers
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - torch may be missing or broken
+        pass
+
+
 class _SentenceTransformersBackend:
     """Default backend; delegates to the module-level ST helpers so the ``_get``
     monkeypatch in tests keeps working."""
@@ -175,6 +198,10 @@ class _SentenceTransformersBackend:
 
     def warm(self, *, model_name = None):
         _get(model_name)
+
+    def unload(self):
+        """Drop the cached ST model and free its GPU memory (see module unload)."""
+        _st_unload()
 
 
 _backend_lock = threading.Lock()
@@ -296,27 +323,17 @@ def warm(model_name: str | None = None) -> None:
 
 
 def unload() -> None:
-    """Drop the cached sentence-transformers model and free its GPU memory, so a
-    GGUF inference model can allocate with full VRAM (a resident embedder otherwise
-    pushes the auto-context pick past the driver's spill threshold). Reloads lazily
-    on the next embed/warm; a no-op when nothing is loaded. A concurrent in-flight
-    encode keeps its own reference, so the VRAM frees once that call returns."""
-    global _model, _name
-    with _lock:
-        had_model = _model is not None
-        _model = None
-        _name = None
-    if had_model:
-        import gc
-
-        gc.collect()  # drop the model now so the freed VRAM is visible to callers
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:  # noqa: BLE001 - torch may be missing or broken
-            pass
+    """Free the active embedder's GPU memory so a GGUF inference model can allocate
+    with full VRAM (a resident embedder otherwise pushes the auto-context pick past
+    the driver's spill threshold). Dispatches to the backend: sentence-transformers
+    drops its cached model, the llama-server embedder kills its subprocess. A no-op
+    when no backend is built; the embedder reloads lazily on the next embed/warm. A
+    concurrent in-flight encode keeps its own reference, so its VRAM frees once that
+    call returns."""
+    with _backend_lock:
+        backend = _backend
+    if backend is not None:
+        backend.unload()
 
 
 def encode(

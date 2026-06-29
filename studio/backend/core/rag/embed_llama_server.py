@@ -354,6 +354,12 @@ class LlamaServerBackend:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
 
+    def unload(self) -> None:
+        """Kill the embedding subprocess to free its VRAM (encode() respawns it).
+        Lets a GGUF inference model load with the embedder's VRAM reclaimed."""
+        with self._lifecycle_lock:
+            self._kill_process()
+
     def _shutdown(self) -> None:
         try:
             self._kill_process()
