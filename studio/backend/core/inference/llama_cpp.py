@@ -239,6 +239,11 @@ _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 _PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 _REPROMPT_MAX_CHARS = 2000
+# Cap on tool calls executed from a single TEXTUAL-fallback turn (mirrors the
+# safetensors loop). Structured delta.tool_calls are grammar-bounded by
+# llama-server; text parsed from content is not, so one runaway turn could fan
+# out into dozens of executions/events without this.
+_MAX_TOOL_CALLS_PER_TURN = 8
 _FORCED_REPEAT_PLAN_SIGNAL = re.compile(
     r"\b(?:i\s+will|i'll|let\s+me|going\s+to|need\s+to|call|use|run|search|fetch|render)\b",
     re.I,
@@ -8573,6 +8578,32 @@ class LlamaCppBackend:
                 _it = _iter_timings or {}
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
+
+                # Collapse exact-duplicate calls and cap the count for the TEXTUAL
+                # fallback (mirrors the safetensors loop). Structured delta.tool_calls
+                # are grammar-bounded by llama-server, but text parsed straight from
+                # content has no such limit, so one runaway turn could fan out into
+                # dozens of executions/events.
+                if tool_calls and not has_structured_tc and len(tool_calls) > 1:
+                    _seen_keys: set = set()
+                    _deduped: list = []
+                    for _tc in tool_calls:
+                        _fn = _tc.get("function", {}) or {}
+                        _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
+                        if _key in _seen_keys:
+                            continue
+                        _seen_keys.add(_key)
+                        _deduped.append(_tc)
+                        if len(_deduped) >= _MAX_TOOL_CALLS_PER_TURN:
+                            break
+                    if len(_deduped) != len(tool_calls):
+                        logger.info(
+                            "GGUF textual fallback: collapsed %d repeated tool call(s) "
+                            "in one turn to %d",
+                            len(tool_calls),
+                            len(_deduped),
+                        )
+                    tool_calls = _deduped
 
                 # disable_parallel_tool_use: execute only the first tool call
                 # this turn. Truncate before building assistant_msg so the

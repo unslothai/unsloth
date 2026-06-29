@@ -222,81 +222,25 @@ class InferenceBackend:
     ) -> Optional[str]:
         """Render ``messages`` + ``tools`` with the model's NATIVE chat template.
 
-        Some Unsloth override templates (e.g. ``mistral``, ``gemma-4``) do not
-        emit the ``tools`` schema, so the safetensors path silently stops
-        advertising tools and the model never calls one (while the GGUF, which
-        uses the repo's native template via llama-server, still fires). When
-        that happens we re-render with the template that ships in the model
-        repo, which carries the family's tool-calling syntax.
-
-        The native template is loaded straight from the repo (bypassing any
-        override applied to the live tokenizer) and cached on ``model_info``.
-        Returns the rendered prompt only if the native template actually emits
-        the tools (render differs with vs without tools); otherwise ``None``.
+        Thin wrapper over the shared ``render_native_template`` helper so the
+        transformers and MLX backends share one implementation (an Unsloth
+        override template like ``mistral`` / ``gemma-4`` can drop the ``tools``
+        schema; the repo's native template carries the family's tool-calling
+        syntax). ``apply_fn`` is this backend's own render so template-rejected
+        kwargs are peeled the same way as the main path.
         """
-        native_tpl = model_info.get("native_chat_template")
-        if native_tpl is None:
-            # For a LoRA adapter the native chat template lives on the base model;
-            # active_model_name is the adapter id/path and often ships no template.
-            template_source = model_info.get("base_model") or self.active_model_name
-            try:
-                from transformers import AutoTokenizer
-                nt = AutoTokenizer.from_pretrained(template_source)
-                native_tpl = nt.chat_template or False
-            except Exception as exc:
-                logger.warning(
-                    "Could not load native chat template for '%s': %s",
-                    template_source,
-                    exc,
-                )
-                native_tpl = False
-            model_info["native_chat_template"] = native_tpl
-        if not native_tpl:
-            return None
+        from core.inference.chat_template_helpers import render_native_template
 
-        tokenizer = model_info.get("tokenizer") or model_info.get("processor")
-        if tokenizer is None:
-            return None
-        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
-        # Render on a shallow copy carrying the native template. Mutating the shared
-        # tokenizer.chat_template here races concurrent requests (this runs outside
-        # the generation lock), which could make another request render with the
-        # native template or restore over its saved value.
-        try:
-            render_tokenizer = copy.copy(tokenizer)
-            render_tokenizer.chat_template = native_tpl
-        except Exception as exc:
-            logger.warning(
-                "Could not clone tokenizer for native-template render of '%s': %s",
-                self.active_model_name,
-                exc,
-            )
-            return None
-        try:
-            with_tools = self._apply_chat_template_for_generation(
-                render_tokenizer,
-                messages,
-                tools = tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-            )
-            no_tools = self._apply_chat_template_for_generation(
-                render_tokenizer,
-                messages,
-                tools = None,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Native-template tool render failed for '%s': %s",
-                self.active_model_name,
-                exc,
-            )
-            return None
-        return with_tools if with_tools != no_tools else None
+        return render_native_template(
+            model_info = model_info,
+            active_model_name = self.active_model_name,
+            messages = messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            apply_fn = self._apply_chat_template_for_generation,
+        )
 
     def load_model(
         self,
@@ -1065,35 +1009,23 @@ class InferenceBackend:
             )
 
             # If tools were requested but the (possibly overridden) template ignored
-            # them, the render is identical with and without tools. Detect by
-            # comparison (robust against tool names in the system prompt) and fall
-            # back to the model's native template, which has the tool-calling syntax.
-            if tools:
-                probe_no_tools = self._apply_chat_template_for_generation(
-                    tokenizer,
-                    template_messages,
-                    tools = None,
-                    enable_thinking = enable_thinking,
-                    reasoning_effort = reasoning_effort,
-                    preserve_thinking = preserve_thinking,
-                )
-                if formatted_prompt == probe_no_tools:
-                    native_prompt = self._render_with_native_template(
-                        model_info,
-                        template_messages,
-                        tools,
-                        enable_thinking,
-                        reasoning_effort,
-                        preserve_thinking,
-                    )
-                    if native_prompt:
-                        logger.info(
-                            "Override template for '%s' dropped tool schemas; "
-                            "using the model's native template for this "
-                            "tool-calling turn.",
-                            self.active_model_name,
-                        )
-                        formatted_prompt = native_prompt
+            # them, fall back to the model's native template (shared with MLX).
+            from core.inference.chat_template_helpers import (
+                render_with_native_template_fallback,
+            )
+
+            formatted_prompt = render_with_native_template_fallback(
+                formatted_prompt = formatted_prompt,
+                tokenizer = tokenizer,
+                model_info = model_info,
+                active_model_name = self.active_model_name,
+                messages = template_messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                apply_fn = self._apply_chat_template_for_generation,
+            )
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:

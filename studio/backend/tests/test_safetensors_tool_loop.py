@@ -3287,6 +3287,85 @@ def test_native_template_loads_from_base_model_for_lora(monkeypatch):
     assert out == "hi|T"
 
 
+def test_render_with_native_template_fallback_swaps_when_override_drops_tools():
+    # The shared gate (used by the transformers and MLX backends): when the live
+    # render is identical with and without tools, re-render with the native
+    # template and return it. When the live render already differs, keep it.
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_with_native_template_fallback
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+
+    # apply_fn that IGNORES tools -> live render drops the schema.
+    def ignoring(tokenizer, msgs, *, tools, **_kw):
+        return "".join(m["content"] for m in msgs)
+
+    model_info = {
+        "native_chat_template": "TPL",
+        "tokenizer": SimpleNamespace(chat_template = "OVERRIDE"),
+    }
+
+    # Native render emits the tools, so the fallback swaps to it.
+    def native_emits(tokenizer, msgs, *, tools, **_kw):
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|TOOLS" if tools else "")
+
+    out = render_with_native_template_fallback(
+        formatted_prompt = ignoring(None, messages, tools = tools),
+        tokenizer = SimpleNamespace(),
+        model_info = dict(model_info),
+        active_model_name = "x",
+        messages = messages,
+        tools = tools,
+        apply_fn = lambda tok, msgs, *, tools, **kw: (
+            native_emits(tok, msgs, tools = tools)
+            if getattr(tok, "chat_template", None) == "TPL"
+            else ignoring(tok, msgs, tools = tools)
+        ),
+    )
+    assert out == "hi|TOOLS", out
+
+
+def test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted():
+    # Live render already differs with vs without tools -> no fallback, returned
+    # unchanged. Also a no-tools call is a passthrough.
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_with_native_template_fallback
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+
+    def emitting(tokenizer, msgs, *, tools, **_kw):
+        body = "".join(m["content"] for m in msgs)
+        return body + ("|T" if tools else "")
+
+    kept = render_with_native_template_fallback(
+        formatted_prompt = emitting(None, messages, tools = tools),
+        tokenizer = SimpleNamespace(),
+        model_info = {"native_chat_template": "TPL", "tokenizer": SimpleNamespace()},
+        active_model_name = "x",
+        messages = messages,
+        tools = tools,
+        apply_fn = emitting,
+    )
+    assert kept == "hi|T", kept
+
+    # No tools -> passthrough (native template never consulted).
+    passthrough = render_with_native_template_fallback(
+        formatted_prompt = "hi",
+        tokenizer = SimpleNamespace(),
+        model_info = {},
+        active_model_name = "x",
+        messages = messages,
+        tools = None,
+        apply_fn = emitting,
+    )
+    assert passthrough == "hi"
+
+
 def test_truncated_bare_json_at_eof_is_not_leaked():
     # Stream ends mid bare-JSON object: the held fragment must be dropped at the
     # EOF resolver, not flushed as plain assistant content (GGUF parity).

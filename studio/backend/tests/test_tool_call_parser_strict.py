@@ -430,3 +430,57 @@ def test_strip_leading_bare_json_call_preserves_plain_json_and_prose():
     assert strip_leading_bare_json_call('here is {"name":"x"}') == 'here is {"name":"x"}'
     # Ordinary text untouched.
     assert strip_leading_bare_json_call("just a sentence.") == "just a sentence."
+
+
+def test_glm_literal_close_tag_in_string_arg_not_truncated():
+    import json
+
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+    # A GLM string argument may legitimately contain the literal close tag
+    # ``</tool_call>`` (e.g. code that prints it). Pre-bounding the body at the
+    # first ``</tool_call>`` truncated the value; walking against the full content
+    # keeps it because each <arg_value> is delimited by its own </arg_value>.
+    text = (
+        "<tool_call>run_code\n"
+        "<arg_key>code</arg_key>\n"
+        '<arg_value>print("</tool_call>")</arg_value>\n'
+        "</tool_call>"
+    )
+    calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+    assert len(calls) == 1
+    args = json.loads(calls[0]["function"]["arguments"])
+    assert args["code"] == 'print("</tool_call>")', args
+
+
+def test_glm_truncated_block_rejected_in_strict_mode_but_healed_otherwise():
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+    # No </tool_call> close: strict mode (Auto-Heal off) rejects the truncated
+    # block; with Auto-Heal it keeps the partial call.
+    text = "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>NYC"
+    assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+    healed = parse_tool_calls_from_text(text, allow_incomplete = True)
+    assert len(healed) == 1 and healed[0]["function"]["name"] == "get_weather"
+
+
+def test_truncated_wrapperless_gemma_call_is_stripped():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # A wrapper-less Gemma ``call:NAME{...`` cut off mid-arguments (no closing
+    # brace) must not leak the raw call into the visible stream.
+    text = 'Sure!\ncall:web_search{"query": "weather in San Fr'
+    stripped = strip_tool_markup(text, final = True)
+    assert "call:web_search" not in stripped, repr(stripped)
+    assert stripped.strip() == "Sure!"
+
+
+def test_complete_wrapperless_gemma_call_keeps_trailing_prose():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # The truncation pattern must run AFTER the closed form, so a complete call
+    # followed by prose keeps the prose instead of eating to EOS.
+    text = 'call:web_search{"query": "cats"} Here you go.'
+    stripped = strip_tool_markup(text, final = True)
+    assert "call:web_search" not in stripped
+    assert stripped.strip() == "Here you go."

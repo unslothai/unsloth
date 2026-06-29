@@ -94,6 +94,11 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     # the ``<|tool_call>`` markers). Bounded to a single brace level so it
     # cleans the common query/command leak without eating unrelated prose.
     re.compile(r"(?<!\w)call:[\w\.\-]+\{[^{}]*\}", re.DOTALL),
+    # Truncated wrapper-less Gemma ``call:NAME{...`` cut off mid-arguments (no
+    # closing brace) -- eat to EOS so the raw call does not leak. Runs after the
+    # closed form above (and _strip_gemma_wrapperless_calls handles balanced
+    # nested ones), so a complete call + trailing prose keeps its prose.
+    re.compile(r"(?<!\w)call:[\w\.\-]+\{.*$", re.DOTALL),
 ]
 
 
@@ -1544,36 +1549,40 @@ def _parse_glm_tool_calls(
         if not m:
             break
         name = m.group(1).strip()
-        body_start = m.end()
-        close = content.find(_GLM_TC_CLOSE, body_start)
-        # Strict mode (Auto-Heal off): a block with no </tool_call> close is
-        # truncated; reject it instead of healing the body out to EOF.
-        if not allow_incomplete and close < 0:
-            break
-        body_end = close if close >= 0 else len(content)
-        body = content[body_start:body_end]
+        apos = m.end()  # absolute position in ``content``; advances past each pair
 
         args: dict[str, Any] = {}
         valid = True
-        # Walk arg_key/arg_value pairs with ``str.find``; a lazy-group ``finditer``
-        # is O(N^2) when an unclosed body holds many bare ``<arg_key>`` tokens.
-        apos = 0
+        close = -1
+        # Walk arg_key/arg_value pairs directly against ``content`` (not a body
+        # pre-bounded by the first </tool_call>): an arg value may legitimately
+        # contain a literal </tool_call> -- e.g. ``print("</tool_call>")`` -- and each
+        # <arg_value> is reliably delimited by its own </arg_value>, so the call's
+        # real close is the </tool_call> that precedes the next <arg_key> (or ends
+        # the block when no key follows). ``str.find`` keeps this linear; a lazy-group
+        # ``finditer`` is O(N^2) when an unclosed body holds many bare ``<arg_key>``.
         while True:
-            ks = body.find(_GLM_ARG_KEY_OPEN, apos)
-            if ks < 0:
+            ks = content.find(_GLM_ARG_KEY_OPEN, apos)
+            tc = content.find(_GLM_TC_CLOSE, apos)
+            # </tool_call> before the next <arg_key> (or no more keys) ends the call;
+            # a literal </tool_call> inside a value sits before ``apos`` already.
+            if tc >= 0 and (ks < 0 or tc < ks):
+                close = tc
                 break
-            ke = body.find(_GLM_ARG_KEY_CLOSE, ks + len(_GLM_ARG_KEY_OPEN))
+            if ks < 0:
+                break  # no close and no more keys -- truncated body
+            ke = content.find(_GLM_ARG_KEY_CLOSE, ks + len(_GLM_ARG_KEY_OPEN))
             if ke < 0:
                 break
             vstart = ke + len(_GLM_ARG_KEY_CLOSE)
-            while vstart < len(body) and body[vstart] in " \t\r\n":
+            while vstart < len(content) and content[vstart] in " \t\r\n":
                 vstart += 1
-            if not body.startswith(_GLM_ARG_VAL_OPEN, vstart):
+            if not content.startswith(_GLM_ARG_VAL_OPEN, vstart):
                 apos = ke + len(_GLM_ARG_KEY_CLOSE)
                 continue
             vs = vstart + len(_GLM_ARG_VAL_OPEN)
-            ve = body.find(_GLM_ARG_VAL_CLOSE, vs)
-            key = body[ks + len(_GLM_ARG_KEY_OPEN) : ke].strip()
+            ve = content.find(_GLM_ARG_VAL_CLOSE, vs)
+            key = content[ks + len(_GLM_ARG_KEY_OPEN) : ke].strip()
             if ve < 0:
                 # Unclosed <arg_value>: strict mode rejects the whole call instead
                 # of executing it with the argument silently dropped; with Auto-Heal
@@ -1582,9 +1591,9 @@ def _parse_glm_tool_calls(
                 if not allow_incomplete:
                     valid = False
                 else:
-                    args[key] = body[vs:].rstrip()
+                    args[key] = content[vs:].rstrip()
                 break
-            raw_val = body[vs:ve]
+            raw_val = content[vs:ve]
             apos = ve + len(_GLM_ARG_VAL_CLOSE)
             # Template emits non-strings via ``tojson``, strings verbatim. Probe for
             # an unambiguous JSON literal; else keep the value RAW so whitespace in
@@ -1604,6 +1613,11 @@ def _parse_glm_tool_calls(
                 except (json.JSONDecodeError, ValueError):
                     pass
             args[key] = raw_val
+
+        # Strict mode (Auto-Heal off): a block with no </tool_call> close is
+        # truncated; reject it instead of healing the body out to EOF.
+        if not allow_incomplete and close < 0:
+            valid = False
 
         if name and valid:
             out.append(
