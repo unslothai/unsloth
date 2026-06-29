@@ -244,6 +244,27 @@ _FINAL_ANSWER_SIGNAL = re.compile(
 )
 
 
+def _gguf_active_tool_names(active_tools: list[dict]) -> list[str]:
+    names = [
+        (tool.get("function") or {}).get("name")
+        for tool in (active_tools or [])
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    ]
+    return [name for name in names if name]
+
+
+def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
+    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
+    active tool -- the bare tool name arriving in its own chunk before ``[ARGS]{...}``.
+    Mirrors the safetensors loop so the split rehearsal call is not streamed."""
+    if not stripped or any(ch.isspace() for ch in stripped):
+        return False
+    for name in _gguf_active_tool_names(active_tools):
+        if stripped == name or f"{name}[ARGS]".startswith(stripped):
+            return True
+    return False
+
+
 def _is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
     return 0 < len(stripped) < _REPROMPT_MAX_CHARS and _INTENT_SIGNAL.search(stripped) is not None
@@ -8254,6 +8275,18 @@ class LlamaCppBackend:
                                             elif sig.startswith("[") and sig in stripped_buf:
                                                 is_match = True
                                                 break
+
+                                        # Rehearsal call split across chunks:
+                                        # ``web_search`` then ``[ARGS]{...}``. Hold the
+                                        # bare active-tool-name prefix so it is not
+                                        # streamed before the ``[ARGS]`` arm arrives
+                                        # and flips this to a match (above).
+                                        if (
+                                            not is_match
+                                            and not is_prefix
+                                            and _is_rehearsal_prefix(stripped_buf, active_tools)
+                                        ):
+                                            is_prefix = True
 
                                         if is_match:
                                             # Tool signal -- flush any visible

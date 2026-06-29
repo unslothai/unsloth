@@ -719,6 +719,34 @@ def test_rehearsal_call_name_is_not_streamed_before_args():
     assert not any("web_search" in t for t in contents), contents
 
 
+def test_rehearsal_call_name_split_before_args_is_not_streamed():
+    # Finding 5: the rehearsal name and ``[ARGS]`` arrive in SEPARATE chunks
+    # (``web_search`` then ``[ARGS]{...}``). The bare active-tool-name prefix must
+    # be held -- not streamed as visible content -- until ``[ARGS]`` flips it to a
+    # drain. Without _is_rehearsal_prefix the name leaks before the call executes.
+    loop, exec_fn = _make_loop(
+        turns = [["web_search", '[ARGS]{"query":"cats"}'], ["Found."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("web_search" in t for t in contents), contents
+
+
+def test_plain_word_matching_no_tool_still_streams():
+    # The rehearsal-prefix guard must not swallow ordinary prose: a bare word that
+    # is not an active tool name (and never becomes ``name[ARGS]``) must stream.
+    loop, _exec = _make_loop(
+        turns = [["weather", " is nice today."]],
+        max_tool_iterations = 1,
+    )
+    events = _collect_events(loop)
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert "weather is nice today." in contents, contents
+
+
 class TestLoopBasic:
     def test_plain_answer(self):
         # No tool XML; loop should yield content then status="".

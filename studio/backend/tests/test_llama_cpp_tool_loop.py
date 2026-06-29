@@ -1813,3 +1813,40 @@ def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
     metadata = [e for e in events if e.get("type") == "metadata"]
     assert metadata, "expected a metadata event"
     assert "prompt_tokens_details" not in metadata[-1]["usage"]
+
+
+def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
+    """Finding 6: a rehearsal call whose name (``web_search``) and ``[ARGS]{...}``
+    arrive in separate content deltas must hold the bare name in the buffer until
+    ``[ARGS]`` flips it to a drain. Without _is_rehearsal_prefix the GGUF path
+    streams the tool name as visible content before the call executes."""
+
+    first_stream = [
+        _sse({"content": "web_search"}),
+        _sse({"content": '[ARGS]{"query":"cats"}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("web_search" not in t for t in content_texts), content_texts
+    assert all("[ARGS]" not in t for t in content_texts), content_texts

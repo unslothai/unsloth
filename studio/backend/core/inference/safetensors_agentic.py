@@ -51,6 +51,28 @@ logger = get_logger(__name__)
 _MAX_BUFFER_CHARS = 32
 
 
+def _active_tool_names(active_tools: list[dict]) -> list[str]:
+    names = [
+        (tool.get("function") or {}).get("name")
+        for tool in active_tools
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    ]
+    return [name for name in names if name]
+
+
+def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
+    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
+    active tool, e.g. ``web_search`` arrives in one chunk and ``[ARGS]{...}`` in the
+    next. Without this the bare tool name streams as visible content before the
+    rehearsal call drains. A space means it is prose, not a split call."""
+    if not stripped or any(ch.isspace() for ch in stripped):
+        return False
+    for name in _active_tool_names(active_tools):
+        if stripped == name or f"{name}[ARGS]".startswith(stripped):
+            return True
+    return False
+
+
 def strip_tool_markup_streaming(
     text: str,
     *,
@@ -377,6 +399,17 @@ def run_safetensors_tool_loop(
                 elif sig.startswith("[") and sig in stripped:
                     is_match = True
                     break
+
+            # Rehearsal call split across chunks: ``web_search`` then ``[ARGS]{...}``.
+            # Hold the bare active-tool-name prefix so it is not streamed before the
+            # ``[ARGS]`` arm arrives and flips this to a match (above).
+            if (
+                not is_match
+                and not is_prefix
+                and tool_protocol_active
+                and _is_rehearsal_prefix(stripped, active_tools)
+            ):
+                is_prefix = True
 
             if is_match:
                 # Tool signal -- flush any visible prefix before DRAINING
