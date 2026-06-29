@@ -5765,7 +5765,9 @@ class LlamaCppBackend:
                                         # mtp_engaged alone is a no-op once budget_frac is set;
                                         # pass the byte-accurate overhead so MTP KV is reserved.
                                         mtp_engaged = _mtp_will_engage_cpu,
-                                        mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None),
+                                        mtp_overhead_fn = (
+                                            _mtp_bytes if _mtp_will_engage_cpu else None
+                                        ),
                                         budget_frac = _CPU_RAM_BUDGET_FRAC,
                                     )
                                     _cpu_cap = max(4096, min(_ctx_ceiling, _fit))
