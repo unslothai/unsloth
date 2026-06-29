@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Shared helpers for version-compat suites: GitHub raw fetch + AST symbol lookup."""
+"""Shared helpers for version-compat suites: GitHub raw fetch + AST symbol lookup with regex fallback."""
 
 from __future__ import annotations
 
 import ast
 import functools
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -82,10 +83,61 @@ def _module_bindings(tree: ast.Module) -> set[str]:
     return out
 
 
+# Regex fallbacks used only when ast.parse fails (e.g., the fetched source
+# uses syntax newer than the running Python). Coarser than AST: can
+# false-positive on docstrings and string literals. AST path is preferred.
+
+
+def _re_is_bound(src: str, name: str) -> bool:
+    n = re.escape(name)
+    patterns = (
+        rf"^\s*class\s+{n}\b",
+        rf"^\s*(?:async\s+)?def\s+{n}\b",
+        rf"^\s*{n}\s*[:=]",
+        rf"^\s*from\s+\S+\s+import\s+[^#\n]*\b{n}\b",
+        rf"^\s*import\s+[^#\n]*\b{n}\b",
+        rf"\bas\s+{n}\b",
+    )
+    return any(re.search(p, src, re.MULTILINE) for p in patterns)
+
+
+def _re_has_def(src: str, name: str, kind: str) -> bool:
+    n = re.escape(name)
+    if kind in ("any", "class") and re.search(rf"^\s*class\s+{n}\b", src, re.MULTILINE):
+        return True
+    if kind in ("any", "func") and re.search(
+        rf"^\s*(?:async\s+)?def\s+{n}\b", src, re.MULTILINE
+    ):
+        return True
+    return kind == "any" and _re_is_bound(src, name)
+
+
+def _re_function_params(src: str, name: str) -> tuple[str, ...] | None:
+    n = re.escape(name)
+    m = re.search(
+        rf"^\s*(?:async\s+)?def\s+{n}\s*\(([^)]*)\)", src, re.MULTILINE | re.DOTALL
+    )
+    if m is None:
+        return None
+    out: list[str] = []
+    for part in m.group(1).split(","):
+        p = part.strip().lstrip("*")
+        for sep in (":", "="):
+            i = p.find(sep)
+            if i >= 0:
+                p = p[:i]
+        p = p.strip()
+        if p and p != "/":
+            out.append(p)
+    return tuple(out)
+
+
 def is_bound(src: str, name: str) -> bool:
     """True if `name` is bound at module scope (def/class/assign/import-as)."""
     tree = _parse(src)
-    return tree is not None and name in _module_bindings(tree)
+    if tree is None:
+        return _re_is_bound(src, name)
+    return name in _module_bindings(tree)
 
 
 def has_def(
@@ -96,7 +148,7 @@ def has_def(
     """`class name` / `def name` at any depth; with kind="any" also any module binding."""
     tree = _parse(src)
     if tree is None:
-        return False
+        return _re_has_def(src, name, kind)
     want_class = kind in ("any", "class")
     want_func = kind in ("any", "func")
     for node in ast.walk(tree):
@@ -120,7 +172,8 @@ def function_params(
     """Param names of the first `def name(...)`; scoped to `class cls:` if given. None if absent."""
     tree = _parse(src)
     if tree is None:
-        return None
+        # cls scoping isn't reliable via regex; degrade to module-level lookup.
+        return _re_function_params(src, name) if cls is None else None
     scope: ast.AST | None = tree
     if cls is not None:
         scope = next(
