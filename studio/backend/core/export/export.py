@@ -507,6 +507,32 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
+                elif is_compressed and output_path and Path(output_path).is_dir():
+                    # The compressed model was already built locally in output_path; upload it
+                    # directly so we do not re-run the (expensive, OOM-prone) compression that
+                    # push_to_hub_merged(save_method=fp8/nvfp4) would otherwise do a second time.
+                    hf_api = HfApi(token = hf_token)
+                    repo_id = PushToHubMixin._create_repo(
+                        PushToHubMixin,
+                        repo_id = repo_id,
+                        private = private,
+                        token = hf_token,
+                    )
+                    content = MODEL_CARD.format(
+                        username = repo_id.split("/")[0],
+                        base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
+                        model_type = getattr(self.current_model.config, "model_type", "llm"),
+                        method = format_type,
+                        extra = "unsloth",
+                    )
+                    ModelCard(content).push_to_hub(
+                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                    )
+                    hf_api.upload_folder(
+                        folder_path = output_path,
+                        repo_id = repo_id,
+                        repo_type = "model",
+                    )
                 else:
                     hub_save_method = save_method if save_method is not None else "merged_16bit"
                     self.current_model.push_to_hub_merged(

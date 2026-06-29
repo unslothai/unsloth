@@ -106,3 +106,11 @@ def test_route_resolves_imatrix_file():
 def test_export_merged_maps_compressed_to_save_method():
     m = _func_src("core/export/export.py", "export_merged_model")
     assert "is_compressed" in m and '"fp8"' in m and '"nvfp4"' in m
+
+
+def test_compressed_hub_push_uploads_local_dir_without_recompressing():
+    # A compressed Hub push must upload the already-built output_path, not re-run compression
+    # via push_to_hub_merged (which would compress a second time).
+    m = _func_src("core/export/export.py", "export_merged_model")
+    assert "elif is_compressed and output_path and Path(output_path).is_dir():" in m
+    assert "hf_api.upload_folder(" in m and "folder_path = output_path" in m
