@@ -1101,9 +1101,10 @@ def _is_mmproj(filename: str) -> bool:
 
 
 def _is_mtp_drafter(path: str) -> bool:
-    """True for a separate-file MTP drafter (speculative head), a companion
-    to the main model rather than a selectable quant: the repo-root
-    ``mtp-*.gguf`` or the ``MTP/`` subdir copies (Gemma 4).
+    """True for a separate-file speculative drafter (MTP or DFlash), a companion
+    to the main model rather than a selectable quant: the MTP repo-root
+    ``mtp-*.gguf`` / ``MTP/`` subdir copies (Gemma 4), or a DFlash
+    ``dflash-*.gguf``.
 
     Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub).
     Must be excluded everywhere mmproj is, or the drafter leaks into variant
@@ -1115,7 +1116,7 @@ def _is_mtp_drafter(path: str) -> bool:
     if not p.endswith(".gguf"):
         return False
     name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or name.startswith("dflash-")
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.
@@ -1325,21 +1326,17 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     return str(best[1])
 
 
-def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
-    """Find the separate MTP drafter (``mtp-*.gguf``) for a local GGUF model.
+def _detect_drafter_sibling(
+    path: str, prefix: str, search_root: Optional[str] = None
+) -> Optional[str]:
+    """Find a separate drafter (``<prefix>*.gguf``) sibling for a local GGUF.
 
     The drafter that pairs with the main weights sits at the repo/snapshot
-    root (Gemma 4); the weight itself may be at the root or in a quant subdir,
-    so scan the weight's directory and ``search_root``. Matches by the
-    ``mtp-`` filename prefix unsloth uses for ``-hf`` auto-discovery -- the
-    same signal as the HF download path. Repos that bake the head into the
-    main GGUF (Qwen) have no such sibling, so this returns None.
-
-    Pairs by name so a multi-model folder can't attach a foreign drafter:
-    unsloth names the drafter ``mtp-<model>.gguf`` where ``<model>`` prefixes
-    the weight filename across all Gemma 4 repos (e.g.
-    ``mtp-gemma-4-12B-it.gguf`` next to ``gemma-4-12B-it-qat-Q4_0.gguf``).
-    An unmatched drafter is skipped (fail-safe: no MTP).
+    root; the weight itself may be at the root or in a quant subdir, so scan the
+    weight's directory and ``search_root``. Pairs by name so a multi-model
+    folder can't attach a foreign drafter: the drafter is ``<prefix><model>.gguf``
+    where ``<model>`` prefixes the weight filename. An unmatched drafter is
+    skipped (fail-safe: no drafter).
     """
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
@@ -1354,9 +1351,9 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             continue
         for f in entries:
             name = f.name.lower()
-            if not (name.startswith("mtp-") and name.endswith(".gguf")):
+            if not (name.startswith(prefix) and name.endswith(".gguf")):
                 continue
-            stem = name[len("mtp-") : -len(".gguf")]
+            stem = name[len(prefix) : -len(".gguf")]
             if not stem or (weight_name is not None and not weight_name.startswith(stem)):
                 continue
             try:
@@ -1365,6 +1362,28 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             except OSError:
                 continue
     return None
+
+
+def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
+    """Find the separate MTP drafter (``mtp-*.gguf``) for a local GGUF model.
+
+    Matches by the ``mtp-`` filename prefix unsloth uses for ``-hf``
+    auto-discovery -- the same signal as the HF download path. Repos that bake
+    the head into the main GGUF (Qwen) have no such sibling (returns None);
+    Gemma 4 ships ``mtp-<model>.gguf`` next to ``<model>-...gguf``.
+    """
+    return _detect_drafter_sibling(path, "mtp-", search_root)
+
+
+def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
+    """Find the separate DFlash drafter (``dflash-*.gguf``) for a local GGUF.
+
+    DFlash is always a standalone block-diffusion draft GGUF paired to a target
+    (never an embedded head), so the discovery is identical to the Gemma MTP
+    drafter: a ``dflash-<model>.gguf`` sibling whose stem prefixes the weight
+    filename (e.g. ``dflash-Qwen3-4B.gguf`` next to ``Qwen3-4B-Q4_K_M.gguf``).
+    """
+    return _detect_drafter_sibling(path, "dflash-", search_root)
 
 
 def detect_gguf_model(path: str) -> Optional[str]:
@@ -2486,6 +2505,7 @@ class ModelConfig:
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
+    gguf_dflash_file: Optional[str] = None  # Full path to the separate DFlash drafter (local mode)
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
@@ -2630,6 +2650,11 @@ class ModelConfig:
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
 
+                # Separate DFlash drafter sibling (dflash-*.gguf), same shape.
+                dflash_file = detect_dflash_file(gguf_file, search_root = companion_root)
+                if dflash_file:
+                    logger.info(f"Detected DFlash drafter: {dflash_file}")
+
                 return cls(
                     identifier = identifier,
                     display_name = display_name,
@@ -2642,6 +2667,7 @@ class ModelConfig:
                     gguf_file = gguf_file,
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
+                    gguf_dflash_file = dflash_file,
                 )
         else:
             # Does the HF repo contain GGUF files?

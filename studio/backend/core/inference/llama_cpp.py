@@ -685,8 +685,9 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 
 
 def _is_companion_gguf_path(path: str) -> bool:
-    """True for a non-main GGUF: vision mmproj or a separate MTP drafter
-    (repo-root ``mtp-*.gguf`` or the ``MTP/`` subdir copies, Gemma 4).
+    """True for a non-main GGUF: vision mmproj or a separate drafter -- the
+    MTP repo-root ``mtp-*.gguf`` / ``MTP/`` subdir copies (Gemma 4), or a
+    DFlash ``dflash-*.gguf``.
 
     Mirrors hub.utils.gguf so variant resolution never picks a companion as
     the main model -- e.g. a Gemma ``Q8_0`` request must not resolve to the
@@ -698,7 +699,7 @@ def _is_companion_gguf_path(path: str) -> bool:
     if "mmproj" in p:
         return True
     name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or name.startswith("dflash-")
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
@@ -1241,6 +1242,7 @@ class LlamaCppBackend:
         # Separate MTP drafter launched with the current model; reload-dedup
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
+        self._dflash_draft_path: Optional[str] = None
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
@@ -1414,6 +1416,10 @@ class LlamaCppBackend:
     @property
     def mtp_draft_path(self) -> Optional[str]:
         return self._mtp_draft_path
+
+    @property
+    def dflash_draft_path(self) -> Optional[str]:
+        return self._dflash_draft_path
 
     @property
     def spec_fallback_reason(self) -> Optional[str]:
@@ -1842,6 +1848,8 @@ class LlamaCppBackend:
                 "found": False,
                 "mtp_token": None,
                 "supports_mtp": False,
+                "dflash_token": None,
+                "supports_dflash": False,
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
@@ -1862,6 +1870,7 @@ class LlamaCppBackend:
             return cached
 
         mtp_token: Optional[str] = None
+        dflash_token: Optional[str] = None
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
@@ -1937,6 +1946,11 @@ class LlamaCppBackend:
             elif re.search(r"[|,\[]mtp[|,\]]", spec_line):
                 mtp_token = "mtp"
 
+            # DFlash block-diffusion drafter (#22105). Single fixed token,
+            # no rename history like MTP.
+            if "draft-dflash" in spec_line:
+                dflash_token = "draft-dflash"
+
             # ngram-mod flag flavor. Post-rename builds advertise both new
             # args (real) and legacy ones (stubs); pre-rename builds only
             # have legacy ones as real.
@@ -1974,6 +1988,8 @@ class LlamaCppBackend:
             "found": True,
             "mtp_token": mtp_token,
             "supports_mtp": mtp_token is not None,
+            "dflash_token": dflash_token,
+            "supports_dflash": dflash_token is not None,
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
@@ -4052,18 +4068,21 @@ class LlamaCppBackend:
             logger.debug(f"Could not size mmproj {launch_mmproj_path}: {e}")
             return 0
 
-    def _resolve_launch_mtp_path(self, *, mtp_draft_path: Optional[str]) -> Optional[str]:
-        """Return mtp_draft_path iff it exists on disk, else None.
+    def _resolve_launch_drafter_path(self, drafter_path: Optional[str], label: str) -> Optional[str]:
+        """Return drafter_path iff it exists on disk, else None.
 
         No family check needed: the drafter is only ever auto-resolved from
         the same repo as the main GGUF (see _download_mtp).
         """
-        if not mtp_draft_path:
+        if not drafter_path:
             return None
-        if not Path(mtp_draft_path).is_file():
-            logger.warning(f"MTP drafter file not found: {mtp_draft_path}")
+        if not Path(drafter_path).is_file():
+            logger.warning(f"{label} drafter file not found: {drafter_path}")
             return None
-        return str(mtp_draft_path)
+        return str(drafter_path)
+
+    def _resolve_launch_mtp_path(self, *, mtp_draft_path: Optional[str]) -> Optional[str]:
+        return self._resolve_launch_drafter_path(mtp_draft_path, "MTP")
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -4548,6 +4567,8 @@ class LlamaCppBackend:
         mmproj_path: Optional[str] = None,
         # Separate MTP drafter for local Gemma loads (HF loads auto-resolve it)
         mtp_draft_path: Optional[str] = None,
+        # Separate DFlash block-diffusion drafter (resolved like the MTP drafter)
+        dflash_draft_path: Optional[str] = None,
         # HF mode: let llama-server download via -hf "repo:quant"
         hf_repo: Optional[str] = None,
         hf_variant: Optional[str] = None,
@@ -4582,6 +4603,7 @@ class LlamaCppBackend:
             "gguf_path": gguf_path,
             "mmproj_path": mmproj_path,
             "mtp_draft_path": mtp_draft_path,
+            "dflash_draft_path": dflash_draft_path,
             "hf_repo": hf_repo,
             "hf_variant": hf_variant,
             "hf_token": hf_token,
@@ -4612,6 +4634,7 @@ class LlamaCppBackend:
             if self._already_in_target_state(
                 gguf_path = gguf_path,
                 mtp_draft_path = mtp_draft_path,
+                dflash_draft_path = dflash_draft_path,
                 model_identifier = model_identifier,
                 hf_variant = hf_variant,
                 n_ctx = n_ctx,
@@ -5714,6 +5737,9 @@ class LlamaCppBackend:
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
                     mtp_draft_path = mtp_draft_path,
                 )
+                launch_dflash_draft_path = self._resolve_launch_drafter_path(
+                    dflash_draft_path, "DFlash"
+                )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -5723,6 +5749,7 @@ class LlamaCppBackend:
                     gpus = bool(gpus),
                     binary = binary,
                     mtp_draft_path = launch_mtp_draft_path,
+                    dflash_draft_path = launch_dflash_draft_path,
                 )
                 # Remember where the spec block sits so a drafter-load failure
                 # can be retried with these flags swapped out (see below).
@@ -6022,6 +6049,7 @@ class LlamaCppBackend:
                 self._gguf_path = model_path
                 self._hf_repo = hf_repo
                 self._mtp_draft_path = launch_mtp_draft_path
+                self._dflash_draft_path = launch_dflash_draft_path
                 # For local GGUF files, extract variant from filename if absent
                 if hf_variant:
                     self._hf_variant = hf_variant
@@ -6095,6 +6123,13 @@ class LlamaCppBackend:
                 _spec_requested_mtp = any(
                     "mtp" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_mtp(extra_args, env = _launch_spec_env)
+                # DFlash uses the same separate-drafter spawn as MTP and can
+                # abort the server the same way (binary predates the arch, or
+                # the drafter GGUF fails to build), so it shares the retry path
+                # below. Not part of the MTP+tensor probe/watchdog above.
+                _spec_requested_dflash = any(
+                    "dflash" in str(t).lower() for t in spec_flags
+                )
                 # Is the launched server actually running MTP+tensor? Gates the
                 # probe/watchdog/recovery; cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(
@@ -6145,14 +6180,18 @@ class LlamaCppBackend:
                 # _requested_spec_mode so a duplicate /load doesn't thrash. The
                 # cancel check stops an /unload-killed attempt respawning. A
                 # decode-probe failure above also routes here.
-                if not healthy and _spec_requested_mtp and not self._cancel_event.is_set():
-                    # Blame the binary only when the output shows MTP itself
-                    # failing (unknown arch / draft or context build); an
+                if (
+                    not healthy
+                    and (_spec_requested_mtp or _spec_requested_dflash)
+                    and not self._cancel_event.is_set()
+                ):
+                    # Blame the binary only when the output shows the drafter
+                    # itself failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
                     _lo = "\n".join(self._stdout_lines).lower()
                     # Only an unknown architecture proves the prebuilt predates
-                    # this MTP model (an update fixes it). The memory/context
-                    # build failures are generic (VRAM / ctx pressure), where an
+                    # this model (an update fixes it). The memory/context build
+                    # failures are generic (VRAM / ctx pressure), where an
                     # update may not help, so classify those as runtime_error.
                     _arch_unsupported = "unknown model architecture" in _lo
                     if (
@@ -6164,23 +6203,24 @@ class LlamaCppBackend:
                         _retry_reason = (
                             "the prebuilt may predate it; retrying without "
                             "speculative decoding -- run `unsloth studio "
-                            "update` for MTP"
+                            "update` for the latest spec support"
                         )
                         self._spec_fallback_reason = (
                             "binary_outdated" if _arch_unsupported else "runtime_error"
                         )
                     else:
                         _retry_reason = (
-                            "retrying without speculative decoding in case MTP is the cause"
+                            "retrying without speculative decoding in case the drafter "
+                            "is the cause"
                         )
                         self._spec_fallback_reason = "runtime_error"
                     _drafter = (
-                        Path(launch_mtp_draft_path).name
-                        if launch_mtp_draft_path
+                        Path(launch_mtp_draft_path or launch_dflash_draft_path).name
+                        if (launch_mtp_draft_path or launch_dflash_draft_path)
                         else "embedded head"
                     )
                     logger.warning(
-                        "llama-server failed to start with MTP (%s); %s.",
+                        "llama-server failed to start with speculative decoding (%s); %s.",
                         _drafter,
                         _retry_reason,
                     )
@@ -6330,6 +6370,7 @@ class LlamaCppBackend:
         gpus: bool,
         binary: Optional[str],
         mtp_draft_path: Optional[str] = None,
+        dflash_draft_path: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -6391,6 +6432,10 @@ class LlamaCppBackend:
             or _is_mtp_model_name(model_identifier, model_path)
             or bool(mtp_draft_path)
         )
+        # DFlash is always a separate drafter (never an embedded head), so the
+        # only signal is a resolved drafter path. Mutually exclusive with MTP:
+        # llama-server takes one --model-draft.
+        is_dflash_model = bool(dflash_draft_path)
         user_owns_spec_type = _extra_args_set_spec_type(extra_args)
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
@@ -6480,6 +6525,40 @@ class LlamaCppBackend:
             logger.info(f"Spec decoding: {mtp_token} ({chain_label})")
             return True
 
+        def _emit_dflash() -> bool:
+            """Append --model-draft <drafter> --spec-type draft-dflash + n-max.
+
+            DFlash is the Gemma-style separate-drafter mechanism: a standalone
+            block-diffusion draft GGUF (never an embedded head), so the path is
+            always emitted. The trained block size caps the draft length and
+            llama-server clamps to block_size-1; the acceptance/draft-cost sweet
+            spot is ~4-6, so the platform default is 4 (vs MTP's 2/3).
+            """
+            caps = self.probe_server_capabilities(binary)
+            dflash_token = caps.get("dflash_token") if caps else None
+            if not dflash_token:
+                logger.warning(
+                    "Requested DFlash speculative decoding but llama-server "
+                    "lacks --spec-type draft-dflash; run `unsloth studio "
+                    "update`. Loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "binary_no_dflash"
+                return False
+            if spec_draft_n_max is not None:
+                draft_n_max = int(spec_draft_n_max)
+                self._spec_draft_n_max = draft_n_max
+            else:
+                draft_n_max = 4
+            n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
+            flags.extend(["--model-draft", dflash_draft_path])
+            flags.extend(["--spec-type", dflash_token, n_max_flag, str(draft_n_max)])
+            self._speculative_type = "draft-dflash"
+            logger.info(f"Using DFlash drafter: {dflash_draft_path}")
+            logger.info(f"Spec decoding: draft-dflash (n-max {draft_n_max})")
+            return True
+
         def _emit_ngram_mod() -> bool:
             """Append --spec-type ngram-mod + flag-set knobs."""
             ngram_caps = self.probe_server_capabilities(binary)
@@ -6511,6 +6590,13 @@ class LlamaCppBackend:
 
         if effective_mode == "off":
             return flags  # nothing to emit
+        # DFlash: separate block-diffusion drafter, independent of the MTP /
+        # ngram branches (mutually exclusive -- one --model-draft). Auto-engages
+        # whenever a drafter resolved; there is no forced "dflash" UI mode, so a
+        # drafter sibling is the only trigger (like Gemma's separate MTP drafter).
+        if is_dflash_model and effective_mode == "auto":
+            _emit_dflash()
+            return flags
         if effective_mode == "ngram-simple":
             flags.extend(["--spec-type", "ngram-simple"])
             self._speculative_type = "ngram-simple"
@@ -6638,6 +6724,7 @@ class LlamaCppBackend:
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
         mtp_draft_path: Optional[str] = None,
+        dflash_draft_path: Optional[str] = None,
         preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
@@ -6713,11 +6800,11 @@ class LlamaCppBackend:
         ):
             return False
 
-        # spec_draft_n_max only matters when an MTP variant is engaged. Compare
-        # on the resolved spec so an Auto request promoted to draft-mtp still
-        # bounces a reload when n_max changes.
+        # spec_draft_n_max only matters when a model-draft variant is engaged
+        # (draft-mtp or draft-dflash). Compare on the resolved spec so an Auto
+        # request promoted to a drafter still bounces a reload when n_max changes.
         if (
-            self._speculative_type == "draft-mtp"
+            self._speculative_type in ("draft-mtp", "draft-dflash")
             and spec_draft_n_max is not None
             and int(spec_draft_n_max) != (self._spec_draft_n_max or 0)
         ):
@@ -6739,6 +6826,16 @@ class LlamaCppBackend:
             gguf_path is not None
             and req_mode in ("auto", "mtp", "mtp+ngram")
             and (mtp_draft_path or None) != (self._mtp_draft_path or None)
+        ):
+            return False
+
+        # Same for the DFlash drafter, which only engages in auto mode (no
+        # forced "dflash" UI mode): a dflash-*.gguf added/removed next to a
+        # local GGUF changes the launch command, so reload rather than dedupe.
+        if (
+            gguf_path is not None
+            and req_mode == "auto"
+            and (dflash_draft_path or None) != (self._dflash_draft_path or None)
         ):
             return False
 
@@ -6777,6 +6874,7 @@ class LlamaCppBackend:
             self._gguf_path = None
             self._hf_repo = None
             self._mtp_draft_path = None
+            self._dflash_draft_path = None
             self._spec_fallback_reason = None
             self._last_load_kwargs = None
             self._mtp_runtime_fallback_active = False
