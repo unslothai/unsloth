@@ -1,13 +1,43 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import contextlib
 import json
+import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import typer
 import yaml
+
+
+@contextlib.contextmanager
+def _silence():
+    from rich.console import Console
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    real = os.fdopen(os.dup(1), "w", closefd = True)
+    saved_out, saved_err = os.dup(1), os.dup(2)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    devnull_py = open(os.devnull, "w")
+    old_out, old_err = sys.stdout, sys.stderr
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        sys.stdout, sys.stderr = devnull_py, devnull_py
+        yield Console(file = real)
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+        os.dup2(saved_out, 1)
+        os.dup2(saved_err, 2)
+        os.close(saved_out)
+        os.close(saved_err)
+        os.close(devnull_fd)
+        devnull_py.close()
+        real.close()
 
 
 def resolve_base_model(model: str) -> Optional[str]:
@@ -202,7 +232,8 @@ def evaluate(
     task_manager = TaskManager(include_path = include_paths) if include_paths else None
 
     if backend == "unsloth":
-        import unsloth
+        with _silence():
+            import unsloth
 
         if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
             typer.echo(
@@ -235,16 +266,17 @@ def evaluate(
             args = [f"pretrained={model}"]
         if load_in_4bit and device and device.startswith("cuda"):
             args.append("load_in_4bit=True")
-        results = lm_eval.simple_evaluate(
-            model = "hf",
-            model_args = ",".join(args),
-            tasks = task_names,
-            num_fewshot = num_fewshot,
-            limit = limit,
-            batch_size = bs,
-            device = device,
-            task_manager = task_manager,
-        )
+        with _silence() as ui, ui.status(f"[cyan]Evaluating {', '.join(task_names)}…"):
+            results = lm_eval.simple_evaluate(
+                model = "hf",
+                model_args = ",".join(args),
+                tasks = task_names,
+                num_fewshot = num_fewshot,
+                limit = limit,
+                batch_size = bs,
+                device = device,
+                task_manager = task_manager,
+            )
     else:
         from unsloth import FastLanguageModel
 
@@ -255,29 +287,32 @@ def evaluate(
         )
         if base_model and detected_base:
             typer.echo(f"Loading base model '{base_model}' with adapter '{model}'...")
-            lmodel, tokenizer = FastLanguageModel.from_pretrained(
-                model_name = base_model, **load_kwargs
-            )
-            from peft import PeftModel
+            with _silence():
+                lmodel, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name = base_model, **load_kwargs
+                )
+                from peft import PeftModel
 
-            lmodel = PeftModel.from_pretrained(lmodel, model)
+                lmodel = PeftModel.from_pretrained(lmodel, model)
         else:
             if detected_base:
                 typer.echo(f"Detected LoRA adapter (base: {detected_base}).")
             typer.echo(f"Loading model: {model}")
-            lmodel, tokenizer = FastLanguageModel.from_pretrained(
-                model_name = model, **load_kwargs
-            )
+            with _silence():
+                lmodel, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name = model, **load_kwargs
+                )
 
-        FastLanguageModel.for_inference(lmodel)
-        lm = HFLM(pretrained = lmodel, tokenizer = tokenizer, batch_size = bs)
-        results = lm_eval.simple_evaluate(
-            model = lm,
-            tasks = task_names,
-            num_fewshot = num_fewshot,
-            limit = limit,
-            task_manager = task_manager,
-        )
+        with _silence() as ui, ui.status(f"[cyan]Evaluating {', '.join(task_names)}…"):
+            FastLanguageModel.for_inference(lmodel)
+            lm = HFLM(pretrained = lmodel, tokenizer = tokenizer, batch_size = bs)
+            results = lm_eval.simple_evaluate(
+                model = lm,
+                tasks = task_names,
+                num_fewshot = num_fewshot,
+                limit = limit,
+                task_manager = task_manager,
+            )
 
     if results is None:
         typer.echo("Error: evaluation returned no results.", err = True)
