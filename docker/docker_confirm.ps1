@@ -206,12 +206,13 @@ if (-not $script:STUDIO_CID) {
   $okStudio = $false; $okJupyter = $false
   foreach ($i in 1..60) {
     if (-not $okStudio)  { try { Invoke-WebRequest -UseBasicParsing -Uri "http://localhost:$PORT_STUDIO/api/health" -TimeoutSec 4 | Out-Null; $okStudio = $true } catch {} }
-    if (-not $okJupyter) { try { Invoke-WebRequest -UseBasicParsing -Uri "http://localhost:$PORT_JUPYTER/api"       -TimeoutSec 4 | Out-Null; $okJupyter = $true } catch {} }
+    # /login, not /api: a password hash is always configured so /api returns 403.
+    if (-not $okJupyter) { try { Invoke-WebRequest -UseBasicParsing -Uri "http://localhost:$PORT_JUPYTER/login"     -TimeoutSec 4 | Out-Null; $okJupyter = $true } catch {} }
     if ($okStudio -and $okJupyter) { break }
     Start-Sleep -Seconds 5
   }
   if ($okStudio)  { Ok "Studio /api/health healthy" } else { Bad "Studio /api/health never went healthy (docker logs $($script:STUDIO_CID.Substring(0,12)))"; docker logs --tail 15 $script:STUDIO_CID 2>&1 | ForEach-Object { Info $_ } }
-  if ($okJupyter) { Ok "JupyterLab /api responding" } else { Bad "JupyterLab /api never responded" }
+  if ($okJupyter) { Ok "JupyterLab /login responding" } else { Bad "JupyterLab /login never responded" }
 }
 Hr
 
