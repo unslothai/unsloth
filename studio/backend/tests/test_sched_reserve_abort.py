@@ -249,9 +249,11 @@ def test_abort_memo_key_includes_variant():
     src = _load_model_src()
     assert "_abort_memo_model" in src
     assert "hf_variant" in src and "gguf_path" in src
+
     # Sanity: distinct variants produce distinct keys for the same model.
     def key(model, variant, gguf):
         return "\x00".join([model or "", variant or "", gguf or ""])
+
     assert key("repo", "UD-Q6_K", None) != key("repo", "UD-Q4_K_XL", None)
 
 
