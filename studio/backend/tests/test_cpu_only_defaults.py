@@ -134,9 +134,11 @@ def test_cpu_context_floors_to_min_when_weights_exceed_budget():
 
 
 def test_numa_decision_uses_footprint_not_just_weights():
-    """The NUMA interleave decision must use weights + KV, so a model whose weights fit
-    one node but whose footprint does not still interleaves (PR review fix)."""
+    """The NUMA interleave decision must use weights + KV (at the launched parallel
+    slots), so a model whose weights fit one node but whose footprint does not still
+    interleaves (PR review fixes)."""
     src = _load_model_src()
     assert "_numa_footprint" in src
-    assert "_estimate_kv_cache_bytes(" in src
     assert "decide_interleave(_numa_footprint" in src
+    # KV must be sized for the launched --parallel slots, not the n_parallel=1 default.
+    assert "effective_ctx, cache_type_kv, n_parallel = n_parallel" in src

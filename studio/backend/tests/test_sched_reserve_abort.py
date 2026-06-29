@@ -243,18 +243,23 @@ def test_failfast_guard_runs_before_killing_the_live_server():
     assert guard_line < kill_line
 
 
-def test_abort_memo_key_includes_variant():
-    """The memo key must include hf_variant / gguf_path so a failed quant does not
-    block a different quant of the same repo (PR review fix)."""
+def test_abort_memo_key_includes_variant_and_launch_settings():
+    """The memo key must include the variant AND the launch settings (context, spec),
+    so a failed quant does not block a different quant, and changing -c / spec (the
+    recommended recovery) is allowed to retry while an identical replay stays blocked."""
     src = _load_model_src()
     assert "_abort_memo_model" in src
-    assert "hf_variant" in src and "gguf_path" in src
+    for tok in ("hf_variant", "gguf_path", "str(n_ctx)", "speculative_type", "extra_args"):
+        assert tok in src, tok
 
-    # Sanity: distinct variants produce distinct keys for the same model.
-    def key(model, variant, gguf):
-        return "\x00".join([model or "", variant or "", gguf or ""])
+    def key(model="repo", variant="", gguf="", n_ctx=4096, spec="", extra=""):
+        return "\x00".join([model, variant, gguf, str(n_ctx), spec, extra])
 
-    assert key("repo", "UD-Q6_K", None) != key("repo", "UD-Q4_K_XL", None)
+    base = key(variant="UD-Q6_K")
+    assert base != key(variant="UD-Q4_K_XL")  # different quant -> retry allowed
+    assert base != key(variant="UD-Q6_K", n_ctx=2048)  # lower context -> retry allowed
+    assert base != key(variant="UD-Q6_K", spec="off")  # disable spec -> retry allowed
+    assert base == key(variant="UD-Q6_K")  # identical replay -> still blocked
 
 
 def test_load_model_records_abort_on_crash():

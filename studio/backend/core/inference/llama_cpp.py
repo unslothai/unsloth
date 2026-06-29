@@ -4714,12 +4714,21 @@ class LlamaCppBackend:
             binary = self._find_llama_server_binary()
 
             # Fail fast BEFORE killing the live server (so a known-bad reload is
-            # non-destructive) if this (binary, model, variant) already aborted in the
-            # graph scheduler this session: reloading re-reads the weights into the same
-            # crash (a startup crash 500s and the UI replays /load). Keyed per variant so
-            # a failed quant does not block trying a different quant in the same repo.
+            # non-destructive) if this exact launch already aborted in the graph
+            # scheduler this session: reloading re-reads the weights into the same crash
+            # (a startup crash 500s and the UI replays /load). The key includes the
+            # variant AND the launch settings (context, spec) so an identical replay is
+            # blocked but a user changing quant / lowering -c / disabling spec -- the
+            # exact recovery the error message recommends -- is allowed to retry.
             _abort_memo_model = "\x00".join(
-                [model_identifier or "", hf_variant or "", gguf_path or ""]
+                [
+                    model_identifier or "",
+                    hf_variant or "",
+                    gguf_path or "",
+                    str(n_ctx),
+                    str(speculative_type or ""),
+                    " ".join(str(a) for a in (extra_args or [])),
+                ]
             )
             if LlamaCppBackend._sched_reserve_aborts(binary, _abort_memo_model):
                 logger.warning(
@@ -5990,7 +5999,7 @@ class LlamaCppBackend:
                     if model_size and effective_ctx > 0 and self._can_estimate_kv():
                         try:
                             _numa_footprint = model_size + self._estimate_kv_cache_bytes(
-                                effective_ctx, cache_type_kv
+                                effective_ctx, cache_type_kv, n_parallel = n_parallel
                             )
                         except Exception:
                             _numa_footprint = model_size
