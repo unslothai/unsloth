@@ -88,7 +88,11 @@ def is_bound(src: str, name: str) -> bool:
     return tree is not None and name in _module_bindings(tree)
 
 
-def has_def(src: str, name: str, kind: str = "any") -> bool:
+def has_def(
+    src: str,
+    name: str,
+    kind: str = "any",
+) -> bool:
     """`class name` / `def name` at any depth; with kind="any" also any module binding."""
     tree = _parse(src)
     if tree is None:
@@ -107,7 +111,12 @@ def has_def(src: str, name: str, kind: str = "any") -> bool:
     return kind == "any" and name in _module_bindings(tree)
 
 
-def function_params(src: str, name: str, *, cls: str | None = None) -> tuple[str, ...] | None:
+def function_params(
+    src: str,
+    name: str,
+    *,
+    cls: str | None = None,
+) -> tuple[str, ...] | None:
     """Param names of the first `def name(...)`; scoped to `class cls:` if given. None if absent."""
     tree = _parse(src)
     if tree is None:
