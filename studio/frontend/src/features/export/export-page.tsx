@@ -77,10 +77,6 @@ const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clea
 type SourceTab = "local" | "checkpoint" | "hf";
 type SourceMode = "checkpoint" | "model";
 
-function leafName(value: string): string {
-  const parts = value.trim().split(/[\\/]+/).filter(Boolean);
-  return parts.at(-1) ?? value;
-}
 
 function safePathSegment(
   value: string | null | undefined,
@@ -105,8 +101,8 @@ function buildRelativeSaveDirectory(
   if (exportMethod === "gguf") {
     const rawName =
       sourceMode === "checkpoint"
-        ? selectedModelIdx ?? checkpoint ?? sourceBaseModelName
-        : leafName(sourceBaseModelName);
+        ? checkpoint ?? selectedModelIdx ?? sourceBaseModelName
+        : sourceBaseModelName;
     return `${safePathSegment(rawName)}-GGUF`;
   }
   return `${selectedModelIdx ?? "model"}/${checkpoint}`;
