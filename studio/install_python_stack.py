@@ -1018,6 +1018,21 @@ def _explicit_cpu_torch_index_url() -> "str | None":
     return url if leaf == "cpu" else None
 
 
+def _explicit_cuda_torch_index_url() -> "str | None":
+    """The pinned wheel index URL when it names a CUDA family (leaf cu*), else None.
+
+    Mirrors _explicit_rocm/cpu_torch_index_url so _ensure_cuda_torch only treats a
+    *CUDA* pin as authority to override the NVIDIA-presence gate. An arbitrary
+    mirror URL (or a ROCm/CPU pin) must not force a CUDA reinstall over a working
+    ROCm/CPU venv on a non-NVIDIA host.
+    """
+    url = _explicit_torch_index_url()
+    if url is None:
+        return None
+    leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
+    return url if leaf.startswith("cu") else None
+
+
 def _ensure_cuda_torch() -> None:
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
@@ -1053,7 +1068,7 @@ def _ensure_cuda_torch() -> None:
     # An explicit CUDA wheel-index pin (headless / container / CI cross-install)
     # commits to CUDA wheels regardless of whether a GPU is visible here, so it
     # overrides the GPU-presence gate.
-    if not _has_usable_nvidia_gpu() and _explicit_torch_index_url() is None:
+    if not _has_usable_nvidia_gpu() and _explicit_cuda_torch_index_url() is None:
         return
 
     # Classify the installed torch: "hip" (ROCm build -- the poisoning

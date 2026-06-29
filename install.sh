@@ -2001,16 +2001,21 @@ get_torch_index_url() {
     # UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim); UNSLOTH_TORCH_INDEX_FAMILY
     # is the convenience form (cpu, cu124, cu126, cu128, cu130, rocm6.4, ...)
     # appended to the mirror base so UNSLOTH_PYTORCH_MIRROR is still honoured.
-    if [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ]; then
+    # Trim leading/trailing whitespace so a whitespace-only value is treated as
+    # unset (parity with the Python .strip() and PowerShell IsNullOrWhiteSpace
+    # paths); otherwise "   " would pass -n and yield an invalid index URL.
+    _url="${UNSLOTH_TORCH_INDEX_URL:-}"
+    _url="${_url#"${_url%%[![:space:]]*}"}"; _url="${_url%"${_url##*[![:space:]]}"}"
+    if [ -n "$_url" ]; then
         # Strip ALL trailing slashes (match the Python side's .rstrip("/") and the
         # Strix mirror handling below) -- a double/triple-slash URL 404s on strict
         # pip proxies (artifactory, sonatype).
-        _url="${UNSLOTH_TORCH_INDEX_URL}"
         while [ "${_url%/}" != "$_url" ]; do _url="${_url%/}"; done
         echo "$_url"; return
     fi
-    if [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
-        _family="${UNSLOTH_TORCH_INDEX_FAMILY}"
+    _family="${UNSLOTH_TORCH_INDEX_FAMILY:-}"
+    _family="${_family#"${_family%%[![:space:]]*}"}"; _family="${_family%"${_family##*[![:space:]]}"}"
+    if [ -n "$_family" ]; then
         while [ "${_family#/}" != "$_family" ]; do _family="${_family#/}"; done
         while [ "${_family%/}" != "$_family" ]; do _family="${_family%/}"; done
         echo "$_base/$_family"; return
