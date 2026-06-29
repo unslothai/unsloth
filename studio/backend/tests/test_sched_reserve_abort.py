@@ -252,14 +252,21 @@ def test_abort_memo_key_includes_variant_and_launch_settings():
     for tok in ("hf_variant", "gguf_path", "str(n_ctx)", "speculative_type", "extra_args"):
         assert tok in src, tok
 
-    def key(model="repo", variant="", gguf="", n_ctx=4096, spec="", extra=""):
+    def key(
+        model = "repo",
+        variant = "",
+        gguf = "",
+        n_ctx = 4096,
+        spec = "",
+        extra = "",
+    ):
         return "\x00".join([model, variant, gguf, str(n_ctx), spec, extra])
 
-    base = key(variant="UD-Q6_K")
-    assert base != key(variant="UD-Q4_K_XL")  # different quant -> retry allowed
-    assert base != key(variant="UD-Q6_K", n_ctx=2048)  # lower context -> retry allowed
-    assert base != key(variant="UD-Q6_K", spec="off")  # disable spec -> retry allowed
-    assert base == key(variant="UD-Q6_K")  # identical replay -> still blocked
+    base = key(variant = "UD-Q6_K")
+    assert base != key(variant = "UD-Q4_K_XL")  # different quant -> retry allowed
+    assert base != key(variant = "UD-Q6_K", n_ctx = 2048)  # lower context -> retry allowed
+    assert base != key(variant = "UD-Q6_K", spec = "off")  # disable spec -> retry allowed
+    assert base == key(variant = "UD-Q6_K")  # identical replay -> still blocked
 
 
 def test_load_model_records_abort_on_crash():
