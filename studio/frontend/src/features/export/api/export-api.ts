@@ -162,6 +162,8 @@ export async function exportGGUF(params: {
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
+  private?: boolean;
+  gguf_shard_size?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",

@@ -1382,6 +1382,23 @@ def get_executable(executables):
     return None
 
 
+def _resolve_gguf_shard_size(gguf_shard_size: Optional[str]) -> str:
+    """
+    Resolve a user-supplied gguf_shard_size value to the string passed to
+    convert_to_gguf's max_shard_size argument.
+
+    - None or ""      → "50GB"  (default: effectively one file for most models)
+    - "0" or "none"   → "100000GB"  (no sharding: one file regardless of size)
+    - anything else   → passed through as-is (e.g. "2GB", "4GB")
+    """
+    if gguf_shard_size is None:
+        return "50GB"
+    cleaned = gguf_shard_size.strip().lower()
+    if cleaned in ("", "0", "none"):
+        return "100000GB"
+    return gguf_shard_size.strip()
+
+
 def save_to_gguf(
     model_name: str,
     model_type: str,
@@ -1392,6 +1409,7 @@ def save_to_gguf(
     first_conversion: str = None,
     is_vlm: bool = False,
     is_gpt_oss: bool = False,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Orchestrates the complete GGUF conversion process.
@@ -1547,7 +1565,7 @@ def save_to_gguf(
             supported_vision_archs = supported_vision_archs,
             is_vlm = is_vlm,
             is_gpt_oss = is_gpt_oss,
-            max_shard_size = "50GB",
+            max_shard_size = _resolve_gguf_shard_size(gguf_shard_size),
             print_output = print_output,
         )
     # update is_vlm switch
@@ -2180,6 +2198,7 @@ def unsloth_save_pretrained_gguf(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -2395,8 +2414,9 @@ def unsloth_save_pretrained_gguf(
             model_directory = save_directory,
             quantization_method = quantization_methods,
             first_conversion = first_conversion,
-            is_vlm = is_vlm,  # Pass VLM flag
-            is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
+            is_vlm = is_vlm,
+            is_gpt_oss = is_gpt_oss,
+            gguf_shard_size = gguf_shard_size,
         )
     except Exception as e:
         if IS_KAGGLE_ENVIRONMENT:
@@ -2493,6 +2513,7 @@ def unsloth_push_to_hub_gguf(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
     datasets: Optional[List[str]] = None,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2553,6 +2574,7 @@ def unsloth_push_to_hub_gguf(
             safe_serialization = safe_serialization,
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
+            gguf_shard_size = gguf_shard_size,
         )
 
         # Extract results

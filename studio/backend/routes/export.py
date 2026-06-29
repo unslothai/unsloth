@@ -350,6 +350,8 @@ async def export_gguf(
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
             hf_token = request.hf_token,
+            private = request.private,
+            gguf_shard_size = request.gguf_shard_size,
         )
 
         if not success:

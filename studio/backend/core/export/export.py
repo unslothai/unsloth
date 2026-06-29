@@ -621,6 +621,8 @@ class ExportBackend:
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
+        private: bool = False,
+        gguf_shard_size: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
@@ -687,10 +689,16 @@ class ExportBackend:
 
                 _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
                 model_tmp_to_cleanup = _model_tmp
+
+                # unsloth saves intermediate HF model files into _model_tmp.
+                # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
+                save_gguf_kwargs = dict(quantization_method = quant_method)
+                if gguf_shard_size is not None:
+                    save_gguf_kwargs["gguf_shard_size"] = gguf_shard_size
                 self.current_model.save_pretrained_gguf(
                     _model_tmp,
                     self.current_tokenizer,
-                    quantization_method = quant_method,
+                    **save_gguf_kwargs,
                 )
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
@@ -752,11 +760,17 @@ class ExportBackend:
 
                 logger.info(f"Pushing GGUF model to Hub: {repo_id}")
 
+                push_gguf_kwargs = dict(
+                    quantization_method = quant_method,
+                    token = hf_token,
+                    private = private,
+                )
+                if gguf_shard_size is not None:
+                    push_gguf_kwargs["gguf_shard_size"] = gguf_shard_size
                 self.current_model.push_to_hub_gguf(
                     repo_id,
                     self.current_tokenizer,
-                    quantization_method = quant_method,
-                    token = hf_token,
+                    **push_gguf_kwargs,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 

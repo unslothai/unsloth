@@ -170,34 +170,22 @@ class ExportBaseModelRequest(ExportCommonOptions):
     # Uses fields from ExportCommonOptions only
 
 
-class ExportGGUFRequest(BaseModel):
+class ExportGGUFRequest(ExportCommonOptions):
     """Request for exporting the current model to GGUF format."""
-
-    save_directory: str = Field(
-        ...,
-        description = "Directory where GGUF files will be saved",
-    )
-
-    @field_validator("save_directory", mode = "before")
-    @classmethod
-    def _check_save_directory(cls, v):
-        return _validate_save_directory(v)
 
     quantization_method: str = Field(
         "Q4_K_M",
         description = 'GGUF quantization method (e.g. "Q4_K_M")',
     )
-    push_to_hub: bool = Field(
-        False,
-        description = "If True, also push GGUF artifacts to the Hugging Face Hub",
-    )
-    repo_id: Optional[str] = Field(
+    gguf_shard_size: Optional[str] = Field(
         None,
-        description = "Hugging Face Hub repository ID for GGUF upload",
-    )
-    hf_token: Optional[str] = Field(
-        None,
-        description = "Hugging Face token for GGUF upload",
+        description = (
+            "Maximum shard size for the initial full-precision GGUF conversion. "
+            "Pass None or '' to use the default (50GB, one file for most models). "
+            "Pass '0' or 'none' to force a single file regardless of model size. "
+            "Examples: '2GB', '4GB', '10GB'. "
+            "Note: quantized outputs (Q4_K_M etc.) are always a single file."
+        ),
     )
 
 
