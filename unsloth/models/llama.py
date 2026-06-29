@@ -2439,8 +2439,10 @@ class FastLlamaModel:
             # Bare load reads only ROOT weights; skip subdir weights (fp16/, experimental/). Ignored
             # when a subfolder is set.
             weights_at_root = True,
-            variant = kwargs.get("variant"),       # forward so the warm keeps the variant .bin
-            gguf_file = kwargs.get("gguf_file"),   # forward so the warm fetches the GGUF (else ignored)
+            variant = kwargs.get("variant"),  # forward so the warm keeps the variant .bin
+            gguf_file = kwargs.get(
+                "gguf_file"
+            ),  # forward so the warm fetches the GGUF (else ignored)
         )
         # Child already did the forced download; clear the flag so the load reuses the warm cache.
         if _prefetched and kwargs.get("force_download", False):
