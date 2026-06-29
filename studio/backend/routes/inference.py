@@ -8526,10 +8526,14 @@ async def anthropic_messages(
             else:
                 openai_messages.insert(0, {"role": "system", "content": _nudge})
 
-        # Strip stale tool-call XML from conversation
+        # Strip stale tool-call XML from conversation. Use the protected display
+        # helper (not raw _TOOL_XML_RE.sub) so rehearsal text inside <think> is
+        # preserved and a nested [TOOL_CALLS] call keeps its trailing prose.
         for _msg in openai_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
-                _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+                _msg["content"] = _strip_tool_xml_for_display(
+                    _msg["content"], auto_heal_tool_calls = True
+                ).strip()
 
         def _run_tool_gen():
             return llama_backend.generate_chat_completion_with_tools(
@@ -8681,9 +8685,13 @@ async def _anthropic_tool_stream(
                         captured_finish_reason = _fr
                 # Strip leaked tool-call XML from content events first, so a
                 # content event that was purely tool XML doesn't count as text.
+                # Protected helper preserves <think> rehearsal and balanced
+                # [TOOL_CALLS] trailing prose (raw _TOOL_XML_RE.sub corrupts both).
                 if etype == "content":
                     event = dict(event)
-                    event["text"] = _TOOL_XML_RE.sub("", event["text"])
+                    event["text"] = _strip_tool_xml_for_display(
+                        event["text"], auto_heal_tool_calls = True
+                    )
                 # disable_parallel_tool_use: keep only the first tool_use block,
                 # dropping every later tool_start and its paired tool_end (robust
                 # to empty tool-call ids — tracked by state, not id matching).
@@ -8868,8 +8876,9 @@ async def _anthropic_tool_non_streaming(
     for event in events:
         etype = event.get("type", "")
         if etype == "content":
-            # Strip leaked tool-call XML
-            clean = _TOOL_XML_RE.sub("", event["text"])
+            # Strip leaked tool-call XML (protected helper: preserves <think>
+            # rehearsal and balanced [TOOL_CALLS] trailing prose).
+            clean = _strip_tool_xml_for_display(event["text"], auto_heal_tool_calls = True)
             new = clean[len(prev_text) :]
             prev_text = clean
             if new:
@@ -9263,7 +9272,9 @@ async def _anthropic_passthrough_non_streaming(
     content_blocks = []
     text = message.get("content") or ""
     if text:
-        text = _TOOL_XML_RE.sub("", text).strip()
+        # Protected helper (not raw _TOOL_XML_RE.sub): preserves <think> rehearsal
+        # and balanced [TOOL_CALLS] trailing prose.
+        text = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip()
         if text:
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 

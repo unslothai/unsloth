@@ -57,6 +57,23 @@ def test_route_display_strip_preserves_rehearsal_inside_think():
     assert "answer" in out and "tail" in out
 
 
+def test_all_route_cleanup_sites_use_protected_display_helper():
+    # Every route content-cleanup site must go through _strip_tool_xml_for_display
+    # (think-preserving, balanced) -- including the Anthropic stream / non-stream /
+    # passthrough paths, which previously called raw _TOOL_XML_RE.sub and so
+    # corrupted <think> rehearsal and dropped trailing prose after nested calls.
+    # The only legitimate raw _TOOL_XML_RE.sub lives INSIDE the helper itself.
+    raw_sub_lines = [
+        (i, line)
+        for i, line in enumerate(_src.splitlines(), 1)
+        if "_TOOL_XML_RE.sub(" in line and not line.lstrip().startswith("#")
+    ]
+    assert len(raw_sub_lines) == 1, (
+        "raw _TOOL_XML_RE.sub must appear only inside _strip_tool_xml_for_display; "
+        f"found extra call sites: {raw_sub_lines!r}"
+    )
+
+
 def test_strips_well_formed_tool_call():
     text = (
         "Let me search.\n"
