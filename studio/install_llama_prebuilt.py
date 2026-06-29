@@ -5222,11 +5222,7 @@ def _has_command(command: str) -> bool:
 
 
 def _append_existing_bwrap_bind(
-    args: list[str],
-    *,
-    source: str | Path,
-    readonly: bool,
-    seen: set[str],
+    args: list[str], *, source: str | Path, readonly: bool, seen: set[str]
 ) -> None:
     path = Path(source)
     if not path.exists():
@@ -5430,9 +5426,7 @@ def _linux_validation_bwrap_prefix(
     if Path("/nix/store") in command_path.parents:
         readonly_targets.append("/nix/store")
     readonly_targets.extend(
-        part
-        for part in payload_env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
-        if part
+        part for part in payload_env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part
     )
     server_command = payload_command or command
 
@@ -5466,19 +5460,19 @@ def _linux_validation_bwrap_prefix(
         args.append("--unshare-all")
     args.extend(
         [
-        "--die-with-parent",
-        "--new-session",
-        "--perms",
-        "1777",
-        "--tmpfs",
-        "/tmp",
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--setenv",
-        "HOME",
-        runtime_home,
+            "--die-with-parent",
+            "--new-session",
+            "--perms",
+            "1777",
+            "--tmpfs",
+            "/tmp",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--setenv",
+            "HOME",
+            runtime_home,
         ]
     )
     is_server_helper = payload_command is not None and purpose == _VALIDATION_PURPOSE_SERVER
@@ -5555,12 +5549,7 @@ def _sandbox_profile_path_literals(path: str | Path) -> list[str]:
 
 
 def _macos_validation_sandbox_prefix(
-    command: list[str],
-    *,
-    binary_path: Path,
-    install_dir: Path,
-    purpose: str,
-    env: dict[str, str],
+    command: list[str], *, binary_path: Path, install_dir: Path, purpose: str, env: dict[str, str]
 ) -> list[str]:
     runtime_home = Path(isolated_runtime_home())
     read_targets: list[str | Path] = [
@@ -5574,11 +5563,7 @@ def _macos_validation_sandbox_prefix(
         binary_path.parent,
         runtime_home,
     ]
-    read_targets.extend(
-        part
-        for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep)
-        if part
-    )
+    read_targets.extend(part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part)
     write_targets: list[str | Path] = [runtime_home]
     if purpose == _VALIDATION_PURPOSE_QUANTIZE and len(command) >= 3:
         read_targets.append(Path(command[1]).parent)
@@ -5601,9 +5586,7 @@ def _macos_validation_sandbox_prefix(
         binary_path.parent,
     ]
     executable_map_targets.extend(
-        part
-        for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep)
-        if part
+        part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part
     )
     profile_parts = [
         "(version 1)",
@@ -5703,16 +5686,20 @@ def build_validation_sandbox_plan(
                 )
             network_policy = _VALIDATION_NETWORK_POLICY_SANDBOX
             server_probe_mode = (
-                _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX if purpose == _VALIDATION_PURPOSE_SERVER else None
+                _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX
+                if purpose == _VALIDATION_PURPOSE_SERVER
+                else None
             )
             launch_command = payload_command
             if purpose == _VALIDATION_PURPOSE_SERVER:
                 try:
-                    launch_command = _resolve_sandbox_command(_linux_validation_server_probe_command(
-                        payload_command,
-                        env,
-                        timeout = _LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS,
-                    ))
+                    launch_command = _resolve_sandbox_command(
+                        _linux_validation_server_probe_command(
+                            payload_command,
+                            env,
+                            timeout = _LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS,
+                        )
+                    )
                 except RuntimeError as exc:
                     return _ValidationLaunchPlan(
                         command = payload_command,
@@ -5776,7 +5763,9 @@ def build_validation_sandbox_plan(
     if _host_is_macos(host):
         if _has_command("sandbox-exec"):
             network_policy = (
-                _VALIDATION_NETWORK_POLICY_SANDBOX if purpose == _VALIDATION_PURPOSE_SERVER else _VALIDATION_NETWORK_POLICY_DIRECT
+                _VALIDATION_NETWORK_POLICY_SANDBOX
+                if purpose == _VALIDATION_PURPOSE_SERVER
+                else _VALIDATION_NETWORK_POLICY_DIRECT
             )
             launch_command = command
             return _ValidationLaunchPlan(
@@ -5811,7 +5800,9 @@ def build_validation_sandbox_plan(
             payload_command = command,
             payload_env = env,
             sandbox_kind = "macos_sandbox_exec",
-            network_policy = _VALIDATION_NETWORK_POLICY_DIRECT if purpose == _VALIDATION_PURPOSE_SERVER else _VALIDATION_NETWORK_POLICY_DIRECT,
+            network_policy = _VALIDATION_NETWORK_POLICY_DIRECT
+            if purpose == _VALIDATION_PURPOSE_SERVER
+            else _VALIDATION_NETWORK_POLICY_DIRECT,
             server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
         )
 
@@ -5839,9 +5830,7 @@ def build_validation_sandbox_plan(
 
 
 def _run_validation_capture(
-    plan: _ValidationLaunchPlan,
-    *,
-    timeout: int,
+    plan: _ValidationLaunchPlan, *, timeout: int
 ) -> subprocess.CompletedProcess[str]:
     if plan.is_skipped:
         raise PrebuiltFallback(f"{plan.purpose} launch was skipped by sandbox policy")
@@ -6613,9 +6602,7 @@ def validate_server(
             # hosts in the GPU-validation path so an AMD-only Linux host
             # is exercised against the actual hardware rather than the
             # CPU fallback. NVIDIA stays covered here.
-            _enable_gpu_layers = (
-                host.has_usable_nvidia or host.has_rocm
-            )
+            _enable_gpu_layers = host.has_usable_nvidia or host.has_rocm
             if host.is_linux and host.has_usable_nvidia:
                 gpu_backend = "cuda"
             elif host.is_linux and host.has_rocm:
@@ -6644,13 +6631,10 @@ def validate_server(
                 return
             exited_quickly = (time.time() - started_at) <= SERVER_BIND_RETRY_WINDOW_SECONDS
             failure = PrebuiltFallback("llama-server validation failed inside sandbox:\n" + output)
-            if (
-                port_attempt < SERVER_PORT_BIND_ATTEMPTS
-                and is_retryable_server_bind_error(
-                    RuntimeError(output),
-                    output,
-                    exited_quickly = exited_quickly,
-                )
+            if port_attempt < SERVER_PORT_BIND_ATTEMPTS and is_retryable_server_bind_error(
+                RuntimeError(output),
+                output,
+                exited_quickly = exited_quickly,
             ):
                 log(
                     f"llama-server startup hit a port race on {port}; retrying with a fresh port "
@@ -6787,9 +6771,7 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
         if server_binary.exists():
             server_env = binary_env(server_binary, install_dir, host)
             ldd_probe = _run_validation_ldd_probe(server_binary, env = server_env)
-            lines.append(
-                "linux_missing_libs_probe=" + ldd_probe.status
-            )
+            lines.append("linux_missing_libs_probe=" + ldd_probe.status)
             if ldd_probe.reason:
                 lines.append("linux_missing_libs_probe_reason=" + ldd_probe.reason)
             if ldd_probe.status == _LINUX_LDD_PROBE_OK:
