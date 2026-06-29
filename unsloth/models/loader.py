@@ -35,6 +35,7 @@ from peft import PeftConfig, PeftModel
 from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
+    _model_has_real_fp8_modules,
     _offline_quantize_to_fp8,
     _restore_missing_fp8_weight_scale_inv,
     _tag_model_with_fp8_torchao_config,
@@ -862,12 +863,12 @@ class FastLanguageModel(FastLlamaModel):
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
-        if restore_fp8_scales:
+        if restore_fp8_scales or _model_has_real_fp8_modules(model):
             _restored_count, _skipped_count = _restore_missing_fp8_weight_scale_inv(
                 model,
                 model_name,
                 token = token,
-                revision = revision,
+                revision = revision if not is_peft else None,
                 local_files_only = local_files_only,
             )
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
@@ -1744,12 +1745,12 @@ class FastModel(FastBaseModel):
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
-        if restore_fp8_scales:
+        if restore_fp8_scales or _model_has_real_fp8_modules(model):
             _restored_count, _skipped_count = _restore_missing_fp8_weight_scale_inv(
                 model,
                 model_name,
                 token = token,
-                revision = revision,
+                revision = revision if not is_peft else None,
                 local_files_only = local_files_only,
             )
             _tag_model_with_fp8_torchao_config(model, fp8_mode)

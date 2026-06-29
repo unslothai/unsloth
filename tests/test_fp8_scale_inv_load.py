@@ -87,6 +87,12 @@ def _make_checkpoint(path, tensors):
     return path
 
 
+def _make_bin_checkpoint(path, tensors):
+    full_path = os.path.join(path, "pytorch_model-00001-of-00001.bin")
+    torch.save(tensors, full_path)
+    return path
+
+
 class _Fp8Owner(torch.nn.Module):
     def __init__(self, weight, quant_method = "fp8", weight_scale = None):
         super().__init__()
@@ -209,7 +215,28 @@ def test_preserves_checkpoint_scale_dtype_for_packed_fp8_weights():
     assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([1.25], dtype = torch.float32))
 
 
-def test_loader_calls_restore_only_for_fp8_loads():
+def test_restores_missing_fp8_weight_scale_inv_from_bin_checkpoint():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_bin_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([2.5], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([2.5], dtype = torch.float32))
+
+
+def test_loader_detects_direct_or_requested_fp8_restore_paths():
     tree = ast.parse(LOADER.read_text())
     hit_count = 0
 
@@ -217,7 +244,16 @@ def test_loader_calls_restore_only_for_fp8_loads():
         if not isinstance(node, ast.If):
             continue
         test = node.test
-        if not isinstance(test, ast.Name) or test.id != "restore_fp8_scales":
+        if not (
+            isinstance(test, ast.BoolOp)
+            and isinstance(test.op, ast.Or)
+            and len(test.values) == 2
+            and isinstance(test.values[0], ast.Name)
+            and test.values[0].id == "restore_fp8_scales"
+            and isinstance(test.values[1], ast.Call)
+            and isinstance(test.values[1].func, ast.Name)
+            and test.values[1].func.id == "_model_has_real_fp8_modules"
+        ):
             continue
 
         call_names = set()
@@ -233,11 +269,50 @@ def test_loader_calls_restore_only_for_fp8_loads():
     assert hit_count == 2
 
 
+def test_loader_restores_fp8_scales_with_base_revision_for_peft():
+    tree = ast.parse(LOADER.read_text())
+    hit_count = 0
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "_restore_missing_fp8_weight_scale_inv":
+            continue
+
+        revision_kw = next((kw for kw in node.keywords if kw.arg == "revision"), None)
+        if revision_kw is None:
+            continue
+        value = revision_kw.value
+        if not (
+            isinstance(value, ast.IfExp)
+            and isinstance(value.test, ast.UnaryOp)
+            and isinstance(value.test.op, ast.Not)
+            and isinstance(value.test.operand, ast.Name)
+            and value.test.operand.id == "is_peft"
+            and isinstance(value.body, ast.Name)
+            and value.body.id == "revision"
+            and isinstance(value.orelse, ast.Constant)
+            and value.orelse.value is None
+        ):
+            continue
+        hit_count += 1
+
+    assert hit_count == 2
+
+
 def test_fp8_probe_skips_missing_optional_kernel_module():
     loader_utils = _load_loader_utils()
     module = torch.nn.Linear(4, 4, bias = False)
 
     assert loader_utils._is_real_fp8_owner(module) is False
+
+
+def test_model_has_real_fp8_modules_detects_nested_fp8_layers():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+
+    assert loader_utils._model_has_real_fp8_modules(model) is True
 
 
 def test_fp8_probe_uses_absolute_optional_import_and_narrow_missing_module_guard():

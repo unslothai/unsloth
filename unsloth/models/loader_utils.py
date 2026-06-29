@@ -403,6 +403,15 @@ def _is_real_fp8_owner(module):
     return False
 
 
+def _model_has_real_fp8_modules(model):
+    if not hasattr(model, "modules"):
+        return False
+    for module in model.modules():
+        if _is_real_fp8_owner(module):
+            return True
+    return False
+
+
 def _resolve_weight_scale_inv_candidates(module_name, named_modules):
     if module_name in named_modules:
         return module_name
@@ -441,16 +450,31 @@ def _find_fp8_scale_inv_tensors(model_dir, model_name, revision = None, token = 
     module_scales = {}
     suffix = ".weight_scale_inv"
     for filename in os.listdir(model_dir):
-        if not filename.endswith(".safetensors"):
-            continue
         full_path = os.path.join(model_dir, filename)
+        if filename.endswith(".safetensors"):
+            try:
+                with safe_open(full_path, framework = "pt", device = "cpu") as f:
+                    for key in f.keys():
+                        if not key.endswith(suffix):
+                            continue
+                        module_name = key[: -len(suffix)]
+                        module_scales[module_name] = f.get_tensor(key)
+            except Exception:
+                continue
+            continue
+        if not filename.endswith(".bin"):
+            continue
         try:
-            with safe_open(full_path, framework = "pt", device = "cpu") as f:
-                for key in f.keys():
-                    if not key.endswith(suffix):
-                        continue
-                    module_name = key[: -len(suffix)]
-                    module_scales[module_name] = f.get_tensor(key)
+            state_dict = torch.load(full_path, map_location = "cpu")
+            if isinstance(state_dict, dict) and isinstance(state_dict.get("state_dict"), dict):
+                state_dict = state_dict["state_dict"]
+            if not isinstance(state_dict, dict):
+                continue
+            for key, value in state_dict.items():
+                if not key.endswith(suffix) or not isinstance(value, torch.Tensor):
+                    continue
+                module_name = key[: -len(suffix)]
+                module_scales[module_name] = value
         except Exception:
             continue
     return list(module_scales.items())
