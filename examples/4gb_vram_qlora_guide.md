@@ -53,6 +53,42 @@ To fine-tune without spiking past 3.8GB VRAM, every hyperparameter must be caref
 
 ---
 
-## 4. Complete Reference Script (`train_4gb_vram.py`)
+## 4. trl 1.x API Note
 
-See `train_4gb_vram.py` in this directory for a complete executable script demonstrating how to fine-tune `Llama-3.2-1B-Instruct` within a 4GB VRAM budget.
+In **trl 1.x**, the `SFTTrainer` constructor was simplified. Parameters like `dataset_text_field`, `max_seq_length`, `packing`, and `dataset_num_proc` were **removed from `SFTTrainer`** and moved into `SFTConfig` (which extends `TrainingArguments`). The `tokenizer` parameter was renamed to `processing_class`.
+
+| Old (trl < 1.0) | New (trl 1.x) |
+| :--- | :--- |
+| `SFTTrainer(..., dataset_text_field="text")` | `SFTConfig(dataset_text_field="text")` |
+| `SFTTrainer(..., max_seq_length=1024)` | `SFTConfig(max_length=1024)` |
+| `SFTTrainer(..., packing=False)` | `SFTConfig(packing=False)` |
+| `SFTTrainer(..., tokenizer=tokenizer)` | `SFTTrainer(..., processing_class=tokenizer)` |
+
+See `train_4gb_vram.py` in this directory for a complete, trl 1.x-compatible executable script.
+
+---
+
+## 5. Verification Checklist
+
+Before submitting this guide to Unsloth's repository:
+
+```bash
+# 1. Set env vars
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_LAUNCH_BLOCKING=0
+
+# 2. Run the verification script (first run downloads ~700 MB model)
+cd examples/
+python train_4gb_vram.py
+```
+
+Expected output (GTX 1650):
+```
+GPU = NVIDIA GeForce GTX 1650. Max VRAM = 4.0 GB.
+✅ Training Complete!
+Peak reserved memory     = X.XXX GB (< 95% of total VRAM).
+```
+
+- [ ] Confirm `Peak reserved memory` stays below `3.8 GB`.
+- [ ] Confirm no OOM crash or KDE/Wayland compositor stutter during training.
+- [ ] Confirm `lora_model_4gb/` directory is created with adapter weights.
