@@ -67,7 +67,10 @@ _UNRESTRICTED_REHEARSAL_RE = re.compile(r"[\w-]+(?:\[A(?:R(?:G(?:S)?)?)?)?")
 
 
 def _is_rehearsal_prefix(
-    stripped: str, active_tools: list[dict], *, unrestricted: bool = False
+    stripped: str,
+    active_tools: list[dict],
+    *,
+    unrestricted: bool = False,
 ) -> bool:
     """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]``, e.g.
     ``web_search`` arrives in one chunk and ``[ARGS]{...}`` in the next. Without this
@@ -86,7 +89,10 @@ def _is_rehearsal_prefix(
 
 
 def _held_rehearsal_tail_len(
-    text: str, active_tools: list[dict], *, unrestricted: bool = False
+    text: str,
+    active_tools: list[dict],
+    *,
+    unrestricted: bool = False,
 ) -> int:
     """Length of a trailing bare tool-name token in ``text`` that may be a split
     rehearsal call (``...prose web_search`` with ``[ARGS]{...}`` still to arrive).
@@ -107,7 +113,11 @@ def _held_rehearsal_tail_len(
 
 
 def _rehearsal_name_start(
-    candidate: str, signal_pos: int, active_tools: list[dict], *, unrestricted: bool = False
+    candidate: str,
+    signal_pos: int,
+    active_tools: list[dict],
+    *,
+    unrestricted: bool = False,
 ) -> int:
     """For an ``[ARGS]`` signal at ``signal_pos``, return the index where the
     rehearsal call truly starts -- the beginning of the bare tool-name token
@@ -120,7 +130,9 @@ def _rehearsal_name_start(
     j = signal_pos
     while j > 0 and (candidate[j - 1].isalnum() or candidate[j - 1] in "_-"):
         j -= 1
-    if j < signal_pos and (unrestricted or candidate[j:signal_pos] in _active_tool_names(active_tools)):
+    if j < signal_pos and (
+        unrestricted or candidate[j:signal_pos] in _active_tool_names(active_tools)
+    ):
         return j
     return signal_pos
 

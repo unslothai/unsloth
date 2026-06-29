@@ -8256,7 +8256,9 @@ class LlamaCppBackend:
                                         # the call drains. Released once more prose
                                         # follows or by the end-of-stream flush.
                                         _hold = _held_rehearsal_tail_len(cleaned, active_tools)
-                                        _emit = cleaned[: len(cleaned) - _hold] if _hold else cleaned
+                                        _emit = (
+                                            cleaned[: len(cleaned) - _hold] if _hold else cleaned
+                                        )
                                         if len(_emit) > len(_last_emitted):
                                             _last_emitted = _emit
                                             if not _suppress_visible_output:
