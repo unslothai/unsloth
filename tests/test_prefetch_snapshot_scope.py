@@ -492,4 +492,6 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
     prefetch_idx = body.find("maybe_prefetch_hf_snapshot(")
     st_idx = body.find("SentenceTransformer(")
     assert prefetch_idx != -1, "from_pretrained must call maybe_prefetch_hf_snapshot"
-    assert st_idx != -1 and prefetch_idx < st_idx, "prefetch must run before the SentenceTransformer load"
+    assert (
+        st_idx != -1 and prefetch_idx < st_idx
+    ), "prefetch must run before the SentenceTransformer load"
