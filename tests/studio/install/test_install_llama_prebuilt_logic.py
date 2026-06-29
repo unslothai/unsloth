@@ -3337,6 +3337,63 @@ def test_run_validation_popen_uses_launcher_env_for_linux_bwrap(monkeypatch):
     assert "LD_LIBRARY_PATH" not in (fake_process.started_with["env"] or {})
 
 
+def test_validate_server_strips_python_import_roots_from_payload_env(monkeypatch, tmp_path):
+    server_path = tmp_path / "llama-server"
+    server_path.write_text("")
+    probe_path = tmp_path / "probe.gguf"
+    probe_path.write_text("")
+    recorded: dict[str, object] = {}
+
+    monkeypatch.setenv("PYTHONHOME", "/host/python")
+    monkeypatch.setenv("PYTHONPATH", "/host/site-packages")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _binary_path: [])
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "free_local_port", lambda: 7777)
+
+    def fake_build_plan(
+        command: list[str],
+        *,
+        binary_path: Path,
+        install_dir: Path,
+        purpose: str,
+        env: dict[str, str],
+        host = None,
+        runtime_line = None,
+        enable_gpu_layers: bool = False,
+        gpu_backend = None,
+    ) -> ValidationLaunchPlan:
+        recorded["env"] = dict(env)
+        return ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = "run",
+            purpose = purpose,
+            server_probe_mode = INSTALL_LLAMA_PREBUILT._VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX,
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "build_validation_sandbox_plan", fake_build_plan)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_run_validation_capture",
+        lambda plan, *, timeout: subprocess.CompletedProcess(
+            plan.command, 0, stdout = "ok", stderr = ""
+        ),
+    )
+
+    validate_server(
+        server_path,
+        probe_path,
+        linux_host(),
+        tmp_path,
+        runtime_line = "cuda13",
+        install_kind = "linux-cuda",
+    )
+
+    env = recorded["env"]
+    assert isinstance(env, dict)
+    assert "PYTHONHOME" not in env
+    assert "PYTHONPATH" not in env
+
+
 def test_build_validation_sandbox_plan_linux_quantize_binds_probe_and_output(monkeypatch, tmp_path):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
     bin_dir = tmp_path / "bin"
