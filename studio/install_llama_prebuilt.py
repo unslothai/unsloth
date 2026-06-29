@@ -5257,11 +5257,14 @@ def _linux_validation_bwrap_prefix(
     return args
 
 
-def _macos_validation_sandbox_prefix() -> list[str]:
+def _macos_validation_sandbox_prefix(purpose: str) -> list[str]:
+    profile = "(version 1)"
+    if purpose != _VALIDATION_PURPOSE_SERVER:
+        profile = "(version 1)(deny network*)"
     return [
         "sandbox-exec",
         "-p",
-        "(version 1)(deny network*)",
+        profile,
     ]
 
 
@@ -5329,7 +5332,7 @@ def build_validation_sandbox_plan(
     if _host_is_macos(host):
         if _has_command("sandbox-exec"):
             return _ValidationLaunchPlan(
-                command = [*_macos_validation_sandbox_prefix(), *command],
+                command = [*_macos_validation_sandbox_prefix(purpose), *command],
                 env = env,
                 action = _VALIDATION_LAUNCH_RUN,
                 purpose = purpose,
