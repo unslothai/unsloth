@@ -1367,8 +1367,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # leak across boundaries) the packed logps will not match and packing is disabled.
             logprobs = None
             _pk_result = None
-            if (pixel_values is None and os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "0") == "1"
-                    and getattr(self, "_unsloth_seq_packing_nograd_ok", None) is not False):
+            if (
+                pixel_values is None
+                and os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "0") == "1"
+                and getattr(self, "_unsloth_seq_packing_nograd_ok", None) is not False
+            ):
                 try:
                     _pk_pad = self.processing_class.pad_token_id
                     _pk_keep = input_ids != _pk_pad
@@ -1380,7 +1383,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pk_W = logits_to_keep + max_left_pad
                     # Sliding-window attention loses the per-sequence local window once the packed
                     # stream is longer than the window, so skip packing for that batch.
-                    _pk_sw = getattr(getattr(unwrapped_model, "config", None), "sliding_window", None)
+                    _pk_sw = getattr(
+                        getattr(unwrapped_model, "config", None), "sliding_window", None
+                    )
                     _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_T > _pk_sw)
                     if _pk_T >= 2 and _pk_nz.numel() > 0 and _pk_sw_ok:
                         _pk_pos = torch.cat(
@@ -1398,30 +1403,49 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     use_cache = False,
                                 ).logits
                                 _pk_sel = chunked_hidden_states_selective_log_softmax(
-                                    _pk_hidden[:, :-1, :], lm_head, _pk_flat[:, 1:], _pk_chunks,
-                                    logit_scale_multiply, logit_scale_divide, logit_softcapping, temperature,
+                                    _pk_hidden[:, :-1, :],
+                                    lm_head,
+                                    _pk_flat[:, 1:],
+                                    _pk_chunks,
+                                    logit_scale_multiply,
+                                    logit_scale_divide,
+                                    logit_softcapping,
+                                    temperature,
                                 )[0]
                         # Same GPT-OSS offload (offload_embbed=True) race guard the padded loop uses.
                         device_synchronize()
-                        _pk_idx = []; _pk_val = []; _pk_off = 0
+                        _pk_idx = []
+                        _pk_val = []
+                        _pk_off = 0
                         for _pk_i in range(total_rows):
                             _pk_n = int(_pk_len[_pk_i])
                             if _pk_n >= 2:
-                                _pk_idx.append(_pk_i * _pk_L + torch.arange(1, _pk_n, device = input_ids.device))
+                                _pk_idx.append(
+                                    _pk_i * _pk_L + torch.arange(1, _pk_n, device = input_ids.device)
+                                )
                                 _pk_val.append(_pk_sel[_pk_off : _pk_off + _pk_n - 1])
                             _pk_off += _pk_n
                         if _pk_idx:
                             _pk_fidx = torch.cat(_pk_idx)
                             _pk_vals = torch.cat(_pk_val).to(torch.float32)
-                            _pk_result = torch.zeros(
-                                total_rows * _pk_L, dtype = torch.float32, device = input_ids.device,
-                            ).index_put((_pk_fidx,), _pk_vals).view(total_rows, _pk_L)[:, -_pk_W:]
+                            _pk_result = (
+                                torch.zeros(
+                                    total_rows * _pk_L,
+                                    dtype = torch.float32,
+                                    device = input_ids.device,
+                                )
+                                .index_put((_pk_fidx,), _pk_vals)
+                                .view(total_rows, _pk_L)[:, -_pk_W:]
+                            )
                 except Exception as _pk_err:
                     if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
-                        print(f"[Unsloth] GRPO sequence-packing (no-grad) fell back to padded path: {_pk_err!r}", flush = True)
+                        print(
+                            f"[Unsloth] GRPO sequence-packing (no-grad) fell back to padded path: {_pk_err!r}",
+                            flush = True,
+                        )
                     _pk_result = None
             if _pk_result is not None and getattr(self, "_unsloth_seq_packing_nograd_ok", False):
-                logprobs = _pk_result          # already verified equal to padded -> skip the loop
+                logprobs = _pk_result  # already verified equal to padded -> skip the loop
                 zipped_inputs = []
 
             with _get_inference_mode_context_manager(model):
@@ -1513,20 +1537,30 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     # One-time self-verification: only trust packing after it matches the padded
                     # ground truth on a real (>=2 sequence) batch; cross-sample contamination shows
                     # up as a large mismatch here and disables packing instead of corrupting logps.
-                    if _pk_result is not None and not hasattr(self, "_unsloth_seq_packing_nograd_ok"):
+                    if _pk_result is not None and not hasattr(
+                        self, "_unsloth_seq_packing_nograd_ok"
+                    ):
                         # Require >=2 rows that actually have completion tokens, so cross-sample
                         # contamination would manifest. An all-pad / fully tool-masked window makes the
                         # masked diff trivially zero, which must NOT pass: leave the verdict unset and
                         # re-verify on a later, non-degenerate batch instead.
-                        _pk_cm = (input_ids[:, -_pk_result.shape[1]:] != self.processing_class.pad_token_id).float()
+                        _pk_cm = (
+                            input_ids[:, -_pk_result.shape[1] :]
+                            != self.processing_class.pad_token_id
+                        ).float()
                         _pk_active_rows = int((_pk_cm.sum(dim = 1) > 0).sum())
                         if _pk_active_rows >= 2 and _pk_result.shape == logprobs.shape:
-                            _pk_ok = bool(float(((_pk_result - logprobs).abs() * _pk_cm).max()) < 5e-1)
+                            _pk_ok = bool(
+                                float(((_pk_result - logprobs).abs() * _pk_cm).max()) < 5e-1
+                            )
                             self._unsloth_seq_packing_nograd_ok = _pk_ok
                             if _pk_ok:
                                 logprobs = _pk_result
                             elif os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
-                                print("[Unsloth] GRPO sequence-packing disabled: packed logprobs did not match the padded path", flush = True)
+                                print(
+                                    "[Unsloth] GRPO sequence-packing disabled: packed logprobs did not match the padded path",
+                                    flush = True,
+                                )
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
