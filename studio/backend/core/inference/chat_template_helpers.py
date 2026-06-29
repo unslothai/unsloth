@@ -96,7 +96,6 @@ def render_native_template(
         template_source = model_info.get("base_model") or active_model_name
         try:
             from transformers import AutoTokenizer
-
             nt = AutoTokenizer.from_pretrained(template_source)
             native_tpl = nt.chat_template or False
         except Exception as exc:

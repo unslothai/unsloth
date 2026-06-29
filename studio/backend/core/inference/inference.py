@@ -230,7 +230,6 @@ class InferenceBackend:
         kwargs are peeled the same way as the main path.
         """
         from core.inference.chat_template_helpers import render_native_template
-
         return render_native_template(
             model_info = model_info,
             active_model_name = self.active_model_name,
