@@ -1224,9 +1224,7 @@ def test_yolo_config_agents_add_no_command_flag(fake_studio):
 def test_connect_pi_wsl_windows_shim_relocates_userprofile(fake_studio, monkeypatch):
     captured = {}
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
-    monkeypatch.setattr(
-        start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/pi"
-    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/pi")
 
     def run(command, env):
         captured["env"] = env
