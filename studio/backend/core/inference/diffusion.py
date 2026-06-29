@@ -190,9 +190,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _detect_family_for_pick(
-        repo_id: str,
-        gguf_filename: Optional[str],
-        family_override: Optional[str],
+        repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
     ) -> Optional[DiffusionFamily]:
         """Detect the family from the repo id, falling back to the combined
         path/filename for a direct local .gguf pick. The frontend splits such a

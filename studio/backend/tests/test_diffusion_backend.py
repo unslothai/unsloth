@@ -596,9 +596,7 @@ def test_generate_lock_split_keeps_status_responsive_and_unload_waits(fake_runti
     # the moment unload returns, the old pipeline is already gone (no dual-allocation
     # OOM). Run it on a thread to observe that it blocks behind the live denoise.
     unload_done = threading.Event()
-    threading.Thread(
-        target = lambda: (backend.unload(), unload_done.set()), daemon = True
-    ).start()
+    threading.Thread(target = lambda: (backend.unload(), unload_done.set()), daemon = True).start()
     assert not unload_done.wait(0.5)  # blocked behind the live denoise
     assert backend._state is not None  # not freed while the pipeline is still live
     assert backend._active_generate_cancel is not None
@@ -848,15 +846,11 @@ def test_detect_family_from_local_gguf_filename(tmp_path):
     # keyword can live only in the filename, so validate must scan it too.
     (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"w")
     backend = DiffusionBackend()
-    fam = backend.validate_load_request(
-        str(tmp_path), gguf_filename = "z-image-turbo-Q4_K_M.gguf"
-    )
+    fam = backend.validate_load_request(str(tmp_path), gguf_filename = "z-image-turbo-Q4_K_M.gguf")
     assert fam.name == "z-image"
     # An edit-checkpoint filename is still rejected even via the filename path.
     (tmp_path / "FLUX.1-Kontext-dev-Q4.gguf").write_bytes(b"w")
     with pytest.raises(ValueError):
-        backend.validate_load_request(
-            str(tmp_path), gguf_filename = "FLUX.1-Kontext-dev-Q4.gguf"
-        )
+        backend.validate_load_request(str(tmp_path), gguf_filename = "FLUX.1-Kontext-dev-Q4.gguf")
     # A bare parent dir whose name DOES carry the keyword still works (unchanged).
     assert backend._detect_family_for_pick("unsloth/Z-Image-GGUF", "x.gguf", None).name == "z-image"

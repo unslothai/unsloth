@@ -728,8 +728,6 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     # classified here as some image task (loadable OR unsupported), never chat.
     from core.inference.llama_cpp import LlamaCppBackend
 
-    classified = (
-        models_route._DIFFUSION_GGUF_ARCHS | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
-    )
+    classified = models_route._DIFFUSION_GGUF_ARCHS | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
     missing = {a for a in LlamaCppBackend._DIFFUSION_ARCHES if a.lower() not in classified}
     assert not missing, f"diffusion archs would still show in chat: {missing}"
