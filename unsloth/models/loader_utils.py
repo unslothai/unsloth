@@ -512,7 +512,7 @@ def _restore_missing_fp8_weight_scale_inv(
             except Exception:
                 pass
 
-        setattr(module, "weight_scale_inv", restored_scale)
+        module.register_buffer("weight_scale_inv", restored_scale)
         restored += 1
 
     return restored, skipped

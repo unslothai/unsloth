@@ -93,6 +93,11 @@ def test_restores_missing_fp8_weight_scale_inv():
     assert restored == 1
     assert skipped == 0
     assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([1.25], dtype = torch.float16))
+    assert "fp8.weight_scale_inv" in model.state_dict()
+    assert torch.equal(
+        model.state_dict()["fp8.weight_scale_inv"],
+        torch.tensor([1.25], dtype = torch.float16),
+    )
     assert not hasattr(model.fp8, "weight_scale")
 
 
@@ -126,7 +131,7 @@ def test_preserves_existing_scale_state():
         weight_scale = weight_scale,
     )
     existing_inv = torch.tensor([5.0], dtype = torch.float16)
-    model.fp8.weight_scale_inv = existing_inv
+    model.fp8.register_buffer("weight_scale_inv", existing_inv)
     weight_scale_id = id(model.fp8.weight_scale)
     weight_scale_inv_id = id(model.fp8.weight_scale_inv)
 
@@ -147,6 +152,8 @@ def test_preserves_existing_scale_state():
     assert id(model.fp8.weight_scale) == weight_scale_id
     assert torch.equal(model.fp8.weight_scale, weight_scale)
     assert torch.equal(model.fp8.weight_scale_inv, existing_inv)
+    assert "fp8.weight_scale_inv" in model.state_dict()
+    assert torch.equal(model.state_dict()["fp8.weight_scale_inv"], existing_inv)
 
 
 def test_loader_calls_restore_only_for_fp8_loads():
