@@ -222,7 +222,7 @@ def test_processing_utils_unpack_importable(tag: str):
     )
 
 
-# Models: gemma3, gpt_oss forward signature drift.
+# Models: gemma3, gpt_oss, qwen3 forward signature drift.
 
 
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
@@ -247,6 +247,24 @@ def test_gpt_oss_model_forward_present(tag: str):
     if src is None:
         pytest.skip(f"{tag}: modeling_gpt_oss.py missing (legacy)")
     assert has_def(src, "GptOssModel", "class"), f"{tag}: class GptOssModel missing"
+
+
+@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
+def test_qwen3_modeling_symbols_present(tag: str):
+    """unsloth/models/qwen3.py:pre_patch patches Qwen3Attention/DecoderLayer/Model/ForCausalLM and rebinds Qwen3RotaryEmbedding."""
+    src = fetch_text(
+        "huggingface/transformers",
+        tag,
+        "src/transformers/models/qwen3/modeling_qwen3.py",
+    )
+    if src is None:
+        pytest.skip(f"{tag}: modeling_qwen3.py missing")
+    for cls in ("Qwen3Attention", "Qwen3DecoderLayer", "Qwen3Model", "Qwen3ForCausalLM"):
+        assert has_def(src, cls, "class"), f"{tag}: class {cls} missing"
+    assert "Qwen3RotaryEmbedding" in src, (
+        f"{tag}: Qwen3RotaryEmbedding missing; "
+        f"FastQwen3Model.pre_patch RoPE rebind silently no-ops"
+    )
 
 
 # auto_factory: unsloth#5155 _LazyAutoMapping private API.
