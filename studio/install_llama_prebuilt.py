@@ -5137,6 +5137,12 @@ _LINUX_LDD_PROBE_SKIPPED = "skipped"
 _LINUX_LDD_PROBE_ERROR = "error"
 _VALIDATION_SERVER_PROBE_MODE_HOST = "host_loopback_http"
 _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX = "sandbox_loopback_http"
+_LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS = 60
+_LINUX_SERVER_VALIDATION_HELPER_SHUTDOWN_SECONDS = 5
+_LINUX_SERVER_VALIDATION_HELPER_CAPTURE_TIMEOUT_SECONDS = (
+    _LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS
+    + (2 * _LINUX_SERVER_VALIDATION_HELPER_SHUTDOWN_SECONDS)
+)
 
 
 @dataclass(frozen = True)
@@ -5173,8 +5179,15 @@ class LinuxLibraryProbeResult:
     reason: str | None = None
 
 
+def _resolve_command_path(command: str) -> str | None:
+    resolved = shutil.which(command)
+    if resolved is None:
+        return None
+    return str(Path(resolved))
+
+
 def _has_command(command: str) -> bool:
-    return shutil.which(command) is not None
+    return _resolve_command_path(command) is not None
 
 
 def _append_existing_bwrap_bind(
@@ -5204,8 +5217,7 @@ def _linux_validation_launcher_env(payload_env: dict[str, str]) -> dict[str, str
     env = scrubbed_environ()
     for key in payload_env:
         env.pop(key, None)
-    # Keep a stable base command search path; payload PATH is still injected in
-    # bwrap via --setenv from payload_env.
+    # Keep a stable base command search path.
     env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     return env
 
@@ -5217,8 +5229,24 @@ def _linux_validation_setenv_args(payload_env: dict[str, str]) -> list[str]:
     return args
 
 
+def _extract_loopback_port(command: list[str]) -> int:
+    for index, arg in enumerate(command):
+        if arg != "--port":
+            continue
+        if index + 1 >= len(command):
+            break
+        try:
+            return int(command[index + 1])
+        except ValueError:
+            break
+    return 0
+
+
 def _linux_validation_server_probe_command(
-    server_command: list[str], *, timeout: int = 60
+    server_command: list[str],
+    payload_env: dict[str, str],
+    *,
+    timeout: int = _LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS,
 ) -> list[str]:
     for candidate in ("/usr/bin/python3", "/usr/bin/python"):
         if Path(candidate).exists():
@@ -5231,7 +5259,6 @@ def _linux_validation_server_probe_command(
 
     probe_script = textwrap.dedent(
         f"""
-        import json
         import os
         import subprocess
         import sys
@@ -5241,6 +5268,7 @@ def _linux_validation_server_probe_command(
         import urllib.request
 
         command = {json.dumps(server_command)}
+        payload_env = {json.dumps(payload_env)}
         body = b'{{"prompt":"a","n_predict":1}}'
         timeout = {int(timeout)}
         deadline = time.time() + timeout
@@ -5269,11 +5297,14 @@ def _linux_validation_server_probe_command(
 
         try:
             with open(log_path, "w", encoding = "utf-8", errors = "replace") as log_handle:
+                server_env = dict(os.environ)
+                server_env.update(payload_env)
                 process = subprocess.Popen(
                     command,
                     stdout = log_handle,
                     stderr = subprocess.STDOUT,
                     text = True,
+                    env = server_env,
                 )
                 request = urllib.request.Request(
                     "http://127.0.0.1:%d/completion" % port,
@@ -5288,7 +5319,7 @@ def _linux_validation_server_probe_command(
                             print(line)
                         raise SystemExit(process.returncode if process.returncode else 1)
                     try:
-                        with urllib.request.urlopen(request, timeout = 1) as response:
+                        with urllib.request.urlopen(request, timeout = 5) as response:
                             _ = response.read(32)
                             if response.status == 200:
                                 process.terminate()
@@ -5332,6 +5363,7 @@ def _linux_validation_bwrap_prefix(
     binary_path: Path,
     install_dir: Path,
     purpose: str,
+    adapter_path: str,
     payload_env: dict[str, str],
     payload_command: list[str] | None = None,
     enable_gpu_layers: bool = False,
@@ -5391,13 +5423,15 @@ def _linux_validation_bwrap_prefix(
         and gpu_backend in {"cuda", "rocm"}
     )
     args = [
-        "bwrap",
+        adapter_path,
         "--unshare-all",
     ]
     args.extend(
         [
         "--die-with-parent",
         "--new-session",
+        "--perms",
+        "1777",
         "--tmpfs",
         "/tmp",
         "--proc",
@@ -5409,7 +5443,9 @@ def _linux_validation_bwrap_prefix(
         runtime_home,
         ]
     )
-    args.extend(_linux_validation_setenv_args(payload_env))
+    is_server_helper = payload_command is not None and purpose == _VALIDATION_PURPOSE_SERVER
+    if not is_server_helper:
+        args.extend(_linux_validation_setenv_args(payload_env))
 
     seen: set[str] = set()
     if enable_gpu_devices:
@@ -5489,12 +5525,11 @@ def _macos_validation_sandbox_prefix(
     runtime_home = Path(isolated_runtime_home())
     read_targets: list[str | Path] = [
         "/bin",
-        "/usr",
         "/usr/bin",
-        "/System",
-        "/Library",
-        "/System/Library/Frameworks",
         "/usr/lib",
+        "/System",
+        "/System/Library/Frameworks",
+        "/System/Library",
         install_dir,
         binary_path.parent,
         runtime_home,
@@ -5514,9 +5549,9 @@ def _macos_validation_sandbox_prefix(
     exec_targets: list[str | Path] = [
         "/bin",
         "/usr/bin",
+        "/usr/lib",
         "/System",
-        "/Library",
-        "/usr",
+        "/System/Library",
         binary_path.parent,
     ]
     profile_parts = [
@@ -5543,8 +5578,10 @@ def _macos_validation_sandbox_prefix(
             profile_parts.append(f'(subpath "{literal}")')
     profile_parts.append(")")
     if purpose == _VALIDATION_PURPOSE_SERVER:
-        profile_parts.append('(allow network* (local ip "localhost:*"))')
-        profile_parts.append('(allow network* (remote ip "localhost:*"))')
+        server_port = _extract_loopback_port(command)
+        if server_port > 0:
+            profile_parts.append(f'(allow network* (local ip "localhost:{server_port}"))')
+            profile_parts.append(f'(allow network* (remote ip "localhost:{server_port}"))')
     profile = "".join(profile_parts)
     return [
         "sandbox-exec",
@@ -5587,7 +5624,8 @@ def build_validation_sandbox_plan(
         _linux_validation_launcher_env(env) if _host_is_linux(host) else scrubbed_environ()
     )
     if _host_is_linux(host):
-        if _has_command("bwrap"):
+        bwrap_path = _resolve_command_path("bwrap")
+        if bwrap_path is not None:
             payload_command = list(command)
             network_policy = _VALIDATION_NETWORK_POLICY_SANDBOX
             server_probe_mode = (
@@ -5598,7 +5636,8 @@ def build_validation_sandbox_plan(
                 try:
                     launch_command = _linux_validation_server_probe_command(
                         payload_command,
-                        timeout = 60,
+                        env,
+                        timeout = _LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS,
                     )
                 except RuntimeError as exc:
                     return _ValidationLaunchPlan(
@@ -5618,6 +5657,7 @@ def build_validation_sandbox_plan(
                 binary_path = binary_path,
                 install_dir = install_dir,
                 purpose = purpose,
+                adapter_path = bwrap_path,
                 payload_env = env,
                 payload_command = payload_command,
                 enable_gpu_layers = enable_gpu_layers,
@@ -6522,7 +6562,10 @@ def validate_server(
         )
         if plan.server_probe_mode == _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX:
             started_at = time.time()
-            result = _run_validation_capture(plan, timeout = 60)
+            result = _run_validation_capture(
+                plan,
+                timeout = _LINUX_SERVER_VALIDATION_HELPER_CAPTURE_TIMEOUT_SECONDS,
+            )
             output = (result.stdout or "") + (result.stderr or "")
             if result.returncode == 0:
                 return
