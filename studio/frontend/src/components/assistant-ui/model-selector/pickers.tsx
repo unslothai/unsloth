@@ -1180,6 +1180,17 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
+function localPathTooltip(name: string, path: string): ReactNode {
+  return (
+    <>
+      <span className="block break-words">{name}</span>
+      <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+        {path}
+      </span>
+    </>
+  );
+}
+
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so
  * callers gate visibility on the host being a Mac. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
@@ -3059,6 +3070,10 @@ export function HubModelPicker({
                           <ModelRow
                             label={m.model_id ?? m.display_name}
                             meta={isGguf ? "GGUF" : "Local"}
+                            tooltipText={localPathTooltip(
+                              m.model_id ?? m.display_name,
+                              m.path,
+                            )}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
@@ -3148,6 +3163,10 @@ export function HubModelPicker({
                           <ModelRow
                             label={m.model_id ?? m.display_name}
                             meta={isGguf ? "GGUF" : "Local"}
+                            tooltipText={localPathTooltip(
+                              m.model_id ?? m.display_name,
+                              m.path,
+                            )}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
@@ -3229,6 +3248,10 @@ export function HubModelPicker({
                           <ModelRow
                             label={m.model_id ?? m.display_name}
                             meta={isGguf ? "GGUF" : "Local"}
+                            tooltipText={localPathTooltip(
+                              m.model_id ?? m.display_name,
+                              m.path,
+                            )}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
