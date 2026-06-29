@@ -5273,7 +5273,7 @@ def _linux_validation_server_probe_command(
         timeout = {int(timeout)}
         deadline = time.time() + timeout
 
-        def read_tail(path: str, max_lines: int = 80) -> list[str]:
+        def read_tail(path, max_lines = 80):
             try:
                 with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
                     return handle.read().splitlines()[-max_lines:]
