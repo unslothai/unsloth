@@ -211,6 +211,31 @@ def test_generate_success_returns_path_and_collects_logs(tmp_path, monkeypatch):
     assert str(Path(e.binary).resolve().parent) in _FakePopen.captured_env.get(var, "")
 
 
+def test_generate_collects_batch_output_paths(tmp_path, monkeypatch):
+    # batch_count > 1: stable-diffusion.cpp writes "<stem>_<idx><suffix>"
+    # (img_0.png, img_1.png, ...) rather than the literal --output path, so the
+    # single-path check must fall back to the numbered siblings.
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+
+    def _factory(cmd, **kw):
+        # Emulate batch save_results(): write the numbered files, NOT the literal path.
+        (tmp_path / "img_0.png").write_bytes(b"\x89PNG\r\n")
+        (tmp_path / "img_1.png").write_bytes(b"\x89PNG\r\n")
+        return _FakePopen(
+            cmd, lines = ["done"], returncode = 0, out_file = out, write = False, env = kw.get("env")
+        )
+
+    monkeypatch.setattr(eng.subprocess, "Popen", _factory)
+    result = e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "x", batch_count = 2),
+        output_path = str(out),
+    )
+    assert result == tmp_path / "img_0.png" and result.is_file()
+    assert not out.exists()  # the literal --output path was never written
+
+
 def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):
     e = _engine(tmp_path)
     out = tmp_path / "img.png"

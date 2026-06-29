@@ -280,13 +280,22 @@ class SdCppEngine:
 
         if ret != 0:
             raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + "\n".join(tail[-12:]))
-        if not out.is_file():
+        if out.is_file():
+            produced: Optional[Path] = out
+        else:
+            # For batch_count > 1, stable-diffusion.cpp's save_results() writes
+            # "<stem>_<idx><suffix>" (base_0.png, base_1.png, ...) rather than the
+            # literal --output path, so the single-path check above misses them.
+            # Fall back to the numbered siblings and return the first.
+            batch = sorted(out.parent.glob(f"{out.stem}_*{out.suffix}"))
+            produced = batch[0] if batch else None
+        if produced is None:
             raise RuntimeError(
                 f"sd-cli reported success but no image at {out}. Last output:\n"
                 + "\n".join(tail[-12:])
             )
-        logger.info("sd-cli generate ok in %.1fs -> %s", time.time() - t0, out)
-        return out
+        logger.info("sd-cli generate ok in %.1fs -> %s", time.time() - t0, produced)
+        return produced
 
 
 # ── engine routing ──────────────────────────────────────────────────────────
