@@ -1115,3 +1115,84 @@ def test_powershell_quote_single_quotes_json():
     assert quoted == "'" + start._CLAUDE_SETTINGS_OVERLAY + "'"
     assert "\\" not in quoted  # no cmd.exe backslash escaping
     assert start._powershell_quote("a'b") == "'a''b'"  # embedded quote doubled
+
+
+# ── --yolo: one switch routed to each agent's own auto-approve form ──
+
+# The native "run tools without prompting" CLI flag each agent should receive.
+_NATIVE_YOLO = {
+    "claude": "--dangerously-skip-permissions",
+    "codex": "--dangerously-bypass-approvals-and-sandbox",
+    "hermes": "--yolo",
+    "pi": "--approve",
+}
+
+
+@pytest.mark.parametrize("agent, native", sorted(_NATIVE_YOLO.items()))
+def test_yolo_routes_to_native_flag(fake_studio, agent, native):
+    result = CliRunner().invoke(start.start_app, [agent, "--yolo", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert native in result.output
+
+
+@pytest.mark.parametrize("agent, native", sorted(_NATIVE_YOLO.items()))
+def test_no_yolo_omits_native_flag(fake_studio, agent, native):
+    result = CliRunner().invoke(start.start_app, [agent, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    # pi's --approve is a real flag only added under --yolo; assert it's absent here.
+    launch_line = [ln for ln in result.output.splitlines() if ln.strip().startswith(agent)]
+    assert launch_line, result.output
+    assert all(native not in ln for ln in launch_line)
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["--yolo", "--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox"],
+)
+def test_yolo_aliases_are_interchangeable(fake_studio, alias):
+    # Any spelling on any agent routes to that agent's own flag, even the "wrong" one.
+    claude = CliRunner().invoke(start.start_app, ["claude", alias, "--no-launch"])
+    assert claude.exit_code == 0, claude.output
+    assert "--dangerously-skip-permissions" in claude.output
+    # The codex spelling must not leak through to Claude's command line.
+    assert "--dangerously-bypass-approvals-and-sandbox" not in claude.output
+
+    codex = CliRunner().invoke(start.start_app, ["codex", alias, "--no-launch"])
+    assert codex.exit_code == 0, codex.output
+    assert "--dangerously-bypass-approvals-and-sandbox" in codex.output
+    assert "--dangerously-skip-permissions" not in codex.output
+
+
+def test_yolo_opencode_writes_permission_block(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    assert config["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+
+
+def test_no_yolo_opencode_has_no_permission_block(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    assert "permission" not in config
+
+
+def test_yolo_openclaw_writes_exec_policy(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--yolo", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = json.loads((tmp_path / "agents" / "openclaw" / "openclaw.json").read_text())
+    assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
+
+
+def test_write_opencode_config_yolo_unit(tmp_path):
+    path = tmp_path / "opencode.json"
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    config = json.loads(path.read_text())
+    assert config["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+
+
+def test_write_openclaw_config_yolo_unit(tmp_path):
+    path = tmp_path / "openclaw.json"
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}

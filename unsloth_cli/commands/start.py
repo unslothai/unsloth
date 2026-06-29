@@ -83,6 +83,34 @@ _TENSOR_PARALLEL_OPTION = typer.Option(
     "--tensor-parallel/--no-tensor-parallel",
     help = "Split a GGUF across GPUs by tensor instead of by layer (multi-GPU only).",
 )
+# One normalized "run tools without prompting" switch. Each agent spells this
+# differently and it's easy to forget which is which, so accept every spelling and
+# route to the agent's own mechanism in _yolo_command_flags / the config writers.
+_YOLO_OPTION = typer.Option(
+    False,
+    "--yolo",
+    "--dangerously-skip-permissions",
+    "--dangerously-bypass-approvals-and-sandbox",
+    help = (
+        "Auto-approve all tool actions for this session; routed to the agent's own "
+        "flag/config. Any of the three spellings works for any agent."
+    ),
+)
+
+# Per-agent CLI flag for "run tools without prompting". opencode and openclaw have no
+# such flag (config only) and are handled in their config writers, so they are absent.
+_YOLO_COMMAND_FLAGS = {
+    "claude": ["--dangerously-skip-permissions"],
+    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+    "hermes": ["--yolo"],
+    # Pi never prompts per tool call; its only approval gate is project trust, so -a
+    # (trust project resources) is the closest "don't ask me" equivalent.
+    "pi": ["--approve"],
+}
+
+
+def _yolo_command_flags(agent: str, yolo: bool) -> list:
+    return _YOLO_COMMAND_FLAGS[agent] if yolo else []
 
 
 class LoadOptions(NamedTuple):
@@ -620,7 +648,7 @@ def _session_config(agent: str, launch: bool):
         yield path
 
 
-def write_openclaw_config(base: str, key: str, model: dict, path: Path) -> None:
+def write_openclaw_config(base: str, key: str, model: dict, path: Path, yolo: bool = False) -> None:
     config = _read_json_object(path)
     if config is None:
         typer.echo(
@@ -651,12 +679,20 @@ def write_openclaw_config(base: str, key: str, model: dict, path: Path) -> None:
     gateway = _subdict(config, "gateway")
     gateway.setdefault("mode", "local")
     _subdict(gateway, "auth").setdefault("mode", "none")
+    if yolo:
+        # OpenClaw has no --yolo flag; the exec policy is config-driven. On a gateway
+        # host, security=full + ask=off runs tools without prompting (the session's
+        # fresh OPENCLAW_STATE_DIR has no stricter approvals file to override it).
+        exec_policy = _subdict(_subdict(config, "tools"), "exec")
+        exec_policy["host"] = "gateway"
+        exec_policy["security"] = "full"
+        exec_policy["ask"] = "off"
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
 
 
-def write_opencode_config(base: str, key: str, model: dict, path: Path) -> None:
+def write_opencode_config(base: str, key: str, model: dict, path: Path, yolo: bool = False) -> None:
     config = _read_json_object(path)
     if config is None:
         typer.echo(
@@ -689,6 +725,10 @@ def write_opencode_config(base: str, key: str, model: dict, path: Path) -> None:
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
         compaction["reserved"] = max(1, window // 10)
+    if yolo:
+        # OpenCode has no --yolo flag; auto-approve is the config `permission` block
+        # (singular). Allow the prompting tools so tool calls don't block on the TUI.
+        config["permission"] = {"edit": "allow", "bash": "allow", "webfetch": "allow"}
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -788,6 +828,7 @@ def claude(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    yolo: bool = _YOLO_OPTION,
 ):
     """Point Claude Code at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -825,7 +866,17 @@ def claude(
         # headroom before the server's context limit instead of relying on Claude's
         # default (which is tuned for its native 200K/1M window).
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
-    command = ["claude", "--model", model_id, *_claude_flags(), *ctx.args]
+    # --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions.
+    # IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a
+    # sandbox is detected, and we don't want to falsely claim one on the user's host.
+    command = [
+        "claude",
+        "--model",
+        model_id,
+        *_claude_flags(),
+        *_yolo_command_flags("claude", yolo),
+        *ctx.args,
+    ]
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"
         if os.name == "nt"
@@ -852,13 +903,21 @@ def codex(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    yolo: bool = _YOLO_OPTION,
 ):
     """Point OpenAI Codex at the running Studio server and start it."""
     base, key, entry = _connect(
         api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
     )
     _require_gguf_for_codex(base, key, entry["id"])
-    command = ["codex", "--oss", "--profile", _CODEX_PROFILE, *ctx.args]
+    command = [
+        "codex",
+        "--oss",
+        "--profile",
+        _CODEX_PROFILE,
+        *_yolo_command_flags("codex", yolo),
+        *ctx.args,
+    ]
     with _session_config("codex", launch) as home:
         write_codex_config(base, entry, home)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
@@ -875,6 +934,7 @@ def openclaw(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    yolo: bool = _YOLO_OPTION,
 ):
     """Point OpenClaw at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -888,7 +948,8 @@ def openclaw(
     )
     with _session_config("openclaw", launch) as cfg:
         config_path = cfg / "openclaw.json"
-        write_openclaw_config(base, key, entry, config_path)  # key lives in the config, not the env
+        # key lives in the config, not the env; --yolo writes the exec policy here too.
+        write_openclaw_config(base, key, entry, config_path, yolo = yolo)
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
@@ -904,6 +965,7 @@ def opencode(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    yolo: bool = _YOLO_OPTION,
 ):
     """Point OpenCode at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -915,7 +977,7 @@ def opencode(
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
         # configs), so this adds the Unsloth provider/model for the session without
         # changing the user's default model. Key lives in the config, not the env.
-        write_opencode_config(base, key, entry, config_path)
+        write_opencode_config(base, key, entry, config_path, yolo = yolo)
         env = {"OPENCODE_CONFIG": str(config_path)}
         _run(base, entry, env, command, launch = launch, install_hint = "npm install -g opencode-ai")
 
@@ -930,12 +992,13 @@ def hermes(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    yolo: bool = _YOLO_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Studio server and start it."""
     base, key, entry = _connect(
         api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel)
     )
-    command = ["hermes", *ctx.args]
+    command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
     install_hint = (
         "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
         "/main/scripts/install.sh | bash"
@@ -958,6 +1021,7 @@ def pi(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    yolo: bool = _YOLO_OPTION,
 ):
     """Point Pi (coding agent) at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -966,7 +1030,15 @@ def pi(
     # Pi defaults to the google provider, so pin our provider/model on the command
     # line; the custom OpenAI-compatible endpoint itself is only configurable via
     # ~/.pi/agent/models.json.
-    command = ["pi", "--provider", _PI_PROVIDER, "--model", entry["id"], *ctx.args]
+    command = [
+        "pi",
+        "--provider",
+        _PI_PROVIDER,
+        "--model",
+        entry["id"],
+        *_yolo_command_flags("pi", yolo),
+        *ctx.args,
+    ]
     install_hint = "npm install -g @earendil-works/pi-coding-agent"
     with _session_config("pi", launch) as home:
         # Pi has no config-dir env var; it resolves ~/.pi off $HOME (Node's homedir()
