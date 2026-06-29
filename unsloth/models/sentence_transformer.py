@@ -19,6 +19,7 @@ from ._utils import (
     SUPPORTS_BFLOAT16,
     resolve_model_class,
     resolve_encoder_attention_implementation,
+    maybe_prefetch_hf_snapshot,
 )
 import inspect
 import json
@@ -1385,6 +1386,18 @@ class FastSentenceTransformer(FastModel):
                 "Unsloth: To use `FastSentenceTransformer`, you must install `sentence-transformers`.\n"
                 "Run `pip install sentence-transformers` to install it."
             )
+
+        # Pre-download in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
+        # SentenceTransformer load below is a cache hit and cannot hang on a stalled Xet transfer.
+        # Covers every path (for_inference, fast-encoder, fallback), which all resolve the repo
+        # in-process. weights_at_root is left False: an ST repo's component weights can live in
+        # subfolders (the pooling / dense modules), so the whole snapshot is warmed.
+        maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = kwargs.get("cache_folder"),
+        )
 
         # if for_inference == True, skip Unsloth optimizations to avoid torch compile issues
         if for_inference:

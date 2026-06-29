@@ -476,3 +476,20 @@ def test_from_tf_root_load_ignores_nested_h5(capture):
     kept = _filter(["model.h5", "checkpoint-1/model.h5", "config.json"], st["allow_patterns"], ig)
     assert "model.h5" in kept  # root TF weight warmed
     assert "checkpoint-1/model.h5" not in kept  # nested TF checkpoint ignored
+
+
+def test_sentence_transformer_from_pretrained_is_prefetch_wired():
+    """FastSentenceTransformer.from_pretrained must warm the repo via maybe_prefetch_hf_snapshot
+    BEFORE it instantiates SentenceTransformer / fetches modules.json, else an ST load downloads over
+    unprotected in-process Xet. Static source guard (importing ST pulls heavy optional deps)."""
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        src = f.read()
+    fp_idx = src.index("def from_pretrained", src.index("class FastSentenceTransformer"))
+    body = src[fp_idx:]
+    prefetch_idx = body.find("maybe_prefetch_hf_snapshot(")
+    st_idx = body.find("SentenceTransformer(")
+    assert prefetch_idx != -1, "from_pretrained must call maybe_prefetch_hf_snapshot"
+    assert st_idx != -1 and prefetch_idx < st_idx, "prefetch must run before the SentenceTransformer load"
