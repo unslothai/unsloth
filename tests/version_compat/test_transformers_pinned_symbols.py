@@ -13,7 +13,13 @@ import re
 
 import pytest
 
-from tests.version_compat._fetch import fetch_text, first_match, has_def
+from tests.version_compat._fetch import (
+    fetch_text,
+    first_match,
+    function_params,
+    has_def,
+    is_bound,
+)
 
 
 # 4.57.6 floor + every 5.x minor since 5.0.0 + main.
@@ -53,10 +59,10 @@ def test_trainer_compute_loss_num_items_in_batch_param(tag: str):
     hit = first_match("huggingface/transformers", tag, candidates)
     assert hit is not None
     _, src = hit
-    m = re.search(r"^\s*def compute_loss\(([^)]*)\)", src, re.MULTILINE | re.DOTALL)
-    if m is None:
+    params = function_params(src, "compute_loss", cls = "Trainer")
+    if params is None:
         pytest.fail(f"{tag}: Trainer.compute_loss not found in source")
-    assert "num_items_in_batch" in m.group(1), (
+    assert "num_items_in_batch" in params, (
         f"{tag}: Trainer.compute_loss signature missing num_items_in_batch param; "
         f"unsloth grad-accum patches assume this kwarg present"
     )
@@ -199,10 +205,9 @@ def test_fp8linear_init_param_names(tag: str):
         pytest.skip(f"{tag}: integrations/finegrained_fp8.py missing")
     if not has_def(src, "FP8Linear", "class"):
         pytest.skip(f"{tag}: FP8Linear not yet defined")
-    has_bias_kw = re.search(r"def __init__\([^)]*\bbias\b", src) is not None
-    has_has_bias_kw = re.search(r"def __init__\([^)]*\bhas_bias\b", src) is not None
+    params = function_params(src, "__init__", cls = "FP8Linear") or ()
     assert (
-        has_bias_kw or has_has_bias_kw
+        "bias" in params or "has_bias" in params
     ), f"{tag}: FP8Linear.__init__ has neither `bias` nor `has_bias` param"
 
 
@@ -215,8 +220,7 @@ def test_processing_utils_unpack_importable(tag: str):
     src = fetch_text("huggingface/transformers", tag, "src/transformers/processing_utils.py")
     if src is None:
         pytest.skip(f"{tag}: processing_utils.py missing")
-    has_unpack = bool(re.search(r"^Unpack\b\s*=", src, re.MULTILINE) or "Unpack" in src)
-    assert has_unpack, (
+    assert is_bound(src, "Unpack"), (
         f"{tag}: transformers.processing_utils.Unpack missing; "
         f"unsloth-zoo#583/584 import guard breaks"
     )
@@ -261,7 +265,7 @@ def test_qwen3_modeling_symbols_present(tag: str):
         pytest.skip(f"{tag}: modeling_qwen3.py missing")
     for cls in ("Qwen3Attention", "Qwen3DecoderLayer", "Qwen3Model", "Qwen3ForCausalLM"):
         assert has_def(src, cls, "class"), f"{tag}: class {cls} missing"
-    assert "Qwen3RotaryEmbedding" in src, (
+    assert is_bound(src, "Qwen3RotaryEmbedding"), (
         f"{tag}: Qwen3RotaryEmbedding missing; "
         f"FastQwen3Model.pre_patch RoPE rebind silently no-ops"
     )
@@ -346,9 +350,8 @@ def test_modeling_attn_mask_utils_symbols(tag: str):
     if src is None:
         pytest.skip(f"{tag}: modeling_attn_mask_utils.py missing")
     assert has_def(src, "AttentionMaskConverter", "class"), f"{tag}: AttentionMaskConverter missing"
-    assert (
-        has_def(src, "_prepare_4d_attention_mask_for_sdpa", "func")
-        or "_prepare_4d_attention_mask_for_sdpa" in src
+    assert is_bound(
+        src, "_prepare_4d_attention_mask_for_sdpa"
     ), f"{tag}: _prepare_4d_attention_mask_for_sdpa missing"
 
 
@@ -367,7 +370,7 @@ def test_training_args_parallel_mode_importable(tag: str):
     src = fetch_text("huggingface/transformers", tag, "src/transformers/training_args.py")
     if src is None:
         pytest.skip(f"{tag}: training_args.py missing")
-    assert "ParallelMode" in src, (
+    assert is_bound(src, "ParallelMode"), (
         f"{tag}: transformers.training_args.ParallelMode missing; "
         f"unsloth-zoo loss_utils.py:232 ImportError"
     )
