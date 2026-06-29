@@ -1636,6 +1636,21 @@ export UV_HTTP_RETRIES
 : "${UV_HTTP_TIMEOUT:=180}"
 export UV_HTTP_TIMEOUT
 
+# macOS: trust the system Keychain so uv uses SecureTransport instead of rustls.
+# Required behind TLS-inspecting proxies (Cisco Umbrella, Zscaler, etc.) which
+# present their own CA certificate. rustls (uv's default) ignores the Keychain
+# and rejects intercepted connections with "invalid peer certificate: UnknownIssuer".
+# Set both vars: UV_SYSTEM_CERTS is the modern one (uv >= 0.11), UV_NATIVE_TLS the
+# legacy one understood by uv 0.8.16-0.10.x, which the installer keeps if already
+# present (UV_MIN_VERSION) and which ignores UV_SYSTEM_CERTS. Mirror the choice onto
+# both so it works on either uv. Opt out with UV_SYSTEM_CERTS=0.
+if [ "$OS" = "macos" ]; then
+    : "${UV_SYSTEM_CERTS:=1}"
+    : "${UV_NATIVE_TLS:=$UV_SYSTEM_CERTS}"
+fi
+[ -n "${UV_SYSTEM_CERTS:-}" ] && export UV_SYSTEM_CERTS
+[ -n "${UV_NATIVE_TLS:-}" ] && export UV_NATIVE_TLS
+
 version_ge() {
     # returns 0 if $1 >= $2
     _a=$1
