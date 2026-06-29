@@ -629,10 +629,10 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
 @pytest.mark.parametrize(
     "opener",
     [
-        "<｜tool▁calls▁begin｜>",      # canonical
-        "<｜tool_calls_begin｜>",      # ASCII underscores
-        "<｜tool▁calls｜>",            # short form
-        "<｜tool calls begin｜>",      # spaces
+        "<｜tool▁calls▁begin｜>",  # canonical
+        "<｜tool_calls_begin｜>",  # ASCII underscores
+        "<｜tool▁calls｜>",  # short form
+        "<｜tool calls begin｜>",  # spaces
         "<｜tool\\_calls\\_begin｜>",  # escaped underscores
     ],
 )

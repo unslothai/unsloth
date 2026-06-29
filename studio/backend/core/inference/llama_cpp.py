@@ -8280,10 +8280,9 @@ class LlamaCppBackend:
                                                     allow_incomplete = auto_heal_tool_calls,
                                                 ):
                                                     _drain_silently = True
-                                            elif (
-                                                "call:".startswith(stripped_buf)
-                                                or stripped_buf.startswith("call:")
-                                            ):
+                                            elif "call:".startswith(
+                                                stripped_buf
+                                            ) or stripped_buf.startswith("call:"):
                                                 if _GEMMA_BARE_TC_RE.match(stripped_buf):
                                                     _drain_silently = True
                                                 elif len(stripped_buf) < _MAX_BUFFER_CHARS:
