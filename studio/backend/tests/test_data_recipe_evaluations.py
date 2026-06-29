@@ -14,7 +14,7 @@ from core.data_recipe.evaluations import score_dataframe, score_parquet_dir
 
 def _doc_score_eval(**overrides) -> dict:
     base = {
-        "evaluation_type": "json_document_score",
+        "processor_type": "json_document_score",
         "name": "score",
         "prediction_column": "prediction",
         "reference_column": "reference",
@@ -121,9 +121,9 @@ def test_score_parquet_dir_uses_schema_field_comparators(tmp_path: Path) -> None
     assert out["doc_score"].iloc[0] == pytest.approx(1.0)
 
 
-def test_score_dataframe_ignores_unknown_evaluation_type(parquet_dir: Path) -> None:
+def test_score_dataframe_ignores_unknown_processor_type(parquet_dir: Path) -> None:
     df = pd.read_parquet(parquet_dir / "batch_00000.parquet")
-    score_dataframe(df, [{"evaluation_type": "unknown_score", "name": "x"}])
+    score_dataframe(df, [{"processor_type": "unknown_score", "name": "x"}])
     assert list(df.columns) == ["prediction", "reference"]
 
 
@@ -169,9 +169,11 @@ def test_score_dataframe_adds_score_column() -> None:
     assert df["doc_score"].iloc[0] == pytest.approx(1.0)
 
 
-def test_build_config_builder_excludes_evaluations_from_designer_config(monkeypatch):
-    """Evaluations live in their own top-level field; they must never appear
-    in the recipe handed to DataDesignerConfigBuilder.from_config."""
+def test_build_config_builder_strips_studio_processor_types(monkeypatch):
+    """Studio-owned processor types (json_document_score) share the
+    recipe.processors[] array with data_designer's native types but
+    data_designer's ProcessorConfigT union doesn't know about them — they
+    must be stripped before reaching DataDesignerConfigBuilder.from_config."""
     from core.data_recipe import service
 
     captured_config: dict = {}
@@ -220,13 +222,10 @@ def test_build_config_builder_excludes_evaluations_from_designer_config(monkeypa
         {
             "processors": [
                 {"processor_type": "schema_transform", "name": "a", "template": {}},
-            ],
-            "evaluations": [
-                {"evaluation_type": "json_document_score", "name": "b"},
+                {"processor_type": "json_document_score", "name": "b"},
             ],
         }
     )
-    assert "evaluations" not in captured_config["data_designer"]
     assert captured_config["data_designer"]["processors"] == [
         {"processor_type": "schema_transform", "name": "a", "template": {}},
     ]

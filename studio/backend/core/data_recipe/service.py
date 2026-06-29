@@ -247,10 +247,25 @@ def build_config_builder(recipe: dict[str, Any]):
     recipe_core = {
         key: value
         for key, value in recipe.items()
-        if key not in {"model_providers", "mcp_providers", "evaluations"}
+        if key not in {"model_providers", "mcp_providers"}
     }
     recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(recipe_core)
+
+    # Strip studio-owned processor types before handing the recipe to
+    # data_designer; its ProcessorConfigT union is closed (DROP_COLUMNS,
+    # SCHEMA_TRANSFORM) and from_config would fail on unknown processor_type
+    # values. Studio runs these post-hoc via _attach_studio_evaluations.
+    raw_processors = recipe_core.get("processors") or []
+    designer_processors: list[dict[str, Any]] = []
+    for processor in raw_processors:
+        if not isinstance(processor, dict):
+            continue
+        processor_type_raw = processor.get("processor_type")
+        if isinstance(processor_type_raw, str) and _is_studio_processor_type(processor_type_raw):
+            continue
+        designer_processors.append(processor)
+    recipe_core = {**recipe_core, "processors": designer_processors}
 
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
@@ -260,9 +275,7 @@ def build_config_builder(recipe: dict[str, Any]):
 
     # DataDesignerConfigBuilder.from_config currently skips processors.
     # Re-attach so drop_columns/schema_transform survive the API payload.
-    for processor in recipe_core.get("processors") or []:
-        if not isinstance(processor, dict):
-            continue
+    for processor in designer_processors:
         processor_type_raw = processor.get("processor_type")
         if not isinstance(processor_type_raw, str):
             continue
@@ -273,6 +286,28 @@ def build_config_builder(recipe: dict[str, Any]):
         )
 
     return builder
+
+
+_STUDIO_PROCESSOR_TYPES: frozenset[str] = frozenset({"json_document_score"})
+
+
+def _is_studio_processor_type(processor_type: str) -> bool:
+    return processor_type in _STUDIO_PROCESSOR_TYPES
+
+
+def _extract_studio_evaluations(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull studio-owned processor entries out of recipe.processors. They
+    travel on the same payload field as data_designer's native processors
+    but data_designer can't dispatch them — _attach_studio_evaluations runs
+    them after preview()/create() returns."""
+    out: list[dict[str, Any]] = []
+    for processor in recipe.get("processors") or []:
+        if not isinstance(processor, dict):
+            continue
+        processor_type = processor.get("processor_type")
+        if isinstance(processor_type, str) and _is_studio_processor_type(processor_type):
+            out.append(processor)
+    return out
 
 
 def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = None):
@@ -301,7 +336,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
         model_providers = model_providers,
         mcp_providers = build_mcp_providers(recipe),
     )
-    _attach_studio_evaluations(designer, recipe.get("evaluations") or [])
+    _attach_studio_evaluations(designer, _extract_studio_evaluations(recipe))
     return designer
 
 
@@ -314,7 +349,7 @@ def _build_evaluation_artifacts(
     for evaluation in evaluations:
         if not isinstance(evaluation, dict):
             continue
-        if evaluation.get("evaluation_type") != "json_document_score":
+        if evaluation.get("processor_type") != "json_document_score":
             continue
         score_column = str(evaluation.get("score_column", "doc_score"))
         if score_column not in df.columns:
@@ -323,7 +358,7 @@ def _build_evaluation_artifacts(
         artifacts.append(
             {
                 "name": evaluation.get("name"),
-                "evaluation_type": "json_document_score",
+                "processor_type": "json_document_score",
                 "score_column": score_column,
                 "mean": float(series.mean()) if len(series) > 0 else None,
                 "count": int(len(series)),

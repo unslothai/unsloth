@@ -27,7 +27,7 @@ def score_dataframe(df: "pd.DataFrame", evaluations: list[dict[str, Any]]) -> "p
     for evaluation in evaluations:
         if not isinstance(evaluation, dict):
             continue
-        if evaluation.get("evaluation_type") == "json_document_score":
+        if evaluation.get("processor_type") == "json_document_score":
             _apply_json_document_score(
                 df,
                 prediction_column = str(evaluation.get("prediction_column", "")),

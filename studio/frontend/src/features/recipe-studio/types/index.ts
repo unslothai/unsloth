@@ -391,7 +391,7 @@ export type EvaluationDocumentScoreConfig = {
   id: string;
   kind: "evaluation";
   // biome-ignore lint/style/useNamingConvention: api schema
-  evaluation_type: "json_document_score";
+  processor_type: "json_document_score";
   name: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   prediction_column: string;

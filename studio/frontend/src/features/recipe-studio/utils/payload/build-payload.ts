@@ -103,7 +103,7 @@ export function buildRecipePayload(
 ): RecipePayloadResult {
   const errors: string[] = [];
   const columns: Record<string, unknown>[] = [];
-  const evaluations: Record<string, unknown>[] = [];
+  const evaluationProcessors: Record<string, unknown>[] = [];
   const modelAliases = new Set<string>();
   const modelProviderNames = new Set<string>();
   const localProviderNames = new Set<string>();
@@ -202,10 +202,10 @@ export function buildRecipePayload(
       continue;
     }
     if (config.kind === "evaluation") {
-      if (config.evaluation_type === "json_document_score") {
+      if (config.processor_type === "json_document_score") {
         const built = buildEvaluationDocumentScoreProcessor(config, errors);
         if (built) {
-          evaluations.push(built);
+          evaluationProcessors.push(built);
         }
       }
       continue;
@@ -398,6 +398,7 @@ export function buildRecipePayload(
     },
   );
   const recipeProcessors = buildProcessors(processors, errors);
+  recipeProcessors.push(...evaluationProcessors);
   const seedConfig = firstSeed ? buildSeedConfig(firstSeed, errors) : undefined;
   const seedDropProcessor = firstSeed
     ? buildSeedDropProcessor(firstSeed, errors)
@@ -423,7 +424,6 @@ export function buildRecipePayload(
         tool_configs: toolConfigs,
         columns,
         processors: recipeProcessors,
-        evaluations,
       },
       run: {
         rows: 5,

@@ -344,7 +344,7 @@ export function makeEvaluationDocumentScoreConfig(
     id,
     kind: "evaluation",
     // biome-ignore lint/style/useNamingConvention: api schema
-    evaluation_type: "json_document_score",
+    processor_type: "json_document_score",
     name: nextName(existing, "doc_score"),
     // biome-ignore lint/style/useNamingConvention: api schema
     prediction_column: "",

@@ -27,7 +27,7 @@ export function buildEvaluationDocumentScoreProcessor(
   const scoreColumn = config.score_column.trim() || "doc_score";
   return {
     // biome-ignore lint/style/useNamingConvention: api schema
-    evaluation_type: "json_document_score",
+    processor_type: "json_document_score",
     name,
     // biome-ignore lint/style/useNamingConvention: api schema
     prediction_column: predictionColumn,

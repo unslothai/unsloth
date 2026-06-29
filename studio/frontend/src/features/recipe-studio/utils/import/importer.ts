@@ -29,7 +29,6 @@ type RecipeInput = {
   mcp_providers?: unknown;
   tool_configs?: unknown;
   processors?: unknown;
-  evaluations?: unknown;
   seed_config?: unknown;
 };
 
@@ -112,7 +111,7 @@ function parseEvaluations(input: unknown): EvaluationDocumentScoreConfig[] {
     if (!isRecord(item)) {
       return;
     }
-    const type = readString(item.evaluation_type);
+    const type = readString(item.processor_type);
     if (type !== "json_document_score") {
       return;
     }
@@ -127,7 +126,7 @@ function parseEvaluations(input: unknown): EvaluationDocumentScoreConfig[] {
       id: `eval${index + 1}`,
       kind: "evaluation",
       // biome-ignore lint/style/useNamingConvention: api schema
-      evaluation_type: "json_document_score",
+      processor_type: "json_document_score",
       name: readString(item.name) ?? `doc_score_${index + 1}`,
       // biome-ignore lint/style/useNamingConvention: api schema
       prediction_column: readString(item.prediction_column) ?? "",
@@ -431,7 +430,7 @@ export function importRecipePayload(input: string): ImportResult {
   const errors: string[] = [];
   const configs: NodeConfig[] = [];
   const processors = parseProcessors(recipe.processors);
-  const evaluations = parseEvaluations(recipe.evaluations);
+  const evaluations = parseEvaluations(recipe.processors);
   const mcpProvidersByName = parseMcpProviders(recipe.mcp_providers);
   const toolConfigsByAlias = parseToolConfigs(recipe.tool_configs);
   const nameToId = new Map<string, string>();
