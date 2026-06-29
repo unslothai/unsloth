@@ -422,7 +422,13 @@ def _resolve_weight_scale_inv_candidates(module_name, named_modules):
     return None
 
 
-def _find_fp8_scale_inv_tensors(model_dir, model_name, revision = None, token = None, local_files_only = False):
+def _find_fp8_scale_inv_tensors(
+    model_dir,
+    model_name,
+    revision = None,
+    token = None,
+    local_files_only = False,
+):
     if not os.path.exists(model_dir):
         try:
             from huggingface_hub import snapshot_download

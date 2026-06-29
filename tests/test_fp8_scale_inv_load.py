@@ -94,7 +94,12 @@ def _make_bin_checkpoint(path, tensors):
 
 
 class _Fp8Owner(torch.nn.Module):
-    def __init__(self, weight, quant_method = "fp8", weight_scale = None):
+    def __init__(
+        self,
+        weight,
+        quant_method = "fp8",
+        weight_scale = None,
+    ):
         super().__init__()
         self.weight = torch.nn.Parameter(weight)
         self.quant_method = quant_method
@@ -276,7 +281,10 @@ def test_loader_restores_fp8_scales_with_base_revision_for_peft():
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        if not isinstance(node.func, ast.Name) or node.func.id != "_restore_missing_fp8_weight_scale_inv":
+        if (
+            not isinstance(node.func, ast.Name)
+            or node.func.id != "_restore_missing_fp8_weight_scale_inv"
+        ):
             continue
 
         revision_kw = next((kw for kw in node.keywords if kw.arg == "revision"), None)
@@ -325,10 +333,7 @@ def test_fp8_probe_uses_absolute_optional_import_and_narrow_missing_module_guard
             if not isinstance(child, ast.Try):
                 continue
 
-            imports = [
-                stmt for stmt in child.body
-                if isinstance(stmt, ast.ImportFrom)
-            ]
+            imports = [stmt for stmt in child.body if isinstance(stmt, ast.ImportFrom)]
             handlers = child.handlers
             if not imports or not handlers:
                 continue
