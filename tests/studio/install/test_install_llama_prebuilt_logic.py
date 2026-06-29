@@ -3147,9 +3147,35 @@ def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch):
         env = {},
     )
     assert plan.is_runnable
-    assert plan.command[:5] == ["bwrap", "--unshare-all", "--unshare-net", "--die-with-parent", "--new-session"]
+    assert plan.command[:5] == ["bwrap", "--unshare-all", "--share-net", "--die-with-parent", "--new-session"]
     assert "ldd" in plan.command[-1] or "--help" in plan.command[-1]
     assert "--ro-bind" in plan.command
+    assert "--dev" in plan.command
+    assert "--bind" in plan.command
+
+
+def test_build_validation_sandbox_plan_linux_quantize_binds_probe_and_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    bin_dir = tmp_path / "bin"
+    probe_dir = tmp_path / "models"
+    out_dir = tmp_path / "out"
+    runtime_dir = tmp_path / "runtime"
+    for directory in (bin_dir, probe_dir, out_dir, runtime_dir):
+        directory.mkdir()
+    plan = build_validation_sandbox_plan(
+        [str(bin_dir / "llama-quantize"), str(probe_dir / "probe.gguf"), str(out_dir / "probe-q4.gguf"), "Q6_K", "2"],
+        binary_path = bin_dir / "llama-quantize",
+        install_dir = tmp_path / "install",
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
+        runtime_line = None,
+        env = {"LD_LIBRARY_PATH": str(runtime_dir)},
+    )
+    assert plan.is_runnable
+    assert plan.command.count("--ro-bind") >= 3
+    assert plan.command.count("--bind") >= 2
+    assert str(probe_dir) in plan.command
+    assert str(out_dir) in plan.command
 
 
 def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monkeypatch):
@@ -3217,7 +3243,6 @@ def test_linux_missing_libraries_skips_ldd_without_sandbox_adapter(monkeypatch, 
 def test_linux_missing_libraries_uses_bwrap_plan(monkeypatch, tmp_path):
     binary_path = tmp_path / "server"
     binary_path.write_text("")
-    install_dir = tmp_path
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
@@ -3235,7 +3260,7 @@ def test_linux_missing_libraries_uses_bwrap_plan(monkeypatch, tmp_path):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "run_capture", fake_run_capture)
     assert linux_missing_libraries(binary_path, env = {"LD_LIBRARY_PATH": ""}) == ["libbad"]
     assert captured["command"][0] == "bwrap"
-    assert "ldd" in captured["command"]
+    assert any(Path(part).stem == "ldd" for part in captured["command"])
 
 
 def test_linux_missing_libraries_tolerates_probe_errors(monkeypatch, tmp_path):

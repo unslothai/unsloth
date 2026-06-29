@@ -5157,28 +5157,104 @@ def _has_command(command: str) -> bool:
     return shutil.which(command) is not None
 
 
-def _linux_validation_bwrap_prefix(binary_path: Path, install_dir: Path) -> list[str]:
+def _append_existing_bwrap_bind(
+    args: list[str],
+    *,
+    source: str | Path,
+    readonly: bool,
+    seen: set[str],
+) -> None:
+    path = Path(source)
+    if not path.exists():
+        return
+    key = str(path)
+    if key in seen:
+        return
+    seen.add(key)
+    args.extend(
+        [
+            "--ro-bind" if readonly else "--bind",
+            key,
+            key,
+        ]
+    )
+
+
+def _linux_validation_bwrap_prefix(
+    command: list[str],
+    *,
+    binary_path: Path,
+    install_dir: Path,
+    purpose: str,
+    env: dict[str, str],
+) -> list[str]:
     runtime_home = isolated_runtime_home()
-    return [
+    command_path = Path(command[0])
+    if not command_path.is_absolute():
+        resolved_command = shutil.which(command[0])
+        if resolved_command:
+            command_path = Path(resolved_command)
+
+    write_targets = {
+        str(Path(runtime_home)),
+    }
+    readonly_targets: list[str | Path] = [
+        install_dir,
+        binary_path.parent,
+        command_path.parent,
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/usr/bin",
+        "/usr/lib",
+        "/usr/lib64",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.conf",
+        "/etc/ld.so.conf.d",
+    ]
+    readonly_targets.extend(
+        part
+        for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+        if part
+    )
+
+    if purpose == _VALIDATION_PURPOSE_QUANTIZE and len(command) >= 3:
+        readonly_targets.append(Path(command[1]).parent)
+        write_targets.add(str(Path(command[2]).parent))
+    elif purpose == _VALIDATION_PURPOSE_SERVER and len(command) >= 3 and command[1] == "-m":
+        readonly_targets.append(Path(command[2]).parent)
+
+    args = [
         "bwrap",
         "--unshare-all",
-        "--unshare-net",
+    ]
+    if purpose == _VALIDATION_PURPOSE_SERVER:
+        args.append("--share-net")
+    args.extend(
+        [
         "--die-with-parent",
         "--new-session",
         "--tmpfs",
         "/tmp",
         "--proc",
         "/proc",
+        "--dev",
+        "/dev",
         "--setenv",
         "HOME",
         runtime_home,
-        "--ro-bind",
-        str(install_dir),
-        str(install_dir),
-        "--ro-bind",
-        str(binary_path.parent),
-        str(binary_path.parent),
-    ]
+        ]
+    )
+
+    seen: set[str] = set()
+    for target in readonly_targets:
+        target_path = Path(target)
+        if str(target_path) in write_targets:
+            continue
+        _append_existing_bwrap_bind(args, source = target_path, readonly = True, seen = seen)
+    for target in sorted(write_targets):
+        _append_existing_bwrap_bind(args, source = target, readonly = False, seen = seen)
+    return args
 
 
 def _macos_validation_sandbox_prefix() -> list[str]:
@@ -5221,7 +5297,13 @@ def build_validation_sandbox_plan(
         if _has_command("bwrap"):
             return _ValidationLaunchPlan(
                 command = [
-                    *_linux_validation_bwrap_prefix(binary_path, install_dir),
+                    *_linux_validation_bwrap_prefix(
+                        command,
+                        binary_path = binary_path,
+                        install_dir = install_dir,
+                        purpose = purpose,
+                        env = env,
+                    ),
                     *command,
                 ],
                 env = env,
@@ -5293,8 +5375,11 @@ def _run_validation_capture(
 
 
 def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> str:
+    ldd_path = shutil.which("ldd")
+    if ldd_path is None:
+        return ""
     plan = build_validation_sandbox_plan(
-        ["ldd", str(binary_path)],
+        [ldd_path, str(binary_path)],
         binary_path = binary_path,
         install_dir = binary_path.parent,
         purpose = _VALIDATION_PURPOSE_LDD,
