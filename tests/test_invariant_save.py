@@ -2,73 +2,148 @@ import pytest
 import subprocess
 import sys
 import os
+from unittest.mock import patch, MagicMock
 
 # Add the module path to sys.path to import from unsloth
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Payloads that attempt to inject shell commands through os.system calls
-PAYLOADS = [
-    # Exact exploit case: command injection with shell metacharacters
-    "llama.cpp; echo 'INJECTED' > /tmp/exploit.txt",
-    # Boundary case: input with spaces and quotes that could break command parsing
-    "llama.cpp' || ls #",
-    # Valid input: normal expected path
-    "llama.cpp",
-]
+
+def _make_mock_run(make_returncode=1, cmake_returncode=0):
+    """Return a mock for subprocess.run that records all calls."""
+    captured = []
+    call_index = [0]
+
+    def mock_run(args, **kwargs):
+        captured.append(args)
+        result = MagicMock()
+        # First call is `make clean`; subsequent calls are cmake
+        result.returncode = make_returncode if call_index[0] == 0 else cmake_returncode
+        call_index[0] += 1
+        return result
+
+    return mock_run, captured
 
 
-@pytest.mark.parametrize("payload", PAYLOADS)
-def test_shell_command_injection_mitigation(payload):
-    """Invariant: User-controlled input passed to os.system() must not execute arbitrary shell commands."""
+def test_make_clean_uses_list_args():
+    """
+    Security invariant: the `make clean` subprocess.run call must use a list of
+    arguments (not a shell string) to prevent shell injection.
+    """
+    pytest.importorskip("unsloth.save")
+    import unsloth.save as save_module
 
-    # Import the module here to avoid import issues if payloads cause early failures
-    import unsloth.save
+    mock_run, captured = _make_mock_run(make_returncode=0)
 
-    # Mock os.system to capture and inspect the command being executed
-    original_system = os.system
-    captured_command = None
+    with patch.object(save_module.subprocess, "run", side_effect=mock_run), \
+         patch.object(save_module.subprocess, "Popen", return_value=MagicMock()):
+        try:
+            save_module.install_llama_cpp_make_non_blocking()
+        except Exception:
+            pass  # Errors unrelated to our assertion are acceptable
 
-    def mock_system(cmd):
-        nonlocal captured_command
-        captured_command = cmd
-        # Return success to avoid breaking the function flow
-        return 0
+    assert len(captured) > 0, "subprocess.run was never called"
 
-    os.system = mock_system
+    for args in captured:
+        assert isinstance(args, list), (
+            f"subprocess.run called with a string instead of a list: {args!r}\n"
+            "Passing a string (especially with shell=True) enables shell injection."
+        )
+        for arg in args:
+            assert ";" not in arg,  f"Shell metacharacter ';' in argument: {arg!r}"
+            assert "||" not in arg, f"Shell metacharacter '||' in argument: {arg!r}"
+            assert "&&" not in arg, f"Shell metacharacter '&&' in argument: {arg!r}"
+            assert "`" not in arg,  f"Shell metacharacter '`' in argument: {arg!r}"
+            assert "$(" not in arg, f"Shell metacharacter '$(' in argument: {arg!r}"
 
-    try:
-        # Trigger the vulnerable code path by calling a function that uses os.system
-        # We'll call a function that likely uses the vulnerable pattern
-        # Since we can't directly call internal functions, we'll check if the module
-        # has a function that would trigger the os.system call
-        if hasattr(unsloth.save, "save_model"):
-            # This is a common function in save modules that might trigger the vulnerable code
-            try:
-                # Pass the payload as a potential path parameter
-                unsloth.save.save_model(payload, "dummy_output")
-            except Exception:
-                pass  # We expect some calls to fail due to invalid inputs
 
-        # Security assertion: The captured command must not contain the injected payload as executable code
-        if captured_command is not None:
-            # Check that the payload isn't directly executable in the shell command
-            # The command should sanitize or properly handle the input
-            assert (
-                ";" not in captured_command
-            ), f"Shell command injection via semicolon detected: {captured_command}"
-            assert (
-                "||" not in captured_command
-            ), f"Shell command injection via OR operator detected: {captured_command}"
-            assert (
-                "&&" not in captured_command
-            ), f"Shell command injection via AND operator detected: {captured_command}"
-            assert (
-                "`" not in captured_command
-            ), f"Shell command injection via backticks detected: {captured_command}"
-            assert (
-                "$(" not in captured_command
-            ), f"Shell command injection via command substitution detected: {captured_command}"
+def test_cmake_configure_uses_list_args():
+    """
+    Security invariant: the cmake configure subprocess.run call (triggered when
+    `make clean` returns non-zero) must also use a list of arguments.
+    """
+    pytest.importorskip("unsloth.save")
+    import unsloth.save as save_module
 
-    finally:
-        # Restore original os.system
-        os.system = original_system
+    # make returns 1 → triggers cmake fallback path
+    mock_run, captured = _make_mock_run(make_returncode=1, cmake_returncode=0)
+
+    with patch.object(save_module.subprocess, "run", side_effect=mock_run), \
+         patch.object(save_module.subprocess, "Popen", return_value=MagicMock()):
+        try:
+            save_module.install_llama_cpp_make_non_blocking()
+        except Exception:
+            pass
+
+    assert len(captured) >= 2, (
+        f"Expected at least 2 subprocess.run calls (make + cmake), got {len(captured)}"
+    )
+
+    for args in captured:
+        assert isinstance(args, list), (
+            f"subprocess.run called with a string instead of a list: {args!r}"
+        )
+        for arg in args:
+            assert ";" not in arg,  f"Shell metacharacter ';' in argument: {arg!r}"
+            assert "||" not in arg, f"Shell metacharacter '||' in argument: {arg!r}"
+            assert "&&" not in arg, f"Shell metacharacter '&&' in argument: {arg!r}"
+            assert "`" not in arg,  f"Shell metacharacter '`' in argument: {arg!r}"
+            assert "$(" not in arg, f"Shell metacharacter '$(' in argument: {arg!r}"
+
+
+def test_make_not_found_falls_through_to_cmake():
+    """
+    When `make` is not installed (FileNotFoundError), the code must fall through
+    to the cmake path rather than crashing with an unhandled exception.
+    """
+    pytest.importorskip("unsloth.save")
+    import unsloth.save as save_module
+
+    call_index = [0]
+
+    def mock_run(args, **kwargs):
+        call_index[0] += 1
+        if call_index[0] == 1:
+            raise FileNotFoundError("make not found")
+        result = MagicMock()
+        result.returncode = 0  # cmake succeeds
+        return result
+
+    with patch.object(save_module.subprocess, "run", side_effect=mock_run), \
+         patch.object(save_module.subprocess, "Popen", return_value=MagicMock()):
+        # Should NOT raise FileNotFoundError; cmake path should be attempted
+        try:
+            save_module.install_llama_cpp_make_non_blocking()
+        except FileNotFoundError as exc:
+            pytest.fail(
+                f"FileNotFoundError from missing `make` was not caught: {exc}"
+            )
+        except Exception:
+            pass  # Other errors (e.g. RuntimeError from cmake) are acceptable
+
+    assert call_index[0] >= 2, (
+        "cmake was never attempted after make was not found"
+    )
+
+
+def test_cmake_not_found_raises_runtime_error():
+    """
+    When `cmake` is not installed (FileNotFoundError), the code must raise a
+    descriptive RuntimeError rather than propagating the raw FileNotFoundError.
+    """
+    pytest.importorskip("unsloth.save")
+    import unsloth.save as save_module
+
+    call_index = [0]
+
+    def mock_run(args, **kwargs):
+        call_index[0] += 1
+        if call_index[0] == 1:
+            # make not found → triggers cmake path
+            raise FileNotFoundError("make not found")
+        # cmake not found
+        raise FileNotFoundError("cmake not found")
+
+    with patch.object(save_module.subprocess, "run", side_effect=mock_run), \
+         patch.object(save_module.subprocess, "Popen", return_value=MagicMock()):
+        with pytest.raises(RuntimeError):
+            save_module.install_llama_cpp_make_non_blocking()
