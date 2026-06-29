@@ -746,37 +746,56 @@ async fn generic_backend_health_ok(port: u16) -> bool {
             return false;
         }
     };
-    let response = match client
-        .get(format!("http://127.0.0.1:{port}/api/liveness"))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
+    let mut last_status = None;
+    let mut json = None;
+    for path in ["/api/liveness", "/api/health"] {
+        let response = match client
+            .get(format!("http://127.0.0.1:{port}{path}"))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                warn!(
+                    "Backend port candidate {} failed health request: {}",
+                    port, error
+                );
+                return false;
+            }
+        };
+        if response.status() == reqwest::StatusCode::NOT_FOUND && path == "/api/liveness" {
+            last_status = Some(response.status());
+            continue;
+        }
+        if !response.status().is_success() {
             warn!(
-                "Backend port candidate {} failed health request: {}",
-                port, error
+                "Backend port candidate {} returned HTTP {} from health",
+                port,
+                response.status()
             );
             return false;
         }
-    };
-    if !response.status().is_success() {
+        json = match response.json::<serde_json::Value>().await {
+            Ok(json) => Some(json),
+            Err(error) => {
+                warn!(
+                    "Backend port candidate {} returned invalid health JSON: {}",
+                    port, error
+                );
+                return false;
+            }
+        };
+        break;
+    }
+    let Some(json) = json else {
         warn!(
             "Backend port candidate {} returned HTTP {} from health",
             port,
-            response.status()
+            last_status
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
         );
         return false;
-    }
-    let json = match response.json::<serde_json::Value>().await {
-        Ok(json) => json,
-        Err(error) => {
-            warn!(
-                "Backend port candidate {} returned invalid health JSON: {}",
-                port, error
-            );
-            return false;
-        }
     };
     let live = json
         .get("status")

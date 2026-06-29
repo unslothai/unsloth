@@ -400,17 +400,6 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
 
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
-    if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
-        if read_cached_capability(&fingerprint).is_some() {
-            info!(
-                "Managed preflight: using cached desktop capability for {:?} in {}ms",
-                bin,
-                started.elapsed().as_millis()
-            );
-            return ManagedProbe::Ready { bin };
-        }
-    }
-
     if !run_cli_probe(&bin, &["-h"]).await {
         info!(
             "Managed preflight: cli unusable for {:?} in {}ms",
@@ -421,6 +410,17 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
             bin,
             reason: "cli_unusable".to_string(),
         };
+    }
+
+    if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
+        if read_cached_capability(&fingerprint).is_some() {
+            info!(
+                "Managed preflight: using cached desktop capability for {:?} in {}ms",
+                bin,
+                started.elapsed().as_millis()
+            );
+            return ManagedProbe::Ready { bin };
+        }
     }
 
     let capability = probe_cli_capability(&bin).await;

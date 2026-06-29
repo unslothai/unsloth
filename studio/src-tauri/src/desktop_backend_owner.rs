@@ -559,24 +559,36 @@ async fn fetch_liveness(port: u16) -> Result<Option<DesktopLiveness>, reqwest::E
     let client = reqwest::Client::builder()
         .timeout(LOCAL_HTTP_TIMEOUT)
         .build()?;
-    let response = client
-        .get(format!("http://127.0.0.1:{port}/api/liveness"))
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        return Ok(None);
+    for path in ["/api/liveness", "/api/health"] {
+        let response = client
+            .get(format!("http://127.0.0.1:{port}{path}"))
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND && path == "/api/liveness" {
+            continue;
+        }
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        return response.json::<DesktopLiveness>().await.map(Some);
     }
-    response.json::<DesktopLiveness>().await.map(Some)
+    Ok(None)
 }
 
 fn fetch_liveness_blocking(port: u16) -> Result<Option<DesktopLiveness>, String> {
-    let response = http_request_blocking(port, "GET", "/api/liveness", &[], &[])?;
-    if !(200..300).contains(&response.status) {
-        return Ok(None);
+    for path in ["/api/liveness", "/api/health"] {
+        let response = http_request_blocking(port, "GET", path, &[], &[])?;
+        if response.status == 404 && path == "/api/liveness" {
+            continue;
+        }
+        if !(200..300).contains(&response.status) {
+            return Ok(None);
+        }
+        return serde_json::from_slice::<DesktopLiveness>(&response.body)
+            .map(Some)
+            .map_err(|e| e.to_string());
     }
-    serde_json::from_slice::<DesktopLiveness>(&response.body)
-        .map(Some)
-        .map_err(|e| e.to_string())
+    Ok(None)
 }
 async fn fetch_health(port: u16) -> Result<Option<HealthResponse>, String> {
     let client = reqwest::Client::builder()

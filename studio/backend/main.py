@@ -457,15 +457,6 @@ def _start_background_maintenance() -> None:
                 "cleanup_orphaned_runs failed at startup: %s", exc
             )
 
-        try:
-            from storage.rag_db import reconcile_orphaned_ingestion_jobs
-            reconcile_orphaned_ingestion_jobs()
-        except Exception as exc:
-            import structlog
-            structlog.get_logger(__name__).warning(
-                "reconcile_orphaned_ingestion_jobs failed at startup: %s", exc
-            )
-
         import structlog as _structlog
 
         _structlog.get_logger(__name__).info(
@@ -539,6 +530,12 @@ async def lifespan(app: FastAPI):
     app.state.llama_cpp_capabilities = None
     app.state.llama_cpp_freshness = None
     _start_llama_cpp_probes_if_enabled(app)
+
+    try:
+        from storage.rag_db import reconcile_orphaned_ingestion_jobs
+        reconcile_orphaned_ingestion_jobs()
+    except Exception as exc:
+        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     _start_background_maintenance()
 
