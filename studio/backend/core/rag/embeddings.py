@@ -158,11 +158,9 @@ def _st_unload() -> None:
     if not had_model:
         return
     import gc
-
     gc.collect()  # drop the model now so the freed VRAM is visible to callers
     try:
         import torch
-
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001 - torch may be missing or broken
