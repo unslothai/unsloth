@@ -501,11 +501,7 @@ def run_safetensors_tool_loop(
                 and any(sig in stripped for sig in tool_xml_signals)
             ):
                 detect_state = _state_draining
-            elif (
-                tool_protocol_active
-                and _bare_eos.startswith("{")
-                and '"name"' in _bare_eos
-            ):
+            elif tool_protocol_active and _bare_eos.startswith("{") and '"name"' in _bare_eos:
                 # A held bare-JSON tool-call fragment carries no XML signal. DRAIN
                 # it so a complete object parses/executes and a truncated one is
                 # dropped by the DRAINING resolver -- the signal-only gate above

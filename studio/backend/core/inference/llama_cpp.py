@@ -8257,9 +8257,7 @@ class LlamaCppBackend:
                                             _bare = strip_llama3_leading_sentinels(stripped_buf)
                                             if _bare.startswith("{"):
                                                 if _balanced_brace_end(_bare, 0) is None:
-                                                    if (
-                                                        len(stripped_buf) < _MAX_BARE_JSON_BUFFER
-                                                    ):
+                                                    if len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
                                                         _hold_buffer = True
                                                     elif '"name"' in _bare:
                                                         # Oversized but still-open

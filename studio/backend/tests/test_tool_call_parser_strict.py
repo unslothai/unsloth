@@ -302,8 +302,7 @@ def test_strip_leading_bare_json_call_drops_complete_call():
     # A complete Llama-3.2 bare-JSON call is removed; trailing prose is kept.
     assert strip_leading_bare_json_call('{"name":"web_search","parameters":{"query":"cats"}}') == ""
     assert (
-        strip_leading_bare_json_call('{"name":"python","parameters":{"code":"x"}} done')
-        == "done"
+        strip_leading_bare_json_call('{"name":"python","parameters":{"code":"x"}} done') == "done"
     )
 
 
@@ -311,14 +310,19 @@ def test_strip_leading_bare_json_call_drops_truncated_call():
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 
     # A truncated call (no closing brace) collapses to "" -- nothing recoverable.
-    assert strip_leading_bare_json_call('{"name":"web_search","parameters":{"query":"weather in S') == ""
+    assert (
+        strip_leading_bare_json_call('{"name":"web_search","parameters":{"query":"weather in S')
+        == ""
+    )
 
 
 def test_strip_leading_bare_json_call_preserves_plain_json_and_prose():
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 
     # No "name" key -> plain JSON answer, left untouched.
-    assert strip_leading_bare_json_call('{"result": 42, "ok": true}') == '{"result": 42, "ok": true}'
+    assert (
+        strip_leading_bare_json_call('{"result": 42, "ok": true}') == '{"result": 42, "ok": true}'
+    )
     # Prose before the brace -> not a leading bare call, untouched.
     assert strip_leading_bare_json_call('here is {"name":"x"}') == 'here is {"name":"x"}'
     # Ordinary text untouched.
