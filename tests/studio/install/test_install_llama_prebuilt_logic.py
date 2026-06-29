@@ -3399,7 +3399,9 @@ def test_build_validation_sandbox_plan_linux_server_probe_binds_nix_store(monkey
     assert _command_contains_path(plan, "nix/store")
 
 
-def test_build_validation_sandbox_plan_linux_gpu_keeps_sandbox_without_setuid_bwrap(monkeypatch, tmp_path):
+def test_build_validation_sandbox_plan_linux_gpu_keeps_sandbox_without_setuid_bwrap(
+    monkeypatch, tmp_path
+):
     bwrap_path = tmp_path / "bwrap"
     bwrap_path.write_text("")
     binary_path = tmp_path / "llama-server"
@@ -3424,7 +3426,8 @@ def test_build_validation_sandbox_plan_linux_gpu_keeps_sandbox_without_setuid_bw
                 "payload_env": dict(payload_env),
                 "timeout": timeout,
             }
-        ) or [str(helper_path), "-c", "server probe"],
+        )
+        or [str(helper_path), "-c", "server probe"],
     )
 
     plan = build_validation_sandbox_plan(
