@@ -224,7 +224,7 @@ class RawTextDataLoader:
         return ""
 
     # Cache text fields/columns for better performance
-    _TEXT_FIELDS = ["text", "content", "message", "body", "description", "prompt"]
+    _TEXT_FIELDS = ("text", "content", "message", "body", "description", "prompt")
     _TEXT_COLUMNS = _TEXT_FIELDS
 
     def _extract_text_from_json(self, data):
