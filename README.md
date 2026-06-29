@@ -246,6 +246,20 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
 ```
 
+On macOS, the installer defaults to the system certificate store (`UV_SYSTEM_CERTS=1`) so uv trusts the CAs in your Keychain, needed behind TLS-inspecting proxies (Cisco Umbrella, Zscaler, etc.). Opt out with:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UV_SYSTEM_CERTS=0 sh
+```
+
+Point the frontend build at a corporate npm mirror/proxy with `UNSLOTH_NPM_REGISTRY` (for the developer install behind a firewall that blocks `registry.npmjs.org`):
+```bash
+UNSLOTH_NPM_REGISTRY=https://artifactory.example.com/api/npm/npm/ ./install.sh --local
+```
+```powershell
+$env:UNSLOTH_NPM_REGISTRY='https://artifactory.example.com/api/npm/npm/'; .\install.ps1 --local
+```
+It is threaded as `--registry` into the Studio frontend `npm`/`bun` installs; the supply-chain locks (7-day `min-release-age`, exact version pins) stay in force.
+
 Cap Studio's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`.
 
 #### Uninstall

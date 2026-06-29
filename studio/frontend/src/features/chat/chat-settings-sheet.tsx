@@ -74,7 +74,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, ExternalLink } from "lucide-react";
+import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -116,8 +116,30 @@ import type { InferenceParams } from "./types/runtime";
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
 
+const PROMPT_VARIABLE_PATTERN = /{{\s*[a-zA-Z_$][a-zA-Z0-9_$.-]*\s*}}/;
+
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
+}
+
+function getPromptVariablesError(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return null;
+    }
+  } catch {
+    return "Use valid JSON, for example { \"env\": \"staging\" }.";
+  }
+  return "Variables must be a JSON object.";
+}
+
+function hasPromptVariableSyntax(prompt: string): boolean {
+  return PROMPT_VARIABLE_PATTERN.test(prompt);
 }
 
 /**
@@ -655,6 +677,8 @@ export function ChatSettingsPanel({
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  const [systemVariablesDraft, setSystemVariablesDraft] = useState("");
+  const [systemVariablesOpen, setSystemVariablesOpen] = useState(false);
   // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
@@ -697,7 +721,12 @@ export function ChatSettingsPanel({
       }),
     [activePreset, hasUnsavedPresetChanges, presetNameInput, presets],
   );
-  const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
+  const systemVariablesError = getPromptVariablesError(systemVariablesDraft);
+  const currentSystemPrompt = params.systemPrompt ?? "";
+  const currentSystemVariables = params.systemVariables ?? "";
+  const systemPromptEditorDirty =
+    systemPromptDraft !== currentSystemPrompt ||
+    systemVariablesDraft !== currentSystemVariables;
   const showPromptCacheTtlControl = Boolean(
     activeExternalProvider &&
       supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
@@ -808,12 +837,32 @@ export function ChatSettingsPanel({
   }
 
   function openSystemPromptEditor() {
-    setSystemPromptDraft(params.systemPrompt);
+    setSystemPromptDraft(currentSystemPrompt);
+    setSystemVariablesDraft(currentSystemVariables);
+    setSystemVariablesOpen(
+      currentSystemVariables.trim().length > 0 ||
+        hasPromptVariableSyntax(currentSystemPrompt),
+    );
     setSystemPromptEditorOpen(true);
   }
 
   function saveSystemPromptEditor() {
-    set("systemPrompt")(systemPromptDraft);
+    if (systemVariablesError) {
+      toast.error("Fix prompt variables before saving", {
+        description: systemVariablesError,
+      });
+      return;
+    }
+    const nextParams = {
+      ...params,
+      systemPrompt: systemPromptDraft,
+      systemVariables: systemVariablesDraft.trim(),
+    };
+    const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
+      ? getPresetSource(activePreset)
+      : "modified";
+    setActivePresetSource(nextSource);
+    onParamsChange(nextParams);
     setSystemPromptEditorOpen(false);
   }
 
@@ -861,12 +910,12 @@ export function ChatSettingsPanel({
   useEffect(() => {
     const el = systemPromptBoxRef.current;
     setSystemPromptOverflows(
-      params.systemPrompt.length > 0 &&
+      currentSystemPrompt.length > 0 &&
         el != null &&
         el.clientHeight > 0 &&
         el.scrollHeight > el.clientHeight + 1,
     );
-  }, [params.systemPrompt, open]);
+  }, [currentSystemPrompt, open]);
 
   const settingsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1538,7 +1587,7 @@ export function ChatSettingsPanel({
           >
             <textarea
               ref={systemPromptBoxRef}
-              value={params.systemPrompt}
+              value={currentSystemPrompt}
               onChange={(e) => set("systemPrompt")(e.target.value)}
               onMouseDown={(e) => {
                 // Overflowing prompt: click opens the popup editor instead.
@@ -1560,6 +1609,7 @@ export function ChatSettingsPanel({
             />
           </div>
         </CollapsibleSection>
+
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
           <div className="flex flex-col gap-5 pt-1">
@@ -1712,20 +1762,96 @@ export function ChatSettingsPanel({
               the preset.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="space-y-0.5 px-0.5">
-              <div className="text-[11px] font-medium">Prompt editor</div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[11px] font-medium">Prompt editor</div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSystemVariablesOpen((open) => !open)}
+                  className="h-7 gap-1.5 rounded-full px-2.5 text-[11px] text-muted-foreground"
+                  aria-expanded={systemVariablesOpen}
+                >
+                  <Braces className="size-3.5" />
+                  Variables
+                  <ChevronDown
+                    className={cn(
+                      "size-3.5 transition-transform",
+                      systemVariablesOpen && "rotate-180",
+                    )}
+                  />
+                </Button>
+              </div>
               <p className="text-[11px] text-muted-foreground">
                 Use this for longer edits. Save writes back to the active
-                configuration only.
+                configuration only. Insert variables with {"{{ env }}"}.
               </p>
             </div>
+            {systemVariablesOpen ? (
+              <div className="space-y-2 px-0.5">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="space-y-0.5">
+                    <div className="text-[11px] font-medium">
+                      Prompt variables
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Define values as JSON below, then use each key in your
+                      prompt, like {"{{ env }}"}.
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="text-[10px] text-muted-foreground">
+                      Built-in, fill in automatically
+                    </span>
+                    <div className="flex flex-wrap justify-end gap-1">
+                      {["{{$date}}", "{{$time}}", "{{$now}}"].map((token) => (
+                        <span
+                          key={token}
+                          title={`${token} is replaced automatically when you send`}
+                          className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+                        >
+                          {token}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <Textarea
+                  value={systemVariablesDraft}
+                  onChange={(event) =>
+                    setSystemVariablesDraft(event.target.value)
+                  }
+                  placeholder='{ "env": "staging", "version": "v2.3.1" }'
+                  fieldSizing="fixed"
+                  className={cn(
+                    "min-h-24 border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
+                    systemVariablesError &&
+                      "ring-1 ring-destructive focus-visible:ring-destructive",
+                  )}
+                  rows={5}
+                  aria-label="Prompt variables JSON"
+                  aria-invalid={Boolean(systemVariablesError)}
+                />
+                {systemVariablesError ? (
+                  <p className="px-1 text-[11px] text-destructive">
+                    {systemVariablesError}
+                  </p>
+                ) : (
+                  <p className="px-1 text-[11px] text-muted-foreground">
+                    Names you don&apos;t define are left unchanged, so a stray
+                    {" {{ typo }} "}stays visible in the prompt.
+                  </p>
+                )}
+              </div>
+            ) : null}
             <Textarea
               value={systemPromptDraft}
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
               fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
+              className="min-h-[20rem] max-h-[48vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
               rows={14}
             />
           </div>
@@ -1744,7 +1870,8 @@ export function ChatSettingsPanel({
                 type="button"
                 variant="ghost"
                 onClick={() => {
-                  setSystemPromptDraft(params.systemPrompt);
+                  setSystemPromptDraft(currentSystemPrompt);
+                  setSystemVariablesDraft(currentSystemVariables);
                   setSystemPromptEditorOpen(false);
                 }}
               >
@@ -1753,7 +1880,9 @@ export function ChatSettingsPanel({
               <Button
                 type="button"
                 onClick={saveSystemPromptEditor}
-                disabled={!systemPromptEditorDirty}
+                disabled={
+                  !systemPromptEditorDirty || Boolean(systemVariablesError)
+                }
               >
                 Save
               </Button>
