@@ -648,7 +648,13 @@ def _session_config(agent: str, launch: bool):
         yield path
 
 
-def write_openclaw_config(base: str, key: str, model: dict, path: Path, yolo: bool = False) -> None:
+def write_openclaw_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    yolo: bool = False,
+) -> None:
     config = _read_json_object(path)
     if config is None:
         typer.echo(
@@ -692,7 +698,13 @@ def write_openclaw_config(base: str, key: str, model: dict, path: Path, yolo: bo
         typer.echo(f"Updated {path}")
 
 
-def write_opencode_config(base: str, key: str, model: dict, path: Path, yolo: bool = False) -> None:
+def write_opencode_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    yolo: bool = False,
+) -> None:
     config = _read_json_object(path)
     if config is None:
         typer.echo(
