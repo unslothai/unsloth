@@ -49,9 +49,9 @@ _xml_helper = _re.search(
     _src,
 )
 assert _xml_helper, "could not extract _strip_tool_xml source"
-assert "_strip_mistral_closed_calls" in _xml_helper.group(0), (
-    "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
-)
+assert "_strip_mistral_closed_calls" in _xml_helper.group(
+    0
+), "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
 exec(_xml_helper.group(0), _ns)
 
 _helper = _re.search(
@@ -379,3 +379,42 @@ def test_strips_bare_kimi_call_without_section_wrapper():
     cleaned = _TOOL_XML_RE.sub("", text)
     assert "tool_call_begin" not in cleaned
     assert cleaned == "pre  post"
+
+
+# ── Llama-3 <|python_tag|> arm bounds on REAL sentinels only ──────
+
+
+def test_python_tag_strip_consumes_literal_sentinel_in_arg():
+    # A <|python_tag|> tool call whose JSON argument carries a literal <|...|>
+    # token (here <|cite|>) must be stripped whole. The old `<(?!\|)` arm stopped
+    # at any `<|`, leaking the call tail (e.g. `<|cite|> here"}}`) into display.
+    text = '<|python_tag|>{"name": "send", "parameters": {"text": "use <|cite|> here"}}'
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == "", f"python_tag call leaked at literal sentinel: {cleaned!r}"
+
+
+@pytest.mark.parametrize(
+    "sentinel",
+    [
+        "<|eot_id|>",
+        "<|eom_id|>",
+        "<|start_header_id|>",
+        "<|end_header_id|>",
+    ],
+)
+def test_python_tag_strip_stops_at_real_sentinel(sentinel):
+    # A genuine Llama control sentinel still bounds the strip so following
+    # assistant text is preserved (the arm must not swallow past it).
+    text = f'<|python_tag|>{{"name": "x", "parameters": {{}}}}{sentinel}visible answer'
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == f"{sentinel}visible answer", (
+        f"strip did not stop at real sentinel {sentinel!r}: {cleaned!r}"
+    )
+
+
+def test_python_tag_strip_restarts_on_second_python_tag():
+    # A second <|python_tag|> opens a new tool-call region, so the whole pair is
+    # stripped (the arm bounds the first, then the next match consumes the rest).
+    text = '<|python_tag|>{"name": "a"}<|python_tag|>{"name": "b"}'
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == "", f"second python_tag region leaked: {cleaned!r}"

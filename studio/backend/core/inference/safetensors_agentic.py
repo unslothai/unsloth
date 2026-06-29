@@ -31,6 +31,7 @@ from core.inference.tool_call_parser import (
     RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
     parse_tool_calls_from_text,
+    strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup,
 )
@@ -437,6 +438,14 @@ def run_safetensors_tool_loop(
                 if _balanced_brace_end(bare_probe, 0) is None:
                     if len(stripped) < _MAX_BARE_JSON_BUFFER:
                         continue  # object still open -- keep buffering
+                    elif '"name"' in bare_probe:
+                        # Oversized but still-open bare-JSON call: stop holding
+                        # (memory bound) yet DRAIN rather than leak the raw JSON
+                        # prefix. The safety net recovers a complete call; the
+                        # DRAINING resolver drops a truncated one. Gated on a
+                        # ``"name"`` key so a giant plain JSON answer still streams.
+                        detect_state = _state_draining
+                        continue
                 elif parse_tool_calls_from_text(
                     content_buffer,
                     id_offset = next_call_id,
@@ -445,7 +454,7 @@ def run_safetensors_tool_loop(
                     # Closed object that parses as a bare-JSON call -- drain silently.
                     detect_state = _state_draining
                     continue
-                # Closed non-call object (or oversized) -- stream it as ordinary text.
+                # Closed non-call object (or oversized non-call) -- stream as text.
 
             # Gemma 4 wrapper-less ``call:NAME{...}`` (special tokens stripped) has no
             # entry in tool_xml_signals, so without this it streams raw and is only
@@ -516,11 +525,18 @@ def run_safetensors_tool_loop(
         if detect_state == _state_buffering:
             # Buffer never resolved -- tool XML or plain content?
             stripped = content_buffer.lstrip()
+            _bare_eos = strip_llama3_leading_sentinels(stripped)
             if (
                 stripped
                 and tool_protocol_active
                 and any(sig in stripped for sig in tool_xml_signals)
             ):
+                detect_state = _state_draining
+            elif tool_protocol_active and _bare_eos.startswith("{") and '"name"' in _bare_eos:
+                # A held bare-JSON tool-call fragment carries no XML signal. DRAIN
+                # it so a complete object parses/executes and a truncated one is
+                # dropped by the DRAINING resolver -- the signal-only gate above
+                # would otherwise flush the raw JSON to the client (GGUF parity).
                 detect_state = _state_draining
             else:
                 # Drain the buffer and fall through to STREAMING so the intent
@@ -605,14 +621,19 @@ def run_safetensors_tool_loop(
                 # strips unparseable tool XML; disabled Auto-Heal preserves
                 # the raw text so literal/malformed markup stays visible.
                 if content_accum:
-                    yield {
-                        "type": "content",
-                        "text": _strip_tool_markup_final(
-                            content_accum,
-                            auto_heal_tool_calls = auto_heal_tool_calls,
-                            tool_protocol_active = False,
-                        ),
-                    }
+                    _drain_text = _strip_tool_markup_final(
+                        content_accum,
+                        auto_heal_tool_calls = auto_heal_tool_calls,
+                        tool_protocol_active = False,
+                    )
+                    # A truncated/oversized bare-JSON tool call (``{"name":..``)
+                    # was drained here but did not parse. Drop it rather than
+                    # leaking the raw fragment; a plain JSON answer (no ``"name"``)
+                    # is left untouched by the helper.
+                    if tool_protocol_active:
+                        _drain_text = strip_leading_bare_json_call(_drain_text)
+                    if _drain_text:
+                        yield {"type": "content", "text": _drain_text}
                 if provisional_render_html_started and not provisional_resolved:
                     provisional_resolved = True
                     yield {
@@ -632,6 +653,12 @@ def run_safetensors_tool_loop(
 
         if tool_calls:
             next_call_id += len(tool_calls)
+            # Strip a leading bare-JSON tool call from the content kept for the
+            # assistant turn so the executed call is not replayed as visible text
+            # or fed back as next-turn history. ``_strip_tool_markup_final`` only
+            # knows XML/bracket markup; this also covers the Llama-3.2 bare-JSON
+            # form. No-op for plain JSON answers (no ``"name"`` key).
+            content_text = strip_leading_bare_json_call(content_text)
 
         if final_attempt_done:
             # Final-answer turn re-called a tool -- stop the loop.

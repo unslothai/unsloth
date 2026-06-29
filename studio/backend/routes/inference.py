@@ -1587,12 +1587,15 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
 
 _TOOL_XML_RE = _re.compile(
-    # Hyphen in the name char-class matches MCP tool names with dashes
-    # (mcp__srv__list-issues) that would otherwise leak past this strip. The Llama-3
-    # ``<|python_tag|>...`` arm runs to the next ``<|`` sentinel or EOF;
-    # ``(?:[^<]|<(?!\|))*`` keeps literal ``<``, newlines, embedded JSON. The last
-    # arms strip DeepSeek envelopes (every opener variant), Kimi section blocks, and
-    # a bare (section-less) Kimi call.
+    # (mcp__srv__list-issues) that would otherwise leak past this strip.
+    # The Llama-3 ``<|python_tag|>...`` arm runs to the next REAL Llama control
+    # sentinel or EOF. Stopping at any ``<|`` (the old ``<(?!\|)``) truncated the
+    # strip when a tool-call argument carried a literal ``<|...|>`` token (e.g.
+    # ``<|cite|>`` inside a string), leaking the call tail into display; the
+    # explicit sentinel list keeps literal ``<``, ``<|x|>`` markup, newlines, and
+    # embedded JSON while still bounding on genuine header/eot/eom/python_tag tokens.
+    # The last arms strip DeepSeek envelopes (every opener variant), Kimi section
+    # blocks, and a bare (section-less) Kimi call.
     # ``<function=name>`` (Qwen3.5) and the attribute form ``<function name="name">``
     # (MiniCPM-5 / MiniMax-M2); name class ``[\w.\-]`` mirrors the parser so this
     # form is stripped from the UI instead of leaking.
@@ -1600,7 +1603,7 @@ _TOOL_XML_RE = _re.compile(
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
-    r"|<\|python_tag\|>(?:[^<]|<(?!\|))*"
+    r"|<\|python_tag\|>(?:[^<]|<(?!\|(?:eot_id|eom_id|python_tag|start_header_id|end_header_id|begin_of_text|finetune_right_pad_id)\|))*"
     r"|" + _DS_OPEN_SRC + r".*?(?:<｜tool▁calls▁end｜>|\Z)"
     r"|<\|tool_calls_section_begin\|>.*?(?:<\|tool_calls_section_end\|>|\Z)"
     r"|<\|tool_call_begin\|>.*?(?:<\|tool_call_end\|>|\Z)"

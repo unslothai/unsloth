@@ -51,6 +51,7 @@ from core.inference.tool_call_parser import (
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+    strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
 )
@@ -8266,15 +8267,20 @@ class LlamaCppBackend:
                                         # XML-signal path which may carry a prefix.
                                         _drain_silently = False
                                         if not is_match and not is_prefix:
-                                            _bare = strip_llama3_leading_sentinels(
-                                                stripped_buf
-                                            )
+                                            _bare = strip_llama3_leading_sentinels(stripped_buf)
                                             if _bare.startswith("{"):
                                                 if _balanced_brace_end(_bare, 0) is None:
-                                                    _hold_buffer = (
-                                                        len(stripped_buf)
-                                                        < _MAX_BARE_JSON_BUFFER
-                                                    )
+                                                    if len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    elif '"name"' in _bare:
+                                                        # Oversized but still-open
+                                                        # bare-JSON call: stop holding
+                                                        # (memory bound) yet DRAIN
+                                                        # rather than leak the raw JSON
+                                                        # prefix. Gated on a ``"name"``
+                                                        # key so a giant plain JSON
+                                                        # answer still streams.
+                                                        _drain_silently = True
                                                 elif self._parse_tool_calls_from_text(
                                                     content_buffer,
                                                     allow_incomplete = auto_heal_tool_calls,
@@ -8345,9 +8351,7 @@ class LlamaCppBackend:
                     # JSON to the user.
                     _bare_eos = strip_llama3_leading_sentinels(stripped_buf)
                     _is_bare_tc = (
-                        bool(active_tools)
-                        and _bare_eos.startswith("{")
-                        and '"name"' in _bare_eos
+                        bool(active_tools) and _bare_eos.startswith("{") and '"name"' in _bare_eos
                     )
                     if stripped_buf and any(s in stripped_buf for s in _tool_xml_signals):
                         detect_state = _S_DRAINING
@@ -8526,6 +8530,10 @@ class LlamaCppBackend:
                             final = True,
                             force = True,
                         )
+                        # ``_strip_tool_markup`` only knows XML/bracket markup; also
+                        # drop a leading Llama-3.2 bare-JSON call so the executed
+                        # call is not replayed as visible text or next-turn history.
+                        content_text = strip_leading_bare_json_call(content_text)
                     if tool_calls:
                         logger.info(
                             f"Parsed {len(tool_calls)} tool call(s) from "

@@ -1167,6 +1167,49 @@ def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
     return None
 
 
+def strip_leading_bare_json_call(text: str) -> str:
+    """Remove a leading (optionally sentinel-prefixed) bare-JSON tool call
+    ``{"name":..,"parameters":..}`` from ``text``.
+
+    ``strip_tool_markup`` only knows XML/bracket markup, so the Llama-3.2
+    ``custom_tools`` bare-JSON form survives it and would otherwise leak into the
+    visible stream or the next-turn assistant content. Returns ``text`` unchanged
+    when it is not such a call (no leading ``{`` or no ``"name"`` key), so a plain
+    JSON answer survives. A truncated call (no closing brace) collapses to ``""``;
+    a complete one is dropped and any trailing prose is kept."""
+    probe = strip_llama3_leading_sentinels(text.lstrip())
+    if not (probe.startswith("{") and '"name"' in probe):
+        return text
+    end = _balanced_brace_end(probe, 0)
+    if end is None:
+        return ""  # truncated bare-JSON call -- nothing recoverable
+    return probe[end + 1 :].lstrip()
+
+
+def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:
+    """Like ``_balanced_brace_end`` but skips ``<|"|>`` strings and matches {}/[] symmetrically."""
+    if brace_pos >= len(text) or text[brace_pos] != "{":
+        return None
+    depth = 0
+    i = brace_pos
+    while i < hard_stop:
+        if text.startswith(_GEMMA_STR_BEGIN, i):
+            close = text.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
+            if close < 0:
+                return None
+            i = close + len(_GEMMA_STR_END)
+            continue
+        ch = text[i]
+        if ch == "{" or ch == "[":
+            depth += 1
+        elif ch == "}" or ch == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
 def _gemma_parse_value(text: str, i: int):
     """Parse one Gemma arg value at ``i``; returns ``(value, next_index, closed)``.
 
