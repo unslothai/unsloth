@@ -1605,10 +1605,14 @@ def _strip_tool_xml(text: str) -> str:
 
 
 def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
-    """Apply route-level XML leak cleanup only when Auto-Heal is enabled."""
+    """Route-level tool-call leak cleanup, only when Auto-Heal is enabled.
+    Delegates to ``_strip_tool_xml`` so the Mistral ``[TOOL_CALLS]`` balanced-brace
+    pass runs here too -- ``_TOOL_XML_RE`` alone has no ``[TOOL_CALLS]`` arm and
+    would leak Mistral textual calls (nested JSON) into OpenAI-compatible display
+    and stale-history paths."""
     if not auto_heal_tool_calls:
         return text
-    return _TOOL_XML_RE.sub("", text)
+    return _strip_tool_xml(text)
 
 
 logger = get_logger(__name__)

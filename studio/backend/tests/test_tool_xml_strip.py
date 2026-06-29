@@ -24,15 +24,32 @@ import re as _re
 _src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
-_ns = {"_re": _re}
+# _strip_tool_xml_for_display now delegates to _strip_tool_xml, which runs the
+# parser's Mistral [TOOL_CALLS] balanced strip before _TOOL_XML_RE. Provide both
+# into the exec namespace so the extracted helpers resolve.
+from core.inference.tool_call_parser import _strip_mistral_closed_calls
+
+_ns = {"_re": _re, "_strip_mistral_closed_calls": _strip_mistral_closed_calls}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
+
+_xml_helper = _re.search(
+    r"def _strip_tool_xml\(text: str\) -> str:\n(?:    .+\n)+",
+    _src,
+)
+assert _xml_helper, "could not extract _strip_tool_xml source"
+assert "_strip_mistral_closed_calls" in _xml_helper.group(0), (
+    "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
+)
+exec(_xml_helper.group(0), _ns)
+
 _helper = _re.search(
     r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
     r"(?:    .+\n)+",
     _src,
 )
 assert _helper, "could not extract _strip_tool_xml_for_display source"
+assert "_strip_tool_xml(" in _helper.group(0), "display helper no longer delegates"
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 
@@ -44,6 +61,17 @@ def test_route_display_strip_respects_disabled_auto_heal_contract():
     text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
     assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+
+
+def test_route_display_strip_removes_mistral_tool_calls_with_nested_json():
+    # _TOOL_XML_RE has no [TOOL_CALLS] arm; the display helper must delegate to
+    # _strip_tool_xml so the Mistral balanced-brace strip runs (a non-greedy
+    # \{.*?\} would truncate the nested JSON at the first }).
+    text = 'ok [TOOL_CALLS]web_search{"filters":{"date":"2024"},"query":"cats"} tail'
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[TOOL_CALLS]" not in out and "web_search" not in out, out
+    assert out == "ok  tail"
 
 
 def test_strips_well_formed_tool_call():
