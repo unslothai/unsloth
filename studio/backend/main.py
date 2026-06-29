@@ -499,20 +499,10 @@ async def lifespan(app: FastAPI):
 
     _start_helper_precache_if_enabled()
 
-    # Warm the RAG embedder so the first upload skips the cold load. Non-fatal.
-    def _warm_rag_embedder():
-        try:
-            from storage import rag_db
-
-            if not rag_db.RAG_AVAILABLE:
-                return
-            from core.rag import embeddings
-
-            embeddings.warm()
-        except Exception:
-            pass
-
-    threading.Thread(target = _warm_rag_embedder, daemon = True).start()
+    # The RAG embedder is loaded lazily on first use, not warmed here: warming it
+    # onto the inference GPU at startup permanently held ~336 MB of VRAM (even when
+    # RAG is never used), which pushed llama-server's auto-context pick past the
+    # driver's system-memory spill threshold and cost ~18% generation throughput.
 
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair

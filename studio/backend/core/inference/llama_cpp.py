@@ -4875,6 +4875,17 @@ class LlamaCppBackend:
                         self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
                     )
                     model_size = gguf_size + mmproj_size
+                    # Free the RAG embedder's VRAM (if loaded) before sizing and
+                    # pinning: a resident embedder shrinks free VRAM and pushes the
+                    # auto-context pick past the driver's system-memory spill
+                    # threshold, costing ~18% throughput. It reloads lazily on the
+                    # next RAG use, after this model's memory is already placed.
+                    try:
+                        from core.rag import embeddings as _rag_embeddings
+
+                        _rag_embeddings.unload()
+                    except Exception:  # noqa: BLE001 - RAG is optional
+                        pass
                     # 2-tuple gpus for existing logic + a total map for the absolute
                     # per-GPU headroom (correct when the GPU is already partly used).
                     _gpu_mem = self._get_gpu_memory()
