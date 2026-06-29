@@ -444,6 +444,13 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
+
+    import time as _time
+
+    _lifespan_started = _time.perf_counter()
+    import structlog as _structlog
+
+    _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
 
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
@@ -453,6 +460,11 @@ async def lifespan(app: FastAPI):
 
     # Detect hardware first — sets the DEVICE global used everywhere.
     detect_hardware()
+
+    _lifespan_log.info(
+        "lifespan hardware detection completed in %.1fms",
+        (_time.perf_counter() - _lifespan_started) * 1000,
+    )
 
     # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
     # Reinstall mlx by name on a background thread (off the critical path) and
@@ -465,7 +477,13 @@ async def lifespan(app: FastAPI):
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
 
-    # Reap download workers orphaned by a previous crash before new downloads start.
+    # Reap workers/runs orphaned by a previous crash before new work starts.
+    try:
+        from storage.studio_db import cleanup_orphaned_runs
+        cleanup_orphaned_runs()
+    except Exception as exc:
+        _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
     reap_hub_orphan_workers()
 
     # llama.cpp probes: capability (MTP support) + freshness (release age).
@@ -473,41 +491,32 @@ async def lifespan(app: FastAPI):
     # for tens of seconds on macOS (cold GitHub freshness cache / slow network, and
     # Gatekeeper verifying the unsigned binary on first `--help` exec). They only
     # write app.state and nothing reads it synchronously at startup, so run them on
-    # a daemon thread off the startup critical path (mirrors the helper-precache and
-    # RAG-warm threads). Default to None until the thread populates them.
+    # a daemon thread off the startup critical path (mirrors the helper-precache
+    # thread). Default to None until the thread populates them.
     app.state.llama_cpp_capabilities = None
     app.state.llama_cpp_freshness = None
     _start_llama_cpp_probes_if_enabled(app)
 
-    from storage.studio_db import cleanup_orphaned_runs
-
-    try:
-        cleanup_orphaned_runs()
-    except Exception as exc:
-        import structlog
-        structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
-
-    # Same for RAG: fail ingestion jobs stranded mid-ingest by a crash.
     try:
         from storage.rag_db import reconcile_orphaned_ingestion_jobs
         reconcile_orphaned_ingestion_jobs()
     except Exception as exc:
-        import structlog
-        structlog.get_logger(__name__).warning(
-            "reconcile_orphaned_ingestion_jobs failed at startup: %s", exc
-        )
+        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     _start_helper_precache_if_enabled()
-
     # The RAG embedder is loaded lazily on first use, not warmed here: warming it
     # onto the inference GPU at startup permanently held ~336 MB of VRAM (even when
     # RAG is never used), which pushed llama-server's auto-context pick past the
     # driver's system-memory spill threshold and cost ~18% generation throughput.
 
-    # Initialize RSA key pair for API key encryption (external providers)
+    # Initialize RSA key pair for API key encryption (external providers).
     from core.inference.key_exchange import init_key_pair
 
     init_key_pair()
+    _lifespan_log.info(
+        "lifespan pre-auth setup completed in %.1fms",
+        (_time.perf_counter() - _lifespan_started) * 1000,
+    )
 
     if storage.ensure_default_admin():
         bootstrap_pw = storage.get_bootstrap_password()
@@ -522,6 +531,11 @@ async def lifespan(app: FastAPI):
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
+
+    _lifespan_log.info(
+        "lifespan startup completed in %.1fms",
+        (_time.perf_counter() - _lifespan_started) * 1000,
+    )
     yield
 
     from core.inference.llama_http import aclose as _close_llama_http
@@ -907,6 +921,21 @@ install_api_error_handlers(app)
 
 
 # ============ Health and System Endpoints ============
+
+
+@app.get("/api/liveness")
+async def liveness_check():
+    """Cheap process liveness for desktop port validation."""
+    return {
+        "status": "alive",
+        "service": "Unsloth UI Backend",
+        "desktop_protocol_version": 1,
+        "desktop_manageability_version": 1,
+        "supports_desktop_auth": True,
+        "supports_desktop_backend_ownership": True,
+        "studio_root_id": _studio_root_id(),
+        **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
+    }
 
 
 @app.get("/api/health")
