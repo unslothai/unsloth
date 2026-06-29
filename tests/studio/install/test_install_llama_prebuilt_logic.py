@@ -3179,13 +3179,15 @@ def test_build_validation_sandbox_plan_linux_quantize_binds_probe_and_output(mon
 
 
 def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monkeypatch):
-    binary_path = Path("/tmp/bin/llama-server")
+    binary_path = Path("/tmp/bin/llama-quantize")
+    probe_path = Path("/tmp/models/probe.gguf")
+    output_path = Path("/tmp/out/probe-q4.gguf")
 
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "sandbox-exec"
     )
     mac_run = build_validation_sandbox_plan(
-        ["llama-server", "--help"],
+        [str(binary_path), str(probe_path), str(output_path), "Q6_K", "2"],
         binary_path = binary_path,
         install_dir = Path("/tmp/install"),
         host = macos_host(),
@@ -3194,11 +3196,18 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
         env = {},
     )
     assert mac_run.is_runnable
-    assert mac_run.command[:3] == ["sandbox-exec", "-p", "(version 1)(deny network*)"]
+    assert mac_run.command[:2] == ["sandbox-exec", "-p"]
+    profile = mac_run.command[2]
+    assert "(deny default)" in profile
+    assert '(import "bsd.sb")' in profile
+    assert "tmp\\\\install" in profile
+    assert "tmp\\\\models" in profile
+    assert "tmp\\\\out" in profile
+    assert "localhost" not in profile
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
     mac_skip = build_validation_sandbox_plan(
-        ["llama-server", "--help"],
+        [str(binary_path), str(probe_path), str(output_path), "Q6_K", "2"],
         binary_path = binary_path,
         install_dir = Path("/tmp/install"),
         host = macos_host(),
@@ -3223,7 +3232,12 @@ def test_build_validation_sandbox_plan_macos_server_keeps_loopback(monkeypatch):
         env = {},
     )
     assert plan.is_runnable
-    assert plan.command[:3] == ["sandbox-exec", "-p", "(version 1)"]
+    assert plan.command[:2] == ["sandbox-exec", "-p"]
+    profile = plan.command[2]
+    assert "(deny default)" in profile
+    assert '(import "bsd.sb")' in profile
+    assert '(allow network* (local ip "localhost:*"))' in profile
+    assert '(allow network* (remote ip "localhost:*"))' in profile
 
 
 def test_build_validation_sandbox_plan_windows_is_unsupported(monkeypatch):
