@@ -234,28 +234,38 @@ def test_explicit_user_numa_skips_auto_interleave_prefix():
 
 
 def test_extra_args_forces_cpu_offload_helper():
-    """The CPU-force detector: zero GPU layers or --device none (PR review fixes)."""
+    """The CPU-force detector: zero GPU layers or --device none, via CLI or the inherited
+    LLAMA_ARG_* env (PR review fixes)."""
     from core.inference.llama_cpp import _extra_args_forces_cpu_offload as f
 
-    assert f(["-ngl", "0"])
-    assert f(["--n-gpu-layers", "0"])
-    assert f(["--gpu-layers", "0"])
-    assert f(["-ngl=0"])
-    assert not f(["-ngl", "99"])
-    assert not f([])
-    assert not f(None)
-    assert not f(["--flash-attn", "on"])
+    E: dict = {}  # explicit empty env so cases ignore the ambient environment
+    assert f(["-ngl", "0"], env = E)
+    assert f(["--n-gpu-layers", "0"], env = E)
+    assert f(["--gpu-layers", "0"], env = E)
+    assert f(["-ngl=0"], env = E)
+    assert not f(["-ngl", "99"], env = E)
+    assert not f([], env = E)
+    assert not f(None, env = E)
+    assert not f(["--flash-attn", "on"], env = E)
     # Each flag's last occurrence wins, matching llama-server's own parsing.
-    assert f(["-ngl", "99", "-ngl", "0"])
-    assert not f(["-ngl", "0", "-ngl", "99"])
+    assert f(["-ngl", "99", "-ngl", "0"], env = E)
+    assert not f(["-ngl", "0", "-ngl", "99"], env = E)
     # --device/-dev none also forces CPU, independently of -ngl.
-    assert f(["--device", "none"])
-    assert f(["-dev", "none"])
-    assert f(["--device=none"])
-    assert not f(["--device", "CUDA0"])
+    assert f(["--device", "none"], env = E)
+    assert f(["-dev", "none"], env = E)
+    assert f(["--device=none"], env = E)
+    assert not f(["--device", "CUDA0"], env = E)
     # The two controls are independent: -ngl 0 stays CPU even with a device named.
-    assert f(["-ngl", "0", "--device", "CUDA0"])
-    assert f(["--device", "none", "-ngl", "99"])
+    assert f(["-ngl", "0", "--device", "CUDA0"], env = E)
+    assert f(["--device", "none", "-ngl", "99"], env = E)
+    # Inherited env forces CPU when the CLI does not set the control.
+    assert f([], env = {"LLAMA_ARG_N_GPU_LAYERS": "0"})
+    assert f([], env = {"LLAMA_ARG_DEVICE": "none"})
+    assert not f([], env = {"LLAMA_ARG_N_GPU_LAYERS": "99"})
+    assert not f([], env = {"LLAMA_ARG_DEVICE": "CUDA0"})
+    # CLI wins over env.
+    assert not f(["-ngl", "99"], env = {"LLAMA_ARG_N_GPU_LAYERS": "0"})
+    assert f(["-ngl", "0"], env = {"LLAMA_ARG_N_GPU_LAYERS": "99"})
 
 
 def test_cpu_cap_lowers_advertised_ceiling():

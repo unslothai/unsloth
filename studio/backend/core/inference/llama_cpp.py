@@ -1114,13 +1114,16 @@ def _extra_args_n_ubatch(
     return None
 
 
-def _extra_args_forces_cpu_offload(extra_args: Optional[Iterable[str]]) -> bool:
-    """True when extras run the launch fully on CPU despite a visible GPU, so the
-    CPU-only safe defaults apply: zero GPU layers (-ngl 0 / --n-gpu-layers 0 /
-    --gpu-layers 0) or no device (--device/-dev none). Each flag's last occurrence
-    wins (as llama-server parses it); the two controls are independent."""
+def _extra_args_forces_cpu_offload(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True when the launch runs fully on CPU despite a visible GPU, so the CPU-only
+    safe defaults apply: zero GPU layers (-ngl 0 / --n-gpu-layers 0 / --gpu-layers 0)
+    or no device (--device/-dev none). CLI extras win (each control's last value); else
+    the inherited LLAMA_ARG_N_GPU_LAYERS / LLAMA_ARG_DEVICE env the child would honor."""
     args = [str(a) for a in extra_args] if extra_args else []
-    ngl_zero = device_none = False
+    ngl_zero: Optional[bool] = None
+    device_none: Optional[bool] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
@@ -1131,7 +1134,15 @@ def _extra_args_forces_cpu_offload(extra_args: Optional[Iterable[str]]) -> bool:
                 continue
         elif flag in ("--device", "-dev"):
             device_none = value.strip().lower() == "none"
-    return ngl_zero or device_none
+    _env = os.environ if env is None else env
+    if ngl_zero is None and _env.get("LLAMA_ARG_N_GPU_LAYERS") is not None:
+        try:
+            ngl_zero = int(_env["LLAMA_ARG_N_GPU_LAYERS"]) == 0
+        except (TypeError, ValueError):
+            pass
+    if device_none is None and _env.get("LLAMA_ARG_DEVICE") is not None:
+        device_none = _env["LLAMA_ARG_DEVICE"].strip().lower() == "none"
+    return bool(ngl_zero) or bool(device_none)
 
 
 def _build_ngram_mod_flags(

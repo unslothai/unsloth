@@ -155,6 +155,26 @@ def test_unknown_model_size_does_not_force_interleave():
         assert d.interleave is False
 
 
+def test_topology_restricted_to_cpuset_allowed_nodes(tmp_path, monkeypatch):
+    """A cpuset that allows only node 0 must drop host node 1 from the topology, so a
+    container is not told a node's RAM is usable when the child can't allocate there
+    (PR review fix)."""
+    import core.inference.numa as m
+
+    (tmp_path / "online").write_text("0-1")
+    for nid, free_kb in ((0, 100 * 1024), (1, 200 * 1024)):
+        d = tmp_path / f"node{nid}"
+        d.mkdir()
+        (d / "meminfo").write_text(f"Node {nid} MemFree: {free_kb} kB\n")
+    monkeypatch.setattr(m, "_NODE_ROOT", tmp_path)
+
+    monkeypatch.setattr(m, "_mems_allowed", lambda: {0})
+    assert m.read_numa_topology().node_free_mib == {0: 100}
+    # No cpuset info (None) -> trust the online set, both nodes present.
+    monkeypatch.setattr(m, "_mems_allowed", lambda: None)
+    assert m.read_numa_topology().node_free_mib == {0: 100, 1: 200}
+
+
 def test_decision_is_frozen_dataclass():
     d = InterleaveDecision(True, "x", ("numactl", "--interleave=all"))
     try:

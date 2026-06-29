@@ -62,6 +62,21 @@ def _parse_online(spec: str) -> list[int]:
     return out
 
 
+def _mems_allowed() -> set[int] | None:
+    """NUMA nodes the process may allocate on (cpuset), from /proc/self/status
+    Mems_allowed_list. None when unavailable, so callers fall back to the online set.
+    numactl --interleave=all only spans these, so a cpuset-limited container must not
+    count host nodes it cannot use."""
+    try:
+        text = Path("/proc/self/status").read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("Mems_allowed_list:"):
+            return set(_parse_online(line.split(":", 1)[1]))
+    return None
+
+
 def _node_memfree_mib(node: int) -> int | None:
     """MemFree for one node from /sys/.../nodeN/meminfo, in MiB (kB -> MiB)."""
     try:
@@ -88,8 +103,13 @@ def read_numa_topology() -> NumaTopology:
         online = (_NODE_ROOT / "online").read_text()
     except OSError:
         return NumaTopology()
+    # Restrict to cpuset-allowed nodes: under a Docker/systemd cpuset the child can only
+    # allocate on these, so counting other host nodes would overstate the fittable RAM.
+    allowed = _mems_allowed()
     free: dict[int, int] = {}
     for node in _parse_online(online):
+        if allowed is not None and node not in allowed:
+            continue
         mib = _node_memfree_mib(node)
         if mib is not None:
             free[node] = mib
