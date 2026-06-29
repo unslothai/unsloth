@@ -5337,7 +5337,10 @@ def _run_validation_popen(
 def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = None) -> list[str]:
     if env is None:
         env = scrubbed_environ()
-    probe_output = _run_validation_ldd_probe(binary_path, env = env)
+    try:
+        probe_output = _run_validation_ldd_probe(binary_path, env = env)
+    except Exception:
+        return []
     if not probe_output:
         return []
     result = subprocess.CompletedProcess(binary_path, 0, stdout = probe_output)
