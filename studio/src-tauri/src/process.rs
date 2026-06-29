@@ -735,6 +735,7 @@ pub fn start_backend(
 }
 
 async fn generic_backend_health_ok(port: u16) -> bool {
+    let started = std::time::Instant::now();
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -746,7 +747,7 @@ async fn generic_backend_health_ok(port: u16) -> bool {
         }
     };
     let response = match client
-        .get(format!("http://127.0.0.1:{port}/api/health"))
+        .get(format!("http://127.0.0.1:{port}/api/liveness"))
         .send()
         .await
     {
@@ -777,17 +778,24 @@ async fn generic_backend_health_ok(port: u16) -> bool {
             return false;
         }
     };
-    let healthy = json
+    let live = json
         .get("status")
         .and_then(|v| v.as_str())
-        .map(|s| s == "healthy")
+        .map(|s| s == "alive" || s == "healthy")
         .unwrap_or(false);
     let service = json
         .get("service")
         .and_then(|v| v.as_str())
         .map(|s| s == "Unsloth UI Backend")
         .unwrap_or(false);
-    healthy && service
+    info!(
+        "Backend port candidate {} liveness live={} service={} in {}ms",
+        port,
+        live,
+        service,
+        started.elapsed().as_millis()
+    );
+    live && service
 }
 
 async fn validate_candidate_port(
@@ -798,6 +806,7 @@ async fn validate_candidate_port(
     generation: u64,
     port: u16,
 ) {
+    let started = std::time::Instant::now();
     let owner = {
         let proc = match state.lock() {
             Ok(proc) => proc,
@@ -851,6 +860,14 @@ async fn validate_candidate_port(
             false
         }
     };
+
+    info!(
+        "Validated backend port candidate {} valid={} emit={} in {}ms",
+        port,
+        valid,
+        should_emit,
+        started.elapsed().as_millis()
+    );
 
     if should_emit {
         diagnostics::record_backend_port(&diagnostics_state, &session_id, port);
