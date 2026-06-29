@@ -1241,6 +1241,41 @@ def test_auto_switch_advertises_repo_id_after_load(monkeypatch):
     assert backend._openai_advertised_id == "org/B-GGUF"  # advertised by repo id
 
 
+def test_already_serving_by_path_records_advertised_alias(monkeypatch):
+    # Codex P2: a model loaded by local path and requested via an advertised alias
+    # that resolves to the same path is already serving (no reload), but /v1/models
+    # and responses would report the path basename and list the alias as loaded:false
+    # unless the alias is recorded as the advertised id on the already-serving return.
+    path = "/cache/models--org--Repo-GGUF/snapshots/abc"
+    backend = _FakeBackend(path, hf_variant = "Q4_K_M")  # loaded by path, no advertised id
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (path, "Q4_K_M", "org/Repo-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    assert backend._openai_advertised_id is None
+    _run_hook("org/Repo-GGUF:Q4_K_M")
+    assert rec.calls == []  # already serving -> no reload
+    assert backend._openai_advertised_id == "org/Repo-GGUF"  # alias now recorded
+
+
+def test_streaming_responses_uses_advertised_id_helper():
+    # Codex P2: streamed /v1/responses envelopes must derive the model id from
+    # _llama_public_model_id (which prefers _openai_advertised_id), not the raw
+    # model_identifier. After an auto-switch to a cached HF GGUF the identifier is
+    # the snapshot path while the repo id lives in _openai_advertised_id, so the raw
+    # form would stream a snapshot basename while /v1/models, chat, and non-streaming
+    # responses report the repo id.
+    import inspect
+
+    src = inspect.getsource(inference_route._responses_stream)
+    assert "_clean_model = _llama_public_model_id(llama_backend" in src
+    assert 'public_model_id(getattr(llama_backend, "model_identifier"' not in src
+
+
 def test_concurrent_same_target_requests_load_once(monkeypatch):
     # Two concurrent requests for the same unloaded model must load once, not each
     # 409 the other. Simulate the second request already waiting (registered) while

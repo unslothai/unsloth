@@ -2512,7 +2512,22 @@ async def _maybe_auto_switch_model(
                 return loaded_variant == variant.lower()
             return True
 
+        def _record_serving_alias() -> None:
+            # When an advertised alias already resolves to the loaded model (e.g. a
+            # model loaded by local path, requested by its repo/LM Studio id), record
+            # the alias as the public id so /v1/models and responses report it (and
+            # mark it loaded) instead of the path-derived basename. Resolver branch
+            # only: the reload-stash override_id can be the bare path, not a repo id.
+            # Lock-free is safe here: an in-flight request blocks any concurrent swap
+            # (single-slot busy guard), so the loaded model can't change under this.
+            if resolved is None or not override_id:
+                return
+            b = get_llama_cpp_backend()
+            if getattr(b, "_openai_advertised_id", None) != override_id:
+                b._openai_advertised_id = override_id
+
         if _already_serving():
+            _record_serving_alias()
             return
         # An image/audio request naming a different text-only GGUF would load it
         # here and only 400 below, evicting the working model. Reject before the
@@ -2546,6 +2561,7 @@ async def _maybe_auto_switch_model(
                     # start on the model while it is being torn down and replaced.
                     async with inference_lifecycle_gate():
                         if _already_serving():
+                            _record_serving_alias()
                             return
                         # Single slot: refuse a cross-model swap while another inference
                         # request is active rather than killing its response. Requests
@@ -8117,12 +8133,11 @@ async def _responses_stream(
         # Clean public id for every response envelope. Prefer the loaded model's
         # id so the stream agrees with /v1/models, chat/completions and the
         # non-streaming twin; fall back to a sanitized payload.model (a legacy
-        # raw .gguf path is stripped, never echoed back).
-        _clean_model = (
-            public_model_id(getattr(llama_backend, "model_identifier", None))
-            or public_model_id(payload.model)
-            or payload.model
-        )
+        # raw .gguf path is stripped, never echoed back). Use the advertised-id
+        # helper, not the raw identifier: after an auto-switch to a cached HF GGUF
+        # the identifier is the snapshot path while the repo id lives in
+        # _openai_advertised_id, so the raw form would stream a snapshot basename.
+        _clean_model = _llama_public_model_id(llama_backend, payload.model) or payload.model
         full_text = ""
         full_reasoning = ""
         input_tokens = 0
