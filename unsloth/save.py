@@ -1191,7 +1191,10 @@ def install_llama_cpp_make_non_blocking():
     # Weirdly GPU conversion for GGUF breaks??
     # env = { **os.environ, "LLAMA_CUDA": "1", }
     # Force make clean
-    check = os.system("make clean -C llama.cpp")
+    try:
+        check = subprocess.run(["make", "clean", "-C", "llama.cpp"]).returncode
+    except FileNotFoundError:
+        check = 1  # make not installed; fall through to cmake path
     IS_CMAKE = False
     if check == 0:
         # Uses old MAKE
@@ -1201,9 +1204,22 @@ def install_llama_cpp_make_non_blocking():
     else:
         # Uses new CMAKE
         n_jobs = max(int(psutil.cpu_count() or 1), 1)  # Use less CPUs since 1.5x faster
-        check = os.system(
-            f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}"
-        )
+        cmake_args = [
+            "cmake",
+            "llama.cpp",
+            "-B",
+            "llama.cpp/build",
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DGGML_CUDA=OFF",
+        ]
+        if CURL_FLAG:
+            cmake_args += CURL_FLAG.split()
+        try:
+            check = subprocess.run(cmake_args).returncode
+        except FileNotFoundError:
+            raise RuntimeError(
+                "*** Unsloth: cmake not found. Please install cmake to compile llama.cpp."
+            )
 
         if check != 0:
             raise RuntimeError(
