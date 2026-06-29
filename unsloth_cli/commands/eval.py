@@ -22,21 +22,18 @@ def _silence():
     real = os.fdopen(os.dup(1), "w", closefd = True)
     saved_out, saved_err = os.dup(1), os.dup(2)
     devnull_fd = os.open(os.devnull, os.O_WRONLY)
-    devnull_py = open(os.devnull, "w")
-    old_out, old_err = sys.stdout, sys.stderr
     try:
         os.dup2(devnull_fd, 1)
         os.dup2(devnull_fd, 2)
-        sys.stdout, sys.stderr = devnull_py, devnull_py
         yield Console(file = real)
     finally:
-        sys.stdout, sys.stderr = old_out, old_err
+        sys.stdout.flush()
+        sys.stderr.flush()
         os.dup2(saved_out, 1)
         os.dup2(saved_err, 2)
         os.close(saved_out)
         os.close(saved_err)
         os.close(devnull_fd)
-        devnull_py.close()
         real.close()
 
 
