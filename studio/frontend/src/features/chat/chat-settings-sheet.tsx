@@ -17,13 +17,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  clearRememberedLoadSettings,
-  loadRememberedLoadSettings,
-  rememberedLoadSettingsKey,
-  saveRememberedLoadSettings,
-} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import {
   Dialog,
   DialogContent,
@@ -68,7 +61,6 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
 import {
-  ArrowTurnBackwardIcon,
   Edit03Icon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
@@ -471,7 +463,6 @@ interface ChatSettingsPanelProps {
    * Max Tokens floor in the slider.
    */
   externalProviderType?: string | null;
-  onReloadModel?: () => void;
   /** The in-flight load (id + GGUF variant + native path token), or null when
    *  idle. Used to show a loading state for the staged pick only — not for an
    *  unrelated load or a cancel's background unload. */
@@ -480,7 +471,7 @@ interface ChatSettingsPanelProps {
     ggufVariant?: string | null;
     nativePathToken?: string | null;
   } | null;
-  /** Loads the staged `pendingSelection` (deferred "Load on selection" flow). */
+  /** Loads the staged `pendingSelection`. */
   onLoadPendingModel?: () => void;
   /** Download progress (0–1) for a staged GGUF being fetched, or null when idle. */
   stagedDownloadFraction?: number | null;
@@ -498,7 +489,6 @@ export function ChatSettingsPanel({
   activeExternalProvider = null,
   onExternalProviderChange,
   externalProviderType = null,
-  onReloadModel,
   loadingModel = null,
   onLoadPendingModel,
   stagedDownloadFraction,
@@ -529,12 +519,7 @@ export function ChatSettingsPanel({
       ggufVariant: loadingModel.ggufVariant,
       nativePathToken: loadingModel.nativePathToken,
     });
-  // Load settings are snapshotted at click time; lock them while loading.
-  const modelControlsDisabled = stagedLoading;
   const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
-  const resetModelSettingsToLoaded = useChatRuntimeStore(
-    (s) => s.resetModelSettingsToLoaded,
-  );
   // A staged GGUF pick (deferred load) shows the GGUF load knobs so they can be
   // set before the single load.
   const pendingIsGguf = isPendingGguf(pendingSelection);
@@ -554,18 +539,14 @@ export function ChatSettingsPanel({
   // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
   // context/KV/speculative controls.
   const isGguf = pendingSelection != null ? pendingIsGguf : isLoadedGguf;
-  // The Model section (and Load button) shows for any staged pick, even when the
-  // currently active model is external.
-  const hasModelContent =
-    pendingSelection != null ||
-    (!isExternalModel && (isGguf || Boolean(params.checkpoint)));
-  const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
-  const setSpeculativeType = useChatRuntimeStore((s) => s.setSpeculativeType);
-  const loadedSpeculativeType = useChatRuntimeStore(
-    (s) => s.loadedSpeculativeType,
+  const currentCheckpoint = params.checkpoint;
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const ggufMaxContextLength = useChatRuntimeStore(
+    (s) => s.ggufMaxContextLength,
   );
+  const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
+  const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
-  // Only binary fallback states are solved by a newer prebuilt.
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
@@ -587,40 +568,24 @@ export function ChatSettingsPanel({
       toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
     }
   }, [applyLlamaUpdate]);
-  const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
-  const setSpecDraftNMax = useChatRuntimeStore((s) => s.setSpecDraftNMax);
-  const loadedSpecDraftNMax = useChatRuntimeStore(
-    (s) => s.loadedSpecDraftNMax,
-  );
-  const currentCheckpoint = params.checkpoint;
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
-  const ggufMaxContextLength = useChatRuntimeStore(
-    (s) => s.ggufMaxContextLength,
-  );
-  const ggufNativeContextLength = useChatRuntimeStore(
-    (s) => s.ggufNativeContextLength,
-  );
-  const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
-  const applyRememberedLoadSettings = useChatRuntimeStore(
-    (s) => s.applyRememberedLoadSettings,
-  );
-  const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
-  const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
-  const setTensorParallel = useChatRuntimeStore((s) => s.setTensorParallel);
-  const loadedTensorParallel = useChatRuntimeStore(
-    (s) => s.loadedTensorParallel,
-  );
-  const chatTemplateOverride = useChatRuntimeStore(
-    (s) => s.chatTemplateOverride,
-  );
-  const loadedChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.loadedChatTemplateOverride,
-  );
-  const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
-  const setCustomContextLength = useChatRuntimeStore(
-    (s) => s.setCustomContextLength,
-  );
+  const loadedEffectiveContext = customContextLength ?? ggufContextLength;
+  const showSpecFallback =
+    pendingSelection == null &&
+    !isExternalModel &&
+    isLoadedGguf &&
+    specFallbackReason != null &&
+    (speculativeType === "auto" ||
+      speculativeType === "mtp" ||
+      speculativeType === "mtp+ngram");
+  const showContextVramWarning =
+    pendingSelection == null &&
+    !isExternalModel &&
+    isLoadedGguf &&
+    ggufMaxContextLength != null &&
+    loadedEffectiveContext != null &&
+    loadedEffectiveContext > ggufMaxContextLength;
+  const showLoadedDiagnostics = showSpecFallback || showContextVramWarning;
+  const hasModelContent = pendingSelection != null || showLoadedDiagnostics;
   const setActivePresetSource = useChatRuntimeStore(
     (s) => s.setActivePresetSource,
   );
@@ -635,45 +600,9 @@ export function ChatSettingsPanel({
   // pendingSelection, so the slider can use the staged model's real ceiling
   // without reading the loaded model's `ggufContextLength`.
   const stagedContextLength = pendingSelection?.contextLength ?? null;
-  // "Remember settings next time" tick for a staged model. Seeds the store from
-  // the saved per-model settings on stage, so the sheet opens with what was used
-  // last time; the tick reflects whether a saved entry exists.
-  const [remember, setRemember] = useState(false);
-  // Keyed per quant: a different variant of the same repo has its own settings.
-  const pendingKey = pendingSelection
-    ? rememberedLoadSettingsKey(pendingSelection)
-    : null;
-  useEffect(() => {
-    if (!pendingKey) return;
-    const saved = loadRememberedLoadSettings(pendingKey);
-    setRemember(saved != null);
-    if (saved) applyRememberedLoadSettings(saved);
-  }, [pendingKey, applyRememberedLoadSettings]);
-  // While staging, the sheet reflects the STAGED model, so its header context
-  // takes precedence over the loaded model's (which may differ or be larger).
   const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
-  const baseNativeContext = pendingIsGguf
-    ? stagedContextLength
-    : ggufNativeContextLength;
-  // Context controls render once we actually have a ceiling: for a staged GGUF,
-  // once its header metadata arrives (post-download); otherwise post-load.
-  const showContextControl = pendingIsGguf
-    ? stagedContextLength != null
-    : isLoadedGguf;
   const stagedDownloading =
     stagedDownloadFraction != null && stagedDownloadFraction < 1;
-  const ctxDisplayValue = customContextLength ?? baseContext ?? "";
-  const ctxMaxValue = baseNativeContext ?? baseContext ?? null;
-  const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
-  const ctxDirty = customContextLength !== null;
-  const specDirty = speculativeType !== loadedSpeculativeType;
-  const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
-  const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
-  // A saved chat-template override is a reload-time setting too, so surface
-  // Apply for a template-only edit (otherwise it could never be applied).
-  const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
-  const modelSettingsDirty =
-    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty || templateDirty;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -973,257 +902,19 @@ export function ChatSettingsPanel({
                 <AlertTitle className="text-[12px] font-medium">
                   {stagedLoading
                     ? `Loading ${stagedLabel}…`
-                    : `${stagedLabel} is staged, not loaded yet`}
+                    : stagedDownloading
+                      ? `Downloading ${stagedLabel}…`
+                      : `${stagedLabel} is staged, not loaded yet`}
                 </AlertTitle>
                 <AlertDescription className="text-[11.5px] leading-[1.45] text-muted-foreground">
                   {stagedLoading
                     ? "Applying your settings."
-                    : "Set the options below, then choose Load model to load it."}
+                    : stagedDownloading
+                      ? "It'll load automatically when the download finishes."
+                      : "Choose Load model to load it."}
                 </AlertDescription>
               </Alert>
             )}
-            {isGguf && (
-              <>
-                {showContextControl && (
-                <div className="space-y-3.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Context Length
-                    </span>
-                    <NumericValueInput
-                      value={
-                        typeof ctxDisplayValue === "number"
-                          ? ctxDisplayValue
-                          : (baseContext ?? 0)
-                      }
-                      min={128}
-                      max={ctxMaxValue ?? undefined}
-                      step={1}
-                      onChange={(v) => {
-                        setCustomContextLength(
-                          v === (baseContext ?? 0) ? null : v,
-                        );
-                      }}
-                      ariaLabel="Context Length"
-                      size={8}
-                      disabled={modelControlsDisabled}
-                    />
-                  </div>
-                  <Slider
-                    min={1024}
-                    max={ctxMaxValue ?? 4096}
-                    step={1024}
-                    value={[
-                      Math.min(
-                        typeof ctxDisplayValue === "number"
-                          ? ctxDisplayValue
-                          : (baseContext ?? 4096),
-                        ctxMaxValue ?? 4096,
-                      ),
-                    ]}
-                    onValueChange={([v]) => {
-                      const snapped = Math.round(v);
-                      setCustomContextLength(
-                        snapped === (baseContext ?? 0) ? null : snapped,
-                      );
-                    }}
-                    className="panel-slider"
-                    disabled={modelControlsDisabled}
-                  />
-                  {ggufMaxContextLength != null &&
-                    typeof ctxDisplayValue === "number" &&
-                    ctxDisplayValue > ggufMaxContextLength && (
-                      <p className="text-[11px] text-amber-500">
-                        Exceeds estimated VRAM capacity (
-                        {ggufMaxContextLength.toLocaleString()} tokens). The
-                        model may use system RAM.
-                      </p>
-                    )}
-                </div>
-                )}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      KV Cache Dtype
-                    </span>
-                    <InfoHint>
-                      Lower KV cache precision to save VRAM at the cost of some
-                      quality. f16/bf16 are full precision; q8_0/q5_1/q4_1 are
-                      quantized.
-                    </InfoHint>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Select
-                      disabled={modelControlsDisabled}
-                      value={kvCacheDtype ?? "f16"}
-                      onValueChange={(v) => {
-                        setKvCacheDtype(v === "f16" ? null : v);
-                      }}
-                    >
-                      <SelectTrigger
-                        animateRadius={false}
-                        icon={ChevronDownStandardIcon}
-                        iconClassName="size-3.5"
-                        className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-                        <SelectItem value="f16">f16</SelectItem>
-                        <SelectItem value="bf16">bf16</SelectItem>
-                        <SelectItem value="q8_0">q8_0</SelectItem>
-                        <SelectItem value="q5_1">q5_1</SelectItem>
-                        <SelectItem value="q4_1">q4_1</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                {isGguf && (
-                  <>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Speculative Decoding
-                    </span>
-                    <InfoHint>
-                      Faster generation with 0% accuracy hit. Auto picks
-                      MTP / ngram-mod based on the model and platform.
-                      Pick MTP, Ngram, or MTP+Ngram to force a specific
-                      strategy on both GPU and CPU.
-                    </InfoHint>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Select
-                      disabled={modelControlsDisabled}
-                      value={speculativeType ?? "auto"}
-                      onValueChange={(v) => {
-                        setSpeculativeType(v);
-                        if (v !== "mtp" && v !== "mtp+ngram") {
-                          setSpecDraftNMax(null);
-                        }
-                      }}
-                    >
-                      <SelectTrigger
-                        animateRadius={false}
-                        icon={ChevronDownStandardIcon}
-                        iconClassName="size-3.5"
-                        className="grid h-7 w-[124px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
-                        data-test-id="speculative-type-select"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-                        <SelectItem value="auto">Auto</SelectItem>
-                        <SelectItem value="mtp">MTP</SelectItem>
-                        <SelectItem value="ngram">Ngram</SelectItem>
-                        <SelectItem value="mtp+ngram">MTP+Ngram</SelectItem>
-                        <SelectItem value="off">Off</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                {specFallbackReason &&
-                  (speculativeType === "auto" ||
-                    speculativeType === "mtp" ||
-                    speculativeType === "mtp+ngram") && (
-                    <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
-                      <p>
-                        {specFallbackReason === "mla_mtp_disabled"
-                          ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Select MTP above to force it."
-                          : specFallbackReason === "runtime_error"
-                          ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
-                          : specFallbackReason === "drafter_not_found"
-                            ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
-                            : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
-                              (llamaUpdateStatus?.update_available
-                                ? " Update llama.cpp to enable it."
-                                : "")}
-                      </p>
-                      {mtpUpdatable && llamaUpdateStatus?.update_available && (
-                        <Button
-                          size="sm"
-                          className="corner-squircle mt-2 h-7 text-[12px]"
-                          onClick={handleMtpUpdate}
-                          disabled={llamaUpdating}
-                          data-test-id="mtp-update-button"
-                        >
-                          {llamaUpdating ? "Updating..." : "Update llama.cpp"}
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                {(speculativeType === "mtp" ||
-                  speculativeType === "mtp+ngram") && (
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                        Draft Tokens
-                      </span>
-                      <InfoHint>
-                        Max MTP draft tokens per step
-                        (--spec-draft-n-max). Lower = less wasted
-                        draft decode; higher = bigger speedup when
-                        acceptance stays high. Default: 2 on GPU,
-                        3 on CPU/Mac.
-                      </InfoHint>
-                    </div>
-                    <input
-                      type="number"
-                      disabled={modelControlsDisabled}
-                      min={1}
-                      max={16}
-                      step={1}
-                      value={specDraftNMax ?? ""}
-                      placeholder="auto"
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        if (raw === "") {
-                          setSpecDraftNMax(null);
-                          return;
-                        }
-                        const parsed = Number.parseInt(raw, 10);
-                        if (Number.isFinite(parsed)) {
-                          const clamped = Math.max(1, Math.min(16, parsed));
-                          setSpecDraftNMax(clamped);
-                        }
-                      }}
-                      data-test-id="spec-draft-n-max-input"
-                      aria-label="Speculative decoding draft tokens"
-                      className="h-7 w-[76px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
-                    />
-                  </div>
-                )}
-                  </>
-                )}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Tensor Parallelism
-                    </span>
-                    <InfoHint>
-                      No effect on a single GPU. On multi-GPU setups, improves
-                      tokens/sec during generation when using dense models. MoE
-                      models don't benefit and can be much slower.
-                    </InfoHint>
-                  </div>
-                  <Switch
-                    className="panel-switch shrink-0"
-                    checked={tensorParallel}
-                    onCheckedChange={setTensorParallel}
-                    disabled={modelControlsDisabled}
-                    data-test-id="tensor-parallel-switch"
-                  />
-                </div>
-              </>
-            )}
-            {/* No persistent "enable custom code" toggle: it is consented per model
-                via the load-time review dialog. */}
-            {/* Apply/Reset belongs to the model-reload settings above (context
-                length, KV cache, speculative decoding). Render it here, before
-                the Chat Template row, so it never reads as attached to Chat
-                Template (which is edited via its own dialog). When a model is
-                staged (deferred load), Load/Cancel takes its place: there's
-                nothing loaded to "apply" against yet. */}
             {pendingSelection ? (
               <div className="flex flex-col gap-4">
                 {stagedDownloading && (
@@ -1232,14 +923,6 @@ export function ChatSettingsPanel({
                     {Math.round((stagedDownloadFraction ?? 0) * 100)}%
                   </p>
                 )}
-                <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[12px] text-muted-foreground">
-                  <Checkbox
-                    className="size-3.5 rounded-full [&_[data-slot=checkbox-indicator]_svg]:size-2.5"
-                    checked={remember}
-                    onCheckedChange={(v) => setRemember(v === true)}
-                  />
-                  Remember settings next time
-                </label>
                 {stagedLoading ? (
                   // Mid-load: nothing to load or abandon until it settles, so disable.
                   <Button
@@ -1255,28 +938,7 @@ export function ChatSettingsPanel({
                   <div className="grid grid-cols-2 gap-3">
                     <Button
                       type="button"
-                      onClick={() => {
-                        // Persist (or clear) this model's load knobs before loading.
-                        // Context is stored as the override (null = auto), never the
-                        // resolved native value, so restoring can't force an OOM.
-                        const pid = pendingSelection
-                          ? rememberedLoadSettingsKey(pendingSelection)
-                          : null;
-                        if (pid) {
-                          if (remember) {
-                            saveRememberedLoadSettings(pid, {
-                              contextLength: customContextLength,
-                              kvCacheDtype,
-                              speculativeType,
-                              specDraftNMax,
-                              tensorParallel,
-                            });
-                          } else {
-                            clearRememberedLoadSettings(pid);
-                          }
-                        }
-                        onLoadPendingModel?.();
-                      }}
+                      onClick={() => onLoadPendingModel?.()}
                       // Disabled while a different model is mid-load: selectModel
                       // refuses a concurrent load, so the click could only toast.
                       disabled={stagedDownloading || loadingModel != null}
@@ -1302,28 +964,46 @@ export function ChatSettingsPanel({
                   </div>
                 )}
               </div>
-            ) : modelSettingsDirty ? (
-              <div className="flex flex-wrap gap-1.5">
-                <Button
-                  type="button"
-                  onClick={() => onReloadModel?.()}
-                  size="sm"
-                  className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
-                >
-                  Apply
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => resetModelSettingsToLoaded()}
-                  className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
-                >
-                  Reset
-                </Button>
-              </div>
             ) : null}
-            <ChatTemplateFields />
+            {showLoadedDiagnostics && (
+              <div className="flex flex-col gap-3">
+                {showSpecFallback && (
+                  <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
+                    <p>
+                      {specFallbackReason === "mla_mtp_disabled"
+                        ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it."
+                        : specFallbackReason === "runtime_error"
+                          ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
+                          : specFallbackReason === "drafter_not_found"
+                            ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
+                            : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
+                                llamaUpdateStatus?.update_available
+                                  ? " Update llama.cpp to enable it."
+                                  : ""
+                              }`}
+                    </p>
+                    {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                      <Button
+                        size="sm"
+                        className="corner-squircle mt-2 h-7 text-[12px]"
+                        onClick={handleMtpUpdate}
+                        disabled={llamaUpdating}
+                        data-test-id="mtp-update-button"
+                      >
+                        {llamaUpdating ? "Updating..." : "Update llama.cpp"}
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {showContextVramWarning && (
+                  <p className="text-[11px] text-amber-500">
+                    Context length exceeds the estimated VRAM capacity (
+                    {ggufMaxContextLength?.toLocaleString()} tokens). The model
+                    may use system RAM.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </CollapsibleSection>
         )}
@@ -2099,148 +1779,5 @@ function BypassPermissionsToggle() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  );
-}
-
-function ChatTemplateFields() {
-  const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
-  const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
-  const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [draft, setDraft] = useState("");
-
-  if (!defaultTemplate) return null;
-
-  const displayValue = override ?? defaultTemplate;
-  const isModified = override !== null;
-  const draftDirty = draft !== displayValue;
-
-  const openEditor = () => {
-    setDraft(displayValue);
-    setEditorOpen(true);
-  };
-  const saveEditor = () => {
-    const cleared = draft.trim().length === 0 || draft === defaultTemplate;
-    setOverride(cleared ? null : draft);
-    setEditorOpen(false);
-    toast.success(
-      cleared
-        ? "Chat template reset to default. It applies on the next model reload."
-        : "Chat template saved. It applies on the next model reload.",
-    );
-  };
-
-  return (
-    <>
-      <div className="-mb-1.5 flex items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={openEditor}
-          className="cursor-pointer text-left text-[13px] font-medium tracking-nav text-nav-fg"
-        >
-          Chat Template
-        </button>
-        <div className="flex items-center gap-1">
-          {isModified && (
-            <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
-                <button
-                  type="button"
-                  onClick={() => setOverride(null)}
-                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
-                  aria-label="Revert chat template"
-                >
-                  <HugeiconsIcon
-                    icon={ArrowTurnBackwardIcon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
-              </TooltipPrimitive.Trigger>
-              <TooltipContent
-                side="top"
-                sideOffset={6}
-                className="tooltip-compact"
-              >
-                Revert changes
-              </TooltipContent>
-            </Tooltip>
-          )}
-          <Tooltip>
-            <TooltipPrimitive.Trigger asChild>
-              <button
-                type="button"
-                onClick={openEditor}
-                className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
-                aria-label="Edit chat template"
-              >
-                <HugeiconsIcon
-                  icon={Edit03Icon}
-                  strokeWidth={1.75}
-                  className="size-3"
-                />
-              </button>
-            </TooltipPrimitive.Trigger>
-            <TooltipContent
-              side="top"
-              sideOffset={6}
-              className="tooltip-compact"
-            >
-              Edit template
-            </TooltipContent>
-          </Tooltip>
-        </div>
-      </div>
-      <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Edit Chat Template</DialogTitle>
-            <DialogDescription>
-              Override the model's chat template. The change applies on the
-              next model reload.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <div className="space-y-0.5 px-0.5">
-              <div className="text-[11px] font-medium">Template editor</div>
-              <p className="text-[11px] text-muted-foreground">
-                Jinja syntax. Save matching the default clears the override.
-              </p>
-            </div>
-            <Textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
-              rows={14}
-              spellCheck={false}
-            />
-          </div>
-          <DialogFooter className="flex-wrap gap-2 sm:justify-between">
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setDraft(defaultTemplate)}
-              disabled={draft === defaultTemplate}
-              className="text-muted-foreground"
-            >
-              Reset
-            </Button>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setEditorOpen(false)}
-              >
-                Cancel
-              </Button>
-              <Button type="button" onClick={saveEditor} disabled={!draftDirty}>
-                Save
-              </Button>
-            </div>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
   );
 }

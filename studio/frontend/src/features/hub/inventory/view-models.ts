@@ -272,6 +272,8 @@ export function buildLocalInventoryRows(
         title,
         source: model.source,
         sourceLabel: localSourceLabel(model.source),
+        modelId: model.model_id ?? null,
+        displayName: model.display_name,
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,

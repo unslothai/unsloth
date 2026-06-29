@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { cancelStagedModelDownload } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
@@ -37,7 +36,6 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
-export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
@@ -447,8 +445,8 @@ export type PendingModelSelection = {
    *  Scoped here (not the shared `ggufContextLength`) so a staged model's
    *  metadata never pollutes the currently-loaded model's context display. */
   contextLength?: number | null;
-  /** "Load on selection" on + un-cached GGUF: download via the manager (global
-   *  indicator) without opening the sheet, then load once the download finishes. */
+  /** Un-cached GGUF: download via the manager (global indicator) without opening
+   *  the sheet, then load once the download finishes. */
   autoLoad?: boolean;
   /** Uncached non-GGUF HF repo: download the full snapshot via the manager
    *  (variant null) the same way GGUF picks download a variant. */
@@ -533,7 +531,6 @@ type ChatRuntimeStore = {
   activeGgufVariant: string | null;
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
-  ggufNativeContextLength: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -650,17 +647,11 @@ type ChatRuntimeStore = {
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
-  /** Persisted: when false, picking a local model stages it as
-   *  `pendingSelection` (and opens settings) instead of loading immediately,
-   *  so load settings can be set before the single load. */
-  loadOnSelection: boolean;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
   /** Persisted: show non-downloaded quantizations too, not just downloaded. */
   showAllQuantizations: boolean;
-  /** A local model picked while `loadOnSelection` is off: staged, not loaded.
-   *  The settings sheet shows its load knobs and a Load button. */
   pendingSelection: PendingModelSelection | null;
   loadedIsMultimodal: boolean;
   /** Active model is a block-diffusion model (DiffusionGemma): drives the
@@ -763,20 +754,11 @@ type ChatRuntimeStore = {
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
-  setKvCacheDtype: (dtype: string | null) => void;
-  setSpeculativeType: (type: string | null) => void;
-  setSpecDraftNMax: (value: number | null) => void;
   /** Revert the editable load knobs to the loaded model's baseline (or defaults
    *  when nothing is loaded). Used by the settings-sheet Reset button and to
    *  start each deferred-staging session clean so one staged pick's settings
    *  don't leak onto the next. */
   resetModelSettingsToLoaded: () => void;
-  /** Seed the editable load knobs from a model's remembered settings. Shared by
-   *  the settings sheet's restore effect and the "Load on selection" paths,
-   *  which skip the sheet but must still honor a saved config. */
-  applyRememberedLoadSettings: (settings: RememberedLoadSettings) => void;
-  setTensorParallel: (value: boolean) => void;
-  setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setPendingSelection: (selection: PendingModelSelection | null) => void;
@@ -787,8 +769,6 @@ type ChatRuntimeStore = {
    *  and clear the pending selection. Cancels its in-flight download too, unless
    *  `keepDownload` is set (navigation keeps the transfer running, like Hub). */
   abandonStagedModel: (opts?: { keepDownload?: boolean }) => void;
-  setCustomContextLength: (v: number | null) => void;
-  setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
   setPendingImageEditReference: (
@@ -1030,7 +1010,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeGgufVariant: null,
   ggufContextLength: null,
   ggufMaxContextLength: null,
-  ggufNativeContextLength: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -1092,7 +1071,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   tensorParallel: false,
   loadedTensorParallel: null,
-  loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   pendingSelection: null,
@@ -1301,7 +1279,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       pendingSelection: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
-      ggufNativeContextLength: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       supportsReasoning: false,
@@ -1529,25 +1506,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return { toolCallTimeout };
     }),
-  setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
-  setSpeculativeType: (speculativeType) => set({ speculativeType }),
-  setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
-  setTensorParallel: (tensorParallel) => set({ tensorParallel }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
-  applyRememberedLoadSettings: (settings) =>
-    // Coalesce every field: a blob persisted by an older/newer build can omit
-    // keys, and a raw spread would push `undefined` into fields typed non-null.
-    set({
-      customContextLength: settings.contextLength ?? null,
-      kvCacheDtype: settings.kvCacheDtype ?? null,
-      speculativeType: settings.speculativeType ?? "auto",
-      specDraftNMax: settings.specDraftNMax ?? null,
-      tensorParallel: settings.tensorParallel ?? false,
-    }),
-  setLoadOnSelection: (loadOnSelection) => {
-    saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
-    set({ loadOnSelection });
-  },
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });
@@ -1586,9 +1545,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     if (!opts?.keepDownload) cancelStagedModelDownload(pendingSelection);
     set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null }));
   },
-  setCustomContextLength: (customContextLength) => set({ customContextLength }),
-  setChatTemplateOverride: (chatTemplateOverride) =>
-    set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>

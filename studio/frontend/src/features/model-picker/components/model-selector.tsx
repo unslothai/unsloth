@@ -32,7 +32,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { Input } from "../ui/input";
+import { Input } from "@/components/ui/input";
+import type { PerModelConfig } from "../model-config/per-model-config";
+import { ModelConfigPage } from "./model-config-page";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import {
@@ -44,6 +46,7 @@ import type {
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
+  ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 
@@ -111,6 +114,7 @@ export type {
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
+  ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 
@@ -121,6 +125,7 @@ interface ModelSelectorProps {
   value?: string;
   defaultValue?: string;
   activeGgufVariant?: string | null;
+  activeModelConfig?: PerModelConfig | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
@@ -267,6 +272,8 @@ function ModelSelectorContent({
   loraModels,
   externalModels,
   value,
+  activeGgufVariant,
+  activeModelConfig,
   onSelect,
   onEject,
   onFoldersChange,
@@ -282,6 +289,8 @@ function ModelSelectorContent({
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value?: string;
+  activeGgufVariant?: string | null;
+  activeModelConfig?: PerModelConfig | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
   onFoldersChange?: () => void;
@@ -411,6 +420,29 @@ function ModelSelectorContent({
     }
   }
 
+  const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!open) {
+      setConfigTarget(null);
+    }
+  }, [open]);
+  const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
+    if (meta.source === "external") {
+      onSelect(id, meta);
+      return;
+    }
+    const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+    setConfigTarget({
+      id,
+      displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
+      ggufVariant: meta.ggufVariant ?? null,
+      isGguf: meta.isGguf ?? Boolean(meta.ggufVariant),
+      meta,
+    });
+  };
+
   return (
     <PopoverContent
       align="start"
@@ -418,12 +450,17 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0 pt-4 pb-0 pl-4",
-        // Sized so the left-packed row keeps uniform gaps and the last dropdown's
-        // right gap matches the pill's left gap (pl-4 vs pr-4).
-        hasExternal
-          ? "w-[min(614px,calc(100vw-1rem))] pr-4"
-          : "w-[min(506px,calc(100vw-1rem))] pr-2",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
+        configTarget
+          ? "w-[min(468px,calc(100vw-1rem))] px-4 pt-4 pb-4"
+          : cn(
+              "pt-4 pb-0 pl-4",
+              // Sized so the left-packed row keeps uniform gaps and the last
+              // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
+              hasExternal
+                ? "w-[min(614px,calc(100vw-1rem))] pr-4"
+                : "w-[min(506px,calc(100vw-1rem))] pr-2",
+            ),
         className,
       )}
     >
@@ -436,6 +473,22 @@ function ModelSelectorContent({
         skipDelayDuration={0}
         disableHoverableContent={true}
       >
+        {configTarget ? (
+          <ModelConfigPage
+            target={configTarget}
+            onBack={() => setConfigTarget(null)}
+            onRun={(config) =>
+              onSelect(configTarget.id, { ...configTarget.meta, config })
+            }
+            loadedConfig={
+              value === configTarget.id &&
+              (activeGgufVariant ?? null) === (configTarget.ggufVariant ?? null)
+                ? (activeModelConfig ?? null)
+                : null
+            }
+          />
+        ) : (
+          <>
         {tabs.length > 1 ? (
           <PillTabs
             ariaLabel="Model source"
@@ -453,13 +506,12 @@ function ModelSelectorContent({
             loraModels={fineTunedModels}
             externalModels={externalModels}
             value={value}
-            onSelect={onSelect}
+            onSelect={handlePick}
             onFoldersChange={onFoldersChange}
             onBrowseHub={onBrowseHub}
             onModelsChange={onModelsChange}
             deleteDisabled={deleteDisabled}
             section={effectiveHubSection}
-            onEject={hasSelection && onEject ? onEject : undefined}
             sectionToggle={
               <PillTabs
                 ariaLabel="Hub section"
@@ -497,10 +549,8 @@ function ModelSelectorContent({
             </button>
           </div>
         ) : null}
-        {/* Hub renders Eject inline as the last list row; other tabs keep the
-          footer button. */}
-        {effectiveTab !== "hub" && hasSelection && onEject ? (
-          <div className="mt-1.5 pt-1.5">
+        {hasSelection && onEject ? (
+          <div className="mt-1.5 border-t border-border/70 pt-1.5 pb-2">
             <button
               type="button"
               onClick={onEject}
@@ -512,6 +562,8 @@ function ModelSelectorContent({
             </button>
           </div>
         ) : null}
+          </>
+        )}
       </TooltipProvider>
     </PopoverContent>
   );
@@ -524,6 +576,7 @@ export function ModelSelector({
   value,
   defaultValue,
   activeGgufVariant,
+  activeModelConfig,
   onValueChange,
   onEject,
   onFoldersChange,
@@ -651,6 +704,8 @@ export function ModelSelector({
         loraModels={loraModels}
         externalModels={externalModels}
         value={selected}
+        activeGgufVariant={activeGgufVariant}
+        activeModelConfig={activeModelConfig}
         onSelect={handleSelect}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
