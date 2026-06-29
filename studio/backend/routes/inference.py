@@ -2866,7 +2866,9 @@ async def load_model(
                                 config.gguf_dflash_file, config.gguf_file, "DFlash drafter"
                             )
                         except HTTPException as exc:
-                            logger.warning("Dropping DFlash drafter for native load: %s", exc.detail)
+                            logger.warning(
+                                "Dropping DFlash drafter for native load: %s", exc.detail
+                            )
                             config.gguf_dflash_file = None
                 _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,

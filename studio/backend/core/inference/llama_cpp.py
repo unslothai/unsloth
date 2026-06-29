@@ -4068,7 +4068,9 @@ class LlamaCppBackend:
             logger.debug(f"Could not size mmproj {launch_mmproj_path}: {e}")
             return 0
 
-    def _resolve_launch_drafter_path(self, drafter_path: Optional[str], label: str) -> Optional[str]:
+    def _resolve_launch_drafter_path(
+        self, drafter_path: Optional[str], label: str
+    ) -> Optional[str]:
         """Return drafter_path iff it exists on disk, else None.
 
         No family check needed: the drafter is only ever auto-resolved from
@@ -6127,9 +6129,7 @@ class LlamaCppBackend:
                 # abort the server the same way (binary predates the arch, or
                 # the drafter GGUF fails to build), so it shares the retry path
                 # below. Not part of the MTP+tensor probe/watchdog above.
-                _spec_requested_dflash = any(
-                    "dflash" in str(t).lower() for t in spec_flags
-                )
+                _spec_requested_dflash = any("dflash" in str(t).lower() for t in spec_flags)
                 # Is the launched server actually running MTP+tensor? Gates the
                 # probe/watchdog/recovery; cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(

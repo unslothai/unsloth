@@ -1327,7 +1327,9 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
 
 
 def _detect_drafter_sibling(
-    path: str, prefix: str, search_root: Optional[str] = None
+    path: str,
+    prefix: str,
+    search_root: Optional[str] = None,
 ) -> Optional[str]:
     """Find a separate drafter (``<prefix>*.gguf``) sibling for a local GGUF.
 

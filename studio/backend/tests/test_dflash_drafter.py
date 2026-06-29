@@ -94,9 +94,7 @@ def test_detect_dflash_file_search_root(tmp_path):
     (sub / "Qwen3-4B-Q4_K_M.gguf").touch()
     drafter = tmp_path / "dflash-Qwen3-4B.gguf"
     drafter.touch()
-    found = detect_dflash_file(
-        str(sub / "Qwen3-4B-Q4_K_M.gguf"), search_root = str(tmp_path)
-    )
+    found = detect_dflash_file(str(sub / "Qwen3-4B-Q4_K_M.gguf"), search_root = str(tmp_path))
     assert found == str(drafter.resolve())
 
 
@@ -152,9 +150,12 @@ def _emit(monkeypatch, caps, **kwargs):
 def test_emit_dflash_auto_engages_with_default_n_max(monkeypatch):
     backend, flags = _emit(monkeypatch, _CAPS_WITH_DFLASH, dflash_draft_path = "/d/dflash.gguf")
     assert flags == [
-        "--model-draft", "/d/dflash.gguf",
-        "--spec-type", "draft-dflash",
-        "--spec-draft-n-max", "4",
+        "--model-draft",
+        "/d/dflash.gguf",
+        "--spec-type",
+        "draft-dflash",
+        "--spec-draft-n-max",
+        "4",
     ]
     assert backend._speculative_type == "draft-dflash"
 
@@ -168,9 +169,7 @@ def test_emit_dflash_honors_n_max_override(monkeypatch):
 
 
 def test_emit_dflash_falls_back_when_binary_lacks_token(monkeypatch):
-    backend, flags = _emit(
-        monkeypatch, _CAPS_WITHOUT_DFLASH, dflash_draft_path = "/d/dflash.gguf"
-    )
+    backend, flags = _emit(monkeypatch, _CAPS_WITHOUT_DFLASH, dflash_draft_path = "/d/dflash.gguf")
     assert "draft-dflash" not in flags
     assert "--spec-default" in flags
     assert backend._speculative_type == "default"
