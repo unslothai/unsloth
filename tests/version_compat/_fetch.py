@@ -105,18 +105,14 @@ def _re_has_def(src: str, name: str, kind: str) -> bool:
     n = re.escape(name)
     if kind in ("any", "class") and re.search(rf"^\s*class\s+{n}\b", src, re.MULTILINE):
         return True
-    if kind in ("any", "func") and re.search(
-        rf"^\s*(?:async\s+)?def\s+{n}\b", src, re.MULTILINE
-    ):
+    if kind in ("any", "func") and re.search(rf"^\s*(?:async\s+)?def\s+{n}\b", src, re.MULTILINE):
         return True
     return kind == "any" and _re_is_bound(src, name)
 
 
 def _re_function_params(src: str, name: str) -> tuple[str, ...] | None:
     n = re.escape(name)
-    m = re.search(
-        rf"^\s*(?:async\s+)?def\s+{n}\s*\(([^)]*)\)", src, re.MULTILINE | re.DOTALL
-    )
+    m = re.search(rf"^\s*(?:async\s+)?def\s+{n}\s*\(([^)]*)\)", src, re.MULTILINE | re.DOTALL)
     if m is None:
         return None
     out: list[str] = []
