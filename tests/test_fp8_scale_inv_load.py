@@ -23,6 +23,27 @@ def _install_stub_package(name, path):
     return module
 
 
+@pytest.fixture(autouse = True)
+def _restore_loader_utils_modules():
+    keep = {
+        "unsloth",
+        "unsloth.models",
+        "unsloth.models.loader_utils",
+        "unsloth.device_type",
+        "unsloth.models.mapper",
+        "unsloth.models._utils",
+        "unsloth_zoo",
+        "unsloth_zoo.utils",
+    }
+    snapshot = {name: sys.modules.get(name) for name in keep}
+    yield
+    for name, value in snapshot.items():
+        if value is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = value
+
+
 def _install_loader_utils_stubs():
     _install_stub_package("unsloth", REPO_ROOT / "unsloth")
     _install_stub_package("unsloth.models", REPO_ROOT / "unsloth" / "models")
@@ -147,14 +168,45 @@ def test_preserves_existing_scale_state():
             local_files_only = True,
         )
 
-    assert restored == 0
-    assert skipped == 1
-    assert id(model.fp8.weight_scale_inv) == weight_scale_inv_id
+    assert restored == 1
+    assert skipped == 0
     assert id(model.fp8.weight_scale) == weight_scale_id
     assert torch.equal(model.fp8.weight_scale, weight_scale)
-    assert torch.equal(model.fp8.weight_scale_inv, existing_inv)
+    assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([1.0], dtype = torch.float16))
     assert "fp8.weight_scale_inv" in model.state_dict()
-    assert torch.equal(model.state_dict()["fp8.weight_scale_inv"], existing_inv)
+    assert torch.equal(
+        model.state_dict()["fp8.weight_scale_inv"],
+        torch.tensor([1.0], dtype = torch.float16),
+    )
+
+
+class _PackedFp8Owner(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.ones(4, 4, dtype = torch.int8)
+        self.quant_method = "fp8"
+
+
+def test_preserves_checkpoint_scale_dtype_for_packed_fp8_weights():
+    loader_utils = _load_loader_utils()
+    model = torch.nn.Module()
+    model.fp8 = _PackedFp8Owner()
+
+    with tempfile.TemporaryDirectory() as checkpoint_dir:
+        _make_checkpoint(
+            checkpoint_dir,
+            {"fp8.weight_scale_inv": torch.tensor([1.25], dtype = torch.float32)},
+        )
+        restored, skipped = loader_utils._restore_missing_fp8_weight_scale_inv(
+            model,
+            model_name = checkpoint_dir,
+            local_files_only = True,
+        )
+
+    assert restored == 1
+    assert skipped == 0
+    assert model.fp8.weight_scale_inv.dtype == torch.float32
+    assert torch.equal(model.fp8.weight_scale_inv, torch.tensor([1.25], dtype = torch.float32))
 
 
 def test_loader_calls_restore_only_for_fp8_loads():
@@ -165,16 +217,7 @@ def test_loader_calls_restore_only_for_fp8_loads():
         if not isinstance(node, ast.If):
             continue
         test = node.test
-        if not (
-            isinstance(test, ast.Compare)
-            and isinstance(test.left, ast.Name)
-            and test.left.id == "load_in_fp8"
-            and len(test.ops) == 1
-            and isinstance(test.ops[0], ast.NotEq)
-            and len(test.comparators) == 1
-            and isinstance(test.comparators[0], ast.Constant)
-            and test.comparators[0].value is False
-        ):
+        if not isinstance(test, ast.Name) or test.id != "restore_fp8_scales":
             continue
 
         call_names = set()

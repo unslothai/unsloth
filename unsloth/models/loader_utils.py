@@ -14,6 +14,7 @@
 
 from ..device_type import DEVICE_TYPE_TORCH
 import importlib
+import logging
 import os
 import torch
 import re
@@ -35,6 +36,8 @@ from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version, get_quant_type
 import gc
+
+logger = logging.getLogger(__name__)
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -389,7 +392,8 @@ def _is_real_fp8_owner(module):
 
     try:
         from unsloth.kernels.fp8 import FbgemmFp8Linear, FP8Linear
-    except ModuleNotFoundError:
+    except ModuleNotFoundError as exc:
+        logger.debug("Optional fp8 kernels not available: %s", exc)
         FbgemmFp8Linear, FP8Linear = None, None
     if FbgemmFp8Linear is not None and isinstance(module, FbgemmFp8Linear):
         return True
@@ -490,29 +494,26 @@ def _restore_missing_fp8_weight_scale_inv(
             skipped += 1
             continue
 
-        if hasattr(module, "weight_scale_inv"):
-            skipped += 1
-            continue
-
         weight = getattr(module, "weight", None)
         if not isinstance(weight, torch.Tensor):
             skipped += 1
             continue
 
         restored_scale = scale_tensor.to(device = weight.device)
-        reference = getattr(module, "weight_scale", None)
+        reference = getattr(module, "weight_scale_inv", None)
+        if not isinstance(reference, torch.Tensor):
+            reference = getattr(module, "weight_scale", None)
         if isinstance(reference, torch.Tensor):
             try:
                 restored_scale = restored_scale.to(dtype = reference.dtype)
             except Exception:
                 pass
-        elif not _has_float8_dtype(getattr(weight, "dtype", None)):
-            try:
-                restored_scale = restored_scale.to(dtype = weight.dtype)
-            except Exception:
-                pass
-
-        module.register_buffer("weight_scale_inv", restored_scale)
+        if "weight_scale_inv" in module._buffers:
+            module._buffers["weight_scale_inv"] = restored_scale
+        else:
+            if hasattr(module, "weight_scale_inv"):
+                delattr(module, "weight_scale_inv")
+            module.register_buffer("weight_scale_inv", restored_scale)
         restored += 1
 
     return restored, skipped

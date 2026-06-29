@@ -438,6 +438,7 @@ class FastLanguageModel(FastLlamaModel):
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
         fp8_mode = None
+        restore_fp8_scales = load_in_fp8 != False
         if not use_exact_model_name:
             new_model_name = get_model_name(
                 model_name,
@@ -475,6 +476,7 @@ class FastLanguageModel(FastLlamaModel):
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
+            restore_fp8_scales = False
             load_in_16bit = True
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
@@ -860,7 +862,7 @@ class FastLanguageModel(FastLlamaModel):
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
-        if load_in_fp8 != False:
+        if restore_fp8_scales:
             _restored_count, _skipped_count = _restore_missing_fp8_weight_scale_inv(
                 model,
                 model_name,
@@ -1096,6 +1098,7 @@ class FastModel(FastBaseModel):
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
         fp8_mode = None
+        restore_fp8_scales = load_in_fp8 != False
         if not use_exact_model_name:
             new_model_name = get_model_name(
                 model_name, load_in_4bit = load_in_4bit, load_in_fp8 = load_in_fp8
@@ -1129,6 +1132,7 @@ class FastModel(FastBaseModel):
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
+            restore_fp8_scales = False
             load_in_16bit = True
 
         # Check modelscope
@@ -1740,7 +1744,7 @@ class FastModel(FastBaseModel):
                 elif isinstance(quantization_config, dict):
                     model.config.update({"quantization_config": quantization_config})
 
-        if load_in_fp8 != False:
+        if restore_fp8_scales:
             _restored_count, _skipped_count = _restore_missing_fp8_weight_scale_inv(
                 model,
                 model_name,
