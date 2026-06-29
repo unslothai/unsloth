@@ -15,10 +15,9 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from ..evaluations import score_dataframe, score_parquet_dir
 from ..jsonable import to_jsonable, to_preview_jsonable
-from ..service import build_config_builder, create_data_designer
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
+from ..service import build_config_builder, create_data_designer
 from utils.paths import ensure_dir, recipe_datasets_root
 
 _ARTIFACT_ROOT = recipe_datasets_root()
@@ -139,20 +138,20 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
                 if results.analysis is None
                 else to_jsonable(results.analysis.model_dump(mode = "json"))
             )
-
-            preview_df = results.dataset
-            if preview_df is not None:
-                score_dataframe(preview_df, recipe.get("evaluations") or [])
-
             dataset = (
                 []
-                if preview_df is None
-                else to_preview_jsonable(preview_df.to_dict(orient = "records"))
+                if results.dataset is None
+                else to_preview_jsonable(results.dataset.to_dict(orient = "records"))
             )
             processor_artifacts = (
                 None
                 if results.processor_artifacts is None
                 else to_jsonable(results.processor_artifacts)
+            )
+            evaluation_artifacts = (
+                None
+                if results.evaluation_artifacts is None
+                else to_jsonable(results.evaluation_artifacts)
             )
             event_queue.put(
                 {
@@ -161,6 +160,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
                     "analysis": analysis,
                     "dataset": dataset,
                     "processor_artifacts": processor_artifacts,
+                    "evaluation_artifacts": evaluation_artifacts,
                     "artifact_path": None,
                     "execution_type": execution_type,
                 }
@@ -170,12 +170,6 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             analysis = to_jsonable(results.load_analysis().model_dump(mode = "json"))
             if merge_batches:
                 _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
-
-            score_parquet_dir(
-                results.artifact_storage.base_dataset_path / "parquet-files",
-                recipe.get("evaluations") or [],
-            )
-
             artifact_path = str(results.artifact_storage.base_dataset_path)
             event_queue.put(
                 {
