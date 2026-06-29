@@ -1492,6 +1492,12 @@ def disable_broken_wandb():
 # Stamped on stub modules so a second call is a strict no-op and so third
 # parties can introspect ``__unsloth_stub__`` to detect our patch.
 _UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
+_PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS = (
+    "ALL_PARALLEL_STYLES",
+    "ColwiseParallel",
+    "EmbeddingParallel",
+    "RowwiseParallel",
+)
 
 
 def _extract_peft_tensor_parallel_imported_symbols():
@@ -1513,7 +1519,8 @@ def _extract_peft_tensor_parallel_imported_symbols():
 
     try:
         source = inspect.getsource(sharding_fn)
-    except (TypeError, OSError, IOError):
+    except Exception as exc:
+        logger.debug("Failed to inspect PEFT tensor-parallel imports: %r", exc)
         return ()
 
     import_pattern = re.compile(
@@ -1521,7 +1528,7 @@ def _extract_peft_tensor_parallel_imported_symbols():
         re.S,
     )
     import_pattern_single = re.compile(
-        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s+([A-Za-z_][A-Za-z0-9_\\s,]*)",
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s+([A-Za-z_][A-Za-z0-9_\s,]*)",
         re.S,
     )
     matches = import_pattern.findall(source)
@@ -1544,7 +1551,7 @@ def _extract_peft_tensor_parallel_imported_symbols():
                 continue
             symbols.append(candidate)
             seen.add(candidate)
-    return tuple(symbols)
+    return tuple(symbols) or _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
 
 
 def _raise_on_peft_tensor_parallel_symbol_use(symbol_name):
@@ -1575,7 +1582,16 @@ def fix_peft_transformers_tensor_parallel_import_compat():
     if not required_symbols:
         return None
 
-    tp_mod = importlib.import_module("transformers.integrations.tensor_parallel")
+    try:
+        tp_mod = importlib.import_module("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError as exc:
+        if exc.name not in {
+            "transformers",
+            "transformers.integrations",
+            "transformers.integrations.tensor_parallel",
+        }:
+            raise
+        return None
     missing = [
         symbol
         for symbol in required_symbols
@@ -1591,6 +1607,15 @@ def fix_peft_transformers_tensor_parallel_import_compat():
                     _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
 
                 def get(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __contains__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __iter__(self):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __len__(self):
                     _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
 
             value = _UnslothTensorParallelStyles()

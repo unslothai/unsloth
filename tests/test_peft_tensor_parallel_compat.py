@@ -112,6 +112,12 @@ def test_missing_tensor_parallel_symbol_import_succeeds_after_fix(monkeypatch):
     assert getattr(embedding_parallel, "__unsloth_stub__", False)
     with pytest.raises(NotImplementedError, match = "ALL_PARALLEL_STYLES"):
         all_parallel_styles["rowwise"]
+    with pytest.raises(NotImplementedError, match = "ALL_PARALLEL_STYLES"):
+        "rowwise" in all_parallel_styles
+    with pytest.raises(NotImplementedError, match = "ALL_PARALLEL_STYLES"):
+        iter(all_parallel_styles)
+    with pytest.raises(NotImplementedError, match = "ALL_PARALLEL_STYLES"):
+        len(all_parallel_styles)
 
 
 def test_existing_embedding_parallel_is_not_replaced(monkeypatch):
@@ -181,3 +187,54 @@ def test_placeholder_raises_on_real_use(monkeypatch):
         tp_mod.EmbeddingParallel()
 
     assert getattr(tp_mod.EmbeddingParallel, "__unsloth_stub__", False)
+
+
+def test_symbol_extractor_falls_back_when_parse_returns_no_identifiers(monkeypatch):
+    module = _load_import_fixes()
+
+    _install_fake_peft_tensor_parallel_import()
+    monkeypatch.setattr(
+        module.inspect,
+        "getsource",
+        lambda _: "from transformers.integrations.tensor_parallel import ()",
+    )
+
+    assert module._extract_peft_tensor_parallel_imported_symbols() == (
+        "ALL_PARALLEL_STYLES",
+        "ColwiseParallel",
+        "EmbeddingParallel",
+        "RowwiseParallel",
+    )
+
+
+def test_symbol_extractor_ignores_valueerror_from_getsource(monkeypatch):
+    module = _load_import_fixes()
+
+    _install_fake_peft_tensor_parallel_import()
+    monkeypatch.setattr(
+        module.inspect,
+        "getsource",
+        lambda _: (_ for _ in ()).throw(ValueError("no source")),
+    )
+
+    assert module._extract_peft_tensor_parallel_imported_symbols() == ()
+
+
+def test_tensor_parallel_import_module_not_found_returns_none(monkeypatch):
+    module = _load_import_fixes()
+    _install_fake_peft_tensor_parallel_import()
+
+    monkeypatch.setattr(
+        module.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "transformers.integrations.tensor_parallel" else None,
+    )
+
+    def _raise_missing(name):
+        exc = ModuleNotFoundError(name)
+        exc.name = name
+        raise exc
+
+    monkeypatch.setattr(module.importlib, "import_module", _raise_missing)
+
+    assert module.fix_peft_transformers_tensor_parallel_import_compat() is None
