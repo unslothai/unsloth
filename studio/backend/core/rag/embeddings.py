@@ -162,6 +162,7 @@ def _st_unload() -> None:
     if not had_model:
         return
     import gc
+
     gc.collect()  # drop the model now so the freed VRAM is visible to callers
     # Clear the cache for the device ST ran on (cuda or xpu); a CUDA-only clear
     # leaks the XPU reservation.
