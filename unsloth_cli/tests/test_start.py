@@ -1196,3 +1196,49 @@ def test_write_openclaw_config_yolo_unit(tmp_path):
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     config = json.loads(path.read_text())
     assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
+
+
+def test_yolo_command_flags_unmapped_agent_is_empty():
+    # Config-based agents (and any typo) must yield no flag, not a KeyError.
+    assert start._yolo_command_flags("opencode", True) == []
+    assert start._yolo_command_flags("openclaw", True) == []
+    assert start._yolo_command_flags("claude", True) == ["--dangerously-skip-permissions"]
+    assert start._yolo_command_flags("claude", False) == []
+
+
+def test_yolo_config_agents_add_no_command_flag(fake_studio):
+    # opencode/openclaw auto-approve is config-only; nothing should leak onto argv.
+    for agent in ("opencode", "openclaw"):
+        result = CliRunner().invoke(start.start_app, [agent, "--yolo", "--no-launch"])
+        assert result.exit_code == 0, result.output
+        launch_line = [ln for ln in result.output.splitlines() if ln.strip().startswith(agent)]
+        assert launch_line, result.output
+        assert all("--yolo" not in ln and "--dangerous" not in ln for ln in launch_line)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "WSL-from-Linux scenario: a Windows pi shim under /mnt called from WSL "
+    "(os.name is 'posix' under WSL), so this can't run on a native Windows runner.",
+)
+def test_connect_pi_wsl_windows_shim_relocates_userprofile(fake_studio, monkeypatch):
+    captured = {}
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(
+        start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/pi"
+    )
+
+    def run(command, env):
+        captured["env"] = env
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    result = CliRunner().invoke(start.start_app, ["pi"])
+    assert result.exit_code == 0, result.output
+    home = captured["env"]["HOME"]
+    # A Windows pi shim resolves ~/.pi via USERPROFILE, so it must match the session
+    # HOME and ride the WSLENV bridge (with /p) so the path is translated for Windows.
+    assert captured["env"]["USERPROFILE"] == home
+    wslenv = captured["env"]["WSLENV"].split(":")
+    assert "HOME/p" in wslenv
+    assert "USERPROFILE/p" in wslenv

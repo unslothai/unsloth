@@ -110,7 +110,8 @@ _YOLO_COMMAND_FLAGS = {
 
 
 def _yolo_command_flags(agent: str, yolo: bool) -> list:
-    return _YOLO_COMMAND_FLAGS[agent] if yolo else []
+    # .get so a config-based agent (or a typo) yields no flag instead of a KeyError.
+    return _YOLO_COMMAND_FLAGS.get(agent, []) if yolo else []
 
 
 class LoadOptions(NamedTuple):
@@ -1053,16 +1054,18 @@ def pi(
     ]
     install_hint = "npm install -g @earendil-works/pi-coding-agent"
     with _session_config("pi", launch) as home:
-        # Pi has no config-dir env var; it resolves ~/.pi off $HOME (Node's homedir()
-        # honors it), so HOME-scope the session to leave the user's ~/.pi untouched.
-        # The key rides in the config, so HOME is the only env var needed.
+        # Pi has no config-dir env var; it resolves ~/.pi off the home directory, so
+        # home-scope the session to leave the user's real ~/.pi untouched. The key
+        # rides in the config rather than the env.
         write_pi_config(base, key, entry, home / ".pi" / "agent" / "models.json")
         env = {"HOME": str(home)}
-        if os.name == "nt":
-            # On native Windows Node resolves ~/.pi via USERPROFILE (then HOMEDRIVE +
-            # HOMEPATH), not HOME, so without these it would read the user's real
-            # ~/.pi. splitdrive yields no drive off a POSIX path, so HOMEDRIVE/HOMEPATH
-            # are only set when there is one.
+        if os.name == "nt" or os.environ.get("WSL_DISTRO_NAME"):
+            # Node resolves ~/.pi via USERPROFILE (then HOMEDRIVE + HOMEPATH) on Windows,
+            # not HOME. Set them whenever Pi may run as a Windows process: native Windows,
+            # or a /mnt Windows shim launched from WSL (the WSLENV bridge then translates
+            # the path). Otherwise the Windows process falls back to the user's real
+            # %USERPROFILE%\.pi. splitdrive yields no drive off a POSIX path, so
+            # HOMEDRIVE/HOMEPATH stay unset there.
             env["USERPROFILE"] = str(home)
             drive, tail = os.path.splitdrive(str(home))
             if drive:

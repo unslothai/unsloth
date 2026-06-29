@@ -10,6 +10,13 @@
 const DEFAULT_STUDIO_PORT = "8888";
 const DEFAULT_AGENT = "claude";
 
+// URL.hostname brackets IPv6 literals (`new URL("http://[::1]:8888").hostname` is
+// "[::1]"), so strip the brackets before matching the bare "::1" loopback rules below.
+function normalizeHost(host: string): string {
+  const lower = host.toLowerCase();
+  return lower.startsWith("[") && lower.endsWith("]") ? lower.slice(1, -1) : lower;
+}
+
 // The bare `unsloth start` only auto-discovers 127.0.0.1:8888 (localhost/::1 alias it).
 function isDefaultLocalHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
@@ -43,7 +50,7 @@ export function buildAgentCommand(
   // Unknown base: fall back to the bare default-local command.
   if (!url) return bare;
 
-  const host = url.hostname.toLowerCase();
+  const host = normalizeHost(url.hostname);
   const loopback = isLoopbackHost(host);
   // Default local server (127.0.0.1/localhost:8888): bare command auto-discovers it.
   if (isDefaultLocalHost(host) && url.port === DEFAULT_STUDIO_PORT) return bare;
