@@ -286,25 +286,98 @@ def test_st_unload_noop_when_nothing_loaded(monkeypatch):
     assert embeddings._model is None
 
 
-def test_llama_embedder_unload_suppresses_respawn(monkeypatch):
-    # When a model load unloads the llama-server embedder, an in-flight encode's
-    # POST fails on the kill and retries via _ensure_ready. That retry must NOT
-    # respawn the embedder back into the model's VRAM; the next deliberate encode
-    # clears the guard so normal lazy reload resumes.
+def test_llama_unload_skips_cpu_only_server(monkeypatch):
+    # A CPU-only embedder holds no VRAM, so a model load must leave it running
+    # (killing it would abort ingestion for no GPU-probe gain). A GPU child is
+    # killed so its VRAM is reclaimed.
     from core.rag.embed_llama_server import LlamaServerBackend
 
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_process_alive", lambda: False)
+    monkeypatch.setattr(b, "_process_alive", lambda: True)
+    killed = {"n": 0}
+    monkeypatch.setattr(b, "_kill_process", lambda: killed.__setitem__("n", killed["n"] + 1))
+
+    b._started_on_gpu = False
+    assert b.unload() is False  # CPU-only: leave it running
+    assert killed["n"] == 0
+
+    b._started_on_gpu = True
+    assert b.unload() is True  # GPU child: kill to free VRAM
+    assert killed["n"] == 1
+
+
+def test_llama_post_no_respawn_when_unloaded_midflight(monkeypatch):
+    # If a model load unloads us mid-POST (epoch moves), the kill is deliberate, so
+    # the dropped connection must NOT respawn the embedder back into model VRAM.
+    import httpx
+
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    restarts = {"n": 0}
+    monkeypatch.setattr(b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1))
+
+    def _post_killed_by_unload(url, json):
+        b._unload_epoch += 1  # a concurrent unload() killed the child
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(b._client, "post", _post_killed_by_unload)
+    with pytest.raises(RuntimeError, match = "failed after retry"):
+        b._post("/v1/embeddings", {})
+    assert restarts["n"] == 0
+
+
+def test_llama_post_respawns_on_transient_drop(monkeypatch):
+    # A dropped connection with no unload (the reaper killed us) must still respawn
+    # once and retry, the pre-existing self-heal the epoch guard must not break.
+    import httpx
+
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_restart", lambda: None)
+    calls = {"n": 0}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"ok": True}
+
+    def _post(url, json):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("connection refused")
+        return _Resp()
+
+    monkeypatch.setattr(b._client, "post", _post)
+    assert b._post("/v1/embeddings", {}) == {"ok": True}
+    assert calls["n"] == 2  # respawned and retried
+
+
+def test_llama_deliberate_post_works_after_unload(monkeypatch):
+    # Codex #1: after a GPU unload, ingestion calls token_counter() (a /tokenize
+    # POST) before any encode. That deliberate call must respawn and succeed, not
+    # be blocked by a stale unload guard.
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    b._started_on_gpu = True
+    monkeypatch.setattr(b, "_process_alive", lambda: True)
     monkeypatch.setattr(b, "_kill_process", lambda: None)
-    spawned = {"n": 0}
-    monkeypatch.setattr(b, "_spawn", lambda: spawned.__setitem__("n", spawned["n"] + 1))
+    assert b.unload() is True
 
-    assert b.unload() is True  # killed a GPU process -> caller waits for reclaim
-    assert b._unloading is True
-    with pytest.raises(RuntimeError, match = "unloaded for model load"):
-        b._ensure_ready()  # in-flight retry must not bring it back
-    assert spawned["n"] == 0
+    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
 
-    b._unloading = False  # a deliberate encode resets the guard
-    b._ensure_ready()
-    assert spawned["n"] == 1  # normal lazy respawn resumes
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"tokens": [1, 2, 3]}
+
+    monkeypatch.setattr(b._client, "post", lambda url, json: _Resp())
+    assert b._post("/tokenize", {}) == {"tokens": [1, 2, 3]}
