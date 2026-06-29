@@ -5754,6 +5754,12 @@ class LlamaCppBackend:
                                     # the minimum so the tightest fit gets the smallest context.
                                     _cpu_cap = 4096
                                 else:
+                                    # MTP engages but the draft KV can't be byte-sized:
+                                    # _mtp_bytes returns 0 and budget_frac skips the flat
+                                    # reserve, so trim the budget to still hold back MTP RAM.
+                                    _cpu_budget = _CPU_RAM_BUDGET_FRAC
+                                    if _mtp_will_engage_cpu and mtp_overhead_fn is None:
+                                        _cpu_budget -= _MTP_VRAM_RESERVE_FRAC
                                     _fit = self._fit_context_to_vram(
                                         requested_ctx = _ctx_ceiling,
                                         available_mib = _avail_mib,
@@ -5768,7 +5774,7 @@ class LlamaCppBackend:
                                         mtp_overhead_fn = (
                                             _mtp_bytes if _mtp_will_engage_cpu else None
                                         ),
-                                        budget_frac = _CPU_RAM_BUDGET_FRAC,
+                                        budget_frac = _cpu_budget,
                                     )
                                     _cpu_cap = max(4096, min(_ctx_ceiling, _fit))
                         except Exception as _cap_exc:  # best-effort; fall back to ceiling
@@ -6308,6 +6314,9 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
+                # A scheduler abort on the first launch must still be memoed even if a later
+                # no-spec/text-only fallback overwrites the stdout tail; track it across them.
+                _pre_fallback_sched_abort = False
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -6407,6 +6416,12 @@ class LlamaCppBackend:
                 # cancel check stops an /unload-killed attempt respawning. A
                 # decode-probe failure above also routes here.
                 if not healthy and _spec_requested_mtp and not self._cancel_event.is_set():
+                    # The no-spec retry below resets the stdout tail; capture a scheduler
+                    # abort from this first launch now so it can still be memoed if the
+                    # retries then fail for another reason (else the UI replays the load).
+                    _pre_fallback_sched_abort = _pre_fallback_sched_abort or (
+                        self._is_sched_reserve_abort("\n".join(self._stdout_lines[-200:]))
+                    )
                     # Blame the binary only when the output shows MTP itself
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
@@ -6471,10 +6486,14 @@ class LlamaCppBackend:
                     # mmproj fallback is ruled out, so a VLM that recovers text-only is not
                     # blocked by the fail-fast guard on its next load. Wider slice as the
                     # GGML_ASSERT line can scroll past the [New LWP] dump.
-                    _was_sched_abort = (
-                        not self._cancel_event.is_set()
-                        and (self._is_signal_crash(_crash_rc) or self._is_abort_exit(_crash_rc))
-                        and self._is_sched_reserve_abort("\n".join(self._stdout_lines[-200:]))
+                    _was_sched_abort = not self._cancel_event.is_set() and (
+                        # A scheduler abort captured before the no-spec fallback reset stdout,
+                        _pre_fallback_sched_abort
+                        # or one still visible in the current tail.
+                        or (
+                            (self._is_signal_crash(_crash_rc) or self._is_abort_exit(_crash_rc))
+                            and self._is_sched_reserve_abort("\n".join(self._stdout_lines[-200:]))
+                        )
                     )
                     self._kill_process()
                     # The #6415 split-axis abort is latched earlier (first spawn).

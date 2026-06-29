@@ -87,6 +87,7 @@ def test_parse_online_ranges():
 def test_topology_aggregates():
     assert _USER_TOPO.node_count == 2
     assert _USER_TOPO.largest_node_free_mib == 465594
+    assert _USER_TOPO.smallest_node_free_mib == 223814
     assert _USER_TOPO.total_free_mib == 465594 + 223814
 
 
@@ -98,12 +99,20 @@ def test_interleaves_when_model_exceeds_largest_node_but_fits_across():
     assert "interleave=all" in d.reason
 
 
-def test_no_interleave_when_model_fits_largest_node():
-    # A 200 GB model fits node 0's 465 GB free -> keep local placement.
+def test_no_interleave_when_model_fits_every_node():
+    # A 200 GB model fits even the smaller node (223 GB) -> safe on any node, keep local.
     d = decide_interleave(200 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
     assert d.interleave is False
     assert d.prefix == ()
-    assert "fits" in d.reason
+    assert "fits every node" in d.reason
+
+
+def test_interleaves_when_fits_larger_node_but_not_smaller():
+    # 300 GB fits node 0 (465) but not node 1 (223); the loader is not bound, so first-
+    # touch could land on node 1. Interleave instead of gambling on placement (PR review).
+    d = decide_interleave(300 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
+    assert d.interleave is True
+    assert d.prefix == ("numactl", "--interleave=all")
 
 
 def test_no_interleave_on_gpu_host():

@@ -36,6 +36,10 @@ class NumaTopology:
     def largest_node_free_mib(self) -> int:
         return max(self.node_free_mib.values(), default = 0)
 
+    @property
+    def smallest_node_free_mib(self) -> int:
+        return min(self.node_free_mib.values(), default = 0)
+
 
 def _parse_online(spec: str) -> list[int]:
     """Parse a sysfs cpulist-style range, e.g. '0-1' or '0,2-3', into node ids."""
@@ -110,10 +114,11 @@ def decide_interleave(
     topology: NumaTopology | None = None,
     has_numactl: bool | None = None,
 ) -> InterleaveDecision:
-    """Interleave only when CPU-only, multi-node, and the footprint exceeds the largest
-    node's free RAM but fits across all nodes; otherwise leave placement local.
-    model_size_bytes should be the resident footprint (weights + KV), not weights
-    alone, so a model whose weights fit a node but whose footprint does not still
+    """Interleave only when CPU-only, multi-node, and the footprint exceeds the smallest
+    node's free RAM but fits across all nodes; otherwise leave placement local. The
+    smallest node is the bound because the loader is not pinned, so first-touch may land
+    on any node. model_size_bytes should be the resident footprint (weights + KV), not
+    weights alone, so a model whose weights fit a node but whose footprint does not still
     interleaves."""
     if not cpu_only:
         return InterleaveDecision(False, "not cpu-only; leaving NUMA placement to the OS")
@@ -125,14 +130,17 @@ def decide_interleave(
         return InterleaveDecision(False, "single NUMA node; interleave not needed")
 
     model_mib = model_size_bytes // (1024 * 1024)
-    largest = topo.largest_node_free_mib
+    smallest = topo.smallest_node_free_mib
     total = topo.total_free_mib
 
-    if model_mib <= largest:
+    # Keep local only when the footprint fits EVERY node (the smallest). We don't bind
+    # the loader, so first-touch may land on any node; local placement is safe only when
+    # any node can hold it. A footprint that fits only the larger node still interleaves.
+    if model_mib <= smallest:
         return InterleaveDecision(
             False,
-            f"model ~{model_mib} MiB fits the largest node's free RAM "
-            f"(~{largest} MiB); keeping local placement",
+            f"model ~{model_mib} MiB fits every node's free RAM "
+            f"(smallest ~{smallest} MiB); keeping local placement",
         )
 
     # Impossible across all nodes regardless of numactl: surface the smaller-quant /
@@ -150,16 +158,16 @@ def decide_interleave(
         # Needed but unavailable: surface it; caller decides whether to block.
         return InterleaveDecision(
             False,
-            f"model ~{model_mib} MiB exceeds the largest NUMA node's free RAM "
-            f"(~{largest} MiB) and needs interleaving across {topo.node_count} nodes, "
+            f"model ~{model_mib} MiB exceeds the smallest NUMA node's free RAM "
+            f"(~{smallest} MiB) and needs interleaving across {topo.node_count} nodes, "
             f"but `numactl` is not installed. Install numactl (e.g. `apt install "
             f"numactl`) or the model may fail to fit a single node.",
         )
 
     return InterleaveDecision(
         True,
-        f"model ~{model_mib} MiB exceeds the largest NUMA node's free RAM "
-        f"(~{largest} MiB) but fits across {topo.node_count} nodes (~{total} MiB total "
+        f"model ~{model_mib} MiB exceeds the smallest NUMA node's free RAM "
+        f"(~{smallest} MiB) but fits across {topo.node_count} nodes (~{total} MiB total "
         f"free); wrapping with numactl --interleave=all",
         prefix = ("numactl", "--interleave=all"),
     )

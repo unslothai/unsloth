@@ -281,7 +281,7 @@ def test_abort_memo_deferred_until_mmproj_fallback_ruled_out():
     raise, after the text-only mmproj fallback is ruled out, so a VLM that recovers
     text-only is not blocked by the fail-fast guard next time (PR review fix)."""
     src = _load_model_src()
-    assert "_was_sched_abort = (" in src
+    assert "_was_sched_abort = " in src
     assert "if _was_sched_abort:" in src
     fn = ast.parse(src).body[0]
     strip_line = _call_line(fn, "_strip_mmproj_args")
@@ -289,3 +289,37 @@ def test_abort_memo_deferred_until_mmproj_fallback_ruled_out():
     # Recording happens after the projector strip, i.e. only once the fallback is tried.
     assert strip_line is not None and record_line is not None
     assert record_line > strip_line
+
+
+def test_sched_abort_captured_before_mtp_fallback():
+    """The no-spec MTP fallback resets the stdout tail, so the first launch's scheduler
+    abort must be captured before it runs and folded into the terminal decision; else a
+    differently-failing fallback drops the memo and the UI replays the load (PR review fix)."""
+    src = _load_model_src()
+    assert "_pre_fallback_sched_abort = False" in src
+    assert "_pre_fallback_sched_abort = _pre_fallback_sched_abort or (" in src
+    # The capture is set before the no-spec fallback spawns.
+    fn = ast.parse(src).body[0]
+    capture_line = next(
+        (
+            n.lineno
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "_pre_fallback_sched_abort" for t in n.targets
+            )
+            and isinstance(n.value, ast.BoolOp)
+        ),
+        None,
+    )
+    fallback_line = next(
+        (
+            n.lineno
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Call)
+            and any(isinstance(a, ast.Name) and a.id == "fallback_cmd" for a in n.args)
+        ),
+        None,
+    )
+    assert capture_line is not None and fallback_line is not None
+    assert capture_line < fallback_line

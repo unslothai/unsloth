@@ -174,7 +174,8 @@ def test_cpu_context_cap_reuses_fit_helper_against_ram():
     src = _load_model_src()
     assert "_available_system_memory_mib()" in src
     assert "self._fit_context_to_vram(" in src
-    assert "budget_frac = _CPU_RAM_BUDGET_FRAC" in src
+    assert "_cpu_budget = _CPU_RAM_BUDGET_FRAC" in src
+    assert "budget_frac = _cpu_budget" in src
 
 
 def test_cpu_ram_preflight_warns_when_weights_exceed_ram():
@@ -273,6 +274,16 @@ def test_cpu_fit_skips_mtp_reserve_when_mla_auto_drops():
     # The CPU cap and NUMA recompute use the gated flag, not the raw _mtp_will_engage.
     assert _nows("mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None)") in src
     assert _nows("_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0") in src
+
+
+def test_cpu_fit_reserves_flat_mtp_when_draft_unsized():
+    """When MTP engages but the draft KV can't be byte-sized (mtp_overhead_fn is None),
+    budget_frac skips the flat reserve, so the CPU budget is trimmed to still hold MTP
+    RAM back instead of fitting a context that OOMs once the draft allocates (PR review)."""
+    src = _load_model_src()
+    assert "if _mtp_will_engage_cpu and mtp_overhead_fn is None:" in src
+    assert "_cpu_budget -= _MTP_VRAM_RESERVE_FRAC" in src
+    assert "budget_frac = _cpu_budget" in src
 
 
 def test_zero_offload_folds_into_cpu_only():
