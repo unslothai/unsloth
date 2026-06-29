@@ -1254,6 +1254,18 @@ fi
 
 verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
+# GGUF export's check_llama_cpp() looks for a llama-quantize shim at the root of
+# the install dir, but a source build keeps the binary under build/bin/. Mirror
+# the source-build-reuse step and create the shim when the reused tree has one
+# but no root shim yet. Best-effort: the tree may be read-only (shared/CI cache),
+# and under `set -e` a failed ln would otherwise abort an good reuse.
+_link_local_llama_quantize_shim() {
+    if [ -x "$1/build/bin/llama-quantize" ] && [ ! -e "$1/llama-quantize" ]; then
+        ln -sf build/bin/llama-quantize "$1/llama-quantize" 2>/dev/null || \
+            substep "could not create llama-quantize shim in linked dir (read-only?); GGUF export may be unavailable"
+    fi
+}
+
 _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
@@ -1273,8 +1285,30 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         _CANON_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" && pwd -P)/$(basename "$LLAMA_CPP_DIR")"
     fi
     if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then
-        substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location; ignoring"
+        # Points at the canonical install location itself: never delete-then-link
+        # it onto itself. If a usable build is already there, reuse it and skip
+        # both the prebuilt download and the source build -- the prebuilt installer
+        # uses os.replace() and would otherwise clobber an existing source build at
+        # this path. If nothing is built there yet, fall through to the normal
+        # install so it gets built in place exactly as it would without the flag.
+        if [ -x "$LLAMA_CPP_DIR/build/bin/llama-server" ]; then
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it"
+            _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+            _LOCAL_LLAMA_CPP_LINKED=true
+            _NEED_LLAMA_SOURCE_BUILD=false
+            _SKIP_PREBUILT_INSTALL=true
+        else
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location with nothing built there yet; running the normal install"
+        fi
     else
+        # Reusing disables BOTH the prebuilt download and the source build, so the
+        # linked tree must already contain a runnable llama-server (Studio loads it
+        # from build/bin/). Fail clearly rather than link an unbuilt or
+        # wrong-platform checkout and leave Studio with no usable binary.
+        if [ ! -x "$_RESOLVED_LOCAL/build/bin/llama-server" ]; then
+            step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL/build/bin -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
+            exit 1
+        fi
         # A stale link from a previous --with-llama-cpp-dir run isn't Studio-owned
         # content; drop it before the ownership check so re-runs stay idempotent
         # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
@@ -1285,19 +1319,7 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         fi
         rm -rf "$LLAMA_CPP_DIR"
         ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
-        # GGUF export's check_llama_cpp() looks for a llama-quantize shim at the
-        # root of the install dir. A normal source build keeps the binary under
-        # build/bin/, so mirror the source-build-reuse step and create the shim
-        # when the linked checkout has one but no root shim yet. Inference
-        # (llama-server) works off the linked tree directly and needs nothing.
-        if [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ] && \
-           [ ! -e "$LLAMA_CPP_DIR/llama-quantize" ]; then
-            # Best-effort: this writes through the link into the user's tree, which
-            # may be read-only (a shared/CI cache). Under `set -e` a failed ln would
-            # abort an otherwise-good reuse, so don't make the shim fatal.
-            ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize" 2>/dev/null || \
-                substep "could not create llama-quantize shim in linked dir (read-only?); GGUF export may be unavailable"
-        fi
+        _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
         step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
         _LOCAL_LLAMA_CPP_LINKED=true
         _NEED_LLAMA_SOURCE_BUILD=false

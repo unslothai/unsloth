@@ -3166,9 +3166,29 @@ if ($LocalLlamaCppSrc) {
         exit 1
     }
     $ResolvedLocal = (Resolve-Path -LiteralPath $LocalLlamaCppSrc).Path
+    # Studio loads the runtime from build\bin\Release\llama-server.exe; reusing a
+    # local dir disables both the prebuilt download and the source build, so that
+    # binary must already be present in the dir the user pointed at.
+    $LocalLlamaServerExe = Join-Path $ResolvedLocal "build\bin\Release\llama-server.exe"
     if ($ResolvedLocal -eq $LlamaCppDir) {
-        substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location; ignoring" "Yellow"
+        # Points at the canonical install location itself: never delete-then-link
+        # onto itself. Reuse an existing build here (skip prebuilt + source) so the
+        # staged prebuilt installer can't replace a build the user asked to reuse;
+        # if nothing is built yet, fall through to the normal install.
+        if (Test-Path -LiteralPath $LocalLlamaServerExe) {
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it" "Yellow"
+            $LocalLlamaCppLinked = $true
+            $NeedLlamaSourceBuild = $false
+        } else {
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location with nothing built there yet; running the normal install" "Yellow"
+        }
     } else {
+        # Fail clearly rather than junction an unbuilt or wrong-platform checkout
+        # and leave Studio with no usable binary.
+        if (-not (Test-Path -LiteralPath $LocalLlamaServerExe)) {
+            step "llama.cpp" "no llama-server.exe under $ResolvedLocal\build\bin\Release -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
+            exit 1
+        }
         # If the target is already a junction/symlink (e.g. a previous
         # --with-llama-cpp-dir run), delete only the link via DirectoryInfo.Delete().
         # Remove-Item -Recurse -Force on a reparse point can traverse the link and
@@ -3187,6 +3207,14 @@ if ($LocalLlamaCppSrc) {
         }
         if (Test-Path -LiteralPath $LlamaCppDir) {
             Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
+            # A locked/in-use tree can silently survive removal (SilentlyContinue
+            # masks it). Don't then junction/copy over a half-present dir; mirror the
+            # prebuilt path's active-process handling and stop with a clear message.
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
+                substep "Close Studio or other llama.cpp users and retry" "Yellow"
+                exit 3
+            }
         }
         cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
