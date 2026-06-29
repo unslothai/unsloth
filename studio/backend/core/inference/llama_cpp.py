@@ -4709,24 +4709,29 @@ class LlamaCppBackend:
 
             self._cancel_event.clear()
 
-            # ── Phase 1: kill old process (under lock, fast) ──────────
-            with self._lock:
-                self._kill_process()
-
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
 
-            # Fail fast if this (binary, model) already aborted in the graph scheduler
-            # this session: reloading just re-reads the weights into the same crash
-            # (a startup crash 500s and the UI replays /load).
-            if LlamaCppBackend._sched_reserve_aborts(binary, model_identifier):
+            # Fail fast BEFORE killing the live server (so a known-bad reload is
+            # non-destructive) if this (binary, model, variant) already aborted in the
+            # graph scheduler this session: reloading re-reads the weights into the same
+            # crash (a startup crash 500s and the UI replays /load). Keyed per variant so
+            # a failed quant does not block trying a different quant in the same repo.
+            _abort_memo_model = "\x00".join(
+                [model_identifier or "", hf_variant or "", gguf_path or ""]
+            )
+            if LlamaCppBackend._sched_reserve_aborts(binary, _abort_memo_model):
                 logger.warning(
                     "Skipping reload of '%s': it already aborted in the llama.cpp "
                     "graph scheduler this session (unsupported op on this backend).",
                     model_identifier,
                 )
                 raise RuntimeError(self._sched_reserve_abort_message())
+
+            # ── Phase 1: kill old process (under lock, fast) ──────────
+            with self._lock:
+                self._kill_process()
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected
@@ -5689,18 +5694,25 @@ class LlamaCppBackend:
                         _cpu_cap = _CPU_CTX_AUTO_CEILING
                         try:
                             if _avail_mib and model_size and self._can_estimate_kv():
-                                _fit = self._fit_context_to_vram(
-                                    requested_ctx = _CPU_CTX_AUTO_CEILING,
-                                    available_mib = _avail_mib,
-                                    model_size_bytes = model_size,
-                                    cache_type_kv = cache_type_kv,
-                                    min_ctx = 4096,
-                                    n_parallel = n_parallel,
-                                    kv_on_gpu = True,  # KV lives in the RAM budget we fit
-                                    mtp_engaged = True,  # flat reserve; no GPU draft here
-                                    budget_frac = _CPU_RAM_BUDGET_FRAC,
-                                )
-                                _cpu_cap = max(4096, min(_CPU_CTX_AUTO_CEILING, _fit))
+                                _budget_b = _avail_mib * _CPU_RAM_BUDGET_FRAC * 1024 * 1024
+                                if model_size >= _budget_b:
+                                    # Weights alone over budget: _fit_context_to_vram returns
+                                    # the ceiling unchanged, but KV at 32k could OOM. Floor to
+                                    # the minimum so the tightest fit gets the smallest context.
+                                    _cpu_cap = 4096
+                                else:
+                                    _fit = self._fit_context_to_vram(
+                                        requested_ctx = _CPU_CTX_AUTO_CEILING,
+                                        available_mib = _avail_mib,
+                                        model_size_bytes = model_size,
+                                        cache_type_kv = cache_type_kv,
+                                        min_ctx = 4096,
+                                        n_parallel = n_parallel,
+                                        kv_on_gpu = True,  # KV lives in the RAM budget we fit
+                                        mtp_engaged = True,  # flat reserve; no GPU draft here
+                                        budget_frac = _CPU_RAM_BUDGET_FRAC,
+                                    )
+                                    _cpu_cap = max(4096, min(_CPU_CTX_AUTO_CEILING, _fit))
                         except Exception as _cap_exc:  # best-effort; fall back to ceiling
                             logger.debug("CPU context-fit failed; using ceiling: %s", _cap_exc)
                         if _cpu_cap < effective_ctx:
@@ -5743,6 +5755,10 @@ class LlamaCppBackend:
                     # Fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
                     fully_gpu_offloaded = True
+                elif _cpu_only:
+                    # --fit defaults to on in recent llama.cpp, so omitting it still runs
+                    # the graph-reserve fitting step (same abort path); disable explicitly.
+                    cmd.extend(["--fit", "off"])
 
                 server_caps = self.probe_server_capabilities(binary)
                 # Expose Prometheus /metrics for the engine-stats logger, only
@@ -5966,7 +5982,19 @@ class LlamaCppBackend:
                 self._numa_prefix = []
                 try:
                     from core.inference.numa import decide_interleave
-                    _numa = decide_interleave(model_size, cpu_only = _cpu_only)
+
+                    # Decide on the resident footprint (weights + KV at the capped
+                    # context), not weights alone, so a model whose weights fit one node
+                    # but whose footprint does not still interleaves.
+                    _numa_footprint = model_size
+                    if model_size and effective_ctx > 0 and self._can_estimate_kv():
+                        try:
+                            _numa_footprint = model_size + self._estimate_kv_cache_bytes(
+                                effective_ctx, cache_type_kv
+                            )
+                        except Exception:
+                            _numa_footprint = model_size
+                    _numa = decide_interleave(_numa_footprint, cpu_only = _cpu_only)
                     if _numa.interleave:
                         self._numa_prefix = list(_numa.prefix)
                         if not _extra_args_set_any_flag(extra_args, {"--numa"}):
@@ -6367,7 +6395,7 @@ class LlamaCppBackend:
                         and (self._is_signal_crash(_crash_rc) or self._is_abort_exit(_crash_rc))
                         and self._is_sched_reserve_abort("\n".join(self._stdout_lines[-200:]))
                     ):
-                        LlamaCppBackend._record_sched_reserve_abort(binary, model_identifier)
+                        LlamaCppBackend._record_sched_reserve_abort(binary, _abort_memo_model)
                     self._kill_process()
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).

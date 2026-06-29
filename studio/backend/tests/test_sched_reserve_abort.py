@@ -207,36 +207,56 @@ def _load_model_src() -> str:
     return textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
 
 
-def test_load_model_fails_fast_on_memoed_abort():
-    """load_model must consult the memo and raise the actionable message before the
-    download/spawn, so a replayed /load doesn't re-read the weights."""
-    src = _load_model_src()
-    assert "_sched_reserve_aborts(binary, model_identifier)" in src
-    assert "_sched_reserve_abort_message()" in src
-    # The guard must precede the model download (the expensive reload it prevents).
-    fn = ast.parse(src).body[0]
-    guard_line = next(
-        node.lineno
-        for node in ast.walk(fn)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_sched_reserve_aborts"
-    )
-    download_line = next(
+def _call_line(fn, attr):
+    """First line where load_model calls method `attr`, or None."""
+    return next(
         (
             node.lineno
             for node in ast.walk(fn)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_download_gguf"
+            and node.func.attr == attr
         ),
         None,
     )
+
+
+def test_load_model_fails_fast_on_memoed_abort():
+    """load_model must consult the memo and raise before the download/spawn, so a
+    replayed /load doesn't re-read the weights."""
+    src = _load_model_src()
+    assert "_sched_reserve_aborts(binary, _abort_memo_model)" in src
+    assert "_sched_reserve_abort_message()" in src
+    fn = ast.parse(src).body[0]
+    guard_line = _call_line(fn, "_sched_reserve_aborts")
+    download_line = _call_line(fn, "_download_gguf")
     assert download_line is None or guard_line < download_line
+
+
+def test_failfast_guard_runs_before_killing_the_live_server():
+    """The memo guard must precede _kill_process so a known-bad reload does not tear
+    down a working server (PR review fix)."""
+    fn = ast.parse(_load_model_src()).body[0]
+    guard_line = _call_line(fn, "_sched_reserve_aborts")
+    kill_line = _call_line(fn, "_kill_process")
+    assert guard_line is not None and kill_line is not None
+    assert guard_line < kill_line
+
+
+def test_abort_memo_key_includes_variant():
+    """The memo key must include hf_variant / gguf_path so a failed quant does not
+    block a different quant of the same repo (PR review fix)."""
+    src = _load_model_src()
+    assert "_abort_memo_model" in src
+    assert "hf_variant" in src and "gguf_path" in src
+    # Sanity: distinct variants produce distinct keys for the same model.
+    def key(model, variant, gguf):
+        return "\x00".join([model or "", variant or "", gguf or ""])
+    assert key("repo", "UD-Q6_K", None) != key("repo", "UD-Q4_K_XL", None)
 
 
 def test_load_model_records_abort_on_crash():
     """On a startup crash matching the signature, load_model must record the memo."""
     src = _load_model_src()
-    assert "_record_sched_reserve_abort(binary, model_identifier)" in src
+    assert "_record_sched_reserve_abort(binary, _abort_memo_model)" in src
     assert "_is_sched_reserve_abort(" in src

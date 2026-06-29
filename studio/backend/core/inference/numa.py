@@ -110,9 +110,11 @@ def decide_interleave(
     topology: NumaTopology | None = None,
     has_numactl: bool | None = None,
 ) -> InterleaveDecision:
-    """Interleave only when CPU-only, multi-node, and the model exceeds the largest
+    """Interleave only when CPU-only, multi-node, and the footprint exceeds the largest
     node's free RAM but fits across all nodes; otherwise leave placement local.
-    model_size_bytes (GGUF weights) is the conservative proxy for the footprint."""
+    model_size_bytes should be the resident footprint (weights + KV), not weights
+    alone, so a model whose weights fit a node but whose footprint does not still
+    interleaves."""
     if not cpu_only:
         return InterleaveDecision(False, "not cpu-only; leaving NUMA placement to the OS")
     if not model_size_bytes or model_size_bytes <= 0:

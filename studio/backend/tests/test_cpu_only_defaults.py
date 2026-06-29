@@ -84,6 +84,14 @@ def test_gpu_path_still_emits_fit_on():
     assert 'cmd.extend(["--fit", "on"])' in src
 
 
+def test_cpu_only_emits_explicit_fit_off():
+    """--fit defaults to on in llama.cpp, so CPU-only must pass --fit off explicitly,
+    not just skip --fit on (PR review fix)."""
+    src = _load_model_src()
+    assert "elif _cpu_only:" in src
+    assert 'cmd.extend(["--fit", "off"])' in src
+
+
 # ---- Phase 3: CPU context cap + RAM preflight ------------------------------
 
 
@@ -115,3 +123,20 @@ def test_cpu_context_cap_reuses_fit_helper_against_ram():
 def test_cpu_ram_preflight_warns_when_weights_exceed_ram():
     src = _load_model_src()
     assert "CPU-only memory preflight" in src
+
+
+def test_cpu_context_floors_to_min_when_weights_exceed_budget():
+    """When weights alone exceed the RAM budget, _fit_context_to_vram returns the
+    ceiling unchanged; the cap must floor to the minimum instead (PR review fix)."""
+    src = _load_model_src()
+    assert "model_size >= _budget_b" in src
+    assert "_cpu_cap = 4096" in src
+
+
+def test_numa_decision_uses_footprint_not_just_weights():
+    """The NUMA interleave decision must use weights + KV, so a model whose weights fit
+    one node but whose footprint does not still interleaves (PR review fix)."""
+    src = _load_model_src()
+    assert "_numa_footprint" in src
+    assert "_estimate_kv_cache_bytes(" in src
+    assert "decide_interleave(_numa_footprint" in src
