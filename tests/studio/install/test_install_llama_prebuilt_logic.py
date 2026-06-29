@@ -3365,6 +3365,45 @@ def test_validate_quantize_routes_through_sandbox_plan(monkeypatch, tmp_path):
     assert quantized_path.exists()
 
 
+def test_validate_quantize_falls_back_without_linux_sandbox(monkeypatch, tmp_path):
+    quantize_path = tmp_path / "llama-quantize"
+    quantize_path.write_text("")
+    probe_path = tmp_path / "probe.gguf"
+    probe_path.write_text("")
+    quantized_path = tmp_path / "probe-q4.gguf"
+
+    def fake_build_plan(
+        command: list[str],
+        *,
+        binary_path: Path,
+        install_dir: Path,
+        purpose: str,
+        env: dict[str, str],
+        host = None,
+        runtime_line = None,
+    ) -> ValidationLaunchPlan:
+        return ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = "fallback",
+            purpose = purpose,
+            reason = "no sandbox",
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "build_validation_sandbox_plan", fake_build_plan)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "binary_env", lambda *_a, **_k: {"PATH": str(tmp_path)})
+
+    with pytest.raises(PrebuiltFallback, match = "no sandbox"):
+        validate_quantize(
+            quantize_path,
+            probe_path,
+            quantized_path,
+            tmp_path,
+            linux_host(),
+            runtime_line = None,
+        )
+
+
 def test_validate_server_routes_through_sandbox_plan(monkeypatch, tmp_path):
     server_path = tmp_path / "llama-server"
     server_path.write_text("")
