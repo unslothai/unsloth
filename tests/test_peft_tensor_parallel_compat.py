@@ -99,14 +99,19 @@ def test_missing_tensor_parallel_symbol_import_succeeds_after_fix(monkeypatch):
         }
     )
 
+    with pytest.raises(ImportError):
+        _fake_peft_shard_state_dict_for_tp()
+
     assert module.fix_peft_transformers_tensor_parallel_import_compat() is True
 
     import transformers.integrations.tensor_parallel as patched
-    from transformers.integrations.tensor_parallel import EmbeddingParallel
+    all_parallel_styles, _, embedding_parallel, _ = _fake_peft_shard_state_dict_for_tp()
 
     assert patched == sys.modules["transformers.integrations.tensor_parallel"]
-    assert EmbeddingParallel is getattr(patched, "EmbeddingParallel")
-    assert getattr(EmbeddingParallel, "__unsloth_stub__", False)
+    assert embedding_parallel is getattr(patched, "EmbeddingParallel")
+    assert getattr(embedding_parallel, "__unsloth_stub__", False)
+    with pytest.raises(NotImplementedError, match = "ALL_PARALLEL_STYLES"):
+        all_parallel_styles["rowwise"]
 
 
 def test_existing_embedding_parallel_is_not_replaced(monkeypatch):
