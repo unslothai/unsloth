@@ -62,20 +62,41 @@ def _install_fake_transformers_tensor_parallel(existing):
     return tp
 
 
+def _fake_peft_shard_state_dict_for_tp():
+    from transformers.integrations.tensor_parallel import (
+        ALL_PARALLEL_STYLES,
+        ColwiseParallel,
+        EmbeddingParallel,
+        RowwiseParallel,
+    )
+    return (
+        ALL_PARALLEL_STYLES,
+        ColwiseParallel,
+        EmbeddingParallel,
+        RowwiseParallel,
+    )
+
+
+def _install_fake_peft_tensor_parallel_import():
+    peft = _install_fake_module("peft", is_package = True)
+    utils = _install_fake_module("peft.utils", is_package = True)
+    setattr(peft, "utils", utils)
+
+    save_and_load = _install_fake_module("peft.utils.save_and_load")
+    save_and_load._maybe_shard_state_dict_for_tp = _fake_peft_shard_state_dict_for_tp
+    setattr(utils, "save_and_load", save_and_load)
+    return save_and_load
+
+
 def test_missing_tensor_parallel_symbol_import_succeeds_after_fix(monkeypatch):
     module = _load_import_fixes()
 
-    tp_mod = _install_fake_transformers_tensor_parallel(
+    _install_fake_peft_tensor_parallel_import()
+    _install_fake_transformers_tensor_parallel(
         {
             "ColwiseParallel": object,
             "RowwiseParallel": object,
         }
-    )
-
-    monkeypatch.setattr(
-        module,
-        "_extract_peft_tensor_parallel_imported_symbols",
-        lambda: ("ALL_PARALLEL_STYLES", "ColwiseParallel", "EmbeddingParallel", "RowwiseParallel"),
     )
 
     assert module.fix_peft_transformers_tensor_parallel_import_compat() is True
