@@ -3200,9 +3200,18 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
     profile = mac_run.command[2]
     assert "(deny default)" in profile
     assert '(import "bsd.sb")' in profile
-    assert "tmp\\\\install" in profile
-    assert "tmp\\\\models" in profile
-    assert "tmp\\\\out" in profile
+    assert any(
+        f'(subpath "{literal}")' in profile
+        for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/tmp/install")
+    )
+    assert any(
+        f'(subpath "{literal}")' in profile
+        for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/tmp/models")
+    )
+    assert any(
+        f'(subpath "{literal}")' in profile
+        for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/tmp/out")
+    )
     assert "localhost" not in profile
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
