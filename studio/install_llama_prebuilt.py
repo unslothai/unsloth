@@ -5921,6 +5921,11 @@ _CI_COMMAND_FILE_VARS = (
     "GITHUB_STEP_SUMMARY",
     "BASH_ENV",
 )
+# Python-first sandbox helpers must not inherit host import roots.
+_PYTHON_IMPORT_POINTER_VARS = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+)
 
 _isolated_runtime_home_dir: str | None = None
 
@@ -5946,7 +5951,11 @@ def scrubbed_environ() -> dict[str, str]:
     # Windows rebuilds the profile from %HOMEDRIVE%%HOMEPATH% (no-op pair on POSIX).
     drive, tail = os.path.splitdrive(runtime_home)
     env["HOMEDRIVE"], env["HOMEPATH"] = drive, tail or runtime_home
-    for pointer in (*_CREDENTIAL_FILE_POINTER_VARS, *_CI_COMMAND_FILE_VARS):
+    for pointer in (
+        *_CREDENTIAL_FILE_POINTER_VARS,
+        *_CI_COMMAND_FILE_VARS,
+        *_PYTHON_IMPORT_POINTER_VARS,
+    ):
         env.pop(pointer, None)
     return env
 
