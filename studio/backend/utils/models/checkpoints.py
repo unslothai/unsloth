@@ -254,3 +254,64 @@ def scan_checkpoints(
     except Exception as e:
         logger.error(f"Error scanning checkpoints: {e}")
         return []
+
+
+def _is_model_dir(path: Path) -> bool:
+    return (path / "config.json").exists() or (path / "adapter_config.json").exists()
+
+
+def has_preview_model(output_dir: Optional[str]) -> bool:
+    """True when ``output_dir`` holds a previewable root model (what ``/p/{run}``
+    resolves). A cancelled run keeps ``output_dir`` but saves no root adapter."""
+    if not output_dir:
+        return False
+    path = Path(output_dir)
+    return path.is_dir() and _is_model_dir(path)
+
+
+def preview_ref(output_dir: Optional[str]) -> Optional[str]:
+    """``/p`` ref (``run`` or ``run/checkpoint``) relative to outputs_root, or None.
+
+    Posix-joined so a nested output dir keeps a working link instead of collapsing
+    to its basename. None when not previewable, outside outputs_root, or deeper than
+    the two path segments the ``/p`` route matches (so the UI omits a dead link).
+    """
+    if not has_preview_model(output_dir):
+        return None
+    try:
+        rel = Path(output_dir).resolve().relative_to(outputs_root().resolve())
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if not parts or len(parts) > 2:
+        return None
+    return "/".join(parts)
+
+
+def resolve_preview_checkpoint(run: str, checkpoint: Optional[str] = None) -> Path:
+    relative = run if not checkpoint else f"{run}/{checkpoint}"
+    path = resolve_output_dir(relative)
+    if not path.is_dir() or not _is_model_dir(path):
+        raise FileNotFoundError(
+            f"No trained checkpoint at '{relative}'. Check the run/checkpoint name (see GET /p)."
+        )
+    return path
+
+
+def list_preview_targets(outputs_dir: str = str(outputs_root())) -> List[dict]:
+    targets: List[dict] = []
+    for run_name, checkpoints, metadata in scan_checkpoints(outputs_dir):
+        for display_name, path, loss in checkpoints:
+            is_latest = display_name == run_name
+            checkpoint = None if is_latest else Path(path).name
+            targets.append(
+                {
+                    "run": run_name,
+                    "checkpoint": checkpoint,
+                    "ref": run_name if is_latest else f"{run_name}/{checkpoint}",
+                    "is_latest": is_latest,
+                    "loss": loss,
+                    "base_model": metadata.get("base_model"),
+                }
+            )
+    return targets

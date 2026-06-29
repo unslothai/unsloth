@@ -119,6 +119,68 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     assert env.get("UV_OVERRIDE", "").endswith("overrides-darwin-arm64.txt")
 
 
+def test_install_requires_prebuilt_wheels(monkeypatch):
+    # A source distribution's PEP 517 build backend runs arbitrary code at install
+    # time, before the post-install stack check. The unattended self-heal must
+    # require pre-built wheels so a malicious resolver-selected sdist cannot execute
+    # during ordinary Studio startup. mlx/mlx-metal ship wheels only and
+    # mlx-lm/mlx-vlm publish py3-none-any wheels, so a healthy self-heal still works.
+    pytest.importorskip("transformers")
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(
+        mr.subprocess, "run", lambda cmd, **k: captured.update(cmd = cmd) or _Result()
+    )
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
+
+    assert mr.attempt_mlx_repair() is True
+    assert mr._ONLY_BINARY_ARG in captured["cmd"]
+
+
+def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
+    # The unattended self-heal must not hand resolver/build code the full Studio
+    # environment: secrets and package-source redirects are dropped, while the
+    # variables uv genuinely needs are forwarded.
+    monkeypatch.setenv("HF_TOKEN", "secret-hf")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret-aws")
+    monkeypatch.setenv("WANDB_API_KEY", "secret-wandb")
+    monkeypatch.setenv("UV_FIND_LINKS", "/tmp/evil")
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "file:///tmp/evil-index")
+    monkeypatch.setenv("UV_INDEX_URL", "https://evil.example/simple")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://evil.example/simple")
+    monkeypatch.setenv("UV_CACHE_DIR", "/tmp/evil-cache")
+    monkeypatch.setenv("XDG_CACHE_HOME", "/tmp/evil-xdg-cache")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HOME", "/home/studio")
+
+    env = mr._mlx_install_env()
+
+    # Secrets never reach a (potentially malicious) build/install hook.
+    for secret in ("HF_TOKEN", "AWS_SECRET_ACCESS_KEY", "WANDB_API_KEY"):
+        assert secret not in env
+    # A poisoned process env cannot repoint the install at a hostile source or
+    # an attacker-staged cache (cache poisoning / symlink writes).
+    for redirect in (
+        "UV_FIND_LINKS",
+        "UV_DEFAULT_INDEX",
+        "UV_INDEX_URL",
+        "PIP_INDEX_URL",
+        "UV_CACHE_DIR",
+        "XDG_CACHE_HOME",
+    ):
+        assert redirect not in env
+    # What uv genuinely needs is still forwarded.
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["HOME"] == "/home/studio"
+    # UV_OVERRIDE is set by us (not inherited), so a poisoned one is ignored.
+    assert env.get("UV_OVERRIDE", "").endswith("overrides-darwin-arm64.txt")
+
+
 def test_repair_rejects_inadequate_stack(monkeypatch):
     # A successful uv run that still leaves an old/missing mlx-vlm must NOT clear
     # chat-only: attempt_mlx_repair returns False so Train/Export stay disabled.
@@ -276,3 +338,22 @@ def test_attempts_only_once_per_process(monkeypatch):
     second = mr.start_mlx_autorepair_if_needed()
     assert first is True
     assert second is False  # guard prevents a second concurrent attempt
+
+
+def test_mlx_install_env_routes_uv_override_through_safe_path(monkeypatch):
+    # uv truncates UV_OVERRIDE at the first space (issue #6503).
+    seen = {}
+
+    def _spy(path):
+        seen["path"] = path
+        return "/space free/marker.txt".replace(" ", "_")
+
+    monkeypatch.setattr(mr, "uv_safe_path", _spy)
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+
+    env = mr._mlx_install_env()
+
+    # The override file ships in the repo, so the helper must have run.
+    assert "path" in seen
+    assert str(seen["path"]).endswith("overrides-darwin-arm64.txt")
+    assert env["UV_OVERRIDE"] == "/space_free/marker.txt"

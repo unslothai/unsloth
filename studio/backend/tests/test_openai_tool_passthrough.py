@@ -1349,6 +1349,7 @@ class TestGgufVisionToolRouting:
             model = "default",
             enable_tools = True,
             enabled_tools = ["web_search"],
+            stream = True,
             messages = [
                 {
                     "role": "user",
@@ -1408,6 +1409,7 @@ class TestGgufVisionToolRouting:
             enable_tools = True,
             enabled_tools = ["web_search"],
             parallel_tool_calls = False,
+            stream = True,
             messages = [{"role": "user", "content": "search once"}],
         )
 

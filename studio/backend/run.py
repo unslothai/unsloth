@@ -340,34 +340,19 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
                 flush = True,
             )
-            print(f"{dim}    Common causes:{reset}", flush = True)
             print(
-                f"{dim}      * AWS  -- the instance's Security Group doesn't "
-                f"allow inbound TCP {port}.{reset}",
+                f"{dim}    Usually a cloud firewall (AWS security group, "
+                f"GCP firewall / Azure NSG rule) or home router isn't "
+                f"allowing inbound TCP {port}.{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * GCP  -- no firewall rule allowing TCP {port} "
-                f"for the instance's network tag.{reset}",
+                f"{dim}    No firewall change needed -- SSH local-forward "
+                f"from your own computer:{reset}",
                 flush = True,
             )
             print(
-                f"{dim}      * Azure / other clouds -- equivalent NSG / "
-                f"firewall rule missing.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}      * Home -- your router isn't port-forwarding "
-                f"{port} to this machine.{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}    Workaround that needs no firewall changes -- "
-                f"SSH local-forward from your laptop:{reset}",
-                flush = True,
-            )
-            print(
-                f"{dim}        ssh -L {port}:localhost:{port} " f"<user>@{display_host}{reset}",
+                f"{dim}        ssh -L {port}:localhost:{port} <user>@{display_host}{reset}",
                 flush = True,
             )
             print(
@@ -622,7 +607,7 @@ def _graceful_shutdown(server = None):
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
     _remove_pid_file()
-    logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
+    logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 1. Shut down uvicorn (releases the listening socket).
     if server is not None:
@@ -948,6 +933,9 @@ def run_server(
     """
     global _server, _server_thread, _shutdown_event
 
+    boot_started = time.perf_counter()
+    logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
+
     # Reap every child if the parent dies abnormally (terminal close, Task
     # Manager kill, SIGKILL); must run before any child can spawn.
     from utils.process_lifetime import initialize_parent_lifetime
@@ -999,7 +987,14 @@ def run_server(
     from threading import Thread, Event
     import uvicorn
 
+    import_started = time.perf_counter()
+
     from main import app, setup_frontend, _IS_COLAB
+
+    logger.info(
+        "Imported FastAPI app in %.1fms",
+        (time.perf_counter() - import_started) * 1000,
+    )
     from utils.paths import ensure_studio_directories
 
     # Allow local stdio MCP servers on a loopback bind (the user's own machine),
@@ -1011,6 +1006,11 @@ def run_server(
 
     # Create all standard directories on startup.
     ensure_studio_directories()
+
+    logger.info(
+        "Ensured Studio directories in %.1fms",
+        (time.perf_counter() - boot_started) * 1000,
+    )
 
     # Auto-find a free port if the requested one is in use.
     if not _is_port_free(host, port):
@@ -1075,6 +1075,11 @@ def run_server(
     display_host = _resolve_external_ip() if host == "0.0.0.0" else host
     _install_uvicorn_startup_log_rewrite(host, display_host)
 
+    logger.info(
+        "run_server pre-uvicorn setup completed in %.1fms",
+        (time.perf_counter() - boot_started) * 1000,
+    )
+
     ready_event = Event()
     startup_failed = Event()
     startup_errors = []
@@ -1083,6 +1088,10 @@ def run_server(
         async def startup(self, *args, **kwargs):
             await super().startup(*args, **kwargs)
             if getattr(self, "started", False) and not self.should_exit:
+                logger.info(
+                    "Uvicorn startup hook completed in %.1fms",
+                    (time.perf_counter() - boot_started) * 1000,
+                )
                 ready_event.set()
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
@@ -1110,7 +1119,10 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
     if port and port > 0:
-        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        _direct_host = _resolve_external_ip() if host in ("0.0.0.0", "::") else host
+        # Bracket IPv6 literals so the URL is valid (http://[2405:...]:port).
+        if ":" in _direct_host and not _direct_host.startswith("["):
+            _direct_host = f"[{_direct_host}]"
         app.state.server_url = f"http://{_direct_host}:{port}"
     else:
         app.state.server_url = None
@@ -1162,6 +1174,11 @@ def run_server(
         _shutdown_event.set()
         raise
 
+    logger.info(
+        "run_server uvicorn ready after %.1fms",
+        (time.perf_counter() - boot_started) * 1000,
+    )
+
     _write_pid_file()
     import atexit
 
@@ -1210,6 +1227,43 @@ def run_server(
         )
         _graceful_shutdown(_server)
         sys.exit(1)
+
+    # Time-box a freshly-exposed web UI: if nobody changes the seeded admin
+    # password within the deadline (default 1h), shut down rather than leave an
+    # unsecured public instance running. No-op for loopback, --api-only, Colab,
+    # an already-changed password, or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0.
+    try:
+        from auth import storage as _auth_storage
+        from auth.bootstrap_timeout import (
+            arm_bootstrap_timeout,
+            bootstrap_timeout_seconds,
+            should_arm_bootstrap_timeout,
+        )
+
+        _bootstrap_timeout = bootstrap_timeout_seconds()
+        if should_arm_bootstrap_timeout(
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            frontend_served = bool(frontend_path) and not api_only,
+            is_colab = _IS_COLAB,
+            requires_change = _auth_storage.requires_password_change(
+                _auth_storage.DEFAULT_ADMIN_USERNAME
+            ),
+            timeout_seconds = _bootstrap_timeout,
+        ):
+            arm_bootstrap_timeout(
+                _auth_storage,
+                _trigger_shutdown,
+                timeout_seconds = _bootstrap_timeout,
+                logger = logger,
+            )
+            logger.info(
+                "Studio will shut down in %ds unless the default admin password is changed.",
+                _bootstrap_timeout,
+            )
+    except Exception as e:  # best-effort: never block startup on the timeout
+        logger.warning("Bootstrap timeout not armed: %s", e)
 
     if not silent:
         _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)

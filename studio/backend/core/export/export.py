@@ -10,6 +10,7 @@ import tempfile
 from loggers import get_logger
 import os
 import shutil
+import contextlib
 from pathlib import Path
 from typing import Optional, Tuple, List
 from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
@@ -35,6 +36,45 @@ if not _IS_MLX:
 logger = get_logger(__name__)
 
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
+
+
+def _hf_offline(timeout = 3):
+    """True if export should avoid the Hub: honors the HF offline env vars, else does one
+    cheap TCP reachability probe so a network-down load uses local files / the HF cache
+    instead of hanging on connection timeouts. Proxy-aware (probes the proxy egress when
+    one is configured); disable the probe with UNSLOTH_OFFLINE_PROBE=0."""
+    _offline = {"1", "true", "yes", "on"}
+    if (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
+    ):
+        return True
+    if os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return False  # probe disabled -> assume online; loads still pass local_files_only on env
+
+    # Shared bounded, proxy-aware probe (also used by the export worker before version activation).
+    from utils.transformers_version import hf_endpoint_unreachable
+
+    if hf_endpoint_unreachable(timeout):
+        logger.warning("Hugging Face endpoint unreachable; loading checkpoint in offline mode")
+        return True
+    return False
+
+
+# Reuse Unsloth's lock-guarded forced-offline context; no-op fallback if it moves.
+try:
+    from unsloth.models.loader_utils import _force_hf_offline
+except Exception:
+    import contextlib as _contextlib
+
+    @_contextlib.contextmanager
+    def _force_hf_offline():
+        yield
+
+
+def _offline_window_if(local_files_only):
+    """Forced-offline window when offline was detected, else a no-op context."""
+    return _force_hf_offline() if local_files_only else contextlib.nullcontext()
 
 
 def _is_wsl():
@@ -175,10 +215,19 @@ class ExportBackend:
 
             model_id = base_model or checkpoint_path
 
-            # Token the type-detection probes too, else a gated multimodal base
-            # 404s here and falls through to the text loader.
-            self._audio_type = detect_audio_type(model_id, hf_token = token)
-            self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token = token)
+            # Skip the Hub when offline so a no-internet export uses the local cache.
+            local_files_only = _hf_offline()
+
+            # Run the type-detection probes in the forced-offline window (else a gated
+            # base 404s); it covers is_vision_model's Hub reads + the transformers-5
+            # subprocess, and local_files_only makes detect_audio_type's requests.get skip.
+            with _offline_window_if(local_files_only):
+                self._audio_type = detect_audio_type(
+                    model_id, hf_token = token, local_files_only = local_files_only
+                )
+                self.is_vision = not self._audio_type and is_vision_model(
+                    model_id, hf_token = token, local_files_only = local_files_only
+                )
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -193,6 +242,7 @@ class ExportBackend:
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self._audio_type == "whisper":
@@ -207,6 +257,7 @@ class ExportBackend:
                     auto_model = WhisperForConditionalGeneration,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self._audio_type == "snac":
@@ -218,6 +269,7 @@ class ExportBackend:
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self._audio_type == "bicodec":
@@ -230,6 +282,7 @@ class ExportBackend:
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self._audio_type == "dac":
@@ -241,6 +294,7 @@ class ExportBackend:
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self.is_vision:
@@ -252,6 +306,7 @@ class ExportBackend:
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
                 tokenizer = processor  # vision: processor acts as tokenizer
 
@@ -264,6 +319,7 @@ class ExportBackend:
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             if _IS_MLX:

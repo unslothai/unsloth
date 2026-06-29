@@ -8,7 +8,7 @@ huggingface-hub==0.36.2
 datasets==4.3.0
 pyarrow==23.0.1
 
-# FastMCP/OpenEnv compat
+# FastMCP compat
 fastmcp>=3.0.2
 mcp>=1.24,<2
 websockets>=15.0.1
