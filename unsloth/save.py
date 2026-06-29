@@ -153,7 +153,8 @@ def _is_cmake_only_llama_cpp(llama_cpp_dir: str = "llama.cpp") -> bool:
     """
     True if llama.cpp's Makefile is the post-CMake-migration deprecation stub,
     so `make` cannot build it. A genuinely missing/empty checkout returns False
-    so the caller's make path fails loudly instead of silently entering CMake.
+    so it isn't treated as CMake-only: the caller then probes make and fails
+    loudly on a real error rather than silently assuming a CMake build.
     """
     makefile_path = os.path.join(llama_cpp_dir, "Makefile")
     if not os.path.exists(makefile_path):
@@ -161,10 +162,10 @@ def _is_cmake_only_llama_cpp(llama_cpp_dir: str = "llama.cpp") -> bool:
         return os.path.exists(os.path.join(llama_cpp_dir, "CMakeLists.txt"))
     try:
         with open(makefile_path, "r", encoding = "utf-8", errors = "ignore") as f:
-            content = f.read(4096)
-            if "cmake" in content.lower() and "deprecated" in content.lower():
+            content = f.read(4096).lower()
+            if "cmake" in content and "deprecated" in content:
                 return True
-            if "Build system changed" in content:
+            if "build system changed" in content:
                 return True
     except (IOError, OSError):
         pass
