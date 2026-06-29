@@ -97,6 +97,14 @@ def test_repo_candidates_appends_gguf():
     assert "unsloth/Llama-3.1-8B-Instruct-GGUF" in repos
 
 
+def test_repo_candidates_maps_official_base_to_unsloth_org():
+    # The upstream imatrix only lives in unsloth/<base>-GGUF, so an official base id must map onto
+    # the unsloth org rather than deriving a non-existent meta-llama/...-GGUF repo.
+    repos = S._gguf_repo_candidates(_Model("meta-llama/Llama-3.1-8B-Instruct"))
+    assert "unsloth/Llama-3.1-8B-Instruct-GGUF" in repos
+    assert not any(r.startswith("meta-llama/") for r in repos)
+
+
 def test_repo_candidates_keeps_existing_gguf_suffix():
     repos = S._gguf_repo_candidates(_Model("unsloth/Qwen3.6-35B-A3B-GGUF"))
     assert repos == ["unsloth/Qwen3.6-35B-A3B-GGUF"]
@@ -223,6 +231,8 @@ def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
 
     monkeypatch.setattr(L.subprocess, "run", _fake_run)
     imat = str(tmp_path / "imatrix it.dat")  # space in path -> must be shell-quoted
+    with open(imat, "wb") as f:  # quantize_gguf validates the imatrix exists before running
+        f.write(b"\x00")
     L.quantize_gguf(
         input_gguf = str(tmp_path / "in.gguf"),
         output_gguf = str(tmp_path / "out.gguf"),

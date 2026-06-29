@@ -72,11 +72,19 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
         try:
             ds = load_dataset(value, split = f"train[:{num_samples}]")
         except (ValueError, KeyError):
-            ds = load_dataset(value)
-            if isinstance(ds, DatasetDict):
-                ds = ds[next(iter(ds.keys()))]
-            if num_samples and len(ds) > num_samples:
-                ds = ds.select(range(num_samples))
+            from datasets import get_dataset_split_names
+            try:
+                # Resolve the first split name so only num_samples rows are fetched, instead of
+                # downloading/materializing the whole dataset just to take a small slice.
+                split = get_dataset_split_names(value)[0]
+                ds = load_dataset(value, split = f"{split}[:{num_samples}]")
+            except Exception:
+                # Last resort: materialize, then subselect (preserves the original behavior).
+                ds = load_dataset(value)
+                if isinstance(ds, DatasetDict):
+                    ds = ds[next(iter(ds.keys()))]
+                if num_samples and len(ds) > num_samples:
+                    ds = ds.select(range(num_samples))
         ds = ds.shuffle(seed = 42)
     elif kind == "disk":
         ds = load_from_disk(value)

@@ -2590,6 +2590,11 @@ def unsloth_save_pretrained_gguf(
     else:
         fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
+    # Resolve the importance matrix (download upstream / validate path / rename *.gguf_file) up
+    # front, so a bad path or an unavailable upstream imatrix fails before the expensive 16-bit
+    # merge, and a failed auto-resolution never reaches the IQ-quant gate.
+    imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
+
     # Step 4: Save/merge model to 16-bit format
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
 
@@ -2693,10 +2698,6 @@ def unsloth_save_pretrained_gguf(
         fix_sentencepiece_gguf(save_directory)
     except Exception as e:
         logger.warning(f"Unsloth: fix_sentencepiece_gguf skipped ({type(e).__name__}): {e}")
-
-    # Resolve the importance matrix once (download upstream / validate path / rename *.gguf_file)
-    # before quantization, so a failed auto-resolution never reaches the IQ-quant gate.
-    imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
 
     try:
         all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
@@ -3175,9 +3176,11 @@ def _gguf_repo_candidates(model):
             name = get_model_name(name, load_in_4bit = False)
         except Exception:
             pass
-        if not name or "/" not in name:
+        if not name:
             continue
-        repo = name if name.endswith("-GGUF") else f"{name}-GGUF"
+        # The upstream imatrix lives in unsloth/<base>-GGUF, so map any org (e.g. meta-llama/...)
+        # onto the unsloth org; keep an already-formed -GGUF id as-is.
+        repo = name if name.endswith("-GGUF") else f"unsloth/{name.split('/')[-1]}-GGUF"
         if repo not in candidates:
             candidates.append(repo)
     return candidates
