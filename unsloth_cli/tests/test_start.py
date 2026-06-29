@@ -1106,6 +1106,17 @@ def test_merge_wslenv_dedups_on_base_name():
     assert "FOO" in parts and "BAR/p" in parts
 
 
+def test_merge_wslenv_upgrades_existing_unflagged_entry():
+    # A user's pre-existing bare "HOME" must be upgraded to "HOME/p" (not left bare or
+    # duplicated), or the Windows shim gets the path without WSL translation.
+    merged = start._merge_wslenv("HOME:FOO", ("HOME/p", "CODEX_HOME/p"))
+    parts = merged.split(":")
+    assert "HOME/p" in parts and "HOME" not in parts  # upgraded in place
+    assert parts.count("HOME/p") == 1
+    assert "FOO" in parts  # untouched user var preserved
+    assert "CODEX_HOME/p" in parts
+
+
 def test_powershell_quote_single_quotes_json():
     # Bare flags/paths pass through; JSON payloads get single-quoted so PowerShell
     # keeps the embedded double quotes literal (list2cmdline's backslashes would not).

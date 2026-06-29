@@ -519,14 +519,20 @@ def _wsl_bridge_names(env: dict, unset_env: tuple) -> tuple:
 
 
 def _merge_wslenv(current: str, names: tuple) -> str:
-    entries = [entry for entry in current.split(":") if entry]
-    existing = {entry.split("/", 1)[0] for entry in entries}
-    for name in names:
-        base = name.split("/", 1)[0]  # dedup on the bare name, ignoring any /p flag
-        if base not in existing:
-            entries.append(name)
-            existing.add(base)
-    return ":".join(entries)
+    # Index WSLENV entries by bare var name, preserving first-seen order. The vars we
+    # bridge are applied last so our entry wins: a user's pre-existing unflagged "HOME"
+    # is upgraded to "HOME/p" (rather than left as-is), since WSLENV ignores a duplicate
+    # name and a bare entry would leave the path untranslated for a Windows shim.
+    ordered = []
+    by_name = {}
+    for entry in (*current.split(":"), *names):
+        if not entry:
+            continue
+        base = entry.split("/", 1)[0]
+        if base not in by_name:
+            ordered.append(base)
+        by_name[base] = entry
+    return ":".join(by_name[base] for base in ordered)
 
 
 def _powershell_quote(arg: str) -> str:
