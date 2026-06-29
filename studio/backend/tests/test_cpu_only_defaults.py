@@ -209,7 +209,9 @@ def test_numa_decision_uses_footprint_not_just_weights():
     # Footprint = fitted weights (incl. compute buffer) + KV + MTP reserve.
     assert "_resident = model_size_fit or model_size" in src
     # MTP is recomputed at the post-cap context, not the stale pre-cap reserve.
-    assert _nows("_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0") in _nows(src)
+    assert _nows("_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0") in _nows(
+        src
+    )
     # KV must be sized for the launched --parallel slots, not the n_parallel=1 default.
     assert "effective_ctx, cache_type_kv, n_parallel = n_parallel" in src
 
