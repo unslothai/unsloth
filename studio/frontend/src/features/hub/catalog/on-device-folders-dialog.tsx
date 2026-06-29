@@ -344,7 +344,6 @@ export function OnDeviceFoldersDialog({
                             <TooltipTrigger asChild={true}>
                               <p
                                 className="block w-full truncate font-mono text-[10.5px] text-muted-foreground"
-                                title={folder.path}
                               >
                                 {folder.path}
                               </p>
