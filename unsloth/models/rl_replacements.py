@@ -1362,17 +1362,26 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # the SAME logprobs [total_rows, W] (left-packed completion layout). Per-token logps use
             # the same float32 reduction as the padded path, so old/ref logps are bit-for-bit
             # identical. Big mem/time win on long, variable-length completions. Correctness is
-            # self-verified ONCE against the padded path (self._unsloth_seq_packing_nograd_ok): if a backend
-            # silently ignores packed_seq_lengths (flat batch run with a normal causal mask -> samples
-            # leak across boundaries) the packed logps will not match and packing is disabled.
+            # self-verified ONCE against the padded path (unwrapped_model._unsloth_seq_packing_nograd_ok):
+            # if a backend silently ignores packed_seq_lengths (flat batch run with a normal causal mask
+            # -> samples leak across boundaries) the packed logps will not match and packing is disabled.
             logprobs = None
             _pk_result = None
+            # Verdict is cached per unwrapped model and only set after a real comparison; token_type_ids /
+            # mm_token_type_ids force the padded path (those VLM mask inputs are not packed here).
+            _pk_verdict = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
             if (
                 pixel_values is None
                 and os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "0") == "1"
-                and getattr(self, "_unsloth_seq_packing_nograd_ok", None) is not False
+                and token_type_ids is None
+                and mm_token_type_ids is None
+                and _pk_verdict is not False
             ):
                 try:
+                    # xformers provides the block-diagonal varlen mask; without it the packed attention
+                    # falls back to a dense O(T^2) SDPA mask that can OOM on the whole flattened batch.
+                    import xformers  # noqa: F401
+
                     _pk_pad = self.processing_class.pad_token_id
                     _pk_keep = input_ids != _pk_pad
                     _pk_len = _pk_keep.sum(dim = 1)
@@ -1438,13 +1447,19 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 .view(total_rows, _pk_L)[:, -_pk_W:]
                             )
                 except Exception as _pk_err:
+                    # Disable packing for this model on any failure (no xformers varlen backend, an OOM on
+                    # an oversized flattened batch the padded loop would chunk, or an unsupported forward)
+                    # so we use the chunked padded loop and do not retry every step.
+                    if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
+                        torch.cuda.empty_cache()
+                    unwrapped_model._unsloth_seq_packing_nograd_ok = False
                     if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
                         print(
-                            f"[Unsloth] GRPO sequence-packing (no-grad) fell back to padded path: {_pk_err!r}",
+                            f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
                             flush = True,
                         )
                     _pk_result = None
-            if _pk_result is not None and getattr(self, "_unsloth_seq_packing_nograd_ok", False):
+            if _pk_result is not None and getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", False):
                 logprobs = _pk_result  # already verified equal to padded -> skip the loop
                 zipped_inputs = []
 
@@ -1538,7 +1553,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     # ground truth on a real (>=2 sequence) batch; cross-sample contamination shows
                     # up as a large mismatch here and disables packing instead of corrupting logps.
                     if _pk_result is not None and not hasattr(
-                        self, "_unsloth_seq_packing_nograd_ok"
+                        unwrapped_model, "_unsloth_seq_packing_nograd_ok"
                     ):
                         # Require >=2 rows that actually have completion tokens, so cross-sample
                         # contamination would manifest. An all-pad / fully tool-masked window makes the
@@ -1553,7 +1568,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             _pk_ok = bool(
                                 float(((_pk_result - logprobs).abs() * _pk_cm).max()) < 5e-1
                             )
-                            self._unsloth_seq_packing_nograd_ok = _pk_ok
+                            unwrapped_model._unsloth_seq_packing_nograd_ok = _pk_ok
                             if _pk_ok:
                                 logprobs = _pk_result
                             elif os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
