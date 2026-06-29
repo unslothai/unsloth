@@ -158,6 +158,7 @@ def _st_unload() -> None:
     if not had_model:
         return
     import gc
+
     gc.collect()  # drop the model now so the freed VRAM is visible to callers
     try:
         import torch
