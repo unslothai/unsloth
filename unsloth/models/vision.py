@@ -805,16 +805,13 @@ class FastBaseModel:
         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
         get_statistics(kwargs.get("local_files_only", False))
 
-        # vLLM owns the weight download only when it is actually available; if
-        # fast_inference was requested but vLLM is missing, the load falls through to the
-        # in-process HF path (fast_inference_setup flips the flag to False below), so the
-        # weights must still be warmed here rather than left to an unprotected in-process
-        # Xet download. Resolve availability now so the prefetch skip reflects the real path.
+        # vLLM owns the weight download only when actually available; if fast_inference was requested
+        # but vLLM is missing, the load falls through to the in-process HF path (fast_inference_setup
+        # flips the flag below), so the weights must still be warmed here. Resolve availability now.
         _vllm_owns_weights = fast_inference and is_vLLM_available()
 
-        # Pre-download the repo in a killable subprocess that falls back from Xet
-        # to HTTP on a no-progress stall, so the in-process load below is a cache
-        # hit and cannot hang on a stalled Xet transfer.
+        # Pre-download the repo in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
+        # in-process load below is a cache hit and cannot hang.
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -827,32 +824,21 @@ class FastBaseModel:
             use_safetensors = kwargs.get("use_safetensors"),
             from_tf = kwargs.get("from_tf", False),
             from_flax = kwargs.get("from_flax", False),
-            # A bare from_pretrained(model_name) reads only the ROOT weight files, so skip
-            # weights nested in subdirs (fp16/, experimental/) the load never reads. Ignored
-            # when a subfolder is set (that branch narrows the warm to the subfolder instead).
+            # Bare load reads only ROOT weights; skip subdir weights (fp16/, experimental/). Ignored
+            # when a subfolder is set.
             weights_at_root = True,
-            # A variant load (variant="fp16") reads model.fp16.* -- forward it so the warm's
-            # format auto-pick keeps the variant .bin instead of dropping it for a default
-            # safetensors the variant load never reads.
-            variant = kwargs.get("variant"),
-            # A gguf_file load reads exactly that GGUF; forward it so the warm fetches it instead of
-            # dropping every *.gguf (the static ignore list otherwise excludes it).
-            gguf_file = kwargs.get("gguf_file"),
+            variant = kwargs.get("variant"),       # forward so the warm keeps the variant .bin
+            gguf_file = kwargs.get("gguf_file"),   # forward so the warm fetches the GGUF (else ignored)
         )
-        # The killable child already did the forced download; clear the flag so the
-        # in-process load reuses that warm cache instead of re-forcing over Xet.
+        # Child already did the forced download; clear the flag so the load reuses the warm cache.
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # The tokenizer / processor loads in-process below (auto_processor / AutoTokenizer), so a
-        # stalled Xet download of its tokenizer / processor / config files could still hang
-        # from_pretrained. Warm a SEPARATE tokenizer repo (explicit tokenizer_name) through the
-        # killable subprocess. When the tokenizer comes from model_name itself, it is already
-        # covered: the base prefetch above warmed model_name, and on the vLLM path
-        # (_vllm_owns_weights) vLLM downloads its model repo -- including the tokenizer -- before
-        # the in-process tokenizer load. We must NOT warm model_name here on the vLLM path: that
-        # warm runs before fast_inference_setup may rewrite a "*-unsloth-bnb-4bit" name to the
-        # "*-bnb-4bit" repo the load actually reads, so it would warm the wrong (pre-remap) repo.
+        # The tokenizer / processor loads in-process below, so warm a SEPARATE tokenizer repo (explicit
+        # tokenizer_name) through the killable subprocess. When the tokenizer is model_name itself it is
+        # already covered (base prefetch, or vLLM's own download on the vLLM path). Do NOT warm model_name
+        # here on the vLLM path: this runs before fast_inference_setup may remap "*-unsloth-bnb-4bit" ->
+        # "*-bnb-4bit", so it would warm the wrong repo.
         _tokenizer_repo = (
             tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
         )

@@ -2420,14 +2420,11 @@ class FastLlamaModel:
 
         preferred_attn_impl = resolve_attention_implementation(model_function, model_config)
 
-        # Pre-download the repo in a killable subprocess that falls back from Xet to HTTP on a
-        # no-progress stall, so the in-process weight load below is a cache hit and cannot hang
-        # on a stalled Xet transfer. This runs AFTER the AutoConfig load + model-class check
-        # above, so an unsupported / incompatible repo fails on its small config fetch without
-        # first pulling multi-GB of weights. revision is intentionally not forwarded: the
-        # base-model load below resolves model_name (possibly a remapped prequantized repo,
-        # where the caller's revision does not exist) on its default branch without a revision,
-        # so warming a specific revision would predownload a snapshot the load never reads.
+        # Pre-download the repo in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
+        # in-process weight load below is a cache hit and cannot hang. Runs AFTER the AutoConfig +
+        # model-class check, so an unsupported repo fails on its small config fetch without pulling
+        # weights. revision is NOT forwarded: the load resolves model_name (possibly a remapped
+        # prequantized repo, where the caller's revision does not exist) on its default branch.
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -2439,29 +2436,19 @@ class FastLlamaModel:
             use_safetensors = kwargs.get("use_safetensors"),
             from_tf = kwargs.get("from_tf", False),
             from_flax = kwargs.get("from_flax", False),
-            # A bare from_pretrained(model_name) reads only the ROOT weight files, so skip
-            # weights nested in subdirs (fp16/, experimental/) the load never reads. Ignored
-            # when a subfolder is set (that branch narrows the warm to the subfolder instead).
+            # Bare load reads only ROOT weights; skip subdir weights (fp16/, experimental/). Ignored
+            # when a subfolder is set.
             weights_at_root = True,
-            # A variant load (variant="fp16") reads model.fp16.* -- forward it so the warm's
-            # format auto-pick keeps the variant .bin instead of dropping it for a default
-            # safetensors the variant load never reads.
-            variant = kwargs.get("variant"),
-            # A gguf_file load reads exactly that GGUF; forward it so the warm fetches it instead of
-            # dropping every *.gguf (the static ignore list otherwise excludes it).
-            gguf_file = kwargs.get("gguf_file"),
+            variant = kwargs.get("variant"),       # forward so the warm keeps the variant .bin
+            gguf_file = kwargs.get("gguf_file"),   # forward so the warm fetches the GGUF (else ignored)
         )
-        # The killable child already did the forced download; clear the flag so the
-        # in-process load reuses that warm cache instead of re-forcing over Xet.
+        # Child already did the forced download; clear the flag so the load reuses the warm cache.
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # The tokenizer loads in-process below (load_correct_tokenizer) regardless of the
-        # vLLM weight path, so a stalled Xet download of its tokenizer / config files could
-        # still hang from_pretrained. Warm that repo's tokenizer files through the same
-        # killable subprocess. The base prefetch above already covered them when it warmed
-        # model_name itself, so only warm here when the tokenizer comes from a different repo,
-        # or when fast_inference skipped the base warm entirely.
+        # The tokenizer loads in-process below regardless of the vLLM weight path, so warm its files
+        # through the same killable subprocess. The base prefetch already covered model_name, so only
+        # warm here when the tokenizer is a different repo, or fast_inference skipped the base warm.
         _tokenizer_repo = (
             tokenizer_name if (isinstance(tokenizer_name, str) and tokenizer_name) else model_name
         )
@@ -2731,10 +2718,8 @@ class FastLlamaModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        # When the caller set a custom cache_dir, the prefetch warmed it (incl.
-        # tokenizer files); route the tokenizer load there too so it reuses that
-        # warm cache instead of doing its own in-process Hub/Xet download. With no
-        # custom cache_dir, keep load_correct_tokenizer's own default.
+        # With a custom cache_dir the prefetch warmed it (incl. tokenizer files); route the tokenizer
+        # load there too so it reuses that cache instead of its own in-process Hub/Xet download.
         _tokenizer_cache_kwargs = {}
         if kwargs.get("cache_dir") is not None:
             _tokenizer_cache_kwargs["cache_dir"] = kwargs["cache_dir"]

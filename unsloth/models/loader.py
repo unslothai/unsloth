@@ -866,39 +866,28 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            # Warm the adapter repo first: PeftModel.from_pretrained downloads it
-            # in-process and can hang on a stalled Xet transfer like the base model.
+            # Warm the adapter repo first: PeftModel downloads it in-process and can hang on Xet.
             _prefetched = maybe_prefetch_hf_snapshot(
                 old_model_name,
                 token = token,
                 revision = revision,
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = local_files_only,
-                # The adapter is loaded in-process by PeftModel.from_pretrained below,
-                # not by vLLM, so warm it even under fast_inference (vLLM only owns the
-                # base model's download path; the adapter would otherwise still hit an
-                # unprotected in-process Xet transfer).
+                # The adapter loads in-process via PeftModel, not vLLM, so warm it even under
+                # fast_inference (vLLM owns only the base model's download path).
                 fast_inference = False,
                 force_download = kwargs.get("force_download", False),
-                # Do not inherit the base model's use_safetensors: it selects the BASE
-                # weight format, but the adapter has its own (usually
-                # adapter_model.safetensors). Passing use_safetensors=False here would skip
-                # a safetensors-only adapter's weights, leaving PeftModel.from_pretrained to
-                # fetch them in-process. Leave it as auto so the adapter's format is warmed.
-                # Restrict the warm to the adapter's own files (adapter_config.json +
-                # adapter_model.*) plus the root tokenizer / config: a repo that also publishes
-                # merged full-model weights must not pull them just to load a small adapter.
+                # Do NOT inherit the base use_safetensors (it selects the BASE format): the adapter has
+                # its own (usually adapter_model.safetensors), and use_safetensors=False would skip a
+                # safetensors-only adapter. Leave it auto. adapter_only restricts the warm to the
+                # adapter's own files + root aux, so a repo also publishing merged weights does not pull them.
                 adapter_only = True,
             )
-            # The killable child already did the forced download; clear the flag so
-            # the in-process load reuses that warm cache instead of re-forcing.
+            # Child already did the forced download; clear the flag so the load reuses the warm cache.
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
-            # Read the adapter from the same place the prefetch warmed: forward cache_dir
-            # when set (local_files_only is already passed explicitly below). subfolder is
-            # NOT forwarded -- it targets the base checkpoint, and an adapter typically
-            # lives at the repo root, so forwarding it would make PeftModel look under
-            # old_model_name/<subfolder> and miss a root adapter.
+            # Read the adapter from where the prefetch warmed it: forward cache_dir when set. subfolder
+            # is NOT forwarded (it targets the base checkpoint; an adapter usually lives at the root).
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
@@ -1828,39 +1817,28 @@ class FastModel(FastBaseModel):
 
                 _LoraModel._create_and_replace = _patched_car
 
-            # Warm the adapter repo first: PeftModel.from_pretrained downloads it
-            # in-process and can hang on a stalled Xet transfer like the base model.
+            # Warm the adapter repo first: PeftModel downloads it in-process and can hang on Xet.
             _prefetched = maybe_prefetch_hf_snapshot(
                 old_model_name,
                 token = token,
                 revision = revision,
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = local_files_only,
-                # The adapter is loaded in-process by PeftModel.from_pretrained below,
-                # not by vLLM, so warm it even under fast_inference (vLLM only owns the
-                # base model's download path; the adapter would otherwise still hit an
-                # unprotected in-process Xet transfer).
+                # The adapter loads in-process via PeftModel, not vLLM, so warm it even under
+                # fast_inference (vLLM owns only the base model's download path).
                 fast_inference = False,
                 force_download = kwargs.get("force_download", False),
-                # Do not inherit the base model's use_safetensors: it selects the BASE
-                # weight format, but the adapter has its own (usually
-                # adapter_model.safetensors). Passing use_safetensors=False here would skip
-                # a safetensors-only adapter's weights, leaving PeftModel.from_pretrained to
-                # fetch them in-process. Leave it as auto so the adapter's format is warmed.
-                # Restrict the warm to the adapter's own files (adapter_config.json +
-                # adapter_model.*) plus the root tokenizer / config: a repo that also publishes
-                # merged full-model weights must not pull them just to load a small adapter.
+                # Do NOT inherit the base use_safetensors (it selects the BASE format): the adapter has
+                # its own (usually adapter_model.safetensors), and use_safetensors=False would skip a
+                # safetensors-only adapter. Leave it auto. adapter_only restricts the warm to the
+                # adapter's own files + root aux, so a repo also publishing merged weights does not pull them.
                 adapter_only = True,
             )
-            # The killable child already did the forced download; clear the flag so
-            # the in-process load reuses that warm cache instead of re-forcing.
+            # Child already did the forced download; clear the flag so the load reuses the warm cache.
             if _prefetched and kwargs.get("force_download", False):
                 kwargs["force_download"] = False
-            # Read the adapter from the same place the prefetch warmed: forward cache_dir
-            # when set (local_files_only is already passed explicitly below). subfolder is
-            # NOT forwarded -- it targets the base checkpoint, and an adapter typically
-            # lives at the repo root, so forwarding it would make PeftModel look under
-            # old_model_name/<subfolder> and miss a root adapter.
+            # Read the adapter from where the prefetch warmed it: forward cache_dir when set. subfolder
+            # is NOT forwarded (it targets the base checkpoint; an adapter usually lives at the root).
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]

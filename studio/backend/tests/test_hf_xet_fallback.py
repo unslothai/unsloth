@@ -23,9 +23,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub heavy/unavailable deps before importing the module under test. Use the
-# real structlog when present; a bare stub left in sys.modules would break later
-# modules that log at import time.
+# Stub heavy/unavailable deps before importing the module under test. Use the real structlog when
+# present; a bare stub would break later modules that log at import time.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -40,10 +39,8 @@ try:
     import unsloth_zoo.hf_xet_fallback as _shared_mod
     shared = _shared_mod
 except Exception:  # noqa: BLE001
-    # The degraded-path test must still collect when unsloth_zoo lacks the helper,
-    # is not installed at all, fails to import because torch is absent (ImportError),
-    # or fails because the host has no GPU (NotImplementedError from its device
-    # init) -- the same failure cases the shim itself degrades for.
+    # Still collect the degraded-path test when unsloth_zoo is missing / too old / torch-less /
+    # GPU-less -- the same failure cases the shim itself degrades for.
     shared = None
 
 import utils.hf_xet_fallback as xf
@@ -276,9 +273,7 @@ def test_degrades_when_shared_helper_import_raises_importerror():
             target = None,
         ):
             if name == "unsloth_zoo.hf_xet_fallback":
-                # Mirror unsloth_zoo/__init__ raising on a torch-less install: a
-                # plain ImportError with no .name, surfaced while importing the
-                # submodule's parent package.
+                # Mirror unsloth_zoo/__init__ on a torch-less install: a plain ImportError with no .name.
                 raise ImportError("Unsloth: Pytorch is not installed.")
             return None
 
@@ -305,11 +300,9 @@ def test_degrades_when_shared_helper_import_raises_importerror():
 
 
 def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
-    """unsloth_zoo's package __init__ runs torch/GPU device detection that raises
-    NotImplementedError on a GPU-less host (CPU GGUF Studio). The shim must retry
-    the import under UNSLOTH_ZOO_DISABLE_GPU_INIT=1 (its light path) -- which is
-    what lets the real helper load on CPU-only hosts -- then restore the env. If
-    even the retry fails, it degrades instead of crashing the server."""
+    """unsloth_zoo's __init__ runs GPU detection that raises NotImplementedError on a GPU-less host
+    (CPU GGUF Studio). The shim must retry the import under UNSLOTH_ZOO_DISABLE_GPU_INIT=1 (its light
+    path), then restore the env; if even the retry fails, it degrades instead of crashing."""
     import importlib
     import os
 
@@ -323,14 +316,11 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
             path = None,
             target = None,
         ):
-            # The real crash is in unsloth_zoo's package __init__ (device
-            # detection), i.e. the PARENT import fails before the submodule is
-            # reached -- so intercept "unsloth_zoo" itself. This works whether or
-            # not unsloth_zoo is installed (the finder is first on meta_path).
+            # The crash is in unsloth_zoo's __init__ (the PARENT import fails before the submodule), so
+            # intercept "unsloth_zoo" itself (works whether or not it is installed; finder is first).
             if name == "unsloth_zoo":
-                # Record the env each import attempt sees; raise the no-GPU error
-                # both times so the shim ends up degrading (the recovery-succeeds
-                # path is covered by real unsloth_zoo on a CPU host in CI).
+                # Record the env each attempt sees; raise the no-GPU error both times so the shim
+                # degrades (the recovery-succeeds path is covered by real unsloth_zoo on a CPU host).
                 seen_env.append(os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT"))
                 raise NotImplementedError("Unsloth cannot find any torch accelerator")
             return None

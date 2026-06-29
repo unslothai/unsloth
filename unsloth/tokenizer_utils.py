@@ -564,12 +564,10 @@ def _load_correct_tokenizer(
         # Let's utilize them
         cache_dir = os.path.join(KAGGLE_TMP, cache_dir)
     elif cache_dir == "huggingface_tokenizers_cache":
-        # The default tokenizer-cache name is only meaningful on Colab/Kaggle; on a
-        # normal host fall back to the HF default cache.
+        # This default name is only meaningful on Colab/Kaggle; elsewhere use the HF default cache.
         cache_dir = None
-    # else: an explicit caller-supplied cache_dir is preserved, so the tokenizer loads
-    # from the same directory the snapshot prefetch warmed instead of probing the default
-    # cache and risking an unprotected in-process Hub/Xet transfer on a miss.
+    # else: a caller-supplied cache_dir is preserved, so the tokenizer loads from the directory the
+    # snapshot prefetch warmed rather than risking an in-process Hub/Xet transfer on a default-cache miss.
 
     # Try loading the slow tokenizer. If it fails, then try Fast only
     # Mainly to solve Deepseek models with no tokenizer.model file

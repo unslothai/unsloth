@@ -181,16 +181,11 @@ class FastDiffusionModel:
 
         model_cls = _resolve_diffusion_model_class(config)
 
-        # The repo is confirmed a diffusion model: now pre-download it in a
-        # killable subprocess that falls back from Xet to HTTP on a no-progress
-        # stall, so the weight load below is a cache hit and cannot hang. Done
-        # after validation so a non-diffusion repo fails on config metadata alone,
-        # without first pulling multi-GB weights.
-        # subfolder is deliberately NOT forwarded: the pipeline / config / processor loads below
-        # resolve the repo ROOT (the whole DiffusionPipeline -- model_index.json plus every
-        # component subfolder), not a single subfolder, so narrowing the warm to one subfolder
-        # would leave the other components (unet/, vae/, text_encoder/) to an unprotected
-        # in-process Xet download while pulling subfolder weights the load never reads.
+        # Repo confirmed a diffusion model: pre-download it in a killable subprocess (Xet -> HTTP on a
+        # stall) so the weight load is a cache hit. After validation, so a non-diffusion repo fails on
+        # config metadata alone. subfolder is NOT forwarded: the pipeline loads the repo ROOT (the whole
+        # DiffusionPipeline -- model_index.json + every component subfolder), so narrowing to one
+        # subfolder would leave the other components (unet/, vae/, text_encoder/) to in-process Xet.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -201,9 +196,7 @@ class FastDiffusionModel:
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
             # Diffusion variants (variant="fp16") are common: forward it so the warm never drops a
-            # variant .bin for a non-variant safetensors. (When component weights live in
-            # subfolders the auto branch finds no root safetensors and keeps both formats anyway;
-            # forwarding variant simply makes that correct rather than incidental.)
+            # variant .bin for a non-variant safetensors.
             variant = kwargs.get("variant"),
         )
 
@@ -217,11 +210,9 @@ class FastDiffusionModel:
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
-        # Honor an explicit weight format on the real load too, so it reads the same
-        # format the prefetch warmed. The prefetch filters .bin / .safetensors by
-        # use_safetensors; without forwarding it the load could pick the other format
-        # on a mixed-format repo and start an unprotected in-process Xet download.
-        # use_safetensors=None (auto) already matches the prefetch's auto heuristic.
+        # Honor an explicit weight format on the real load too, so it reads the format the prefetch
+        # warmed (else a mixed-format repo could pick the other and start an in-process Xet download).
+        # use_safetensors=None (auto) already matches the prefetch's heuristic.
         if kwargs.get("use_safetensors") is not None:
             load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
 

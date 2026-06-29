@@ -3,12 +3,10 @@
 
 """Studio shim over the shared Xet -> HTTP stall fallback.
 
-The no-progress watchdog, the spawn-child download, and the single Xet -> HTTP
-retry now live once in ``unsloth_zoo.hf_xet_fallback`` (so Unsloth main and Studio
-share one implementation). This module re-exports that API and injects Studio's
-marker-aware cache purge (``prepare_cache_for_transport``) so the hub download
-manager keeps its ``.transport`` marker semantics on the HTTP retry. Call sites
-(core/inference/llama_cpp.py, core/training/worker.py) and the orchestrator's
+The watchdog, spawn-child download, and Xet -> HTTP retry live once in
+``unsloth_zoo.hf_xet_fallback`` (shared by Unsloth main and Studio). This module re-exports that API
+and injects Studio's marker-aware cache purge (``prepare_cache_for_transport``) so the download
+manager keeps its ``.transport`` marker semantics on the HTTP retry. Call sites and the orchestrator's
 ``DownloadStallError`` import are unchanged.
 """
 
@@ -22,13 +20,11 @@ try:
     import unsloth_zoo.hf_xet_fallback as _shared
     _shared_available = True
 except Exception as _exc:  # noqa: BLE001 - any import failure must degrade, not crash
-    # unsloth_zoo runs torch/GPU device detection in its package __init__, which
-    # raises on a Studio host without torch (ImportError) or without a GPU
-    # (NotImplementedError) -- a CPU / llama.cpp GGUF-only deployment. The download
-    # helper needs none of that, so retry with unsloth_zoo's documented light import
-    # path (UNSLOTH_ZOO_DISABLE_GPU_INIT) before giving up. The first attempt above
-    # keeps full device init unchanged on a normal GPU host; a failed import is
-    # dropped from sys.modules, so the retry re-runs __init__ on the light path.
+    # unsloth_zoo's package __init__ runs torch/GPU detection, which raises on a Studio host without
+    # torch / without a GPU (CPU / llama.cpp GGUF-only). The download helper needs none of that, so
+    # retry on the light import path (UNSLOTH_ZOO_DISABLE_GPU_INIT) before giving up. The full GPU
+    # path above is unchanged on a normal host; a failed import is dropped from sys.modules so __init__
+    # re-runs here.
     _shared_import_error = _exc
     import os as _os
 
@@ -39,8 +35,7 @@ except Exception as _exc:  # noqa: BLE001 - any import failure must degrade, not
         _shared_available = True
         _shared_import_error = None
     except Exception as _exc2:  # noqa: BLE001
-        # unsloth_zoo is absent/too old, or genuinely broken: degrade so Studio
-        # still boots with plain HF downloads instead of crashing on import.
+        # unsloth_zoo absent / too old / broken: degrade so Studio still boots with plain HF downloads.
         _shared_import_error = _exc2
         _shared_available = False
     finally:
@@ -50,9 +45,8 @@ except Exception as _exc:  # noqa: BLE001 - any import failure must degrade, not
             _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = _prev_gpu_init
 
 if _shared_available:
-    # Bind the shared API by assignment (not `from ... import`) so each public name
-    # has a single, unambiguous module-level binding shared between this branch and
-    # the degraded one below.
+    # Bind by assignment (not `from ... import`) so each public name has one module-level binding
+    # shared between this branch and the degraded one below.
     DEFAULT_GRACE_PERIOD = _shared.DEFAULT_GRACE_PERIOD
     DEFAULT_HEARTBEAT_INTERVAL = _shared.DEFAULT_HEARTBEAT_INTERVAL
     DEFAULT_STALL_TIMEOUT = _shared.DEFAULT_STALL_TIMEOUT
@@ -63,11 +57,9 @@ if _shared_available:
     _shared_hf_hub_download_with_xet_fallback = _shared.hf_hub_download_with_xet_fallback
     _shared_snapshot_download_with_xet_fallback = _shared.snapshot_download_with_xet_fallback
 else:
-    # Rather than crash Studio at startup, degrade gracefully: plain HF downloads
-    # with the no-progress stall watchdog disabled -- the same best-effort posture
-    # core Unsloth uses in from_pretrained. Automatic Xet -> HTTP recovery returns
-    # as soon as unsloth_zoo is upgraded. These are thin stubs, not a second copy
-    # of the orchestration.
+    # Degrade gracefully instead of crashing Studio: plain HF downloads with the stall watchdog
+    # disabled (the same best-effort posture core Unsloth uses). Recovery returns once unsloth_zoo is
+    # upgraded. Thin stubs, not a second copy of the orchestration.
     import logging as _logging
 
     _logging.getLogger(__name__).warning(
@@ -82,9 +74,8 @@ else:
     DEFAULT_GRACE_PERIOD = 10.0
 
     class DownloadStallError(RuntimeError):
-        """Stub mirror of the shared type so callers and ``except`` clauses still
-        resolve when the shared helper is unavailable (it is simply never raised
-        in degraded mode, since there is no watchdog to detect a stall)."""
+        """Stub mirror of the shared type so callers' ``except`` clauses still resolve; never raised in
+        degraded mode (no watchdog to detect a stall)."""
 
     def child_should_disable_xet(config: dict) -> bool:
         return bool(config.get("disable_xet"))
@@ -99,9 +90,8 @@ else:
         xet_disabled: bool = False,
         **kwargs: Any,
     ) -> "threading.Event":
-        # No stall detection without the shared helper, but keep emitting heartbeat
-        # statuses so the orchestrator's inactivity deadline is not tripped during a
-        # legitimately long load/download in this degraded mode.
+        # No stall detection here, but keep emitting heartbeats so the orchestrator's inactivity
+        # deadline is not tripped during a legitimately long download.
         stop = threading.Event()
         if on_heartbeat is None:
             return stop
@@ -136,8 +126,8 @@ else:
         cancel_event: "Optional[threading.Event]" = None,
         **_ignored: Any,
     ) -> str:
-        # No subprocess to interrupt mid-call here, but keep the cancellation
-        # contract: do not start, and do not return, a download once cancelled.
+        # No subprocess to interrupt here, but keep the cancellation contract: do not start or return
+        # a download once cancelled.
         if _degraded_cancelled(cancel_event):
             raise RuntimeError("Cancelled")
 
@@ -203,13 +193,9 @@ __all__ = [
 
 
 def _studio_prepare_for_http(repo_type: str, repo_id: str) -> None:
-    """Make the partial safe for an HTTP resume using Studio's marker-aware purge,
-    so the download manager's ``.transport`` marker accounting stays consistent
-    (vs the generic delete-incompletes default in unsloth_zoo).
-
-    The shared orchestrator already wraps this hook, but guard it here too so a
-    purge failure (locked file, missing dir) is logged rather than aborting the
-    HTTP retry that is the whole point of the fallback."""
+    """Make the partial safe for an HTTP resume using Studio's marker-aware purge, so the download
+    manager's ``.transport`` accounting stays consistent (vs unsloth_zoo's generic default). Guarded so
+    a purge failure (locked file, missing dir) is logged rather than aborting the HTTP retry."""
     try:
         from hub.utils.download_registry import prepare_cache_for_transport
         prepare_cache_for_transport(repo_type, repo_id, "http")
