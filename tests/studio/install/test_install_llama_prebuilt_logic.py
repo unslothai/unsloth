@@ -1106,6 +1106,13 @@ def _command_contains_path(plan: ValidationLaunchPlan, path_fragment: str) -> bo
     )
 
 
+def _command_has_setenv(plan: ValidationLaunchPlan, key: str) -> bool:
+    for index in range(len(plan.command) - 2):
+        if plan.command[index] == "--setenv" and plan.command[index + 1] == key:
+            return True
+    return False
+
+
 def test_install_prebuilt_falls_back_to_older_release_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -3182,7 +3189,7 @@ def test_build_validation_sandbox_plan_contract():
 
 
 def test_build_validation_sandbox_plan_linux_without_bwrap_skips_ldd_probe(monkeypatch):
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_resolve_command_path", lambda command: None if command == "bwrap" else "/usr/bin/bwrap")
     plan = build_validation_sandbox_plan(
         ["ldd", "/tmp/bin"],
         binary_path = Path("/tmp/bin"),
@@ -3198,7 +3205,7 @@ def test_build_validation_sandbox_plan_linux_without_bwrap_skips_ldd_probe(monke
 
 
 def test_build_validation_sandbox_plan_linux_without_bwrap_falls_back_validation(monkeypatch):
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_resolve_command_path", lambda command: None if command == "bwrap" else "/usr/bin/bwrap")
     plan = build_validation_sandbox_plan(
         ["llama-quantize", "in", "out"],
         binary_path = Path("/tmp/bin"),
@@ -3213,7 +3220,13 @@ def test_build_validation_sandbox_plan_linux_without_bwrap_falls_back_validation
 
 
 def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch, tmp_path):
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    bwrap_path = tmp_path / "bwrap"
+    bwrap_path.write_text("")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: str(bwrap_path) if command == "bwrap" else None,
+    )
     helper_bin = tmp_path / "helper" / "bin"
     helper_lib = tmp_path / "helper" / "lib"
     install_dir = tmp_path / "install"
@@ -3226,7 +3239,7 @@ def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch, tmp_pa
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "_linux_validation_server_probe_command",
-        lambda command, timeout = 60: [str(helper_path), "-c", "server probe"],
+        lambda command, payload_env, timeout = 60: [str(helper_path), "-c", "server probe"],
     )
     binary_path = binary_dir / "llama-server"
     binary_path.write_text("")
@@ -3240,11 +3253,15 @@ def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch, tmp_pa
         env = {"LD_LIBRARY_PATH": "/tmp/payload/libs"},
     )
     assert plan.is_runnable
-    assert plan.command[0] == "bwrap"
+    assert plan.command[0] == str(bwrap_path)
     assert plan.command[1] == "--unshare-all"
     assert "--share-net" not in plan.command
     assert "--setenv" in plan.command
-    assert "LD_LIBRARY_PATH" in plan.command
+    assert not _command_has_setenv(plan, "LD_LIBRARY_PATH")
+    assert "--tmpfs" in plan.command
+    assert "--perms" in plan.command
+    assert "1777" in plan.command
+    assert "/tmp" in plan.command
     assert plan.env.get("LD_LIBRARY_PATH") is None
     assert plan.payload_command == [
         "llama-server",
@@ -3261,6 +3278,29 @@ def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch, tmp_pa
     assert plan.network_policy == INSTALL_LLAMA_PREBUILT._VALIDATION_NETWORK_POLICY_SANDBOX
     assert str(model_dir) in plan.command
     assert str(helper_lib) in plan.command
+
+
+def test_linux_validation_server_probe_command_passes_payload_env_to_server_spawn():
+    probe_command = INSTALL_LLAMA_PREBUILT._linux_validation_server_probe_command(
+        [
+            "/opt/llama-server",
+            "-m",
+            "/tmp/models/stories260K.gguf",
+            "--port",
+            "7777",
+        ],
+        {
+            "LD_LIBRARY_PATH": "/tmp/libs",
+            "PYTHONPATH": "/tmp/python",
+        },
+    )
+    assert len(probe_command) == 3
+    _, script = probe_command[0], probe_command[2]
+    assert "payload_env = {\"LD_LIBRARY_PATH\": \"/tmp/libs\", \"PYTHONPATH\": \"/tmp/python\"}" in script
+    assert "server_env = dict(os.environ)" in script
+    assert "server_env.update(payload_env)" in script
+    assert "timeout = 5" in script
+    assert "with urllib.request.urlopen(request, timeout = 5)" in script
 
 
 def test_run_validation_capture_uses_launcher_env_for_linux_bwrap(monkeypatch):
@@ -3395,7 +3435,11 @@ def test_validate_server_strips_python_import_roots_from_payload_env(monkeypatch
 
 
 def test_build_validation_sandbox_plan_linux_quantize_binds_probe_and_output(monkeypatch, tmp_path):
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: "/tmp/bin/bwrap" if command == "bwrap" else None,
+    )
     bin_dir = tmp_path / "bin"
     probe_dir = tmp_path / "models"
     out_dir = tmp_path / "out"
@@ -3412,6 +3456,7 @@ def test_build_validation_sandbox_plan_linux_quantize_binds_probe_and_output(mon
         env = {"LD_LIBRARY_PATH": str(runtime_dir)},
     )
     assert plan.is_runnable
+    assert _command_has_setenv(plan, "LD_LIBRARY_PATH")
     assert plan.command.count("--ro-bind") >= 3
     assert plan.command.count("--bind") >= 2
     assert str(probe_dir) in plan.command
@@ -3419,7 +3464,11 @@ def test_build_validation_sandbox_plan_linux_quantize_binds_probe_and_output(mon
 
 
 def test_build_validation_sandbox_plan_linux_server_binds_gpu_nodes_when_enabled(monkeypatch, tmp_path):
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: "/tmp/bin/bwrap" if command == "bwrap" else None,
+    )
     existing_nodes = {
         "/dev/nvidiactl",
         "/dev/nvidia-uvm",
@@ -3487,7 +3536,11 @@ def test_build_validation_sandbox_plan_linux_server_binds_gpu_nodes_when_enabled
 
 
 def test_build_validation_sandbox_plan_linux_server_binds_rocm_nodes_when_enabled(monkeypatch, tmp_path):
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: "/tmp/bin/bwrap" if command == "bwrap" else None,
+    )
     existing_nodes = {
         "/dev/kfd",
         "/dev/dxg",
@@ -3570,6 +3623,8 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
     assert "(deny default)" in profile
     assert '(import "bsd.sb")' in profile
     assert "(subpath \"/private\")" not in profile
+    assert '(subpath "/usr")' not in profile
+    assert '(subpath "/Library")' not in profile
     assert any(
         f'(subpath "{literal}")' in profile
         for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/tmp/install")
@@ -3602,7 +3657,7 @@ def test_build_validation_sandbox_plan_macos_server_keeps_loopback(monkeypatch):
         INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "sandbox-exec"
     )
     plan = build_validation_sandbox_plan(
-        ["llama-server", "--help"],
+        ["llama-server", "-m", str(Path("/tmp/models/story.gguf")), "--port", "7777"],
         binary_path = Path("/tmp/bin/llama-server"),
         install_dir = Path("/tmp/install"),
         host = macos_host(),
@@ -3616,8 +3671,12 @@ def test_build_validation_sandbox_plan_macos_server_keeps_loopback(monkeypatch):
     assert "(deny default)" in profile
     assert '(import "bsd.sb")' in profile
     assert "(subpath \"/private\")" not in profile
-    assert '(allow network* (local ip "localhost:*"))' in profile
-    assert '(allow network* (remote ip "localhost:*"))' in profile
+    assert '(subpath "/usr")' not in profile
+    assert '(subpath "/Library")' not in profile
+    assert '(allow network* (local ip "localhost:7777"))' in profile
+    assert '(allow network* (remote ip "localhost:7777"))' in profile
+    assert '(allow network* (local ip "localhost:*"))' not in profile
+    assert '(allow network* (remote ip "localhost:*"))' not in profile
 
 
 def test_build_validation_sandbox_plan_windows_is_unsupported(monkeypatch):
@@ -3639,7 +3698,11 @@ def test_linux_missing_libraries_skips_ldd_without_sandbox_adapter(monkeypatch, 
     binary_path = tmp_path / "server"
     binary_path.write_text("")
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: None if command == "bwrap" else "/usr/bin/bwrap",
+    )
 
     captured: dict[str, bool] = {"run": False}
 
@@ -3657,7 +3720,11 @@ def test_run_validation_ldd_probe_reports_skipped_status_without_sandbox_adapter
     binary_path = tmp_path / "server"
     binary_path.write_text("")
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: None if command == "bwrap" else "/usr/bin/bwrap",
+    )
     result = run_validation_ldd_probe(binary_path, env = {"LD_LIBRARY_PATH": ""})
     assert result.status == LINUX_LDD_PROBE_SKIPPED
     assert result.missing == []
@@ -3669,9 +3736,10 @@ def test_run_validation_ldd_probe_reports_error_on_nonzero_returncode(monkeypatc
     binary_path.write_text("")
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
     monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT.shutil, "which", lambda name: f"/usr/bin/{name}"
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: f"/usr/bin/{command}",
     )
 
     def fake_capture(plan, *, timeout: int):
@@ -3690,8 +3758,12 @@ def test_linux_missing_libraries_uses_bwrap_plan(monkeypatch, tmp_path):
     binary_path.write_text("")
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "bwrap")
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.shutil, "which", lambda name: f"/usr/bin/{name}")
+    bwrap_path = "/usr/bin/bwrap"
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: bwrap_path if command == "bwrap" else None,
+    )
     captured = {}
 
     def fake_run_capture(command, *, timeout, env = None, check = False):
@@ -3705,7 +3777,7 @@ def test_linux_missing_libraries_uses_bwrap_plan(monkeypatch, tmp_path):
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "run_capture", fake_run_capture)
     assert linux_missing_libraries(binary_path, env = {"LD_LIBRARY_PATH": ""}) == ["libbad"]
-    assert captured["command"][0] == "bwrap"
+    assert captured["command"][0] == bwrap_path
     assert any(Path(part).stem == "ldd" for part in captured["command"])
 
 
@@ -3992,6 +4064,67 @@ def test_validate_server_routes_through_sandbox_plan(monkeypatch, tmp_path):
     assert called_capture is True
     assert called_popen is False
     assert recorded["server_probe_mode"] == INSTALL_LLAMA_PREBUILT._VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX
+
+
+def test_validate_server_uses_extended_capture_timeout_for_in_sandbox_probe(monkeypatch, tmp_path):
+    server_path = tmp_path / "llama-server"
+    server_path.write_text("")
+    probe_path = tmp_path / "probe.gguf"
+    probe_path.write_text("")
+    install_dir = tmp_path
+
+    called: dict[str, object] = {}
+
+    def fake_binary_env(*_a, **_k):
+        return {"PATH": str(tmp_path)}
+
+    def fake_capture(_plan, *, timeout: int):
+        called["timeout"] = timeout
+        return subprocess.CompletedProcess(_plan.command, 0, stdout = "ok")
+
+    def fake_build_plan(
+        command: list[str],
+        *,
+        binary_path: Path,
+        install_dir: Path,
+        purpose: str,
+        env: dict[str, str],
+        host = None,
+        runtime_line = None,
+        enable_gpu_layers: bool = False,
+        gpu_backend = None,
+    ) -> ValidationLaunchPlan:
+        called["purpose"] = purpose
+        return ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = "run",
+            purpose = purpose,
+            sandbox_kind = "linux_bwrap",
+            payload_command = command,
+            payload_env = env,
+            server_probe_mode = INSTALL_LLAMA_PREBUILT._VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX,
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "binary_env", fake_binary_env)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "free_local_port", lambda: 7777)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "build_validation_sandbox_plan", fake_build_plan)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_run_validation_capture", fake_capture)
+
+    validate_server(
+        server_path,
+        probe_path,
+        linux_host(),
+        install_dir,
+        runtime_line = None,
+        install_kind = "linux-cuda",
+    )
+
+    captured_timeout = called.get("timeout")
+    assert called.get("purpose") == INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER
+    assert isinstance(captured_timeout, int)
+    assert captured_timeout == INSTALL_LLAMA_PREBUILT._LINUX_SERVER_VALIDATION_HELPER_CAPTURE_TIMEOUT_SECONDS
+    assert captured_timeout > INSTALL_LLAMA_PREBUILT._LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS
 
 
 def test_validate_server_falls_back_without_linux_sandbox(monkeypatch, tmp_path):
