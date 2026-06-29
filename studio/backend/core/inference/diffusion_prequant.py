@@ -54,6 +54,7 @@ def _allowed_prequant_roots() -> list:
     ``os.pathsep``). A bare truthy/falsey toggle is ignored on purpose -- it must name a
     directory, so there is no "allow everything" mode."""
     import os
+
     raw = (os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV) or "").strip()
     if not raw:
         return []
@@ -74,6 +75,7 @@ def _local_prequant_path_allowed(path: str) -> bool:
     arbitrary request-supplied path is never unpickled. ``realpath`` first so a symlink
     cannot point an allowlisted name at a file outside the allowed roots."""
     import os
+
     roots = _allowed_prequant_roots()
     if not roots:
         return False
@@ -220,7 +222,11 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
 
 
 def _validate_checkpoint(
-    ckpt: Any, scheme: str, base: str, logger: Any, min_features: Optional[int] = None
+    ckpt: Any,
+    scheme: str,
+    base: str,
+    logger: Any,
+    min_features: Optional[int] = None,
 ) -> bool:
     """Reject a checkpoint that is the wrong format / scheme / base model / filter.
 
@@ -258,8 +264,10 @@ def _same_base_model(a: str, b: str) -> bool:
     """Tolerant compare of two base-model ids: an exact match, or the same final
     path/repo segment (so a local path or a fork id matches the canonical repo, e.g.
     ``/models/Z-Image-Turbo`` vs ``Tongyi-MAI/Z-Image-Turbo``)."""
+
     def _tail(x: str) -> str:
         return x.replace("\\", "/").rstrip("/").split("/")[-1].lower()
+
     return a == b or _tail(a) == _tail(b)
 
 
