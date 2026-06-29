@@ -3332,6 +3332,98 @@ def test_build_validation_sandbox_plan_linux_server_probe_uses_resolved_helper_p
     assert str(helper_symlink) not in plan.command
 
 
+def test_build_validation_sandbox_plan_linux_server_probe_binds_nix_store(monkeypatch, tmp_path):
+    bwrap_path = tmp_path / "bwrap"
+    bwrap_path.write_text("")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: str(bwrap_path.resolve()) if command == "bwrap" else None,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_binary_is_setuid_root", lambda _path: True)
+    install_dir = tmp_path / "install"
+    binary_dir = tmp_path / "bin"
+    model_dir = tmp_path / "models"
+    for directory in (install_dir, binary_dir, model_dir):
+        directory.mkdir(parents = True, exist_ok = True)
+    helper_symlink = tmp_path / "helper-python"
+    helper_symlink.write_text("")
+    binary_path = binary_dir / "llama-server"
+    binary_path.write_text("")
+
+    original_resolve = Path.resolve
+    original_exists = Path.exists
+
+    def fake_resolve(path: Path, strict: bool = False):
+        if path == helper_symlink:
+            return Path("/nix/store/fake-python/bin/python3")
+        return original_resolve(path, strict = strict)
+
+    def fake_exists(path: Path) -> bool:
+        normalized = str(path).replace("\\", "/")
+        if normalized in {
+            "/nix/store",
+            "/nix/store/fake-python/bin/python3",
+            "/nix/store/fake-python/bin",
+        }:
+            return True
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_linux_validation_server_probe_command",
+        lambda command, payload_env, timeout = 60: [str(helper_symlink), "-c", "server probe"],
+    )
+
+    plan = build_validation_sandbox_plan(
+        ["llama-server", "-m", str(model_dir / "stories260K.gguf"), "--port", "7777"],
+        binary_path = binary_path,
+        install_dir = install_dir,
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {"LD_LIBRARY_PATH": "/tmp/payload/libs"},
+    )
+
+    assert plan.is_runnable
+    assert _command_contains_path(plan, "nix/store")
+
+
+def test_build_validation_sandbox_plan_linux_gpu_uses_direct_validation_without_setuid_bwrap(monkeypatch, tmp_path):
+    bwrap_path = tmp_path / "bwrap"
+    bwrap_path.write_text("")
+    binary_path = tmp_path / "llama-server"
+    binary_path.write_text("")
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: str(bwrap_path.resolve()) if command == "bwrap" else None,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_binary_is_setuid_root", lambda _path: False)
+
+    plan = build_validation_sandbox_plan(
+        [str(binary_path), "--help"],
+        binary_path = binary_path,
+        install_dir = install_dir,
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {},
+        enable_gpu_layers = True,
+        gpu_backend = "cuda",
+    )
+
+    assert plan.is_runnable
+    assert plan.command == [str(binary_path), "--help"]
+    assert plan.sandbox_kind == "linux_direct_validation"
+    assert plan.network_policy == INSTALL_LLAMA_PREBUILT._VALIDATION_NETWORK_POLICY_DIRECT
+    assert plan.server_probe_mode == INSTALL_LLAMA_PREBUILT._VALIDATION_SERVER_PROBE_MODE_HOST
+
+
 def test_linux_validation_server_probe_command_passes_payload_env_to_server_spawn():
     probe_command = INSTALL_LLAMA_PREBUILT._linux_validation_server_probe_command(
         [
@@ -3521,12 +3613,14 @@ def test_build_validation_sandbox_plan_linux_server_binds_gpu_nodes_when_enabled
         "_resolve_command_path",
         lambda command: "/tmp/bin/bwrap" if command == "bwrap" else None,
     )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_binary_is_setuid_root", lambda _path: True)
     existing_nodes = {
         "/dev/nvidiactl",
         "/dev/nvidia-uvm",
         "/dev/nvidia-uvm-tools",
         "/dev/nvidia-modeset",
         "/dev/nvidia0",
+        "/dev/nvidia-caps/nvidia-cap1",
         "/dev/kfd",
         "/dev/dxg",
         "/dev/dri/card0",
@@ -3536,6 +3630,7 @@ def test_build_validation_sandbox_plan_linux_server_binds_gpu_nodes_when_enabled
         "/sys/dev/char",
         "/sys/devices",
         "/proc/driver/nvidia",
+        "/proc/driver/nvidia/capabilities",
     }
     original_exists = Path.exists
     original_glob = Path.glob
@@ -3555,6 +3650,8 @@ def test_build_validation_sandbox_plan_linux_server_binds_gpu_nodes_when_enabled
         normalized = _norm(path)
         if normalized == "/dev" and pattern == "nvidia*":
             return [Path(node) for node in existing_nodes if str(node).startswith("/dev/nvidia") and "*" not in node]
+        if normalized == "/dev/nvidia-caps" and pattern == "nvidia-cap*":
+            return [Path("/dev/nvidia-caps/nvidia-cap1")]
         if normalized == "/dev/dri" and pattern == "card*":
             return [Path("/dev/dri/card0")]
         if normalized == "/dev/dri" and pattern == "renderD*":
@@ -3584,12 +3681,14 @@ def test_build_validation_sandbox_plan_linux_server_binds_gpu_nodes_when_enabled
     assert "--dev-bind-try" in plan.command
     assert any("nvidiactl" in part for part in plan.command)
     assert any("nvidia0" in part for part in plan.command)
+    assert any("nvidia-cap1" in part for part in plan.command)
     assert not any("dxg" in part for part in plan.command)
     assert not _command_contains_path(plan, "dri/card0")
     assert not _command_contains_path(plan, "dri/renderD128")
     assert not any("kfd" in part for part in plan.command)
     assert _command_contains_path(plan, "sys/class/drm")
     assert _command_contains_path(plan, "proc/driver/nvidia")
+    assert _command_contains_path(plan, "proc/driver/nvidia/capabilities")
 
 
 def test_build_validation_sandbox_plan_linux_server_binds_rocm_nodes_when_enabled(monkeypatch, tmp_path):
@@ -3598,6 +3697,7 @@ def test_build_validation_sandbox_plan_linux_server_binds_rocm_nodes_when_enable
         "_resolve_command_path",
         lambda command: "/tmp/bin/bwrap" if command == "bwrap" else None,
     )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_binary_is_setuid_root", lambda _path: True)
     existing_nodes = {
         "/dev/kfd",
         "/dev/dxg",
@@ -4192,6 +4292,56 @@ def test_validate_server_uses_extended_capture_timeout_for_in_sandbox_probe(monk
     assert isinstance(captured_timeout, int)
     assert captured_timeout == INSTALL_LLAMA_PREBUILT._LINUX_SERVER_VALIDATION_HELPER_CAPTURE_TIMEOUT_SECONDS
     assert captured_timeout > INSTALL_LLAMA_PREBUILT._LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS
+
+
+def test_validate_server_skips_gpu_layers_for_macos_arm64(monkeypatch, tmp_path):
+    server_path = tmp_path / "llama-server"
+    server_path.write_text("")
+    probe_path = tmp_path / "probe.gguf"
+    probe_path.write_text("")
+    recorded: dict[str, object] = {}
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "binary_env", lambda *_a, **_k: {"PATH": str(tmp_path)})
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "free_local_port", lambda: 7777)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop")))
+
+    def fake_build_plan(
+        command: list[str],
+        *,
+        binary_path: Path,
+        install_dir: Path,
+        purpose: str,
+        env: dict[str, str],
+        host = None,
+        runtime_line = None,
+        enable_gpu_layers: bool = False,
+        gpu_backend = None,
+    ) -> ValidationLaunchPlan:
+        recorded["command"] = command
+        recorded["enable_gpu_layers"] = enable_gpu_layers
+        return ValidationLaunchPlan(
+            command = command,
+            env = env,
+            action = "fallback",
+            purpose = purpose,
+            reason = "stop",
+        )
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "build_validation_sandbox_plan", fake_build_plan)
+
+    with pytest.raises(PrebuiltFallback, match = "stop"):
+        validate_server(
+            server_path,
+            probe_path,
+            macos_host(),
+            tmp_path,
+            runtime_line = None,
+            install_kind = "macos-arm64",
+        )
+
+    command = recorded["command"]
+    assert "--n-gpu-layers" not in command
+    assert recorded["enable_gpu_layers"] is False
 
 
 def test_validate_server_falls_back_without_linux_sandbox(monkeypatch, tmp_path):
