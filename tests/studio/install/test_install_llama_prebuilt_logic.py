@@ -3280,6 +3280,58 @@ def test_build_validation_sandbox_plan_linux_with_bwrap_runs(monkeypatch, tmp_pa
     assert str(helper_lib) in plan.command
 
 
+def test_build_validation_sandbox_plan_linux_server_probe_uses_resolved_helper_path(monkeypatch, tmp_path):
+    bwrap_path = tmp_path / "bwrap"
+    bwrap_path.write_text("")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: str(bwrap_path.resolve()) if command == "bwrap" else None,
+    )
+    helper_bin = tmp_path / "helper" / "bin"
+    helper_store = tmp_path / "nix" / "store"
+    install_dir = tmp_path / "install"
+    binary_dir = tmp_path / "bin"
+    model_dir = tmp_path / "models"
+    for directory in (helper_bin, helper_store, install_dir, binary_dir, model_dir):
+        directory.mkdir(parents = True, exist_ok = True)
+    helper_symlink = helper_bin / "python3"
+    helper_symlink.write_text("")
+    helper_target = helper_store / "python3"
+    helper_target.write_text("")
+    binary_path = binary_dir / "llama-server"
+    binary_path.write_text("")
+
+    original_resolve = Path.resolve
+
+    def fake_resolve(path: Path, strict: bool = False):
+        if path == helper_symlink:
+            return helper_target
+        return original_resolve(path, strict = strict)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_linux_validation_server_probe_command",
+        lambda command, payload_env, timeout = 60: [str(helper_symlink), "-c", "server probe"],
+    )
+
+    plan = build_validation_sandbox_plan(
+        ["llama-server", "-m", str(model_dir / "stories260K.gguf"), "--port", "7777"],
+        binary_path = binary_path,
+        install_dir = install_dir,
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {"LD_LIBRARY_PATH": "/tmp/payload/libs"},
+    )
+
+    assert plan.is_runnable
+    assert str(helper_target) in plan.command
+    assert str(helper_target.parent) in plan.command
+    assert str(helper_symlink) not in plan.command
+
+
 def test_linux_validation_server_probe_command_passes_payload_env_to_server_spawn():
     probe_command = INSTALL_LLAMA_PREBUILT._linux_validation_server_probe_command(
         [
@@ -3524,6 +3576,11 @@ def test_build_validation_sandbox_plan_linux_server_binds_gpu_nodes_when_enabled
         gpu_backend = "cuda",
     )
     assert plan.is_runnable
+    assert "--unshare-all" not in plan.command
+    assert "--unshare-net" in plan.command
+    assert "--unshare-pid" in plan.command
+    assert "--unshare-ipc" in plan.command
+    assert "--unshare-uts" in plan.command
     assert "--dev-bind-try" in plan.command
     assert any("nvidiactl" in part for part in plan.command)
     assert any("nvidia0" in part for part in plan.command)
@@ -3591,6 +3648,11 @@ def test_build_validation_sandbox_plan_linux_server_binds_rocm_nodes_when_enable
         gpu_backend = "rocm",
     )
     assert plan.is_runnable
+    assert "--unshare-all" not in plan.command
+    assert "--unshare-net" in plan.command
+    assert "--unshare-pid" in plan.command
+    assert "--unshare-ipc" in plan.command
+    assert "--unshare-uts" in plan.command
     assert "--dev-bind-try" in plan.command
     assert any("kfd" in part for part in plan.command)
     assert any("dxg" in part for part in plan.command)
@@ -3615,13 +3677,14 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
         host = macos_host(),
         purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
         runtime_line = None,
-        env = {},
+        env = {"DYLD_LIBRARY_PATH": "/opt/dyld"},
     )
     assert mac_run.is_runnable
     assert mac_run.command[:2] == ["sandbox-exec", "-p"]
     profile = mac_run.command[2]
     assert "(deny default)" in profile
     assert '(import "bsd.sb")' in profile
+    assert "(allow file-map-executable" in profile
     assert "(subpath \"/private\")" not in profile
     assert '(subpath "/usr")' not in profile
     assert '(subpath "/Library")' not in profile
@@ -3636,6 +3699,10 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
     assert any(
         f'(subpath "{literal}")' in profile
         for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/tmp/out")
+    )
+    assert any(
+        f'(subpath "{literal}")' in profile
+        for literal in INSTALL_LLAMA_PREBUILT._sandbox_profile_path_literals("/opt/dyld")
     )
     assert "localhost" not in profile
 

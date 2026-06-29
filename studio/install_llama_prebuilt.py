@@ -5183,7 +5183,29 @@ def _resolve_command_path(command: str) -> str | None:
     resolved = shutil.which(command)
     if resolved is None:
         return None
-    return str(Path(resolved))
+    return str(Path(resolved).resolve())
+
+
+def _resolve_existing_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    try:
+        return candidate.resolve(strict = True)
+    except Exception:
+        return candidate
+
+
+def _resolve_sandbox_command(command: list[str]) -> list[str]:
+    if not command:
+        return []
+    resolved_command = list(command)
+    command_path = Path(resolved_command[0])
+    if command_path.is_absolute():
+        resolved_command[0] = str(_resolve_existing_path(command_path))
+        return resolved_command
+    resolved_path = _resolve_command_path(resolved_command[0])
+    if resolved_path is not None:
+        resolved_command[0] = resolved_path
+    return resolved_command
 
 
 def _has_command(command: str) -> bool:
@@ -5370,11 +5392,7 @@ def _linux_validation_bwrap_prefix(
     gpu_backend: Literal["cuda", "rocm"] | None = None,
 ) -> list[str]:
     runtime_home = isolated_runtime_home()
-    command_path = Path(command[0])
-    if not command_path.is_absolute():
-        resolved_command = shutil.which(command[0])
-        if resolved_command:
-            command_path = Path(resolved_command)
+    command_path = _resolve_existing_path(command[0])
 
     write_targets = {
         str(Path(runtime_home)),
@@ -5422,10 +5440,19 @@ def _linux_validation_bwrap_prefix(
         and enable_gpu_layers
         and gpu_backend in {"cuda", "rocm"}
     )
-    args = [
-        adapter_path,
-        "--unshare-all",
-    ]
+    args = [adapter_path]
+    if enable_gpu_devices:
+        args.extend(
+            [
+                "--unshare-cgroup-try",
+                "--unshare-ipc",
+                "--unshare-net",
+                "--unshare-pid",
+                "--unshare-uts",
+            ]
+        )
+    else:
+        args.append("--unshare-all")
     args.extend(
         [
         "--die-with-parent",
@@ -5554,6 +5581,17 @@ def _macos_validation_sandbox_prefix(
         "/System/Library",
         binary_path.parent,
     ]
+    executable_map_targets: list[str | Path] = [
+        "/usr/lib",
+        "/System",
+        "/System/Library",
+        binary_path.parent,
+    ]
+    executable_map_targets.extend(
+        part
+        for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep)
+        if part
+    )
     profile_parts = [
         "(version 1)",
         "(deny default)",
@@ -5561,6 +5599,11 @@ def _macos_validation_sandbox_prefix(
         "(allow process-exec",
     ]
     for target in exec_targets:
+        for literal in _sandbox_profile_path_literals(target):
+            profile_parts.append(f'(subpath "{literal}")')
+    profile_parts.append(")")
+    profile_parts.append("(allow file-map-executable")
+    for target in executable_map_targets:
         for literal in _sandbox_profile_path_literals(target):
             profile_parts.append(f'(subpath "{literal}")')
     profile_parts.append(")")
@@ -5626,7 +5669,7 @@ def build_validation_sandbox_plan(
     if _host_is_linux(host):
         bwrap_path = _resolve_command_path("bwrap")
         if bwrap_path is not None:
-            payload_command = list(command)
+            payload_command = _resolve_sandbox_command(command)
             network_policy = _VALIDATION_NETWORK_POLICY_SANDBOX
             server_probe_mode = (
                 _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX if purpose == _VALIDATION_PURPOSE_SERVER else None
@@ -5634,11 +5677,11 @@ def build_validation_sandbox_plan(
             launch_command = payload_command
             if purpose == _VALIDATION_PURPOSE_SERVER:
                 try:
-                    launch_command = _linux_validation_server_probe_command(
+                    launch_command = _resolve_sandbox_command(_linux_validation_server_probe_command(
                         payload_command,
                         env,
                         timeout = _LINUX_SERVER_VALIDATION_HELPER_TIMEOUT_SECONDS,
-                    )
+                    ))
                 except RuntimeError as exc:
                     return _ValidationLaunchPlan(
                         command = payload_command,
