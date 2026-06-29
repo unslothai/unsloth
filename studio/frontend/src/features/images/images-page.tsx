@@ -425,6 +425,9 @@ export function ImagesPage() {
   );
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
+  // False once the page unmounts, so a multi-run generation loop stops issuing further
+  // GPU work (and state updates) after the user navigates away.
+  const isMounted = useRef(true);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -534,6 +537,9 @@ export function ImagesPage() {
     setSeed(String(image.seed));
     setWidth(image.width);
     setHeight(image.height);
+    // The batch shared one seed, so image batch_index>0 only reproduces by replaying the
+    // whole batch: restore the batch size too (older recipes without it default to 1).
+    setBatchSize(image.batch_size ?? 1);
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -577,11 +583,13 @@ export function ImagesPage() {
   }, []);
 
   useEffect(() => {
+    isMounted.current = true;
     void refreshStatus();
     // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the
     // load toast — its poll loop is gone, so it would otherwise hang forever
     // (duration: Infinity) on whatever page the user navigated to.
     return () => {
+      isMounted.current = false;
       if (pollTimer.current) clearTimeout(pollTimer.current);
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       dismissLoadToast();
@@ -653,12 +661,28 @@ export function ImagesPage() {
   // and seed the inputs with that model's defaults.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
-      if (!meta.ggufVariant || !meta.ggufFilename) return; // not a quant pick
-      setQuant(meta.ggufVariant);
-      const d = defaultsFor(id);
-      setSteps(d.steps);
-      setGuidance(d.guidance);
-      void handleLoad(id, meta.ggufFilename);
+      if (meta.ggufVariant && meta.ggufFilename) {
+        setQuant(meta.ggufVariant);
+        const d = defaultsFor(id);
+        setSteps(d.steps);
+        setGuidance(d.guidance);
+        void handleLoad(id, meta.ggufFilename);
+        return;
+      }
+      // A direct single-file local .gguf pick has no variant/filename (custom folder /
+      // LM Studio). Load it by splitting the path into (parent dir, basename) the backend
+      // resolves, instead of silently doing nothing.
+      if (meta.isGguf) {
+        const norm = id.replace(/\\/g, "/");
+        const slash = norm.lastIndexOf("/");
+        const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
+        const dir = slash >= 0 ? norm.slice(0, slash) : ".";
+        if (!filename.toLowerCase().endsWith(".gguf")) return;
+        const d = defaultsFor(id);
+        setSteps(d.steps);
+        setGuidance(d.guidance);
+        void handleLoad(dir, filename);
+      }
     },
     [handleLoad],
   );
@@ -720,6 +744,8 @@ export function ImagesPage() {
     }, 300);
     try {
       for (let i = 0; i < count; i++) {
+        // The user navigated away mid-run: stop issuing more GPU generations.
+        if (!isMounted.current) break;
         const res = await generateDiffusionImage({
           prompt: prompt.trim(),
           // Only send a negative prompt when guidance uses it, so the recipe
@@ -732,6 +758,7 @@ export function ImagesPage() {
           seed: baseSeed + i,
           batch_size: batchSize,
         });
+        if (!isMounted.current) break;
         // Prepend this run's records (newest first) and load their blobs.
         setImages((prev) => [...res.images, ...prev]);
         if (res.images[0]) setSelectedId(res.images[0].id);

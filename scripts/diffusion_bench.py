@@ -142,8 +142,10 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     import numpy as np
     from PIL import Image
 
-    a = np.asarray(Image.open(ref_png).convert("RGB"), dtype = np.float64)
-    b = np.asarray(Image.open(cand_png).convert("RGB"), dtype = np.float64)
+    with Image.open(ref_png) as im_a:
+        a = np.asarray(im_a.convert("RGB"), dtype = np.float64)
+    with Image.open(cand_png) as im_b:
+        b = np.asarray(im_b.convert("RGB"), dtype = np.float64)
     if a.shape != b.shape:
         # Different geometry means the comparison is meaningless; report worst case.
         return 0.0

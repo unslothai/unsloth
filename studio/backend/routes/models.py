@@ -3064,20 +3064,17 @@ def _repo_gguf_last_modified(repo_info) -> float:
 # image GGUFs in its On Device list.
 _DIFFUSION_GGUF_ARCHS = frozenset(
     {
-        "flux",
-        "flux2",
-        "sd1",
-        "sd2",
-        "sd3",
-        "sdxl",
-        "stable_diffusion",
-        "lumina2",
-        "qwen_image",
+        # ONLY the families the diffusion backend can actually assemble (see
+        # diffusion_families._FAMILIES). Other on-device diffusion archs (SD1/2/3,
+        # SDXL, PixArt, Lumina2, AuraFlow, Wan, HunyuanVideo, ...) would pass this
+        # Images-picker filter and then fail validate_load with a 400, so they are
+        # deliberately excluded until the backend supports them.
+        "flux",  # flux.1
+        "flux2",  # flux.2-klein
+        "qwen_image",  # qwen-image
         "qwenimage",
-        "auraflow",
-        "pixart",
-        "hunyuan_video",
-        "wan",
+        "z_image",  # z-image
+        "zimage",
     }
 )
 

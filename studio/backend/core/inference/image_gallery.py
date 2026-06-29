@@ -143,14 +143,19 @@ def list_images(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, 
     except OSError:
         return []
     paths.sort(key = _mtime, reverse = True)
-    window = paths[offset:] if limit is None else paths[offset : offset + limit]
+    # Page over READABLE records, not raw files: filtering a foreign/corrupt PNG out of an
+    # already-sliced window would drop valid images that sort after it and make the route's
+    # has_more wrong. Read only as far as needed to fill the requested window.
+    want = None if limit is None else offset + limit
     records = []
-    for path in window:
+    for path in paths:
         meta = _read_meta(path)
         if meta is None:  # not one of ours (no recipe chunk) — skip
             continue
         records.append(_record(path.stem, meta))
-    return records
+        if want is not None and len(records) >= want:
+            break
+    return records[offset:] if limit is None else records[offset : offset + limit]
 
 
 def delete(image_id: str) -> bool:

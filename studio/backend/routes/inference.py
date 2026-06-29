@@ -10140,6 +10140,9 @@ async def generate_diffusion_image(
                         # Position within the batch: images here share a seed + timestamp,
                         # so the export filename needs this to stay unique.
                         "batch_index": index,
+                        # The batch shares one seed, so reproducing image batch_index>0
+                        # needs the original batch_size: persist it so restore can replay.
+                        "batch_size": request.batch_size,
                         "model": result.get("repo_id"),
                         "created_at": created_at,
                     },

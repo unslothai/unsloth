@@ -344,7 +344,11 @@ class DiffusionBackend:
         total = 0
         base_files: list[str] = []
         try:
-            if gguf_filename:
+            # Skip the Hub size lookup for a LOCAL gguf path: model_info(repo_id) would
+            # raise on a filesystem path and (caught below) skip the base-repo lookup too,
+            # so the companion VAE/text-encoder files would never be prefetched and would
+            # instead download synchronously under the load lock.
+            if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
