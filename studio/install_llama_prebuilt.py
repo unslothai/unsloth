@@ -5130,9 +5130,13 @@ _VALIDATION_LAUNCH_FALLBACK = "fallback"
 _VALIDATION_PURPOSE_LDD = "ldd"
 _VALIDATION_PURPOSE_QUANTIZE = "quantize"
 _VALIDATION_PURPOSE_SERVER = "server"
+_VALIDATION_NETWORK_POLICY_DIRECT = "direct"
+_VALIDATION_NETWORK_POLICY_SANDBOX = "sandbox_loopback_only"
 _LINUX_LDD_PROBE_OK = "ok"
 _LINUX_LDD_PROBE_SKIPPED = "skipped"
 _LINUX_LDD_PROBE_ERROR = "error"
+_VALIDATION_SERVER_PROBE_MODE_HOST = "host_loopback_http"
+_VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX = "sandbox_loopback_http"
 
 
 @dataclass(frozen = True)
@@ -5143,6 +5147,10 @@ class _ValidationLaunchPlan:
     purpose: str
     sandbox_kind: str | None = None
     reason: str | None = None
+    payload_command: list[str] | None = None
+    payload_env: dict[str, str] | None = None
+    network_policy: str | None = None
+    server_probe_mode: str | None = None
 
     @property
     def is_runnable(self) -> bool:
@@ -5192,13 +5200,140 @@ def _append_existing_bwrap_bind(
     )
 
 
+def _linux_validation_launcher_env(payload_env: dict[str, str]) -> dict[str, str]:
+    env = scrubbed_environ()
+    for key in payload_env:
+        env.pop(key, None)
+    # Keep a stable base command search path; payload PATH is still injected in
+    # bwrap via --setenv from payload_env.
+    env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    return env
+
+
+def _linux_validation_setenv_args(payload_env: dict[str, str]) -> list[str]:
+    args: list[str] = []
+    for key, value in sorted(payload_env.items()):
+        args.extend(["--setenv", key, value])
+    return args
+
+
+def _linux_validation_server_probe_command(
+    server_command: list[str], *, timeout: int = 60
+) -> list[str]:
+    for candidate in ("/usr/bin/python3", "/usr/bin/python"):
+        if Path(candidate).exists():
+            python = candidate
+            break
+    else:
+        python = shutil.which("python3") or shutil.which("python")
+    if python is None:
+        raise RuntimeError("No python interpreter available for in-sandbox server probe")
+
+    probe_script = textwrap.dedent(
+        f"""
+        import json
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        import urllib.error
+        import urllib.request
+
+        command = {json.dumps(server_command)}
+        body = b'{{"prompt":"a","n_predict":1}}'
+        timeout = {int(timeout)}
+        deadline = time.time() + timeout
+
+        def read_tail(path: str, max_lines: int = 80) -> list[str]:
+            try:
+                with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
+                    return handle.read().splitlines()[-max_lines:]
+            except Exception:
+                return []
+
+        log_fd, log_path = tempfile.mkstemp(prefix = "unsloth-server-validate-", suffix = ".log")
+        os.close(log_fd)
+
+        port = 0
+        for index, arg in enumerate(command):
+            if arg == "--port" and index + 1 < len(command):
+                try:
+                    port = int(command[index + 1])
+                except ValueError:
+                    port = 0
+                break
+        if port <= 0:
+            print("failed: missing --port for sandboxed llama-server probe")
+            raise SystemExit(1)
+
+        try:
+            with open(log_path, "w", encoding = "utf-8", errors = "replace") as log_handle:
+                process = subprocess.Popen(
+                    command,
+                    stdout = log_handle,
+                    stderr = subprocess.STDOUT,
+                    text = True,
+                )
+                request = urllib.request.Request(
+                    "http://127.0.0.1:%d/completion" % port,
+                    data = body,
+                    headers = {{"Content-Type": "application/json"}},
+                    method = "POST",
+                )
+                while time.time() < deadline:
+                    if process.poll() is not None:
+                        print("server exited before completion probe, code=%s" % process.returncode)
+                        for line in read_tail(log_path):
+                            print(line)
+                        raise SystemExit(process.returncode if process.returncode else 1)
+                    try:
+                        with urllib.request.urlopen(request, timeout = 1) as response:
+                            _ = response.read(32)
+                            if response.status == 200:
+                                process.terminate()
+                                try:
+                                    process.wait(timeout = 5)
+                                except subprocess.TimeoutExpired:
+                                    process.kill()
+                                print("server validation probe succeeded for port=%s" % port)
+                                for line in read_tail(log_path):
+                                    print(line)
+                                raise SystemExit(0)
+                            print("server returned HTTP %s" % response.status)
+                    except urllib.error.HTTPError as exc:
+                        print("server returned HTTP %s" % exc.code)
+                        _ = exc.read()
+                    except Exception:
+                        pass
+                    time.sleep(0.25)
+
+            print("server validation timed out waiting for loopback response on port=%s" % port)
+            for line in read_tail(log_path):
+                print(line)
+            raise SystemExit(1)
+        finally:
+            if "process" in locals() and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout = 5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout = 5)
+            os.unlink(log_path)
+        """
+    )
+    return [python, "-c", probe_script]
+
+
 def _linux_validation_bwrap_prefix(
     command: list[str],
     *,
     binary_path: Path,
     install_dir: Path,
     purpose: str,
-    env: dict[str, str],
+    payload_env: dict[str, str],
+    payload_command: list[str] | None = None,
     enable_gpu_layers: bool = False,
     gpu_backend: Literal["cuda", "rocm"] | None = None,
 ) -> list[str]:
@@ -5226,17 +5361,29 @@ def _linux_validation_bwrap_prefix(
         "/etc/ld.so.conf",
         "/etc/ld.so.conf.d",
     ]
+    if command_path.parent.name == "bin":
+        readonly_targets.extend(
+            [
+                command_path.parent.parent / "lib",
+                command_path.parent.parent / "lib64",
+            ]
+        )
     readonly_targets.extend(
         part
-        for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+        for part in payload_env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
         if part
     )
+    server_command = payload_command or command
 
     if purpose == _VALIDATION_PURPOSE_QUANTIZE and len(command) >= 3:
         readonly_targets.append(Path(command[1]).parent)
         write_targets.add(str(Path(command[2]).parent))
-    elif purpose == _VALIDATION_PURPOSE_SERVER and len(command) >= 3 and command[1] == "-m":
-        readonly_targets.append(Path(command[2]).parent)
+    elif (
+        purpose == _VALIDATION_PURPOSE_SERVER
+        and len(server_command) >= 3
+        and server_command[1] == "-m"
+    ):
+        readonly_targets.append(Path(server_command[2]).parent)
 
     enable_gpu_devices = (
         purpose == _VALIDATION_PURPOSE_SERVER
@@ -5247,8 +5394,6 @@ def _linux_validation_bwrap_prefix(
         "bwrap",
         "--unshare-all",
     ]
-    if purpose == _VALIDATION_PURPOSE_SERVER:
-        args.append("--share-net")
     args.extend(
         [
         "--die-with-parent",
@@ -5264,6 +5409,7 @@ def _linux_validation_bwrap_prefix(
         runtime_home,
         ]
     )
+    args.extend(_linux_validation_setenv_args(payload_env))
 
     seen: set[str] = set()
     if enable_gpu_devices:
@@ -5342,12 +5488,13 @@ def _macos_validation_sandbox_prefix(
 ) -> list[str]:
     runtime_home = Path(isolated_runtime_home())
     read_targets: list[str | Path] = [
-        "/",
+        "/bin",
+        "/usr",
+        "/usr/bin",
         "/System",
         "/Library",
-        "/private",
-        "/dev",
-        "/usr",
+        "/System/Library/Frameworks",
+        "/usr/lib",
         install_dir,
         binary_path.parent,
         runtime_home,
@@ -5369,7 +5516,6 @@ def _macos_validation_sandbox_prefix(
         "/usr/bin",
         "/System",
         "/Library",
-        "/private",
         "/usr",
         binary_path.parent,
     ]
@@ -5437,43 +5583,88 @@ def build_validation_sandbox_plan(
     host: HostInfo | None = None,
     runtime_line: str | None = None,
 ) -> _ValidationLaunchPlan:
+    launcher_env = (
+        _linux_validation_launcher_env(env) if _host_is_linux(host) else scrubbed_environ()
+    )
     if _host_is_linux(host):
         if _has_command("bwrap"):
+            payload_command = list(command)
+            network_policy = _VALIDATION_NETWORK_POLICY_SANDBOX
+            server_probe_mode = (
+                _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX if purpose == _VALIDATION_PURPOSE_SERVER else None
+            )
+            launch_command = payload_command
+            if purpose == _VALIDATION_PURPOSE_SERVER:
+                try:
+                    launch_command = _linux_validation_server_probe_command(
+                        payload_command,
+                        timeout = 60,
+                    )
+                except RuntimeError as exc:
+                    return _ValidationLaunchPlan(
+                        command = payload_command,
+                        env = launcher_env,
+                        action = _VALIDATION_LAUNCH_FALLBACK,
+                        purpose = purpose,
+                        reason = str(exc),
+                        payload_command = payload_command,
+                        payload_env = env,
+                        network_policy = network_policy,
+                        server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX,
+                        sandbox_kind = "linux_bwrap",
+                    )
+            adapter_command = _linux_validation_bwrap_prefix(
+                launch_command,
+                binary_path = binary_path,
+                install_dir = install_dir,
+                purpose = purpose,
+                payload_env = env,
+                payload_command = payload_command,
+                enable_gpu_layers = enable_gpu_layers,
+                gpu_backend = gpu_backend,
+            )
             return _ValidationLaunchPlan(
                 command = [
-                    *_linux_validation_bwrap_prefix(
-                        command,
-                        binary_path = binary_path,
-                        install_dir = install_dir,
-                        purpose = purpose,
-                        env = env,
-                        enable_gpu_layers = enable_gpu_layers,
-                        gpu_backend = gpu_backend,
-                    ),
-                    *command,
+                    *adapter_command,
+                    *launch_command,
                 ],
-                env = env,
+                env = launcher_env,
                 action = _VALIDATION_LAUNCH_RUN,
                 purpose = purpose,
+                sandbox_kind = "linux_bwrap",
+                payload_command = payload_command,
+                payload_env = env,
+                network_policy = network_policy,
+                server_probe_mode = server_probe_mode,
             )
         if purpose == _VALIDATION_PURPOSE_LDD:
             return _ValidationLaunchPlan(
                 command = command,
-                env = env,
+                env = launcher_env,
                 action = _VALIDATION_LAUNCH_SKIP,
                 purpose = purpose,
+                sandbox_kind = "linux_bwrap",
                 reason = "No Linux sandbox adapter was available; skip ldd probe",
             )
         return _ValidationLaunchPlan(
             command = command,
-            env = env,
+            env = launcher_env,
             action = _VALIDATION_LAUNCH_FALLBACK,
             purpose = purpose,
+            sandbox_kind = "linux_bwrap",
             reason = "No Linux sandbox adapter was available for downloaded-binary validation",
+            payload_command = command,
+            payload_env = env,
+            network_policy = _VALIDATION_NETWORK_POLICY_DIRECT,
+            server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
         )
 
     if _host_is_macos(host):
         if _has_command("sandbox-exec"):
+            network_policy = (
+                _VALIDATION_NETWORK_POLICY_SANDBOX if purpose == _VALIDATION_PURPOSE_SERVER else _VALIDATION_NETWORK_POLICY_DIRECT
+            )
+            launch_command = command
             return _ValidationLaunchPlan(
                 command = [
                     *_macos_validation_sandbox_prefix(
@@ -5483,18 +5674,31 @@ def build_validation_sandbox_plan(
                         purpose = purpose,
                         env = env,
                     ),
-                    *command,
+                    "env",
+                    "-i",
+                    *[f"{name}={value}" for name, value in sorted(env.items())],
+                    *launch_command,
                 ],
-                env = env,
+                env = launcher_env,
                 action = _VALIDATION_LAUNCH_RUN,
                 purpose = purpose,
+                sandbox_kind = "macos_sandbox_exec",
+                payload_command = launch_command,
+                payload_env = env,
+                network_policy = network_policy,
+                server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
             )
         return _ValidationLaunchPlan(
             command = command,
-            env = env,
+            env = launcher_env,
             action = _VALIDATION_LAUNCH_FALLBACK,
             purpose = purpose,
             reason = "No macOS sandbox-exec adapter was available for downloaded-binary validation",
+            payload_command = command,
+            payload_env = env,
+            sandbox_kind = "macos_sandbox_exec",
+            network_policy = _VALIDATION_NETWORK_POLICY_DIRECT if purpose == _VALIDATION_PURPOSE_SERVER else _VALIDATION_NETWORK_POLICY_DIRECT,
+            server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
         )
 
     if _host_is_windows(host):
@@ -5505,6 +5709,10 @@ def build_validation_sandbox_plan(
             purpose = purpose,
             sandbox_kind = "windows_direct_validation",
             reason = "Running validation directly on Windows host",
+            payload_command = command,
+            payload_env = env,
+            network_policy = _VALIDATION_NETWORK_POLICY_DIRECT,
+            server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
         )
 
     return _ValidationLaunchPlan(
@@ -5576,6 +5784,19 @@ def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> Linu
             status = _LINUX_LDD_PROBE_ERROR,
             missing = [],
             reason = f"ldd probe failed: {exc}",
+        )
+    if result.returncode != 0:
+        reason = result.stdout if result.stdout else ""
+        stderr = result.stderr if result.stderr else ""
+        if stderr:
+            reason = f"{reason} {stderr}" if reason else stderr
+        if not reason:
+            reason = "ldd probe failed"
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_ERROR,
+            missing = [],
+            reason = reason.strip(),
+            output = result.stdout + result.stderr,
         )
     output = result.stdout + result.stderr
     return LinuxLibraryProbeResult(
@@ -6290,6 +6511,29 @@ def validate_server(
             enable_gpu_layers = _enable_gpu_layers,
             gpu_backend = gpu_backend,
         )
+        if plan.server_probe_mode == _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX:
+            started_at = time.time()
+            result = _run_validation_capture(plan, timeout = 60)
+            output = (result.stdout or "") + (result.stderr or "")
+            if result.returncode == 0:
+                return
+            exited_quickly = (time.time() - started_at) <= SERVER_BIND_RETRY_WINDOW_SECONDS
+            failure = PrebuiltFallback("llama-server validation failed inside sandbox:\n" + output)
+            if (
+                port_attempt < SERVER_PORT_BIND_ATTEMPTS
+                and is_retryable_server_bind_error(
+                    RuntimeError(output),
+                    output,
+                    exited_quickly = exited_quickly,
+                )
+            ):
+                log(
+                    f"llama-server startup hit a port race on {port}; retrying with a fresh port "
+                    f"({port_attempt}/{SERVER_PORT_BIND_ATTEMPTS})"
+                )
+                last_failure = failure
+                continue
+            raise failure
 
         log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")
         os.close(log_fd)
