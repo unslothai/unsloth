@@ -5257,10 +5257,94 @@ def _linux_validation_bwrap_prefix(
     return args
 
 
-def _macos_validation_sandbox_prefix(purpose: str) -> list[str]:
-    profile = "(version 1)"
-    if purpose != _VALIDATION_PURPOSE_SERVER:
-        profile = "(version 1)(deny network*)"
+def _sandbox_profile_path_literals(path: str | Path) -> list[str]:
+    raw_path = Path(path)
+    candidates: list[Path] = [raw_path]
+    try:
+        resolved = raw_path.resolve()
+    except Exception:
+        resolved = raw_path
+    if resolved not in candidates:
+        candidates.append(resolved)
+    literals: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        text = str(candidate)
+        if text in seen:
+            continue
+        seen.add(text)
+        literals.append(text.replace("\\", "\\\\").replace('"', '\\"'))
+    return literals
+
+
+def _macos_validation_sandbox_prefix(
+    command: list[str],
+    *,
+    binary_path: Path,
+    install_dir: Path,
+    purpose: str,
+    env: dict[str, str],
+) -> list[str]:
+    runtime_home = Path(isolated_runtime_home())
+    read_targets: list[str | Path] = [
+        "/",
+        "/System",
+        "/Library",
+        "/private",
+        "/dev",
+        "/usr",
+        install_dir,
+        binary_path.parent,
+        runtime_home,
+    ]
+    read_targets.extend(
+        part
+        for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep)
+        if part
+    )
+    write_targets: list[str | Path] = [runtime_home]
+    if purpose == _VALIDATION_PURPOSE_QUANTIZE and len(command) >= 3:
+        read_targets.append(Path(command[1]).parent)
+        write_targets.append(Path(command[2]).parent)
+    elif purpose == _VALIDATION_PURPOSE_SERVER and len(command) >= 3 and command[1] == "-m":
+        read_targets.append(Path(command[2]).parent)
+
+    exec_targets: list[str | Path] = [
+        "/bin",
+        "/usr/bin",
+        "/System",
+        "/Library",
+        "/private",
+        "/usr",
+        binary_path.parent,
+    ]
+    profile_parts = [
+        "(version 1)",
+        "(deny default)",
+        '(import "bsd.sb")',
+        "(allow process-exec",
+    ]
+    for target in exec_targets:
+        for literal in _sandbox_profile_path_literals(target):
+            profile_parts.append(f'(subpath "{literal}")')
+    profile_parts.append(")")
+    profile_parts.append("(allow file-read*")
+    for target in read_targets:
+        for literal in _sandbox_profile_path_literals(target):
+            if literal == "/":
+                profile_parts.append(f'(literal "{literal}")')
+            else:
+                profile_parts.append(f'(subpath "{literal}")')
+    profile_parts.append(")")
+    profile_parts.append("(allow file-write*")
+    for target in write_targets:
+        for literal in _sandbox_profile_path_literals(target):
+            profile_parts.append(f'(subpath "{literal}")')
+    profile_parts.append(")")
+    if purpose == _VALIDATION_PURPOSE_SERVER:
+        profile_parts.append('(allow network* (local ip "localhost:*"))')
+        profile_parts.append('(allow network* (remote ip "localhost:*"))')
+    profile = "".join(profile_parts)
     return [
         "sandbox-exec",
         "-p",
@@ -5332,7 +5416,16 @@ def build_validation_sandbox_plan(
     if _host_is_macos(host):
         if _has_command("sandbox-exec"):
             return _ValidationLaunchPlan(
-                command = [*_macos_validation_sandbox_prefix(purpose), *command],
+                command = [
+                    *_macos_validation_sandbox_prefix(
+                        command,
+                        binary_path = binary_path,
+                        install_dir = install_dir,
+                        purpose = purpose,
+                        env = env,
+                    ),
+                    *command,
+                ],
                 env = env,
                 action = _VALIDATION_LAUNCH_RUN,
                 purpose = purpose,
