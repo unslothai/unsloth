@@ -1114,6 +1114,24 @@ def _extra_args_n_ubatch(
     return None
 
 
+def _extra_args_forces_cpu_offload(extra_args: Optional[Iterable[str]]) -> bool:
+    """True when extras pin GPU offload to zero (-ngl 0 / --n-gpu-layers 0 /
+    --gpu-layers 0): the launch runs fully on CPU despite a visible GPU, so the
+    CPU-only safe defaults apply. Last occurrence wins, as llama-server parses it."""
+    args = [str(a) for a in extra_args] if extra_args else []
+    forced = False
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        if flag not in ("-ngl", "--n-gpu-layers", "--gpu-layers"):
+            continue
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        try:
+            forced = int(value) == 0
+        except (TypeError, ValueError):
+            continue
+    return forced
+
+
 def _build_ngram_mod_flags(
     caps: Optional[dict],
     n_match: int = 24,
@@ -4955,6 +4973,8 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                model_size_fit = None  # weights + compute buffer; set in the fit try
+                _mtp_reserve_bytes = 0  # MTP draft reserve at effective_ctx; set in the fit try
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
@@ -4976,6 +4996,12 @@ class LlamaCppBackend:
                     _gpu_mem = self._get_gpu_memory()
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
+                    # A user -ngl 0 / --n-gpu-layers 0 pins every layer on CPU even with a
+                    # visible GPU; drop the GPU list so the CPU-only safe defaults and the
+                    # RAM-aware fit apply, not a GPU launch that then runs on CPU anyway.
+                    if gpus and _extra_args_forces_cpu_offload(extra_args):
+                        logger.info("User set zero GPU offload (-ngl 0): treating as CPU-only.")
+                        gpus, total_by_idx = [], {}
                     _cpu_only = (not gpus) and not _is_apple_silicon()
 
                     def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
@@ -5704,8 +5730,12 @@ class LlamaCppBackend:
                         try:
                             if _avail_mib and model_size and self._can_estimate_kv():
                                 _budget_b = _avail_mib * _CPU_RAM_BUDGET_FRAC * 1024 * 1024
-                                if model_size >= _budget_b:
-                                    # Weights alone over budget: _fit_context_to_vram returns
+                                # Fixed footprint = weights + compute buffer (the same lump
+                                # the load allocates), so a context that only fits ignoring
+                                # the buffer can't slip through and get OS-killed at startup.
+                                _fixed = model_size_fit or model_size
+                                if _fixed >= _budget_b:
+                                    # Footprint alone over budget: _fit_context_to_vram returns
                                     # the ceiling unchanged, but KV at 32k could OOM. Floor to
                                     # the minimum so the tightest fit gets the smallest context.
                                     _cpu_cap = 4096
@@ -5713,7 +5743,7 @@ class LlamaCppBackend:
                                     _fit = self._fit_context_to_vram(
                                         requested_ctx = _CPU_CTX_AUTO_CEILING,
                                         available_mib = _avail_mib,
-                                        model_size_bytes = model_size,
+                                        model_size_bytes = _fixed,
                                         cache_type_kv = cache_type_kv,
                                         min_ctx = 4096,
                                         n_parallel = n_parallel,
@@ -5992,17 +6022,23 @@ class LlamaCppBackend:
                 try:
                     from core.inference.numa import decide_interleave
 
-                    # Decide on the resident footprint (weights + KV at the capped
-                    # context), not weights alone, so a model whose weights fit one node
-                    # but whose footprint does not still interleaves.
-                    _numa_footprint = model_size
-                    if model_size and effective_ctx > 0 and self._can_estimate_kv():
+                    # Decide on the full resident footprint (weights + compute buffer + KV
+                    # at the capped context + MTP reserve), not weights alone, so a model
+                    # whose weights fit one node but whose footprint does not still
+                    # interleaves instead of first-touch thrashing on one node.
+                    _resident = model_size_fit or model_size
+                    _numa_footprint = _resident
+                    if _resident and effective_ctx > 0 and self._can_estimate_kv():
                         try:
-                            _numa_footprint = model_size + self._estimate_kv_cache_bytes(
-                                effective_ctx, cache_type_kv, n_parallel = n_parallel
+                            _numa_footprint = (
+                                _resident
+                                + self._estimate_kv_cache_bytes(
+                                    effective_ctx, cache_type_kv, n_parallel = n_parallel
+                                )
+                                + _mtp_reserve_bytes
                             )
                         except Exception:
-                            _numa_footprint = model_size
+                            _numa_footprint = _resident
                     _numa = decide_interleave(_numa_footprint, cpu_only = _cpu_only)
                     if _numa.interleave:
                         self._numa_prefix = list(_numa.prefix)

@@ -126,19 +126,56 @@ def test_cpu_ram_preflight_warns_when_weights_exceed_ram():
 
 
 def test_cpu_context_floors_to_min_when_weights_exceed_budget():
-    """When weights alone exceed the RAM budget, _fit_context_to_vram returns the
-    ceiling unchanged; the cap must floor to the minimum instead (PR review fix)."""
+    """When the fixed footprint exceeds the RAM budget, _fit_context_to_vram returns
+    the ceiling unchanged; the cap must floor to the minimum instead (PR review fix)."""
     src = _load_model_src()
-    assert "model_size >= _budget_b" in src
+    # The check uses the fitted footprint (weights + compute buffer), not raw weights.
+    assert "_fixed = model_size_fit or model_size" in src
+    assert "_fixed >= _budget_b" in src
     assert "_cpu_cap = 4096" in src
 
 
+def test_cpu_context_fit_uses_fitted_footprint():
+    """The CPU RAM fit must pass the fitted footprint (weights + compute buffer), so a
+    context that only fits when the buffer is ignored can't slip through (PR review fix)."""
+    src = _load_model_src()
+    assert "model_size_bytes = _fixed" in src
+
+
 def test_numa_decision_uses_footprint_not_just_weights():
-    """The NUMA interleave decision must use weights + KV (at the launched parallel
-    slots), so a model whose weights fit one node but whose footprint does not still
-    interleaves (PR review fixes)."""
+    """The NUMA interleave decision must use the full resident footprint (weights +
+    compute buffer + KV at the launched parallel slots + MTP reserve), so a model whose
+    weights fit one node but whose footprint does not still interleaves (PR review fixes)."""
     src = _load_model_src()
     assert "_numa_footprint" in src
     assert "decide_interleave(_numa_footprint" in src
+    # Footprint = fitted weights (incl. compute buffer) + KV + MTP reserve.
+    assert "_resident = model_size_fit or model_size" in src
+    assert "_mtp_reserve_bytes" in src
     # KV must be sized for the launched --parallel slots, not the n_parallel=1 default.
     assert "effective_ctx, cache_type_kv, n_parallel = n_parallel" in src
+
+
+def test_extra_args_forces_cpu_offload_helper():
+    """The zero-offload detector: -ngl 0 / --n-gpu-layers 0 / --gpu-layers 0 (last wins)."""
+    from core.inference.llama_cpp import _extra_args_forces_cpu_offload as f
+
+    assert f(["-ngl", "0"])
+    assert f(["--n-gpu-layers", "0"])
+    assert f(["--gpu-layers", "0"])
+    assert f(["-ngl=0"])
+    assert not f(["-ngl", "99"])
+    assert not f([])
+    assert not f(None)
+    assert not f(["--flash-attn", "on"])
+    # Last occurrence wins, matching llama-server's own parsing.
+    assert f(["-ngl", "99", "-ngl", "0"])
+    assert not f(["-ngl", "0", "-ngl", "99"])
+
+
+def test_zero_offload_folds_into_cpu_only():
+    """A visible GPU plus a user -ngl 0 must be treated as CPU-only: the GPU list is
+    dropped before _cpu_only is computed so the CPU safe defaults apply (PR review fix)."""
+    src = _load_model_src()
+    assert "_extra_args_forces_cpu_offload(extra_args)" in src
+    assert "gpus, total_by_idx = [], {}" in src
