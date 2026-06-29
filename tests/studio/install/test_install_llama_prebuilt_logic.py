@@ -3189,7 +3189,7 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
         binary_path = binary_path,
         install_dir = Path("/tmp/install"),
         host = macos_host(),
-        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
         runtime_line = None,
         env = {},
     )
@@ -3202,11 +3202,28 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
         binary_path = binary_path,
         install_dir = Path("/tmp/install"),
         host = macos_host(),
-        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
         runtime_line = None,
         env = {},
     )
     assert mac_skip.is_fallback
+
+
+def test_build_validation_sandbox_plan_macos_server_keeps_loopback(monkeypatch):
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "_has_command", lambda command: command == "sandbox-exec"
+    )
+    plan = build_validation_sandbox_plan(
+        ["llama-server", "--help"],
+        binary_path = Path("/tmp/bin/llama-server"),
+        install_dir = Path("/tmp/install"),
+        host = macos_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {},
+    )
+    assert plan.is_runnable
+    assert plan.command[:3] == ["sandbox-exec", "-p", "(version 1)"]
 
 
 def test_build_validation_sandbox_plan_windows_is_unsupported(monkeypatch):
