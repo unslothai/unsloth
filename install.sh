@@ -447,8 +447,12 @@ _on_install_exit() {
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
     fi
+    [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
     exit "$_status"
 }
+# Empty so an inherited value can never reach the trap's rm; only a temp dir
+# this script creates below (Apple Silicon, spaced path) is ever removed.
+_UV_OVERRIDE_TMPDIR=""
 trap _on_install_exit EXIT
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
@@ -1427,6 +1431,25 @@ fi
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
     if [ -f "$_OVERRIDES_FILE" ]; then
+        # uv splits UV_OVERRIDE on whitespace, so a repo path with whitespace
+        # truncates it and aborts every later uv call (issue #6503). Hand uv a copy.
+        case "$_OVERRIDES_FILE" in
+            *[[:space:]]*)
+                _UV_OVERRIDE_TMPDIR=$(mktemp -d 2>/dev/null) || _UV_OVERRIDE_TMPDIR=""
+                case "$_UV_OVERRIDE_TMPDIR" in
+                    "") ;;
+                    *[[:space:]]*) rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true; _UV_OVERRIDE_TMPDIR="" ;;
+                    *)
+                        if cp "$_OVERRIDES_FILE" "$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt" 2>/dev/null; then
+                            _OVERRIDES_FILE="$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt"
+                        else
+                            rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+                            _UV_OVERRIDE_TMPDIR=""
+                        fi
+                        ;;
+                esac
+                ;;
+        esac
         export UV_OVERRIDE="$_OVERRIDES_FILE"
     fi
 fi
@@ -1534,17 +1557,15 @@ _maybe_reroute_strixhalo_to_2404() {
 _maybe_reroute_strixhalo_to_2404 || true
 
 # ── Check system dependencies ──
-# cmake and git are needed by unsloth studio setup to build the GGUF inference
-# engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
+# cmake/git are only needed to *build* llama.cpp from source. Studio downloads a
+# prebuilt by default, and setup.sh self-skips the source build when they're
+# absent -- so macOS doesn't block on cmake (requiring it would force a manual
+# Homebrew install). Linux keeps requiring them; its package manager has them.
 tauri_log "STEP" "Checking system dependencies"
-MISSING=""
-
-command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
-command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
 
 case "$OS" in
     macos)
-        # Xcode Command Line Tools provide the C/C++ compiler
+        # Xcode Command Line Tools provide the C/C++ compiler and git.
         if ! xcode-select -p >/dev/null 2>&1; then
             echo ""
             echo "==> Xcode Command Line Tools are required."
@@ -1553,8 +1574,19 @@ case "$OS" in
             echo "    After the installation completes, please re-run this script."
             exit 1
         fi
+        # cmake is only needed for a source build; the default prebuilt path
+        # doesn't use it, so its absence is not fatal -- no Homebrew prerequisite.
+        if command -v cmake >/dev/null 2>&1; then
+            step "deps" "all system dependencies found"
+        else
+            step "deps" "using prebuilt llama.cpp (cmake not found)" "$C_WARN"
+            substep "Install cmake only if you want a source build: brew install cmake"
+        fi
         ;;
     linux|wsl)
+        MISSING=""
+        command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
+        command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
         # curl or wget is needed for downloads; check both
         if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
             MISSING="$MISSING curl"
@@ -1562,27 +1594,12 @@ case "$OS" in
         command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
         # libcurl dev headers for llama.cpp HTTPS support
         command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
-        ;;
-esac
 
-MISSING=$(echo "$MISSING" | sed 's/^ *//')
-
-if [ -n "$MISSING" ]; then
-    echo ""
-    step "deps" "missing: $MISSING" "$C_WARN"
-    substep "These are needed to build the GGUF inference engine."
-
-    case "$OS" in
-        macos)
-            if ! command -v brew >/dev/null 2>&1; then
-                echo ""
-                echo "    Homebrew is required to install them."
-                echo "    Install Homebrew from https://brew.sh then re-run this script."
-                exit 1
-            fi
-            brew install $MISSING </dev/null
-            ;;
-        linux|wsl)
+        MISSING=$(echo "$MISSING" | sed 's/^ *//')
+        if [ -n "$MISSING" ]; then
+            echo ""
+            step "deps" "missing: $MISSING" "$C_WARN"
+            substep "These are needed to build the GGUF inference engine."
             if command -v apt-get >/dev/null 2>&1; then
                 _smart_apt_install $MISSING
             else
@@ -1597,12 +1614,12 @@ if [ -n "$MISSING" ]; then
                 echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
                 exit 1
             fi
-            ;;
-    esac
-    echo ""
-else
-    step "deps" "all system dependencies found"
-fi
+            echo ""
+        else
+            step "deps" "all system dependencies found"
+        fi
+        ;;
+esac
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
@@ -3160,7 +3177,7 @@ if [ -t 1 ]; then
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 to allow network / cloud access)"
-            substep "(add --secure to allow HTTPS)"
+            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
             echo ""
             ;;
     esac
@@ -3182,6 +3199,6 @@ else
         substep "unsloth studio -p 8888"
     fi
     substep "(add -H 0.0.0.0 to allow network / cloud access)"
-    substep "(add --secure to allow HTTPS)"
+    substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
     echo ""
 fi

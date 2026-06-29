@@ -27,6 +27,7 @@ from storage.studio_db import (
     list_runs,
     update_run_display_name,
 )
+from utils.models.checkpoints import has_preview_model, preview_ref
 
 logger = get_logger(__name__)
 
@@ -42,7 +43,17 @@ async def list_training_runs(
     """List training runs, newest first."""
     result = list_runs(limit = limit, offset = offset)
     return TrainingRunListResponse(
-        runs = [TrainingRunSummary(**{**r, "can_resume": can_resume_run(r)}) for r in result["runs"]],
+        runs = [
+            TrainingRunSummary(
+                **{
+                    **r,
+                    "can_resume": can_resume_run(r),
+                    "has_preview_model": has_preview_model(r.get("output_dir")),
+                    "preview_ref": preview_ref(r.get("output_dir")),
+                }
+            )
+            for r in result["runs"]
+        ],
         total = result["total"],
     )
 
@@ -67,6 +78,8 @@ async def get_training_run_detail(run_id: str, current_subject: str = Depends(ge
             **{
                 **{k: v for k, v in run.items() if k != "config_json"},
                 "can_resume": can_resume_run(run),
+                "has_preview_model": has_preview_model(run.get("output_dir")),
+                "preview_ref": preview_ref(run.get("output_dir")),
             }
         ),
         config = config,
@@ -98,6 +111,8 @@ async def update_training_run(
         **{
             **{k: v for k, v in refreshed.items() if k != "config_json"},
             "can_resume": can_resume_run(refreshed),
+            "has_preview_model": has_preview_model(refreshed.get("output_dir")),
+            "preview_ref": preview_ref(refreshed.get("output_dir")),
         }
     )
 

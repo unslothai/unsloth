@@ -4261,7 +4261,10 @@ def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
 
 
 def ensure_diffusion_visual_server(
-    install_dir: Path, host: HostInfo, release_tag: str | None
+    install_dir: Path,
+    host: HostInfo,
+    release_tag: str | None,
+    approved_checksums: ApprovedReleaseChecksums,
 ) -> None:
     """Best-effort placement of the DiffusionGemma visual-server binary next to
     llama-server in the install tree, so Studio can serve DiffusionGemma GGUFs
@@ -4293,6 +4296,7 @@ def ensure_diffusion_visual_server(
     try:
         assets = github_release_assets(DEFAULT_PUBLISHED_REPO, release_tag)
         match = None
+        unapproved_matches: list[str] = []
         for asset_name, url in assets.items():
             low = asset_name.lower()
             if "llama-diffusion-gemma-visual-server" not in low:
@@ -4301,19 +4305,39 @@ def ensure_diffusion_visual_server(
                 continue
             if (not host.is_windows) and low.endswith(".exe"):
                 continue
-            match = (asset_name, url)
+            # This binary is chmod'd executable and later launched by the
+            # backend, so it must be covered by the approved checksum manifest
+            # just like every other prebuilt artifact. An asset that matches the
+            # name but is missing from the manifest is refused rather than run.
+            approved = approved_checksums.artifacts.get(asset_name)
+            if approved is None:
+                unapproved_matches.append(asset_name)
+                continue
+            match = (asset_name, url, approved.sha256)
             break
         if match is None:
-            log(
-                "diffusion visual server not found in the published release; native "
-                "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
-            )
+            if unapproved_matches:
+                log(
+                    "diffusion visual server asset(s) were present but omitted from the "
+                    "approved checksum manifest; refusing unverified native executable: "
+                    + ", ".join(unapproved_matches)
+                )
+            else:
+                log(
+                    "diffusion visual server not found in the published release; native "
+                    "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
+                )
             return
         bin_dir.mkdir(parents = True, exist_ok = True)
-        download_file(match[1], target)
+        download_file_verified(
+            match[1],
+            target,
+            expected_sha256 = match[2],
+            label = f"diffusion visual server {match[0]}",
+        )
         if not host.is_windows:
             target.chmod(0o755)
-        log(f"installed diffusion visual server: {match[0]}")
+        log(f"installed verified diffusion visual server: {match[0]}")
     except Exception as exc:
         log(
             "diffusion visual server fetch skipped "
@@ -6637,7 +6661,9 @@ def install_prebuilt(
                             f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                         )
                     try:
-                        ensure_diffusion_visual_server(install_dir, host, plan.release_tag)
+                        ensure_diffusion_visual_server(
+                            install_dir, host, plan.release_tag, plan.approved_checksums
+                        )
                     except Exception as exc:
                         log(
                             "diffusion visual server step skipped; install remains valid "

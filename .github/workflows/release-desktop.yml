@@ -353,7 +353,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
 
       # ── Node.js ──
       - name: Setup Node.js
@@ -406,9 +406,24 @@ jobs:
           if (config.bundle?.linux?.rpm) {
             throw new Error('bundle.linux.rpm must not be configured');
           }
+          if (config.bundle?.linux?.appimage?.bundleMediaFramework !== false) {
+            throw new Error('Linux AppImage bundleMediaFramework must stay false');
+          }
 
           const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
           const lines = workflow.split(/\r?\n/);
+          const linuxInstallLines = lines.filter((line) => line.includes('sudo apt-get install'));
+          const ayatanaPackage = ['libayatana', 'appindicator3-dev'].join('-');
+          if (linuxInstallLines.some((line) => line.includes(ayatanaPackage))) {
+            throw new Error('Desktop Linux release must not install the Ayatana appindicator dev package');
+          }
+          if (!linuxInstallLines.some((line) => line.includes('libappindicator3-dev'))) {
+            throw new Error('Desktop Linux release must install libappindicator3-dev');
+          }
+          const linuxdeployLines = lines.filter((line) => line.includes('github.com/linuxdeploy/linuxdeploy/releases/download'));
+          if (!linuxdeployLines.some((line) => line.includes('1-alpha-20250213-2/linuxdeploy-x86_64.AppImage'))) {
+            throw new Error('Desktop Linux release must pin linuxdeploy 1-alpha-20250213-2');
+          }
           const releaseBodies = [];
           for (let i = 0; i < lines.length; i += 1) {
             const match = lines[i].match(/^(\s*)releaseBody:\s*\|\s*$/);
@@ -437,6 +452,12 @@ jobs:
           for (const body of releaseBodies) {
             if (/\brpm\b|\.rpm/i.test(body)) {
               throw new Error('Desktop release body must not advertise RPM packages');
+            }
+            if (/AppImage.*universal|universal.*AppImage/i.test(body)) {
+              throw new Error('Desktop release body must not advertise AppImage as universal');
+            }
+            if (!/AppImage.*experimental/i.test(body)) {
+              throw new Error('Desktop release body must mark AppImage as experimental');
             }
           }
           JS
@@ -562,6 +583,19 @@ jobs:
           Get-Command trusted-signing-cli -ErrorAction SilentlyContinue || Write-Output "trusted-signing-cli NOT in PATH"
           trusted-signing-cli --version || Write-Output "trusted-signing-cli failed to run"
 
+      # ── Linux: pin AppImage packaging toolchain ──
+      - name: Pin linuxdeploy for AppImage
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools_dir="$RUNNER_TEMP/tauri-tools-cache/tauri"
+          mkdir -p "$tools_dir"
+          curl -fsSL \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage" \
+            -o "$tools_dir/linuxdeploy-x86_64.AppImage"
+          chmod +x "$tools_dir/linuxdeploy-x86_64.AppImage"
+
       # ── Linux: build + sign + upload ──
       - name: Build Linux app
         if: matrix.platform == 'ubuntu-22.04'
@@ -570,6 +604,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          XDG_CACHE_HOME: ${{ runner.temp }}/tauri-tools-cache
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
@@ -580,9 +615,10 @@ jobs:
 
             **macOS**: Download the Apple Silicon `.dmg`.
             **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+            **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
             > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+            > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
             > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
@@ -611,9 +647,10 @@ jobs:
 
             **macOS**: Download the Apple Silicon `.dmg`.
             **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+            **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
             > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+            > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
             > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}
@@ -643,9 +680,10 @@ jobs:
 
             **macOS**: Download the Apple Silicon `.dmg`.
             **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` (Ubuntu/Debian) or `.AppImage` (universal).
+            **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
             > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+            > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
             > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
             > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
           releaseDraft: ${{ inputs.draft }}

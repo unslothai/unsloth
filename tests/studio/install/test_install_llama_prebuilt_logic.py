@@ -37,6 +37,41 @@ install_prebuilt = INSTALL_LLAMA_PREBUILT.install_prebuilt
 write_prebuilt_metadata = INSTALL_LLAMA_PREBUILT.write_prebuilt_metadata
 existing_install_matches_plan = INSTALL_LLAMA_PREBUILT.existing_install_matches_plan
 existing_install_matches_choice = INSTALL_LLAMA_PREBUILT.existing_install_matches_choice
+ensure_diffusion_visual_server = INSTALL_LLAMA_PREBUILT.ensure_diffusion_visual_server
+
+
+def linux_host() -> HostInfo:
+    return HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+
+
+def approved_release_checksums_for_asset(asset_name: str, sha256: str) -> ApprovedReleaseChecksums:
+    return ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "b9334",
+        upstream_tag = "b9334",
+        artifacts = {
+            asset_name: ApprovedArtifactHash(
+                asset_name = asset_name,
+                sha256 = sha256,
+                repo = "unslothai/llama.cpp",
+                kind = "diffusion-visual-server",
+            )
+        },
+    )
 
 
 def approved_checksums_for(
@@ -2828,3 +2863,87 @@ def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
     calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
     assert calls == {"quantize": 1, "server": 1}
+
+
+def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tmp_path: Path):
+    asset_name = "llama-diffusion-gemma-visual-server-linux-x64"
+    expected_sha = "a" * 64
+    asset_url = "https://github.com/unslothai/llama.cpp/releases/download/b9334/" + asset_name
+    calls: list[tuple[str, Path, str | None, str | None]] = []
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "github_release_assets",
+        lambda repo, tag: {asset_name: asset_url},
+    )
+
+    def fake_download_file(url, destination):
+        raise AssertionError("diffusion visual server must not use unverified download_file")
+
+    def fake_download_file_verified(url, destination, *, expected_sha256, label):
+        calls.append((url, Path(destination), expected_sha256, label))
+        Path(destination).write_bytes(b"verified visual server")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "download_file_verified", fake_download_file_verified
+    )
+
+    ensure_diffusion_visual_server(
+        tmp_path / "install",
+        linux_host(),
+        "b9334",
+        approved_release_checksums_for_asset(asset_name, expected_sha),
+    )
+
+    target = tmp_path / "install" / "build" / "bin" / "llama-diffusion-gemma-visual-server"
+    assert calls == [
+        (
+            asset_url,
+            target,
+            expected_sha,
+            f"diffusion visual server {asset_name}",
+        )
+    ]
+    assert target.read_bytes() == b"verified visual server"
+    assert target.stat().st_mode & 0o777 == 0o755
+
+
+def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, tmp_path: Path):
+    asset_name = "llama-diffusion-gemma-visual-server-attacker-linux"
+    verified_calls: list[str] = []
+    raw_calls: list[str] = []
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "github_release_assets",
+        lambda repo, tag: {asset_name: "https://example.test/" + asset_name},
+    )
+
+    def fake_download_file(url, destination):
+        raw_calls.append(url)
+
+    def fake_download_file_verified(url, destination, *, expected_sha256, label):
+        verified_calls.append(url)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "download_file_verified", fake_download_file_verified
+    )
+
+    ensure_diffusion_visual_server(
+        tmp_path / "install",
+        linux_host(),
+        "b9334",
+        ApprovedReleaseChecksums(
+            repo = "unslothai/llama.cpp",
+            release_tag = "b9334",
+            upstream_tag = "b9334",
+            artifacts = {},
+        ),
+    )
+
+    target = tmp_path / "install" / "build" / "bin" / "llama-diffusion-gemma-visual-server"
+    assert not target.exists()
+    assert raw_calls == []
+    assert verified_calls == []
