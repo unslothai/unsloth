@@ -947,6 +947,9 @@ def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatc
         transformer_quant = "fp8",
     )
     assert status["transformer_quant"] == "fp8"
+    # No speed_mode was given, but a quantized transformer is ~30x slower eager, so the
+    # backend promotes it to `default` (regional compile) instead of the dense `off`.
+    assert status["speed_mode"] == "default"
     assert calls["from_pretrained"] == 1 and calls["quantize"] == 1
     assert calls["quant_mode"] == "fp8"
     assert calls["fp_kwargs"]["subfolder"] == "transformer"  # dense transformer subfolder

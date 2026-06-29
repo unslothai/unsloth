@@ -45,6 +45,7 @@ from .diffusion_memory import (
     snapshot_device_memory,
 )
 from .diffusion_speed import (
+    SPEED_DEFAULT,
     SPEED_OFF,
     apply_speed_optims,
     resolve_speed_mode,
@@ -534,6 +535,18 @@ class DiffusionBackend:
                 # the quant noise floor), dense models stay bit-identical `off`. An
                 # explicit speed_mode (incl. "off") is honored verbatim.
                 effective_speed = resolve_speed_mode(speed_mode, is_gguf = bool(gguf_filename))
+                # A torchao-quantized dense transformer runs its matmuls through the
+                # regional torch.compile; UNcompiled (eager) it is ~30x slower and would
+                # lose to the GGUF fallback. A dense model otherwise resolves to `off`, so
+                # force at least `default` (regional compile) whenever the quant engaged,
+                # or the opt-in "fast" path silently commits an eager, pathologically slow
+                # pipeline.
+                if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
+                    logger.info(
+                        "diffusion.transformer_quant: forcing speed_mode=default "
+                        "(quantized transformer must be compiled; eager is ~30x slower)"
+                    )
+                    effective_speed = SPEED_DEFAULT
                 # Opt-in speed optims run BEFORE placement (channels_last / compile
                 # must precede CPU offload). Snapshot the process-wide backend flags
                 # first so unload can restore them: TF32 / cudnn.benchmark are global,
@@ -547,6 +560,16 @@ class DiffusionBackend:
                     speed_mode = effective_speed,
                     logger = logger,
                 )
+                if transformer_quant_engaged is not None and not speed_applied.get("compiled"):
+                    # Promotion above could not engage compile (e.g. the family is not
+                    # compile-friendly, or compile_repeated_blocks failed): the quantized
+                    # transformer is now running eager, which is far slower than the GGUF
+                    # path it replaced. Surface it loudly rather than hiding the regression.
+                    logger.warning(
+                        "diffusion.transformer_quant: %s engaged but the transformer is NOT "
+                        "compiled; eager torchao quant is ~30x slower than GGUF here",
+                        transformer_quant_engaged,
+                    )
                 # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
                 # also before placement so the offload hooks move the smaller weights.
                 te_quant = quantize_text_encoders(
