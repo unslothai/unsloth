@@ -4974,7 +4974,6 @@ class LlamaCppBackend:
                     )
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 model_size_fit = None  # weights + compute buffer; set in the fit try
-                _mtp_reserve_bytes = 0  # MTP draft reserve at effective_ctx; set in the fit try
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
@@ -5724,9 +5723,12 @@ class LlamaCppBackend:
                             model_size / (1024**3),
                             _avail_mib / 1024,
                         )
-                    # Cap an auto context to a RAM-aware ceiling (explicit -c is honored).
-                    if requested_ctx <= 0 and effective_ctx > _CPU_CTX_AUTO_CEILING:
-                        _cpu_cap = _CPU_CTX_AUTO_CEILING
+                    # Fit an auto context to a RAM-aware ceiling (explicit -c is honored).
+                    # Runs for every auto context, not only above the ceiling: a large
+                    # small-context GGUF can still exceed RAM and must be reduced too.
+                    if requested_ctx <= 0 and effective_ctx > 0:
+                        _ctx_ceiling = min(effective_ctx, _CPU_CTX_AUTO_CEILING)
+                        _cpu_cap = _ctx_ceiling
                         try:
                             if _avail_mib and model_size and self._can_estimate_kv():
                                 _budget_b = _avail_mib * _CPU_RAM_BUDGET_FRAC * 1024 * 1024
@@ -5736,22 +5738,25 @@ class LlamaCppBackend:
                                 _fixed = model_size_fit or model_size
                                 if _fixed >= _budget_b:
                                     # Footprint alone over budget: _fit_context_to_vram returns
-                                    # the ceiling unchanged, but KV at 32k could OOM. Floor to
+                                    # the ceiling unchanged, but KV could still OOM. Floor to
                                     # the minimum so the tightest fit gets the smallest context.
                                     _cpu_cap = 4096
                                 else:
                                     _fit = self._fit_context_to_vram(
-                                        requested_ctx = _CPU_CTX_AUTO_CEILING,
+                                        requested_ctx = _ctx_ceiling,
                                         available_mib = _avail_mib,
                                         model_size_bytes = _fixed,
                                         cache_type_kv = cache_type_kv,
                                         min_ctx = 4096,
                                         n_parallel = n_parallel,
                                         kv_on_gpu = True,  # KV lives in the RAM budget we fit
-                                        mtp_engaged = True,  # flat reserve; no GPU draft here
+                                        # mtp_engaged alone is a no-op once budget_frac is set;
+                                        # pass the byte-accurate overhead so MTP KV is reserved.
+                                        mtp_engaged = _mtp_will_engage,
+                                        mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage else None),
                                         budget_frac = _CPU_RAM_BUDGET_FRAC,
                                     )
-                                    _cpu_cap = max(4096, min(_CPU_CTX_AUTO_CEILING, _fit))
+                                    _cpu_cap = max(4096, min(_ctx_ceiling, _fit))
                         except Exception as _cap_exc:  # best-effort; fall back to ceiling
                             logger.debug("CPU context-fit failed; using ceiling: %s", _cap_exc)
                         if _cpu_cap < effective_ctx:
@@ -6030,12 +6035,15 @@ class LlamaCppBackend:
                     _numa_footprint = _resident
                     if _resident and effective_ctx > 0 and self._can_estimate_kv():
                         try:
+                            # Recompute MTP at the post-cap context; the pre-cap
+                            # _mtp_reserve_bytes would overstate a capped million-token load.
+                            _numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
                             _numa_footprint = (
                                 _resident
                                 + self._estimate_kv_cache_bytes(
                                     effective_ctx, cache_type_kv, n_parallel = n_parallel
                                 )
-                                + _mtp_reserve_bytes
+                                + _numa_mtp
                             )
                         except Exception:
                             _numa_footprint = _resident
@@ -6045,7 +6053,12 @@ class LlamaCppBackend:
                         if not _extra_args_set_any_flag(extra_args, {"--numa"}):
                             cmd.extend(["--numa", "distribute"])
                         logger.info("NUMA: %s", _numa.reason)
-                    elif _cpu_only and "numactl` is not installed" in _numa.reason:
+                    elif _cpu_only and (
+                        "numactl` is not installed" in _numa.reason
+                        or "interleave cannot help" in _numa.reason
+                    ):
+                        # Actionable: numactl missing, or the footprint exceeds total RAM
+                        # across all nodes (the weights-only preflight can't catch this).
                         logger.warning("NUMA: %s", _numa.reason)
                 except Exception as _numa_exc:  # never block a load on the NUMA probe
                     logger.debug("NUMA interleave probe failed: %s", _numa_exc)
@@ -6432,15 +6445,16 @@ class LlamaCppBackend:
                     out = "\n".join(self._stdout_lines[-50:])
                     # Read the crash code before _kill_process() clears _process.
                     _crash_rc = self._process.poll() if self._process is not None else None
-                    # Graph-scheduler abort (flash-off retry already failed): memo it so
-                    # the next /load fails fast. Wider slice as the GGML_ASSERT line can
-                    # scroll past the [New LWP] dump (backtrace markers stay in the tail).
-                    if (
+                    # Graph-scheduler abort (flash-off retry already failed)? Capture now (a
+                    # text-only retry overwrites the stdout tail) but memo it only once the
+                    # mmproj fallback is ruled out, so a VLM that recovers text-only is not
+                    # blocked by the fail-fast guard on its next load. Wider slice as the
+                    # GGML_ASSERT line can scroll past the [New LWP] dump.
+                    _was_sched_abort = (
                         not self._cancel_event.is_set()
                         and (self._is_signal_crash(_crash_rc) or self._is_abort_exit(_crash_rc))
                         and self._is_sched_reserve_abort("\n".join(self._stdout_lines[-200:]))
-                    ):
-                        LlamaCppBackend._record_sched_reserve_abort(binary, _abort_memo_model)
+                    )
                     self._kill_process()
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
@@ -6470,6 +6484,9 @@ class LlamaCppBackend:
                             # an OS-killed text-only retry still gets the OOM message.
                             _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
+                            # Fallback exhausted: now memo the original scheduler abort.
+                            if _was_sched_abort:
+                                LlamaCppBackend._record_sched_reserve_abort(binary, _abort_memo_model)
                             raise RuntimeError(
                                 "Vision projector incompatible with this llama.cpp "
                                 "build, and the text-only retry also failed: "
@@ -6481,6 +6498,10 @@ class LlamaCppBackend:
                                 )
                             )
                     else:
+                        # No mmproj fallback available/eligible: memo the scheduler abort
+                        # (if that is what crashed) so the next /load fails fast, then raise.
+                        if _was_sched_abort:
+                            LlamaCppBackend._record_sched_reserve_abort(binary, _abort_memo_model)
                         raise RuntimeError(
                             self._classify_llama_start_failure(
                                 out,

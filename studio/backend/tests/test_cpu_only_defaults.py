@@ -106,10 +106,27 @@ def test_cpu_context_ceiling_constant_is_sane():
 
 def test_cpu_only_caps_auto_context_but_honors_explicit():
     src = _load_model_src()
-    # Cap only fires for an auto context (requested_ctx <= 0) over the ceiling;
-    # an explicit -c (requested_ctx > 0) is honored.
-    assert "requested_ctx <= 0 and effective_ctx > _CPU_CTX_AUTO_CEILING" in src
+    # The fit runs for any auto context (requested_ctx <= 0), against a ceiling of
+    # min(native, 32k); an explicit -c (requested_ctx > 0) is honored untouched.
+    assert "requested_ctx <= 0 and effective_ctx > 0" in src
+    assert "_ctx_ceiling = min(effective_ctx, _CPU_CTX_AUTO_CEILING)" in src
     assert "effective_ctx = _cpu_cap" in src
+
+
+def test_cpu_context_fit_runs_below_ceiling_too():
+    """A large GGUF with a native context already <= 32k must still be RAM-fit, not
+    skipped, so it can be reduced toward 4096 instead of OS-killed (PR review fix)."""
+    src = _load_model_src()
+    # The gate is `> 0`, not `> _CPU_CTX_AUTO_CEILING`, and the fit ceiling is clamped.
+    assert "effective_ctx > _CPU_CTX_AUTO_CEILING" not in src
+    assert "requested_ctx = _ctx_ceiling" in src
+
+
+def test_cpu_context_fit_accounts_for_mtp():
+    """mtp_engaged alone is a no-op once budget_frac is set, so the CPU fit must pass the
+    byte-accurate MTP overhead fn to actually reserve MTP KV (PR review fix)."""
+    src = _load_model_src()
+    assert "mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage else None)" in src
 
 
 def test_cpu_context_cap_reuses_fit_helper_against_ram():
@@ -151,9 +168,18 @@ def test_numa_decision_uses_footprint_not_just_weights():
     assert "decide_interleave(_numa_footprint" in src
     # Footprint = fitted weights (incl. compute buffer) + KV + MTP reserve.
     assert "_resident = model_size_fit or model_size" in src
-    assert "_mtp_reserve_bytes" in src
+    # MTP is recomputed at the post-cap context, not the stale pre-cap reserve.
+    assert "_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0" in src
     # KV must be sized for the launched --parallel slots, not the n_parallel=1 default.
     assert "effective_ctx, cache_type_kv, n_parallel = n_parallel" in src
+
+
+def test_numa_surfaces_total_ram_failure():
+    """When the footprint exceeds total RAM across all nodes, decide_interleave returns
+    an actionable 'interleave cannot help' reason; the caller must surface it, not only
+    the missing-numactl case (PR review fix)."""
+    src = _load_model_src()
+    assert '"interleave cannot help" in _numa.reason' in src
 
 
 def test_extra_args_forces_cpu_offload_helper():

@@ -274,3 +274,18 @@ def test_load_model_records_abort_on_crash():
     src = _load_model_src()
     assert "_record_sched_reserve_abort(binary, _abort_memo_model)" in src
     assert "_is_sched_reserve_abort(" in src
+
+
+def test_abort_memo_deferred_until_mmproj_fallback_ruled_out():
+    """The signature is captured up front but the memo is recorded only on a terminal
+    raise, after the text-only mmproj fallback is ruled out, so a VLM that recovers
+    text-only is not blocked by the fail-fast guard next time (PR review fix)."""
+    src = _load_model_src()
+    assert "_was_sched_abort = (" in src
+    assert "if _was_sched_abort:" in src
+    fn = ast.parse(src).body[0]
+    strip_line = _call_line(fn, "_strip_mmproj_args")
+    record_line = _call_line(fn, "_record_sched_reserve_abort")
+    # Recording happens after the projector strip, i.e. only once the fallback is tried.
+    assert strip_line is not None and record_line is not None
+    assert record_line > strip_line
