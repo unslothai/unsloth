@@ -14,17 +14,19 @@ import json as _json
 import math
 import multiprocessing as mp
 import os
+import platform
 import queue
 import re
 import shutil
 import threading
 import time
+import traceback
 import structlog
 from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple, Any, TYPE_CHECKING
+from typing import Optional, Tuple, Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -96,6 +98,119 @@ def _coerce_optional_nonneg_float(name: str, value):
     if coerced < 0:
         raise ValueError(f"Unsloth: {name}={coerced} must be >= 0 (use 0 or None to disable).")
     return coerced
+
+
+def is_apple_silicon_training_platform() -> bool:
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def is_mlx_training_device(device: Any) -> bool:
+    return (
+        str(device).lower() == "mlx"
+        or str(device).lower().endswith(".mlx")
+        or getattr(device, "name", "").lower() == "mlx"
+    )
+
+
+def _detected_training_device() -> Any | None:
+    try:
+        from utils.hardware import hardware as _hw
+        return _hw.DEVICE
+    except Exception:
+        return None
+
+
+def should_use_mlx_training_backend(*, device: Any | None = None) -> bool:
+    if device is not None:
+        return is_mlx_training_device(device)
+    if is_apple_silicon_training_platform():
+        return True
+    detected_device = _detected_training_device()
+    if detected_device is not None:
+        return is_mlx_training_device(detected_device)
+    return False
+
+
+def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
+    """Build the normalized worker config shared by Studio and the CLI adapter."""
+    config = {
+        "model_name": values["model_name"],
+        "training_type": values.get("training_type", "LoRA/QLoRA"),
+        "hf_token": values.get("hf_token", ""),
+        "load_in_4bit": values.get("load_in_4bit", True),
+        "max_seq_length": values.get("max_seq_length", 2048),
+        "vision_image_size": values.get("vision_image_size"),
+        "hf_dataset": values.get("hf_dataset", ""),
+        "local_datasets": values.get("local_datasets"),
+        "local_eval_datasets": values.get("local_eval_datasets"),
+        "format_type": values.get("format_type", ""),
+        "subset": values.get("subset"),
+        "train_split": values.get("train_split", "train"),
+        "eval_split": values.get("eval_split"),
+        "eval_steps": values.get("eval_steps", 0.00),
+        "dataset_streaming": values.get("dataset_streaming", False),
+        "dataset_slice_start": values.get("dataset_slice_start"),
+        "dataset_slice_end": values.get("dataset_slice_end"),
+        "custom_format_mapping": values.get("custom_format_mapping"),
+        "is_dataset_image": values.get("is_dataset_image", False),
+        "is_dataset_audio": values.get("is_dataset_audio", False),
+        "is_embedding": values.get("is_embedding", False),
+        "num_epochs": values.get("num_epochs", 3),
+        "learning_rate": values.get("learning_rate", "2e-4"),
+        "embedding_learning_rate": values.get("embedding_learning_rate"),
+        "batch_size": values.get("batch_size", 2),
+        "gradient_accumulation_steps": values.get("gradient_accumulation_steps", 4),
+        "warmup_steps": values.get("warmup_steps"),
+        "warmup_ratio": values.get("warmup_ratio"),
+        "max_steps": values.get("max_steps", 0),
+        "save_steps": values.get("save_steps", 0),
+        "weight_decay": values.get("weight_decay", 0.001),
+        "max_grad_norm": values.get("max_grad_norm", 0.0),
+        "max_grad_value": _coerce_optional_nonneg_float(
+            "max_grad_value", values.get("max_grad_value")
+        ),
+        "max_grad_leaf_norm": _coerce_optional_nonneg_float(
+            "max_grad_leaf_norm", values.get("max_grad_leaf_norm")
+        ),
+        "cast_norm_output_to_input_dtype": _coerce_optional_bool(
+            values.get("cast_norm_output_to_input_dtype"), True
+        ),
+        "random_seed": _coerce_seed(values.get("random_seed")),
+        "packing": values.get("packing", False),
+        "optim": values.get("optim", "adamw_8bit"),
+        "lr_scheduler_type": values.get("lr_scheduler_type", "linear"),
+        "use_lora": values.get("use_lora", True),
+        "lora_r": values.get("lora_r", 16),
+        "lora_alpha": values.get("lora_alpha", 16),
+        "lora_dropout": values.get("lora_dropout", 0.0),
+        "target_modules": values.get("target_modules"),
+        "gradient_checkpointing": values.get("gradient_checkpointing", "unsloth"),
+        "use_rslora": values.get("use_rslora", False),
+        "use_loftq": values.get("use_loftq", False),
+        "train_on_completions": values.get("train_on_completions", False),
+        "finetune_vision_layers": values.get("finetune_vision_layers", True),
+        "finetune_language_layers": values.get("finetune_language_layers", True),
+        "finetune_attention_modules": values.get("finetune_attention_modules", True),
+        "finetune_mlp_modules": values.get("finetune_mlp_modules", True),
+        "enable_wandb": values.get("enable_wandb", False),
+        "wandb_token": values.get("wandb_token"),
+        "wandb_project": values.get("wandb_project", "unsloth-training"),
+        "enable_tensorboard": values.get("enable_tensorboard", False),
+        "tensorboard_dir": values.get("tensorboard_dir", "runs"),
+        "resume_from_checkpoint": values.get("resume_from_checkpoint"),
+        "trust_remote_code": values.get("trust_remote_code", False),
+        "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
+        "subject": values.get("subject"),
+        "gpu_ids": values.get("gpu_ids"),
+        "s3_config": values.get("s3_config"),
+        "disable_xet": values.get("disable_xet", False),
+    }
+    for key in ("output_dir", "allow_external_output_dir", "full_finetuning"):
+        if key in values:
+            config[key] = values.get(key)
+    if config["training_type"] == "Full Finetuning":
+        config["load_in_4bit"] = False
+    return config
 
 
 _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
@@ -183,7 +298,7 @@ PLOT_HEIGHT = 3.5
 
 @dataclass
 class TrainingProgress:
-    """Mirror of trainer.TrainingProgress so the parent never imports heavy ML modules."""
+    """Shared training progress payload for Studio and backend-aware trainers."""
 
     epoch: float = 0
     step: int = 0
@@ -200,6 +315,536 @@ class TrainingProgress:
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    output_dir: Optional[str] = None
+
+
+class _MLXTrainerAdapter:
+    """Adapts the legacy UnslothTrainer API to the shared Studio MLX worker path."""
+
+    def __init__(self):
+        self.model = None
+        self.tokenizer = None
+        self.trainer = None
+        self.training_thread = None
+        self.training_progress = TrainingProgress()
+        self.progress_callbacks: list[Callable[[TrainingProgress], None]] = []
+        self.is_training = False
+        self.should_stop = False
+        self.save_on_stop = True
+        self.load_in_4bit = True
+        self.output_dir = None
+
+        self.is_cpt = False
+        self.is_vlm = False
+        self.is_audio = False
+        self.is_audio_vlm = False
+        self.model_name = None
+        self.max_seq_length = None
+
+        self._model_config: dict[str, Any] = {}
+        self._peft_config: dict[str, Any] = {}
+        self._dataset_config: dict[str, Any] = {}
+        self._event_queue: queue.Queue | None = None
+        self._stop_queue: queue.Queue | None = None
+        self._worker_process: mp.Process | None = None
+        self._pump_thread: threading.Thread | None = None
+        self._needs_xet_respawn = False
+        self._xet_fallback_used = False
+        self._active_attempt_id = 0
+        self._lock = threading.Lock()
+
+    def _activate_transformers_for_model(self, model_name: str, hf_token: Optional[str]) -> None:
+        try:
+            from utils.transformers_version import activate_transformers_for_subprocess
+            activate_transformers_for_subprocess(model_name, hf_token)
+        except Exception as exc:
+            logger.warning("MLX trainer adapter Transformers activation failed", error = str(exc))
+
+    def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
+        self.progress_callbacks.append(callback)
+
+    def _update_progress(self, **kwargs):
+        with self._lock:
+            for key, value in kwargs.items():
+                if hasattr(self.training_progress, key):
+                    setattr(self.training_progress, key, value)
+            progress = self.training_progress
+        for callback in self.progress_callbacks:
+            try:
+                callback(progress)
+            except Exception:
+                pass
+
+    def load_model(
+        self,
+        model_name: str,
+        max_seq_length: int = 2048,
+        load_in_4bit: bool = True,
+        hf_token: Optional[str] = None,
+        is_dataset_image: bool = False,
+        is_dataset_audio: bool = False,
+        trust_remote_code: bool = False,
+        full_finetuning: bool = False,
+        gpu_ids: Optional[list[int]] = None,
+    ) -> bool:
+        self.model_name = model_name
+        self.max_seq_length = max_seq_length
+        self.load_in_4bit = load_in_4bit
+        self._audio_type = None
+        self._activate_transformers_for_model(model_name, hf_token)
+        try:
+            from utils.models import detect_audio_type, is_vision_model
+
+            self._audio_type = detect_audio_type(model_name, hf_token)
+            if self._audio_type == "audio_vlm":
+                self.is_audio = False
+                self.is_audio_vlm = bool(is_dataset_audio)
+                self._audio_type = None
+            else:
+                self.is_audio = self._audio_type is not None
+                self.is_audio_vlm = False
+            vision = is_vision_model(model_name, hf_token = hf_token) if not self.is_audio else False
+            self.is_vlm = not self.is_audio_vlm and vision and bool(is_dataset_image)
+        except Exception as exc:
+            logger.warning("MLX trainer adapter model type detection failed", error = str(exc))
+            self.is_vlm = False
+            self.is_audio = False
+            self.is_audio_vlm = False
+        self.model = object()
+        self.tokenizer = object()
+        self._model_config = {
+            "model_name": model_name,
+            "max_seq_length": max_seq_length,
+            "load_in_4bit": load_in_4bit,
+            "hf_token": hf_token or "",
+            "is_dataset_image": bool(is_dataset_image),
+            "is_dataset_audio": bool(is_dataset_audio),
+            "trust_remote_code": bool(trust_remote_code),
+            "full_finetuning": bool(full_finetuning),
+            "gpu_ids": gpu_ids,
+        }
+        self._update_progress(
+            is_training = False,
+            is_completed = False,
+            error = None,
+            step = 0,
+            loss = 0.0,
+            epoch = 0,
+            status_message = f"Queued MLX model load: {model_name}",
+        )
+        return True
+
+    def prepare_model_for_training(
+        self,
+        use_lora: bool = True,
+        finetune_vision_layers: bool = True,
+        finetune_language_layers: bool = True,
+        finetune_attention_modules: bool = True,
+        finetune_mlp_modules: bool = True,
+        target_modules: list | str | None = None,
+        lora_r: int = 16,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.0,
+        use_gradient_checkpointing: str | bool = "unsloth",
+        use_rslora: bool = False,
+        use_loftq: bool = False,
+    ) -> bool:
+        self._peft_config = {
+            "use_lora": bool(use_lora),
+            "lora_r": lora_r,
+            "lora_alpha": lora_alpha,
+            "lora_dropout": lora_dropout,
+            "target_modules": target_modules,
+            "gradient_checkpointing": use_gradient_checkpointing,
+            "use_rslora": bool(use_rslora),
+            "use_loftq": bool(use_loftq),
+            "finetune_vision_layers": bool(finetune_vision_layers),
+            "finetune_language_layers": bool(finetune_language_layers),
+            "finetune_attention_modules": bool(finetune_attention_modules),
+            "finetune_mlp_modules": bool(finetune_mlp_modules),
+        }
+        self._update_progress(status_message = "Queued MLX training setup")
+        return True
+
+    def load_and_format_dataset(
+        self,
+        dataset_source: Optional[str],
+        format_type: str = "auto",
+        local_datasets: Optional[list[str]] = None,
+        local_eval_datasets: Optional[list[str]] = None,
+        custom_format_mapping: Optional[dict[str, Any]] = None,
+        subset: Optional[str] = None,
+        train_split: str = "train",
+        eval_split: Optional[str] = None,
+        dataset_streaming: bool = False,
+        eval_steps: float = 0.00,
+        dataset_slice_start: Optional[int] = None,
+        dataset_slice_end: Optional[int] = None,
+        is_cpt: bool = False,
+        s3_config: dict = None,
+    ) -> Optional[tuple]:
+        self._dataset_config = {
+            "hf_dataset": dataset_source or "",
+            "local_datasets": local_datasets,
+            "local_eval_datasets": local_eval_datasets,
+            "format_type": format_type or "",
+            "custom_format_mapping": custom_format_mapping,
+            "subset": subset,
+            "train_split": train_split or "train",
+            "eval_split": eval_split,
+            "dataset_streaming": bool(dataset_streaming),
+            "eval_steps": eval_steps or 0.0,
+            "dataset_slice_start": dataset_slice_start,
+            "dataset_slice_end": dataset_slice_end,
+            "s3_config": s3_config,
+        }
+        self.is_cpt = bool(is_cpt)
+        self._update_progress(status_message = "Queued MLX dataset load")
+        return ({"dataset": [], "final_format": "deferred_mlx_cli", "success": True}, None)
+
+    def start_training(
+        self,
+        dataset = None,
+        eval_dataset = None,
+        **training_args,
+    ) -> bool:
+        if self.is_training and self.training_thread and self.training_thread.is_alive():
+            return False
+        if self._pump_thread and self._pump_thread.is_alive():
+            self._pump_thread.join(timeout = 2.0)
+            if self._pump_thread.is_alive():
+                self._update_progress(error = "Previous training event pump is still finalizing")
+                return False
+        if not self._model_config:
+            self._update_progress(error = "Model not loaded")
+            return False
+        if not self._dataset_config:
+            self._update_progress(error = "Dataset not loaded")
+            return False
+        if self.is_cpt:
+            self._update_progress(
+                error = "Continued Pretraining is not supported for MLX training yet.",
+                is_training = False,
+                is_completed = False,
+            )
+            return False
+
+        config = self._build_worker_config(training_args)
+        event_queue = _CTX.Queue()
+        stop_queue = _CTX.Queue()
+        self._event_queue = event_queue
+        self._stop_queue = stop_queue
+        self.should_stop = False
+        self._needs_xet_respawn = False
+        self._xet_fallback_used = False
+        self._active_attempt_id = 0
+        self.is_training = True
+        self.training_progress = TrainingProgress(
+            is_training = True,
+            status_message = "Initializing MLX training...",
+        )
+
+        self.training_thread = threading.Thread(
+            target = self._run_training_thread,
+            args = (config, event_queue, stop_queue),
+            daemon = True,
+        )
+        self._pump_thread = threading.Thread(
+            target = self._pump_events,
+            args = (event_queue, self.training_thread),
+            daemon = True,
+        )
+        self.training_thread.start()
+        self._pump_thread.start()
+        return True
+
+    def _build_worker_config(self, training_args: dict[str, Any]) -> dict[str, Any]:
+        peft = {
+            "use_lora": True,
+            "lora_r": 16,
+            "lora_alpha": 16,
+            "lora_dropout": 0.0,
+            "target_modules": None,
+            "gradient_checkpointing": "unsloth",
+            "use_rslora": False,
+            "use_loftq": False,
+            "finetune_vision_layers": True,
+            "finetune_language_layers": True,
+            "finetune_attention_modules": True,
+            "finetune_mlp_modules": True,
+            **self._peft_config,
+        }
+        output_dir = training_args.get("output_dir")
+        if output_dir:
+            output_dir = os.path.abspath(os.path.expanduser(str(output_dir)))
+        values = {
+            **self._model_config,
+            **self._dataset_config,
+            **training_args,
+            "training_type": (
+                "Continued Pretraining"
+                if self.is_cpt
+                else "LoRA/QLoRA"
+                if peft["use_lora"]
+                else "Full Finetuning"
+            ),
+            **peft,
+            "output_dir": output_dir,
+            "allow_external_output_dir": bool(output_dir),
+        }
+        config = _build_training_worker_config(values)
+        config["resolved_gpu_ids"] = None
+        config["gpu_selection"] = None
+        return config
+
+    def _run_training_thread(
+        self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
+    ):
+        try:
+            self._run_mlx_worker_supervised(config, event_queue, stop_queue)
+        except Exception as exc:
+            if event_queue is not None:
+                event_queue.put(
+                    {
+                        "type": "error",
+                        "error": str(exc),
+                        "stack": traceback.format_exc(limit = 20),
+                        "ts": time.time(),
+                    }
+                )
+        finally:
+            self._worker_process = None
+
+    def _start_mlx_worker_process(
+        self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
+    ) -> mp.Process:
+        from .worker import run_mlx_training_process
+        with native_path_secret_removed_for_child_start():
+            proc = _CTX.Process(
+                target = run_without_native_path_secret,
+                args = (run_mlx_training_process,),
+                kwargs = {
+                    "event_queue": event_queue,
+                    "stop_queue": stop_queue,
+                    "config": config,
+                },
+                daemon = True,
+            )
+            proc.start()
+            try:
+                from utils.process_lifetime import adopt_pid
+                adopt_pid(proc.pid)
+            except Exception:
+                pass
+        return proc
+
+    def _run_mlx_worker_supervised(
+        self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
+    ):
+        current_config = dict(config)
+        current_stop_queue = stop_queue
+        while True:
+            with self._lock:
+                if self.should_stop:
+                    self._needs_xet_respawn = False
+                    return
+                self._active_attempt_id += 1
+                attempt_config = {**current_config, "attempt_id": self._active_attempt_id}
+                if current_config.get("disable_xet"):
+                    self._needs_xet_respawn = False
+                self._stop_queue = current_stop_queue
+                proc = self._start_mlx_worker_process(
+                    attempt_config,
+                    event_queue,
+                    current_stop_queue,
+                )
+                self._worker_process = proc
+            proc.join()
+            with self._lock:
+                self._worker_process = None
+                if self._needs_xet_respawn and not self.should_stop:
+                    current_config = {**current_config, "disable_xet": True}
+                    current_stop_queue = _CTX.Queue()
+                    continue
+                if self.should_stop:
+                    self._needs_xet_respawn = False
+            return
+
+    def _run_mlx_worker(
+        self, config: dict[str, Any], event_queue: queue.Queue, stop_queue: queue.Queue
+    ):
+        from .worker import run_mlx_training_process
+        run_mlx_training_process(
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
+        )
+
+    def _pump_events(self, event_queue: queue.Queue, training_thread: threading.Thread):
+        while True:
+            event = None
+            try:
+                event = event_queue.get(timeout = 0.25)
+            except queue.Empty:
+                pass
+            if event is not None:
+                self._handle_event(event)
+                continue
+            if not training_thread.is_alive():
+                self._drain_events(event_queue)
+                with self._lock:
+                    if self.training_progress.is_training:
+                        self.training_progress.is_training = False
+                        if self.should_stop:
+                            self.training_progress.status_message = (
+                                "Training stopped." if self.save_on_stop else "Training cancelled"
+                            )
+                        elif (
+                            not self.training_progress.error
+                            and not self.training_progress.is_completed
+                        ):
+                            self.training_progress.error = "Training process exited unexpectedly"
+                    self.is_training = False
+                    self._event_queue = None
+                    self._stop_queue = None
+                return
+
+    def _drain_events(self, event_queue: queue.Queue | None = None):
+        event_queue = event_queue or self._event_queue
+        if event_queue is None:
+            return
+        while True:
+            try:
+                self._handle_event(event_queue.get_nowait())
+            except queue.Empty:
+                return
+
+    def _handle_event(self, event: dict[str, Any]):
+        attempt_id = event.get("attempt_id")
+        if attempt_id is not None and attempt_id != self._active_attempt_id:
+            return
+
+        etype = event.get("type")
+        if etype == "status":
+            output_dir = event.get("output_dir")
+            if output_dir is not None:
+                self.output_dir = output_dir
+            self._update_progress(
+                status_message = event.get("status_message") or event.get("message") or "",
+                **({"output_dir": output_dir} if output_dir is not None else {}),
+            )
+            return
+        if etype == "progress":
+            self._update_progress(
+                step = event.get("step", self.training_progress.step),
+                epoch = event.get("epoch", self.training_progress.epoch),
+                loss = event.get("loss", self.training_progress.loss),
+                learning_rate = event.get("learning_rate", self.training_progress.learning_rate),
+                total_steps = event.get("total_steps", self.training_progress.total_steps),
+                elapsed_seconds = event.get(
+                    "elapsed_seconds",
+                    self.training_progress.elapsed_seconds,
+                ),
+                eta_seconds = event.get("eta_seconds", self.training_progress.eta_seconds),
+                grad_norm = event.get("grad_norm", self.training_progress.grad_norm),
+                num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
+                eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
+                peak_memory_gb = event.get("peak_memory_gb", self.training_progress.peak_memory_gb),
+            )
+            return
+        if etype in {"complete", "error"} and self._needs_xet_respawn and not self.should_stop:
+            return
+        if etype == "complete":
+            status_message = event.get("status_message") or "Training completed"
+            output_dir = event.get("output_dir")
+            was_cancelled = self.should_stop or status_message.strip().lower() in {
+                "training cancelled",
+                "training stopped",
+            }
+            self._needs_xet_respawn = False
+            self.output_dir = output_dir
+            self._update_progress(
+                is_training = False,
+                is_completed = not was_cancelled,
+                error = None,
+                status_message = status_message,
+                output_dir = output_dir,
+            )
+            self.is_training = False
+            return
+        if etype == "error":
+            self._needs_xet_respawn = False
+            self._update_progress(
+                is_training = False,
+                is_completed = False,
+                error = event.get("error") or event.get("message") or "Training failed",
+            )
+            self.is_training = False
+            return
+        if etype == "stall":
+            if self.should_stop:
+                self._needs_xet_respawn = False
+                proc = self._worker_process
+                if proc is not None and proc.is_alive():
+                    proc.terminate()
+                return
+            if not self._xet_fallback_used:
+                self._xet_fallback_used = True
+                self._needs_xet_respawn = True
+                self._update_progress(
+                    status_message = "Model download stalled on Xet; retrying over HTTP..."
+                )
+                proc = self._worker_process
+                if proc is not None and proc.is_alive():
+                    proc.terminate()
+                return
+            self._needs_xet_respawn = False
+            proc = self._worker_process
+            if proc is not None and proc.is_alive():
+                proc.terminate()
+            self._update_progress(
+                is_training = False,
+                is_completed = False,
+                error = (
+                    event.get("message")
+                    or "Model download stalled even over HTTP -- check your network connection"
+                ),
+            )
+            self.is_training = False
+
+    def stop_training(self, save: bool = True):
+        with self._lock:
+            self.should_stop = True
+            self.save_on_stop = bool(save)
+            self._needs_xet_respawn = False
+            if self._stop_queue is not None:
+                self._stop_queue.put({"type": "stop", "save": save})
+            proc = self._worker_process
+        if proc is not None and proc.is_alive() and not save:
+            proc.terminate()
+        status_message = (
+            "Stopping training and saving checkpoint..." if save else "Cancelling training..."
+        )
+        self._update_progress(status_message = status_message)
+        return True
+
+    def get_training_progress(self) -> TrainingProgress:
+        pump_thread = self._pump_thread
+        training_thread = self.training_thread
+        if (
+            pump_thread is not None
+            and pump_thread.is_alive()
+            and (training_thread is None or not training_thread.is_alive())
+            and threading.current_thread() is not pump_thread
+        ):
+            pump_thread.join(timeout = 5.0)
+        if pump_thread is None or not pump_thread.is_alive():
+            self._drain_events()
+        return self.training_progress
+
+
+def create_mlx_trainer_adapter(*args, **kwargs):
+    return _MLXTrainerAdapter(*args, **kwargs)
 
 
 class TrainingBackend:
@@ -296,85 +941,8 @@ class TrainingBackend:
         # treat this fresh setup as a recoverable death.
         self._pump_running = False
 
-        # Build config dict for the subprocess
-        config = {
-            "model_name": kwargs["model_name"],
-            "training_type": kwargs.get("training_type", "LoRA/QLoRA"),
-            "hf_token": kwargs.get("hf_token", ""),
-            "load_in_4bit": kwargs.get("load_in_4bit", True),
-            "max_seq_length": kwargs.get("max_seq_length", 2048),
-            "vision_image_size": kwargs.get("vision_image_size"),
-            "hf_dataset": kwargs.get("hf_dataset", ""),
-            "local_datasets": kwargs.get("local_datasets"),
-            "local_eval_datasets": kwargs.get("local_eval_datasets"),
-            "format_type": kwargs.get("format_type", ""),
-            "subset": kwargs.get("subset"),
-            "train_split": kwargs.get("train_split", "train"),
-            "eval_split": kwargs.get("eval_split"),
-            "eval_steps": kwargs.get("eval_steps", 0.00),
-            "dataset_streaming": kwargs.get("dataset_streaming", False),
-            "dataset_slice_start": kwargs.get("dataset_slice_start"),
-            "dataset_slice_end": kwargs.get("dataset_slice_end"),
-            "custom_format_mapping": kwargs.get("custom_format_mapping"),
-            "is_dataset_image": kwargs.get("is_dataset_image", False),
-            "is_dataset_audio": kwargs.get("is_dataset_audio", False),
-            "is_embedding": kwargs.get("is_embedding", False),
-            "num_epochs": kwargs.get("num_epochs", 3),
-            "learning_rate": kwargs.get("learning_rate", "2e-4"),
-            "embedding_learning_rate": kwargs.get("embedding_learning_rate"),
-            "batch_size": kwargs.get("batch_size", 2),
-            "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
-            "warmup_steps": kwargs.get("warmup_steps"),
-            "warmup_ratio": kwargs.get("warmup_ratio"),
-            "max_steps": kwargs.get("max_steps", 0),
-            "save_steps": kwargs.get("save_steps", 0),
-            "weight_decay": kwargs.get("weight_decay", 0.001),
-            "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
-            "max_grad_value": _coerce_optional_nonneg_float(
-                "max_grad_value", kwargs.get("max_grad_value")
-            ),
-            "max_grad_leaf_norm": _coerce_optional_nonneg_float(
-                "max_grad_leaf_norm", kwargs.get("max_grad_leaf_norm")
-            ),
-            "cast_norm_output_to_input_dtype": _coerce_optional_bool(
-                kwargs.get("cast_norm_output_to_input_dtype"), True
-            ),
-            # MLX/CUDA/embedding workers need an int (transformers.set_seed(None) raises).
-            "random_seed": _coerce_seed(kwargs.get("random_seed")),
-            "packing": kwargs.get("packing", False),
-            "optim": kwargs.get("optim", "adamw_8bit"),
-            "lr_scheduler_type": kwargs.get("lr_scheduler_type", "linear"),
-            "use_lora": kwargs.get("use_lora", True),
-            "lora_r": kwargs.get("lora_r", 16),
-            "lora_alpha": kwargs.get("lora_alpha", 16),
-            "lora_dropout": kwargs.get("lora_dropout", 0.0),
-            "target_modules": kwargs.get("target_modules"),
-            "gradient_checkpointing": kwargs.get("gradient_checkpointing", "unsloth"),
-            "use_rslora": kwargs.get("use_rslora", False),
-            "use_loftq": kwargs.get("use_loftq", False),
-            "train_on_completions": kwargs.get("train_on_completions", False),
-            "finetune_vision_layers": kwargs.get("finetune_vision_layers", True),
-            "finetune_language_layers": kwargs.get("finetune_language_layers", True),
-            "finetune_attention_modules": kwargs.get("finetune_attention_modules", True),
-            "finetune_mlp_modules": kwargs.get("finetune_mlp_modules", True),
-            "enable_wandb": kwargs.get("enable_wandb", False),
-            "wandb_token": kwargs.get("wandb_token"),
-            "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
-            "enable_tensorboard": kwargs.get("enable_tensorboard", False),
-            "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
-            "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
-            "trust_remote_code": kwargs.get("trust_remote_code", False),
-            "approved_remote_code_fingerprint": kwargs.get("approved_remote_code_fingerprint"),
-            "subject": kwargs.get("subject"),
-            "gpu_ids": kwargs.get("gpu_ids"),
-            "s3_config": kwargs.get("s3_config"),
-            # Flipped to True only by the HTTP-fallback respawn after a stall.
-            "disable_xet": kwargs.get("disable_xet", False),
-        }
-
-        # Full finetuning always runs in 16-bit; LoRA/QLoRA/CPT keep the request.
-        if config["training_type"] == "Full Finetuning":
-            config["load_in_4bit"] = False
+        # Build config dict for the subprocess.
+        config = _build_training_worker_config(kwargs)
 
         # Split GPU validation from placement around the VRAM hook:
         #   * Explicit gpu_ids are validated here (raises -> the route returns 400
@@ -400,7 +968,7 @@ class TrainingBackend:
         )
 
         defer_auto_selection = False
-        if _hw.DEVICE == _hw.DeviceType.MLX:
+        if should_use_mlx_training_backend(device = _hw.DEVICE):
             config["resolved_gpu_ids"] = None
             config["gpu_selection"] = None
         elif gpu_ids:
@@ -1021,17 +1589,22 @@ class TrainingBackend:
                 self._progress.is_training = True
 
             elif etype == "complete":
-                self._progress.is_training = False
-                self._progress.is_completed = True
-                self._output_dir = event.get("output_dir")
                 msg = event.get("status_message", "Training completed")
+                stopped = self._should_stop or msg.strip().lower() in {
+                    "training cancelled",
+                    "training stopped",
+                }
+                self._progress.is_training = False
+                self._progress.is_completed = not stopped
+                self._output_dir = event.get("output_dir")
+                self._progress.output_dir = self._output_dir
                 self._progress.status_message = msg
                 if not self._db_run_created and self.current_job_id and self._db_config:
                     db_action = "create_and_finalize"
                 else:
                     db_action = "finalize"
                 db_action_kwargs = {
-                    "status": "stopped" if self._should_stop else "completed",
+                    "status": "stopped" if stopped else "completed",
                     "output_dir": self._output_dir,
                 }
 
