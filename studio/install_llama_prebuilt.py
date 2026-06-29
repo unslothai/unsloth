@@ -19,6 +19,7 @@ import re
 import shutil
 import site
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -5208,6 +5209,14 @@ def _resolve_sandbox_command(command: list[str]) -> list[str]:
     return resolved_command
 
 
+def _binary_is_setuid_root(path: str | Path) -> bool:
+    try:
+        stat_result = os.stat(path)
+    except OSError:
+        return False
+    return stat_result.st_uid == 0 and bool(stat_result.st_mode & stat.S_ISUID)
+
+
 def _has_command(command: str) -> bool:
     return _resolve_command_path(command) is not None
 
@@ -5418,6 +5427,8 @@ def _linux_validation_bwrap_prefix(
                 command_path.parent.parent / "lib64",
             ]
         )
+    if Path("/nix/store") in command_path.parents:
+        readonly_targets.append("/nix/store")
     readonly_targets.extend(
         part
         for part in payload_env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
@@ -5495,7 +5506,9 @@ def _linux_validation_bwrap_prefix(
             for path in Path("/dev").glob("nvidia*"):
                 if re.match(r"^nvidia[0-9]+$", path.name):
                     dev_nodes.append(str(path))
+            dev_nodes.extend(str(path) for path in Path("/dev/nvidia-caps").glob("nvidia-cap*"))
             readonly_gpu_targets.append("/proc/driver/nvidia")
+            readonly_gpu_targets.append("/proc/driver/nvidia/capabilities")
         elif gpu_backend == "rocm":
             dev_nodes.extend(["/dev/kfd", "/dev/dxg"])
             dev_nodes.extend(str(node) for node in Path("/dev/dri").glob("card*"))
@@ -5670,6 +5683,24 @@ def build_validation_sandbox_plan(
         bwrap_path = _resolve_command_path("bwrap")
         if bwrap_path is not None:
             payload_command = _resolve_sandbox_command(command)
+            if (
+                purpose == _VALIDATION_PURPOSE_SERVER
+                and enable_gpu_layers
+                and gpu_backend in {"cuda", "rocm"}
+                and not _binary_is_setuid_root(bwrap_path)
+            ):
+                return _ValidationLaunchPlan(
+                    command = payload_command,
+                    env = launcher_env,
+                    action = _VALIDATION_LAUNCH_RUN,
+                    purpose = purpose,
+                    sandbox_kind = "linux_direct_validation",
+                    reason = "Linux GPU validation requires direct launch when bwrap is not setuid root",
+                    payload_command = payload_command,
+                    payload_env = env,
+                    network_policy = _VALIDATION_NETWORK_POLICY_DIRECT,
+                    server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
+                )
             network_policy = _VALIDATION_NETWORK_POLICY_SANDBOX
             server_probe_mode = (
                 _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX if purpose == _VALIDATION_PURPOSE_SERVER else None
@@ -6570,7 +6601,6 @@ def validate_server(
             "windows-cuda",
             "windows-hip",
             "windows-rocm",
-            "macos-arm64",
         }
         if install_kind is not None:
             _enable_gpu_layers = install_kind in _gpu_kinds
@@ -6582,9 +6612,9 @@ def validate_server(
             # Older call sites that don't pass install_kind: keep ROCm
             # hosts in the GPU-validation path so an AMD-only Linux host
             # is exercised against the actual hardware rather than the
-            # CPU fallback. NVIDIA and macOS-arm64 are already covered.
+            # CPU fallback. NVIDIA stays covered here.
             _enable_gpu_layers = (
-                host.has_usable_nvidia or host.has_rocm or (host.is_macos and host.is_arm64)
+                host.has_usable_nvidia or host.has_rocm
             )
             if host.is_linux and host.has_usable_nvidia:
                 gpu_backend = "cuda"
