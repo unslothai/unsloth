@@ -362,6 +362,162 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
         pass
 
 
+def _has_float8_dtype(dtype):
+    dtype_name = str(dtype)
+    return dtype_name.startswith("torch.float8_")
+
+
+def _is_real_fp8_owner(module):
+    if not isinstance(module, torch.nn.Module):
+        return False
+    weight = getattr(module, "weight", None)
+    if not isinstance(weight, torch.Tensor):
+        return False
+    if getattr(module, "quant_method", None) in ["fp8", "fbgemm_fp8"]:
+        return True
+    if getattr(weight, "quant_method", None) in ["fp8", "fbgemm_fp8"]:
+        return True
+
+    config = getattr(module, "quantization_config", None)
+    if isinstance(config, dict) and config.get("quant_method") in ["fp8", "fbgemm_fp8"]:
+        return True
+    if getattr(config, "quant_method", None) in ["fp8", "fbgemm_fp8"]:
+        return True
+
+    if _has_float8_dtype(getattr(weight, "dtype", None)):
+        return True
+
+    try:
+        from ..kernels.fp8 import FbgemmFp8Linear, FP8Linear
+    except Exception:
+        FbgemmFp8Linear, FP8Linear = None, None
+    if FbgemmFp8Linear is not None and isinstance(module, FbgemmFp8Linear):
+        return True
+    if FP8Linear is not None and isinstance(module, FP8Linear):
+        return True
+
+    return False
+
+
+def _resolve_weight_scale_inv_candidates(module_name, named_modules):
+    if module_name in named_modules:
+        return module_name
+    suffix = f".{module_name}"
+    suffix_matches = [name for name in named_modules if name.endswith(suffix)]
+    if len(suffix_matches) == 1:
+        return suffix_matches[0]
+    return None
+
+
+def _find_fp8_scale_inv_tensors(model_dir, model_name, revision = None, token = None, local_files_only = False):
+    if not os.path.exists(model_dir):
+        try:
+            from huggingface_hub import snapshot_download
+        except Exception:
+            return []
+
+        try:
+            model_dir = snapshot_download(
+                model_name,
+                revision = revision,
+                token = token,
+                local_files_only = local_files_only,
+            )
+        except Exception:
+            return []
+
+    if not os.path.isdir(model_dir):
+        return []
+
+    try:
+        from safetensors.torch import safe_open
+    except Exception:
+        return []
+
+    module_scales = {}
+    suffix = ".weight_scale_inv"
+    for filename in os.listdir(model_dir):
+        if not filename.endswith(".safetensors"):
+            continue
+        full_path = os.path.join(model_dir, filename)
+        try:
+            with safe_open(full_path, framework = "pt", device = "cpu") as f:
+                for key in f.keys():
+                    if not key.endswith(suffix):
+                        continue
+                    module_name = key[: -len(suffix)]
+                    module_scales[module_name] = f.get_tensor(key)
+        except Exception:
+            continue
+    return list(module_scales.items())
+
+
+def _restore_missing_fp8_weight_scale_inv(
+    model: torch.nn.Module,
+    model_name: str,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
+    """Find checkpointed `.weight_scale_inv` tensors and restore missing runtime tensors on FP8 modules.
+
+    Returns a tuple of `(restored_count, skipped_count)`.
+    """
+    if not hasattr(model, "named_modules"):
+        return 0, 0
+
+    name_to_module = dict(model.named_modules())
+    scaled_tensors = _find_fp8_scale_inv_tensors(
+        model_dir = model_name,
+        model_name = model_name,
+        revision = revision,
+        token = token,
+        local_files_only = local_files_only,
+    )
+    if len(scaled_tensors) == 0:
+        return 0, 0
+
+    restored = 0
+    skipped = 0
+    for module_name, scale_tensor in scaled_tensors:
+        target_name = _resolve_weight_scale_inv_candidates(module_name, name_to_module)
+        if target_name is None:
+            skipped += 1
+            continue
+
+        module = name_to_module[target_name]
+        if not _is_real_fp8_owner(module):
+            skipped += 1
+            continue
+
+        if hasattr(module, "weight_scale_inv"):
+            skipped += 1
+            continue
+
+        weight = getattr(module, "weight", None)
+        if not isinstance(weight, torch.Tensor):
+            skipped += 1
+            continue
+
+        restored_scale = scale_tensor.to(device = weight.device)
+        reference = getattr(module, "weight_scale", None)
+        if isinstance(reference, torch.Tensor):
+            try:
+                restored_scale = restored_scale.to(dtype = reference.dtype)
+            except Exception:
+                pass
+        elif not _has_float8_dtype(getattr(weight, "dtype", None)):
+            try:
+                restored_scale = restored_scale.to(dtype = weight.dtype)
+            except Exception:
+                pass
+
+        setattr(module, "weight_scale_inv", restored_scale)
+        restored += 1
+
+    return restored, skipped
+
+
 def check_and_disable_bitsandbytes_loading(
     model_config,
     load_in_4bit = True,

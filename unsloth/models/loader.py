@@ -36,6 +36,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
+    _restore_missing_fp8_weight_scale_inv,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     prepare_device_map,
@@ -860,6 +861,13 @@ class FastLanguageModel(FastLlamaModel):
                     model.config.update({"quantization_config": quantization_config})
 
         if load_in_fp8 != False:
+            _restored_count, _skipped_count = _restore_missing_fp8_weight_scale_inv(
+                model,
+                model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+            )
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
         if is_peft:
@@ -1733,6 +1741,13 @@ class FastModel(FastBaseModel):
                     model.config.update({"quantization_config": quantization_config})
 
         if load_in_fp8 != False:
+            _restored_count, _skipped_count = _restore_missing_fp8_weight_scale_inv(
+                model,
+                model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+            )
             _tag_model_with_fp8_torchao_config(model, fp8_mode)
 
         if is_peft:
