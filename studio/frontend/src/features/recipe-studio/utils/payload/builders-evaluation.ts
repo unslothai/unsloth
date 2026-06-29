@@ -4,10 +4,6 @@
 import type { EvaluationDocumentScoreConfig } from "../../types";
 import { parseJsonObject } from "./parse";
 
-// Always emit an evaluations[] entry so the block survives save/load. Missing
-// required fields are tolerated (emitted as empty strings) — the backend
-// scorer will skip rows where the column lookup fails, and on reload the
-// block remains on the canvas in its incomplete state for the user to finish.
 export function buildEvaluationDocumentScoreProcessor(
   config: EvaluationDocumentScoreConfig,
   errors: string[],
