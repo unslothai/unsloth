@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _make_mock_run(make_returncode=1, cmake_returncode=0):
+def _make_mock_run(make_returncode = 1, cmake_returncode = 0):
     """Return a mock for subprocess.run that records all calls."""
     captured = []
     call_index = [0]
@@ -32,10 +32,12 @@ def test_make_clean_uses_list_args():
     pytest.importorskip("unsloth.save")
     import unsloth.save as save_module
 
-    mock_run, captured = _make_mock_run(make_returncode=0)
+    mock_run, captured = _make_mock_run(make_returncode = 0)
 
-    with patch.object(save_module.subprocess, "run", side_effect=mock_run), \
-         patch.object(save_module.subprocess, "Popen", return_value=MagicMock()):
+    with (
+        patch.object(save_module.subprocess, "run", side_effect = mock_run),
+        patch.object(save_module.subprocess, "Popen", return_value = MagicMock()),
+    ):
         try:
             save_module.install_llama_cpp_make_non_blocking()
         except Exception:
@@ -49,10 +51,10 @@ def test_make_clean_uses_list_args():
             "Passing a string (especially with shell=True) enables shell injection."
         )
         for arg in args:
-            assert ";" not in arg,  f"Shell metacharacter ';' in argument: {arg!r}"
+            assert ";" not in arg, f"Shell metacharacter ';' in argument: {arg!r}"
             assert "||" not in arg, f"Shell metacharacter '||' in argument: {arg!r}"
             assert "&&" not in arg, f"Shell metacharacter '&&' in argument: {arg!r}"
-            assert "`" not in arg,  f"Shell metacharacter '`' in argument: {arg!r}"
+            assert "`" not in arg, f"Shell metacharacter '`' in argument: {arg!r}"
             assert "$(" not in arg, f"Shell metacharacter '$(' in argument: {arg!r}"
 
 
@@ -65,28 +67,30 @@ def test_cmake_configure_uses_list_args():
     import unsloth.save as save_module
 
     # make returns 1 → triggers cmake fallback path
-    mock_run, captured = _make_mock_run(make_returncode=1, cmake_returncode=0)
+    mock_run, captured = _make_mock_run(make_returncode = 1, cmake_returncode = 0)
 
-    with patch.object(save_module.subprocess, "run", side_effect=mock_run), \
-         patch.object(save_module.subprocess, "Popen", return_value=MagicMock()):
+    with (
+        patch.object(save_module.subprocess, "run", side_effect = mock_run),
+        patch.object(save_module.subprocess, "Popen", return_value = MagicMock()),
+    ):
         try:
             save_module.install_llama_cpp_make_non_blocking()
         except Exception:
             pass
 
-    assert len(captured) >= 2, (
-        f"Expected at least 2 subprocess.run calls (make + cmake), got {len(captured)}"
-    )
+    assert (
+        len(captured) >= 2
+    ), f"Expected at least 2 subprocess.run calls (make + cmake), got {len(captured)}"
 
     for args in captured:
-        assert isinstance(args, list), (
-            f"subprocess.run called with a string instead of a list: {args!r}"
-        )
+        assert isinstance(
+            args, list
+        ), f"subprocess.run called with a string instead of a list: {args!r}"
         for arg in args:
-            assert ";" not in arg,  f"Shell metacharacter ';' in argument: {arg!r}"
+            assert ";" not in arg, f"Shell metacharacter ';' in argument: {arg!r}"
             assert "||" not in arg, f"Shell metacharacter '||' in argument: {arg!r}"
             assert "&&" not in arg, f"Shell metacharacter '&&' in argument: {arg!r}"
-            assert "`" not in arg,  f"Shell metacharacter '`' in argument: {arg!r}"
+            assert "`" not in arg, f"Shell metacharacter '`' in argument: {arg!r}"
             assert "$(" not in arg, f"Shell metacharacter '$(' in argument: {arg!r}"
 
 
@@ -108,21 +112,19 @@ def test_make_not_found_falls_through_to_cmake():
         result.returncode = 0  # cmake succeeds
         return result
 
-    with patch.object(save_module.subprocess, "run", side_effect=mock_run), \
-         patch.object(save_module.subprocess, "Popen", return_value=MagicMock()):
+    with (
+        patch.object(save_module.subprocess, "run", side_effect = mock_run),
+        patch.object(save_module.subprocess, "Popen", return_value = MagicMock()),
+    ):
         # Should NOT raise FileNotFoundError; cmake path should be attempted
         try:
             save_module.install_llama_cpp_make_non_blocking()
         except FileNotFoundError as exc:
-            pytest.fail(
-                f"FileNotFoundError from missing `make` was not caught: {exc}"
-            )
+            pytest.fail(f"FileNotFoundError from missing `make` was not caught: {exc}")
         except Exception:
             pass  # Other errors (e.g. RuntimeError from cmake) are acceptable
 
-    assert call_index[0] >= 2, (
-        "cmake was never attempted after make was not found"
-    )
+    assert call_index[0] >= 2, "cmake was never attempted after make was not found"
 
 
 def test_cmake_not_found_raises_runtime_error():
@@ -143,7 +145,9 @@ def test_cmake_not_found_raises_runtime_error():
         # cmake not found
         raise FileNotFoundError("cmake not found")
 
-    with patch.object(save_module.subprocess, "run", side_effect=mock_run), \
-         patch.object(save_module.subprocess, "Popen", return_value=MagicMock()):
+    with (
+        patch.object(save_module.subprocess, "run", side_effect = mock_run),
+        patch.object(save_module.subprocess, "Popen", return_value = MagicMock()),
+    ):
         with pytest.raises(RuntimeError):
             save_module.install_llama_cpp_make_non_blocking()
