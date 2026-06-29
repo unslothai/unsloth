@@ -494,12 +494,15 @@ with sync_playwright() as p:
             # typeahead actually filters (else an ignored-input regression
             # would silently pass).
             def picker_visible_text():
-                return page.evaluate("""() => {
+                return robust_evaluate(
+                    page,
+                    """() => {
                     const el = document.querySelector(
                         '[role="dialog"], [role="listbox"], [role="menu"]'
                     );
                     return el ? (el.innerText || '').trim() : '';
-                }""")
+                }""",
+                )
 
             search.fill("qwen")
             page.wait_for_timeout(800)
@@ -535,9 +538,12 @@ with sync_playwright() as p:
 
     def _bubble_count():
         """Total [data-role='assistant'] elements (empty or not)."""
-        return page.evaluate("""() => {
+        return robust_evaluate(
+            page,
+            """() => {
             return document.querySelectorAll('[data-role="assistant"]').length;
-        }""")
+        }""",
+        )
 
     def send_and_wait(prompt, idx):
         # 1. Wait until the previous turn fully stopped: Send attached
@@ -626,8 +632,11 @@ with sync_playwright() as p:
         send_and_wait(p_, i)
     shoot("04-after-five-turns")
 
-    texts = page.evaluate("""() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
-        .map(e => (e.innerText || '').trim())""")
+    texts = robust_evaluate(
+        page,
+        """() => Array.from(document.querySelectorAll('[data-role="assistant"]'))
+        .map(e => (e.innerText || '').trim())""",
+    )
     if len(texts) < len(prompts):
         fail(f"expected >= {len(prompts)} assistant bubbles, got {len(texts)}")
     info(f"five turn lengths = {[len(t) for t in texts[:5]]}")
@@ -840,7 +849,9 @@ with sync_playwright() as p:
             # Settle. The ".dark" class on <html> is the ground truth
             # (theme-store toggles only that); don't gate on ".light".
             page.wait_for_timeout(700)
-            bg = page.evaluate("""() => {
+            bg = robust_evaluate(
+                page,
+                """() => {
                 const root = document.documentElement;
                 return {
                     cls:    root.className,
@@ -848,7 +859,8 @@ with sync_playwright() as p:
                     bg:     getComputedStyle(document.body).backgroundColor,
                     rbg:    getComputedStyle(root).backgroundColor,
                 };
-            }""")
+            }""",
+            )
             observed.append(bg)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
@@ -1050,7 +1062,8 @@ with sync_playwright() as p:
             shoot("15d-recent-clicked")
             info(f"OK clicked recent entry: {t[:60]!r}")
             # The landed thread must include at least one of our prompts.
-            turns_text = page.evaluate(
+            turns_text = robust_evaluate(
+                page,
                 """() => {
                 const els = document.querySelectorAll(
                     '[data-role="user"], [data-role="assistant"]'
@@ -1058,7 +1071,6 @@ with sync_playwright() as p:
                 return Array.from(els).map(e => (e.innerText || '')
                     .toLowerCase()).join(' ');
             }""",
-                None,
             )
             clicked_recent = True
             if any(k in turns_text for k in PROMPT_KEYWORDS):
@@ -1213,15 +1225,17 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("Shutdown via account menu")
     # Re-login with NEW2 for a valid /api/shutdown token (CLI rotation
-    # invalidated the old one). The stale token can make the SPA auth
-    # guard abort this goto with ERR_ABORTED; resolve on
-    # domcontentloaded and tolerate it -- the pw-field wait confirms /login.
+    # invalidated the old one). The stale token can make the SPA auth guard
+    # abort this goto with ERR_ABORTED, or redirect to the same /login URL
+    # ("interrupted by another navigation"); resolve on domcontentloaded and
+    # tolerate either -- the pw-field wait below confirms we are on /login.
+    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
     try:
         page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
     except Exception as exc:
-        if "ERR_ABORTED" not in str(exc):
+        if not any(t in str(exc) for t in _tolerated_nav):
             raise
-        info(f"goto /login aborted ({exc!r}); password-field wait will confirm /login")
+        info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
     pw_field = page.locator("#password")
     pw_field.wait_for(state = "visible", timeout = 60_000)
     pw_field.fill(NEW2)

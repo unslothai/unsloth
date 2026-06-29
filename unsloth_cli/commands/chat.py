@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
@@ -153,6 +153,22 @@ def chat(
     ),
     max_seq_length: int = typer.Option(4096, "--max-seq-length"),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
+    tensor_parallel: bool = typer.Option(
+        False,
+        "--tensor-parallel/--no-tensor-parallel",
+        help = (
+            "Split a GGUF across GPUs by tensor (--split-mode tensor) instead "
+            "of by layer. Ignored for non-GGUF models."
+        ),
+    ),
+    llama_extra_args: Optional[List[str]] = typer.Option(
+        None,
+        "--llama-extra-arg",
+        help = (
+            "Extra llama-server arg for GGUF models. Repeat for multiple "
+            "tokens, e.g. --llama-extra-arg=--top-k --llama-extra-arg 20."
+        ),
+    ),
     think: bool = typer.Option(
         False,
         "--think/--no-think",
@@ -190,7 +206,13 @@ def chat(
         err.print(f"--compare unavailable: {compare_blocked}", style = "red", markup = False)
         raise typer.Exit(code = 1)
 
-    load_opts = dict(hf_token = hf_token, max_seq_length = max_seq_length, load_in_4bit = load_in_4bit)
+    load_opts = dict(
+        hf_token = hf_token,
+        max_seq_length = max_seq_length,
+        load_in_4bit = load_in_4bit,
+        tensor_parallel = tensor_parallel,
+        llama_extra_args = llama_extra_args,
+    )
 
     # Prefer a running Studio server: instant starts, model shared with the UI.
     chat_backend = None if no_server else connect_studio_server(model, **load_opts)

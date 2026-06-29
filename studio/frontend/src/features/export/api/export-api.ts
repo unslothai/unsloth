@@ -425,5 +425,12 @@ export async function streamExportLogs(options: {
   } catch (err) {
     if (isAbortError(err)) return;
     throw err;
+  } finally {
+    // Release the stream lock now instead of leaking the reader until GC.
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
+    }
   }
 }
