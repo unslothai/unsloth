@@ -75,16 +75,35 @@ import { exportTourSteps } from "./tour";
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 
 type SourceTab = "local" | "checkpoint" | "hf";
+type SourceMode = "checkpoint" | "model";
+
+
+function safePathSegment(
+  value: string | null | undefined,
+  fallback = "model",
+  maxLength = 250,
+): string {
+  const safe = (value ?? "")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, maxLength)
+    .replace(/[._-]+$/g, "");
+  return safe || fallback;
+}
 
 function buildRelativeSaveDirectory(
   exportMethod: ExportMethod | null,
+  sourceMode: SourceMode,
   sourceBaseModelName: string,
   selectedModelIdx: string | null,
   checkpoint: string | null,
 ): string {
   if (exportMethod === "gguf") {
-    return `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
-      .replace(/[^a-zA-Z0-9._-]/g, "-")}-GGUF`;
+    const rawName =
+      sourceMode === "checkpoint"
+        ? checkpoint ?? selectedModelIdx ?? sourceBaseModelName
+        : sourceBaseModelName;
+    return `${safePathSegment(rawName)}-GGUF`;
   }
   return `${selectedModelIdx ?? "model"}/${checkpoint}`;
 }
@@ -125,9 +144,7 @@ export function ExportPage() {
 
   const [selectedModelIdx, setSelectedModelIdx] = useState<string | null>(null);
   const [checkpoint, setCheckpoint] = useState<string | null>(null);
-  const [sourceMode, setSourceMode] = useState<"checkpoint" | "model">(
-    "checkpoint",
-  );
+  const [sourceMode, setSourceMode] = useState<SourceMode>("checkpoint");
   const [modelSource, setModelSource] = useState<"hf" | "local">("hf");
   const [modelInput, setModelInput] = useState("");
   const [selectedSourceModel, setSelectedSourceModel] = useState<string | null>(
@@ -449,6 +466,7 @@ export function ExportPage() {
   const defaultSaveDirectory = useMemo(() => {
     const relative = buildRelativeSaveDirectory(
       exportMethod,
+      sourceMode,
       sourceBaseModelName,
       selectedModelIdx,
       checkpoint,
