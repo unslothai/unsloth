@@ -152,6 +152,8 @@ export const en = {
           "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded.",
         idleNeedsEnable:
           "Turn on Switch model by request so an unloaded model reloads on next use.",
+        idleActiveViaEnv:
+          "Idle auto-unload is active via the UNSLOTH_MODEL_IDLE_TTL environment variable.",
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter a whole number of seconds (0 or more).",

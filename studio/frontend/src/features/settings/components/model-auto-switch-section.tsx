@@ -149,6 +149,10 @@ export function ModelAutoSwitchSection() {
             <span className="max-w-[260px] text-right text-xs text-destructive">
               {error}
             </span>
+          ) : settings && !settings.enabled && settings.idleUnloadActive ? (
+            <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+              {t("settings.general.modelAutoSwitch.idleActiveViaEnv")}
+            </span>
           ) : settings && !settings.enabled ? (
             <span className="max-w-[260px] text-right text-xs text-muted-foreground">
               {t("settings.general.modelAutoSwitch.idleNeedsEnable")}

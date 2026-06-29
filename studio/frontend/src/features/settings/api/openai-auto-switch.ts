@@ -8,6 +8,9 @@ export type OpenAIAutoSwitchSettings = {
   enabled: boolean;
   autoUnloadIdleSeconds: number;
   defaultEnabled: boolean;
+  // True when the idle-unload loop will actually unload (e.g. enabled via the
+  // UNSLOTH_MODEL_IDLE_TTL env var even while the toggle is off).
+  idleUnloadActive: boolean;
 };
 
 type ApiOpenAIAutoSwitchSettings = {
@@ -16,6 +19,8 @@ type ApiOpenAIAutoSwitchSettings = {
   auto_unload_idle_seconds: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   default_enabled: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  idle_unload_active?: boolean;
 };
 
 let cachedSettings: OpenAIAutoSwitchSettings | null = null;
@@ -28,6 +33,7 @@ function fromApi(
     enabled: settings.enabled,
     autoUnloadIdleSeconds: settings.auto_unload_idle_seconds,
     defaultEnabled: settings.default_enabled,
+    idleUnloadActive: settings.idle_unload_active ?? false,
   };
 }
 

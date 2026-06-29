@@ -624,6 +624,24 @@ def test_update_openai_auto_switch_writes_both_keys_in_one_transaction(monkeypat
     assert written.get(AUTO_UNLOAD_IDLE_SETTING_KEY) == 120
 
 
+def test_settings_report_idle_unload_active_when_env_backed(monkeypatch):
+    # Codex P2: with UNSLOTH_MODEL_IDLE_TTL driving idle-unload while the toggle is
+    # off, the settings response must report idle_unload_active so the UI shows the
+    # feature as active via env rather than "needs enable".
+    import routes.settings as settings_route
+
+    monkeypatch.setattr(settings_route, "get_openai_auto_switch_enabled", lambda: False)
+    monkeypatch.setattr(settings_route, "get_stored_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(
+        settings_route, "get_auto_unload_idle_seconds", lambda: 600
+    )  # effective > 0
+    resp = settings_route.get_openai_auto_switch("tester")
+    assert resp.enabled is False and resp.idle_unload_active is True
+    # Effective TTL 0 (off, nothing env-backed) -> not active.
+    monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
+    assert settings_route.get_openai_auto_switch("tester").idle_unload_active is False
+
+
 # ── /v1/models discovery ────────────────────────────────────────────
 
 
@@ -2361,6 +2379,34 @@ def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
 
 
+def test_chat_audio_input_guards_target_before_switch(monkeypatch):
+    # Codex P2: a chat request carrying audio_base64 must guard the target before the
+    # switch -- audio rides the same companion mmproj as vision -- so a text-only
+    # target can't be loaded and evict the working audio model. Assert the handler
+    # flags require_vision so the hook's multimodal probe runs.
+    class _Reached(Exception):
+        pass
+
+    captured = {}
+
+    async def _capture(
+        model,
+        request,
+        subject,
+        *,
+        require_vision = False,
+    ):
+        captured["require_vision"] = require_vision
+        raise _Reached()
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert captured["require_vision"] is True
+
+
 def test_require_vision_rejects_text_target_before_switch(monkeypatch):
     # Codex P2: an image request naming a different text-only GGUF must 400 before
     # the swap, so the resident vision model is not evicted for a rejected request.
@@ -2436,7 +2482,7 @@ def test_chat_validates_confirm_and_modality_before_switch():
     assert "require_vision" in src
     hook = inspect.getsource(inference_route._maybe_auto_switch_model)
     assert hook.index("require_vision") < hook.index("_load_model_impl")
-    assert "does not support vision" in hook
+    assert "does not support the image or audio input" in hook
 
 
 def test_messages_have_image_helper():

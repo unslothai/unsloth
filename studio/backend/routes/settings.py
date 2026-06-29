@@ -35,6 +35,7 @@ from utils.helper_precache_settings import (
 from utils.openai_auto_switch_settings import (
     DEFAULT_AUTO_UNLOAD_IDLE_SECONDS,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
+    get_auto_unload_idle_seconds,
     get_model_overrides,
     get_openai_auto_switch_enabled,
     get_stored_auto_unload_idle_seconds,
@@ -84,6 +85,10 @@ class OpenAIAutoSwitchResponse(BaseModel):
     enabled: bool
     auto_unload_idle_seconds: int
     default_enabled: bool = DEFAULT_OPENAI_AUTO_SWITCH_ENABLED
+    # True when the idle-unload loop will actually unload (effective TTL > 0). With
+    # UNSLOTH_MODEL_IDLE_TTL set and nothing stored, this is true even while enabled
+    # is false, so the UI can show idle-unload as active instead of "needs enable".
+    idle_unload_active: bool = False
 
 
 class ModelOverridePayload(BaseModel):
@@ -167,6 +172,7 @@ def get_openai_auto_switch(
     return OpenAIAutoSwitchResponse(
         enabled = get_openai_auto_switch_enabled(),
         auto_unload_idle_seconds = get_stored_auto_unload_idle_seconds(),
+        idle_unload_active = get_auto_unload_idle_seconds() > 0,
     )
 
 
@@ -186,7 +192,11 @@ def update_openai_auto_switch(
             event = "settings.update_openai_auto_switch_failed",
             log = logger,
         ) from exc
-    return OpenAIAutoSwitchResponse(enabled = enabled, auto_unload_idle_seconds = idle_seconds)
+    return OpenAIAutoSwitchResponse(
+        enabled = enabled,
+        auto_unload_idle_seconds = idle_seconds,
+        idle_unload_active = get_auto_unload_idle_seconds() > 0,
+    )
 
 
 @router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)

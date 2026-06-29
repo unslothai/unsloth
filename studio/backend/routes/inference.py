@@ -2514,12 +2514,12 @@ async def _maybe_auto_switch_model(
 
         if _already_serving():
             return
-        # An image request naming a different text-only GGUF would load it here and
-        # only 400 below, evicting the working model. Reject before the swap. Only
-        # the resolver branch (an explicit new target); the reload-stash path just
-        # restores the model the request was already using. Vision capability comes
-        # from a companion mmproj, a filesystem probe -- run it off the loop, like
-        # the resolver above.
+        # An image/audio request naming a different text-only GGUF would load it
+        # here and only 400 below, evicting the working model. Reject before the
+        # swap. Only the resolver branch (an explicit new target); the reload-stash
+        # path just restores the model the request was already using. Both vision and
+        # audio input come from a companion mmproj (a filesystem probe) -- run it off
+        # the loop, like the resolver above.
         if (
             require_vision
             and resolved is not None
@@ -2528,7 +2528,7 @@ async def _maybe_auto_switch_model(
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
-                    "Image provided but the requested model does not support vision.",
+                    "The requested model does not support the image or audio input in this request.",
                     status = 400,
                     code = "invalid_value",
                     param = "model",
@@ -5260,7 +5260,11 @@ async def openai_chat_completions(
                         param = "tool_choice",
                     ),
                 )
-        _needs_vision = bool(_pre_parsed[2]) or _request_has_image(payload)
+        # Audio input rides the same companion-mmproj projector as vision, so a
+        # text-only target can't serve it either; guard both before the switch.
+        _needs_vision = (
+            bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
+        )
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
