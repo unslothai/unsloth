@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
@@ -622,3 +624,30 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
     assert flags["supports_preserve_thinking"] is True
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "<｜tool▁calls▁begin｜>",      # canonical
+        "<｜tool_calls_begin｜>",      # ASCII underscores
+        "<｜tool▁calls｜>",            # short form
+        "<｜tool calls begin｜>",      # spaces
+        "<｜tool\\_calls\\_begin｜>",  # escaped underscores
+    ],
+)
+def test_detect_safetensors_features_deepseek_opener_variants_keep_tools_on(opener):
+    # Every DeepSeek opener the parser accepts must keep supports_tools on; the
+    # route gate derives its markers from the parser's TOOL_XML_SIGNALS so it can
+    # no longer drift behind the parser and wrongly disable tools.
+    from routes.inference import _detect_safetensors_features
+
+    tpl = (
+        "{%- if tools %}tools{%- endif %}"
+        + opener
+        + "<｜tool▁call▁begin｜>function<｜tool▁sep｜>get_time{}"
+        "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    )
+    backend = SimpleNamespace(active_model_name = "unsloth/DeepSeek-V3.1")
+    flags = _detect_safetensors_features(backend, tpl)
+    assert flags["supports_tools"] is True

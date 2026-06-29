@@ -216,7 +216,11 @@ _DEEPSEEK_R1_CLOSE_RE = re.compile(r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_EN
 # ``<arg_key>`` directly and ``</tool_call>`` for a zero-argument call
 # (``<tool_call>get_current_date</tool_call>``). First-char ``[^\n<{]``
 # excludes Qwen.
-_GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([^\n<{][^\n<]*?)\s*(?=\n|<arg_key>|</tool_call>)")
+# Name class ``[\w.\-]+`` mirrors the other parsers (``_TC_FUNC_START_RE``) so
+# literal prose like ``<tool_call>not a call</tool_call>`` is NOT parsed as a tool
+# named "not a call"; a broad ``[^\n<]*`` captured arbitrary spaced text. ``{`` is
+# still excluded (Qwen's ``<tool_call>{json}`` is handled by the JSON parser).
+_GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([\w.\-]+)\s*(?=\n|<arg_key>|</tool_call>)")
 _GLM_TC_CLOSE = "</tool_call>"
 _GLM_ARG_KEY_OPEN = "<arg_key>"
 _GLM_ARG_KEY_CLOSE = "</arg_key>"
@@ -528,6 +532,25 @@ def _trim_param_value(val: str) -> str:
     return val
 
 
+def _inside_open_parameter(text: str, pos: int) -> bool:
+    """True if ``pos`` sits inside an unclosed ``<parameter>``/``<param>`` block --
+    i.e. a ``<function>`` / ``<parameter>`` opener at ``pos`` is a literal inside an
+    argument value (e.g. code that prints tool-call XML), not a real nested call.
+    Compares the last parameter opener before ``pos`` against the last
+    parameter/function close before it."""
+    last_param_open = -1
+    for m in _TC_PARAM_START_RE.finditer(text, 0, pos):
+        last_param_open = m.start()
+    if last_param_open < 0:
+        return False
+    last_close = max(
+        text.rfind("</parameter>", 0, pos),
+        text.rfind("</param>", 0, pos),
+        text.rfind("</function>", 0, pos),
+    )
+    return last_param_open > last_close
+
+
 def _parse_function_xml(
     content: str,
     *,
@@ -535,7 +558,14 @@ def _parse_function_xml(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     out: list[dict] = []
-    func_starts = list(_TC_FUNC_START_RE.finditer(content))
+    # Skip ``<function ...>`` openers that are literals inside an open parameter
+    # value (a code/search argument echoing tool-call XML), else the nested marker
+    # is promoted to a second call and truncates the real argument.
+    func_starts = [
+        fm
+        for fm in _TC_FUNC_START_RE.finditer(content)
+        if not _inside_open_parameter(content, fm.start())
+    ]
     for idx, fm in enumerate(func_starts):
         # group(1) is ``<function=name>``, group(2) is ``<function name="...">``.
         func_name = fm.group(1) or fm.group(2)
@@ -560,7 +590,13 @@ def _parse_function_xml(
 
         args: dict = {}
         param_unclosed = False
-        param_starts = list(_TC_PARAM_START_RE.finditer(body))
+        # Same nested-literal guard for parameters: a ``<parameter>`` opener inside
+        # an already-open parameter value is literal text, not a real second param.
+        param_starts = [
+            pm
+            for pm in _TC_PARAM_START_RE.finditer(body)
+            if not _inside_open_parameter(body, pm.start())
+        ]
         if len(param_starts) == 1:
             pm = param_starts[0]
             raw_val = body[pm.end() :]
@@ -714,7 +750,7 @@ def _parse_llama3_python_tag(
             if not allow_incomplete and depth > 0:
                 truncated = True
                 break
-            body = content[open_idx : i]
+            body = content[open_idx:i]
             out.append(
                 {
                     "id": f"call_{id_offset + len(out)}",
@@ -782,6 +818,41 @@ def _parse_llama3_python_tag(
     return out
 
 
+# Llama-3 special-token sentinels (chainable, any order) plus the role label the
+# template inserts between ``<|start_header_id|>`` and ``<|end_header_id|>``.
+_LLAMA3_BARE_JSON_SENTINELS = (
+    "<|begin_of_text|>",
+    "<|eot_id|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+    "<|eom_id|>",
+)
+_LLAMA3_HEADER_ROLES = ("assistant", "user", "system", "tool", "ipython")
+
+
+def strip_llama3_leading_sentinels(content: str) -> str:
+    """Strip leading Llama-3 special-token sentinels (and the role label after
+    ``<|start_header_id|>``) that can leak from a prior turn before a bare-JSON tool
+    call. Shared by the parser and the streaming buffering guards so a
+    sentinel-prefixed ``{"name":...}`` is recognised the same everywhere."""
+    stripped = content.lstrip()
+    while True:
+        stripped = stripped.lstrip()
+        matched = False
+        for sentinel in _LLAMA3_BARE_JSON_SENTINELS:
+            if stripped.startswith(sentinel):
+                stripped = stripped[len(sentinel) :]
+                if sentinel == "<|start_header_id|>":
+                    for role in _LLAMA3_HEADER_ROLES:
+                        if stripped.startswith(role):
+                            stripped = stripped[len(role) :]
+                            break
+                matched = True
+                break
+        if not matched:
+            return stripped
+
+
 def _parse_llama3_bare_json(
     content: str,
     *,
@@ -792,34 +863,7 @@ def _parse_llama3_bare_json(
     ``<|python_tag|>``. Strict (starts with ``{`` after sentinel strip; ``name``
     non-empty; ``parameters``/``arguments`` a dict) so prose and echoes don't fire."""
     out: list[dict] = []
-    stripped = content.lstrip()
-    # Sentinels can chain in any order, so loop until none match.
-    _sentinels = (
-        "<|begin_of_text|>",
-        "<|eot_id|>",
-        "<|start_header_id|>",
-        "<|end_header_id|>",
-        "<|eom_id|>",
-    )
-    # Consume the role label Meta's template inserts between ``<|start_header_id|>``
-    # and ``<|end_header_id|>`` so a round-trip like
-    # ``<|start_header_id|>assistant<|end_header_id|>\n\n{json}`` reaches the body.
-    _header_roles = ("assistant", "user", "system", "tool", "ipython")
-    while True:
-        stripped = stripped.lstrip()
-        matched = False
-        for sentinel in _sentinels:
-            if stripped.startswith(sentinel):
-                stripped = stripped[len(sentinel) :]
-                if sentinel == "<|start_header_id|>":
-                    for role in _header_roles:
-                        if stripped.startswith(role):
-                            stripped = stripped[len(role) :]
-                            break
-                matched = True
-                break
-        if not matched:
-            break
+    stripped = strip_llama3_leading_sentinels(content)
     if not stripped.startswith("{"):
         return out
 
@@ -1349,6 +1393,18 @@ def _parse_deepseek_tool_calls(
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
+        # Closing ``` fence + ``<｜tool▁call▁end｜>``. ``search`` advances ``pos`` in
+        # the heal path, but in strict mode the close must immediately follow the
+        # JSON (after optional whitespace) so a truncated R1 call -- one whose
+        # fence/terminator never arrived -- is rejected, matching the V3/V3.1 and
+        # other strict parsers instead of being healed into a call.
+        close_m = _DEEPSEEK_R1_CLOSE_RE.search(body, brace_end + 1)
+        if not allow_incomplete:
+            after = brace_end + 1
+            while after < len(body) and body[after] in " \t\r\n":
+                after += 1
+            if _DEEPSEEK_R1_CLOSE_RE.match(body, after) is None:
+                break
         if name:
             out.append(
                 {
@@ -1360,8 +1416,6 @@ def _parse_deepseek_tool_calls(
                     },
                 }
             )
-        # Move past the closing fence + ``<｜tool▁call▁end｜>``.
-        close_m = _DEEPSEEK_R1_CLOSE_RE.search(body, brace_end + 1)
         pos = close_m.end() if close_m else brace_end + 1
     if out:
         return out

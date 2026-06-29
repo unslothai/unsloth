@@ -362,3 +362,38 @@ class TestLlamaBuiltinChainAndNesting:
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
+
+
+def test_glm_open_does_not_parse_spaced_prose_as_tool_name():
+    # The GLM <tool_call>NAME opener must reject spaced literal prose (V10); only a
+    # valid [\w.\-]+ name (followed by newline/<arg_key>/</tool_call>) is a call.
+    assert parse_tool_calls_from_text("<tool_call>not a call</tool_call>") == []
+    ok = parse_tool_calls_from_text(
+        "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>NYC</arg_value>\n</tool_call>"
+    )
+    assert [c["function"]["name"] for c in ok] == ["get_weather"]
+
+
+def test_deepseek_r1_missing_call_terminator_rejected_in_strict_mode():
+    # R1 must reject a fenced call whose closing ``` + <｜tool▁call▁end｜> never
+    # arrived when Auto-Heal is off, matching V3/V3.1 strictness (V6).
+    text = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather\n"
+        "```json\n"
+        '{"city":"NYC"}'
+        "<｜tool▁calls▁end｜>"
+    )
+    assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+    assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
+
+
+def test_deepseek_r1_complete_call_accepted_in_strict_mode():
+    # A fully-terminated R1 call (close fence + per-call end) is still accepted.
+    text = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather\n"
+        "```json\n"
+        '{"city":"NYC"}\n'
+        "```<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    )
+    calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+    assert len(calls) == 1 and calls[0]["function"]["name"] == "get_weather"

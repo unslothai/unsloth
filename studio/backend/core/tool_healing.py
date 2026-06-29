@@ -27,7 +27,10 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-_TC_GEMMA_START_RE = re.compile(r"<\|tool_call>call:([\w-]+)\s*\{")
+# Name class ``[\w.\-]`` (dots/hyphens) matches the wrapper-less ``_GEMMA_BARE_TC_RE``
+# and the other parsers, so a dotted/namespaced Gemma tool name (mcp.server-list)
+# in the wrapped form is parsed instead of silently producing no call.
+_TC_GEMMA_START_RE = re.compile(r"<\|tool_call>call:([\w.\-]+)\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_GEMMA_END_TAG_RE = re.compile(r"<tool_call\|>")

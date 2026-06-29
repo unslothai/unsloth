@@ -1808,6 +1808,119 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
     assert calls == [("python", {"code": big_code})]
 
 
+def _streamed_content(text: str, frag: int = 4) -> list[str]:
+    """Stream a content string token-by-token across many deltas, the way
+    llama-server emits a generation. ``frag`` controls the chunk size so the
+    BUFFERING state machine sees the call shape grow incrementally."""
+    chunks = [_sse({"content": text[i : i + frag]}) for i in range(0, len(text), frag)]
+    chunks.append(_done())
+    return chunks
+
+
+def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
+    """Llama-3.2 GGUF emits a wrapper-less ``{"name":..,"parameters":..}`` call
+    with no XML signal. The BUFFERING scan only knew the XML signals, so the
+    bare object streamed out raw AND the signal-gated safety net never fired the
+    tool. It must instead be held while incomplete, drained silently when
+    balanced, and executed -- with nothing leaking to the visible stream."""
+
+    bare_call = '{"name": "web_search", "parameters": {"query": "weather in Sydney"}}'
+    first_stream = _streamed_content(bare_call)
+    final_stream = [_sse({"content": "It is sunny in Sydney."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Weather: sunny, 22C."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather in Sydney?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    # The tool ran with the parsed arguments.
+    assert calls == [("web_search", {"query": "weather in Sydney"})]
+    assert any(
+        event.get("type") == "tool_end" and event.get("tool_name") == "web_search"
+        for event in events
+    )
+
+    # The bare JSON never leaked to the user-visible stream.
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all('"name"' not in t for t in content_texts), content_texts
+    assert all("web_search" not in t for t in content_texts), content_texts
+    # The post-tool synthesis is still streamed.
+    assert any("sunny in Sydney" in t for t in content_texts), content_texts
+
+
+def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
+    """If generation is cut off mid bare-JSON object (no closing brace), the held
+    fragment must be stripped at stream end rather than dumped to the user."""
+
+    truncated = '{"name": "web_search", "parameters": {"query": "weather in S'
+    stream = _streamed_content(truncated)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no complete call")),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all('{"name"' not in t for t in content_texts), content_texts
+
+
+def test_gemma_wrapperless_call_streamed_is_not_leaked_and_executes(monkeypatch):
+    """Gemma 4 GGUF (skip_special_tokens) streams a wrapper-less ``call:NAME{..}``
+    with no XML signal. Like bare JSON, the BUFFERING scan must recognise it via
+    _GEMMA_BARE_TC_RE, drain it silently, and execute the tool -- never leaking
+    the ``call:`` markup to the user-visible stream."""
+
+    gemma_call = 'call:web_search{query:"weather in Sydney"}'
+    first_stream = _streamed_content(gemma_call)
+    final_stream = [_sse({"content": "It is sunny in Sydney."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Weather: sunny, 22C."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather in Sydney?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "weather in Sydney"})]
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("call:" not in t for t in content_texts), content_texts
+    assert any("sunny in Sydney" in t for t in content_texts), content_texts
+
+
 def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
     """A terminal SSE chunk carrying llama-server's ``usage`` block, the way the
     real server reports it on the final chunk of a completion."""

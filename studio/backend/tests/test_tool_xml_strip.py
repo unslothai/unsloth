@@ -30,21 +30,39 @@ assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(
     1
 ), "extracted _TOOL_XML_RE is missing expected arms (extraction truncated?)"
 # The regex reuses the parser's shared DeepSeek opener alternation; provide it so
-# the extracted ``_re.compile`` expression resolves the same source.
+# the extracted ``_re.compile`` expression resolves the same source. The display
+# helper also delegates to _strip_tool_xml, which runs the parser's Mistral
+# [TOOL_CALLS] balanced strip, so provide _strip_mistral_closed_calls too.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
+from core.inference.tool_call_parser import _strip_mistral_closed_calls
 
-_ns = {"_re": _re, "_DS_OPEN_SRC": _DS_OPEN_SRC}
+_ns = {
+    "_re": _re,
+    "_DS_OPEN_SRC": _DS_OPEN_SRC,
+    "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
+}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
+
+_xml_helper = _re.search(
+    r"def _strip_tool_xml\(text: str\) -> str:\n(?:    .+\n)+",
+    _src,
+)
+assert _xml_helper, "could not extract _strip_tool_xml source"
+assert "_strip_mistral_closed_calls" in _xml_helper.group(0), (
+    "extracted _strip_tool_xml no longer runs the Mistral balanced strip"
+)
+exec(_xml_helper.group(0), _ns)
+
 _helper = _re.search(
     r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
     r"(?:    .+\n)+",
     _src,
 )
 assert _helper, "could not extract _strip_tool_xml_for_display source"
-# ``(?:    .+\n)+`` stops at the first blank/under-indented line, so confirm the
-# body actually reached the ``_TOOL_XML_RE.sub`` call rather than truncating early.
-assert "_TOOL_XML_RE" in _helper.group(0), "extracted helper body looks truncated"
+# After the V1 fix the display helper delegates to _strip_tool_xml; confirm the
+# extracted body actually reached that call rather than truncating early.
+assert "_strip_tool_xml(" in _helper.group(0), "display helper no longer delegates"
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 
@@ -56,6 +74,17 @@ def test_route_display_strip_respects_disabled_auto_heal_contract():
     text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
     assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+
+
+def test_route_display_strip_removes_mistral_tool_calls_with_nested_json():
+    # _TOOL_XML_RE has no [TOOL_CALLS] arm; the display helper must delegate to
+    # _strip_tool_xml so the Mistral balanced-brace strip runs (a non-greedy
+    # \{.*?\} would truncate the nested JSON at the first }).
+    text = 'ok [TOOL_CALLS]web_search{"filters":{"date":"2024"},"query":"cats"} tail'
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[TOOL_CALLS]" not in out and "web_search" not in out, out
+    assert out == "ok  tail"
 
 
 def test_strips_well_formed_tool_call():

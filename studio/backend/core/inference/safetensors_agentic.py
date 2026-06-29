@@ -31,6 +31,7 @@ from core.inference.tool_call_parser import (
     RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
     parse_tool_calls_from_text,
+    strip_llama3_leading_sentinels,
     strip_tool_markup,
 )
 from core.inference.tool_loop_controller import (
@@ -74,8 +75,7 @@ _REPROMPT_MAX_CHARS = 2000
 # web_search/python pushed the model toward calls that are rejected when only a
 # subset (or custom/MCP tools) is active. Mirrors the GGUF path's tool_hint.
 _REPROMPT_INSTRUCTION_TEMPLATE = (
-    "STOP. Do NOT write code or explain. You MUST call a tool NOW. "
-    "Call {tool_hint} immediately."
+    "STOP. Do NOT write code or explain. You MUST call a tool NOW. Call {tool_hint} immediately."
 )
 
 # Without a grammar constraint a small model can loop, emitting the same tool
@@ -421,17 +421,20 @@ def run_safetensors_tool_loop(
             # Llama-3.2 ``custom_tools`` emits a bare ``{"name":..,"parameters":..}``
             # object with no XML signal. Without this, the loop streams that raw JSON
             # to the client before the end-of-turn safety net recognises it as a call.
-            # Hold a leading ``{`` until its top-level object closes: drain silently if
-            # it parses as a tool call, else fall through and stream it as content
-            # (the DRAINING/ STREAMING resolvers both recover non-call text, so this
-            # can never drop a plain JSON answer).
+            # Strip any leading Llama sentinel (e.g. a prior turn's ``<|eot_id|>``)
+            # first so a sentinel-prefixed object is held too. Hold a leading ``{``
+            # until its top-level object closes: drain silently if it parses as a tool
+            # call, else fall through and stream it as content (the DRAINING/STREAMING
+            # resolvers both recover non-call text, so this can never drop a plain
+            # JSON answer).
+            bare_probe = strip_llama3_leading_sentinels(stripped)
             if (
                 not is_match
                 and not is_prefix
                 and tool_protocol_active
-                and stripped.startswith("{")
+                and bare_probe.startswith("{")
             ):
-                if _balanced_brace_end(stripped, 0) is None:
+                if _balanced_brace_end(bare_probe, 0) is None:
                     if len(stripped) < _MAX_BARE_JSON_BUFFER:
                         continue  # object still open -- keep buffering
                 elif parse_tool_calls_from_text(
@@ -564,10 +567,12 @@ def run_safetensors_tool_loop(
                     )
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
                     conversation.append({"role": "assistant", "content": _stripped})
-                    conversation.append({
-                        "role": "user",
-                        "content": _REPROMPT_INSTRUCTION_TEMPLATE.format(tool_hint = tool_hint),
-                    })
+                    conversation.append(
+                        {
+                            "role": "user",
+                            "content": _REPROMPT_INSTRUCTION_TEMPLATE.format(tool_hint = tool_hint),
+                        }
+                    )
                     yield {"type": "status", "text": ""}
                     continue
 

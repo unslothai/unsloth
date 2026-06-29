@@ -1110,6 +1110,7 @@ from core.inference.key_exchange import decrypt_api_key
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.tool_call_parser import _strip_mistral_closed_calls
+from core.inference.tool_call_parser import TOOL_XML_SIGNALS as _PARSER_TOOL_SIGNALS
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -1269,23 +1270,17 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         log_source = "safetensors",
     )
     # Markers any supported parser recognises. If the template advertises
-    # tools but uses none, drop the pill. ``{"name":`` covers Llama-3.2
-    # ``custom_tools`` bare-JSON. ``<arg_key>`` is GLM's unique signal
-    # (GLM and Qwen share ``<tool_call>``).
+    # tools but uses none, drop the pill. Reuse the parser's own signal list
+    # (``_PARSER_TOOL_SIGNALS``) so this gate never drifts from the formats the
+    # parser actually handles -- a hand-maintained copy silently lost the new
+    # DeepSeek opener variants. ``{"name":`` covers Llama-3.2 ``custom_tools``
+    # bare-JSON and ``<arg_key>`` is GLM's unique signal (GLM and Qwen share
+    # ``<tool_call>``); neither is in the shared XML-signal set, so add them here.
     _PARSER_MARKERS = (
-        "<tool_call>",
-        "<function=",
-        "<function name=",
-        "<|python_tag|>",
-        "[TOOL_CALLS]",
-        "<|tool_call>",
+        *_PARSER_TOOL_SIGNALS,
         '{"name":',
         '{\\"name\\":',
-        "<｜tool▁calls▁begin｜>",
-        "<｜tool▁call▁begin｜>",
         "<arg_key>",
-        "<|tool_calls_section_begin|>",
-        "<|tool_call_begin|>",
     )
     if (
         flags.get("supports_tools")
@@ -1620,10 +1615,14 @@ def _strip_tool_xml(text: str) -> str:
 
 
 def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
-    """Apply route-level XML leak cleanup only when Auto-Heal is enabled."""
+    """Route-level tool-call leak cleanup, only when Auto-Heal is enabled.
+    Delegates to ``_strip_tool_xml`` so the Mistral ``[TOOL_CALLS]`` balanced-brace
+    pass runs here too -- ``_TOOL_XML_RE`` alone has no ``[TOOL_CALLS]`` arm and
+    would leak Mistral textual calls (nested JSON) into OpenAI-compatible display
+    and stale-history paths."""
     if not auto_heal_tool_calls:
         return text
-    return _TOOL_XML_RE.sub("", text)
+    return _strip_tool_xml(text)
 
 
 logger = get_logger(__name__)
