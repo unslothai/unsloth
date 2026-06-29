@@ -3078,7 +3078,7 @@ class TorchAOConfig:
 def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     """
     Utility to untie input/output embeddings in a HuggingFace model.
-    This is useful if we want to quantize the input/ouput embeddings differently.
+    This is useful if we want to quantize the input/output embeddings differently.
     Model is modified in-place.
     """
 
