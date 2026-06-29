@@ -5256,6 +5256,19 @@ def _linux_validation_setenv_args(payload_env: dict[str, str]) -> list[str]:
     return args
 
 
+def _drop_server_gpu_layers(command: list[str]) -> list[str]:
+    trimmed: list[str] = []
+    index = 0
+    while index < len(command):
+        arg = command[index]
+        if arg == "--n-gpu-layers" and index + 1 < len(command):
+            index += 2
+            continue
+        trimmed.append(arg)
+        index += 1
+    return trimmed
+
+
 def _extract_loopback_port(command: list[str]) -> int:
     for index, arg in enumerate(command):
         if arg != "--port":
@@ -5672,18 +5685,12 @@ def build_validation_sandbox_plan(
                 and gpu_backend in {"cuda", "rocm"}
                 and not _binary_is_setuid_root(bwrap_path)
             ):
-                return _ValidationLaunchPlan(
-                    command = payload_command,
-                    env = launcher_env,
-                    action = _VALIDATION_LAUNCH_RUN,
-                    purpose = purpose,
-                    sandbox_kind = "linux_direct_validation",
-                    reason = "Linux GPU validation requires direct launch when bwrap is not setuid root",
-                    payload_command = payload_command,
-                    payload_env = env,
-                    network_policy = _VALIDATION_NETWORK_POLICY_DIRECT,
-                    server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
-                )
+                # Non-setuid bwrap needs a user namespace, which drops the host's
+                # supplementary GPU device groups. Keep the loopback-only sandbox
+                # and validate the bundle on the CPU path instead.
+                payload_command = _drop_server_gpu_layers(payload_command)
+                enable_gpu_layers = False
+                gpu_backend = None
             network_policy = _VALIDATION_NETWORK_POLICY_SANDBOX
             server_probe_mode = (
                 _VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX
@@ -5777,7 +5784,7 @@ def build_validation_sandbox_plan(
                         purpose = purpose,
                         env = env,
                     ),
-                    "env",
+                    "/usr/bin/env",
                     "-i",
                     *[f"{name}={value}" for name, value in sorted(env.items())],
                     *launch_command,

@@ -3399,39 +3399,55 @@ def test_build_validation_sandbox_plan_linux_server_probe_binds_nix_store(monkey
     assert _command_contains_path(plan, "nix/store")
 
 
-def test_build_validation_sandbox_plan_linux_gpu_uses_direct_validation_without_setuid_bwrap(
-    monkeypatch, tmp_path
-):
+def test_build_validation_sandbox_plan_linux_gpu_keeps_sandbox_without_setuid_bwrap(monkeypatch, tmp_path):
     bwrap_path = tmp_path / "bwrap"
     bwrap_path.write_text("")
     binary_path = tmp_path / "llama-server"
     binary_path.write_text("")
     install_dir = tmp_path / "install"
     install_dir.mkdir()
+    helper_path = tmp_path / "python3"
+    helper_path.write_text("")
+    seen: dict[str, object] = {}
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "_resolve_command_path",
         lambda command: str(bwrap_path.resolve()) if command == "bwrap" else None,
     )
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_binary_is_setuid_root", lambda _path: False)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_linux_validation_server_probe_command",
+        lambda command, payload_env, timeout = 60: seen.update(
+            {
+                "command": list(command),
+                "payload_env": dict(payload_env),
+                "timeout": timeout,
+            }
+        ) or [str(helper_path), "-c", "server probe"],
+    )
 
     plan = build_validation_sandbox_plan(
-        [str(binary_path), "--help"],
+        [str(binary_path), "--port", "7777", "--n-gpu-layers", "1"],
         binary_path = binary_path,
         install_dir = install_dir,
         host = linux_host(),
         purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
         runtime_line = None,
-        env = {},
+        env = {"LD_LIBRARY_PATH": "/tmp/payload/libs"},
         enable_gpu_layers = True,
         gpu_backend = "cuda",
     )
 
     assert plan.is_runnable
-    assert plan.command == [str(binary_path), "--help"]
-    assert plan.sandbox_kind == "linux_direct_validation"
-    assert plan.network_policy == INSTALL_LLAMA_PREBUILT._VALIDATION_NETWORK_POLICY_DIRECT
-    assert plan.server_probe_mode == INSTALL_LLAMA_PREBUILT._VALIDATION_SERVER_PROBE_MODE_HOST
+    assert plan.command[0] == str(bwrap_path.resolve())
+    assert plan.sandbox_kind == "linux_bwrap"
+    assert plan.network_policy == INSTALL_LLAMA_PREBUILT._VALIDATION_NETWORK_POLICY_SANDBOX
+    assert plan.server_probe_mode == INSTALL_LLAMA_PREBUILT._VALIDATION_SERVER_PROBE_MODE_IN_SANDBOX
+    assert seen["command"] == [str(binary_path), "--port", "7777"]
+    assert seen["payload_env"] == {"LD_LIBRARY_PATH": "/tmp/payload/libs"}
+    assert plan.payload_command == [str(binary_path), "--port", "7777"]
+    assert "--n-gpu-layers" not in plan.command
 
 
 def test_linux_validation_server_probe_command_passes_payload_env_to_server_spawn():
@@ -3819,6 +3835,7 @@ def test_build_validation_sandbox_plan_macos_with_and_without_sandbox_exec(monke
     )
     assert mac_run.is_runnable
     assert mac_run.command[:2] == ["sandbox-exec", "-p"]
+    assert "/usr/bin/env" in mac_run.command
     profile = mac_run.command[2]
     assert "(deny default)" in profile
     assert '(import "bsd.sb")' in profile
@@ -3872,6 +3889,7 @@ def test_build_validation_sandbox_plan_macos_server_keeps_loopback(monkeypatch):
     )
     assert plan.is_runnable
     assert plan.command[:2] == ["sandbox-exec", "-p"]
+    assert "/usr/bin/env" in plan.command
     profile = plan.command[2]
     assert "(deny default)" in profile
     assert '(import "bsd.sb")' in profile
