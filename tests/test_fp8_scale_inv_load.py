@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 
+import pytest
 import torch
 from safetensors.torch import save_file
 
@@ -187,3 +188,38 @@ def test_loader_calls_restore_only_for_fp8_loads():
             hit_count += 1
 
     assert hit_count == 2
+
+
+def test_fp8_probe_skips_missing_optional_kernel_module():
+    loader_utils = _load_loader_utils()
+    module = torch.nn.Linear(4, 4, bias = False)
+
+    assert loader_utils._is_real_fp8_owner(module) is False
+
+
+def test_fp8_probe_uses_absolute_optional_import_and_narrow_missing_module_guard():
+    tree = ast.parse(LOADER_UTILS.read_text())
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "_is_real_fp8_owner":
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Try):
+                continue
+
+            imports = [
+                stmt for stmt in child.body
+                if isinstance(stmt, ast.ImportFrom)
+            ]
+            handlers = child.handlers
+            if not imports or not handlers:
+                continue
+
+            import_stmt = imports[0]
+            handler = handlers[0]
+            assert import_stmt.module == "unsloth.kernels.fp8"
+            assert isinstance(handler.type, ast.Name)
+            assert handler.type.id == "ModuleNotFoundError"
+            return
+
+    pytest.fail("_is_real_fp8_owner no longer protects the optional fp8 kernel import.")

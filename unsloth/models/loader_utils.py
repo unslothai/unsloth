@@ -388,8 +388,8 @@ def _is_real_fp8_owner(module):
         return True
 
     try:
-        from ..kernels.fp8 import FbgemmFp8Linear, FP8Linear
-    except Exception:
+        from unsloth.kernels.fp8 import FbgemmFp8Linear, FP8Linear
+    except ModuleNotFoundError:
         FbgemmFp8Linear, FP8Linear = None, None
     if FbgemmFp8Linear is not None and isinstance(module, FbgemmFp8Linear):
         return True
