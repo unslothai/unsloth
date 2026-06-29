@@ -1962,3 +1962,66 @@ def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
     metadata = [e for e in events if e.get("type") == "metadata"]
     assert metadata, "expected a metadata event"
     assert "prompt_tokens_details" not in metadata[-1]["usage"]
+
+
+def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
+    """A bare-JSON call whose arguments exceed _MAX_BARE_JSON_BUFFER (~16 KiB)
+    must DRAIN rather than stream the raw JSON prefix, yet still execute once the
+    full object is parsed by the safety net."""
+
+    cap = 16384
+    big = "A" * (cap + 5000)
+    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
+    first_stream.append(_done())
+    final_stream = [_sse({"content": "done"}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert not any(t.lstrip().startswith('{"name') for t in content_texts), content_texts[:1]
+    assert calls and calls[0][0] == "python"
+    assert len(calls[0][1].get("code", "")) > cap
+
+
+def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
+    """After a complete bare-JSON call executes, the assistant message kept for
+    the next llama-server request must not carry the raw call as content."""
+
+    import copy
+
+    first_stream = [
+        _sse({"content": '{"name":"web_search","parameters":{"query":"cats"}}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "RESULT")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(payloads) >= 2
+    asst = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
+    assert asst and not any('"name"' in (m.get("content") or "") for m in asst), asst

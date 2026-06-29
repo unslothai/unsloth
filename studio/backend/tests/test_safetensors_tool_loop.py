@@ -2482,5 +2482,75 @@ class TestParserRobustness:
         assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
 
 
+def test_truncated_bare_json_at_eof_is_not_leaked():
+    # Stream ends mid bare-JSON object: the held fragment must be dropped at the
+    # EOF resolver, not flushed as plain assistant content (GGUF parity).
+    loop, _exec = _make_loop(
+        turns = [['{"name":"web_search","parameters":{"query":"weather in S']],
+        max_tool_iterations = 1,
+    )
+    events = _collect_events(loop)
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any('"name"' in t for t in contents), contents
+
+
+def test_oversized_bare_json_call_is_not_leaked_and_executes():
+    # A bare-JSON call whose arguments exceed _MAX_BARE_JSON_BUFFER must DRAIN
+    # (suppress) rather than stream the raw JSON prefix, and still execute once
+    # the full object is parsed by the safety net.
+    from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
+
+    big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
+    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
+    loop, exec_fn = _make_loop(turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2)
+    events = _collect_events(loop)
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any(t.lstrip().startswith('{"name') for t in contents), contents[:1]
+    assert exec_fn.calls and exec_fn.calls[0][0] == "python"
+    assert len(exec_fn.calls[0][1].get("code", "")) > _MAX_BARE_JSON_BUFFER
+
+
+def test_oversized_plain_json_answer_still_streams():
+    # A giant plain JSON answer (no "name" key) is NOT a tool call and must still
+    # stream -- the oversized DRAIN route is gated on a "name" key.
+    from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
+
+    big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
+    full = '{"result":"' + big + '"}'
+    chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
+    loop, _exec = _make_loop(turns = [chunks], max_tool_iterations = 1)
+    events = _collect_events(loop)
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert '"result"' in contents
+
+
+def test_bare_json_call_not_replayed_in_next_turn_content():
+    # After a complete bare-JSON call executes, the assistant content fed to the
+    # next turn must not contain the raw call (next-turn contamination).
+    captured: list[list[dict]] = []
+    exec_fn = FakeExecuteTool(["RESULT"])
+
+    def st(messages, active_tools = None):
+        captured.append([dict(m) for m in messages])
+        if len(captured) == 1:
+            yield '{"name":"web_search","parameters":{"query":"cats"}}'
+        else:
+            yield "Found."
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = st,
+            messages = [{"role": "user", "content": "cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = exec_fn,
+            max_tool_iterations = 3,
+        )
+    )
+    assert len(captured) >= 2, captured
+    asst = [m for m in captured[1] if m.get("role") == "assistant"]
+    assert asst and not any('"name"' in (m.get("content") or "") for m in asst), asst
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

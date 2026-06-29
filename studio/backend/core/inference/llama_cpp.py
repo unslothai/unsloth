@@ -49,6 +49,7 @@ from core.inference.tool_call_parser import (
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
+    strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
 )
@@ -8256,9 +8257,19 @@ class LlamaCppBackend:
                                             _bare = strip_llama3_leading_sentinels(stripped_buf)
                                             if _bare.startswith("{"):
                                                 if _balanced_brace_end(_bare, 0) is None:
-                                                    _hold_buffer = (
+                                                    if (
                                                         len(stripped_buf) < _MAX_BARE_JSON_BUFFER
-                                                    )
+                                                    ):
+                                                        _hold_buffer = True
+                                                    elif '"name"' in _bare:
+                                                        # Oversized but still-open
+                                                        # bare-JSON call: stop holding
+                                                        # (memory bound) yet DRAIN
+                                                        # rather than leak the raw JSON
+                                                        # prefix. Gated on a ``"name"``
+                                                        # key so a giant plain JSON
+                                                        # answer still streams.
+                                                        _drain_silently = True
                                                 elif self._parse_tool_calls_from_text(
                                                     content_buffer,
                                                     allow_incomplete = auto_heal_tool_calls,
@@ -8501,6 +8512,10 @@ class LlamaCppBackend:
                             final = True,
                             force = True,
                         )
+                        # ``_strip_tool_markup`` only knows XML/bracket markup; also
+                        # drop a leading Llama-3.2 bare-JSON call so the executed
+                        # call is not replayed as visible text or next-turn history.
+                        content_text = strip_leading_bare_json_call(content_text)
                     if tool_calls:
                         logger.info(
                             f"Parsed {len(tool_calls)} tool call(s) from "
