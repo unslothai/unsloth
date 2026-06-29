@@ -77,13 +77,15 @@ _DATACENTER_GPU_TOKENS = frozenset(
     {
         "B200",
         "B100",
+        "B300",  # Blackwell Ultra data center
         "GB200",
         "GB300",
         "GB10",  # Blackwell data center
         "H200",
         "H100",
         "H800",
-        "H20",  # Hopper data center
+        "H20",
+        "GH200",  # Grace-Hopper superchip (data center)
         "A100",
         "A800",
         "A30",

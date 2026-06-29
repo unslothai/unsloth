@@ -279,6 +279,8 @@ def test_is_consumer_gpu_true(monkeypatch, name):
     "name",
     [
         "NVIDIA B200",
+        "NVIDIA B300",  # Blackwell Ultra (matches llama_cpp datacenter regex)
+        "NVIDIA GH200 480GB",  # Grace-Hopper superchip (was misread as consumer)
         "NVIDIA H100 80GB HBM3",
         "NVIDIA A100-SXM4-80GB",
         "NVIDIA A40",  # data-center Ampere (distinct token from RTX A4000)
