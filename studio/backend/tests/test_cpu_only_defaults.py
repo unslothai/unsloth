@@ -157,11 +157,16 @@ def test_cpu_context_fit_runs_below_ceiling_too():
     assert "requested_ctx = _ctx_ceiling" in src
 
 
+def _nows(s: str) -> str:
+    """Whitespace-stripped source, so assertions survive the formatter wrapping a line."""
+    return "".join(s.split())
+
+
 def test_cpu_context_fit_accounts_for_mtp():
     """mtp_engaged alone is a no-op once budget_frac is set, so the CPU fit must pass the
     byte-accurate MTP overhead fn to actually reserve MTP KV (PR review fix)."""
-    src = _load_model_src()
-    assert "mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None)" in src
+    src = _nows(_load_model_src())
+    assert _nows("mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None)") in src
 
 
 def test_cpu_context_cap_reuses_fit_helper_against_ram():
@@ -204,7 +209,7 @@ def test_numa_decision_uses_footprint_not_just_weights():
     # Footprint = fitted weights (incl. compute buffer) + KV + MTP reserve.
     assert "_resident = model_size_fit or model_size" in src
     # MTP is recomputed at the post-cap context, not the stale pre-cap reserve.
-    assert "_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0" in src
+    assert _nows("_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0") in _nows(src)
     # KV must be sized for the launched --parallel slots, not the n_parallel=1 default.
     assert "effective_ctx, cache_type_kv, n_parallel = n_parallel" in src
 
@@ -260,12 +265,12 @@ def test_cpu_cap_lowers_advertised_ceiling():
 def test_cpu_fit_skips_mtp_reserve_when_mla_auto_drops():
     """Auto drops embedded MTP for MLA models, so the CPU cap / NUMA footprint must not
     reserve a target-KV copy for a drafter that won't launch (PR review fix)."""
-    src = _load_model_src()
-    assert "_mtp_will_engage_cpu = _mtp_will_engage and not (" in src
-    assert "not _mla_mtp_auto_enabled()" in src
+    src = _nows(_load_model_src())
+    assert _nows("_mtp_will_engage_cpu = _mtp_will_engage and not (") in src
+    assert _nows("not _mla_mtp_auto_enabled()") in src
     # The CPU cap and NUMA recompute use the gated flag, not the raw _mtp_will_engage.
-    assert "mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None)" in src
-    assert "_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0" in src
+    assert _nows("mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None)") in src
+    assert _nows("_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0") in src
 
 
 def test_zero_offload_folds_into_cpu_only():
