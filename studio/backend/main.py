@@ -441,30 +441,6 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
-def _start_background_maintenance() -> None:
-    """Run non-critical startup maintenance after the API is live."""
-
-    def _run() -> None:
-        import time as _time
-
-        _started = _time.perf_counter()
-        try:
-            from storage.studio_db import cleanup_orphaned_runs
-            cleanup_orphaned_runs()
-        except Exception as exc:
-            import structlog
-            structlog.get_logger(__name__).warning(
-                "cleanup_orphaned_runs failed at startup: %s", exc
-            )
-
-        import structlog as _structlog
-
-        _structlog.get_logger(__name__).info(
-            "background startup maintenance completed in %.1fms",
-            (_time.perf_counter() - _started) * 1000,
-        )
-
-    threading.Thread(target = _run, daemon = True, name = "startup-maintenance").start()
 
 
 def _warm_rag_embedder() -> None:
@@ -517,7 +493,14 @@ async def lifespan(app: FastAPI):
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
 
-    # Reap download workers orphaned by a previous crash before new downloads start.
+    # Reap workers/runs orphaned by a previous crash before new work starts.
+    try:
+        from storage.studio_db import cleanup_orphaned_runs
+
+        cleanup_orphaned_runs()
+    except Exception as exc:
+        _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
     reap_hub_orphan_workers()
 
     # llama.cpp probes: capability (MTP support) + freshness (release age).
@@ -537,7 +520,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
-    _start_background_maintenance()
 
     _start_helper_precache_if_enabled()
     threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
