@@ -57,6 +57,7 @@ from .diffusion_prequant import (
     resolve_prequant_source,
 )
 from .diffusion_transformer_quant import (
+    DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
     normalize_transformer_quant,
     quantize_transformer,
@@ -648,6 +649,9 @@ class DiffusionBackend:
                     dtype = dtype,
                     hf_token = hf_token,
                     scheme = scheme,
+                    # Reject a checkpoint built with a different Linear filter than the
+                    # dense path uses, so the prequant and runtime-quant models match.
+                    min_features = DEFAULT_MIN_LINEAR_FEATURES,
                     logger = logger,
                 )
                 if transformer is not None:

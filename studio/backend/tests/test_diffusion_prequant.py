@@ -147,10 +147,11 @@ def _load(
 ):
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, ckpt, load_raises = load_raises)
-    # The local-path branch is opt-in (it unpickles an arbitrary file); these tests
-    # exercise the load mechanics, so enable it unless a test is checking the gate.
+    # The local-path branch is opt-in via a directory ALLOWLIST (it unpickles an arbitrary
+    # file); these tests exercise the load mechanics, so allowlist tmp_path (where ckpt.pt
+    # lives) unless a test is checking the gate.
     if allow_local:
-        monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, "1")
+        monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
     else:
         monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
     path = tmp_path / "ckpt.pt"
@@ -256,6 +257,87 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
     result = load_prequantized_transformer(
         _FakeTransformer,
         "Tongyi-MAI/Z-Image-Turbo",
+        source,
+        device = "cuda",
+        dtype = "bfloat16",
+        hf_token = None,
+        scheme = "fp8",
+        logger = None,
+    )
+    assert result is not None
+
+
+def test_load_local_path_outside_allowlist_refused(monkeypatch, tmp_path):
+    # Even with the opt-in set, a path OUTSIDE every allowlisted directory must not be
+    # unpickled: enabling one trusted dir is not a wildcard for arbitrary request paths.
+    called = {"load": False}
+
+    def _explode(*a, **k):
+        called["load"] = True
+        raise AssertionError("torch.load must not run on a path outside the allowlist")
+
+    torch = types.ModuleType("torch")
+    torch.load = _explode
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(allowed))
+
+    outside = tmp_path / "evil.pt"  # a real file, but outside the allowlisted dir
+    outside.write_bytes(b"x")
+    source = PrequantSource(kind = "path", location = str(outside), filename = None)
+    result = load_prequantized_transformer(
+        _FakeTransformer,
+        "Tongyi-MAI/Z-Image-Turbo",
+        source,
+        device = "cuda",
+        dtype = "bfloat16",
+        hf_token = None,
+        scheme = "fp8",
+        logger = None,
+    )
+    assert result is None
+    assert called["load"] is False
+
+
+def test_load_min_features_mismatch_is_none(monkeypatch, tmp_path):
+    # A checkpoint built with a different --min-features quantises a different Linear set,
+    # so it must be rejected when the runtime threshold is supplied.
+    ckpt = _good_ckpt()
+    ckpt["metadata"]["min_features"] = 256  # built with 256, runtime asks for 512
+    _FakeTransformer.calls = {}
+    _stub_torch_accelerate(monkeypatch, ckpt)
+    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    path = tmp_path / "ckpt.pt"
+    path.write_bytes(b"x")
+    source = PrequantSource(kind = "path", location = str(path), filename = None)
+    result = load_prequantized_transformer(
+        _FakeTransformer,
+        "Tongyi-MAI/Z-Image-Turbo",
+        source,
+        device = "cuda",
+        dtype = "bfloat16",
+        hf_token = None,
+        scheme = "fp8",
+        min_features = 512,
+        logger = None,
+    )
+    assert result is None
+
+
+def test_load_base_fork_tail_matches(monkeypatch, tmp_path):
+    # A local path / fork id with the same final segment as the canonical base is accepted.
+    ckpt = _good_ckpt(base = "Tongyi-MAI/Z-Image-Turbo")
+    _FakeTransformer.calls = {}
+    _stub_torch_accelerate(monkeypatch, ckpt)
+    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    path = tmp_path / "ckpt.pt"
+    path.write_bytes(b"x")
+    source = PrequantSource(kind = "path", location = str(path), filename = None)
+    result = load_prequantized_transformer(
+        _FakeTransformer,
+        "/local/models/Z-Image-Turbo",  # different prefix, same tail
         source,
         device = "cuda",
         dtype = "bfloat16",

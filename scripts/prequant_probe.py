@@ -26,7 +26,7 @@ import numpy as np
 
 BASE = "Tongyi-MAI/Z-Image-Turbo"
 PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed"
-ROOT = Path("/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research")
+ROOT = Path(__file__).resolve().parent.parent / "outputs" / "quant_research"
 CKPT = ROOT / "prequant_fp8" / "transformer_fp8_state.pt"
 OUT = ROOT / "prequant_images"
 MIN_FEAT = 512
