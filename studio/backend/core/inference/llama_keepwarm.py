@@ -168,6 +168,14 @@ def note_model_loaded() -> None:
     _set_last_unloaded(None)
 
 
+def note_model_unloaded() -> None:
+    """Record a deliberate (user/API) unload: drop any idle reload stash so the next
+    request can't resurrect the just-unloaded model. The idle loop unloads via the
+    backend directly and then stashes the freed model for an alias reload; an
+    explicit unload instead means "stay unloaded", so it must not stamp activity."""
+    _set_last_unloaded(None)
+
+
 def get_last_unloaded_model():
     with _lock:
         return _last_unloaded_model

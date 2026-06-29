@@ -293,6 +293,19 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     assert e2 is not None and e2.variants
 
 
+def test_local_gguf_entry_rejects_standalone_mmproj(tmp_path):
+    # Codex P2: _scan_models_dir's standalone-.gguf pass emits an entry for a
+    # bare mmproj projector (it only filters mmproj inside directory scans). A
+    # projector is not a servable model, so the resolver must reject it or
+    # /v1/models advertises it and a switch could load it over the real weights.
+    from types import SimpleNamespace
+
+    proj = tmp_path / "mmproj-F16.gguf"
+    proj.write_text("x")
+    assert resolver._local_gguf_entry("p", SimpleNamespace(path = str(proj))) is None
+    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(proj), path = str(proj))) is False
+
+
 def _entry(loader_id, *variants):
     # load_path == loader_id for tests; production stores a concrete local path.
     return resolver._LocalGgufEntry(loader_id, loader_id, tuple(variants))
@@ -2524,6 +2537,10 @@ def test_responses_and_anthropic_wire_require_vision_from_images():
     assert "require_vision = _messages_have_image(" in responses_src
     anthropic_src = inspect.getsource(inference_route.anthropic_messages)
     assert "require_vision = _anthropic_request_has_image(" in anthropic_src
+    # /messages/count_tokens shares the /messages translation, so it needs the same
+    # guard: an image count must not evict a vision model for a text-only target.
+    count_src = inspect.getsource(inference_route.anthropic_count_tokens)
+    assert "require_vision = _anthropic_request_has_image(" in count_src
 
 
 # ── codex review (round 5): count_tokens tools, tool_choice, process-wide gate ──
@@ -2548,6 +2565,92 @@ def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert exc.value.status_code == 400
     assert rec.calls == []
+
+
+def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
+    # Codex P2: an image /v1/messages/count_tokens naming a text-only GGUF must
+    # carry the same require_vision guard as /messages, so it can't evict a loaded
+    # vision model for a swap that can't serve the request.
+    class _Reached(Exception):
+        pass
+
+    captured = {}
+
+    async def _capture(
+        model,
+        request,
+        subject,
+        *,
+        require_vision = False,
+    ):
+        captured["require_vision"] = require_vision
+        raise _Reached()
+
+    monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    payload = _anthropic_payload_with_tools(None)  # no tools -> tool validation passes
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
+    assert captured["require_vision"] is True
+
+
+def test_audio_generate_is_reload_only(monkeypatch):
+    # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
+    # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal
+    # can't tell an audio projector from a vision one), so resolving the client model
+    # could evict the working audio model for a target that then fails the audio
+    # check. Only the idle-stash restore runs: the hook gets the reload-only sentinel.
+    from models.inference import ChatCompletionRequest
+
+    class _Reached(Exception):
+        pass
+
+    captured = {}
+
+    async def _capture(
+        model,
+        request,
+        subject,
+        *,
+        require_vision = False,
+    ):
+        captured["model"] = model
+        raise _Reached()
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    payload = ChatCompletionRequest(
+        model = "org/B-GGUF", messages = [{"role": "user", "content": "say hi"}]
+    )
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
+    assert captured["model"] == inference_route._RELOAD_ONLY_MODEL
+
+
+def test_note_model_unloaded_clears_reload_stash(monkeypatch):
+    # Codex P2: a deliberate unload must drop the idle reload stash so the next /v1
+    # request can't resurrect the just-unloaded model. (The idle loop unloads via the
+    # backend directly, so clearing on the route never fights keep-warm.)
+    import core.inference.llama_keepwarm as kw
+
+    kw._set_last_unloaded(("org/A-GGUF", "Q4_K_M"))
+    assert kw.get_last_unloaded_model() == ("org/A-GGUF", "Q4_K_M")
+    kw.note_model_unloaded()
+    assert kw.get_last_unloaded_model() is None
+
+
+def test_unload_route_clears_reload_stash(monkeypatch):
+    # The /unload route must clear the stash on both the GGUF and non-GGUF branches.
+    import inspect
+    src = inspect.getsource(inference_route.unload_model)
+    assert src.count("note_model_unloaded()") >= 2
+
+
+def test_non_gguf_load_clears_reload_stash():
+    # A non-GGUF (Transformers/Unsloth) load must clear the stash like the GGUF
+    # branch, so it never lingers until the idle poll (or forever, idle-unload off).
+    import inspect
+    src = inspect.getsource(inference_route._load_model_impl)
+    assert src.count("note_model_loaded()") >= 2
 
 
 def test_chat_rejects_malformed_tool_choice_before_switch(monkeypatch):
