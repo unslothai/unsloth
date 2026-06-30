@@ -1988,3 +1988,45 @@ class TestGptOssNameDetection:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_streaming_strip_keeps_bare_args_before_think_block():
+    # F3: a bare ``foo[ARGS]`` (no JSON body) before a <think> block is prose, not a
+    # truncated call. The open-ended tail arms in _TOOL_ALL_PATS are anchored to true
+    # EOS, so they must run only on the LAST segment; earlier segments use the
+    # closed-only patterns (mirrors strip_tool_call_markup and the route strip).
+    text = "Please pass foo[ARGS] <think>pause</think> to the template."
+    out = strip_tool_markup_streaming(text, tool_protocol_active = True)
+    assert out == text
+
+
+def test_streaming_strip_still_removes_complete_call_before_think_block():
+    # A COMPLETE bracket call before a <think> block is still stripped in the
+    # non-last segment (the balanced scan runs on every segment).
+    text = 'go web_search[ARGS]{"q":"x"} <think>z</think> done'
+    out = strip_tool_markup_streaming(text, tool_protocol_active = True)
+    assert "web_search[ARGS]" not in out
+    assert "<think>z</think>" in out
+    assert "go" in out and "done" in out
+
+
+def test_prose_args_marker_before_real_call_does_not_drain_the_prose():
+    # F5: a literal ``foo[ARGS]`` in prose (``foo`` is not an active tool) must not be
+    # treated as a call boundary that drains the rest of the turn. The prose must
+    # stream in full and the later REAL ``web_search[ARGS]{...}`` call still executes.
+    loop, exec_fn = _make_loop(
+        turns = [
+            ["Intro ", "foo[ARGS] syntax. ", 'web_search[ARGS]{"query":"cats"}'],
+            ["Cats are great."],
+        ],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    # The prose between the bogus marker and the real call must survive (previously
+    # the stream entered DRAINING at ``foo[ARGS]`` and swallowed `` syntax. ``).
+    assert any("foo[ARGS] syntax." in t for t in contents), contents
+    # The real call markup is never shown as content.
+    assert not any("web_search[ARGS]" in t for t in contents), contents

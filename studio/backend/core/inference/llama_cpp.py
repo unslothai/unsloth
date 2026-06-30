@@ -40,6 +40,7 @@ from core.inference.llama_server_args import (
 )
 from core.tool_healing import (
     _TOOL_ALL_PATS,
+    _TOOL_CLOSED_PATS,
     _strip_bracket_tag_calls,
     strip_outside_think,
     strip_tool_call_markup,
@@ -7900,12 +7901,16 @@ class LlamaCppBackend:
             if not (auto_heal_tool_calls or force):
                 return text
 
-            def _seg(segment: str, _is_last: bool) -> str:
+            def _seg(segment: str, is_last: bool) -> str:
                 # Balanced-brace strip first (handles any JSON nesting depth) so a
                 # nested-arg bracket call does not leak or eat the trailing prose,
-                # then the regex patterns cover the XML forms and truncated tails.
+                # then the regex patterns cover the XML forms. The open-ended tail
+                # arms in _TOOL_ALL_PATS are anchored to end-of-text, so run them
+                # only on the last segment: a bare ``foo[ARGS]`` before a <think>
+                # block is prose, not a truncated call.
                 segment = _strip_bracket_tag_calls(segment)
-                for pat in _TOOL_ALL_PATS:
+                patterns = _TOOL_ALL_PATS if is_last else _TOOL_CLOSED_PATS
+                for pat in patterns:
                     segment = pat.sub("", segment)
                 return segment
 

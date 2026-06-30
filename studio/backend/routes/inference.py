@@ -1587,6 +1587,7 @@ _TOOL_XML_RE = _re.compile(
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
+    r"|\[/TOOL_CALLS\]"
     r"|</parameter>\s*\Z"
     # Truncated canonical array ``[TOOL_CALLS] [{...`` (closing ``]`` lost to EOS):
     # the balanced scan can't remove an unbalanced array, so strip its tail here.
@@ -1612,7 +1613,8 @@ _TOOL_XML_CLOSED_RE = _re.compile(
     r"<(?:tool_call|function=[\w-]+)>.*?</(?:tool_call|function)>"
     r"|<\|tool_call>.*?<tool_call\|>"
     r"|</(?:tool_call|function)>"
-    r"|<tool_call\|>",
+    r"|<tool_call\|>"
+    r"|\[/TOOL_CALLS\]",
     _re.DOTALL,
 )
 

@@ -159,3 +159,21 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
     )
     calls = parse_tool_calls_from_text(content)
     assert [c["function"]["name"] for c in calls] == ["python"], calls
+
+
+def test_unclosed_think_literal_inside_tool_argument_does_not_hide_later_call():
+    # A literal ``<think>`` inside a completed call's arguments is argument data, not
+    # a reasoning block. The unclosed marker greedily spans to EOF; if it were
+    # treated as a real think block, the later ``b[ARGS]{...}`` call would be skipped
+    # as a rehearsal. Both calls must parse.
+    text = '[TOOL_CALLS]a{"x":"literal <think> marker"} b[ARGS]{"y":2}'
+    calls = parse_tool_calls_from_text(text)
+    assert [c["function"]["name"] for c in calls] == ["a", "b"], calls
+
+
+def test_real_think_block_with_rehearsal_inside_still_skips_only_the_rehearsal():
+    # A genuine reasoning block (the marker opens OUTSIDE any tool call) still hides
+    # the call rehearsed within it, while a real call after the block parses.
+    text = '<think>web_search[ARGS]{"q":"draft"}</think>real[ARGS]{"q":"go"}'
+    calls = parse_tool_calls_from_text(text)
+    assert [c["function"]["name"] for c in calls] == ["real"], calls

@@ -48,6 +48,11 @@ _TOOL_CLOSED_PATS = [
         re.DOTALL,
     ),
     re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*" + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL),
+    # Orphan closing marker. The Mistral v11 wrapper closes a call with
+    # ``[TOOL_CALLS]...[/TOOL_CALLS]``; the balanced scan strips the call body but
+    # leaves the bare ``[/TOOL_CALLS]`` behind, so remove it here too (it is never
+    # legitimate visible content).
+    re.compile(r"\[/TOOL_CALLS\]"),
 ]
 # Trailing-unclosed patterns. The bracket-tag open forms match the bare marker
 # (no `{`), so a partial `[TOOL_CALLS]web_search` / `python[ARGS]` streamed before
@@ -476,8 +481,10 @@ def parse_tool_calls_from_text(
     # A tool-call marker inside a <think>/[THINK] reasoning block is a rehearsal,
     # not a real call, so skip any candidate that STARTS inside one. We no longer
     # delete the blocks from ``content``: a real tool argument may legitimately
-    # contain a ``<think>`` / ``[THINK]`` literal, and stripping corrupted it.
-    _think_spans = [(t.start(), t.end()) for t in _THINK_TAG_RE.finditer(content)]
+    # contain a ``<think>`` / ``[THINK]`` literal, and stripping corrupted it. A
+    # think marker that itself opens INSIDE a tool call is argument data, not a
+    # reasoning block, so it is excluded (else a real call after it is dropped).
+    _think_spans = _think_spans_outside_tool_markup(content)
     _think_starts = [s for s, _e in _think_spans]
 
     def _in_think(pos: int) -> bool:
@@ -703,6 +710,26 @@ def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _think_spans_outside_tool_markup(text: str) -> list[tuple[int, int]]:
+    """``<think>`` / ``[THINK]`` block spans, minus any whose opening marker sits
+    INSIDE a tool-call markup span.
+
+    A think tag that opens within a call's arguments is literal argument data, not a
+    reasoning block. Keeping it would (a) make the rehearsal-skip in
+    ``parse_tool_calls_from_text`` treat a real call appearing after it as rehearsed
+    and drop it, and (b) make ``strip_outside_think`` split the call's open/close
+    across the preserved block and leak the raw markup. We test the START only: a
+    greedy unclosed ``<think>`` match runs to end-of-text and so extends past the
+    call, yet it is still that call's argument data."""
+    think_spans = [m.span() for m in _THINK_TAG_RE.finditer(text)]
+    if not think_spans:
+        return think_spans
+    call_spans = _tool_call_markup_spans(text)
+    if not call_spans:
+        return think_spans
+    return [(s, e) for (s, e) in think_spans if not any(cs <= s < ce for cs, ce in call_spans)]
+
+
 def strip_outside_think(text: str, strip_segment) -> str:
     """Apply ``strip_segment(segment, is_last)`` to the visible text around
     ``<think>`` / ``[THINK]`` blocks, preserving the blocks verbatim.
@@ -713,19 +740,12 @@ def strip_outside_think(text: str, strip_segment) -> str:
     trailing-tail patterns only there. Shared by every strip path (this module's
     ``strip_tool_call_markup``, the route display strip, and the GGUF streaming
     strip) so they stay consistent."""
-    think_spans = [m.span() for m in _THINK_TAG_RE.finditer(text)]
-    if think_spans:
-        # A ``<think>`` / ``[THINK]`` literal that sits INSIDE a complete tool call
-        # is argument text, not reasoning. Excluding it lets the segment stripper see
-        # the whole call (the split would otherwise hide the open/close pair and leak
-        # the raw call after execution).
-        call_spans = _tool_call_markup_spans(text)
-        if call_spans:
-            think_spans = [
-                (s, e)
-                for (s, e) in think_spans
-                if not any(cs <= s and e <= ce for cs, ce in call_spans)
-            ]
+    # A ``<think>`` / ``[THINK]`` literal that OPENS inside a complete tool call is
+    # argument text, not reasoning. Excluding it lets the segment stripper see the
+    # whole call (the split would otherwise hide the open/close pair and leak the raw
+    # call after execution). Tested on the marker start so an unclosed greedy match
+    # that runs past the call's closer is still treated as argument data.
+    think_spans = _think_spans_outside_tool_markup(text)
     if not think_spans:
         return strip_segment(text, True)
     pieces: list[str] = []

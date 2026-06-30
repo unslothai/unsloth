@@ -29,7 +29,7 @@ from core.inference.tool_call_parser import (
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
-from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
+from core.tool_healing import _TOOL_CLOSED_PATS, _strip_bracket_tag_calls, strip_outside_think
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     coerce_tool_arguments,
@@ -138,6 +138,48 @@ def _rehearsal_name_start(
     return signal_pos
 
 
+def _earliest_tool_signal(
+    candidate: str,
+    signals,
+    active_tools: list[dict],
+    *,
+    unrestricted: bool = False,
+) -> int:
+    """Index where the turn's first genuine tool-call boundary begins, or -1.
+
+    Non-``[ARGS]`` signals (``<tool_call>``, ``[TOOL_CALLS]``, ...) are unambiguous
+    markup, so their first occurrence wins. An ``[ARGS]`` hit is only a rehearsal
+    when the token in front of it is an active tool name (or, in unrestricted mode,
+    any name token): a literal ``foo[ARGS]`` in prose must NOT drain the rest of the
+    turn, so such hits are skipped and a later real call is still found. For a real
+    ``NAME[ARGS]`` the boundary is pulled back to NAME so the bare name is not
+    flushed as visible content before the call drains."""
+    best = -1
+    for sig in signals:
+        if sig != "[ARGS]":
+            p = candidate.find(sig)
+            if p >= 0 and (best < 0 or p < best):
+                best = p
+            continue
+        from_idx = 0
+        while True:
+            p = candidate.find("[ARGS]", from_idx)
+            if p < 0:
+                break
+            name_start = _rehearsal_name_start(
+                candidate, p, active_tools, unrestricted = unrestricted
+            )
+            if name_start < p:
+                # Genuine ``NAME[ARGS]``: the boundary is the start of NAME.
+                if best < 0 or name_start < best:
+                    best = name_start
+                break
+            # Bare/prose ``[ARGS]`` (no active name in front): skip it and keep
+            # looking so a later real call in the same chunk is still detected.
+            from_idx = p + len("[ARGS]")
+    return best
+
+
 def strip_tool_markup_streaming(
     text: str,
     *,
@@ -148,12 +190,16 @@ def strip_tool_markup_streaming(
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
 
-    def _seg(segment: str, _is_last: bool) -> str:
+    def _seg(segment: str, is_last: bool) -> str:
         # Balanced-brace strip first (handles any JSON nesting depth) so a
         # nested-arg bracket call does not leak or eat the trailing prose, then
-        # the regex patterns cover the XML forms and truncated tails.
+        # the regex patterns cover the XML forms. The open-ended tail arms in
+        # _TOOL_ALL_PATS are anchored to end-of-text, so run them only on the last
+        # segment: a bare ``foo[ARGS]`` before a <think> block is prose, not a
+        # truncated call (mirrors strip_tool_call_markup and the route strip).
         segment = _strip_bracket_tag_calls(segment)
-        for pat in _TOOL_ALL_PATS:
+        patterns = _TOOL_ALL_PATS if is_last else _TOOL_CLOSED_PATS
+        for pat in patterns:
             segment = pat.sub("", segment)
         return segment
 
@@ -404,18 +450,14 @@ def run_safetensors_tool_loop(
 
             if detect_state == _state_streaming:
                 candidate = cumulative_display + delta
-                signal_pos = -1
-                for sig in tool_xml_signals:
-                    p = candidate.find(sig)
-                    if p >= 0 and (signal_pos < 0 or p < signal_pos):
-                        signal_pos = p
+                # Earliest genuine tool-call boundary. A bare ``[ARGS]`` in prose
+                # (no active tool name in front) is skipped instead of draining the
+                # rest of the turn, and a real ``NAME[ARGS]`` boundary is pulled back
+                # to NAME so the bare name is not flushed as visible content first.
+                signal_pos = _earliest_tool_signal(
+                    candidate, tool_xml_signals, active_tools, unrestricted = unrestricted_tools
+                )
                 if signal_pos >= 0:
-                    # A rehearsal call NAME[ARGS] really starts at NAME, not at the
-                    # [ARGS] signal; pull the boundary back so the bare tool name is
-                    # not flushed as visible content before the call drains.
-                    signal_pos = _rehearsal_name_start(
-                        candidate, signal_pos, active_tools, unrestricted = unrestricted_tools
-                    )
                     before_tool = candidate[:signal_pos]
                     cleaned_before = strip_tool_markup_streaming(
                         before_tool,

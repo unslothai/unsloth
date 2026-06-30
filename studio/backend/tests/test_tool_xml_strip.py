@@ -432,3 +432,41 @@ def test_route_strip_handles_mistral_v11_call_id_args_shape():
     out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
     assert "[TOOL_CALLS]" not in out and "[CALL_ID]" not in out and "[ARGS]" not in out
     assert "before" in out and "after" in out
+
+
+# ── Mistral [/TOOL_CALLS] closer + literal <think> inside a call ───────────────
+
+from core.tool_healing import strip_tool_call_markup as _strip_tool_call_markup
+
+
+def test_core_strip_removes_orphan_tool_calls_closer_array_form():
+    # The Mistral v11 wrapper closes a call with ``[/TOOL_CALLS]``. The balanced scan
+    # removes the call body but leaves the bare closer; it must not leak as content.
+    text = '[TOOL_CALLS] [{"name":"x","arguments":{}}][/TOOL_CALLS]'
+    assert _strip_tool_call_markup(text, final = True) == ""
+
+
+def test_core_strip_removes_orphan_tool_calls_closer_named_form_keeps_tail():
+    text = '[TOOL_CALLS]web_search{"q":"x"}[/TOOL_CALLS] tail'
+    assert _strip_tool_call_markup(text, final = True) == "tail"
+
+
+def test_core_strip_removes_call_with_literal_think_in_argument():
+    # An unclosed literal ``<think>`` inside a tool call's arguments must be stripped
+    # WITH the call (it is argument data), not preserved as a reasoning block, even
+    # though the greedy think match runs past the call's closer to EOF.
+    text = 'before <tool_call>{"name":"write","arguments":{"text":"literal <think> marker"}}</tool_call> after'
+    assert _strip_tool_call_markup(text, final = True) == "before  after"
+
+
+def test_route_display_strip_removes_orphan_tool_calls_closer_array_form():
+    text = '[TOOL_CALLS] [{"name":"x","arguments":{}}][/TOOL_CALLS]'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert out.strip() == ""
+
+
+def test_route_display_strip_removes_orphan_tool_calls_closer_named_form_keeps_tail():
+    text = '[TOOL_CALLS]web_search{"q":"x"}[/TOOL_CALLS] tail'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[/TOOL_CALLS]" not in out
+    assert out.strip() == "tail"

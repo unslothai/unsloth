@@ -1990,3 +1990,38 @@ def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypa
     assert calls == [(name, {"x": 1})], calls
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert not any(name in t for t in content_texts), content_texts
+
+
+def test_gguf_streaming_keeps_bare_args_before_think_block(monkeypatch):
+    """F4: the GGUF streaming strip must run its open-ended ``[ARGS]`` tail cleanup
+    only on the LAST segment. A bare ``foo[ARGS]`` (no JSON body, ``foo`` not a tool)
+    before a <think> block is prose, not a truncated call, so the final visible text
+    must keep it verbatim instead of dropping ``foo[ARGS]`` and corrupting the
+    sentence."""
+
+    first_stream = [
+        _sse({"content": "Please pass foo[ARGS] "}),
+        _sse({"content": "<think>pause</think> "}),
+        _sse({"content": "to the template."}),
+        _done(),
+    ]
+    backend = _make_backend(monkeypatch, [first_stream], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "x"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert content_texts, events
+    assert content_texts[-1] == "Please pass foo[ARGS] <think>pause</think> to the template."
