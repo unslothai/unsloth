@@ -32,6 +32,7 @@ import {
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  lazy,
   Suspense,
   useEffect,
   useLayoutEffect,
@@ -56,6 +57,13 @@ function RouteFallback() {
     </div>
   );
 }
+
+// ImagesPage is mounted persistently below (not via the /images route) so an
+// in-flight image batch survives leaving the tab, mirroring ChatPage. Kept lazy
+// so its bundle still loads only on the first /images visit.
+const ImagesPage = lazy(() =>
+  import("@/features/images").then((m) => ({ default: m.ImagesPage })),
+);
 
 function PersonalizationSyncMount() {
   usePersonalizationSync(hasAuthToken());
@@ -140,6 +148,17 @@ function RootLayout() {
   }
   const chatSearch = isChatRoute ? liveChatSearch : frozenChatSearch;
   const shouldMountChat = isChatRoute || chatMounted;
+
+  // Same persistent-mount treatment for /images so a long image batch keeps
+  // generating when the user flips to another tab (ImagesPage reads no URL
+  // search, so it needs no freeze dance -- just the mount latch). Mounts lazily
+  // on first /images visit, then stays mounted, hidden+inert while off-route.
+  const isImagesRoute = pathname === "/images";
+  const [imagesMounted, setImagesMounted] = useState(isImagesRoute);
+  if (isImagesRoute && !imagesMounted) {
+    setImagesMounted(true);
+  }
+  const shouldMountImages = isImagesRoute || imagesMounted;
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -253,12 +272,29 @@ function RootLayout() {
                   <ChatPage search={chatSearch} active={isChatRoute} />
                 </div>
               )}
+              {/* Same keep-alive treatment for Images so a long batch keeps
+                  generating off-tab; `active` closes its body-portaled model
+                  selector so it can't bleed over another tab while hidden. */}
+              {shouldMountImages && (
+                <div
+                  className={
+                    isImagesRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
+                      : "hidden"
+                  }
+                  inert={!isImagesRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <ImagesPage active={isImagesRoute} />
+                  </Suspense>
+                </div>
+              )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
                   switching from heavy pages (like Export with many checkpoints).
                   "popLayout" allows the new route to mount immediately while the
                   old one animates out, avoiding blocking on expensive exit renders.
                   See issue #5850. */}
-              {!isChatRoute && (
+              {!isChatRoute && !isImagesRoute && (
                 <AnimatePresence initial={false} mode="popLayout">
                   <motion.div
                     key={pathname}

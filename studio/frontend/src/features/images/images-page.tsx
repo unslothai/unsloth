@@ -389,7 +389,7 @@ function RecipePopover({
 
 type Busy = "loading" | "unloading" | "generating" | null;
 
-export function ImagesPage() {
+export function ImagesPage({ active = true }: { active?: boolean }) {
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
@@ -419,6 +419,9 @@ export function ImagesPage() {
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  // Controlled so the model selector force-closes when this page is mounted but
+  // off-tab (it portals to body, so a hidden parent wouldn't otherwise hide it).
+  const [selectorOpen, setSelectorOpen] = useState(false);
   // Records come from the backend (durable); srcById maps each id to its object
   // URL (loaded images) or data URL (the one just generated).
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
@@ -586,16 +589,28 @@ export function ImagesPage() {
     }
   }, []);
 
-  // Track mount so a long sequential generate run stops issuing GPU work once
-  // the user navigates away (the generate loop checks isMounted.current). The
-  // mount-time refreshStatus and the timer/toast cleanup live in the load-resume
-  // effect below, so this one carries only the mount flag.
+  // Track mount so a long generate run stops issuing GPU work when the page is
+  // truly unmounted (app close / chat-only eject). The page now stays mounted
+  // across tab switches (RootLayout keeps it alive like chat), so a switch no
+  // longer breaks the loop -- a batch keeps generating off-tab. The mount-time
+  // refreshStatus and timer/toast cleanup live in the load-resume effect below,
+  // so this one carries only the mount flag.
   useEffect(() => {
     isMounted.current = true;
     return () => {
       isMounted.current = false;
     };
   }, []);
+
+  // Re-sync model status when the tab becomes active again: while off-tab the
+  // diffusion model may have been evicted (e.g. a chat load claimed the GPU),
+  // and the page no longer remounts on return to refresh it on its own.
+  useEffect(() => {
+    if (!active) return;
+    void (async () => {
+      await refreshStatus();
+    })();
+  }, [active, refreshStatus]);
 
   // Poll load-progress until the background load reaches "ready" or "error",
   // updating the persistent toast in place each tick.
@@ -853,6 +868,8 @@ export function ImagesPage() {
           variant="ghost"
           className="!h-[34px]"
           task={IMAGE_GEN_TASKS}
+          open={active && selectorOpen}
+          onOpenChange={(o) => setSelectorOpen(active && o)}
         />
       </div>
 
