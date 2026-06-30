@@ -162,6 +162,7 @@ def _pdeathsig_preexec() -> None:
     try:
         import ctypes
         ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+        current_parent_pid = os.getppid()
         expected_parent_pid = _parent_pid
         if expected_parent_pid is None:
             raw_parent_pid = os.environ.get(_PARENT_PID_ENV)
@@ -171,8 +172,10 @@ def _pdeathsig_preexec() -> None:
                 except ValueError:
                     expected_parent_pid = None
         if expected_parent_pid is None:
-            expected_parent_pid = 1
-        if os.getppid() != expected_parent_pid:
+            if current_parent_pid == 1:
+                os._exit(1)
+            return
+        if current_parent_pid != expected_parent_pid:
             os._exit(1)
     except Exception:
         pass

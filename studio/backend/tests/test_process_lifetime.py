@@ -152,6 +152,15 @@ def test_pdeathsig_child_still_exits_when_reparented_to_init(monkeypatch):
     assert calls == ["prctl"]
 
 
+def test_pdeathsig_without_expected_parent_preserves_legacy_noninit_case(monkeypatch):
+    calls = _patch_fake_linux_pdeathsig(monkeypatch)
+    monkeypatch.setattr(pl, "_parent_pid", None)
+    monkeypatch.delenv(pl._PARENT_PID_ENV, raising = False)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 4321)
+    pl._pdeathsig_preexec()
+    assert calls == ["prctl"]
+
+
 def test_bind_current_process_to_parent_lifetime_reads_shared_expected_parent(monkeypatch):
     calls = _patch_fake_linux_pdeathsig(monkeypatch)
     monkeypatch.setattr(pl, "_parent_pid", None)
@@ -159,6 +168,29 @@ def test_bind_current_process_to_parent_lifetime_reads_shared_expected_parent(mo
     monkeypatch.setattr(pl.os, "getppid", lambda: 1)
     pl.bind_current_process_to_parent_lifetime()
     assert calls == ["prctl"]
+
+
+def test_bind_current_process_to_parent_lifetime_reads_expected_parent_in_fresh_interpreter(tmp_path):
+    child = tmp_path / "fresh_bind.py"
+    child.write_text(
+        "import ctypes, sys\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "import utils.process_lifetime as pl\n"
+        "class _Libc:\n"
+        "    def prctl(self, *a):\n"
+        "        return 0\n"
+        "ctypes.CDLL = lambda *a, **k: _Libc()\n"
+        "pl._is_linux = lambda: True\n"
+        "pl.os.getppid = lambda: 1\n"
+        "pl.bind_current_process_to_parent_lifetime()\n"
+        "print('ok')\n",
+        encoding = "utf-8",
+    )
+    env = os.environ.copy()
+    env[pl._PARENT_PID_ENV] = "1"
+    proc = subprocess.run([sys.executable, str(child)], capture_output = True, text = True, env = env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.strip() == "ok"
 
 
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
