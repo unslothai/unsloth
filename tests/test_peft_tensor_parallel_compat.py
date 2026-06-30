@@ -214,7 +214,7 @@ def test_symbol_extractor_falls_back_when_parse_returns_no_identifiers(monkeypat
     )
 
 
-def test_symbol_extractor_ignores_valueerror_from_getsource(monkeypatch):
+def test_symbol_extractor_falls_back_when_getsource_fails(monkeypatch):
     module = _load_import_fixes()
 
     _install_fake_peft_tensor_parallel_import()
@@ -224,7 +224,12 @@ def test_symbol_extractor_ignores_valueerror_from_getsource(monkeypatch):
         lambda _: (_ for _ in ()).throw(ValueError("no source")),
     )
 
-    assert module._extract_peft_tensor_parallel_imported_symbols() == ()
+    assert module._extract_peft_tensor_parallel_imported_symbols() == (
+        "ALL_PARALLEL_STYLES",
+        "ColwiseParallel",
+        "EmbeddingParallel",
+        "RowwiseParallel",
+    )
 
 
 def test_tensor_parallel_import_module_not_found_returns_none(monkeypatch):

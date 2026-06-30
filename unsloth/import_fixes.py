@@ -1521,7 +1521,7 @@ def _extract_peft_tensor_parallel_imported_symbols():
         source = inspect.getsource(sharding_fn)
     except Exception as exc:
         logger.debug("Failed to inspect PEFT tensor-parallel imports: %r", exc)
-        return ()
+        return _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
 
     import_pattern = re.compile(
         r"from\s+transformers\.integrations\.tensor_parallel\s+import\s*\((.*?)\)",
