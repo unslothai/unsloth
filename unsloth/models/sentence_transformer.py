@@ -542,7 +542,11 @@ class FastSentenceTransformer(FastModel):
         return transformer_module
 
     @staticmethod
-    def _read_pooling_mode(model_name, token, cache_dir = None):
+    def _read_pooling_mode(
+        model_name,
+        token,
+        cache_dir = None,
+    ):
         """Read the pooling mode from modules.json, else return "mean"."""
         try:
             if os.path.exists(model_name) and os.path.exists(
@@ -954,7 +958,11 @@ class FastSentenceTransformer(FastModel):
             f.write(content)
 
     @staticmethod
-    def _module_path(model_name, token = None, cache_dir = None):
+    def _module_path(
+        model_name,
+        token = None,
+        cache_dir = None,
+    ):
         """Return the path to the modules.json file, or None."""
         try:
             if os.path.exists(model_name) and os.path.isdir(model_name):
@@ -1152,7 +1160,9 @@ class FastSentenceTransformer(FastModel):
         from sentence_transformers.models import Pooling, Normalize
 
         modules = OrderedDict()
-        modules_json_path = FastSentenceTransformer._module_path(model_name, token, cache_dir = cache_dir)
+        modules_json_path = FastSentenceTransformer._module_path(
+            model_name, token, cache_dir = cache_dir
+        )
 
         if modules_json_path:
             with open(modules_json_path, encoding = "utf8") as f:
@@ -1667,9 +1677,12 @@ class FastSentenceTransformer(FastModel):
 
         # No modules.json -> force 16-bit: saving is custom for these models and
         # 4-bit would need dequant in save_pretrained_merged, not worth it.
-        has_modules_json = FastSentenceTransformer._module_path(
-            model_name, token, cache_dir = kwargs.get("cache_folder")
-        ) is not None
+        has_modules_json = (
+            FastSentenceTransformer._module_path(
+                model_name, token, cache_dir = kwargs.get("cache_folder")
+            )
+            is not None
+        )
 
         if not has_modules_json and load_in_4bit:
             print(
