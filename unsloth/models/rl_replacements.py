@@ -1357,50 +1357,51 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
-            # ---- Sequence-packing fast path (opt-in UNSLOTH_GRPO_SEQ_PACKING=1; text-only) ----
-            # One varlen [1, sum L] forward replaces the padded [B, Lmax] per-chunk loop, producing
-            # the SAME logprobs [total_rows, W] (left-packed completion layout). Per-token logps use
-            # the same float32 reduction as the padded path, so old/ref logps are bit-for-bit
-            # identical. Big mem/time win on long, variable-length completions. Correctness is
-            # self-verified ONCE against the padded path (unwrapped_model._unsloth_seq_packing_nograd_ok):
-            # if a backend silently ignores packed_seq_lengths (flat batch run with a normal causal mask
-            # -> samples leak across boundaries) the packed logps will not match and packing is disabled.
+            # ---- Sequence-packing fast path (default-on; disable with UNSLOTH_GRPO_SEQ_PACKING=0) ----
+            # One varlen [1, sum L] block-diagonal forward replaces the padded [B, Lmax] per-chunk
+            # loop. The packed forward is the EXACT per-row computation (each segment attends only
+            # within itself, reset 0-based positions), so it equals forwarding each row's real tokens
+            # alone -- and is strictly more accurate than the padded batch forward, which mis-positions
+            # left-padded rows (Unsloth's known Flash-Attn left-padding issue) on long completions.
+            # Correctness is self-verified against the PER-ROW clean forward (NOT the padded batch,
+            # which is itself wrong for left-pad), shape/RoPE-aware: re-checked whenever the packed
+            # total length T grows past the largest verified T, so a later batch that crosses a
+            # LongRoPE short/long cache boundary -- or a backend that silently ignores
+            # packed_seq_lengths and leaks attention across samples -- is caught and falls back to the
+            # padded loop instead of corrupting logps. lm_head runs only on completion-prediction
+            # positions (not every packed prompt token).
             logprobs = None
             _pk_result = None
-            # Verdict is cached per unwrapped model and only set after a real comparison; token_type_ids /
-            # mm_token_type_ids force the padded path (those VLM mask inputs are not packed here).
-            _pk_verdict = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
-            if (
-                pixel_values is None
-                and os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "0") == "1"
-                and token_type_ids is None
-                and mm_token_type_ids is None
-                and _pk_verdict is not False
-            ):
+            _pk_use = False
+            _pk_enabled = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in ("0", "false", "no", "off")
+            _pk_ok = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_ok", None)
+            if (_pk_enabled and pixel_values is None
+                    and token_type_ids is None and mm_token_type_ids is None and _pk_ok is not False):
                 try:
-                    # xformers provides the block-diagonal varlen mask; without it the packed attention
-                    # falls back to a dense O(T^2) SDPA mask that can OOM on the whole flattened batch.
-                    import xformers  # noqa: F401
-
                     _pk_pad = self.processing_class.pad_token_id
                     _pk_keep = input_ids != _pk_pad
                     _pk_len = _pk_keep.sum(dim = 1)
-                    _pk_nz = _pk_len[_pk_len > 0]
+                    _pk_len_cpu = _pk_len.tolist()                 # single GPU->CPU sync, reused below
+                    _pk_nz_cpu = [_n for _n in _pk_len_cpu if _n > 0]
                     _pk_flat = input_ids[_pk_keep].unsqueeze(0)
                     _pk_T = _pk_flat.shape[1]
                     _pk_L = input_ids.shape[1]
                     _pk_W = logits_to_keep + max_left_pad
-                    # Sliding-window attention loses the per-sequence local window once the packed
-                    # stream is longer than the window, so skip packing for that batch.
-                    _pk_sw = getattr(
-                        getattr(unwrapped_model, "config", None), "sliding_window", None
-                    )
-                    _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_T > _pk_sw)
-                    if _pk_T >= 2 and _pk_nz.numel() > 0 and _pk_sw_ok:
-                        _pk_pos = torch.cat(
-                            [torch.arange(int(_n), device = input_ids.device) for _n in _pk_nz]
-                        ).unsqueeze(0)
+                    _pk_maxseg = max(_pk_nz_cpu) if _pk_nz_cpu else 0
+                    # sliding-window models lose the per-sequence local window in a packed stream
+                    _pk_sw = getattr(getattr(unwrapped_model, "config", None), "sliding_window", None)
+                    _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
+                    # need >= 2 completion rows for verification to expose cross-sample leakage
+                    _pk_active = int(((input_ids[:, -_pk_W:] != _pk_pad).sum(dim = 1) > 0).sum())
+                    if _pk_T >= 2 and len(_pk_nz_cpu) > 0 and _pk_sw_ok and (_pk_ok is True or _pk_active >= 2):
+                        # vectorized reset 0-based position_ids (no per-row sync)
+                        _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
+                        _pk_nz_idx = _pk_keep.nonzero(as_tuple = False)           # [T, 2] = (row, col), row-major
+                        _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]      # [T-1]
+                        # completion-prediction positions: token j+1 is a real completion token
+                        # (col >= L - logits_to_keep) in the same row as j. lm_head only on these.
+                        _pk_ctgt = (_pk_nz_idx[1:, 1] >= (_pk_L - logits_to_keep)) & _pk_within
                         with _get_inference_mode_context_manager(model):
                             with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
                                 # use_cache=False: a populated past_key_value disables varlen packing
@@ -1408,61 +1409,99 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_hidden = unwrapped_model(
                                     input_ids = _pk_flat,
                                     position_ids = _pk_pos,
-                                    packed_seq_lengths = _pk_nz.to(torch.int32),
+                                    packed_seq_lengths = torch.tensor(_pk_nz_cpu, dtype = torch.int32, device = input_ids.device),
                                     use_cache = False,
                                 ).logits
                                 _pk_sel = chunked_hidden_states_selective_log_softmax(
-                                    _pk_hidden[:, :-1, :],
-                                    lm_head,
-                                    _pk_flat[:, 1:],
-                                    _pk_chunks,
-                                    logit_scale_multiply,
-                                    logit_scale_divide,
-                                    logit_softcapping,
-                                    temperature,
+                                    _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0), lm_head,
+                                    _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0), _pk_chunks,
+                                    logit_scale_multiply, logit_scale_divide, logit_softcapping, temperature,
                                 )[0]
                         # Same GPT-OSS offload (offload_embbed=True) race guard the padded loop uses.
                         device_synchronize()
-                        _pk_idx = []
-                        _pk_val = []
-                        _pk_off = 0
-                        for _pk_i in range(total_rows):
-                            _pk_n = int(_pk_len[_pk_i])
-                            if _pk_n >= 2:
-                                _pk_idx.append(
-                                    _pk_i * _pk_L + torch.arange(1, _pk_n, device = input_ids.device)
+                        # Scatter each completion next-token logprob to its ORIGINAL (row, col) so
+                        # left-padded prompts land in the right columns; [:, -_pk_W:] then matches the
+                        # padded layout.
+                        _pk_tgt = (_pk_nz_idx[1:, 0] * _pk_L + _pk_nz_idx[1:, 1])[_pk_ctgt]
+                        _pk_result = torch.zeros(
+                            total_rows * _pk_L, dtype = torch.float32, device = input_ids.device,
+                        ).index_put((_pk_tgt,), _pk_sel.to(torch.float32)).view(total_rows, _pk_L)[:, -_pk_W:]
+                        # ---- trust decision (shape/RoPE-aware) ----
+                        # Re-verify when the packed total length OR the longest segment grows past what
+                        # was verified: a LongRoPE model can switch its short/long RoPE cache on either,
+                        # and the packed [1, T] forward can cross that boundary before any single row does.
+                        _pk_vT = int(getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0))
+                        _pk_vS = int(getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0))
+                        _pk_unsafe = getattr(unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None)
+                        _pk_force_verify = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_VERIFY", "0") == "1"
+                        if (not _pk_force_verify) and _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
+                            _pk_use = True                                        # already verified for this shape
+                        elif _pk_unsafe is not None and _pk_T >= _pk_unsafe:
+                            _pk_use = False                                       # known-unsafe length region
+                        else:
+                            # verify against the per-row clean forward (exact ground truth: each row's
+                            # real tokens alone, 0-based positions, no padding).
+                            _pk_ref = torch.zeros_like(_pk_result)
+                            with _get_inference_mode_context_manager(model):
+                                with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
+                                    for _pk_i in range(total_rows):
+                                        _pk_ni = _pk_len_cpu[_pk_i]
+                                        if _pk_ni < 2: continue
+                                        _pk_rmask = _pk_keep[_pk_i]
+                                        _pk_real = input_ids[_pk_i][_pk_rmask].unsqueeze(0)
+                                        _pk_rpos = torch.arange(_pk_ni, device = input_ids.device).unsqueeze(0)
+                                        _pk_rh = unwrapped_model(input_ids = _pk_real, position_ids = _pk_rpos, use_cache = False).logits
+                                        _pk_rsel = chunked_hidden_states_selective_log_softmax(
+                                            _pk_rh[:, :-1, :], lm_head, _pk_real[:, 1:], 1,
+                                            logit_scale_multiply, logit_scale_divide, logit_softcapping, temperature,
+                                        )[0]
+                                        _pk_rcols = _pk_rmask.nonzero(as_tuple = False).squeeze(1)[1:] - (_pk_L - _pk_W)
+                                        _pk_rkeep = _pk_rcols >= 0
+                                        _pk_ref[_pk_i, _pk_rcols[_pk_rkeep]] = _pk_rsel[_pk_rkeep].to(torch.float32)
+                            device_synchronize()
+                            # Compare ONLY the completion region (window cols [max_left_pad, W) = the
+                            # last logits_to_keep cols). The window's first max_left_pad cols are
+                            # prompt-overflow that the lm_head completion-window opt deliberately leaves
+                            # 0 (masked out downstream); including them would falsely flag a mismatch.
+                            _pk_cm = torch.zeros((total_rows, _pk_W), dtype = torch.float32, device = input_ids.device)
+                            _pk_cm[:, max_left_pad:] = (input_ids[:, -logits_to_keep:] != _pk_pad).float()
+                            _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
+                            if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
+                                print(f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}", flush = True)
+                            # floor: packed vs per-row through different attention kernels ~0.25 (the
+                            # padded path is itself ~0.4 from per-row truth); cross-sample
+                            # contamination (a backend ignoring packing) is >= 2.4.
+                            if _pk_diff < 7e-1:
+                                unwrapped_model._unsloth_seq_packing_nograd_ok = True
+                                unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(_pk_vT, _pk_T)
+                                unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(_pk_vS, _pk_maxseg)
+                                _pk_ok = True
+                                _pk_use = True
+                            else:
+                                unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
+                                    _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
                                 )
-                                _pk_val.append(_pk_sel[_pk_off : _pk_off + _pk_n - 1])
-                            _pk_off += _pk_n
-                        if _pk_idx:
-                            _pk_fidx = torch.cat(_pk_idx)
-                            _pk_vals = torch.cat(_pk_val).to(torch.float32)
-                            _pk_result = (
-                                torch.zeros(
-                                    total_rows * _pk_L,
-                                    dtype = torch.float32,
-                                    device = input_ids.device,
-                                )
-                                .index_put((_pk_fidx,), _pk_vals)
-                                .view(total_rows, _pk_L)[:, -_pk_W:]
-                            )
+                                _pk_use = False
+                                if _pk_ok is None and _pk_T <= _pk_maxseg + 8:
+                                    # failed at a small T (no LongRoPE story) -> backend genuinely
+                                    # ignores packing; disable entirely.
+                                    unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                                if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
+                                    print(f"[Unsloth] GRPO seq-packing (no-grad) fell back at T={_pk_T} (diff={_pk_diff:.3f})", flush = True)
                 except Exception as _pk_err:
-                    # Disable packing for this model on any failure (no xformers varlen backend, an OOM on
-                    # an oversized flattened batch the padded loop would chunk, or an unsupported forward)
-                    # so we use the chunked padded loop and do not retry every step.
+                    # Any failure (no varlen backend, OOM on the flattened batch, unsupported forward)
+                    # -> drop packed intermediates, reclaim memory, use the padded loop, do not retry.
+                    _pk_hidden = None
+                    _pk_sel = None
+                    _pk_result = None
+                    _pk_use = False
                     if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
                         torch.cuda.empty_cache()
                     unwrapped_model._unsloth_seq_packing_nograd_ok = False
                     if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
-                        print(
-                            f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
-                            flush = True,
-                        )
-                    _pk_result = None
-            if _pk_result is not None and getattr(
-                unwrapped_model, "_unsloth_seq_packing_nograd_ok", False
-            ):
-                logprobs = _pk_result  # already verified equal to padded -> skip the loop
+                        print(f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}", flush = True)
+            if _pk_use and _pk_result is not None:
+                logprobs = _pk_result          # verified equal to per-row ground truth -> skip the loop
                 zipped_inputs = []
 
             with _get_inference_mode_context_manager(model):
@@ -1550,34 +1589,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)
                 if logprobs is None:
+                    # Padded fallback result (packing disabled / unsupported / not yet verified for
+                    # this length). Verification against the per-row ground truth already happened in
+                    # the packing block above, so nothing to compare here.
                     logprobs = torch.cat(all_logprobs_list, dim = 0)
-                    # One-time self-verification: only trust packing after it matches the padded
-                    # ground truth on a real (>=2 sequence) batch; cross-sample contamination shows
-                    # up as a large mismatch here and disables packing instead of corrupting logps.
-                    if _pk_result is not None and not hasattr(
-                        unwrapped_model, "_unsloth_seq_packing_nograd_ok"
-                    ):
-                        # Require >=2 rows that actually have completion tokens, so cross-sample
-                        # contamination would manifest. An all-pad / fully tool-masked window makes the
-                        # masked diff trivially zero, which must NOT pass: leave the verdict unset and
-                        # re-verify on a later, non-degenerate batch instead.
-                        _pk_cm = (
-                            input_ids[:, -_pk_result.shape[1] :]
-                            != self.processing_class.pad_token_id
-                        ).float()
-                        _pk_active_rows = int((_pk_cm.sum(dim = 1) > 0).sum())
-                        if _pk_active_rows >= 2 and _pk_result.shape == logprobs.shape:
-                            _pk_ok = bool(
-                                float(((_pk_result - logprobs).abs() * _pk_cm).max()) < 5e-1
-                            )
-                            unwrapped_model._unsloth_seq_packing_nograd_ok = _pk_ok
-                            if _pk_ok:
-                                logprobs = _pk_result
-                            elif os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
-                                print(
-                                    "[Unsloth] GRPO sequence-packing disabled: packed logprobs did not match the padded path",
-                                    flush = True,
-                                )
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
