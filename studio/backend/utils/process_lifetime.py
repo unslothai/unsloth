@@ -161,6 +161,7 @@ def _pdeathsig_preexec() -> None:
     # check closes the race where the parent died before this ran.
     try:
         import ctypes
+
         ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
         current_parent_pid = os.getppid()
         expected_parent_pid = _parent_pid

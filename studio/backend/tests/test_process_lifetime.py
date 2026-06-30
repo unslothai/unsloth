@@ -170,7 +170,9 @@ def test_bind_current_process_to_parent_lifetime_reads_shared_expected_parent(mo
     assert calls == ["prctl"]
 
 
-def test_bind_current_process_to_parent_lifetime_reads_expected_parent_in_fresh_interpreter(tmp_path):
+def test_bind_current_process_to_parent_lifetime_reads_expected_parent_in_fresh_interpreter(
+    tmp_path,
+):
     child = tmp_path / "fresh_bind.py"
     child.write_text(
         "import ctypes, sys\n"
