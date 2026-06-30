@@ -2276,28 +2276,28 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     if getattr(tokenizer, "bos_token", None) is not None:
         added_tokens_decoder = [x for x in added_tokens_decoder if x != tokenizer.bos_token]
 
-    repeatted_tokens = []
+    repeated_tokens = []
     # Join all vocab
     joined_text = "\x01\x00".join(added_tokens_decoder)
     for token in added_tokens_decoder:
         n = len(token)
-        repeatted_counts = joined_text.count(token[:n//2])
+        repeated_counts = joined_text.count(token[:n//2])
         # Try finding longer than 1/2 of the token in the rest
         # For eg <|reserved_special_token_0|>, <|reserved_special_token_1|>
-        if repeatted_counts > 2:
+        if repeated_counts > 2:
             for j in range(n//2+1, n):
-                if joined_text.count(token[:j]) < repeatted_counts:
+                if joined_text.count(token[:j]) < repeated_counts:
                     j -= 1
-                    # Remove repeatted tokens to reduce search space
+                    # Remove repeated tokens to reduce search space
                     joined_text = joined_text.replace(token[:j], "")
-                    repeatted_tokens.append(token[:j])
+                    repeated_tokens.append(token[:j])
                     break
 
     # Remove duplicates
-    splitted = joined_text.split("\x01\x00")
-    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, splitted) if old == new]
+    split = joined_text.split("\x01\x00")
+    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, split) if old == new]
     final_eos_tokens += extra_eos_tokens
-    final_eos_tokens += repeatted_tokens
+    final_eos_tokens += repeated_tokens
 
     # Remove new lines, spaces and HTML tags
     filtered_eos_tokens = []
