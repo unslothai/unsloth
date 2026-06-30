@@ -551,9 +551,7 @@ class DiffusionBackend:
                 # companion text-encoder / VAE already cached for `base`), then
                 # apply it. Computed here, after the build but before placement,
                 # because the weights are still on CPU so free VRAM is the real budget.
-                plan = self._plan_memory(
-                    target, gguf_path, gguf_filename, base, fam, memory_mode
-                )
+                plan = self._plan_memory(target, gguf_path, gguf_filename, base, fam, memory_mode)
                 # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
                 # may fall back to whole-module offload, and tiling is a no-op on a
                 # pipeline with no tiling control), so status stays honest.

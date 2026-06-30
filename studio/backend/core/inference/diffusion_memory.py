@@ -193,8 +193,6 @@ def file_size_mib(path: Any) -> Optional[int]:
         return None
 
 
-
-
 def estimate_image_runtime_mib(*, family: Optional[str] = None) -> int:
     """Per-call activation / latent headroom for an image generation (at the
     default ~1MP resolution the planner budgets for). Distilled / turbo models

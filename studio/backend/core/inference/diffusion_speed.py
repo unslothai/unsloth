@@ -166,7 +166,6 @@ def _restore_tf32(logger: Any) -> None:
         return
     try:
         import torch
-
         torch.backends.cuda.matmul.allow_tf32 = _tf32_prev[0]
         torch.backends.cudnn.allow_tf32 = _tf32_prev[1]
     except Exception as exc:  # noqa: BLE001 — best-effort restore

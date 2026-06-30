@@ -111,9 +111,7 @@ class _Pipe:
 def test_speed_off_applies_nothing(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True, with_fuse = True)
-    applied = apply_speed_optims(
-        pipe, _target(), family = _family(), speed_mode = SPEED_OFF
-    )
+    applied = apply_speed_optims(pipe, _target(), family = _family(), speed_mode = SPEED_OFF)
     assert applied == {"channels_last": False, "tf32": False, "fused_qkv": False, "compiled": False}
     assert pipe.vae.mem_format is None and pipe.compiled is False
 
@@ -121,9 +119,7 @@ def test_speed_off_applies_nothing(monkeypatch):
 def test_speed_default_channels_last_and_compile_when_eligible(monkeypatch):
     torch = _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
-    applied = apply_speed_optims(
-        pipe, _target(), family = _family(), speed_mode = SPEED_DEFAULT
-    )
+    applied = apply_speed_optims(pipe, _target(), family = _family(), speed_mode = SPEED_DEFAULT)
     assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
     assert applied["compiled"] is True and pipe.compiled is True
     # default does not flip TF32 or fuse QKV.
@@ -133,9 +129,7 @@ def test_speed_default_channels_last_and_compile_when_eligible(monkeypatch):
 def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     torch = _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True, with_fuse = True)
-    applied = apply_speed_optims(
-        pipe, _target(), family = _family(), speed_mode = SPEED_MAX
-    )
+    applied = apply_speed_optims(pipe, _target(), family = _family(), speed_mode = SPEED_MAX)
     assert applied["tf32"] is True and torch.backends.cuda.matmul.allow_tf32 is True
     assert applied["fused_qkv"] is True and pipe.fused is True
 
@@ -156,7 +150,5 @@ def test_apply_tolerates_missing_optims(monkeypatch):
     _stub_torch(monkeypatch)
     # A bare pipe (no vae.to, no compile, no fuse) must not crash.
     bare = types.SimpleNamespace(vae = None, transformer = types.SimpleNamespace())
-    applied = apply_speed_optims(
-        bare, _target(), family = _family(), speed_mode = SPEED_MAX
-    )
+    applied = apply_speed_optims(bare, _target(), family = _family(), speed_mode = SPEED_MAX)
     assert applied["channels_last"] is False and applied["fused_qkv"] is False
