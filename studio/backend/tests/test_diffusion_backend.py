@@ -903,6 +903,37 @@ def test_load_speed_mode_threads_and_defaults_off(fake_runtime, tmp_path):
     assert status3["text_encoder_quant"] is None
 
 
+def test_failed_max_load_restores_tf32_on_unload(monkeypatch):
+    # A speed_mode="max" load flips process-global TF32 (in apply_speed_optims) and can
+    # then fail before _state is committed (e.g. an OOM during placement), leaving the
+    # flag on with _state still None. _unload_locked is the universal handoff gate, so it
+    # must restore TF32 even on this no-state path or the next tenant (chat, or a default
+    # load) silently inherits it. Regression: the restore used to sit below the
+    # `if state is None: return` early return and never ran here.
+    from core.inference import diffusion_speed
+
+    torch = types.ModuleType("torch")
+    torch.backends = types.SimpleNamespace(
+        cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(allow_tf32 = False)),
+        cudnn = types.SimpleNamespace(allow_tf32 = False),
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(diffusion_speed, "_tf32_prev", None)
+
+    # Simulate the max load flipping TF32 on, then failing before committing _state.
+    diffusion_speed._enable_tf32(None)
+    assert torch.backends.cuda.matmul.allow_tf32 is True
+    assert diffusion_speed._tf32_prev == (False, False)
+
+    backend = DiffusionBackend()
+    assert backend._state is None
+    backend._unload_locked()
+
+    assert torch.backends.cuda.matmul.allow_tf32 is False
+    assert torch.backends.cudnn.allow_tf32 is False
+    assert diffusion_speed._tf32_prev is None
+
+
 def test_load_fast_mode_stays_resident_on_cuda(fake_runtime, tmp_path, monkeypatch):
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()

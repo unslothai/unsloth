@@ -772,15 +772,19 @@ class DiffusionBackend:
         return self.status()
 
     def _unload_locked(self) -> None:
+        # Restore TF32 before the no-state early return: a speed_mode="max" load flips
+        # process-global TF32 (in apply_speed_optims) and can then fail before _state is
+        # committed, leaving the flag on with _state still None. This is the universal
+        # handoff gate (explicit unload, an arbiter eviction for chat, and the start of
+        # the next load all route here), so it's the only place that reliably puts TF32
+        # back before the next tenant runs. No-op when no max load ever flipped it.
+        restore_tf32()
         state = self._state
         if state is None:
             return
         self._state = None
         del state
         clear_gpu_cache()
-        # A speed_mode="max" load flips process-global TF32; put it back so the next
-        # tenant (a default diffusion load, or chat) isn't silently left on TF32.
-        restore_tf32()
 
     def status(self) -> dict[str, Any]:
         state = self._state
