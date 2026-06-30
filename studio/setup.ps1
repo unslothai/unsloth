@@ -70,6 +70,28 @@ $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
 $script:CudaArch = $null
 
+# ─────────────────────────────────────────────
+# Guard: LOCALAPPDATA must not point to systemprofile
+# ─────────────────────────────────────────────
+# When setup.ps1 is elevated via UAC the child process can inherit the
+# SYSTEM token's LOCALAPPDATA (C:\Windows\system32\config\systemprofile)
+# instead of the real user path. Every code path below — prebuilt installs,
+# CMake probe, source builds — relies on a writable LOCALAPPDATA, so we
+# fix it once here at the top.
+if ([string]::IsNullOrEmpty($env:LOCALAPPDATA) -or $env:LOCALAPPDATA -like "C:\Windows\*\config\systemprofile*") {
+    $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
+    if ([string]::IsNullOrEmpty($env:LOCALAPPDATA) -or $env:LOCALAPPDATA -like "C:\Windows\*\config\systemprofile*") {
+        $env:LOCALAPPDATA = "$env:USERPROFILE\AppData\Local"
+    }
+}
+if ($env:LOCALAPPDATA -like "C:\Windows\*\config\systemprofile*") {
+    Write-Host "ERROR: Could not resolve a valid LOCALAPPDATA path." -ForegroundColor Red
+    Write-Host "       Current value: $env:LOCALAPPDATA" -ForegroundColor Red
+    Write-Host "       This usually means the script is running under a SYSTEM or" -ForegroundColor Red
+    Write-Host "       service account. Please run from a normal user PowerShell session." -ForegroundColor Red
+    exit 1
+}
+
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
@@ -3232,6 +3254,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             $PSNativeCommandUseErrorActionPreference = $false
             $restoreNativeErrorPreference = $true
         }
+
         try {
             if ($script:UnslothVerbose) {
                 # Show live output in verbose mode while still capturing for error log
