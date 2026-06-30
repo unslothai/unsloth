@@ -2069,6 +2069,26 @@ export function ChatPage({
     });
   }, [currentProjectId, navigate, search]);
 
+  const compareLoraWithBase = useCallback(
+    (adapter: LoraModelOption) => {
+      void (async () => {
+        try {
+          await selectModel({
+            id: adapter.id,
+            source: "lora",
+            isLora: true,
+            isDownloaded: true,
+            throwOnError: true,
+          });
+        } catch {
+          return;
+        }
+        enterCompare();
+      })();
+    },
+    [selectModel, enterCompare],
+  );
+
   const exitCompare = useCallback(() => {
     // Prefer the explicit save; fall back to the last non-compare view so
     // the composer + menu path also returns where the user started.
@@ -2411,6 +2431,7 @@ export function ChatPage({
                 onFoldersChange={refreshLocalModels}
                 onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
+                onCompareWithBase={compareLoraWithBase}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
                 open={active && modelSelectorOpen}
