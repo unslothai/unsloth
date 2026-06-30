@@ -39,6 +39,7 @@ export interface IndexJob {
   stage?: string | null;
   progress?: number | null;
   error?: string | null;
+  numChunks?: number | null;
 }
 
 /** One SSE frame from /jobs/{jobId}/events. */
@@ -47,6 +48,7 @@ export interface JobEvent {
   stage?: string | null;
   progress?: number | null;
   error?: string | null;
+  num_chunks?: number | null;
 }
 
 /** Coords 0..1, top-left origin. */
