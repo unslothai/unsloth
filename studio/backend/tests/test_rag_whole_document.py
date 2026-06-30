@@ -253,7 +253,6 @@ def test_build_rag_autoinject_explicit_off_disables_whole_doc(rag_conn, monkeypa
     )
 
 
-
 def test_build_rag_autoinject_falls_back_over_budget(rag_conn, monkeypatch):
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000])
@@ -269,7 +268,9 @@ def test_build_rag_autoinject_falls_back_over_budget(rag_conn, monkeypatch):
 def test_build_rag_autoinject_context_budget_falls_back(rag_conn, monkeypatch):
     # Runtime context can be smaller than RAG_WHOLE_DOC_MAX_TOKENS; cap whole-doc to
     # the active context and fall back to retrieval when it would overflow.
-    _add_doc(rag_conn, store.thread_scope("t1"), "d1", "small.pdf", "h1", ["fits global"], tokens = [900])
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "small.pdf", "h1", ["fits global"], tokens = [900]
+    )
     sentinel = ("TOPK_CONTEXT_FALLBACK", [{"citationId": 1, "filename": "small.pdf", "text": "x"}])
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
     result = inf_tools.build_rag_autoinject(

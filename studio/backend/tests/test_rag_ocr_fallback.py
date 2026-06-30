@@ -123,6 +123,7 @@ def test_ocr_pages_transcribes_and_caps(monkeypatch):
     assert out == {1: "transcribed text"}  # page 2 dropped by the cap
     assert len(calls) == 1
 
+
 def test_ocr_scanned_pages_merges_short_text_layer(rag_conn, monkeypatch):
     # Near-empty pages can still have meaningful extractable text; OCR augments it
     # rather than replacing it with a fallible vision transcription.
@@ -140,8 +141,6 @@ def test_ocr_scanned_pages_merges_short_text_layer(rag_conn, monkeypatch):
     out, ocred = ingestion._ocr_scanned_pages(pages, "scan.pdf", rag_conn, job_id)
     assert ocred == {1}
     assert out[0].text == "ID-42\n\nOCR body text"
-
-
 
 
 # ── end-to-end ingestion ─────────────────────────────────────────────
