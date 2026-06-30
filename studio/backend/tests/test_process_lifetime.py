@@ -168,6 +168,8 @@ def test_bind_current_process_to_parent_lifetime_reads_shared_expected_parent(mo
     monkeypatch.setattr(pl.os, "getppid", lambda: 1)
     pl.bind_current_process_to_parent_lifetime()
     assert calls == ["prctl"]
+    assert pl._parent_pid == os.getpid()
+    assert os.environ[pl._PARENT_PID_ENV] == str(os.getpid())
 
 
 def test_bind_current_process_to_parent_lifetime_reads_expected_parent_in_fresh_interpreter(
@@ -216,6 +218,39 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
         proc.kill()  # hard-kill the parent (no graceful shutdown runs)
         proc.wait(timeout = 5)
         assert _wait_dead(sleeper_pid, 5.0), "child orphaned after parent SIGKILL"
+    finally:
+        proc.kill()
+
+
+@pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
+def test_bound_child_can_spawn_grandchild_with_refreshed_expected_parent(tmp_path):
+    mid = tmp_path / "mid_grandchild.py"
+    mid.write_text(
+        "import sys, subprocess, time\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "from utils.process_lifetime import (\n"
+        "    bind_current_process_to_parent_lifetime,\n"
+        "    child_popen_kwargs,\n"
+        ")\n"
+        "bind_current_process_to_parent_lifetime()\n"
+        "p = subprocess.Popen(['sleep', '300'], **child_popen_kwargs())\n"
+        "print(p.pid, flush = True)\n"
+        "time.sleep(300)\n"
+    )
+    env = os.environ.copy()
+    env[pl._PARENT_PID_ENV] = str(os.getpid())
+    proc = subprocess.Popen(
+        [sys.executable, str(mid)],
+        stdout = subprocess.PIPE,
+        text = True,
+        env = env,
+    )
+    try:
+        grandchild_pid = int(proc.stdout.readline().strip())
+        assert _alive(grandchild_pid), "grandchild exited before the worker finished spawning it"
+        proc.kill()
+        proc.wait(timeout = 5)
+        assert _wait_dead(grandchild_pid, 5.0), "grandchild orphaned after worker SIGKILL"
     finally:
         proc.kill()
 

@@ -47,6 +47,12 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _remember_current_process_as_parent() -> None:
+    global _parent_pid
+    _parent_pid = os.getpid()
+    os.environ[_PARENT_PID_ENV] = str(_parent_pid)
+
+
 # ── Parent setup ──
 
 
@@ -61,8 +67,7 @@ def initialize_parent_lifetime() -> None:
         if _initialized:
             return
         _initialized = True
-        _parent_pid = os.getpid()
-        os.environ[_PARENT_PID_ENV] = str(_parent_pid)
+        _remember_current_process_as_parent()
         if _is_windows():
             _install_windows_job()
 
@@ -188,6 +193,7 @@ def bind_current_process_to_parent_lifetime() -> None:
     PR_SET_PDEATHSIG for them -- the child must do it itself at startup."""
     if _is_linux():
         _pdeathsig_preexec()
+        _remember_current_process_as_parent()
 
 
 def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:
