@@ -8357,9 +8357,7 @@ class LlamaCppBackend:
                                             # next (``I will use web_search`` then
                                             # ``[ARGS]{...}``), or it leaks before
                                             # the call drains.
-                                            _hold = _held_rehearsal_tail_len(
-                                                cleaned, active_tools
-                                            )
+                                            _hold = _held_rehearsal_tail_len(cleaned, active_tools)
                                             _emit = (
                                                 cleaned[: len(cleaned) - _hold]
                                                 if _hold
