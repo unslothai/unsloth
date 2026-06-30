@@ -450,9 +450,11 @@ def test_pick_dtype_bf16_only_on_ampere(fake_runtime, monkeypatch):
     backend = DiffusionBackend()
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True, raising = False)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (8, 0), raising = False)
-    assert backend._pick_device_and_dtype() == ("cuda", torch.bfloat16)
+    t = backend._resolve_device_target(None)
+    assert (t.device, t.dtype) == ("cuda", torch.bfloat16)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5), raising = False)
-    assert backend._pick_device_and_dtype() == ("cuda", torch.float16)
+    t = backend._resolve_device_target(None)
+    assert (t.device, t.dtype) == ("cuda", torch.float16)
 
 
 def test_unload_sets_cancel_event(fake_runtime):

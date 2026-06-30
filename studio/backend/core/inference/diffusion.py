@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,7 +31,6 @@ from .diffusion_families import (
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
-    diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
 )
 
@@ -130,28 +129,20 @@ class DiffusionBackend:
     def is_loaded(self) -> bool:
         return self._state is not None
 
-    def _pick_device_and_dtype(self) -> tuple[str, Any]:
-        """(device, dtype) for the current host. Thin wrapper over the device
-        policy module, kept as a method so tests can still monkeypatch it."""
-        target = resolve_diffusion_device_target()
-        return target.device, target.dtype
-
     def _resolve_device_target(self, fam: Optional[DiffusionFamily]) -> DiffusionDeviceTarget:
-        """The device target with the family fp16 guard applied.
-
-        Routes through _pick_device_and_dtype() (so a monkeypatched override still
-        drives the result), then promotes float16 -> float32 for fp16-incompatible
-        families (Z-Image), rebuilding the target so dtype + capability flags stay
-        consistent with the effective dtype.
-        """
-        device, dtype = self._pick_device_and_dtype()
-        effective = _resolve_diffusion_compute_dtype(fam, dtype)
-        if effective is not dtype:
-            logger.warning(
-                "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
-                getattr(fam, "name", None),
-            )
-        return diffusion_device_target_from_torch_device(device, effective)
+        """The device target for the current host with the family fp16 guard applied:
+        promote float16 -> float32 for fp16-incompatible families (Z-Image), whose
+        activations overflow float16 and render a black image. The capability flags
+        carry through unchanged; only the dtype moves."""
+        target = resolve_diffusion_device_target()
+        effective = _resolve_diffusion_compute_dtype(fam, target.dtype)
+        if effective is target.dtype:
+            return target
+        logger.warning(
+            "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
+            getattr(fam, "name", None),
+        )
+        return replace(target, dtype = effective)
 
     def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
         local_root = Path(repo_id).expanduser()
@@ -243,28 +234,6 @@ class DiffusionBackend:
         return fam
 
     # ── Background load + progress ─────────────────────────────────────────
-
-    def validate_load(
-        self,
-        repo_id: str,
-        *,
-        gguf_filename: Optional[str] = None,
-        family_override: Optional[str] = None,
-    ) -> DiffusionFamily:
-        """Cheap, pure-synchronous pre-flight: returns the resolved family or
-        raises ValueError. No I/O, so a caller can reject a bad request before
-        taking the GPU (begin_load and load_pipeline re-check on the load path)."""
-        if not gguf_filename:
-            raise ValueError(
-                "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
-            )
-        fam = detect_family(repo_id, family_override)
-        if fam is None:
-            raise ValueError(
-                f"'{repo_id}' isn't a supported image-generation model. "
-                f"Supported: Z-Image, Qwen-Image, FLUX.1, FLUX.2-klein."
-            )
-        return fam
 
     def begin_load(
         self,
