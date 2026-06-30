@@ -148,11 +148,6 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
                 if results.processor_artifacts is None
                 else to_jsonable(results.processor_artifacts)
             )
-            evaluation_artifacts = (
-                None
-                if results.evaluation_artifacts is None
-                else to_jsonable(results.evaluation_artifacts)
-            )
             event_queue.put(
                 {
                     "type": EVENT_JOB_COMPLETED,
@@ -160,7 +155,6 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
                     "analysis": analysis,
                     "dataset": dataset,
                     "processor_artifacts": processor_artifacts,
-                    "evaluation_artifacts": evaluation_artifacts,
                     "artifact_path": None,
                     "execution_type": execution_type,
                 }

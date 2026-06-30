@@ -340,64 +340,31 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     return designer
 
 
-def _build_evaluation_artifacts(
-    df, evaluations: list[dict[str, Any]]
-) -> list[dict[str, Any]] | None:
-    """Per-evaluation summary attached to results.evaluation_artifacts so the
-    preview UI can show a score column + basic stats alongside the dataset."""
-    artifacts: list[dict[str, Any]] = []
-    for evaluation in evaluations:
-        if not isinstance(evaluation, dict):
-            continue
-        if evaluation.get("processor_type") != "json_document_score":
-            continue
-        score_column = str(evaluation.get("score_column", "doc_score"))
-        if score_column not in df.columns:
-            continue
-        series = df[score_column]
-        artifacts.append(
-            {
-                "name": evaluation.get("name"),
-                "processor_type": "json_document_score",
-                "score_column": score_column,
-                "mean": float(series.mean()) if len(series) > 0 else None,
-                "count": int(len(series)),
-            }
-        )
-    return artifacts or None
-
-
 def _attach_studio_evaluations(designer: Any, evaluations: list[dict[str, Any]]) -> None:
     """Override designer.preview/create per-instance so studio-owned
     evaluations run alongside `data_designer`'s native processors — the
     worker stays naive (same shape as it is for processors today). Mirrors
     the existing `_apply_data_designer_image_context_patch` pattern."""
+    if not evaluations:
+        return
+
     original_preview = designer.preview
     original_create = designer.create
 
     def patched_preview(config_builder, *, num_records):
         results = original_preview(config_builder, num_records = num_records)
-        artifacts: list[dict[str, Any]] | None = None
-        if results.dataset is not None and evaluations:
+        if results.dataset is not None:
             score_dataframe(results.dataset, evaluations)
-            artifacts = _build_evaluation_artifacts(results.dataset, evaluations)
-        results.evaluation_artifacts = artifacts
         return results
 
-    def patched_create(
-        config_builder,
-        *,
-        num_records,
-        dataset_name = "dataset",
-    ):
+    def patched_create(config_builder, *, num_records, dataset_name = "dataset"):
         results = original_create(
             config_builder, num_records = num_records, dataset_name = dataset_name
         )
-        if evaluations:
-            score_parquet_dir(
-                results.artifact_storage.base_dataset_path / "parquet-files",
-                evaluations,
-            )
+        score_parquet_dir(
+            results.artifact_storage.base_dataset_path / "parquet-files",
+            evaluations,
+        )
         return results
 
     designer.preview = patched_preview
