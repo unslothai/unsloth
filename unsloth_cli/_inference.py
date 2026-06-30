@@ -447,14 +447,22 @@ def load_chat_backend(
             ensure_studio_backend_path()
             from core.inference import get_inference_backend
             backend = get_inference_backend()
-        if not backend.load_model(
-            config = model_config,
-            max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
-            hf_token = hf_token,
-            tensor_parallel = tensor_parallel,
-            mlx_distributed = is_mlx_distributed,
-        ):
+        try:
+            loaded = backend.load_model(
+                config = model_config,
+                max_seq_length = max_seq_length,
+                load_in_4bit = load_in_4bit,
+                hf_token = hf_token,
+                tensor_parallel = tensor_parallel,
+                mlx_distributed = is_mlx_distributed,
+            )
+        except Exception as exc:
+            if not is_mlx_distributed:
+                raise
+            if rank == 0:
+                typer.echo(str(exc) or "Model load failed", err = True)
+            raise typer.Exit(code = 1)
+        if not loaded:
             typer.echo("Model load failed", err = True)
             raise typer.Exit(code = 1)
     return ChatBackend("unsloth", backend)
