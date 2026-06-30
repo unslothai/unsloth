@@ -94,6 +94,10 @@ def _patch_fake_linux_pdeathsig(monkeypatch):
     return calls
 
 
+def _mock_exit(code):
+    raise SystemExit(code)
+
+
 # ── No-op safety / composition ──
 
 
@@ -145,7 +149,7 @@ def test_pdeathsig_child_still_exits_when_reparented_to_init(monkeypatch):
     calls = _patch_fake_linux_pdeathsig(monkeypatch)
     monkeypatch.setattr(pl, "_parent_pid", 4321)
     monkeypatch.setattr(pl.os, "getppid", lambda: 1)
-    monkeypatch.setattr(pl.os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
+    monkeypatch.setattr(pl.os, "_exit", _mock_exit)
     with pytest.raises(SystemExit) as excinfo:
         pl._pdeathsig_preexec()
     assert excinfo.value.code == 1
