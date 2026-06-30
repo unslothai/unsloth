@@ -201,7 +201,9 @@ def test_uv_venv_empty_head_passes(tmp_path):
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 def test_uv_venv_empty_origin_main_fails(tmp_path):
-    proc, venv_dir, log_file, partial_marker = _run_bootstrap(tmp_path, "empty", _source("origin/main:install.ps1"))
+    proc, venv_dir, log_file, partial_marker = _run_bootstrap(
+        tmp_path, "empty", _source("origin/main:install.ps1")
+    )
     assert proc.returncode == 91, proc.stdout + proc.stderr
     assert not (venv_dir / "Scripts" / "python.exe").exists()
     assert partial_marker.exists()
