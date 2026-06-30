@@ -3166,16 +3166,23 @@ if ($LocalLlamaCppSrc) {
         exit 1
     }
     $ResolvedLocal = (Resolve-Path -LiteralPath $LocalLlamaCppSrc).Path
-    # Studio loads the runtime from build\bin\Release\llama-server.exe; reusing a
-    # local dir disables both the prebuilt download and the source build, so that
-    # binary must already be present in the dir the user pointed at.
-    $LocalLlamaServerExe = Join-Path $ResolvedLocal "build\bin\Release\llama-server.exe"
+    # Reusing a local dir disables both the prebuilt download and the source
+    # build, so a runnable llama-server.exe must already be present. Accept any
+    # layout LlamaCppBackend._layout_candidates() resolves (root-level, build\bin,
+    # or build\bin\Release) so the flag never rejects a tree Studio could run.
+    $LocalLlamaServerFound = $false
+    foreach ($_cand in @(
+            (Join-Path $ResolvedLocal "llama-server.exe"),
+            (Join-Path $ResolvedLocal "build\bin\llama-server.exe"),
+            (Join-Path $ResolvedLocal "build\bin\Release\llama-server.exe"))) {
+        if (Test-Path -LiteralPath $_cand) { $LocalLlamaServerFound = $true; break }
+    }
     if ($ResolvedLocal -eq $LlamaCppDir) {
         # Points at the canonical install location itself: never delete-then-link
         # onto itself. Reuse an existing build here (skip prebuilt + source) so the
         # staged prebuilt installer can't replace a build the user asked to reuse;
         # if nothing is built yet, fall through to the normal install.
-        if (Test-Path -LiteralPath $LocalLlamaServerExe) {
+        if ($LocalLlamaServerFound) {
             substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it" "Yellow"
             $LocalLlamaCppLinked = $true
             $NeedLlamaSourceBuild = $false
@@ -3185,8 +3192,8 @@ if ($LocalLlamaCppSrc) {
     } else {
         # Fail clearly rather than junction an unbuilt or wrong-platform checkout
         # and leave Studio with no usable binary.
-        if (-not (Test-Path -LiteralPath $LocalLlamaServerExe)) {
-            step "llama.cpp" "no llama-server.exe under $ResolvedLocal\build\bin\Release -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
+        if (-not $LocalLlamaServerFound) {
+            step "llama.cpp" "no llama-server.exe under $ResolvedLocal (looked for .\llama-server.exe, .\build\bin and .\build\bin\Release) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
             exit 1
         }
         # If the target is already a junction/symlink (e.g. a previous

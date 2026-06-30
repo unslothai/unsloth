@@ -133,6 +133,23 @@ assert_contains \
     "$SETUP_PS1" 'step "llama.cpp" "linked (skipping build)"'
 
 echo ""
+echo "=== both setup scripts: validate against every layout the backend resolves ==="
+
+# The linked tree is accepted only if it already holds a runnable llama-server,
+# but the check must match LlamaCppBackend._layout_candidates() (root-level
+# first, then build/bin, then build/bin/Release on Windows). A narrower check
+# would reject a make/flat-release tree the backend could run.
+assert_contains \
+    "setup.sh: accepts root-level or build/bin llama-server layouts" \
+    "$SETUP_SH" '[ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]'
+assert_contains \
+    "setup.ps1: accepts the build\\bin (non-Release) llama-server.exe layout" \
+    "$SETUP_PS1" 'Join-Path $ResolvedLocal "build\bin\llama-server.exe"'
+assert_contains \
+    "setup.ps1: accepts the root-level llama-server.exe layout" \
+    "$SETUP_PS1" 'Join-Path $ResolvedLocal "llama-server.exe"'
+
+echo ""
 echo "=== both setup scripts: a local dir pointing at the canonical path is a no-op ==="
 
 # Guard against the self-link footgun: if the user passes the canonical install

@@ -1266,6 +1266,13 @@ _link_local_llama_quantize_shim() {
     fi
 }
 
+# Accept any layout LlamaCppBackend._layout_candidates() resolves so the flag
+# never rejects a tree Studio could actually run: a root-level llama-server (a
+# `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
+_has_local_llama_server() {
+    [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
+}
+
 _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
@@ -1291,7 +1298,7 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # uses os.replace() and would otherwise clobber an existing source build at
         # this path. If nothing is built there yet, fall through to the normal
         # install so it gets built in place exactly as it would without the flag.
-        if [ -x "$LLAMA_CPP_DIR/build/bin/llama-server" ]; then
+        if _has_local_llama_server "$LLAMA_CPP_DIR"; then
             substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it"
             _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
             _LOCAL_LLAMA_CPP_LINKED=true
@@ -1302,11 +1309,12 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         fi
     else
         # Reusing disables BOTH the prebuilt download and the source build, so the
-        # linked tree must already contain a runnable llama-server (Studio loads it
-        # from build/bin/). Fail clearly rather than link an unbuilt or
-        # wrong-platform checkout and leave Studio with no usable binary.
-        if [ ! -x "$_RESOLVED_LOCAL/build/bin/llama-server" ]; then
-            step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL/build/bin -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
+        # linked tree must already contain a runnable llama-server in one of the
+        # layouts the backend resolves (root-level or build/bin/). Fail clearly
+        # rather than link an unbuilt or wrong-platform checkout and leave Studio
+        # with no usable binary.
+        if ! _has_local_llama_server "$_RESOLVED_LOCAL"; then
+            step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL (looked for ./llama-server and ./build/bin/llama-server) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
             exit 1
         fi
         # A stale link from a previous --with-llama-cpp-dir run isn't Studio-owned
