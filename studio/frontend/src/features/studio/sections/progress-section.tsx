@@ -28,6 +28,8 @@ import {
 } from "@/features/training";
 import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
+import { isAdapterMethod } from "@/types/training";
+import type { TrainingMethod } from "@/types/training";
 import { useGpuUtilization } from "@/hooks";
 import { cn } from "@/lib/utils";
 import {
@@ -154,12 +156,11 @@ export function ProgressSection({
     setTrainingCompareHandoff(data.modelName, data.outputDir);
     await navigate({ to: "/chat" });
   };
-  const isLoraRun =
-    data.trainingMethod === "lora" || data.trainingMethod === "qlora";
   const canCompareInChat =
     isHistorical &&
     data.phase === "completed" &&
-    isLoraRun &&
+    isAdapterMethod(data.trainingMethod as TrainingMethod) &&
+    !data.resumedLater &&
     Boolean(data.outputDir);
 
   // A finished run can be exported to GGUF: deep-link to the Export page with

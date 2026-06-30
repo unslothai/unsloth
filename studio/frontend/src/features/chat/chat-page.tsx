@@ -2310,9 +2310,9 @@ export function ChatPage({
         if (canceled) return;
 
         const state = useChatRuntimeStore.getState();
-        const targetLora =
-          findLoraByPath(state.loras, handoff.loraPath) ??
-          pickBestLoraForBase(state.loras, handoff.baseModel);
+        const targetLora = handoff.loraPath
+          ? findLoraByPath(state.loras, handoff.loraPath)
+          : pickBestLoraForBase(state.loras, handoff.baseModel);
         if (targetLora) {
           console.info("[chat-handoff] loading lora", {
             id: targetLora.id,
@@ -2325,6 +2325,17 @@ export function ChatPage({
           navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");
+          return;
+        }
+
+        if (handoff.loraPath) {
+          console.warn("[chat-handoff] requested adapter not found", {
+            loraPath: handoff.loraPath,
+          });
+          toast.error("Fine-tuned model not found", {
+            description: "It may have been deleted or moved.",
+          });
+          clearHandoff();
           return;
         }
 
