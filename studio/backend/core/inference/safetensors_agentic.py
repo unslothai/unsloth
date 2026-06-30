@@ -620,10 +620,12 @@ def run_safetensors_tool_loop(
                         tool_protocol_active = False,
                     )
                     # A truncated/oversized bare-JSON tool call (``{"name":..``)
-                    # was drained here but did not parse. Drop it rather than
-                    # leaking the raw fragment; a plain JSON answer (no ``"name"``)
-                    # is left untouched by the helper.
-                    if tool_protocol_active:
+                    # was drained here but did not parse. With Auto-Heal on, drop it
+                    # rather than leaking the raw fragment; a plain JSON answer (no
+                    # ``"name"``) is left untouched by the helper. With Auto-Heal off
+                    # the raw fragment stays visible, matching the XML strip above and
+                    # the disabled-Auto-Heal contract (malformed markup is preserved).
+                    if tool_protocol_active and auto_heal_tool_calls:
                         _drain_text = strip_leading_bare_json_call(_drain_text, _enabled_tool_names)
                     if _drain_text:
                         yield {"type": "content", "text": _drain_text}

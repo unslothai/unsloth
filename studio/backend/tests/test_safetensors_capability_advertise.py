@@ -539,3 +539,52 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
     assert flags["supports_preserve_thinking"] is True
+
+
+# Templates that advertise tools ({%- if tools %}) and prompt the bare-JSON
+# call form, but whose ``{"name":`` example is pretty-printed or JSON-escaped.
+_WHITESPACE_BARE_JSON_TEMPLATE = (
+    "{%- if tools %}\n"
+    "To call a tool, output JSON of the form:\n"
+    '{ "name" : "function_name", "parameters": { } }\n'
+    "{%- endif %}\n"
+    "{{ messages }}"
+)
+_ESCAPED_BARE_JSON_TEMPLATE = (
+    "{%- if tools %}\n"
+    'Respond with {\\"name\\": \\"fn\\", \\"parameters\\": {}}\n'
+    "{%- endif %}\n"
+    "{{ messages }}"
+)
+_TOOLS_ADVERTISED_NO_PARSEABLE_FORM = (
+    "{%- if tools %}\nYou may use the available tools.\n{%- endif %}\n{{ messages }}"
+)
+
+
+def test_detect_safetensors_features_keeps_tools_for_pretty_printed_bare_json():
+    # A template advertising tools whose bare-JSON example is pretty-printed
+    # (``{ "name" :`` with whitespace) must keep supports_tools: the parser accepts
+    # that whitespace via raw_decode, so the capability gate must not downgrade it.
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    flags = _detect_safetensors_features(backend, _WHITESPACE_BARE_JSON_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+def test_detect_safetensors_features_keeps_tools_for_escaped_bare_json():
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    flags = _detect_safetensors_features(backend, _ESCAPED_BARE_JSON_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+def test_detect_safetensors_features_drops_tools_when_no_parseable_form():
+    # Negative control: tools advertised but no parser-recognised emission form at
+    # all -> the pill is still dropped (the gate is not now matching everything).
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    flags = _detect_safetensors_features(backend, _TOOLS_ADVERTISED_NO_PARSEABLE_FORM)
+    assert flags["supports_tools"] is False

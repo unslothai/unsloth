@@ -1258,6 +1258,12 @@ async def artifact_preview_frame(allow_network: bool = False):
     )
 
 
+# Whitespace/escape-tolerant ``{"name":`` detector for bare-JSON tool templates.
+# Matches ``{"name":``, ``{ "name" :`` (pretty-printed) and ``{\"name\":``
+# (JSON-escaped inside the template), mirroring the parser's whitespace tolerance.
+_BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"name\\?"\s*:')
+
+
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
@@ -1270,8 +1276,11 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     )
     # Markers the safetensors / MLX parser recognises. If the template advertises
     # tools but uses none, drop the pill (parser can't honour the emission). The
-    # two ``{"name":`` variants cover Llama-3.2 ``custom_tools`` whose template
-    # prompts the bare-JSON form without a ``<|python_tag|>`` prefix.
+    # bare-JSON ``{"name":`` form (Llama-3.2 ``custom_tools`` template, no
+    # ``<|python_tag|>`` prefix) is matched with a whitespace-tolerant regex so a
+    # pretty-printed / escaped template (``{ "name" :`` or ``{\"name\":``) is not
+    # mis-classified as tool-less -- the parser itself accepts that whitespace via
+    # ``json.JSONDecoder().raw_decode``, so the gate must too.
     _PARSER_MARKERS = (
         "<tool_call>",
         "<function=",
@@ -1279,13 +1288,12 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         "<|python_tag|>",
         "[TOOL_CALLS]",
         "<|tool_call>",
-        '{"name":',
-        '{\\"name\\":',
     )
     if (
         flags.get("supports_tools")
         and chat_template
         and not any(m in chat_template for m in _PARSER_MARKERS)
+        and not _BARE_JSON_NAME_MARKER_RE.search(chat_template)
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "

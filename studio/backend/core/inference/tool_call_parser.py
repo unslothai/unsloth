@@ -18,6 +18,12 @@ safetensors + MLX agentic loop sees the same call shape llama-server gives GGUF:
 Missing closing tags / brackets are tolerated: models often truncate mid-stream.
 """
 
+# This module is dependency-light by design (external llama-server wrappers import
+# it standalone) and the package targets ``python >=3.9``. ``from __future__ import
+# annotations`` makes the PEP 604 ``X | None`` return annotations lazy strings so a
+# 3.9 import does not raise ``TypeError: unsupported operand type(s) for |``.
+from __future__ import annotations
+
 import json
 import re
 from typing import Any, Optional

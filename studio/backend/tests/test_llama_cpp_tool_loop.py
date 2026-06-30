@@ -2144,3 +2144,39 @@ def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
     assert len(payloads) >= 2
     asst = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
     assert asst and not any('"name"' in (m.get("content") or "") for m in asst), asst
+
+
+def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):
+    """F4 (GGUF parallel of F3): with Auto-Heal OFF, a truncated ENABLED-name
+    bare-JSON fragment that did not parse must stay visible; with Auto-Heal ON it is
+    suppressed. The drain bare-JSON strip is gated on auto_heal_tool_calls, matching
+    the XML strip in the same branch."""
+
+    trunc = '{"name":"web_search","parameters":{"query":"weather'
+
+    def _run(auto_heal):
+        stream = [_sse({"content": trunc}), _done()]
+        backend = _make_backend(monkeypatch, [stream], [])
+        calls: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            "core.inference.tools.execute_tool",
+            lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        )
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "x"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                max_tool_iterations = 1,
+                auto_heal_tool_calls = auto_heal,
+            )
+        )
+        contents = "".join(e.get("text", "") for e in events if e.get("type") == "content")
+        return calls, contents
+
+    calls_off, contents_off = _run(False)
+    assert calls_off == [], calls_off
+    assert "web_search" in contents_off, contents_off
+
+    calls_on, contents_on = _run(True)
+    assert calls_on == [], calls_on
+    assert "web_search" not in contents_on, contents_on
