@@ -3421,6 +3421,47 @@ def test_oversized_plain_json_answer_still_streams():
     assert '"result"' in contents
 
 
+def test_oversized_disabled_name_json_answer_still_streams():
+    # A giant still-open JSON answer whose "name" is NOT an enabled tool must stream:
+    # the oversized DRAIN branch was gated only on the presence of a "name" key, so a
+    # large ordinary record ({"name":"Alice",...}) was drained instead of shown.
+    from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
+
+    big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
+    answer = '{"name":"Alice","parameters":{"bio":"' + big  # never closes
+    chunks = [answer[i : i + 2000] for i in range(0, len(answer), 2000)]
+    loop, exec_fn = _make_loop(turns = [chunks], max_tool_iterations = 1)
+    events = _collect_events(loop)
+    assert exec_fn.calls == [], exec_fn.calls
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert "Alice" in contents, contents[:80]
+
+
+def test_truncated_disabled_name_json_is_shown_at_eof():
+    # A truncated ordinary JSON answer whose name is not an enabled tool, held to EOF,
+    # must be shown -- the EOF bare-JSON DRAIN branch was gated only on a "name" key.
+    truncated = '{"name":"Alice","parameters":{"age":'
+    loop, exec_fn = _make_loop(turns = [[truncated]], max_tool_iterations = 1)
+    events = _collect_events(loop)
+    assert exec_fn.calls == [], exec_fn.calls
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert "Alice" in contents, contents
+
+
+def test_truncated_plain_json_with_nested_enabled_name_is_visible():
+    # A truncated ordinary JSON answer with a NESTED ``"name"`` matching an enabled
+    # tool ({"result":{"name":"web_search",...) must be shown, not suppressed: the
+    # gate now extracts the TOP-LEVEL name only, so the nested field is just data.
+    loop, exec_fn = _make_loop(
+        turns = [['{"result":{"name":"web_search","age":']],
+        max_tool_iterations = 1,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == []
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert '"result"' in contents and "web_search" in contents, contents
+
+
 def test_bare_json_call_not_replayed_in_next_turn_content():
     # After a complete bare-JSON call executes, the assistant content fed to the
     # next turn must not contain the raw call (next-turn contamination).

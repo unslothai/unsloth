@@ -544,6 +544,40 @@ def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
     assert strip_tool_markup(two, final = True) == "a  mid  end"
 
 
+def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
+    from core.inference.tool_call_parser import parse_tool_calls_from_text, strip_tool_markup
+
+    # A literal ``<function=x>`` OPENER inside a parameter value is data, not a new
+    # call (the parser ignores it via _inside_open_parameter). The strip must do the
+    # same: a regex negative-lookahead stopped at the nested opener and the
+    # unclosed-tail arm then ate the trailing prose. Scan-based strip keeps " done".
+    text = '<function=python><parameter=code>print("<function=x>")</parameter></function> done'
+    assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
+    assert strip_tool_markup(text, final = True) == "done"
+    # Non-final (streaming) keeps an unclosed call buffered, does not eat prose early.
+    open_text = 'pre <function=python><parameter=code>print("<function=x>")'
+    assert strip_tool_markup(open_text, final = False) == open_text
+
+
+def test_strip_leading_bare_json_call_ignores_nested_name():
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    # A nested ``"name"`` equal to an enabled tool must NOT gate the strip: the object
+    # is an ordinary JSON answer, not a call. Both truncated and complete forms are
+    # kept verbatim. Only a TOP-LEVEL enabled name is treated as a real call.
+    nested_trunc = '{"result":{"name":"web_search","age":'
+    nested_full = '{"result":{"name":"web_search","age":1}}'
+    assert strip_leading_bare_json_call(nested_trunc, {"web_search"}) == nested_trunc
+    assert strip_leading_bare_json_call(nested_full, {"web_search"}) == nested_full
+    # A real top-level call (even with a top-level array before the name) still strips.
+    assert (
+        strip_leading_bare_json_call(
+            '{"data":[1,2],"name":"web_search","parameters":{}}', {"web_search"}
+        )
+        == ""
+    )
+
+
 def test_mistral_single_object_call_is_stripped_for_display():
     from core.inference.tool_call_parser import (
         _strip_mistral_closed_calls,

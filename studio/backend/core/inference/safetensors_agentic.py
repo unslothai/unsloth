@@ -130,6 +130,19 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return status_for_tool(tool_name, arguments)
 
 
+def _looks_like_enabled_bare_json(text: str, enabled_tool_names: Optional[set]) -> bool:
+    """True when ``text`` opens with a markerless bare-JSON tool call whose name is an
+    ENABLED tool (the gated strip would remove it). An ordinary JSON answer whose name
+    is not a tool ({"name":"Alice",...}) returns False so it streams as content instead
+    of being drained -- the GGUF loop applies the same gate. ``enabled_tool_names`` is
+    ``None`` in unrestricted mode, where any bare ``{...,"name",...}`` is a potential
+    call (matching the prior behaviour)."""
+    probe = strip_llama3_leading_sentinels(text.lstrip())
+    if not (probe.startswith("{") and '"name"' in probe):
+        return False
+    return strip_leading_bare_json_call(probe, enabled_tool_names) != probe
+
+
 _FUNCTION_SIGNAL_RE = re.compile(r"<function=([\w-]+)>")
 _TOOL_CALL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w-]+)"')
 
@@ -442,12 +455,13 @@ def run_safetensors_tool_loop(
                 if _balanced_brace_end(bare_probe, 0) is None:
                     if len(stripped) < _MAX_BARE_JSON_BUFFER:
                         continue  # object still open -- keep buffering
-                    elif '"name"' in bare_probe:
-                        # Oversized but still-open bare-JSON call: stop holding
-                        # (memory bound) yet DRAIN rather than leak the raw JSON
-                        # prefix. The safety net recovers a complete call; the
-                        # DRAINING resolver drops a truncated one. Gated on a
-                        # ``"name"`` key so a giant plain JSON answer still streams.
+                    elif _looks_like_enabled_bare_json(bare_probe, _enabled_tool_names):
+                        # Oversized but still-open bare-JSON call for an ENABLED tool:
+                        # stop holding (memory bound) yet DRAIN rather than leak the raw
+                        # JSON prefix. The safety net recovers a complete call; the
+                        # DRAINING resolver drops a truncated one. Gated on the enabled
+                        # tool name so a giant ordinary JSON answer
+                        # ({"name":"Alice",...}) still streams (GGUF parity).
                         detect_state = _state_draining
                         continue
                 elif parse_tool_calls_from_text(
@@ -537,11 +551,14 @@ def run_safetensors_tool_loop(
                 and any(sig in stripped for sig in tool_xml_signals)
             ):
                 detect_state = _state_draining
-            elif tool_protocol_active and _bare_eos.startswith("{") and '"name"' in _bare_eos:
-                # A held bare-JSON tool-call fragment carries no XML signal. DRAIN
-                # it so a complete object parses/executes and a truncated one is
-                # dropped by the DRAINING resolver -- the signal-only gate above
-                # would otherwise flush the raw JSON to the client (GGUF parity).
+            elif tool_protocol_active and _looks_like_enabled_bare_json(
+                _bare_eos, _enabled_tool_names
+            ):
+                # A held bare-JSON ENABLED-tool call fragment carries no XML signal.
+                # DRAIN it so a complete object parses/executes and a truncated one is
+                # dropped by the DRAINING resolver. Gated on the enabled tool name so
+                # an ordinary JSON answer whose name is not a tool falls through to the
+                # else below and is streamed as content (GGUF parity).
                 detect_state = _state_draining
             else:
                 # Drain the buffer and fall through to STREAMING so the intent
