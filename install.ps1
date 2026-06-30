@@ -1512,6 +1512,26 @@ exit 0
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
         }
+        # Trust neither uv's exit code nor a half-baked Scripts\python.exe.
+        function Test-VenvPythonReady {
+            param(
+                [Parameter(Mandatory = $true)][string]$PythonExe
+            )
+            if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+            return (Invoke-InstallCommand { & $PythonExe -c "import sys; print(sys.executable)" }) -eq 0
+        }
+        if (-not (Test-VenvPythonReady $VenvPython)) {
+            substep "uv venv returned success but left an unusable venv; rebuilding with python -m venv..." "Yellow"
+            $venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvDir }
+            if ($venvExit -ne 0) {
+                Write-Host "[ERROR] Failed to rebuild virtual environment (exit code $venvExit)" -ForegroundColor Red
+                return (Exit-InstallFailure "Failed to rebuild virtual environment (exit code $venvExit)" $venvExit)
+            }
+            if (-not (Test-VenvPythonReady $VenvPython)) {
+                Write-Host "[ERROR] Rebuilt virtual environment is still unusable" -ForegroundColor Red
+                return (Exit-InstallFailure "Rebuilt virtual environment is still unusable" $venvExit)
+            }
+        }
     } else {
         step "venv" "using migrated environment"
         substep "$VenvDir"
