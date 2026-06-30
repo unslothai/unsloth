@@ -28,8 +28,8 @@ def _table_pdf(path):
 
 
 def test_pdf_extracts_markdown_table(tmp_path, monkeypatch):
-    # With Markdown on, a tabular layout is reconstructed as a Markdown table, so the
-    # column structure (pipes) survives into the page text that gets chunked/indexed.
+    # With Markdown on, the layout is emitted as Markdown markup (heading, and a pipe table
+    # where the extractor detects one) that flat get_text never produces.
     pytest.importorskip("pymupdf4llm")
     from core.rag import config, parsers
 
@@ -38,12 +38,12 @@ def test_pdf_extracts_markdown_table(tmp_path, monkeypatch):
     _table_pdf(pdf)
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
     assert "Q2" in text and "$1.5M" in text  # cell values preserved
-    assert "|" in text  # Markdown table pipes (never present in flat get_text output)
+    assert "#" in text or "|" in text  # Markdown markup (heading or table pipes)
 
 
 def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     # The toggle (RAG_PDF_MARKDOWN=0) falls back to flat PyMuPDF text: content is still
-    # there, but with no Markdown table structure.
+    # there, but with no Markdown markup.
     from core.rag import config, parsers
 
     monkeypatch.setattr(config, "PDF_MARKDOWN", False)
@@ -51,7 +51,7 @@ def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     _table_pdf(pdf)
     text = "\n".join(p.text for p in parsers.parse(str(pdf)))
     assert "Q2" in text and "$1.5M" in text
-    assert "|" not in text  # plain text path emits no table pipes
+    assert "#" not in text and "|" not in text  # plain text path emits no Markdown markup
 
 
 def test_pdf_markdown_falls_back_when_lib_missing(tmp_path, monkeypatch):
