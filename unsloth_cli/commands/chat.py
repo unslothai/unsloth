@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import sys
 from typing import List, Optional
 
 import typer
@@ -108,6 +109,20 @@ def _compare_needs_second_model() -> bool:
         return True
     except Exception:
         return False
+
+
+def _drain_available_stdin() -> None:
+    """Drain already-buffered launcher stdin on nonzero distributed ranks."""
+    try:
+        import os
+        from select import select
+
+        fd = sys.stdin.fileno()
+        while select([fd], [], [], 0)[0]:
+            if not os.read(fd, 8192):
+                break
+    except Exception:
+        return
 
 
 def _pick_trained_model(console) -> str:
@@ -329,12 +344,33 @@ def chat(
 
     try:
         while True:
-            try:
-                user = input(you_prompt).strip()
-            except (EOFError, KeyboardInterrupt):
-                if should_print:
-                    console.print()
-                break
+            if should_print:
+                try:
+                    user = input(you_prompt).strip()
+                except (EOFError, KeyboardInterrupt):
+                    if should_print:
+                        console.print()
+                    user = "/exit"
+                turn = {"type": "turn", "text": user}
+            else:
+                turn = None
+
+            if is_mlx_distributed:
+                try:
+                    turn = chat_backend.share_distributed_object(turn, timeout = None)
+                    if not should_print:
+                        _drain_available_stdin()
+                except Exception as exc:
+                    if should_print:
+                        err.print(
+                            f"\n(error sharing chat turn: {exc})",
+                            style = "red",
+                            markup = False,
+                        )
+                    raise typer.Exit(code = 1)
+            if not turn:
+                continue
+            user = str(turn.get("text", "")).strip()
 
             if not user:
                 continue

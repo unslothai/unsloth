@@ -306,6 +306,14 @@ class ChatBackend:
         except Exception:
             pass
 
+    def share_distributed_object(self, obj):
+        if self._kind != "unsloth" or not hasattr(self._backend, "share_distributed_object"):
+            raise RuntimeError(
+                "Distributed MLX chat requires the Unsloth MLX backend; "
+                f"backend '{self._kind}' cannot broadcast chat turns."
+            )
+        return self._backend.share_distributed_object(obj)
+
 
 def resolve_model_config(model: str, *, hf_token: Optional[str]):
     ensure_studio_backend_path()
@@ -403,6 +411,16 @@ def load_chat_backend(
         is_mlx_distributed, rank, _world_size = mlx_distributed_info()
         if model_config is None:
             model_config = resolve_model_config(model, hf_token = hf_token)
+
+        if is_mlx_distributed and model_config.is_gguf:
+            if rank == 0:
+                typer.echo(
+                    "Distributed MLX inference does not support GGUF/llama.cpp models. "
+                    "Use a non-GGUF MLX model under mlx.launch, or run GGUF without "
+                    "mlx.launch.",
+                    err = True,
+                )
+            raise typer.Exit(code = 1)
 
         if rank == 0:
             typer.echo(f"Loading {model}", err = True)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 from loggers import get_logger
 import os
+import pickle
 import queue as _queue
 import sys
 import time
@@ -498,6 +499,56 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         )
 
 
+def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
+    """Share a small Python object across MLX distributed ranks."""
+    request_id = cmd.get("request_id", "")
+    group = getattr(backend, "_distributed_group", None)
+    rank = int(getattr(backend, "_distributed_rank", 0) or 0)
+    world_size = int(getattr(backend, "_distributed_world_size", 1) or 1)
+    obj = cmd.get("object")
+
+    try:
+        if group is None or world_size <= 1:
+            shared = obj
+        else:
+            import mlx.core as mx
+            if rank == 0:
+                if obj is None:
+                    mx.eval(mx.distributed.all_sum(0, group = group))
+                    shared = None
+                else:
+                    data = mx.array(pickle.dumps(obj), dtype = mx.uint8)
+                    mx.eval(mx.distributed.all_sum(data.size, group = group))
+                    mx.eval(mx.distributed.all_sum(data, group = group))
+                    shared = obj
+            else:
+                size = int(mx.distributed.all_sum(0, group = group).item())
+                if size == 0:
+                    shared = None
+                else:
+                    data = mx.zeros(size, dtype = mx.uint8)
+                    data = mx.distributed.all_sum(data, group = group)
+                    shared = pickle.loads(bytes(data.tolist()))
+        _send_response(
+            resp_queue,
+            {
+                "type": "shared",
+                "request_id": request_id,
+                "object": shared,
+            },
+        )
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "share_error",
+                "request_id": request_id,
+                "error": str(exc),
+                "stack": traceback.format_exc(limit = 20),
+            },
+        )
+
+
 def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
     """Handle TTS audio generation — returns WAV bytes + sample_rate."""
     request_id = cmd.get("request_id", "")
@@ -736,6 +787,8 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 if cmd_type == "generate":
                     cancel_event.clear()
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "share_object":
+                    _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
@@ -939,6 +992,9 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             if cmd_type == "generate":
                 cancel_event.clear()
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+            elif cmd_type == "share_object":
+                _handle_share_object(backend, cmd, resp_queue)
 
             elif cmd_type == "load":
                 if backend.active_model_name:

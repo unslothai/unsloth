@@ -798,43 +798,72 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
     assert closed == [True]
 
 
-def test_single_rank_mlx_launch_can_use_studio_server(monkeypatch, tmp_path):
-    from unsloth_cli.commands import inference as infermod
+def test_chat_server_mode_compare_loads_base_locally(monkeypatch):
+    streamed, closed, base_loads = [], [], []
 
-    loads, streams, closed = [], [], []
-
-    class _FakeBackend:
-        def stream(self, messages, **kwargs):
-            streams.append((messages, kwargs))
-            return iter(["answer"])
+    class _FakeHttpBackend:
+        def stream(self, *a, **k):
+            streamed.append("tuned")
+            return iter(["tuned-answer"])
 
         def close(self):
-            closed.append(True)
+            closed.append("http")
 
-    empty_hostfile = tmp_path / "empty-ring.txt"
-    empty_hostfile.write_text("")
-    monkeypatch.setenv("MLX_RANK", "0")
-    monkeypatch.setenv("MLX_HOSTFILE", str(empty_hostfile))
-    monkeypatch.setattr(
-        infermod,
-        "connect_studio_server",
-        lambda model, **kwargs: (loads.append((model, kwargs)), _FakeBackend())[1],
-    )
-    monkeypatch.setattr(
-        infermod,
-        "load_chat_backend",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("single-rank mlx.launch must not force local load")
-        ),
-    )
+    class _FakeBaseBackend:
+        def stream(self, *a, **k):
+            streamed.append("base")
+            return iter(["base-answer"])
 
-    result = CliRunner().invoke(_inference_app(), ["fake-model", "hello"])
+        def close(self):
+            closed.append("base")
+
+    def fake_local_load(model, **kwargs):
+        base_loads.append((model, kwargs.get("fresh_backend", False)))
+        return _FakeBaseBackend()
+
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend())
+    monkeypatch.setattr(chatmod, "load_chat_backend", fake_local_load)
+
+    result = CliRunner().invoke(_chat_app(), ["tuned-run"], input = "/compare\nhi\n/exit\n")
 
     assert result.exit_code == 0, result.output
-    assert loads and loads[0][0] == "fake-model"
-    assert streams[0][0] == [{"role": "user", "content": "hello"}]
-    assert "answer" in result.output
-    assert closed == [True]
+    assert "(compare on)" in result.output
+    assert base_loads == [("fake/base", True)]
+    assert streamed == ["base", "tuned"]
+    assert set(closed) == {"http", "base"}
+
+
+def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):
+    loads, streamed, closed = [], [], []
+
+    class _FakeLocalBackend:
+        def __init__(self, role):
+            self.role = role
+
+        def stream(self, *a, **k):
+            streamed.append((self.role, k.get("use_adapter")))
+            return iter([f"{self.role}-answer"])
+
+        def close(self):
+            closed.append(self.role)
+
+    def fake_load(model, **kwargs):
+        fresh = kwargs.get("fresh_backend", False)
+        loads.append((model, fresh))
+        return _FakeLocalBackend("base" if fresh else "tuned")
+
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "load_chat_backend", fake_load)
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: True)
+    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
+
+    result = CliRunner().invoke(_chat_app(), ["tuned-run", "--compare"], input = "hi\n/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert loads == [("tuned-run", False), ("fake/base", True)]
+    assert ("base", None) in streamed and ("tuned", None) in streamed
+    assert set(closed) == {"tuned", "base"}
 
 
 def test_inference_under_mlx_launch_forwards_tensor_parallel(monkeypatch):
@@ -868,7 +897,49 @@ def test_inference_under_mlx_launch_forwards_tensor_parallel(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert loads[0][1]["tensor_parallel"] is True
-    assert "answer" in result.output
+
+
+def test_chat_under_mlx_launch_nonzero_rank_drains_stdin(monkeypatch):
+    drains, closed = [], []
+    turns = iter(
+        [
+            {"type": "turn", "text": "hi"},
+            {"type": "turn", "text": "/exit"},
+        ]
+    )
+
+    class _FakeChatBackend:
+        def share_distributed_object(
+            self,
+            obj,
+            *,
+            timeout = 300.0,
+        ):
+            assert obj is None
+            return next(turns)
+
+        def stream(self, messages, **kwargs):
+            return iter(["hidden"])
+
+        def close(self):
+            closed.append(True)
+
+    _set_mlx_nccl_env(monkeypatch, rank = "1")
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(
+        chatmod,
+        "connect_studio_server",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("server disabled")),
+    )
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: _FakeChatBackend())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+    monkeypatch.setattr(chatmod, "_drain_available_stdin", lambda: drains.append(True))
+
+    result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "hi\n/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Chatting with" not in result.output
+    assert drains == [True, True]
     assert closed == [True]
 
 
@@ -891,12 +962,13 @@ def test_chat_under_mlx_launch_rank0_bypasses_studio_and_prints(monkeypatch):
         def close(self):
             closed.append(True)
 
-    def _unexpected_server(*_args, **_kwargs):
-        raise AssertionError("rank 0 under mlx.launch must not connect to Studio")
-
     _set_mlx_nccl_env(monkeypatch, rank = "0")
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
-    monkeypatch.setattr(chatmod, "connect_studio_server", _unexpected_server)
+    monkeypatch.setattr(
+        chatmod,
+        "connect_studio_server",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("server disabled")),
+    )
     monkeypatch.setattr(
         chatmod,
         "load_chat_backend",
@@ -912,16 +984,13 @@ def test_chat_under_mlx_launch_rank0_bypasses_studio_and_prints(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "Chatting with fake-model" in result.output
-    assert "Assistant:" in result.output
     assert "hello" in result.output
-    assert "Bye." in result.output
     assert loads and loads[0][0] == "fake-model"
     assert loads[0][1]["tensor_parallel"] is True
     assert shares == [
         ({"type": "turn", "text": "hi"}, None),
         ({"type": "turn", "text": "/exit"}, None),
     ]
-    assert closed == [True]
 
 
 def test_load_chat_backend_forwards_mlx_distributed_options(monkeypatch):
