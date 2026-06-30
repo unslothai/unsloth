@@ -312,10 +312,60 @@ def _strip_mistral_closed_calls(text: str) -> str:
     return "".join(out)
 
 
+_FUNC_CLOSE_TAG_RE = re.compile(r"</function>")
+
+
+def _strip_function_xml_calls(text: str, *, final: bool) -> str:
+    """Strip ``<function=NAME>...</function>`` (and the ``<function name="NAME">``
+    attribute form) calls, mirroring the parser instead of a regex.
+
+    A function opener that sits INSIDE another call's open ``<parameter>`` value is
+    literal data -- e.g. ``print("<function=x>")`` -- not a new call, so it must not
+    split the strip or truncate the trailing text. The regex arms used a negative
+    lookahead that stopped at any nested opener and then the unclosed-tail arm ate
+    everything to EOF (dropping real assistant prose after the call). This scan skips
+    openers found inside an open parameter (same ``_inside_open_parameter`` guard the
+    parser uses) and closes each call at its REAL ``</function>``. ``final`` also
+    removes a trailing unclosed call to EOF; otherwise an unclosed call is left
+    buffered (still streaming)."""
+    starts = [
+        m
+        for m in _TC_FUNC_START_RE.finditer(text)
+        if not _inside_open_parameter(text, m.start())
+    ]
+    if not starts:
+        return text
+    out: list[str] = []
+    pos = 0
+    for idx, m in enumerate(starts):
+        if m.start() < pos:
+            continue  # opener already inside a previously consumed call span
+        out.append(text[pos : m.start()])
+        next_start = starts[idx + 1].start() if idx + 1 < len(starts) else len(text)
+        close = None
+        for cm in _FUNC_CLOSE_TAG_RE.finditer(text, m.end(), next_start):
+            close = cm  # the call's real close is the LAST </function> before the next call
+        if close is not None:
+            pos = close.end()
+        elif final:
+            pos = len(text)  # trailing unclosed call -- drop to EOF
+        else:
+            out.append(text[m.start() :])  # keep the unclosed call buffered mid-stream
+            pos = len(text)
+            break
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
     """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
     ``final=True`` also drops trailing unclosed runs and trims."""
     text = _strip_mistral_closed_calls(text)
+    # Scan-strip the function-XML form first (parser-accurate: a literal
+    # ``<function=...>`` inside a parameter value is data, not a call), then the
+    # remaining regex arms cover the other formats. The function regex arms stay in
+    # the pattern lists for the streaming callers but no-op here once the scan ran.
+    text = _strip_function_xml_calls(text, final = final)
     pats = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in pats:
         text = pat.sub("", text)
@@ -1074,6 +1124,70 @@ def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
 _BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 
 
+def _top_level_bare_json_name(probe: str) -> Optional[str]:
+    """Return the TOP-LEVEL ``"name"`` string value of a bare-JSON object, else None.
+
+    Walks only the object's top-level keys, skipping nested objects / arrays, so a
+    nested ``"name"`` -- e.g. ``{"result":{"name":"web_search",...}}`` -- is never
+    mistaken for the call name (a plain JSON answer must not be gated as a call just
+    because a nested field matches a tool). Tolerates a truncated tail: if a
+    top-level value is cut off before a top-level ``name`` is reached, returns None so
+    the caller keeps the text rather than dropping it."""
+    if not probe.startswith("{"):
+        return None
+    decoder = json.JSONDecoder()
+    i = 1
+    n = len(probe)
+    while i < n:
+        while i < n and probe[i] in " \t\r\n,":
+            i += 1
+        if i >= n or probe[i] == "}":
+            return None
+        if probe[i] != '"':
+            return None
+        try:
+            key, consumed = decoder.raw_decode(probe[i:])
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(key, str):
+            return None
+        i += consumed
+        while i < n and probe[i] in " \t\r\n":
+            i += 1
+        if i >= n or probe[i] != ":":
+            return None
+        i += 1
+        while i < n and probe[i] in " \t\r\n":
+            i += 1
+        if key == "name":
+            if i < n and probe[i] == '"':
+                try:
+                    value, _consumed = decoder.raw_decode(probe[i:])
+                except (json.JSONDecodeError, ValueError):
+                    return None
+                return value if isinstance(value, str) else None
+            return None
+        # Skip a non-name top-level value; a truncated one means we cannot prove a
+        # top-level name exists, so return None (keep the text).
+        if i < n and probe[i] == "{":
+            end = _balanced_brace_end(probe, i)
+            if end is None:
+                return None
+            i = end + 1
+        elif i < n and probe[i] == "[":
+            end = _balanced_bracket_end(probe, i)
+            if end is None:
+                return None
+            i = end + 1
+        else:
+            try:
+                _value, consumed = decoder.raw_decode(probe[i:])
+            except (json.JSONDecodeError, ValueError):
+                return None
+            i += consumed
+    return None
+
+
 def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Remove a leading (optionally sentinel-prefixed) bare-JSON tool call
     ``{"name":..,"parameters":..}`` from ``text``.
@@ -1093,9 +1207,11 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
         return text
     if enabled_tool_names is not None:
         # Only suppress when the leading object is (or may be) a real call, i.e. its
-        # name is an enabled tool. An unknown / un-extractable name is kept content.
-        _m = _BARE_JSON_NAME_RE.search(probe)
-        if not (_m and _m.group(1) in enabled_tool_names):
+        # TOP-LEVEL name is an enabled tool. A nested ``"name"`` (e.g.
+        # {"result":{"name":"web_search",...}}) is ordinary data, not the call name,
+        # so it must not gate the strip. An unknown / un-extractable name is kept.
+        name = _top_level_bare_json_name(probe)
+        if name not in enabled_tool_names:
             return text
     end = _balanced_brace_end(probe, 0)
     if end is None:
