@@ -375,7 +375,9 @@ async def start_training(
 
                 diffusion = get_diffusion_backend()
                 if diffusion.is_loaded:
-                    logger.info("Unloading diffusion (Images) model to free GPU memory for training")
+                    logger.info(
+                        "Unloading diffusion (Images) model to free GPU memory for training"
+                    )
                 diffusion.unload()
                 gpu_arbiter.release(gpu_arbiter.DIFFUSION)
             except Exception as e:
