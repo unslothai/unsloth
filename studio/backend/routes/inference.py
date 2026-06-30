@@ -1267,10 +1267,11 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # Our safetensors loop only parses <tool_call>{json}</tool_call>,
-    # <function=name>...</function>, and Gemma native <|tool_call>...<tool_call|>.
-    # Llama uses <|python_tag|>, Mistral uses [TOOL_CALLS]; advertising tools for
-    # those enables a pill the parser can't honour. GGUF is unaffected --
+    # Our safetensors loop parses <tool_call>{json}</tool_call>,
+    # <function=name>...</function>, Gemma native <|tool_call>...<tool_call|>, and
+    # the Mistral [TOOL_CALLS]name{json} / rehearsal name[ARGS]{json} bracket forms.
+    # Llama uses <|python_tag|>, which the loop still cannot parse; advertising
+    # tools for that enables a pill the parser can't honour. GGUF is unaffected --
     # llama-server normalises every format into structured deltas.
     if (
         flags.get("supports_tools")
@@ -1278,6 +1279,7 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         and "<tool_call>" not in chat_template
         and "<function=" not in chat_template
         and "<|tool_call>" not in chat_template
+        and "[TOOL_CALLS]" not in chat_template
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "
@@ -1599,6 +1601,21 @@ _TOOL_XML_RE = _re.compile(
     _re.DOTALL,
 )
 
+# Closed-only variant for the segments BEFORE the last <think>/[THINK] block. The
+# open-ended / bare-marker arms of _TOOL_XML_RE are anchored to ``\Z`` (true end of
+# text), so applying the full regex to a non-final segment would treat the segment
+# boundary as EOS and strip a bare ``foo[ARGS]`` that is really prose preceding a
+# reasoning block. Mirrors strip_tool_call_markup, which only runs its trailing-tail
+# patterns on the last segment; complete bracket calls are still removed in every
+# segment by _strip_bracket_tag_calls.
+_TOOL_XML_CLOSED_RE = _re.compile(
+    r"<(?:tool_call|function=[\w-]+)>.*?</(?:tool_call|function)>"
+    r"|<\|tool_call>.*?<tool_call\|>"
+    r"|</(?:tool_call|function)>"
+    r"|<tool_call\|>",
+    _re.DOTALL,
+)
+
 
 def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
     """Apply route-level XML leak cleanup only when Auto-Heal is enabled."""
@@ -1608,12 +1625,18 @@ def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str
     # two-level-nested JSON arg is removed whole instead of the catch-all eating
     # the trailing prose after it. Preserve <think>/[THINK] reasoning verbatim
     # (same contract as strip_tool_call_markup) so a rehearsed call inside a
-    # reasoning block does not corrupt the visible block.
+    # reasoning block does not corrupt the visible block. The open-ended tail arms
+    # run only on the last segment (is_last); earlier segments use the closed-only
+    # regex so a bare ``foo[ARGS]`` before a reasoning block is not stripped.
     from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
 
-    return strip_outside_think(
-        text, lambda seg, _is_last: _TOOL_XML_RE.sub("", _strip_bracket_tag_calls(seg))
-    )
+    def _strip_segment(seg: str, is_last: bool) -> str:
+        seg = _strip_bracket_tag_calls(seg)
+        if is_last:
+            return _TOOL_XML_RE.sub("", seg)
+        return _TOOL_XML_CLOSED_RE.sub("", seg)
+
+    return strip_outside_think(text, _strip_segment)
 
 
 logger = get_logger(__name__)

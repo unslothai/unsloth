@@ -171,13 +171,15 @@ def test_detect_safetensors_features_llama3_template_suppresses_tools():
     assert flags["supports_tools"] is False
 
 
-def test_detect_safetensors_features_mistral_template_suppresses_tools():
-    """Mistral emits [TOOL_CALLS]; safetensors loop cannot parse it."""
+def test_detect_safetensors_features_mistral_template_keeps_tools_on():
+    """Mistral emits [TOOL_CALLS]name{json}, which the safetensors loop now parses
+    (the shared bracket-tag parser). The gate must no longer suppress it, or the
+    PR's Mistral tool support is unreachable through normal capability detection."""
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(active_model_name = "unsloth/mistral-7b-instruct-v0.3")
     flags = _detect_safetensors_features(backend, MISTRAL_TEMPLATE)
-    assert flags["supports_tools"] is False
+    assert flags["supports_tools"] is True
 
 
 def test_detect_safetensors_features_qwen_tool_call_keeps_tools_on():

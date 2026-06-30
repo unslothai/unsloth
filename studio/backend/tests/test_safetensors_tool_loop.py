@@ -559,6 +559,27 @@ class TestParser:
         assert out == text
         assert "search[ARGS]" in out
 
+    def test_streaming_strip_preserves_rehearsal_inside_think(self):
+        # The STREAMING display strip must also preserve a rehearsal inside <think>
+        # (the final strip already does). Stripping it mid-stream emits a shorter
+        # cumulative text that the final strip then grows back -- a non-monotonic
+        # shrink/grow that corrupts append-by-length consumers and visible reasoning.
+        # The GGUF streaming strip protects <think>; safetensors must match.
+        text = '<think>plan: search[ARGS]{"q":"x"}</think> A'
+        assert strip_tool_markup_streaming(text) == text
+        assert strip_tool_markup_streaming(text, tool_protocol_active = True) == text
+        # An unclosed block during streaming is preserved too (the parser keeps it).
+        partial = '<think>plan: search[ARGS]{"q":"x"}'
+        assert strip_tool_markup_streaming(partial, tool_protocol_active = True) == partial
+
+    def test_streaming_strip_still_removes_real_call_outside_think(self):
+        # The <think> guard must not stop the streaming strip removing a genuine call
+        # that sits OUTSIDE the reasoning block.
+        text = '<think>reason</think> web_search[ARGS]{"q":"x"}'
+        out = strip_tool_markup_streaming(text, tool_protocol_active = True)
+        assert "web_search[ARGS]" not in out
+        assert "<think>reason</think>" in out
+
     def test_strip_bracket_calls_is_linear(self):
         # Many complete bracket calls must strip in ~linear time (the scan formerly
         # re-searched the whole tail per match -> O(n^2) on untrusted output).
@@ -783,6 +804,39 @@ def test_rehearsal_name_after_prose_same_chunk_in_streaming_is_not_streamed():
     assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("web_search" in t for t in contents), contents
+
+
+def test_initial_buffer_flush_holds_split_rehearsal_name():
+    # The first flush out of BUFFERING (prose + a trailing active-tool-name in chunk
+    # one, ``[ARGS]{...}`` in chunk two) must apply the same trailing-name hold the
+    # STREAMING branch uses, or the rehearsal name leaks before the call drains.
+    loop, exec_fn = _make_loop(
+        turns = [["I will use python", '[ARGS]{"code":"print(1)"}'], ["done"]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("python", {"code": "print(1)"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("python" in t for t in contents), contents
+
+
+def test_think_rehearsal_streams_monotonically_and_keeps_reasoning():
+    # A turn whose visible reasoning rehearses a call inside <think> must stream the
+    # same text the final strip keeps. The cumulative content events must be
+    # monotonically non-decreasing (no shrink-then-grow) and end with the rehearsal
+    # markup intact inside the reasoning block.
+    loop, exec_fn = _make_loop(
+        turns = [["<think>plan ", 'search[ARGS]{"q":"x"}', "</think> visible"]],
+        max_tool_iterations = 1,
+    )
+    events = _collect_events(loop)
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert exec_fn.calls == [], exec_fn.calls
+    assert all(len(b) >= len(a) for a, b in zip(contents, contents[1:])), contents
+    final = contents[-1] if contents else ""
+    assert 'search[ARGS]{"q":"x"}' in final, contents
+    assert "visible" in final, contents
 
 
 def test_plain_answer_ending_with_tool_name_word_is_preserved():

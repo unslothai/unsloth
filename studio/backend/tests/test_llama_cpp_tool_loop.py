@@ -1852,6 +1852,42 @@ def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
     assert all("[ARGS]" not in t for t in content_texts), content_texts
 
 
+def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
+    """The first flush out of BUFFERING (prose plus a trailing active-tool-name in
+    the first delta, ``[ARGS]{...}`` in the next) must apply the same trailing-name
+    hold the STREAMING branch uses. The first delta has spaces so it is not a
+    rehearsal prefix and falls to the initial flush, which previously emitted the
+    bare name before the call drained."""
+
+    first_stream = [
+        _sse({"content": "I will use web_search"}),
+        _sse({"content": '[ARGS]{"query":"cats"}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("web_search" not in t for t in content_texts), content_texts
+    assert all("[ARGS]" not in t for t in content_texts), content_texts
+
+
 def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch):
     """Finding 9: the BUFFERING guard only covers a rehearsal at the turn start.
     When prose has already streamed (STREAMING state) and the model then emits the

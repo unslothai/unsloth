@@ -27,6 +27,13 @@ assert _m, "could not extract _TOOL_XML_RE source"
 _ns = {"_re": _re}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
+# The display helper applies the closed-only variant to segments before the last
+# <think> block (open-ended tails only on the final segment), so the extracted
+# helper needs it in scope to run.
+_mc = _re.search(r"_TOOL_XML_CLOSED_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
+assert _mc, "could not extract _TOOL_XML_CLOSED_RE source"
+exec(f"_TOOL_XML_CLOSED_RE = _re.compile({_mc.group(1)})", _ns)
+_TOOL_XML_CLOSED_RE = _ns["_TOOL_XML_CLOSED_RE"]
 _helper = _re.search(
     r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
     r"(?:(?: {4}.*)?\n)+",
@@ -55,6 +62,37 @@ def test_route_display_strip_preserves_rehearsal_inside_think():
     assert '<think>plan: search[ARGS]{"q":"x"}</think>' in out
     assert "[TOOL_CALLS]web_search" not in out
     assert "answer" in out and "tail" in out
+
+
+def test_route_display_strip_keeps_bare_args_before_think_block():
+    # A bare ``foo[ARGS]`` (no JSON body) before a <think> block is prose, not a
+    # truncated call: the open-ended tail arms are anchored to true EOS, so they
+    # must run only on the LAST segment. Earlier segments use the closed-only regex,
+    # matching strip_tool_call_markup. Previously the route treated the segment
+    # boundary as EOS and stripped ``foo[ARGS]``.
+    text = "Please pass foo[ARGS] <think>pause</think> to the template."
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True) == text
+
+
+def test_route_display_strip_removes_complete_call_before_think_block():
+    # A COMPLETE bracket call before a <think> block is still stripped (the balanced
+    # scan runs on every segment), so the closed-only non-last regex does not let a
+    # real call leak.
+    text = 'before search[ARGS]{"q":"x"} <think>pause</think> after'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "search[ARGS]" not in out
+    assert "<think>pause</think>" in out
+    assert "before" in out and "after" in out
+
+
+def test_route_display_strip_removes_closed_xml_before_think_block():
+    # A closed <tool_call>...</tool_call> before a <think> block is removed in the
+    # non-last segment via the closed-only regex.
+    text = 'pre <tool_call>{"name":"x"}</tool_call> <think>p</think> tail'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "<tool_call>" not in out
+    assert "<think>p</think>" in out
+    assert "pre" in out and "tail" in out
 
 
 def test_all_route_cleanup_sites_use_protected_display_helper():

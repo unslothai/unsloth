@@ -8350,12 +8350,27 @@ class LlamaCppBackend:
                                             cleaned = _strip_tool_markup(
                                                 cumulative_display,
                                             )
-                                            if len(cleaned) > len(_last_emitted):
-                                                _last_emitted = cleaned
+                                            # Same trailing-name hold as the
+                                            # STREAMING branch: this first flush
+                                            # out of BUFFERING must not emit a bare
+                                            # active-tool-name whose [ARGS] arrives
+                                            # next (``I will use web_search`` then
+                                            # ``[ARGS]{...}``), or it leaks before
+                                            # the call drains.
+                                            _hold = _held_rehearsal_tail_len(
+                                                cleaned, active_tools
+                                            )
+                                            _emit = (
+                                                cleaned[: len(cleaned) - _hold]
+                                                if _hold
+                                                else cleaned
+                                            )
+                                            if len(_emit) > len(_last_emitted):
+                                                _last_emitted = _emit
                                                 if not _suppress_visible_output:
                                                     yield {
                                                         "type": "content",
-                                                        "text": cleaned,
+                                                        "text": _emit,
                                                     }
 
                             except json.JSONDecodeError:

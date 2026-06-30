@@ -29,6 +29,7 @@ from core.inference.tool_call_parser import (
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
+from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     coerce_tool_arguments,
@@ -146,9 +147,22 @@ def strip_tool_markup_streaming(
     """Strip open-ended tool XML from display text without trimming whitespace."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    for pat in _TOOL_ALL_PATS:
-        text = pat.sub("", text)
-    return text
+
+    def _seg(segment: str, _is_last: bool) -> str:
+        # Balanced-brace strip first (handles any JSON nesting depth) so a
+        # nested-arg bracket call does not leak or eat the trailing prose, then
+        # the regex patterns cover the XML forms and truncated tails.
+        segment = _strip_bracket_tag_calls(segment)
+        for pat in _TOOL_ALL_PATS:
+            segment = pat.sub("", segment)
+        return segment
+
+    # Preserve <think>/[THINK] reasoning verbatim: a call rehearsed inside a
+    # reasoning block is skipped by the parser and kept by the final strip, so
+    # stripping it here would emit a shorter cumulative text that then grows back
+    # once the block closes -- corrupting append-by-length stream consumers and
+    # the visible reasoning (the GGUF streaming strip already does this).
+    return strip_outside_think(text, _seg)
 
 
 def _strip_tool_markup_final(
@@ -539,9 +553,20 @@ def run_safetensors_tool_loop(
                     auto_heal_tool_calls = auto_heal_tool_calls,
                     tool_protocol_active = tool_protocol_active,
                 )
-                if len(cleaned) > len(last_emitted):
-                    last_emitted = cleaned
-                    yield {"type": "content", "text": cleaned}
+                # Same trailing-name hold as the STREAMING branch: this first flush
+                # out of BUFFERING must not emit a bare active-tool-name whose
+                # ``[ARGS]`` arrives in the next chunk (``I will use python`` then
+                # ``[ARGS]{...}``), or the rehearsal name leaks before the call drains.
+                if tool_protocol_active:
+                    _hold = _held_rehearsal_tail_len(
+                        cleaned, active_tools, unrestricted = unrestricted_tools
+                    )
+                    emit = cleaned[: len(cleaned) - _hold] if _hold else cleaned
+                else:
+                    emit = cleaned
+                if len(emit) > len(last_emitted):
+                    last_emitted = emit
+                    yield {"type": "content", "text": emit}
 
         # Stream finished -- resolve what we collected.
         if cancel_event is not None and cancel_event.is_set():
