@@ -152,14 +152,18 @@ export function ProgressSection({
   const showHalfwayHint =
     data.phase === "training" && pct >= 50 && pct < 100;
   const showCompletedHint = data.phase === "completed";
+  const isAdapterRun = isAdapterMethod(data.trainingMethod as TrainingMethod);
   const handleCompareInChat = async () => {
-    setTrainingCompareHandoff(data.modelName, data.outputDir);
+    setTrainingCompareHandoff(
+      data.modelName,
+      isAdapterRun ? data.outputDir : null,
+    );
     await navigate({ to: "/chat" });
   };
   const canCompareInChat =
     isHistorical &&
     data.phase === "completed" &&
-    isAdapterMethod(data.trainingMethod as TrainingMethod) &&
+    isAdapterRun &&
     !data.resumedLater &&
     Boolean(data.outputDir);
 
