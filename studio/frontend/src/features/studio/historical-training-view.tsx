@@ -78,6 +78,7 @@ function mapToViewData(
     error: run.status === "error" ? run.error_message : null,
     isTrainingRunning: false,
     modelName: run.display_name ?? run.model_name,
+    projectName: run.project_name,
     trainingMethod: parseBackendTrainingMethod(
       detail.config?.training_type,
       detail.config?.load_in_4bit,
