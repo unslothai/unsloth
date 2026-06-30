@@ -4,7 +4,7 @@
 from typing import Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
@@ -31,6 +31,10 @@ from utils.helper_precache_settings import (
     get_helper_precache_enabled,
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
+)
+from utils.notification_settings import (
+    get_training_webhook,
+    set_training_webhook,
 )
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
@@ -64,6 +68,20 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class TrainingWebhookPayload(BaseModel):
+    enabled: bool = False
+    url: str = ""
+
+
+class TrainingWebhookResponse(BaseModel):
+    enabled: bool
+    url: str
+
+
+class TrainingWebhookTestResponse(BaseModel):
+    ok: bool
 
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
@@ -252,3 +270,81 @@ def update_personalization_settings(
             log = logger,
         ) from exc
     return payload
+
+
+def _training_webhook_response(config: dict | None = None) -> TrainingWebhookResponse:
+    cfg = config if config is not None else get_training_webhook()
+    return TrainingWebhookResponse(
+        enabled = bool(cfg.get("enabled")),
+        url = cfg.get("url", ""),
+    )
+
+
+@router.get("/notifications", response_model = TrainingWebhookResponse)
+def get_notifications(
+    current_subject: str = Depends(get_current_subject),
+) -> TrainingWebhookResponse:
+    return _training_webhook_response()
+
+
+@router.put("/notifications", response_model = TrainingWebhookResponse)
+def update_notifications(
+    payload: TrainingWebhookPayload, current_subject: str = Depends(get_current_subject)
+) -> TrainingWebhookResponse:
+    try:
+        config = set_training_webhook(payload.enabled, payload.url)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid notification settings."),
+            event = "settings.update_notifications_failed",
+            log = logger,
+        ) from exc
+    return _training_webhook_response(config)
+
+
+@router.post("/notifications/test", response_model = TrainingWebhookTestResponse)
+def test_notifications(
+    current_subject: str = Depends(get_current_subject),
+) -> TrainingWebhookTestResponse:
+    config = get_training_webhook()
+    if not config.get("enabled"):
+        raise log_and_http_error(
+            ValueError("notifications disabled"),
+            400,
+            "Enable training notifications before sending a test.",
+            event = "settings.test_notifications_disabled",
+            log = logger,
+        )
+    if not config.get("url"):
+        raise log_and_http_error(
+            ValueError("missing webhook url"),
+            400,
+            "Save a webhook URL before sending a test notification.",
+            event = "settings.test_notifications_no_url",
+            log = logger,
+        )
+
+    from core.training.notifications import TrainingTerminalEvent, WebhookSink
+
+    sink = WebhookSink(url = config["url"])
+    sample = TrainingTerminalEvent(
+        job_id = "test",
+        status = "test",
+        model = "",
+    )
+    try:
+        sink.deliver(sample)
+    except Exception as exc:
+        # Webhook URLs embed the secret token, so log only the type and host.
+        logger.warning(
+            "settings.test_notifications_failed: %s (%s)",
+            type(exc).__name__,
+            urlsplit(config["url"]).hostname or "?",
+        )
+        raise HTTPException(
+            status_code = 502,
+            detail = "Webhook test failed. Check the URL and try again.",
+        ) from exc
+    return TrainingWebhookTestResponse(ok = True)

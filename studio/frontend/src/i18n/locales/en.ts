@@ -166,6 +166,15 @@ export const en = {
         showLlamaUpdates: "llama.cpp update notifications",
         showLlamaUpdatesDescription:
           "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
+        trainingWebhook: "Webhook when training finishes",
+        trainingWebhookDescription:
+          "POST a summary to a URL when a run completes or fails — auto-formatted for Slack, Discord, or any service (ntfy, Zapier, your own server). Works even when Studio is closed.",
+        trainingWebhookUrlPlaceholder: "https://hooks.slack.com/services/…",
+        trainingWebhookTest: "Send test",
+        trainingWebhookTestSuccess: "Test notification sent.",
+        trainingWebhookSaveError: "Failed to save notification settings.",
+        trainingWebhookLoadError: "Failed to load notification settings.",
+        trainingWebhookTestError: "Webhook test failed. Check the URL.",
       },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",

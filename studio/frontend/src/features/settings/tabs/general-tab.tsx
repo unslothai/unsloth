@@ -42,6 +42,12 @@ import {
   updatePreviewSharing,
 } from "../api/preview-sharing";
 import {
+  loadTrainingWebhookSettings,
+  sendTrainingWebhookTest,
+  updateTrainingWebhookSettings,
+  type TrainingWebhookSettings,
+} from "../api/training-webhook";
+import {
   DEFAULT_UPLOAD_LIMIT_MB,
   type UploadLimitSettings,
   loadUploadLimitSettings,
@@ -153,6 +159,11 @@ export function GeneralTab() {
     null,
   );
   const [isSavingHelperPrecache, setIsSavingHelperPrecache] = useState(false);
+  const [webhook, setWebhook] = useState<TrainingWebhookSettings | null>(null);
+  const [webhookUrlDraft, setWebhookUrlDraft] = useState("");
+  const [webhookError, setWebhookError] = useState<string | null>(null);
+  const [isSavingWebhook, setIsSavingWebhook] = useState(false);
+  const [isTestingWebhook, setIsTestingWebhook] = useState(false);
   const [previewSharing, setPreviewSharing] =
     useState<PreviewSharingSettings | null>(null);
   const [previewSharingError, setPreviewSharingError] = useState<string | null>(
@@ -237,6 +248,28 @@ export function GeneralTab() {
 
   useEffect(() => {
     let cancelled = false;
+    void loadTrainingWebhookSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setWebhook(settings);
+        setWebhookUrlDraft(settings.url);
+        setWebhookError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setWebhookError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.notifications.trainingWebhookLoadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  useEffect(() => {
+    let cancelled = false;
     void loadPreviewSharing()
       .then((settings) => {
         if (cancelled) return;
@@ -307,6 +340,56 @@ export function GeneralTab() {
       );
     } finally {
       setIsSavingHelperPrecache(false);
+    }
+  };
+
+  const saveWebhook = async (next: {
+    enabled?: boolean;
+    url?: string;
+  }): Promise<boolean> => {
+    const payload = {
+      enabled: next.enabled ?? webhook?.enabled ?? false,
+      url: next.url ?? webhookUrlDraft,
+    };
+    setIsSavingWebhook(true);
+    setWebhookError(null);
+    try {
+      const settings = await updateTrainingWebhookSettings(payload);
+      setWebhook(settings);
+      setWebhookUrlDraft(settings.url);
+      return true;
+    } catch (error) {
+      setWebhookError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.notifications.trainingWebhookSaveError"),
+      );
+      return false;
+    } finally {
+      setIsSavingWebhook(false);
+    }
+  };
+
+  const testWebhook = async () => {
+    setIsTestingWebhook(true);
+    setWebhookError(null);
+    try {
+      // Persist an unsaved draft first so the test hits the URL on screen.
+      if (webhookUrlDraft !== (webhook?.url ?? "")) {
+        if (!(await saveWebhook({ url: webhookUrlDraft }))) return;
+      }
+      await sendTrainingWebhookTest();
+      toast.success(
+        t("settings.general.notifications.trainingWebhookTestSuccess"),
+      );
+    } catch (error) {
+      setWebhookError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.notifications.trainingWebhookTestError"),
+      );
+    } finally {
+      setIsTestingWebhook(false);
     }
   };
 
@@ -495,6 +578,58 @@ export function GeneralTab() {
             checked={showLlamaUpdates}
             onCheckedChange={setShowLlamaUpdateBanner}
           />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.trainingWebhook")}
+          description={t(
+            "settings.general.notifications.trainingWebhookDescription",
+          )}
+        >
+          <div className="flex w-[280px] flex-col items-end gap-2">
+            <div className="flex w-full items-center gap-2">
+              <Input
+                type="url"
+                placeholder={t(
+                  "settings.general.notifications.trainingWebhookUrlPlaceholder",
+                )}
+                value={webhookUrlDraft}
+                onChange={(e) => setWebhookUrlDraft(e.target.value)}
+                onBlur={() => {
+                  if (webhookUrlDraft !== (webhook?.url ?? "")) {
+                    void saveWebhook({ url: webhookUrlDraft });
+                  }
+                }}
+                className="h-8 w-full font-mono text-xs"
+              />
+              <Switch
+                checked={webhook?.enabled ?? false}
+                disabled={
+                  !webhook ||
+                  isSavingWebhook ||
+                  (!webhook.enabled && webhookUrlDraft.trim().length === 0)
+                }
+                onCheckedChange={(enabled) => void saveWebhook({ enabled })}
+              />
+            </div>
+            <div className="flex w-full items-center justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  !webhook?.enabled ||
+                  !webhookUrlDraft.trim() ||
+                  isTestingWebhook ||
+                  isSavingWebhook
+                }
+                onClick={() => void testWebhook()}
+              >
+                {t("settings.general.notifications.trainingWebhookTest")}
+              </Button>
+            </div>
+            <span className="min-h-4 w-full text-right text-xs text-destructive">
+              {webhookError}
+            </span>
+          </div>
         </SettingsRow>
       </SettingsSection>
 

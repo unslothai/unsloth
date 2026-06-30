@@ -244,6 +244,7 @@ class TrainingBackend:
         # DB persistence
         self._metric_buffer: list[dict] = []
         self._run_finalized: bool = False
+        self._notification_sent: bool = False
         self._db_run_created: bool = False
         self._db_total_steps_set: bool = False
         self._db_config: Optional[dict] = None
@@ -469,6 +470,7 @@ class TrainingBackend:
         self._output_dir = None
         self._metric_buffer.clear()
         self._run_finalized = False
+        self._notification_sent = False
         self._db_run_created = False
         self._db_total_steps_set = False
         self._db_config = _sanitize_db_config(config)
@@ -854,6 +856,13 @@ class TrainingBackend:
                     if self._should_stop
                     else "Training process terminated unexpectedly",
                 )
+                # Worker died with no complete/error event, so _handle_event's hook
+                # never ran.
+                if not self._should_stop:
+                    self._notify_terminal(
+                        "error",
+                        {"error_message": "Training process terminated unexpectedly"},
+                    )
             except Exception:
                 logger.exception("Training event pump: finalization after worker exit failed")
             self._pump_running = False
@@ -1084,6 +1093,46 @@ class TrainingBackend:
             self._flush_metrics_to_db()
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
+
+        # Notify on terminal states; "stopped" is a user stop, so skip it.
+        if db_action in ("finalize", "create_and_finalize"):
+            status = db_action_kwargs.get("status")
+            if status in ("completed", "error"):
+                self._notify_terminal(status, db_action_kwargs)
+
+    def _notify_terminal(self, status: str, db_action_kwargs: dict) -> None:
+        # Fire at most once per run; both the event handler and exit-fallback reach this.
+        if self._notification_sent:
+            return
+        self._notification_sent = True
+        try:
+            from .notifications import TrainingTerminalEvent, get_training_notifier
+
+            final_loss = self.loss_history[-1] if self.loss_history else self._progress.loss
+            error = None
+            if status == "error":
+                error = db_action_kwargs.get("error_message") or self._progress.error
+            event = TrainingTerminalEvent(
+                job_id = self.current_job_id or "",
+                status = status,
+                model = (self._db_config or {}).get("model_name") or "",
+                total_steps = self._progress.total_steps or None,
+                final_loss = final_loss,
+                duration_s = self._terminal_duration_seconds(),
+                error = error,
+            )
+            get_training_notifier().emit(event)
+        except Exception:
+            logger.warning("Failed to emit training notification", exc_info = True)
+
+    def _terminal_duration_seconds(self) -> Optional[float]:
+        if not self._db_started_at:
+            return None
+        try:
+            started = datetime.fromisoformat(self._db_started_at)
+            return (datetime.now(timezone.utc) - started).total_seconds()
+        except Exception:
+            return None
 
     def _ensure_db_run_created(self) -> None:
         """Create the DB row if it doesn't exist yet. Called outside the lock."""
