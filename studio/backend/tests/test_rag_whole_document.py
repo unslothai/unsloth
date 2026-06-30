@@ -294,9 +294,11 @@ def test_whole_doc_budget_reserves_image_parts(monkeypatch):
         }
     ]
 
-    assert inf_tools._whole_doc_budget(scope, text_only) - inf_tools._whole_doc_budget(
-        scope, with_image
-    ) == inf_tools._IMAGE_PART_TOKEN_ESTIMATE
+    assert (
+        inf_tools._whole_doc_budget(scope, text_only)
+        - inf_tools._whole_doc_budget(scope, with_image)
+        == inf_tools._IMAGE_PART_TOKEN_ESTIMATE
+    )
 
 
 def test_build_rag_autoinject_server_kill_switch_blocks_whole_doc(rag_conn, monkeypatch):
