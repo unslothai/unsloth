@@ -83,6 +83,11 @@ def test_resolve_local_gguf_child(tmp_path):
         resolve_local_gguf_child(tmp_path, "..\\secret.gguf")
     with pytest.raises(FileNotFoundError):
         resolve_local_gguf_child(tmp_path, "missing.gguf")
+    # A directory named like the gguf exists but isn't loadable; reject it here so
+    # the preflight doesn't pass and evict chat for a pick from_single_file can't load.
+    (tmp_path / "dir.gguf").mkdir()
+    with pytest.raises(FileNotFoundError):
+        resolve_local_gguf_child(tmp_path, "dir.gguf")
 
 
 def test_resolve_local_gguf_child_blocks_symlink_escape(tmp_path):
@@ -208,6 +213,12 @@ def fake_runtime(monkeypatch):
     # The backend imports clear_gpu_cache by reference; no-op it so unload doesn't
     # run real hardware detection against the stubbed torch.
     monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", lambda: None)
+    # Fake the hardware layer too: resolve_diffusion_device_target() consults
+    # utils.hardware.get_device(), so on a real XPU/ROCm box the host would leak
+    # through the stubbed torch and the device tests would resolve a non-CUDA
+    # target. None -> fall through to the (stubbed, monkeypatchable) torch probe.
+    monkeypatch.setattr("utils.hardware.get_device", lambda: None, raising = False)
+    monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", False, raising = False)
     _FakePipeline.last = {}
     _FakeTransformer.last = {}
     yield

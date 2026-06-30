@@ -141,6 +141,6 @@ def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     child = repo_root.joinpath(*rel.parts).resolve()
     if child != repo_real and repo_real not in child.parents:
         raise ValueError("gguf_filename must resolve to a file inside the repo.")
-    if not child.exists():
-        raise FileNotFoundError(f"'{gguf_filename}' not found under {repo_root}.")
+    if not child.is_file():
+        raise FileNotFoundError(f"'{gguf_filename}' is not a file under {repo_root}.")
     return child

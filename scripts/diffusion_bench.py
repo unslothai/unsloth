@@ -357,9 +357,9 @@ def _compare(args: argparse.Namespace) -> int:
     # next to the baseline JSON. A still-missing reference is a failure below, not a silent
     # pass -- otherwise the benchmark would report PASS having done no image comparison.
     ref_png = Path(baseline.get("accuracy", {}).get("reference_png", ""))
-    if not ref_png.exists():
+    if not ref_png.is_file():
         ref_png = baseline_path.parent / "reference.png"
-    psnr = _psnr(ref_png, args._image_out) if ref_png.exists() else float("nan")
+    psnr = _psnr(ref_png, args._image_out) if ref_png.is_file() else float("nan")
 
     base_gen = baseline.get("generate", {})
     cur_gen = metrics["generate"]
