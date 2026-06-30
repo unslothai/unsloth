@@ -5363,7 +5363,7 @@ class LlamaCppBackend:
         """
         url = f"http://127.0.0.1:{self._port}/props"
         try:
-            resp = httpx.get(url, timeout = 5.0)
+            resp = httpx.get(url, timeout = 5.0, trust_env = False)
             if resp.status_code != 200:
                 return None
             settings = resp.json().get("default_generation_settings") or {}
@@ -5654,7 +5654,9 @@ class LlamaCppBackend:
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             with httpx.Client(
-                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+                timeout = stream_timeout,
+                limits = httpx.Limits(max_keepalive_connections = 0),
+                trust_env = False,
             ) as client:
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 with self._stream_with_retry(
@@ -5953,6 +5955,7 @@ class LlamaCppBackend:
                 with httpx.Client(
                     timeout = stream_timeout,
                     limits = httpx.Limits(max_keepalive_connections = 0),
+                    trust_env = False,
                 ) as client:
                     first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                     with self._stream_with_retry(
@@ -6646,7 +6649,9 @@ class LlamaCppBackend:
             stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             with httpx.Client(
-                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+                timeout = stream_timeout,
+                limits = httpx.Limits(max_keepalive_connections = 0),
+                trust_env = False,
             ) as client:
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 with self._stream_with_retry(
@@ -6839,7 +6844,7 @@ class LlamaCppBackend:
 
         try:
             _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+            with httpx.Client(timeout = 10, headers = _auth_headers, trust_env = False) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(
@@ -6923,7 +6928,7 @@ class LlamaCppBackend:
         if not self.is_loaded:
             return None
         _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-        with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+        with httpx.Client(timeout = 10, headers = _auth_headers, trust_env = False) as client:
 
             def _detok(tid: int) -> str:
                 # Non-200 means "marker not in vocab" -- keep probing.
@@ -7038,7 +7043,11 @@ class LlamaCppBackend:
             payload["n_probs"] = 1
 
         _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-        with httpx.Client(timeout = httpx.Timeout(300, connect = 10), headers = _auth_headers) as client:
+        with httpx.Client(
+            timeout = httpx.Timeout(300, connect = 10),
+            headers = _auth_headers,
+            trust_env = False,
+        ) as client:
             resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
                 raise RuntimeError(f"llama-server returned {resp.status_code}: {resp.text}")
