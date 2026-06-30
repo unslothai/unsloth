@@ -710,7 +710,7 @@ class InferenceOrchestrator:
     def share_distributed_object(
         self,
         obj,
-        timeout: float = 300.0,
+        timeout: Optional[float] = 300.0,
     ):
         """Share a small object through the worker's MLX distributed group."""
         if not self._ensure_subprocess_alive():
@@ -726,9 +726,9 @@ class InferenceOrchestrator:
 
         with self._gen_lock:
             self._send_cmd(cmd)
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                remaining = max(0.1, deadline - time.monotonic())
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while deadline is None or time.monotonic() < deadline:
+                remaining = 1.0 if deadline is None else max(0.1, deadline - time.monotonic())
                 resp = self._read_resp(timeout = min(remaining, 1.0))
                 if resp is None:
                     if not self._ensure_subprocess_alive():

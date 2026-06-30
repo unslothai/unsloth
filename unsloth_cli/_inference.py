@@ -306,13 +306,18 @@ class ChatBackend:
         except Exception:
             pass
 
-    def share_distributed_object(self, obj):
+    def share_distributed_object(
+        self,
+        obj,
+        *,
+        timeout = 300.0,
+    ):
         if self._kind != "unsloth" or not hasattr(self._backend, "share_distributed_object"):
             raise RuntimeError(
                 "Distributed MLX chat requires the Unsloth MLX backend; "
                 f"backend '{self._kind}' cannot broadcast chat turns."
             )
-        return self._backend.share_distributed_object(obj)
+        return self._backend.share_distributed_object(obj, timeout = timeout)
 
 
 def resolve_model_config(model: str, *, hf_token: Optional[str]):
