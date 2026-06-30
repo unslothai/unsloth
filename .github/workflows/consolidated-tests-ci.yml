@@ -209,7 +209,7 @@ jobs:
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
             ipython
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
           # transformers + trl from the matrix combo.
           pip install "$RESOLVED_TRANSFORMERS_SPEC"
@@ -2174,7 +2174,7 @@ jobs:
           python -m pip install --upgrade pip
           # Match the matrix job's torch path so unsloth_zoo's
           # `import torch` resolves to the same CPU build.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
           pip install \
             'numpy<3' protobuf sentencepiece \

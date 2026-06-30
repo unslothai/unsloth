@@ -1225,15 +1225,17 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("Shutdown via account menu")
     # Re-login with NEW2 for a valid /api/shutdown token (CLI rotation
-    # invalidated the old one). The stale token can make the SPA auth
-    # guard abort this goto with ERR_ABORTED; resolve on
-    # domcontentloaded and tolerate it -- the pw-field wait confirms /login.
+    # invalidated the old one). The stale token can make the SPA auth guard
+    # abort this goto with ERR_ABORTED, or redirect to the same /login URL
+    # ("interrupted by another navigation"); resolve on domcontentloaded and
+    # tolerate either -- the pw-field wait below confirms we are on /login.
+    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
     try:
         page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
     except Exception as exc:
-        if "ERR_ABORTED" not in str(exc):
+        if not any(t in str(exc) for t in _tolerated_nav):
             raise
-        info(f"goto /login aborted ({exc!r}); password-field wait will confirm /login")
+        info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
     pw_field = page.locator("#password")
     pw_field.wait_for(state = "visible", timeout = 60_000)
     pw_field.fill(NEW2)

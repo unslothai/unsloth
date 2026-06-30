@@ -226,6 +226,29 @@ def _normalize_compressed_method(save_method):
     return None
 
 
+def _is_cmake_only_llama_cpp(llama_cpp_dir: str = "llama.cpp") -> bool:
+    """
+    True if llama.cpp's Makefile is the post-CMake-migration deprecation stub,
+    so `make` cannot build it. A genuinely missing/empty checkout returns False
+    so it isn't treated as CMake-only: the caller then probes make and fails
+    loudly on a real error rather than silently assuming a CMake build.
+    """
+    makefile_path = os.path.join(llama_cpp_dir, "Makefile")
+    if not os.path.exists(makefile_path):
+        # No Makefile: only CMake-only if a real CMake project is present
+        return os.path.exists(os.path.join(llama_cpp_dir, "CMakeLists.txt"))
+    try:
+        with open(makefile_path, "r", encoding = "utf-8", errors = "ignore") as f:
+            content = f.read(4096).lower()
+            if "cmake" in content and "deprecated" in content:
+                return True
+            if "build system changed" in content:
+                return True
+    except (IOError, OSError):
+        pass
+    return False
+
+
 def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
@@ -563,6 +586,17 @@ def _is_qwen3_5_vlm(model):
         )
         for architecture in architectures
     ) or getattr(config, "model_type", None) in ("qwen3_5", "qwen3_5_moe")
+
+
+def _is_gpt_oss(model):
+    config = getattr(model, "config", None)
+    if config is None:
+        return False
+    architectures = getattr(config, "architectures", None) or ()
+    return "GptOssForCausalLM" in architectures or getattr(config, "model_type", None) in (
+        "gpt-oss",
+        "gpt_oss",
+    )
 
 
 def _qwen3_5_vlm_state_dict_for_save(state_dict):
@@ -1269,14 +1303,27 @@ def install_llama_cpp_make_non_blocking():
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # env = { **os.environ, "LLAMA_CUDA": "1", }
-    # Force make clean
-    check = os.system("make clean -C llama.cpp")
-    IS_CMAKE = False
-    if check == 0:
+
+    # Skip the make-clean probe on CMake-only checkouts (its error output is misleading)
+    IS_CMAKE = _is_cmake_only_llama_cpp("llama.cpp")
+
+    if not IS_CMAKE:
+        # Confirm make still works, silently
+        try:
+            result = subprocess.run(
+                ["make", "clean", "-C", "llama.cpp"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            )
+            IS_CMAKE = result.returncode != 0
+        except FileNotFoundError:
+            # No make executable; use CMake
+            IS_CMAKE = True
+
+    if not IS_CMAKE:
         # Uses old MAKE
         n_jobs = max(int((psutil.cpu_count() or 1) * 1.5), 1)
         full_command = ["make", "all", "-j" + str(n_jobs), "-C", "llama.cpp"]
-        IS_CMAKE = False
     else:
         # Uses new CMAKE
         n_jobs = max(int(psutil.cpu_count() or 1), 1)  # Use less CPUs since 1.5x faster
@@ -1299,7 +1346,6 @@ def install_llama_cpp_make_non_blocking():
             "--clean-first",
             "--target",
         ] + LLAMA_CPP_TARGETS
-        IS_CMAKE = True
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
@@ -1468,20 +1514,25 @@ def install_llama_cpp_old(version = -10):
     ]
     try_execute(commands)
 
-    # Try using MAKE
-    commands = [
-        "make clean -C llama.cpp",
-        f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
-    ]
-    if try_execute(commands) == "CMAKE":
-        # Instead use CMAKE
+    # Detect CMake-only build system before trying make
+    use_cmake = _is_cmake_only_llama_cpp("llama.cpp")
+
+    if not use_cmake:
+        # Try using MAKE
+        commands = [
+            "make clean -C llama.cpp",
+            f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+        ]
+        use_cmake = try_execute(commands) == "CMAKE"
+
+    if use_cmake:
+        # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
             f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
-
         try_execute(commands)
 
     # Check if successful
@@ -1513,15 +1564,21 @@ def install_llama_cpp_blocking(use_cuda = False):
         return
     try_execute(commands)
 
-    commands = [
-        "make clean -C llama.cpp",
-        # https://github.com/ggerganov/llama.cpp/issues/7062
-        # Weirdly GPU conversion for GGUF breaks??
-        # f"{use_cuda} make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
-        f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
-    ]
-    if try_execute(commands) == "CMAKE":
-        # Instead use CMAKE
+    # Detect CMake-only build system before trying make
+    use_cmake = _is_cmake_only_llama_cpp("llama.cpp")
+
+    if not use_cmake:
+        commands = [
+            "make clean -C llama.cpp",
+            # https://github.com/ggerganov/llama.cpp/issues/7062
+            # Weirdly GPU conversion for GGUF breaks??
+            # f"{use_cuda} make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+            f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+        ]
+        use_cmake = try_execute(commands) == "CMAKE"
+
+    if use_cmake:
+        # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
             f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
@@ -2541,15 +2598,7 @@ def unsloth_save_pretrained_gguf(
 
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
-    is_gpt_oss = (
-        True
-        if (
-            hasattr(self.config, "architectures")
-            and self.config.architectures == "GptOssForCausalLM"
-        )
-        or (hasattr(self.config, "model_type") and self.config.model_type in ["gpt-oss", "gpt_oss"])
-        else False
-    )
+    is_gpt_oss = _is_gpt_oss(self)
     # Step 2: Prepare arguments for model saving
     arguments = dict(locals())
     arguments["model"] = self
