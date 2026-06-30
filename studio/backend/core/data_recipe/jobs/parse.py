@@ -52,7 +52,7 @@ _RE_SAMPLERS = re.compile(
 )
 # Current data-designer phrasing for the same sampling stage (the line above is
 # kept for older builds). No column count is reported here, so only rows is set.
-_RE_SAMPLING_SEED = re.compile(r"Sampling (?P<rows>\d+) records from .*seed dataset", re.IGNORECASE)
+_RE_SAMPLING_SEED = re.compile(r"Sampling (?P<rows>\d+) records from .*?seed dataset", re.IGNORECASE)
 _RE_COLCFG = re.compile(r"model config for column '(?P<col>[^']+)'")
 _RE_PROCESSING_COL = re.compile(r"Processing .* column '(?P<col>[^']+)'")
 _RE_PROGRESS = re.compile(
