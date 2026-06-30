@@ -725,7 +725,11 @@ class TestWaitForHealthRetriesOnReadError:
 
         calls = {"n": 0}
 
-        def fake_get(url, timeout = None, trust_env = None):
+        def fake_get(
+            url,
+            timeout = None,
+            trust_env = None,
+        ):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise httpx.ReadError("WinError 10054")
