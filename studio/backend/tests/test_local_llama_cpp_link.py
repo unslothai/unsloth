@@ -93,7 +93,9 @@ def test_start_update_refuses_local_link(tmp_path: Path, monkeypatch) -> None:
 
 
 def _run_orphan_scan(monkeypatch, studio_root: Path, fake: _FakeProc) -> int:
-    import psutil
+    # psutil drives the cross-platform process scan; skip (rather than error) if a
+    # minimal test env lacks it. CI installs it so these tests actually run.
+    psutil = pytest.importorskip("psutil")
 
     monkeypatch.setattr(
         LlamaCppBackend,
