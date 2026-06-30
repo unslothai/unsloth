@@ -1518,10 +1518,21 @@ exit 0
                 [Parameter(Mandatory = $true)][string]$PythonExe
             )
             if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
-            return (Invoke-InstallCommand { & $PythonExe -c "import sys; print(sys.executable)" }) -eq 0
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                $global:LASTEXITCODE = 0
+                & $PythonExe -c "import sys; print(sys.executable)" 2>$null | Out-Null
+                return $LASTEXITCODE -eq 0
+            } catch {
+                return $false
+            } finally {
+                $ErrorActionPreference = $prevEap
+            }
         }
         if (-not (Test-VenvPythonReady $VenvPython)) {
             substep "uv venv returned success but left an unusable venv; rebuilding with python -m venv..." "Yellow"
+            Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue
             $venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvDir }
             if ($venvExit -ne 0) {
                 Write-Host "[ERROR] Failed to rebuild virtual environment (exit code $venvExit)" -ForegroundColor Red
