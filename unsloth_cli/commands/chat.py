@@ -161,7 +161,8 @@ def chat(
         "--tensor-parallel/--no-tensor-parallel",
         help = (
             "Split a GGUF across GPUs by tensor (--split-mode tensor) instead "
-            "of by layer. Ignored for non-GGUF models."
+            "of by layer. Under non-MPI mlx.launch, select MLX tensor "
+            "parallel mode instead of pipeline mode."
         ),
     ),
     llama_extra_args: Optional[List[str]] = typer.Option(
@@ -205,8 +206,8 @@ def chat(
         if should_print:
             err.print(
                 "Distributed `unsloth chat` with MPI needs rank-0 prompt broadcast, "
-                "which is not enabled yet. Use `unsloth inference` under MPI or a "
-                "non-MPI MLX launcher backend for now.",
+                "which is not enabled yet. Use a non-MPI MLX launcher backend "
+                "such as ring/JACCL for now.",
                 style = "red",
                 markup = False,
             )
@@ -227,6 +228,11 @@ def chat(
     with quiet_if_nonzero_mlx_rank():
         model_config = resolve_model_config(model, hf_token = hf_token)
     compare_blocked = _compare_blocked_reason(model_config)
+    if is_mlx_distributed:
+        compare_blocked = (
+            "distributed MLX chat does not support compare mode yet because it "
+            "would need a second distributed worker group on the same ranks"
+        )
     if compare and compare_blocked:
         if should_print:
             err.print(f"--compare unavailable: {compare_blocked}", style = "red", markup = False)

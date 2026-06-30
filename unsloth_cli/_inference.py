@@ -4,6 +4,7 @@
 """Model loading and streaming shared by `inference` and `chat`."""
 
 import asyncio
+import json
 import os
 import re
 import sys
@@ -88,12 +89,45 @@ def _first_mpi_env_pair() -> tuple[Optional[int], Optional[int]]:
     return None, None
 
 
+def _json_rank_count_from_env(name: str) -> Optional[int]:
+    path = os.environ.get(name)
+    if not path:
+        return None
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, list):
+        return len(data)
+    return None
+
+
 def mlx_distributed_info() -> tuple[bool, int, Optional[int]]:
     """Return launch-context metadata without initializing MLX distributed."""
     rank = _parse_nonnegative_int(os.environ.get("MLX_RANK"))
     world_size = _parse_nonnegative_int(os.environ.get("MLX_WORLD_SIZE"))
     if rank is not None:
-        return True, rank, world_size
+        if (
+            world_size is not None
+            and world_size > 1
+            and rank < world_size
+            and os.environ.get("NCCL_HOST_IP")
+            and os.environ.get("NCCL_PORT")
+        ):
+            return True, rank, world_size
+        inferred_size = _json_rank_count_from_env("MLX_HOSTFILE")
+        if inferred_size is not None and inferred_size > 1 and rank < inferred_size:
+            return True, rank, inferred_size
+        inferred_size = _json_rank_count_from_env("MLX_IBV_DEVICES")
+        if (
+            inferred_size is not None
+            and inferred_size > 1
+            and rank < inferred_size
+            and os.environ.get("MLX_JACCL_COORDINATOR")
+        ):
+            return True, rank, inferred_size
+        return False, 0, None
 
     mpi_rank, mpi_world_size = _first_mpi_env_pair()
     return mpi_rank is not None, mpi_rank or 0, mpi_world_size
@@ -366,10 +400,11 @@ def load_chat_backend(
     base column) can run alongside the main one.
     """
     with quiet_if_nonzero_mlx_rank():
+        is_mlx_distributed, rank, _world_size = mlx_distributed_info()
         if model_config is None:
             model_config = resolve_model_config(model, hf_token = hf_token)
 
-        if mlx_distributed_info()[1] == 0:
+        if rank == 0:
             typer.echo(f"Loading {model}", err = True)
 
         if model_config.is_gguf:
@@ -394,6 +429,8 @@ def load_chat_backend(
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
             hf_token = hf_token,
+            tensor_parallel = tensor_parallel,
+            mlx_distributed = is_mlx_distributed,
         ):
             typer.echo("Model load failed", err = True)
             raise typer.Exit(code = 1)

@@ -11,6 +11,7 @@ from unsloth_cli._inference import (
     connect_studio_server,
     load_chat_backend,
     mlx_distributed_info,
+    mlx_distributed_uses_mpi,
     stream_to_stdout,
 )
 
@@ -38,7 +39,8 @@ def inference(
         "--tensor-parallel/--no-tensor-parallel",
         help = (
             "Split a GGUF across GPUs by tensor (--split-mode tensor) instead "
-            "of by layer. Ignored for non-GGUF models."
+            "of by layer. Under non-MPI mlx.launch, select MLX tensor "
+            "parallel mode instead of pipeline mode."
         ),
     ),
     llama_extra_args: Optional[List[str]] = typer.Option(
@@ -72,6 +74,15 @@ def inference(
         configure_quiet_logging()
 
     is_mlx_distributed, rank, _world_size = mlx_distributed_info()
+    if is_mlx_distributed and mlx_distributed_uses_mpi():
+        if rank == 0:
+            typer.echo(
+                "Distributed `unsloth inference` with MPI is not supported by "
+                "the current subprocess backend. Use a non-MPI MLX launcher "
+                "backend such as ring/JACCL for now.",
+                err = True,
+            )
+        raise typer.Exit(code = 1)
 
     # A running Studio server keeps the model warm between runs, which is
     # exactly what a one-shot command wants. Under mlx.launch, every rank must

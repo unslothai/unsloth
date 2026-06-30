@@ -41,6 +41,35 @@ def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
     }
 
 
+def _mlx_distributed_rank_size(group = None):
+    """Return ``(rank, world_size)`` for an optional MLX distributed group."""
+    if group is None:
+        return 0, 1
+    rank = int(group.rank())
+    world_size = int(group.size())
+    if world_size < 1:
+        raise ValueError(f"Invalid MLX distributed world_size={world_size}.")
+    if rank < 0 or rank >= world_size:
+        raise ValueError(f"Invalid MLX distributed rank={rank} for world_size={world_size}.")
+    return rank, world_size
+
+
+def _init_mlx_distributed():
+    """Initialize MLX distributed state, falling back to singleton metadata."""
+    import mlx.core as mx
+
+    group = None
+    rank = 0
+    world_size = 1
+    distributed = getattr(mx, "distributed", None)
+    init = getattr(distributed, "init", None) if distributed is not None else None
+    if callable(init):
+        group = init()
+        if group is not None:
+            rank, world_size = _mlx_distributed_rank_size(group)
+    return group, rank, world_size
+
+
 class MLXInferenceBackend:
     def __init__(self):
         self.models = {}
@@ -57,6 +86,9 @@ class MLXInferenceBackend:
         self._processor = None
         self._is_vlm = False
         self._config = {}
+        self._distributed_group = None
+        self._distributed_rank = 0
+        self._distributed_world_size = 1
 
         # Recorded for unload to release pinned memory back to the OS.
         self._memory_limits_applied = {}
@@ -101,11 +133,18 @@ class MLXInferenceBackend:
         trust_remote_code = False,
         gpu_ids = None,
         dtype = None,
+        parallel_mode = None,
+        distributed_group = None,
     ) -> bool:
         import mlx.core as mx
 
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
+        distributed_rank, distributed_size = _mlx_distributed_rank_size(distributed_group)
+        is_distributed = distributed_group is not None and distributed_size > 1
+        self._distributed_group = distributed_group
+        self._distributed_rank = distributed_rank
+        self._distributed_world_size = distributed_size
 
         # GGUF guard. GGUF models are served by llama-server in the parent
         # process, not mlx-lm here. Reaching this with is_gguf=True means the
@@ -129,11 +168,30 @@ class MLXInferenceBackend:
         is_lora = getattr(config, "is_lora", False)
 
         logger.info(
-            "Loading %s via %s (is_lora=%s)",
+            "Loading %s via %s (is_lora=%s, distributed=%s, rank=%s/%s, mode=%s)",
             model_name,
             "mlx-vlm" if is_vision else "mlx-lm",
             is_lora,
+            is_distributed,
+            distributed_rank,
+            distributed_size,
+            parallel_mode,
         )
+        if is_vision and is_distributed:
+            raise ValueError(
+                "Unsloth: distributed MLX inference for VLM models is not supported yet."
+            )
+        if is_distributed and parallel_mode not in ("pipeline", "tensor"):
+            raise ValueError(
+                "Unsloth: distributed MLX inference requires parallel_mode='pipeline' "
+                "or parallel_mode='tensor'."
+            )
+        if is_distributed and is_lora:
+            raise ValueError(
+                "Unsloth: distributed MLX inference for LoRA adapter repos "
+                "is not supported yet. Merge/export the adapter into an MLX model "
+                "before distributed inference."
+            )
 
         try:
             from unsloth_zoo.mlx.loader import FastMLXModel
@@ -143,14 +201,23 @@ class MLXInferenceBackend:
                 "(unsloth_zoo.mlx.loader). Reinstall via install.sh on Apple Silicon."
             ) from e
 
+        load_kwargs = {
+            "max_seq_length": max_seq_length,
+            "dtype": dtype,
+            "load_in_4bit": load_in_4bit,
+            "token": hf_token,
+            "trust_remote_code": trust_remote_code,
+            "text_only": False if is_vision else True,
+        }
+        if is_distributed:
+            if parallel_mode == "pipeline":
+                load_kwargs["pipeline_group"] = distributed_group
+            else:
+                load_kwargs["tensor_group"] = distributed_group
+
         model, tokenizer_or_processor = FastMLXModel.from_pretrained(
             model_name,
-            max_seq_length = max_seq_length,
-            dtype = dtype,
-            load_in_4bit = load_in_4bit,
-            token = hf_token,
-            trust_remote_code = trust_remote_code,
-            text_only = False if is_vision else True,
+            **load_kwargs,
         )
 
         if is_vision:
@@ -237,6 +304,9 @@ class MLXInferenceBackend:
         self._model = None
         self._tokenizer = None
         self._processor = None
+        self._distributed_group = None
+        self._distributed_rank = 0
+        self._distributed_world_size = 1
         if self.active_model_name == model_name:
             self.active_model_name = None
         gc.collect()

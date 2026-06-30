@@ -329,14 +329,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
         try:
-            success = backend.load_model(
-                config = mc,
-                max_seq_length = config.get("max_seq_length", 2048),
-                load_in_4bit = load_in_4bit,
-                hf_token = hf_token,
-                trust_remote_code = trust_remote_code,
-                gpu_ids = config.get("resolved_gpu_ids"),
-            )
+            load_kwargs = {
+                "config": mc,
+                "max_seq_length": config.get("max_seq_length", 2048),
+                "load_in_4bit": load_in_4bit,
+                "hf_token": hf_token,
+                "trust_remote_code": trust_remote_code,
+                "gpu_ids": config.get("resolved_gpu_ids"),
+            }
+            if getattr(backend, "device", None) == "mlx":
+                load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
+                load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
+            success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
 
@@ -682,9 +686,24 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 exc,
             )
         try:
-            from core.inference.mlx_inference import MLXInferenceBackend
+            from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
             backend = MLXInferenceBackend()
+            if config.get("mlx_distributed"):
+                group, rank, size = _init_mlx_distributed()
+                config["_mlx_distributed_group"] = group
+                if size <= 1:
+                    logger.warning(
+                        "MLX distributed launch requested but initialized singleton "
+                        "group; continuing without distributed sharding"
+                    )
+                else:
+                    logger.info(
+                        "MLX distributed initialized in worker: rank=%s size=%s mode=%s",
+                        rank,
+                        size,
+                        config.get("mlx_parallel_mode"),
+                    )
             _send_response(
                 resp_queue,
                 {"type": "status", "message": "Loading model..."},
