@@ -542,7 +542,7 @@ class FastSentenceTransformer(FastModel):
         return transformer_module
 
     @staticmethod
-    def _read_pooling_mode(model_name, token):
+    def _read_pooling_mode(model_name, token, cache_dir = None):
         """Read the pooling mode from modules.json, else return "mean"."""
         try:
             if os.path.exists(model_name) and os.path.exists(
@@ -550,7 +550,9 @@ class FastSentenceTransformer(FastModel):
             ):
                 modules_json_path = os.path.join(model_name, "modules.json")
             else:
-                modules_json_path = hf_hub_download(model_name, "modules.json", token = token)
+                modules_json_path = hf_hub_download(
+                    model_name, "modules.json", token = token, cache_dir = cache_dir
+                )
 
             with open(modules_json_path, "r", encoding = "utf-8") as f:
                 modules_config = json.load(f)
@@ -572,6 +574,7 @@ class FastSentenceTransformer(FastModel):
                                 model_name,
                                 os.path.join(pooling_path, "config.json"),
                                 token = token,
+                                cache_dir = cache_dir,
                             )
                         break
 
@@ -951,7 +954,7 @@ class FastSentenceTransformer(FastModel):
             f.write(content)
 
     @staticmethod
-    def _module_path(model_name, token = None):
+    def _module_path(model_name, token = None, cache_dir = None):
         """Return the path to the modules.json file, or None."""
         try:
             if os.path.exists(model_name) and os.path.isdir(model_name):
@@ -959,7 +962,9 @@ class FastSentenceTransformer(FastModel):
                 return path if os.path.exists(path) else None
             else:
                 try:
-                    return hf_hub_download(model_name, "modules.json", token = token)
+                    return hf_hub_download(
+                        model_name, "modules.json", token = token, cache_dir = cache_dir
+                    )
                 except:
                     return None
         except:
@@ -1136,6 +1141,7 @@ class FastSentenceTransformer(FastModel):
         max_seq_length,
         pooling_mode,
         trust_remote_code = False,
+        cache_dir = None,
     ) -> tuple[OrderedDict, bool]:
         """Load modules from modules.json, else fall back to hard-coded modules.
 
@@ -1146,7 +1152,7 @@ class FastSentenceTransformer(FastModel):
         from sentence_transformers.models import Pooling, Normalize
 
         modules = OrderedDict()
-        modules_json_path = FastSentenceTransformer._module_path(model_name, token)
+        modules_json_path = FastSentenceTransformer._module_path(model_name, token, cache_dir = cache_dir)
 
         if modules_json_path:
             with open(modules_json_path, encoding = "utf8") as f:
@@ -1199,7 +1205,9 @@ class FastSentenceTransformer(FastModel):
         hidden_size = getattr(model.config, "hidden_size", 768)
 
         if pooling_mode == "mean":
-            pooling_mode = FastSentenceTransformer._read_pooling_mode(model_name, token)
+            pooling_mode = FastSentenceTransformer._read_pooling_mode(
+                model_name, token, cache_dir = cache_dir
+            )
 
         modules["1"] = Pooling(word_embedding_dimension = hidden_size, pooling_mode = pooling_mode)
         modules["2"] = Normalize()
@@ -1659,7 +1667,9 @@ class FastSentenceTransformer(FastModel):
 
         # No modules.json -> force 16-bit: saving is custom for these models and
         # 4-bit would need dequant in save_pretrained_merged, not worth it.
-        has_modules_json = FastSentenceTransformer._module_path(model_name, token) is not None
+        has_modules_json = FastSentenceTransformer._module_path(
+            model_name, token, cache_dir = kwargs.get("cache_folder")
+        ) is not None
 
         if not has_modules_json and load_in_4bit:
             print(
@@ -1710,6 +1720,7 @@ class FastSentenceTransformer(FastModel):
             max_seq_length,
             pooling_mode,
             trust_remote_code = trust_remote_code,
+            cache_dir = kwargs.get("cache_folder"),
         )
 
         st_device = device_map

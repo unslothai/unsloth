@@ -1326,6 +1326,7 @@ def check_tokenizer(
     padding_side = "right",
     token = None,
     _reload = True,
+    cache_dir = None,
 ):
     # Checks tokenizer for out of bounds ids.
     # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
@@ -1416,10 +1417,11 @@ def check_tokenizer(
                     f"Fix your tokenizer since it'll perform out of bounds memory accesses."
                 )
 
-            if IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT:
-                cache_dir = "huggingface_tokenizers_cache"
-            else:
-                cache_dir = None
+            # Honor a caller-supplied cache_dir so the repair reload reuses any warmed cache; else fall
+            # back to the Colab/Kaggle sentinel (HF default elsewhere), as load_correct_tokenizer does.
+            reload_cache_dir = cache_dir
+            if reload_cache_dir is None and (IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT):
+                reload_cache_dir = "huggingface_tokenizers_cache"
 
             # Sometimes slow tokenizer does not work like Deepseek
             try:
@@ -1433,7 +1435,7 @@ def check_tokenizer(
                     use_fast = False,
                     legacy = False,
                     from_slow = True,
-                    cache_dir = cache_dir,
+                    cache_dir = reload_cache_dir,
                 )
                 return check_tokenizer(
                     model = model,
@@ -1443,6 +1445,7 @@ def check_tokenizer(
                     padding_side = padding_side,
                     token = token,
                     _reload = False,
+                    cache_dir = cache_dir,
                 )
                 break
             except:
