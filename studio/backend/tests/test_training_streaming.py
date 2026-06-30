@@ -195,6 +195,16 @@ def test_hf_dataset_rejects_unsafe_values(bad_hf_dataset):
         )
 
 
+def test_project_name_rejects_values_over_ui_limit():
+    with pytest.raises(ValidationError):
+        TrainingStartRequest(
+            model_name = "unsloth/test",
+            project_name = "x" * 81,
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+        )
+
+
 # --- Start-route streaming compatibility guards ---
 
 

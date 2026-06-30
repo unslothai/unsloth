@@ -601,7 +601,7 @@ def _load_correct_tokenizer(
         cache_dir = cache_dir,
     )
 
-    if not fix_tokenizer or tokenizer_name in IGNORED_TOKENIZER_NAMES:
+    if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
         return fast_tokenizer
     # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
@@ -626,72 +626,22 @@ def _load_correct_tokenizer(
         return fast_tokenizer
 
 
-# Qwen3 text models share Qwen3-VL's vocab, so configs ship a vision pad_token;
-# padding text-only training with one yields NaN losses (#3155, #4104).
-_VISION_PAD_TOKENS = frozenset(
-    (
-        "<|vision_pad|>",
-        "<|image_pad|>",
-        "<|video_pad|>",
-        "<|audio_pad|>",
-    )
-)
-# Preference order; <unk> excluded since reusing it as pad masks real OOV tokens.
-_SAFE_TEXT_PAD_TOKENS = ("<|endoftext|>", "<pad>", "[PAD]")
-
-
-def _fix_vision_pad_token(tokenizer):
-    """Swap a vision pad_token on a text-only tokenizer for a safe text token (#3155)."""
-    if tokenizer is None:
-        return tokenizer
-    if hasattr(tokenizer, "image_processor"):
-        return tokenizer
-    pad_token = getattr(tokenizer, "pad_token", None)
-    if pad_token is None or pad_token not in _VISION_PAD_TOKENS:
-        return tokenizer
-
-    get_vocab = getattr(tokenizer, "get_vocab", None)
-    if get_vocab is None:
-        return tokenizer
-    vocab = get_vocab()
-    if not isinstance(vocab, dict):
-        return tokenizer
-    new_pad_token = None
-    for candidate in _SAFE_TEXT_PAD_TOKENS:
-        if candidate in vocab and candidate != getattr(tokenizer, "eos_token", None):
-            new_pad_token = candidate
-            break
-    # Fall back to eos_token only if it is a distinct, non-vision token.
-    if new_pad_token is None:
-        eos_token = getattr(tokenizer, "eos_token", None)
-        if eos_token is not None and eos_token != pad_token and eos_token not in _VISION_PAD_TOKENS:
-            new_pad_token = eos_token
-    if new_pad_token is None:
-        return tokenizer
-
-    tokenizer.pad_token = new_pad_token
-    logger.warning(
-        f"Unsloth: pad_token was a vision token ({pad_token}) on a text-only "
-        f"model. Replaced with {new_pad_token} to avoid NaN losses."
-    )
-    return tokenizer
-
-
 def _fix_pad_token(tokenizer):
     """Heal a bad/missing pad_token before chat-template repair.
 
-    Delegates to unsloth_zoo's shared fix_pad_token (single source of truth) when
-    available, falling back to the narrow vision-token swap against an older
-    unsloth_zoo. allow_add=False keeps this side-effect free: there is no model
-    here to resize embeddings, so a brand new pad token is never added - the later
-    model-aware patch_tokenizer call finishes the job and is idempotent.
+    Delegates to unsloth_zoo's shared fix_pad_token (single source of truth); against
+    an older unsloth_zoo without it, this is a no-op (a pad-named token like
+    <|vision_pad|> is already a valid pad). allow_add=False keeps this side-effect
+    free: there is no model here to resize embeddings, so a brand new pad token is
+    never added - the later model-aware patch_tokenizer call finishes the job and is
+    idempotent.
     """
     if tokenizer is None:
         return tokenizer
     try:
         from unsloth_zoo.pad_token import fix_pad_token
     except Exception:
-        return _fix_vision_pad_token(tokenizer)
+        return tokenizer
     fix_pad_token(tokenizer, allow_add = False)
     return tokenizer
 
