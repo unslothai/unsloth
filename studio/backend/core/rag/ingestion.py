@@ -290,7 +290,10 @@ def start_ingestion(
                 _remove_upload(stored_path)
                 with _jobs_lock:
                     _jobs[job_id] = queue.Queue()
-                _emit(job_id, {"type": "complete", "num_chunks": 0, "deduped": True})
+                _emit(
+                    job_id,
+                    {"type": "complete", "num_chunks": doc.get("num_chunks") or 0, "deduped": True},
+                )
                 _emit(job_id, None)
                 return existing, job_id
         for failed in store.failed_documents_by_hash(conn, scope, sha):

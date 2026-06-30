@@ -1238,9 +1238,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     # through to the combined top-K retrieval below.
     if whole_doc_requested:
         try:
+            budget = _whole_doc_budget(rag_scope, conversation)
+
             whole = whole_document_context(
                 scope_thread_id = thread_id,
-                max_tokens = _whole_doc_budget(rag_scope, conversation),
+                max_tokens = budget,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG whole-document context failed: %s", exc)
@@ -1261,8 +1263,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
                     proj = None
                 if proj is not None:
-                    sources = sources + proj[1]
-                    text = render_sources(sources)
+                    merged = sources + proj[1]
+                    merged_text = render_sources(merged)
+                    if max(1, len(merged_text) // 4) <= budget:
+                        sources = merged
+                        text = merged_text
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
     if text is None and enabled:

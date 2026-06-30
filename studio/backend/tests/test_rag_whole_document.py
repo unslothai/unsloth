@@ -394,6 +394,32 @@ def test_build_rag_autoinject_appends_project_retrieval(rag_conn, monkeypatch):
     assert '<chunk id="3"' in injected
 
 
+def test_build_rag_autoinject_skips_project_companion_over_budget(rag_conn, monkeypatch):
+    _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["thread body"])
+    project_text = "project overflow " * 2000
+    proj = (
+        "PROJ",
+        [
+            {
+                "citationId": 1,
+                "chunkId": "pj:0",
+                "documentId": "pj",
+                "filename": "project.txt",
+                "page": None,
+                "text": project_text,
+                "score": 0.91,
+            }
+        ],
+    )
+
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: proj)
+    result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "project_id": "p1"})
+    injected = _injected_text(result)
+    assert "thread body" in injected
+    assert "project overflow" not in injected
+
+
+
 def test_build_rag_autoinject_thread_whole_doc_ignores_project_size(rag_conn, monkeypatch):
     # A large project corpus must not push a small thread attachment over budget;
     # whole-doc resolves the thread scope alone (companion retrieval stubbed out).

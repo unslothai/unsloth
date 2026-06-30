@@ -3,6 +3,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
+
+import {
+  CHAT_RAG_CAPTION_KEY,
+  CHAT_RAG_OCR_KEY,
+} from "@/features/chat/stores/chat-runtime-store";
 import { toast } from "@/lib/toast";
 import {
   deleteDocument,
@@ -251,9 +256,15 @@ export function useRagDocuments(
       tempId: string,
     ) => {
       try {
-        // Read the RAG ingest toggles fresh at upload time (non-reactive, off the chat store).
-        const { ragOcrScanned: ocr, ragCaptionFigures: caption } =
-          useChatRuntimeStore.getState();
+        // Send vision-pass overrides only after the user has explicitly set them;
+        // otherwise backend env defaults own the ingest policy.
+        const state = useChatRuntimeStore.getState();
+        const hasLocal = (key: string) =>
+          typeof window !== "undefined" && window.localStorage.getItem(key) !== null;
+        const ocr = hasLocal(CHAT_RAG_OCR_KEY) ? state.ragOcrScanned : undefined;
+        const caption = hasLocal(CHAT_RAG_CAPTION_KEY)
+          ? state.ragCaptionFigures
+          : undefined;
         const result =
           activeScope.type === "kb"
             ? await uploadKnowledgeBaseDocument(activeScope.kbId, file, ocr, caption)

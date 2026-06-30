@@ -77,3 +77,5 @@ pymupdf==1.27.2.3
 # lockstep 1.27.x line makes it a hard dep we do not need for to_markdown().
 pymupdf4llm==0.3.4
 python-docx==1.2.0
+
+lxml==6.0.2
