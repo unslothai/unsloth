@@ -30,9 +30,11 @@ from typing import Callable, Optional
 _PR_SET_PDEATHSIG = 1
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 _JobObjectExtendedLimitInformation = 9
+_PARENT_PID_ENV = "UNSLOTH_PROCESS_LIFETIME_PARENT_PID"
 
 _lock = threading.Lock()
 _initialized = False
+_parent_pid: Optional[int] = None
 _win_job_handle: Optional[int] = None  # retained for the interpreter's lifetime
 _tracked_pids: "dict[int, Optional[str]]" = {}  # pid -> identity, reaped by terminate_all
 
@@ -54,11 +56,13 @@ def initialize_parent_lifetime() -> None:
     Windows builds and holds the Job Object; POSIX has nothing to install (the
     guarantee is per-child via preexec). Idempotent and never raises.
     """
-    global _initialized
+    global _initialized, _parent_pid
     with _lock:
         if _initialized:
             return
         _initialized = True
+        _parent_pid = os.getpid()
+        os.environ[_PARENT_PID_ENV] = str(_parent_pid)
         if _is_windows():
             _install_windows_job()
 
@@ -158,7 +162,17 @@ def _pdeathsig_preexec() -> None:
     try:
         import ctypes
         ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
-        if os.getppid() == 1:
+        expected_parent_pid = _parent_pid
+        if expected_parent_pid is None:
+            raw_parent_pid = os.environ.get(_PARENT_PID_ENV)
+            if raw_parent_pid is not None:
+                try:
+                    expected_parent_pid = int(raw_parent_pid)
+                except ValueError:
+                    expected_parent_pid = None
+        if expected_parent_pid is None:
+            expected_parent_pid = 1
+        if os.getppid() != expected_parent_pid:
             os._exit(1)
     except Exception:
         pass

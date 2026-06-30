@@ -30,13 +30,20 @@ IS_LINUX = sys.platform.startswith("linux")
 
 @pytest.fixture(autouse = True)
 def _reset_module_state():
+    saved_parent_pid = os.environ.pop(pl._PARENT_PID_ENV, None)
     pl._tracked_pids.clear()
+    pl._parent_pid = None
     pl._win_job_handle = None
     pl._initialized = False
     yield
     pl._tracked_pids.clear()
+    pl._parent_pid = None
     pl._win_job_handle = None
     pl._initialized = False
+    if saved_parent_pid is None:
+        os.environ.pop(pl._PARENT_PID_ENV, None)
+    else:
+        os.environ[pl._PARENT_PID_ENV] = saved_parent_pid
 
 
 def _alive(pid: int) -> bool:
@@ -72,12 +79,28 @@ def _wait_dead(pid: int, timeout: float) -> bool:
     return not _alive(pid)
 
 
+def _patch_fake_linux_pdeathsig(monkeypatch):
+    import ctypes
+
+    calls: list[str] = []
+
+    class _Libc:
+        def prctl(self, *a):
+            calls.append("prctl")
+            return 0
+
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: _Libc(), raising = False)
+    return calls
+
+
 # ── No-op safety / composition ──
 
 
 def test_initialize_idempotent_and_noop_on_posix():
     pl.initialize_parent_lifetime()
     pl.initialize_parent_lifetime()  # second call short-circuits
+    assert os.environ[pl._PARENT_PID_ENV] == str(os.getpid())  # captured once at startup
     if IS_POSIX:
         assert pl._win_job_handle is None  # POSIX installs no job
 
@@ -108,6 +131,34 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
     sentinel = lambda: None  # noqa: E731
     assert pl.compose_preexec(sentinel) is sentinel
     assert pl.compose_preexec(None) is None
+
+
+def test_pdeathsig_child_survives_when_parent_is_pid1(monkeypatch):
+    calls = _patch_fake_linux_pdeathsig(monkeypatch)
+    monkeypatch.setattr(pl, "_parent_pid", 1)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    pl._pdeathsig_preexec()
+    assert calls == ["prctl"]
+
+
+def test_pdeathsig_child_still_exits_when_reparented_to_init(monkeypatch):
+    calls = _patch_fake_linux_pdeathsig(monkeypatch)
+    monkeypatch.setattr(pl, "_parent_pid", 4321)
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    monkeypatch.setattr(pl.os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
+    with pytest.raises(SystemExit) as excinfo:
+        pl._pdeathsig_preexec()
+    assert excinfo.value.code == 1
+    assert calls == ["prctl"]
+
+
+def test_bind_current_process_to_parent_lifetime_reads_shared_expected_parent(monkeypatch):
+    calls = _patch_fake_linux_pdeathsig(monkeypatch)
+    monkeypatch.setattr(pl, "_parent_pid", None)
+    monkeypatch.setenv(pl._PARENT_PID_ENV, "1")
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    pl.bind_current_process_to_parent_lifetime()
+    assert calls == ["prctl"]
 
 
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
