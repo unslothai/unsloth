@@ -985,16 +985,29 @@ export const IMAGE_GEN_TASKS = [
   "image-text-to-image",
 ] as const;
 
+// Diffusion GGUF archs the Images backend can't assemble yet (SD/SDXL/PixArt/Wan/
+// ...). The backend tags them with this task so the chat picker hides them -- they
+// die with "unknown model architecture" in llama.cpp -- while the Images picker,
+// which filters on IMAGE_GEN_TASKS, also leaves them out (they'd 400 on load).
+const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
+
+// Tasks that must never appear as a loadable chat model: the Images-handled
+// generation tasks plus the non-loadable diffusion tag above.
+const NON_CHAT_TASKS: readonly string[] = [...IMAGE_GEN_TASKS, UNSUPPORTED_DIFFUSION_TASK];
+
 // Editing/inpaint checkpoints are tagged image-to-image but need an input image,
 // which the text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by
 // id so they don't show in the Images picker only to 400 on load. Keeping the
 // image-to-image task itself is required: some supported models (FLUX.2-klein)
 // carry that tag too.
-const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint"] as const;
+const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "inpainting"] as const;
 function isImageEditModel(repoId: string | null | undefined): boolean {
   if (!repoId) return false;
-  const id = repoId.toLowerCase();
-  return IMAGE_EDIT_KEYWORDS.some((kw) => id.includes(kw));
+  // Whole-segment match (not substring) so a normal model like "...-edition"
+  // isn't hidden; mirrors the backend detect_family segment check. Split on
+  // both path separators so a Windows local path is segmented too.
+  const segments = new Set(repoId.toLowerCase().split(/[-_./\\]+/));
+  return IMAGE_EDIT_KEYWORDS.some((kw) => segments.has(kw));
 }
 
 // Gate an on-device model by the picker's task scope. With a filter (the Images
@@ -1007,7 +1020,7 @@ function passesTaskGate(
   filter: HfTaskFilter,
 ): boolean {
   if (filter) return taskMatchesFilter(repoTask, filter) && !isImageEditModel(repoId);
-  return !(repoTask != null && (IMAGE_GEN_TASKS as readonly string[]).includes(repoTask));
+  return !(repoTask != null && NON_CHAT_TASKS.includes(repoTask));
 }
 
 // Module-level caches so re-mounting the popover shows results instantly
@@ -1580,9 +1593,10 @@ export function HubModelPicker({
   // the chat classifier marks image tasks "unsupported".
   const isChatSupported = useCallback(
     (r: HfModelResult) => {
-      // Image tab: keep task-matching results, but drop editing checkpoints the
-      // backend rejects (so they don't appear in Hub search only to 400 on load).
-      if (task && taskMatchesFilter(r.pipelineTag, task)) return !isImageEditModel(r.id);
+      // Image tab (task set): only task-matching, non-editing results. Anything
+      // else (e.g. a chat GGUF surfaced by a typed query) is dropped rather than
+      // falling through to the chat classifier and appearing as loadable.
+      if (task) return taskMatchesFilter(r.pipelineTag, task) && !isImageEditModel(r.id);
       return (
         classifyUnslothSupport({
           modelId: r.id,
@@ -1635,6 +1649,10 @@ export function HubModelPicker({
       .filter((r) => !isMobileVariant(r.id));
     // Drop models Studio can't run for chat (diffusion / image / video / etc.).
     rows = rows.filter(isChatSupported);
+    // Images (task set) loads single-file GGUF only, so never surface non-GGUF
+    // rows regardless of the format dropdown (mirrors hfIds and the empty
+    // Recommended view); selecting a non-GGUF row is a silent no-op.
+    if (task) rows = rows.filter((r) => r.isGguf);
     // With no explicit format, show the device-recommended formats (GGUF, plus
     // MLX on Mac). When the user picks a format, honor it instead so Safetensors
     // is not dropped by the recommendation default.
@@ -1674,6 +1692,7 @@ export function HubModelPicker({
     isMac,
     gpu,
     isChatSupported,
+    task,
   ]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
@@ -1970,10 +1989,14 @@ export function HubModelPicker({
       .filter((id) => !isHiddenModelId(id))
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
-      // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
-      // on Mac (matches the empty Recommended view so search stays consistent).
-      .filter(
-        (id) => !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+      // Images (task set) loads single-file GGUF only, so don't surface non-GGUF
+      // text-to-image rows the page can't load (mirrors the Recommended view).
+      // Otherwise chat-only keeps runnable formats: GGUF anywhere, plus MLX/
+      // safetensors on Mac.
+      .filter((id) =>
+        task
+          ? isKnownGgufRepo(id)
+          : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
       .filter((id) =>
@@ -1989,6 +2012,7 @@ export function HubModelPicker({
     isChatSupported,
     formatFilter,
     isMac,
+    task,
   ]);
 
   const hubOptionKeys = useMemo(() => {

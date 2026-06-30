@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,7 +31,6 @@ from .diffusion_families import (
 )
 from .diffusion_device import (
     DiffusionDeviceTarget,
-    diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
 )
 from .diffusion_memory import (
@@ -152,28 +151,20 @@ class DiffusionBackend:
     def is_loaded(self) -> bool:
         return self._state is not None
 
-    def _pick_device_and_dtype(self) -> tuple[str, Any]:
-        """(device, dtype) for the current host. Thin wrapper over the device
-        policy module, kept as a method so tests can still monkeypatch it."""
-        target = resolve_diffusion_device_target()
-        return target.device, target.dtype
-
     def _resolve_device_target(self, fam: Optional[DiffusionFamily]) -> DiffusionDeviceTarget:
-        """The device target with the family fp16 guard applied.
-
-        Routes through _pick_device_and_dtype() (so a monkeypatched override still
-        drives the result), then promotes float16 -> float32 for fp16-incompatible
-        families (Z-Image), rebuilding the target so dtype + capability flags stay
-        consistent with the effective dtype.
-        """
-        device, dtype = self._pick_device_and_dtype()
-        effective = _resolve_diffusion_compute_dtype(fam, dtype)
-        if effective is not dtype:
-            logger.warning(
-                "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
-                getattr(fam, "name", None),
-            )
-        return diffusion_device_target_from_torch_device(device, effective)
+        """The device target for the current host with the family fp16 guard applied:
+        promote float16 -> float32 for fp16-incompatible families (Z-Image), whose
+        activations overflow float16 and render a black image. The capability flags
+        carry through unchanged; only the dtype moves."""
+        target = resolve_diffusion_device_target()
+        effective = _resolve_diffusion_compute_dtype(fam, target.dtype)
+        if effective is target.dtype:
+            return target
+        logger.warning(
+            "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
+            getattr(fam, "name", None),
+        )
+        return replace(target, dtype = effective)
 
     def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
         local_root = Path(repo_id).expanduser()
@@ -210,6 +201,22 @@ class DiffusionBackend:
                 base, rfilename, hf_token, cancel_event = self._cancel_event
             )
 
+    @staticmethod
+    def _detect_family_for_pick(
+        repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
+    ) -> Optional[DiffusionFamily]:
+        """Detect the family from the repo id, falling back to the combined
+        path/filename for a direct local .gguf pick. The frontend splits such a
+        pick into (parent dir, basename), so the family keyword can live only in
+        the filename (e.g. /models/z-image-turbo-Q4_K_M.gguf) while the parent
+        directory carries none; scan it too when the directory alone is
+        undetectable. Only used as a fallback, so remote 'org/name' picks and
+        explicit overrides behave exactly as before."""
+        fam = detect_family(repo_id, family_override)
+        if fam is None and gguf_filename and not family_override:
+            fam = detect_family(f"{repo_id}/{gguf_filename}", family_override)
+        return fam
+
     def validate_load_request(
         self,
         repo_id: str,
@@ -226,7 +233,7 @@ class DiffusionBackend:
             raise ValueError(
                 "gguf_filename is required: this backend loads single-file GGUF checkpoints only."
             )
-        fam = detect_family(repo_id, family_override)
+        fam = self._detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
             raise ValueError(
                 f"Could not infer a diffusion family for '{repo_id}'. Pass family_override (z-image)."
@@ -239,7 +246,12 @@ class DiffusionBackend:
         local_root = Path(repo_id).expanduser()
         if local_root.exists():
             resolve_local_gguf_child(local_root, gguf_filename)
-        elif repo_id.startswith(("/", "~", "./", "../")) or local_root.is_absolute():
+        elif (
+            # POSIX path-shaped, a "."/".." prefix (covers ./ ../ and their Windows .\ ..\
+            # forms), a Windows separator anywhere (never present in a bare "org/name" HF
+            # id), or an absolute path on this OS.
+            repo_id.startswith(("/", "\\", "~", ".")) or "\\" in repo_id or local_root.is_absolute()
+        ):
             raise FileNotFoundError(f"Local model path does not exist: {repo_id}")
         return fam
 
@@ -300,7 +312,9 @@ class DiffusionBackend:
             # Resolve the base repo and estimate sizes on this thread (both network
             # calls) so begin_load returns instantly; the bar shows raw bytes until
             # the total lands. This is the only writer of _loading's fields here.
-            fam = detect_family(kwargs["repo_id"], kwargs.get("family_override"))
+            fam = self._detect_family_for_pick(
+                kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
+            )
             base = _resolve_base_repo(
                 kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
             )
@@ -308,10 +322,12 @@ class DiffusionBackend:
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
             )
-            loading = self._loading
-            if loading is not None:
-                loading.base_repo = base
-                loading.expected_bytes = expected
+            with self._lock:
+                # Stamp progress only if this load is still current; a superseding
+                # load (or unload) has its own token and its own _LoadingState.
+                if self._load_token == token and self._loading is not None:
+                    self._loading.base_repo = base
+                    self._loading.expected_bytes = expected
             # Download outside the lock so unload()/an eviction can preempt the
             # multi-GB pull; load_pipeline below then assembles from the cache.
             self._prefetch_files(
@@ -333,9 +349,13 @@ class DiffusionBackend:
             if self._load_token != token:
                 return
             logger.error("diffusion.load_failed: %s", exc)
+            # Redact native paths: this error is surfaced verbatim via the
+            # load-progress poll, and Studio can run as a shared server.
+            from utils.native_path_leases import redact_native_paths
+
             with self._lock:
                 if self._load_token == token and self._loading is not None:
-                    self._loading.error = str(exc)
+                    self._loading.error = redact_native_paths(str(exc))
 
     def load_progress(self) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
@@ -367,7 +387,11 @@ class DiffusionBackend:
         total = 0
         base_files: list[str] = []
         try:
-            if gguf_filename:
+            # Skip the Hub size lookup for a LOCAL gguf path: model_info(repo_id) would
+            # raise on a filesystem path and (caught below) skip the base-repo lookup too,
+            # so the companion VAE/text-encoder files would never be prefetched and would
+            # instead download synchronously under the load lock.
+            if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
                 total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
@@ -469,12 +493,18 @@ class DiffusionBackend:
         # The cancel makes that wait ~one step (or the rest of the denoise for a
         # pipeline that ignores the step callback).
         with self._lock:
+            # Check the token BEFORE cancelling: a superseded/cancelled worker (its
+            # token already bumped by unload or a newer load) must not abort the
+            # current model's unrelated in-flight generation on its way out.
+            if _load_token is not None and _load_token != self._load_token:
+                raise RuntimeError("Diffusion load was cancelled.")
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
         with self._generate_lock:
             with self._lock:
-                # Bail before the (slow, VRAM-heavy) build if an unload/eviction or a
-                # newer load superseded this one while we were resolving/downloading.
+                # Re-check under the lock (we dropped it to wait on _generate_lock): an
+                # unload/eviction or a newer load may have superseded this one while we
+                # waited, and the slow VRAM-heavy build below must not run if so.
                 if _load_token is not None and _load_token != self._load_token:
                     raise RuntimeError("Diffusion load was cancelled.")
 
@@ -728,19 +758,22 @@ class DiffusionBackend:
         # Abort an in-flight download so unload/an eviction returns promptly instead
         # of waiting it out (the download runs without _lock and checks this event).
         self._cancel_event.set()
+        # Signal an in-flight denoise, then WAIT on _generate_lock for it to exit
+        # before freeing _state. The GPU arbiter releases diffusion ownership and
+        # hands the card to chat the instant this returns, so chat must not start
+        # allocating VRAM while the old pipeline is still resident — that transient
+        # overlap is an OOM risk. The cancel bounds the wait to ~one step (the same
+        # bound the replacement-load path in load_pipeline already relies on).
         with self._lock:
-            # Abort an in-flight denoise too by setting ITS cancel event, so the step
-            # callback stops it. unload does NOT take _generate_lock — it must return
-            # promptly; the running generate keeps its own pipe reference, so freeing
-            # _state here can't crash it, and its VRAM is reclaimed when it returns
-            # (within ~one step thanks to the cancel).
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
-            self._unload_locked()
-            # Cancel any in-flight load (its worker checks this token before
-            # committing) and drop the marker so the next load starts clean.
-            self._load_token += 1
-            self._loading = None
+        with self._generate_lock:
+            with self._lock:
+                self._unload_locked()
+                # Cancel any in-flight load (its worker checks this token before
+                # committing) and drop the marker so the next load starts clean.
+                self._load_token += 1
+                self._loading = None
         return self.status()
 
     def _unload_locked(self) -> None:

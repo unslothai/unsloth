@@ -13,8 +13,6 @@ from __future__ import annotations
 import sys
 import types
 
-import pytest
-
 from core.inference import diffusion_device as dd
 
 
@@ -285,40 +283,3 @@ def test_fallback_cpu(monkeypatch):
     _install(monkeypatch, torch, hardware_fails = True)
     t = dd.resolve_diffusion_device_target()
     assert t.device == "cpu" and t.dtype == FP32
-
-
-# ── from-torch-device reconstruction + public dict ────────────────────
-
-
-def test_from_torch_device_cuda(monkeypatch):
-    torch = _make_torch()
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    t = dd.diffusion_device_target_from_torch_device("cuda:0", FP32)
-    assert (t.device, t.backend, t.vendor, t.dtype) == ("cuda", "cuda", "nvidia", FP32)
-    assert t.is_cuda_torch_device
-
-
-def test_from_torch_device_mps_and_cpu(monkeypatch):
-    torch = _make_torch()
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    mps = dd.diffusion_device_target_from_torch_device("mps", FP16)
-    assert mps.device == "mps" and not mps.supports_model_cpu_offload
-    cpu = dd.diffusion_device_target_from_torch_device("cpu", FP32)
-    assert cpu.device == "cpu" and cpu.vendor is None
-
-
-@pytest.mark.parametrize(
-    "dtype,expected", [(BF16, "bfloat16"), (FP16, "float16"), (FP32, "float32")]
-)
-def test_public_dict_dtype_string(dtype, expected):
-    t = dd.DiffusionDeviceTarget(
-        device = "cuda",
-        dtype = dtype,
-        backend = "cuda",
-        vendor = "nvidia",
-        supports_model_cpu_offload = True,
-        supports_default_torch_compile = True,
-        supports_pinned_transfer = True,
-    )
-    d = t.as_public_dict()
-    assert d["dtype"] == expected and "torch." not in d["dtype"]

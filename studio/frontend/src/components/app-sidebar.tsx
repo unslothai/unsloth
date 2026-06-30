@@ -44,7 +44,12 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
+import {
+  shouldUseCustomWindowTitlebar,
+  shouldUseNativeMacWindowTitlebar,
+} from "@/components/tauri/window-titlebar";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
@@ -273,6 +278,8 @@ function devForceUpdateCard(): boolean {
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
+  const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
+  const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -458,6 +465,10 @@ export function AppSidebar() {
     pinnedOpen,
     isStudioRoute,
   ]);
+
+  const chatDisabled = trainingInProgress;
+  const showSidebarBrand = !usesCustomTitlebar;
+  const showCompactMacBrand = showSidebarBrand && usesNativeMacTitlebar;
 
   function chatSearchForProject(projectId: string | null) {
     if (projectId) {
@@ -984,81 +995,118 @@ export function AppSidebar() {
       variant="sidebar"
       className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
     >
-      <SidebarHeader className="pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0">
-        {/* Expanded: compact logo + close toggle */}
-        <div className="flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden">
-          <Link
-            to="/chat"
-            onClick={(event) => {
-              event.preventDefault();
-              openNewChat(null);
-            }}
-            className="flex items-center gap-[6px] select-none"
-            aria-label={t("shell.aria.home")}
-          >
-            <img
-              src="/circle-logo-small.png"
-              alt="Unsloth"
-              className="h-[34px] w-[34px] rounded-full object-cover"
-            />
-            <span className="font-heading text-[21px] font-semibold tracking-[0em] dark:tracking-[0.02em] leading-none text-black dark:text-white">
-              unsloth
-            </span>
-            <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
-              {t("shell.beta")}
-            </span>
-          </Link>
-          {!isMobile && (
-            <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
-                <button
-                  type="button"
-                  onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label={t("shell.aria.closeSidebar")}
+      <SidebarHeader
+        className={cn(
+          "relative",
+          showSidebarBrand
+            ? showCompactMacBrand
+              ? "h-[var(--studio-chat-header-height,48px)] pl-[calc(var(--studio-mac-traffic-light-inset,78px)+6px)] pr-2 pt-[var(--studio-chat-header-padding-top,9px)] pb-0 group-data-[collapsible=icon]:h-[calc(var(--studio-mac-titlebar-height,34px)+var(--studio-chat-control-height,33px)+8px)] group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)]"
+              : "pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0"
+            : "h-[var(--studio-custom-titlebar-height,34px)] shrink-0 p-0",
+        )}
+      >
+        {showSidebarBrand && (
+          <>
+            {usesNativeMacTitlebar && (
+              <div
+                data-tauri-drag-region
+                aria-hidden="true"
+                className="absolute inset-x-0 top-0 z-0 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+              />
+            )}
+            <div
+              className={cn(
+                "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
+                showCompactMacBrand &&
+                  "h-[var(--studio-chat-control-height,33px)] justify-end gap-2",
+                !showCompactMacBrand && "justify-between",
+              )}
+            >
+              {!showCompactMacBrand && (
+                <Link
+                  to="/chat"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (chatDisabled) return;
+                    openNewChat(null);
+                  }}
+                  className={cn(
+                    "flex items-center gap-[6px] select-none transition-opacity",
+                    chatDisabled && "pointer-events-none opacity-50",
+                  )}
+                  aria-label={t("shell.aria.home")}
+                  aria-disabled={chatDisabled}
+                  tabIndex={chatDisabled ? -1 : undefined}
                 >
-                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
-                </button>
-              </TooltipPrimitive.Trigger>
-              <TooltipContent
-                side="bottom"
-                sideOffset={6}
-                className="tooltip-compact"
-              >
-                {t("shell.aria.closeSidebar")}
-              </TooltipContent>
-            </Tooltip>
-          )}
-        </div>
-
-        {/* Collapsed: panel icon doubles as expand trigger */}
-        {!isMobile && (
-          <div className="hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
-            <Tooltip>
-              <TooltipPrimitive.Trigger asChild>
-                <button
-                  type="button"
-                  onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label={t("shell.aria.openSidebar")}
-                >
-                  <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
-                </button>
-              </TooltipPrimitive.Trigger>
-              <TooltipContent
-                side="right"
-                sideOffset={8}
-                className="tooltip-compact"
-              >
-                {t("shell.aria.openSidebar")}
-              </TooltipContent>
-            </Tooltip>
-          </div>
+                  <img
+                    src="/circle-logo-small.png"
+                    alt="Unsloth"
+                    className="h-[34px] w-[34px] rounded-full object-cover"
+                  />
+                  <span className="font-heading text-[21px] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
+                    unsloth
+                  </span>
+                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                    {t("shell.beta")}
+                  </span>
+                </Link>
+              )}
+              {!isMobile && (
+                <Tooltip>
+                  <TooltipPrimitive.Trigger asChild>
+                    <button
+                      type="button"
+                      onClick={togglePinned}
+                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={t("shell.aria.closeSidebar")}
+                    >
+                      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                    </button>
+                  </TooltipPrimitive.Trigger>
+                  <TooltipContent
+                    side="bottom"
+                    sideOffset={6}
+                    className="tooltip-compact"
+                  >
+                    {t("shell.aria.closeSidebar")}
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </div>
+            {!isMobile && (
+              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
+                <Tooltip>
+                  <TooltipPrimitive.Trigger asChild>
+                    <button
+                      type="button"
+                      onClick={togglePinned}
+                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={t("shell.aria.openSidebar")}
+                    >
+                      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                    </button>
+                  </TooltipPrimitive.Trigger>
+                  <TooltipContent
+                    side="right"
+                    sideOffset={8}
+                    className="tooltip-compact"
+                  >
+                    {t("shell.aria.openSidebar")}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            )}
+          </>
         )}
       </SidebarHeader>
 
       {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pt-[9px] pb-px shrink-0">
+      <SidebarGroup
+        className={cn(
+          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pb-px shrink-0",
+          showCompactMacBrand ? "pt-0" : "pt-[9px]",
+        )}
+      >
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -1558,25 +1606,29 @@ export function AppSidebar() {
                   <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
                   <span>{t("common.help")}</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={async () => {
-                    // Best-effort server revocation; ignore network errors so
-                    // the local clear still runs and the user lands on /login.
-                    try {
-                      await logout();
-                    } catch {
-                      clearAuthTokens();
-                    }
-                    void navigate({ to: "/login" });
-                  }}
-                >
-                  <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("shell.navigation.logOut")}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
-                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("common.shutdown")}</span>
-                </DropdownMenuItem>
+                {!isTauri && (
+                  <DropdownMenuItem
+                    onSelect={async () => {
+                      // Best-effort server revocation; ignore network errors so
+                      // the local clear still runs and the user lands on /login.
+                      try {
+                        await logout();
+                      } catch {
+                        clearAuthTokens();
+                      }
+                      void navigate({ to: "/login" });
+                    }}
+                  >
+                    <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.navigation.logOut")}</span>
+                  </DropdownMenuItem>
+                )}
+                {!isTauri && (
+                  <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
+                    <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("common.shutdown")}</span>
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </SidebarMenuItem>
@@ -1584,11 +1636,13 @@ export function AppSidebar() {
       </SidebarFooter>
     </Sidebar>
     <ChatSearchDialog />
-    <ShutdownDialog
-      open={shutdownOpen}
-      onOpenChange={setShutdownOpen}
-      onAfterShutdown={removeTrainingUnloadGuard}
-    />
+    {!isTauri && (
+      <ShutdownDialog
+        open={shutdownOpen}
+        onOpenChange={setShutdownOpen}
+        onAfterShutdown={removeTrainingUnloadGuard}
+      />
+    )}
     <Dialog
       open={confirmingDelete !== null}
       onOpenChange={(open) => {
