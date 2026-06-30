@@ -1384,7 +1384,7 @@ jobs:
       - name: PyTorch CPU wheel installs and imports (no Visual Studio)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
           python -c "import torch; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())"
 
       - name: Install Studio (--local, --no-torch) with no build tools present
