@@ -15,8 +15,6 @@ import types
 import pytest
 
 from core.inference.diffusion_memory import (
-    DEFAULT_IMAGE_HEIGHT,
-    DEFAULT_IMAGE_WIDTH,
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_FAST,
     MEMORY_MODE_LOW_VRAM,
@@ -95,15 +93,13 @@ def test_estimate_gguf_dense_mib_expansion():
     assert estimate_gguf_dense_mib(1000, None) == 4000
 
 
-def test_estimate_image_runtime_scales_with_pixels_and_family():
-    base = estimate_image_runtime_mib(width = DEFAULT_IMAGE_WIDTH, height = DEFAULT_IMAGE_HEIGHT)
-    bigger = estimate_image_runtime_mib(width = 2048, height = 2048)
-    assert bigger > base
-    # Distilled / turbo families get a discount.
-    turbo = estimate_image_runtime_mib(
-        width = DEFAULT_IMAGE_WIDTH, height = DEFAULT_IMAGE_HEIGHT, family = "z-image-turbo"
-    )
-    assert turbo < base
+def test_estimate_image_runtime_scales_by_family():
+    base = estimate_image_runtime_mib(family = "z-image")
+    # Distilled / turbo families get a discount; editing pipelines need more.
+    turbo = estimate_image_runtime_mib(family = "z-image-turbo")
+    edit = estimate_image_runtime_mib(family = "flux-kontext-edit")
+    assert turbo < base < edit
+    assert turbo >= 1024  # never below the floor
 
 
 # ── planner: device classes ───────────────────────────────────────────────────
@@ -410,7 +406,6 @@ def _manual_plan(policy, *, tiling):
         vae_tiling = tiling,
         vae_slicing = tiling,
         device_memory = _discrete(4000, 8000),
-        estimates = {},
     )
 
 

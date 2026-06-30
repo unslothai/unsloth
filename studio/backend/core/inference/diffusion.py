@@ -621,7 +621,7 @@ class DiffusionBackend:
         model_dense_mib = None
         if transformer_dense is not None:
             model_dense_mib = transformer_dense + (companion_mib or 0)
-        runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = fam.name)
+        runtime_headroom = estimate_image_runtime_mib(family = fam.name)
         return plan_diffusion_memory(
             target = target,
             device_memory = device_memory,
