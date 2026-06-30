@@ -15,6 +15,8 @@ import { useEffect, useMemo, useState } from "react";
 import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
+import { LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -146,6 +148,7 @@ function deviceOrdinal(device: GpuDevice): number | undefined {
 export function ResourcesTab() {
   const t = useT();
   const [liveUpdates, setLiveUpdates] = useState(true);
+  const { isOpen, setIsOpen } = useMonitorOverlayStore();
   const systemInfo = useSystemInfo({
     enabled: liveUpdates,
     pollMs: liveUpdates ? POLL_MS : undefined,
@@ -256,13 +259,25 @@ export function ResourcesTab() {
             {t("settings.resources.description")}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-2 rounded-full border border-border/60 px-2.5 py-1.5 text-xs font-medium text-foreground">
-          <span>{t("settings.resources.liveUpdates")}</span>
-          <Switch
-            aria-label={t("settings.resources.liveUpdates")}
-            checked={liveUpdates}
-            onCheckedChange={setLiveUpdates}
-          />
+        <div className="flex items-center gap-3">
+          <Button
+            variant={isOpen ? "secondary" : "outline"}
+            size="sm"
+            className="gap-1.5 h-8 text-xs rounded-full px-3"
+            onClick={() => setIsOpen(!isOpen)}
+          >
+            <LayersIcon className="size-3.5" />
+            {isOpen ? "Disable Overlay" : "Floating Window"}
+          </Button>
+
+          <div className="flex shrink-0 items-center gap-2 rounded-full border border-border/60 px-2.5 py-1.5 text-xs font-medium text-foreground">
+            <span>{t("settings.resources.liveUpdates")}</span>
+            <Switch
+              aria-label={t("settings.resources.liveUpdates")}
+              checked={liveUpdates}
+              onCheckedChange={setLiveUpdates}
+            />
+          </div>
         </div>
       </header>
 
