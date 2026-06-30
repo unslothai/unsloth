@@ -591,3 +591,14 @@ def test_mistral_single_object_call_is_stripped_for_display():
     assert _strip_mistral_closed_calls(text) == " tail"
     # A literal [TOOL_CALLS] in prose (no following object) is left untouched.
     assert _strip_mistral_closed_calls("See the [TOOL_CALLS] docs") == "See the [TOOL_CALLS] docs"
+
+
+def test_tool_call_parser_declares_future_annotations_for_py39_import():
+    # F1: the parser is dependency-light (external llama-server wrappers import it
+    # standalone) and the package targets python >=3.9. Its PEP 604 ``X | None``
+    # return annotations would raise TypeError on a 3.9 import without
+    # ``from __future__ import annotations``; guard that the import stays present.
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py").read_text()
+    assert "from __future__ import annotations" in src

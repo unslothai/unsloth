@@ -8602,12 +8602,14 @@ class LlamaCppBackend:
                             content_accum = _strip_tool_markup(content_accum, final = True)
                         # A truncated bare-JSON tool call (``{"name":..`` cut off
                         # by max_tokens) has no XML markup for the strip above to
-                        # remove and did not parse to a call. Strip a leading
-                        # ENABLED-tool bare-JSON call (truncated -> "", complete ->
-                        # keep trailing prose) rather than dumping the raw fragment.
-                        # Gated on the enabled tool names so an ordinary JSON answer
-                        # whose name is not a tool ({"name":"Alice",...}) is untouched.
-                        if content_accum and active_tools:
+                        # remove and did not parse to a call. With Auto-Heal on, strip
+                        # a leading ENABLED-tool bare-JSON call (truncated -> "",
+                        # complete -> keep trailing prose) rather than dumping the raw
+                        # fragment. Gated on the enabled tool names so an ordinary JSON
+                        # answer whose name is not a tool ({"name":"Alice",...}) is
+                        # untouched, and on Auto-Heal so the disabled contract keeps a
+                        # malformed fragment visible (matching the XML strip above).
+                        if content_accum and active_tools and auto_heal_tool_calls:
                             content_accum = strip_leading_bare_json_call(
                                 content_accum, _enabled_tool_names
                             )

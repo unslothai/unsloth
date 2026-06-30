@@ -1262,6 +1262,12 @@ async def artifact_preview_frame(allow_network: bool = False):
     )
 
 
+# Whitespace/escape-tolerant ``{"name":`` detector for bare-JSON tool templates.
+# Matches ``{"name":``, ``{ "name" :`` (pretty-printed) and ``{\"name\":``
+# (JSON-escaped inside the template), mirroring the parser's whitespace tolerance.
+_BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"name\\?"\s*:')
+
+
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
@@ -1276,19 +1282,22 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     # tools but uses none, drop the pill. Reuse the parser's own signal list
     # (``_PARSER_TOOL_SIGNALS``) so this gate never drifts from the formats the
     # parser actually handles -- a hand-maintained copy silently lost the new
-    # DeepSeek opener variants. ``{"name":`` covers Llama-3.2 ``custom_tools``
-    # bare-JSON and ``<arg_key>`` is GLM's unique signal (GLM and Qwen share
-    # ``<tool_call>``); neither is in the shared XML-signal set, so add them here.
+    # DeepSeek opener variants. ``<arg_key>`` is GLM's unique signal (GLM and Qwen
+    # share ``<tool_call>``); it is not in the shared XML-signal set, so add it here.
+    # The bare-JSON ``{"name":`` form (Llama-3.2 ``custom_tools``) is matched below
+    # with the whitespace/escape-tolerant ``_BARE_JSON_NAME_MARKER_RE`` instead of
+    # literal substrings, so a pretty-printed ``{ "name" :`` or escaped
+    # ``{\"name\":`` template is not mis-classified as tool-less (the parser accepts
+    # that whitespace via ``json.JSONDecoder().raw_decode``).
     _PARSER_MARKERS = (
         *_PARSER_TOOL_SIGNALS,
-        '{"name":',
-        '{\\"name\\":',
         "<arg_key>",
     )
     if (
         flags.get("supports_tools")
         and chat_template
         and not any(m in chat_template for m in _PARSER_MARKERS)
+        and not _BARE_JSON_NAME_MARKER_RE.search(chat_template)
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "

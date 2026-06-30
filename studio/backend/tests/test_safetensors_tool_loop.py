@@ -3522,3 +3522,26 @@ def test_bare_json_call_not_replayed_in_next_turn_content():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled():
+    # F3: with Auto-Heal OFF, a truncated ENABLED-name bare-JSON fragment that did
+    # not parse must stay visible (disabled-Auto-Heal contract: malformed markup is
+    # preserved), matching the XML strip in the same drain branch. With Auto-Heal ON
+    # the same fragment is suppressed.
+    trunc = '{"name":"web_search","parameters":{"query":"weather'
+    off, exec_off = _make_loop(
+        turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = False
+    )
+    events_off = _collect_events(off)
+    assert exec_off.calls == [], exec_off.calls
+    contents_off = "".join(e["text"] for e in events_off if e["type"] == "content")
+    assert "web_search" in contents_off, contents_off
+
+    on, exec_on = _make_loop(
+        turns = [[trunc]], max_tool_iterations = 1, auto_heal_tool_calls = True
+    )
+    events_on = _collect_events(on)
+    assert exec_on.calls == [], exec_on.calls
+    contents_on = "".join(e["text"] for e in events_on if e["type"] == "content")
+    assert "web_search" not in contents_on, contents_on
