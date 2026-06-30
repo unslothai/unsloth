@@ -442,6 +442,7 @@ def test_tool_call_parser_declares_future_annotations_for_py39_import():
     # return annotations would raise TypeError on a 3.9 import without
     # ``from __future__ import annotations``; guard that the import stays present.
     from pathlib import Path
-
-    src = (Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py").read_text()
+    src = (
+        Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py"
+    ).read_text()
     assert "from __future__ import annotations" in src
