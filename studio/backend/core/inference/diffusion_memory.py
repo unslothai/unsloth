@@ -374,18 +374,24 @@ def plan_diffusion_memory(
         policy = OFFLOAD_MODEL
         reasons.append("explicit cpu_offload requests whole-module offload")
 
-    # VAE tiling/slicing decode the image in chunks, capping the decode-time spike
-    # that often dominates peak VRAM at high resolution. Turn it on whenever weights
-    # are being offloaded (the device is already tight) or there is no spare device
-    # pool to offload to -- unified / system memory, i.e. MPS, CPU, and integrated /
-    # unified-memory CUDA (which is_unified covers; a backend-string check would miss
-    # it). On a roomy discrete GPU it stays off so output is bit-identical.
+    # VAE TILING decodes in spatially-overlapping chunks and blends the seams,
+    # capping the decode-time VRAM spike at high resolution -- but it is LOSSY above
+    # the tile threshold (diffusers blends overlapping tiles), so only engage it when
+    # weights are being offloaded (the device is already tight) or there is no spare
+    # device pool to offload to -- unified / system memory, i.e. MPS, CPU, and
+    # integrated / unified-memory CUDA (which is_unified covers; a backend-string
+    # check would miss it). On a roomy discrete GPU it stays off so output is
+    # bit-identical.
     tile = policy != OFFLOAD_NONE or device_memory.is_unified
+    # VAE SLICING decodes one batch element at a time and concatenates (no blending):
+    # bit-identical to a non-sliced decode, and diffusers no-ops it below batch>1, so
+    # it's free at the batch=1 size every request uses today. Always on -- it never
+    # changes output and a future batched caller gets the memory saving for free.
     return MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
         vae_tiling = tile,
-        vae_slicing = tile,
+        vae_slicing = True,
         device_memory = device_memory,
         reasons = tuple(reasons),
     )

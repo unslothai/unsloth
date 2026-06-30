@@ -159,7 +159,8 @@ def test_auto_resident_when_roomy():
         runtime_headroom_mib = 4000,
     )
     assert plan.offload_policy == OFFLOAD_NONE
-    assert plan.vae_tiling is False and plan.vae_slicing is False  # roomy -> no tiling
+    assert plan.vae_tiling is False  # roomy -> no lossy tiling
+    assert plan.vae_slicing is True  # slicing is always on (lossless, free at batch=1)
 
 
 def test_auto_model_offload_on_tight_fit():
@@ -420,7 +421,8 @@ def _manual_plan(policy, *, tiling):
 def test_apply_none_places_resident():
     pipe = _RecordingPipe()
     effective, tiled = apply_memory_plan(pipe, _plan(OFFLOAD_NONE, tiling = False), device = "cuda")
-    assert pipe.calls == ["to:cuda"]  # no tiling on a roomy resident run
+    # Resident placement, no lossy tiling, but slicing is always on (lossless / free).
+    assert pipe.calls == ["vae_slicing", "to:cuda"]
     assert effective == OFFLOAD_NONE and tiled is False
 
 
