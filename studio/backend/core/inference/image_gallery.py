@@ -146,6 +146,11 @@ def list_images(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, 
     # Page over READABLE records, not raw files: filtering a foreign/corrupt PNG out of an
     # already-sliced window would drop valid images that sort after it and make the route's
     # has_more wrong. Read only as far as needed to fill the requested window.
+    # Known Phase-1 limit: this re-reads headers from the newest down to `offset+limit` on
+    # every page, so a deep infinite-scroll over a very large gallery (thousands of images,
+    # e.g. a long uncapped batch) is O(offset) header-opens per page. PIL opens are lazy
+    # (header only) and this runs off the event loop, so it's not a freeze; a later phase can
+    # switch to cursor-based paging (resume after the last-seen record) if it starts to bite.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:

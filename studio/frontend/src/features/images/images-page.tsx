@@ -348,12 +348,17 @@ function RecipeRow({
 function RecipePopover({
   image,
   onRestore,
+  active,
 }: {
   image: GalleryImage;
   onRestore: (image: GalleryImage) => void;
+  active: boolean;
 }) {
+  // Controlled + force-closed off-tab: PopoverContent portals to body, so the
+  // hidden/inert page wrapper can't contain it when the page is kept mounted.
+  const [open, setOpen] = useState(false);
   return (
-    <Popover>
+    <Popover open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <PopoverTrigger asChild>
         <Button size="sm" variant="ghost" className="gap-1.5">
           <HugeiconsIcon icon={InformationCircleIcon} className="size-4" />
@@ -419,9 +424,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
-  // Controlled so the model selector force-closes when this page is mounted but
-  // off-tab (it portals to body, so a hidden parent wouldn't otherwise hide it).
+  // Controlled so the body-portaled overlays force-close when this page is mounted
+  // but off-tab (a hidden/inert parent can't contain a body portal): the model
+  // selector and the aspect-ratio dropdown.
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const [aspectOpen, setAspectOpen] = useState(false);
   // Records come from the backend (durable); srcById maps each id to its object
   // URL (loaded images) or data URL (the one just generated).
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
@@ -432,8 +439,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
-  // False once the page unmounts, so a multi-run generation loop stops issuing further
-  // GPU work (and state updates) after the user navigates away.
+  // False once the page truly unmounts (app close / chat-only eject). The page now
+  // stays mounted across tab switches, so a switch does NOT flip this -- a batch keeps
+  // generating off-tab; the multi-run loop only stops on a real unmount.
   const isMounted = useRef(true);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
@@ -821,7 +829,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }, 300);
     try {
       for (let i = 0; i < runs; i++) {
-        // The user navigated away mid-run: stop issuing more GPU generations.
+        // The page truly unmounted mid-run (app close / chat-only eject): stop
+        // issuing more GPU generations. A plain tab switch keeps it mounted.
         if (!isMounted.current) break;
         const res = await generateDiffusionImage({
           prompt: prompt.trim(),
@@ -903,7 +912,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             hint="Pick a ratio to lock the proportions, then set the size with the sliders. Flip swaps width and height. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
           >
             <div className="flex items-center gap-2">
-              <Select value={aspect} onValueChange={changeAspect}>
+              <Select
+                value={aspect}
+                onValueChange={changeAspect}
+                open={active && aspectOpen}
+                onOpenChange={(o) => setAspectOpen(active && o)}
+              >
                 <SelectTrigger className="flex-1">
                   <SelectValue />
                 </SelectTrigger>
@@ -995,7 +1009,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                     any image and read as a unit instead of blending into the canvas.
                     Size/seed live in the Recipe popover, so no separate chip here. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
-                  <RecipePopover image={selected} onRestore={restoreSettings} />
+                  <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <Button
                     size="sm"
                     variant="ghost"

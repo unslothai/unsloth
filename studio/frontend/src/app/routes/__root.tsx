@@ -273,8 +273,9 @@ function RootLayout() {
                 </div>
               )}
               {/* Same keep-alive treatment for Images so a long batch keeps
-                  generating off-tab; `active` closes its body-portaled model
-                  selector so it can't bleed over another tab while hidden. */}
+                  generating off-tab; `active` force-closes its body-portaled
+                  overlays (model selector, recipe popover, aspect dropdown) so
+                  none can bleed over another tab while hidden. */}
               {shouldMountImages && (
                 <div
                   className={
