@@ -1,4 +1,0 @@
-- Decision: user requested review findings be posted as inline comments.
-- Preserve directive verbatim: `Yes as inline comments post them`
-- Completed: confirmation captured.
-- Pending: post inline comments.
