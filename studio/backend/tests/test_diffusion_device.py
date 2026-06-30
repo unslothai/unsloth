@@ -283,5 +283,3 @@ def test_fallback_cpu(monkeypatch):
     _install(monkeypatch, torch, hardware_fails = True)
     t = dd.resolve_diffusion_device_target()
     assert t.device == "cpu" and t.dtype == FP32
-
-
