@@ -239,6 +239,7 @@ class InferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             apply_fn = self._apply_chat_template_for_generation,
+            hf_token = getattr(self, "_hf_token", None),
         )
 
     def load_model(
@@ -252,6 +253,9 @@ class InferenceBackend:
         gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load any model: base, LoRA adapter, text, or vision."""
+        # Keep the load token so the native-template fallback can fetch a
+        # gated/private model's repo template later (during generation).
+        self._hf_token = hf_token
         # GGUF uses max_seq_length=0 as "model default"; Unsloth crashes on it.
         if max_seq_length <= 0:
             max_seq_length = 2048
@@ -1024,6 +1028,7 @@ class InferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 apply_fn = self._apply_chat_template_for_generation,
+                hf_token = getattr(self, "_hf_token", None),
             )
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")

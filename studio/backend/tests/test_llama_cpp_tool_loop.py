@@ -1916,6 +1916,37 @@ def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
     assert all('{"name"' not in t for t in content_texts), content_texts
 
 
+def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(monkeypatch):
+    """A truncated markerless object whose "name" is NOT an enabled tool (a person
+    record cut off mid-stream, ``{"name":"Alice","age":``) must still be shown. The
+    end-of-stream ``_is_bare_tc`` heuristic routed any ``{...,"name",...}`` fragment
+    to DRAINING (dropped); it is now gated on the enabled tool names so only a real
+    truncated tool call is suppressed, ordinary JSON streams through."""
+
+    truncated = '{"name": "Alice", "age": 30, "bio": "loves '
+    stream = _streamed_content(truncated)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "start a person record"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("Alice" in t for t in content_texts), content_texts
+
+
 def test_gemma_wrapperless_call_streamed_is_not_leaked_and_executes(monkeypatch):
     """Gemma 4 GGUF (skip_special_tokens) streams a wrapper-less ``call:NAME{..}``
     with no XML signal. Like bare JSON, the BUFFERING scan must recognise it via

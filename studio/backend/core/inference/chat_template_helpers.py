@@ -74,6 +74,7 @@ def render_native_template(
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
     apply_fn = None,
+    hf_token: Optional[str] = None,
 ) -> Optional[str]:
     """Render ``messages`` + ``tools`` with the model's NATIVE chat template.
 
@@ -84,6 +85,10 @@ def render_native_template(
     override on the live tokenizer) and cached on ``model_info``. Returns the
     rendered prompt only if the native template actually emits the tools (render
     differs with vs without tools); otherwise ``None``.
+
+    ``hf_token`` is the token the model was loaded with -- passed to the repo load
+    so a gated/private model's native template can still be fetched (otherwise the
+    fallback fails silently and keeps the override prompt that dropped tools).
     """
     # ``apply_fn`` lets a backend inject its own render (e.g. one that peels
     # template-rejected kwargs); defaults to the dependency-light module helper.
@@ -96,7 +101,10 @@ def render_native_template(
         template_source = model_info.get("base_model") or active_model_name
         try:
             from transformers import AutoTokenizer
-            nt = AutoTokenizer.from_pretrained(template_source)
+            nt = AutoTokenizer.from_pretrained(
+                template_source,
+                token = hf_token if hf_token and hf_token.strip() else None,
+            )
             native_tpl = nt.chat_template or False
         except Exception as exc:
             logger.warning(
@@ -166,6 +174,7 @@ def render_with_native_template_fallback(
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
     apply_fn = None,
+    hf_token: Optional[str] = None,
 ) -> str:
     """Return ``formatted_prompt``, swapping in a native-template render when an
     override template dropped the ``tools`` schema.
@@ -173,7 +182,8 @@ def render_with_native_template_fallback(
     If ``tools`` were requested but the live render is identical with and without
     them (detected by comparison, robust against tool names in the system prompt),
     re-render with the model's native template. Shared by the transformers and MLX
-    backends so both advertise tools consistently."""
+    backends so both advertise tools consistently. ``hf_token`` is forwarded so a
+    gated/private model's native template can still be fetched."""
     if not tools:
         return formatted_prompt
     if apply_fn is None:
@@ -197,6 +207,7 @@ def render_with_native_template_fallback(
         reasoning_effort = reasoning_effort,
         preserve_thinking = preserve_thinking,
         apply_fn = apply_fn,
+        hf_token = hf_token,
     )
     if native_prompt:
         logger.info(

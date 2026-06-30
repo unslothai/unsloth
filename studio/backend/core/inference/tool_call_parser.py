@@ -88,6 +88,10 @@ _TOOL_CLOSED_PATS = [
     re.compile(_DEEPSEEK_OPEN_RE_SRC + r".*?<｜tool▁calls▁end｜>", re.DOTALL),
     # Kimi K2: ``<|tool_calls_section_begin|>...<|tool_calls_section_end|>``.
     re.compile(r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>", re.DOTALL),
+    # Kimi K2 bare (section-less) closed call ``<|tool_call_begin|>...<|tool_call_end|>``.
+    # The parser accepts this shape; without a CLOSED arm here the unclosed
+    # ``<|tool_call_begin|>.*$`` catch-all below eats trailing prose to EOS.
+    re.compile(r"<\|tool_call_begin\|>.*?<\|tool_call_end\|>", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),

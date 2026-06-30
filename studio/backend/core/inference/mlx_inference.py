@@ -104,6 +104,9 @@ class MLXInferenceBackend:
     ) -> bool:
         import mlx.core as mx
 
+        # Keep the load token so the native-template fallback can fetch a
+        # gated/private model's repo template later (during generation).
+        self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
 
@@ -173,6 +176,12 @@ class MLXInferenceBackend:
             "processor": self._processor,
             "is_vision": is_vision,
             "is_lora": getattr(config, "is_lora", False),
+            # For a LoRA adapter the native chat template lives on the base model;
+            # without this the native-template fallback would load the adapter's own
+            # (often template-less) tokenizer instead of the base model template.
+            "base_model": getattr(config, "base_model", None)
+            if getattr(config, "is_lora", False)
+            else None,
             "is_audio": False,
             "audio_type": None,
             "has_audio_input": False,
@@ -385,6 +394,7 @@ class MLXInferenceBackend:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            hf_token = getattr(self, "_hf_token", None),
         )
 
         sampler = make_sampler(

@@ -8375,6 +8375,13 @@ class LlamaCppBackend:
                     _is_bare_tc = (
                         bool(active_tools) and _bare_eos.startswith("{") and '"name"' in _bare_eos
                     )
+                    # Only treat it as a call fragment when the name is an enabled
+                    # tool; an ordinary (possibly truncated) JSON answer like
+                    # ``{"name":"Alice","age":`` must stream, not drain to nothing.
+                    if _is_bare_tc:
+                        _nm = re.search(r'"name"\s*:\s*"([^"]+)"', _bare_eos)
+                        if not (_nm and _nm.group(1) in _enabled_tool_names):
+                            _is_bare_tc = False
                     if stripped_buf and any(s in stripped_buf for s in _tool_xml_signals):
                         detect_state = _S_DRAINING
                     elif _is_bare_tc:

@@ -34,12 +34,16 @@ assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(
 # helper also delegates to _strip_tool_xml, which runs the parser's Mistral
 # [TOOL_CALLS] balanced strip, so provide _strip_mistral_closed_calls too.
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
-from core.inference.tool_call_parser import _strip_mistral_closed_calls
+from core.inference.tool_call_parser import (
+    _strip_gemma_wrapperless_calls,
+    _strip_mistral_closed_calls,
+)
 
 _ns = {
     "_re": _re,
     "_DS_OPEN_SRC": _DS_OPEN_SRC,
     "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
+    "_strip_gemma_wrapperless_calls": _strip_gemma_wrapperless_calls,
 }
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]

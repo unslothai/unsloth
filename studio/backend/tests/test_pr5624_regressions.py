@@ -473,3 +473,39 @@ def test_strip_tool_markup_removes_nested_wrapperless_gemma_call():
     assert "call:f" not in stripped
     assert "}" not in stripped
     assert "answer:" in stripped and "done" in stripped
+
+
+# ────────────────────────────────────────────────────────────────────
+# Pass-3 review findings: bare-Kimi streaming (non-final) strip symmetry
+# and the wrapper-less Gemma route-display strip
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_strip_tool_markup_non_final_removes_bare_kimi_call():
+    # The parser accepts a bare ``<|tool_call_begin|>...<|tool_call_end|>`` with no
+    # section wrapper, so the CLOSED (streaming, final=False) strip must remove it
+    # too -- otherwise the call's markup leaks into the live stream mid-generation
+    # while only the finalise pass cleaned it. The surrounding prose must survive.
+    text = (
+        "before "
+        "<|tool_call_begin|>functions.web_search:0"
+        '<|tool_call_argument_begin|>{"q":"x"}'
+        "<|tool_call_end|>"
+        " after"
+    )
+    stripped = strip_tool_markup(text, final = False)
+    assert "tool_call_begin" not in stripped
+    assert "tool_call_end" not in stripped
+    assert "before" in stripped and "after" in stripped
+
+
+def test_routes_layer_strip_removes_wrapperless_gemma_call():
+    # Gemma 4 (skip_special_tokens) emits a wrapper-less ``call:NAME{..}`` with no
+    # XML markers. _strip_tool_xml now delegates to _strip_gemma_wrapperless_calls,
+    # so the route display strip removes it instead of leaking ``call:web_search``.
+    from routes.inference import _strip_tool_xml as _routes_strip
+
+    text = 'before call:web_search{query:"weather in Sydney"} after'
+    stripped = _routes_strip(text)
+    assert "call:web_search" not in stripped
+    assert "before" in stripped and "after" in stripped
