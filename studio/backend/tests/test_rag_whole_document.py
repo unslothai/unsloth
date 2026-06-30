@@ -230,9 +230,7 @@ def test_build_rag_autoinject_whole_doc_runs_when_autoinject_false(rag_conn, mon
         "search_for_autoinject",
         lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
     )
-    result = inf_tools.build_rag_autoinject(
-        _convo(), {"thread_id": "t1", "autoinject": False}
-    )
+    result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False})
     assert result is not None
     assert "entire file body" in _injected_text(result)
 
@@ -280,9 +278,7 @@ def test_build_rag_autoinject_context_budget_falls_back(rag_conn, monkeypatch):
     assert _injected_text(result) == "TOPK_CONTEXT_FALLBACK"
 
 
-def test_build_rag_autoinject_server_kill_switch_blocks_whole_doc(
-    rag_conn, monkeypatch
-):
+def test_build_rag_autoinject_server_kill_switch_blocks_whole_doc(rag_conn, monkeypatch):
     # RAG_THREAD_WHOLE_DOC=0 stays authoritative; browser requests should not
     # turn it back on by default.
     from core.rag import config
@@ -294,7 +290,9 @@ def test_build_rag_autoinject_server_kill_switch_blocks_whole_doc(
         "search_for_autoinject",
         lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
     )
-    assert inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False}) is None
+    assert (
+        inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False}) is None
+    )
 
 
 def test_whole_document_context_budgets_rendered_wrappers(rag_conn):
@@ -311,7 +309,6 @@ def test_whole_document_context_budgets_rendered_wrappers(rag_conn):
         tokens = [1 for _ in texts],
     )
     assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 500) is None
-
 
 
 def test_build_rag_autoinject_whole_doc_disabled_via_override(rag_conn, monkeypatch):

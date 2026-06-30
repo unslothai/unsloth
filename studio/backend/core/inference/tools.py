@@ -1205,9 +1205,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         enabled = _autoinject_enabled()
     thread_id = rag_scope.get("thread_id")
     whole_doc_requested = (
-        bool(thread_id)
-        and not rag_scope.get("kb_id")
-        and _thread_whole_doc_enabled(rag_scope)
+        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
     )
     if not enabled and not whole_doc_requested:
         return None
