@@ -49,9 +49,13 @@ def test_detect_family_from_repo_id():
     # Qwen-Image guides via true_cfg_scale, not guidance_scale.
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").cfg_kwarg == "true_cfg_scale"
     assert detect_family("unsloth/Z-Image-GGUF").cfg_kwarg == "guidance_scale"
-    # Image-editing checkpoints are rejected (text-to-image backend only).
+    # Image-editing checkpoints are rejected (text-to-image backend only): the
+    # edit keyword is matched as a whole id segment, so an "edit" that's only a
+    # substring of a normal word ("Edition") still loads.
     assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF") is None
     assert detect_family("unsloth/FLUX.1-Kontext-dev-GGUF") is None
+    assert detect_family("unsloth/Qwen-Image-Inpainting-GGUF") is None
+    assert detect_family("unsloth/Z-Image-Edition-GGUF").name == "z-image"
     assert detect_family("meta-llama/Llama-3-8B") is None
 
 
@@ -310,7 +314,9 @@ def test_load_without_gguf_raises():
 
 def test_load_unknown_family_raises():
     backend = DiffusionBackend()
-    with pytest.raises(ValueError):
+    # load_pipeline validates via validate_load_request, which rejects an
+    # undetectable family before any GPU/network work.
+    with pytest.raises(ValueError, match = "family"):
         backend.load_pipeline("some/unrecognised-repo", gguf_filename = "x.gguf")
 
 
@@ -854,3 +860,28 @@ def test_detect_family_from_local_gguf_filename(tmp_path):
         backend.validate_load_request(str(tmp_path), gguf_filename = "FLUX.1-Kontext-dev-Q4.gguf")
     # A bare parent dir whose name DOES carry the keyword still works (unchanged).
     assert backend._detect_family_for_pick("unsloth/Z-Image-GGUF", "x.gguf", None).name == "z-image"
+
+
+def test_run_load_does_not_stamp_superseded_progress(fake_runtime, monkeypatch):
+    # A worker whose load is superseded mid-resolve must not stamp its progress
+    # (base_repo / expected_bytes) onto the new load's _LoadingState.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(repo_id = "unsloth/Z-Image-Turbo-GGUF", base_repo = "seed")
+    backend._load_token = 5
+    monkeypatch.setattr("core.inference.diffusion._hf_base_model", lambda *a, **k: None)
+
+    def supersede_then_estimate(*a, **k):
+        backend._load_token = 6  # a newer begin_load bumped the token mid-resolve
+        return (99999, [])
+
+    monkeypatch.setattr(
+        DiffusionBackend, "_estimate_download_bytes", staticmethod(supersede_then_estimate)
+    )
+    monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda self, *a, **k: None)
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **k: None)
+
+    backend._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "m.gguf", base_repo = None, _load_token = 5
+    )
+    assert backend._loading.expected_bytes == 0
+    assert backend._loading.base_repo == "seed"

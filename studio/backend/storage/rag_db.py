@@ -156,3 +156,71 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_vec'"
     ).fetchone()
     return row is not None
+
+
+def _delete_document_chunks(conn, document_id: str) -> None:
+    """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the
+    documents row. Used when reconciling a half-ingested doc to failed: retrieval
+    filters by scope not status, so leftover chunks would stay citable."""
+    chunk_ids = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM chunks WHERE document_id=?", (document_id,)
+        ).fetchall()
+    ]
+    if not chunk_ids:
+        return
+    has_vec = vec_table_exists(conn)
+    for chunk_id in chunk_ids:
+        conn.execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
+        if has_vec:
+            conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
+    conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+
+
+def reconcile_orphaned_ingestion_jobs() -> int:
+    """Fail ingestion jobs/documents left mid-flight by a crash so they stop
+    showing as stuck "processing" and become re-ingestible. Run at startup.
+    No-op without RAG. Returns the number of jobs reset.
+    """
+    if not RAG_AVAILABLE:
+        return 0
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, document_id FROM ingestion_jobs "
+            "WHERE status NOT IN ('completed', 'failed')"
+        ).fetchall()
+        for row in rows:
+            doc = conn.execute(
+                "SELECT status FROM documents WHERE id=?", (row["document_id"],)
+            ).fetchone()
+            if doc is not None and doc["status"] == "completed":
+                # Worker finished indexing before the crash but didn't retire the
+                # job row. Mark the job completed (not failed) and keep its chunks,
+                # so the UI's getJob fallback after restart doesn't flag a
+                # searchable document as a failed ingestion.
+                conn.execute(
+                    "UPDATE ingestion_jobs SET status='completed', stage='done', "
+                    "progress=1.0, error=NULL WHERE id=?",
+                    (row["id"],),
+                )
+                continue
+            conn.execute(
+                "UPDATE ingestion_jobs SET status='failed', stage='error', "
+                "error='Server restarted during ingestion' WHERE id=?",
+                (row["id"],),
+            )
+            conn.execute(
+                "UPDATE documents SET status='failed' "
+                "WHERE id=? AND status NOT IN ('completed', 'failed')",
+                (row["document_id"],),
+            )
+            # A failed or still-in-flight doc must not leave citable chunks
+            # (retrieval filters by scope, not status); also drops any chunks of a
+            # doc already 'failed' before the crash.
+            _delete_document_chunks(conn, row["document_id"])
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()

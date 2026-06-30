@@ -86,6 +86,8 @@ __all__ = [
     "is_moe_model",
     "get_moe_target_parameters",
     "make_fast_generate_wrapper",
+    "_mark_unsloth_disable_data_parallel",
+    "_patch_transformers_trainer_data_parallel",
 ]
 
 import torch
@@ -158,6 +160,85 @@ from unsloth_zoo.compiler import (
 from unsloth_zoo.training_utils import (
     prepare_model_for_training,
 )
+
+
+def _iter_wrapped_models(model):
+    seen = set()
+    current = model
+    while current is not None and id(current) not in seen:
+        yield current
+        seen.add(id(current))
+        next_model = getattr(current, "model", None)
+        if next_model is None:
+            next_model = getattr(current, "base_model", None)
+        if next_model is None:
+            next_model = getattr(current, "module", None)
+        current = next_model
+
+
+def _patch_transformers_trainer_data_parallel():
+    try:
+        from transformers.trainer import Trainer
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+    original_wrap_model = getattr(Trainer, "_wrap_model", None)
+    if original_wrap_model is None:
+        return False
+    if getattr(original_wrap_model, "_unsloth_data_parallel_patched", False):
+        return True
+    try:
+        supports_dataloader = "dataloader" in inspect.signature(original_wrap_model).parameters
+    except (TypeError, ValueError):
+        supports_dataloader = True
+
+    def _call_original_wrap_model(self, model, wrap_args, wrap_kwargs):
+        if supports_dataloader:
+            return original_wrap_model(self, model, *wrap_args, **wrap_kwargs)
+
+        if "dataloader" in wrap_kwargs:
+            wrap_kwargs = {k: v for k, v in wrap_kwargs.items() if k != "dataloader"}
+        return original_wrap_model(self, model, *wrap_args, **wrap_kwargs)
+
+    @functools.wraps(original_wrap_model)
+    def _unsloth_wrap_model(self, model, *wrap_args, **wrap_kwargs):
+        args = getattr(self, "args", None)
+        disable_data_parallel = getattr(model, "_unsloth_disable_data_parallel", False)
+        is_real_8bit = getattr(model, "is_loaded_in_8bit", False)
+        if (
+            args is None
+            or not disable_data_parallel
+            or is_real_8bit
+            or getattr(args, "n_gpu", 0) <= 1
+        ):
+            return _call_original_wrap_model(self, model, wrap_args, wrap_kwargs)
+
+        had_n_gpu = hasattr(args, "_n_gpu")
+        old_n_gpu = getattr(args, "_n_gpu", None)
+        args._n_gpu = 1
+        try:
+            return _call_original_wrap_model(self, model, wrap_args, wrap_kwargs)
+        finally:
+            if had_n_gpu:
+                args._n_gpu = old_n_gpu
+            else:
+                try:
+                    delattr(args, "_n_gpu")
+                except AttributeError:
+                    pass
+
+    _unsloth_wrap_model._unsloth_data_parallel_patched = True
+    _unsloth_wrap_model._unsloth_original_wrap_model = original_wrap_model
+    Trainer._wrap_model = _unsloth_wrap_model
+    return True
+
+
+def _mark_unsloth_disable_data_parallel(model, disable = True):
+    if disable:
+        _patch_transformers_trainer_data_parallel()
+    for module in _iter_wrapped_models(model):
+        setattr(module, "_unsloth_disable_data_parallel", bool(disable))
+    return model
 
 
 def resolve_hip_gpu_stats_name(gpu_stats):

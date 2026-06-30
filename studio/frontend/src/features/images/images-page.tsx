@@ -115,6 +115,10 @@ const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
 // Z-Image accepts 256–2048, in multiples of 16. Snap any value into range.
 const MIN_DIM = 256;
 const MAX_DIM = 2048;
+// Convenient drag range for the Runs slider. The number box accepts higher typed
+// values on purpose (set it large to generate all night); the loop only floors at
+// 1 and ignores non-numeric input.
+const RUNS_SLIDER_MAX = 128;
 function snapDim(value: number): number {
   if (!Number.isFinite(value)) return 1024;
   return Math.min(MAX_DIM, Math.max(MIN_DIM, Math.round(value / 16) * 16));
@@ -582,19 +586,16 @@ export function ImagesPage() {
     }
   }, []);
 
+  // Track mount so a long sequential generate run stops issuing GPU work once
+  // the user navigates away (the generate loop checks isMounted.current). The
+  // mount-time refreshStatus and the timer/toast cleanup live in the load-resume
+  // effect below, so this one carries only the mount flag.
   useEffect(() => {
     isMounted.current = true;
-    void refreshStatus();
-    // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the
-    // load toast — its poll loop is gone, so it would otherwise hang forever
-    // (duration: Infinity) on whatever page the user navigated to.
     return () => {
       isMounted.current = false;
-      if (pollTimer.current) clearTimeout(pollTimer.current);
-      if (genPollTimer.current) clearInterval(genPollTimer.current);
-      dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast]);
+  }, []);
 
   // Poll load-progress until the background load reaches "ready" or "error",
   // updating the persistent toast in place each tick.
@@ -612,6 +613,19 @@ export function ImagesPage() {
         dismissLoadToast();
         toast.error(p.error || "Failed to load model");
         setBusy(null);
+        // A failed load may have freed a previously-loaded model, so resync to
+        // the real backend state (the synchronous failure path does the same).
+        void refreshStatus();
+        return;
+      }
+      if (p.phase === null) {
+        // No load in flight and nothing loaded: the load was cancelled or
+        // evicted (e.g. a chat load took the GPU) and the backend cleared its
+        // state. Terminal — otherwise this loop would spin forever and leave
+        // busy stuck on "loading", deadening the picker and Generate button.
+        dismissLoadToast();
+        setBusy(null);
+        void refreshStatus();
         return;
       }
       // Include bytes_total: the estimate lands as a 0→real jump while phase and
@@ -625,7 +639,37 @@ export function ImagesPage() {
       // Transient poll failure: keep trying.
     }
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast]);
+  }, [dismissLoadToast, refreshStatus]);
+
+  useEffect(() => {
+    void (async () => {
+      await refreshStatus();
+      // A load runs on the backend as a daemon thread that survives navigation.
+      // On (re)mount, resume tracking one that's still in flight so the page
+      // shows progress and updates on completion, instead of a stale view that
+      // never polls (no toast, and no refresh when the load finishes).
+      try {
+        const p = await getDiffusionLoadProgress();
+        if (p.phase === "downloading" || p.phase === "finalizing") {
+          setBusy("loading");
+          dismissLoadToast();
+          lastLoadSig.current = null;
+          loadToastId.current = toast(null, loadToastArgs(p));
+          void pollLoadProgress();
+        }
+      } catch {
+        // Resume is best-effort; a failed probe just leaves the idle view.
+      }
+    })();
+    // Stop polling if the page unmounts mid-load / mid-generate, and dismiss the
+    // load toast — its poll loop is gone, so it would otherwise hang forever
+    // (duration: Infinity) on whatever page the user navigated to.
+    return () => {
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+      if (genPollTimer.current) clearInterval(genPollTimer.current);
+      dismissLoadToast();
+    };
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress]);
 
   const handleLoad = useCallback(
     async (repoId: string, ggufFilename: string) => {
@@ -661,6 +705,10 @@ export function ImagesPage() {
   // and seed the inputs with that model's defaults.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
+      // Ignore picks while a load/generation/unload is in flight: starting a
+      // replacement load now would tear down the live poll/toast and reset
+      // busy, while the backend rejects the second load with a 409.
+      if (busy !== null) return;
       if (meta.ggufVariant && meta.ggufFilename) {
         setQuant(meta.ggufVariant);
         const d = defaultsFor(id);
@@ -684,10 +732,18 @@ export function ImagesPage() {
         void handleLoad(dir, filename);
       }
     },
-    [handleLoad],
+    [busy, handleLoad],
   );
 
   const handleUnload = useCallback(async () => {
+    // Ejecting cancels any in-flight replacement load on the backend, so tear
+    // down its client-side tracking too: the load poll reschedules on phase
+    // null and the persistent toast never resolves, so both would otherwise
+    // leak forever after the unload.
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+    dismissLoadToast();
+    lastLoadSig.current = null;
     setBusy("unloading");
     try {
       setStatus(await unloadDiffusionModel());
@@ -698,7 +754,7 @@ export function ImagesPage() {
     } finally {
       setBusy(null);
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, dismissLoadToast]);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
@@ -724,6 +780,12 @@ export function ImagesPage() {
     const w = snapDim(width);
     const h = snapDim(height);
 
+    // A large run count (generate all night) is a legitimate choice, so there's
+    // no upper cap; just floor at 1 and ignore non-numeric input (the number box
+    // can yield NaN), which would otherwise make the loop a silent no-op.
+    const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
+    if (runs !== count) setCount(runs);
+
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -743,7 +805,7 @@ export function ImagesPage() {
       }
     }, 300);
     try {
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < runs; i++) {
         // The user navigated away mid-run: stop issuing more GPU generations.
         if (!isMounted.current) break;
         const res = await generateDiffusionImage({
@@ -883,7 +945,7 @@ export function ImagesPage() {
             hint="How many times to repeat the generation, one after another. Each run uses the next seed, so the images differ and can be reproduced."
             value={count}
             min={1}
-            max={128}
+            max={RUNS_SLIDER_MAX}
             step={1}
             onChange={setCount}
           />
