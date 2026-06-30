@@ -490,13 +490,9 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
     with open(src_path, "r", encoding = "utf-8") as f:
         tree = ast.parse(f.read())
     cls = next(
-        n for n in tree.body
-        if isinstance(n, ast.ClassDef) and n.name == "FastSentenceTransformer"
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastSentenceTransformer"
     )
-    fp = next(
-        n for n in cls.body
-        if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
-    )
+    fp = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
 
     def _is_prefetch_call(node):
         return (
@@ -508,5 +504,7 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
 
     prefetch_pos = next((i for i, n in enumerate(fp.body) if _is_prefetch_call(n)), None)
     return_pos = next((i for i, n in enumerate(fp.body) if isinstance(n, ast.Return)), len(fp.body))
-    assert prefetch_pos is not None, "from_pretrained must call maybe_prefetch_hf_snapshot at top level"
+    assert (
+        prefetch_pos is not None
+    ), "from_pretrained must call maybe_prefetch_hf_snapshot at top level"
     assert prefetch_pos < return_pos, "prefetch must run before any top-level return"
