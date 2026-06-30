@@ -278,6 +278,27 @@ def test_build_rag_autoinject_context_budget_falls_back(rag_conn, monkeypatch):
     assert _injected_text(result) == "TOPK_CONTEXT_FALLBACK"
 
 
+def test_whole_doc_budget_reserves_image_parts(monkeypatch):
+    from core.rag import config
+
+    monkeypatch.setattr(config, "WHOLE_DOC_MAX_TOKENS", 10_000)
+    scope = {"context_length": 7000, "response_headroom": 1000}
+    text_only = [{"role": "user", "content": [{"type": "text", "text": "summarize"}]}]
+    with_image = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "summarize"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        }
+    ]
+
+    assert inf_tools._whole_doc_budget(scope, text_only) - inf_tools._whole_doc_budget(
+        scope, with_image
+    ) == inf_tools._IMAGE_PART_TOKEN_ESTIMATE
+
+
 def test_build_rag_autoinject_server_kill_switch_blocks_whole_doc(rag_conn, monkeypatch):
     # RAG_THREAD_WHOLE_DOC=0 stays authoritative; browser requests should not
     # turn it back on by default.

@@ -1134,6 +1134,9 @@ def _thread_whole_doc_enabled(scope: dict) -> bool:
     return _rag_config.THREAD_WHOLE_DOC
 
 
+_IMAGE_PART_TOKEN_ESTIMATE = 1024
+
+
 def _message_token_estimate(conversation: list[dict]) -> int:
     """Cheap prompt-size estimate for budget guards; exact tokenization happens later."""
     total = 0
@@ -1144,7 +1147,10 @@ def _message_token_estimate(conversation: list[dict]) -> int:
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict):
-                    total += max(1, len(str(part.get("text") or "")) // 4)
+                    if part.get("type") in ("image_url", "input_image"):
+                        total += _IMAGE_PART_TOKEN_ESTIMATE
+                    else:
+                        total += max(1, len(str(part.get("text") or "")) // 4)
         total += 4  # chat-template role / separator overhead estimate
     return total
 
