@@ -91,6 +91,11 @@ def test_estimate_gguf_dense_mib_expansion():
     assert estimate_gguf_dense_mib(None, "Q4_K_M") is None
     # Unknown quant falls back to the conservative 4-bit-ish factor.
     assert estimate_gguf_dense_mib(1000, None) == 4000
+    # An Unsloth Dynamic prefix must not mask the real bit-width token: UD_IQ2 is
+    # 2-bit (8x), not the 4x the bare "UD" catch-all used to give.
+    assert estimate_gguf_dense_mib(1000, "UD_IQ2_XXS") == 8000
+    # A float32 compute dtype (Z-Image pre-Ampere, CPU/older-macOS) doubles the size.
+    assert estimate_gguf_dense_mib(1000, "Q4_K_M", compute_dtype_bytes = 4) == 8000
 
 
 def test_estimate_image_runtime_scales_by_family():
@@ -137,6 +142,9 @@ def test_unified_cuda_skips_offload_even_if_offload_capable():
         runtime_headroom_mib = 4000,
     )
     assert plan.offload_policy == OFFLOAD_NONE
+    # ... but it's still memory-tight, so VAE tiling must engage (keyed on is_unified,
+    # which a backend-string check would have missed for unified-memory CUDA).
+    assert plan.vae_tiling is True
 
 
 # ── planner: auto budget tiers on a discrete GPU ──────────────────────────────

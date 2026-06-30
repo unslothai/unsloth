@@ -216,28 +216,35 @@ def infer_gguf_quant_label(filename: Optional[str]) -> Optional[str]:
     return None
 
 
-def estimate_gguf_dense_mib(storage_mib: Optional[int], quant: Optional[str]) -> Optional[int]:
+def estimate_gguf_dense_mib(
+    storage_mib: Optional[int], quant: Optional[str], *, compute_dtype_bytes: int = 2
+) -> Optional[int]:
     """Approximate the dequantised (device) size of a GGUF from its on-disk size
-    and quant label. The compute dtype is bf16/fp16, so a 4-bit file roughly
-    quadruples once unpacked; higher-bit quants expand less."""
+    and quant label. The multipliers assume a 2-byte compute dtype (bf16/fp16);
+    ``compute_dtype_bytes`` scales them, so a float32 (4-byte) load -- Z-Image on
+    pre-Ampere CUDA, or the CPU/older-macOS fallback -- doubles the estimate. A
+    4-bit file roughly quadruples once unpacked; higher-bit quants expand less.
+    The quant label may carry an Unsloth Dynamic ``UD`` prefix (e.g. UD_IQ2_XXS);
+    match on the real bit-width token, never the ``UD`` family marker."""
     if storage_mib is None:
         return None
     q = (quant or "").upper()
+    scale = compute_dtype_bytes / 2
     if any(t in q for t in ("BF16", "F16", "FP16")):
-        return storage_mib
+        return int(storage_mib * scale)
     if "FP8" in q or "Q8" in q:
-        return int(storage_mib * 2.0)
+        return int(storage_mib * 2.0 * scale)
     if "Q6" in q:
-        return int(storage_mib * 2.8)
+        return int(storage_mib * 2.8 * scale)
     if "Q5" in q:
-        return int(storage_mib * 3.3)
-    if "Q4" in q or "IQ4" in q or "UD" in q:
-        return int(storage_mib * 4.0)
+        return int(storage_mib * 3.3 * scale)
+    if "Q4" in q or "IQ4" in q:
+        return int(storage_mib * 4.0 * scale)
     if "Q3" in q or "IQ3" in q:
-        return int(storage_mib * 5.3)
+        return int(storage_mib * 5.3 * scale)
     if "Q2" in q or "Q1" in q or "IQ2" in q or "IQ1" in q:
-        return int(storage_mib * 8.0)
-    return int(storage_mib * 4.0)  # unknown: assume 4-bit-ish
+        return int(storage_mib * 8.0 * scale)
+    return int(storage_mib * 4.0 * scale)  # unknown: assume 4-bit-ish
 
 
 def estimate_image_runtime_mib(*, family: Optional[str] = None) -> int:
@@ -369,10 +376,11 @@ def plan_diffusion_memory(
 
     # VAE tiling/slicing decode the image in chunks, capping the decode-time spike
     # that often dominates peak VRAM at high resolution. Turn it on whenever weights
-    # are being offloaded (the device is already tight) or the backend has no spare
-    # device pool (MPS/CPU). On a roomy discrete GPU it stays off so output is
-    # bit-identical to a plain resident run.
-    tile = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
+    # are being offloaded (the device is already tight) or there is no spare device
+    # pool to offload to -- unified / system memory, i.e. MPS, CPU, and integrated /
+    # unified-memory CUDA (which is_unified covers; a backend-string check would miss
+    # it). On a roomy discrete GPU it stays off so output is bit-identical.
+    tile = policy != OFFLOAD_NONE or device_memory.is_unified
     return MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
@@ -462,6 +470,19 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
 
         onload = torch.device(device)
         use_stream = onload.type == "cuda"  # overlap H2D copies with compute on CUDA
+        # Place the smaller components resident FIRST: moving them onto the device is
+        # the only step here that can OOM on a tight GPU. Doing it before
+        # apply_group_offloading means a failure leaves NO group-offload hooks on the
+        # transformer, so the caller's whole-module-offload fallback gets a clean
+        # pipeline -- diffusers refuses enable_model_cpu_offload() while group hooks
+        # are attached, which would otherwise turn the fallback into a hard crash.
+        for name, comp in getattr(pipe, "components", {}).items():
+            if name == "transformer":
+                continue
+            if isinstance(comp, torch.nn.Module):
+                comp.to(onload)
+        # Stream the transformer a few blocks at a time; it manages its own placement
+        # via the offloading hooks.
         apply_group_offloading(
             transformer,
             onload_device = onload,
@@ -470,13 +491,6 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
             num_blocks_per_group = DEFAULT_GROUP_BLOCKS,
             use_stream = use_stream,
         )
-        # Place the remaining (smaller) components resident; the streamed
-        # transformer manages its own placement via the offloading hooks.
-        for name, comp in getattr(pipe, "components", {}).items():
-            if name == "transformer":
-                continue
-            if isinstance(comp, torch.nn.Module):
-                comp.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
         if logger is not None:

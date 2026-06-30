@@ -108,6 +108,11 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         storage_dtype = torch.float8_e4m3fn,
         compute_dtype = target.dtype,
         skip_modules_pattern = DEFAULT_SKIP_MODULES_PATTERN,
+        # Keep token-embedding tables (T5 "shared", Qwen "embed_tokens", etc.) full
+        # precision: the diffusers default pattern only skips vision pos/patch
+        # embeds, not nn.Embedding lookups, and fp8'ing those quantizes every prompt
+        # token straight to the coarse fp8 grid, hurting prompt fidelity.
+        skip_modules_classes = (torch.nn.Embedding,),
     )
 
 

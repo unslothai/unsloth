@@ -43,7 +43,7 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     snapshot_device_memory,
 )
-from .diffusion_speed import SPEED_OFF, apply_speed_optims
+from .diffusion_speed import SPEED_OFF, apply_speed_optims, restore_tf32
 from .diffusion_precision import quantize_text_encoders
 
 logger = get_logger(__name__)
@@ -610,8 +610,14 @@ class DiffusionBackend:
         offload policy + VAE memory savers. Kept on the backend so the cached base
         repo (companion text-encoder / VAE) feeds the size estimate."""
         device_memory = snapshot_device_memory(target)
+        # The transformer dequantises to the compute dtype; a float32 load (Z-Image
+        # pre-Ampere, CPU/older-macOS) is 4 bytes/elt, not the bf16/fp16 2 bytes the
+        # estimate assumes, so size it by the effective dtype to avoid undercounting.
+        dtype_bytes = 4 if "float32" in str(target.dtype) else 2
         transformer_dense = estimate_gguf_dense_mib(
-            file_size_mib(gguf_path), infer_gguf_quant_label(gguf_filename)
+            file_size_mib(gguf_path),
+            infer_gguf_quant_label(gguf_filename),
+            compute_dtype_bytes = dtype_bytes,
         )
         # The companion components (VAE + text encoders) load near their on-disk
         # size; sum only the base-repo files the GGUF pipeline actually loads (NOT any
@@ -783,6 +789,9 @@ class DiffusionBackend:
         self._state = None
         del state
         clear_gpu_cache()
+        # A speed_mode="max" load flips process-global TF32; put it back so the next
+        # tenant (a default diffusion load, or chat) isn't silently left on TF32.
+        restore_tf32()
 
     def status(self) -> dict[str, Any]:
         state = self._state

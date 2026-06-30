@@ -44,6 +44,8 @@ def _stub_torch(
     if with_fp8:
         torch.float8_e4m3fn = "float8_e4m3fn"
     torch.cuda = types.SimpleNamespace(get_device_capability = lambda *a: cc)
+    # _cast_fp8 skips nn.Embedding modules from layerwise casting.
+    torch.nn = types.SimpleNamespace(Embedding = type("Embedding", (), {}))
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
 
