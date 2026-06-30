@@ -9,6 +9,7 @@ import inspect
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -16,6 +17,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 import typer
+import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -40,6 +42,14 @@ class _FakeConfig:
 def _chat_app():
     cli = typer.Typer()
     cli.command()(chatmod.chat)
+    return cli
+
+
+def _inference_app():
+    from unsloth_cli.commands.inference import inference
+
+    cli = typer.Typer()
+    cli.command()(inference)
     return cli
 
 
@@ -81,6 +91,16 @@ def test_inference_think_defaults_off():
     assert "--think/--no-think" in (getattr(opt, "param_decls", None) or [])
 
 
+def test_inference_exposes_gguf_runtime_options():
+    from unsloth_cli.commands.inference import inference
+
+    tensor = _option(inference, "tensor_parallel")
+    assert "--tensor-parallel/--no-tensor-parallel" in (getattr(tensor, "param_decls", None) or [])
+
+    extra = _option(inference, "llama_extra_args")
+    assert "--llama-extra-arg" in (getattr(extra, "param_decls", None) or [])
+
+
 def test_chat_command_is_registered_with_options():
     params = inspect.signature(chatmod.chat).parameters
     assert "model" in params
@@ -93,6 +113,12 @@ def test_chat_command_is_registered_with_options():
 
     verbose = _option(chatmod.chat, "verbose")
     assert {"--verbose", "-v"} <= set(getattr(verbose, "param_decls", None) or [])
+
+    tensor = _option(chatmod.chat, "tensor_parallel")
+    assert "--tensor-parallel/--no-tensor-parallel" in (getattr(tensor, "param_decls", None) or [])
+
+    extra = _option(chatmod.chat, "llama_extra_args")
+    assert "--llama-extra-arg" in (getattr(extra, "param_decls", None) or [])
 
 
 class _FakeBackend:
@@ -324,6 +350,243 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
     assert out == ["He", "Hello"]
 
 
+def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    requests = []
+
+    class _OK:
+        def close(self):
+            pass
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        requests.append((method, path, payload, timeout))
+        return _OK()
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+
+    backend.ensure_loaded(
+        "org/model-GGUF",
+        hf_token = "hf_x",
+        max_seq_length = 8192,
+        load_in_4bit = False,
+        tensor_parallel = True,
+        llama_extra_args = ["--top-k", "20"],
+    )
+
+    assert requests == [
+        (
+            "POST",
+            "/api/inference/load",
+            {
+                "model_path": "org/model-GGUF",
+                "hf_token": "hf_x",
+                "max_seq_length": 8192,
+                "load_in_4bit": False,
+                "tensor_parallel": True,
+                "llama_extra_args": ["--top-k", "20"],
+            },
+            None,
+        )
+    ]
+
+
+def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    requests = []
+
+    class _OK:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        backend,
+        "_request",
+        lambda method, path, payload = None, timeout = None: (
+            requests.append((method, path, payload, timeout)),
+            _OK(),
+        )[1],
+    )
+
+    backend.ensure_loaded(
+        "org/model-GGUF",
+        hf_token = None,
+        max_seq_length = 4096,
+        load_in_4bit = True,
+        tensor_parallel = False,
+    )
+
+    assert requests[0][2]["tensor_parallel"] is False
+
+
+def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
+    import unsloth_cli._inference as inference
+
+    calls = []
+
+    class _FakeLlamaCppBackend:
+        def load_model(self, **kwargs):
+            calls.append(kwargs)
+            return True
+
+    fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
+    fake_args = types.ModuleType("core.inference.llama_server_args")
+    fake_args.validate_extra_args = lambda args: list(args or [])
+    fake_tensor_fallback = types.ModuleType("core.inference.tensor_fallback")
+
+    async def _passthrough(
+        attempt_load,
+        *,
+        requested_tensor,
+        extra_args,
+        label = "",
+        cancelled = None,
+    ):
+        return await attempt_load(requested_tensor, extra_args)
+
+    fake_tensor_fallback.load_with_tensor_fallback = _passthrough
+
+    monkeypatch.setitem(sys.modules, "core", types.ModuleType("core"))
+    monkeypatch.setitem(sys.modules, "core.inference", types.ModuleType("core.inference"))
+    monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
+    monkeypatch.setitem(sys.modules, "core.inference.llama_server_args", fake_args)
+    monkeypatch.setitem(sys.modules, "core.inference.tensor_fallback", fake_tensor_fallback)
+    monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
+
+    config = SimpleNamespace(
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = "org/model-GGUF",
+    )
+
+    backend = inference._load_gguf_backend(
+        config,
+        hf_token = "hf_x",
+        max_seq_length = 8192,
+        tensor_parallel = True,
+        llama_extra_args = ["--top-k", "20"],
+    )
+
+    assert isinstance(backend, ChatBackend)
+    assert calls == [
+        {
+            "hf_repo": "org/model-GGUF",
+            "hf_token": "hf_x",
+            "hf_variant": "Q4_K_M",
+            "model_identifier": "org/model-GGUF",
+            "is_vision": False,
+            "n_ctx": 8192,
+            "tensor_parallel": True,
+            "extra_args": ["--top-k", "20"],
+        }
+    ]
+
+
+def test_load_gguf_backend_exits_cleanly_on_invalid_extra_args(monkeypatch):
+    import unsloth_cli._inference as inference
+
+    fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.LlamaCppBackend = object
+    fake_args = types.ModuleType("core.inference.llama_server_args")
+
+    def _raise(_args):
+        raise ValueError("llama-server flag '--model' is managed by Unsloth Studio")
+
+    fake_args.validate_extra_args = _raise
+    fake_tensor_fallback = types.ModuleType("core.inference.tensor_fallback")
+    fake_tensor_fallback.load_with_tensor_fallback = None
+
+    monkeypatch.setitem(sys.modules, "core", types.ModuleType("core"))
+    monkeypatch.setitem(sys.modules, "core.inference", types.ModuleType("core.inference"))
+    monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
+    monkeypatch.setitem(sys.modules, "core.inference.llama_server_args", fake_args)
+    monkeypatch.setitem(sys.modules, "core.inference.tensor_fallback", fake_tensor_fallback)
+    monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
+
+    config = SimpleNamespace(
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = "org/model-GGUF",
+    )
+
+    with pytest.raises(typer.Exit) as excinfo:
+        inference._load_gguf_backend(
+            config,
+            hf_token = "hf_x",
+            max_seq_length = 8192,
+            llama_extra_args = ["--model"],
+        )
+
+    assert excinfo.value.exit_code == 1
+
+
+def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
+    import unsloth_cli._inference as inference
+
+    calls = []
+    fallback_calls = []
+
+    class _FakeLlamaCppBackend:
+        def load_model(self, **kwargs):
+            calls.append(kwargs)
+            return kwargs["tensor_parallel"] is False
+
+    fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
+    fake_args = types.ModuleType("core.inference.llama_server_args")
+    fake_args.validate_extra_args = lambda args: list(args or [])
+    fake_tensor_fallback = types.ModuleType("core.inference.tensor_fallback")
+
+    async def _fallback(
+        attempt_load,
+        *,
+        requested_tensor,
+        extra_args,
+        label = "",
+        cancelled = None,
+    ):
+        fallback_calls.append((requested_tensor, extra_args, label))
+        ok = await attempt_load(requested_tensor, extra_args)
+        if ok:
+            return True
+        return await attempt_load(False, ["--split-mode", "layer"])
+
+    fake_tensor_fallback.load_with_tensor_fallback = _fallback
+
+    monkeypatch.setitem(sys.modules, "core", types.ModuleType("core"))
+    monkeypatch.setitem(sys.modules, "core.inference", types.ModuleType("core.inference"))
+    monkeypatch.setitem(sys.modules, "core.inference.llama_cpp", fake_llama_cpp)
+    monkeypatch.setitem(sys.modules, "core.inference.llama_server_args", fake_args)
+    monkeypatch.setitem(sys.modules, "core.inference.tensor_fallback", fake_tensor_fallback)
+    monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
+
+    config = SimpleNamespace(
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = "org/model-GGUF",
+    )
+
+    backend = inference._load_gguf_backend(
+        config,
+        hf_token = "hf_x",
+        max_seq_length = 8192,
+        tensor_parallel = True,
+    )
+
+    assert isinstance(backend, ChatBackend)
+    assert fallback_calls == [(True, [], "org/model-GGUF")]
+    assert [call["tensor_parallel"] for call in calls] == [True, False]
+    assert calls[1]["extra_args"] == ["--split-mode", "layer"]
+
+
 def test_http_backend_merges_emoji_split_across_deltas(monkeypatch):
     backend = HttpChatBackend("http://localhost:8888", "token")
     response = _FakeSSEResponse(
@@ -363,6 +626,98 @@ def test_chat_prefers_running_studio_server(monkeypatch):
     assert local_loads == []
     assert "stays warm" in result.output
     assert closed == ["http"]
+
+
+def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
+    loads = []
+
+    class _FakeHttpBackend:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(
+        chatmod,
+        "connect_studio_server",
+        lambda model, **kwargs: (loads.append((model, kwargs)), _FakeHttpBackend())[1],
+    )
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: None)
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(
+        _chat_app(),
+        [
+            "fake-model",
+            "--tensor-parallel",
+            "--llama-extra-arg=--top-k",
+            "--llama-extra-arg",
+            "20",
+        ],
+        input = "/exit\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert loads == [
+        (
+            "fake-model",
+            {
+                "hf_token": None,
+                "max_seq_length": 4096,
+                "load_in_4bit": True,
+                "tensor_parallel": True,
+                "llama_extra_args": ["--top-k", "20"],
+            },
+        )
+    ]
+
+
+def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
+    from unsloth_cli.commands import inference as infermod
+
+    loads, streams, closed = [], [], []
+
+    class _FakeBackend:
+        def stream(self, messages, **kwargs):
+            streams.append((messages, kwargs))
+            return iter(["answer"])
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(
+        infermod,
+        "connect_studio_server",
+        lambda model, **kwargs: (loads.append((model, kwargs)), _FakeBackend())[1],
+    )
+    monkeypatch.setattr(infermod, "load_chat_backend", lambda *a, **k: None)
+
+    result = CliRunner().invoke(
+        _inference_app(),
+        [
+            "fake-model",
+            "hello",
+            "--tensor-parallel",
+            "--llama-extra-arg=--top-k",
+            "--llama-extra-arg",
+            "20",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert loads == [
+        (
+            "fake-model",
+            {
+                "hf_token": None,
+                "max_seq_length": 2048,
+                "load_in_4bit": True,
+                "tensor_parallel": True,
+                "llama_extra_args": ["--top-k", "20"],
+            },
+        )
+    ]
+    assert streams[0][0] == [{"role": "user", "content": "hello"}]
+    assert closed == [True]
 
 
 def test_chat_server_mode_compare_loads_base_locally(monkeypatch):
