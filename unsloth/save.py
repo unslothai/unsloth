@@ -614,6 +614,186 @@ def _qwen3_5_vlm_state_dict_for_save(state_dict):
     return remapped_state_dict
 
 
+_QWEN3_5_GGUF_ARCHITECTURES = {
+    "Qwen3_5ForConditionalGeneration",
+    "Qwen3_5ForCausalLM",
+    "Qwen3_5MoeForConditionalGeneration",
+    "Qwen3_5MoeForCausalLM",
+}
+_QWEN3_5_GGUF_MODEL_TYPES = {
+    "qwen3_5",
+    "qwen3_5_text",
+    "qwen3_5_moe",
+    "qwen3_5_moe_text",
+}
+
+
+def _as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def _is_qwen3_5_config_dict(config):
+    text_config = config.get("text_config")
+    if not isinstance(text_config, dict):
+        text_config = {}
+
+    architectures = _as_list(config.get("architectures")) + _as_list(text_config.get("architectures"))
+    if any(architecture in _QWEN3_5_GGUF_ARCHITECTURES for architecture in architectures):
+        return True
+
+    model_types = {config.get("model_type"), text_config.get("model_type")}
+    return bool(model_types & _QWEN3_5_GGUF_MODEL_TYPES)
+
+
+def _qwen3_5_num_hidden_layers(config):
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict):
+        value = text_config.get("num_hidden_layers")
+        if isinstance(value, int):
+            return value
+
+    value = config.get("num_hidden_layers")
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _qwen3_5_existing_mtp_layers(config):
+    text_config = config.get("text_config")
+    values = [config.get("mtp_num_hidden_layers")]
+    if isinstance(text_config, dict):
+        values.append(text_config.get("mtp_num_hidden_layers"))
+
+    for value in values:
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _qwen3_5_tensor_names_from_save_directory(save_directory):
+    save_path = Path(save_directory)
+    index_path = save_path / "model.safetensors.index.json"
+    if index_path.is_file():
+        try:
+            with index_path.open("r", encoding = "utf-8") as file:
+                index = json.load(file)
+            weight_map = index.get("weight_map", {})
+            if isinstance(weight_map, dict):
+                return list(weight_map.keys())
+        except (json.JSONDecodeError, OSError) as error:
+            logger.warning_once(
+                f"Unsloth: Could not inspect model.safetensors.index.json for Qwen3.5 MTP metadata: {error}"
+            )
+
+    tensor_names = []
+    for safetensor_path in sorted(save_path.glob("*.safetensors")):
+        try:
+            from safetensors import safe_open
+            with safe_open(str(safetensor_path), framework = "pt", device = "cpu") as file:
+                tensor_names.extend(file.keys())
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: Could not inspect {safetensor_path.name} for Qwen3.5 MTP metadata: {error}"
+            )
+            return []
+    return tensor_names
+
+
+def _qwen3_5_infer_mtp_layers_from_tensor_names(tensor_names, num_hidden_layers):
+    highest_appended_layer = None
+    highest_mtp_layer = None
+    layer_patterns = (
+        re.compile(r"^(?:model\.)?layers\.(\d+)\."),
+        re.compile(r"^(?:model\.)?language_model\.layers\.(\d+)\."),
+        re.compile(r"^language_model\.model\.layers\.(\d+)\."),
+        re.compile(r"^model\.language_model\.model\.layers\.(\d+)\."),
+    )
+    mtp_pattern = re.compile(r"^(?:model\.)?mtp\.layers\.(\d+)\.")
+
+    for name in tensor_names:
+        match = mtp_pattern.match(name)
+        if match is not None:
+            layer = int(match.group(1))
+            highest_mtp_layer = layer if highest_mtp_layer is None else max(highest_mtp_layer, layer)
+            continue
+
+        for pattern in layer_patterns:
+            match = pattern.match(name)
+            if match is None:
+                continue
+            layer = int(match.group(1))
+            if layer >= num_hidden_layers:
+                highest_appended_layer = (
+                    layer
+                    if highest_appended_layer is None
+                    else max(highest_appended_layer, layer)
+                )
+            break
+
+    inferred = 0
+    if highest_appended_layer is not None:
+        inferred = max(inferred, highest_appended_layer - num_hidden_layers + 1)
+    if highest_mtp_layer is not None:
+        inferred = max(inferred, highest_mtp_layer + 1)
+    return inferred
+
+
+def _ensure_qwen3_5_mtp_config_for_gguf(save_directory):
+    config_path = Path(save_directory) / "config.json"
+    if not config_path.is_file():
+        return
+
+    try:
+        with config_path.open("r", encoding = "utf-8") as file:
+            config = json.load(file)
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not inspect config.json for Qwen3.5 MTP metadata: {error}"
+        )
+        return
+
+    if not isinstance(config, dict) or not _is_qwen3_5_config_dict(config):
+        return
+
+    num_hidden_layers = _qwen3_5_num_hidden_layers(config)
+    if num_hidden_layers is None:
+        return
+
+    tensor_names = _qwen3_5_tensor_names_from_save_directory(save_directory)
+    inferred_mtp_layers = _qwen3_5_infer_mtp_layers_from_tensor_names(
+        tensor_names,
+        num_hidden_layers,
+    )
+    existing_mtp_layers = _qwen3_5_existing_mtp_layers(config)
+    if inferred_mtp_layers <= 0 or (
+        existing_mtp_layers is not None and existing_mtp_layers >= inferred_mtp_layers
+    ):
+        return
+
+    config["mtp_num_hidden_layers"] = inferred_mtp_layers
+    if isinstance(config.get("text_config"), dict):
+        config["text_config"]["mtp_num_hidden_layers"] = inferred_mtp_layers
+
+    try:
+        with config_path.open("w", encoding = "utf-8") as file:
+            json.dump(config, file, indent = 2, ensure_ascii = False)
+            file.write("\n")
+    except OSError as error:
+        logger.warning_once(
+            f"Unsloth: Could not write Qwen3.5 MTP metadata to config.json: {error}"
+        )
+        return
+
+    logger.warning_once(
+        "Unsloth: Restored missing Qwen3.5 MTP metadata in config.json "
+        f"(mtp_num_hidden_layers={inferred_mtp_layers}) so GGUF conversion can map NextN tensors."
+    )
+
+
 def _coerce_tied_weights_keys_to_dict(model):
     """Coerce each module's legacy list/tuple/set ``_tied_weights_keys`` to dict form,
     returning ``[(module, original), ...]`` for the caller to restore.
@@ -2741,6 +2921,8 @@ def unsloth_save_pretrained_gguf(
             elif quant_method is None:
                 quant_method = "q8_0"
             quantization_methods.append(quant_method.lower())
+
+    _ensure_qwen3_5_mtp_config_for_gguf(save_directory)
 
     try:
         from .tokenizer_utils import fix_sentencepiece_gguf

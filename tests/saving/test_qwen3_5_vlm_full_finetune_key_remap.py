@@ -1,4 +1,6 @@
 import ast
+import json
+import re
 import types
 from pathlib import Path
 
@@ -8,19 +10,39 @@ import torch
 def _load_qwen3_5_vlm_save_helpers():
     source = Path(__file__).parents[2] / "unsloth" / "save.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
+    names = {
+        "_QWEN3_5_GGUF_ARCHITECTURES",
+        "_QWEN3_5_GGUF_MODEL_TYPES",
+        "_as_list",
+        "_is_qwen3_5_config_dict",
+        "_qwen3_5_num_hidden_layers",
+        "_qwen3_5_existing_mtp_layers",
+        "_qwen3_5_tensor_names_from_save_directory",
+        "_qwen3_5_infer_mtp_layers_from_tensor_names",
+        "_ensure_qwen3_5_mtp_config_for_gguf",
+        "_is_qwen3_5_vlm",
+        "_qwen3_5_vlm_state_dict_for_save",
+    }
     helpers = [
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name
-        in {
-            "_is_qwen3_5_vlm",
-            "_qwen3_5_vlm_state_dict_for_save",
-        }
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name in names
+        )
+        or (
+            isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id in names for target in node.targets)
+        )
     ]
     module = ast.Module(body = helpers, type_ignores = [])
     ast.fix_missing_locations(module)
-    namespace = {}
+    namespace = {
+        "json": json,
+        "Path": Path,
+        "re": re,
+        "logger": types.SimpleNamespace(warning_once = lambda *_args, **_kwargs: None),
+    }
     exec(compile(module, str(source), "exec"), namespace)
     return namespace
 
@@ -69,3 +91,102 @@ def test_qwen3_5_vlm_detection_requires_vision_config():
     )
 
     assert not helpers["_is_qwen3_5_vlm"](model)
+
+
+def test_qwen3_5_gguf_save_restores_missing_mtp_config(tmp_path):
+    helpers = _load_qwen3_5_vlm_save_helpers()
+    config = {
+        "architectures": ["Qwen3_5ForConditionalGeneration"],
+        "model_type": "qwen3_5",
+        "text_config": {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 32,
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    index = {
+        "metadata": {},
+        "weight_map": {
+            "model.layers.31.mlp.down_proj.weight": "model.safetensors-00001-of-00001.safetensors",
+            "model.layers.32.mlp.down_proj.weight": "model.safetensors-00001-of-00001.safetensors",
+        },
+    }
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index), encoding = "utf-8")
+
+    helpers["_ensure_qwen3_5_mtp_config_for_gguf"](tmp_path)
+
+    updated = json.loads((tmp_path / "config.json").read_text(encoding = "utf-8"))
+    assert updated["mtp_num_hidden_layers"] == 1
+    assert updated["text_config"]["mtp_num_hidden_layers"] == 1
+
+
+def test_qwen3_5_gguf_save_leaves_non_qwen_config_unchanged(tmp_path):
+    helpers = _load_qwen3_5_vlm_save_helpers()
+    config = {
+        "architectures": ["LlamaForCausalLM"],
+        "model_type": "llama",
+        "num_hidden_layers": 32,
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    index = {
+        "metadata": {},
+        "weight_map": {
+            "model.layers.32.mlp.down_proj.weight": "model.safetensors-00001-of-00001.safetensors",
+        },
+    }
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index), encoding = "utf-8")
+
+    helpers["_ensure_qwen3_5_mtp_config_for_gguf"](tmp_path)
+
+    assert json.loads((tmp_path / "config.json").read_text(encoding = "utf-8")) == config
+
+
+def test_qwen3_5_gguf_save_ignores_malformed_safetensors_index(tmp_path):
+    helpers = _load_qwen3_5_vlm_save_helpers()
+    config = {
+        "architectures": ["Qwen3_5ForConditionalGeneration"],
+        "model_type": "qwen3_5",
+        "text_config": {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 32,
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (tmp_path / "model.safetensors.index.json").write_text("{", encoding = "utf-8")
+
+    helpers["_ensure_qwen3_5_mtp_config_for_gguf"](tmp_path)
+
+    assert json.loads((tmp_path / "config.json").read_text(encoding = "utf-8")) == config
+
+
+def test_qwen3_5_gguf_save_handles_config_write_failure(tmp_path, monkeypatch):
+    helpers = _load_qwen3_5_vlm_save_helpers()
+    config = {
+        "architectures": ["Qwen3_5ForConditionalGeneration"],
+        "model_type": "qwen3_5",
+        "text_config": {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 32,
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    index = {
+        "metadata": {},
+        "weight_map": {
+            "model.layers.32.mlp.down_proj.weight": "model.safetensors-00001-of-00001.safetensors",
+        },
+    }
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index), encoding = "utf-8")
+
+    original_open = Path.open
+
+    def fail_writes(self, mode = "r", *args, **kwargs):
+        if "w" in mode and self.name == "config.json":
+            raise OSError("read-only config")
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_writes)
+
+    helpers["_ensure_qwen3_5_mtp_config_for_gguf"](tmp_path)
+
+    assert json.loads((tmp_path / "config.json").read_text(encoding = "utf-8")) == config
