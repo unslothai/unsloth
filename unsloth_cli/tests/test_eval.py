@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -116,7 +117,7 @@ def test_resolve_tasks_empty_raises(tmp_path):
         evalmod.resolve_tasks("  , ", "question", "answer", tmp_path)
 
 
-def test_render_results_smoke():
+def test_render_results_renders_metric_row(capsys):
     evalmod._render_results(
         {
             "results": {
@@ -128,6 +129,10 @@ def test_render_results_smoke():
             }
         }
     )
+    out = capsys.readouterr().out
+    assert "gsm8k" in out
+    assert "0.5000" in out
+    assert "0.0500" in out
 
 
 def test_eval_missing_lm_eval_shows_hint(monkeypatch):
@@ -157,6 +162,10 @@ def fake_eval_env(monkeypatch):
             calls["batch_size"] = batch_size
 
     class _FakeTaskManager:
+        all_tasks = ["gsm8k", "qa", "mmlu", "hellaswag"]
+        all_groups = ["mmlu"]
+        all_tags = []
+
         def __init__(self, include_path = None):
             calls["include_path"] = include_path
 
@@ -179,6 +188,13 @@ def fake_eval_env(monkeypatch):
     unsloth_mod = types.ModuleType("unsloth")
     unsloth_mod.FastLanguageModel = _FakeFLM
 
+    # deterministic device detection, no real torch needed
+    torch_mod = types.ModuleType("torch")
+    torch_mod.cuda = SimpleNamespace(is_available = lambda: False)
+    torch_mod.backends = SimpleNamespace(
+        mps = SimpleNamespace(is_available = lambda: False)
+    )
+
     lm_eval_mod = types.ModuleType("lm_eval")
     lm_eval_mod.simple_evaluate = _simple_evaluate
     models_mod = types.ModuleType("lm_eval.models")
@@ -189,6 +205,7 @@ def fake_eval_env(monkeypatch):
 
     for name, mod in {
         "unsloth": unsloth_mod,
+        "torch": torch_mod,
         "lm_eval": lm_eval_mod,
         "lm_eval.models": models_mod,
         "lm_eval.models.huggingface": hf_mod,
@@ -209,8 +226,9 @@ def test_eval_success_writes_results(fake_eval_env, tmp_path):
     assert result.exit_code == 0, result.output
     assert "Saved results to" in result.output
     assert fake_eval_env["tasks"] == ["gsm8k"]
-    assert fake_eval_env["simple_evaluate_kwargs"]["task_manager"] is None
-    assert "include_path" not in fake_eval_env
+    assert fake_eval_env["simple_evaluate_kwargs"]["task_manager"] is not None
+    assert fake_eval_env["simple_evaluate_kwargs"]["log_samples"] is False
+    assert fake_eval_env["include_path"] is None
 
     saved = json.loads((out_dir / "results.json").read_text())
     assert saved["results"]["gsm8k"]["exact_match,strict-match"] == 0.42
@@ -239,7 +257,7 @@ def test_eval_mlx_falls_back_to_hf(fake_eval_env, tmp_path):
     assert result.exit_code == 0, result.output
     assert "falling back" in result.output
     assert fake_eval_env["model"] == "hf"
-    assert fake_eval_env["model_args"] == "pretrained=fake/model"
+    assert fake_eval_env["model_args"] == {"pretrained": "fake/model", "max_length": 2048}
     assert "model_name" not in fake_eval_env
 
 
@@ -256,6 +274,92 @@ def test_eval_hf_backend_skips_unsloth(fake_eval_env, tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert fake_eval_env["model"] == "hf"
-    assert fake_eval_env["model_args"] == "pretrained=fake/model"
+    assert fake_eval_env["model_args"] == {"pretrained": "fake/model", "max_length": 2048}
     assert fake_eval_env["simple_evaluate_kwargs"]["device"] == "cpu"
     assert "model_name" not in fake_eval_env
+
+
+def test_eval_rejects_nonpositive_batch_size(fake_eval_env, tmp_path):
+    for bad in ["0", "-1", "abc"]:
+        result = CliRunner().invoke(
+            _eval_app(),
+            [
+                "fake/model", "--tasks", "gsm8k",
+                "--backend", "hf", "--device", "cpu",
+                "--batch-size", bad,
+                "--output-dir", str(tmp_path / "out"),
+            ],
+        )
+        assert result.exit_code == 2, (bad, result.output)
+        assert "positive integer or 'auto'" in result.output
+
+
+def test_eval_hf_forwards_max_seq_length(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model", "--tasks", "gsm8k",
+            "--backend", "hf", "--device", "cpu",
+            "--max-seq-length", "1024",
+            "--output-dir", str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["model_args"] == {"pretrained": "fake/model", "max_length": 1024}
+
+
+def test_eval_hf_honors_base_model_for_remote_adapter(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "someuser/my-lora", "--tasks", "gsm8k",
+            "--backend", "hf", "--device", "cpu",
+            "--base-model", "meta-llama/Llama-2-7b",
+            "--output-dir", str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["model_args"] == {
+        "pretrained": "meta-llama/Llama-2-7b",
+        "peft": "someuser/my-lora",
+        "max_length": 2048,
+    }
+
+
+def test_eval_cuda_index_keeps_auto_batch_size(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model", "--tasks", "gsm8k",
+            "--backend", "hf", "--device", "cuda:0",
+            "--output-dir", str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # 'auto' survives an explicit CUDA index (not downgraded to 1)
+    assert fake_eval_env["simple_evaluate_kwargs"]["batch_size"] == "auto"
+    assert fake_eval_env["model_args"]["load_in_4bit"] is True
+
+
+def test_eval_unknown_task_errors(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", "notarealtask", "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 2, result.output
+    assert "unknown task" in result.output
+
+
+def test_eval_hf_token_sets_env(fake_eval_env, tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "placeholder")
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model", "--tasks", "gsm8k",
+            "--backend", "hf", "--device", "cpu",
+            "--hf-token", "hf_secret",
+            "--output-dir", str(tmp_path / "out"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert os.environ.get("HF_TOKEN") == "hf_secret"

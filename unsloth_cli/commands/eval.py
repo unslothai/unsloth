@@ -4,6 +4,7 @@
 import contextlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -83,6 +84,16 @@ def make_jsonl_task(
         "doc_to_text": "{{" + input_key + "}}",
         "doc_to_target": "{{" + target_key + "}}",
         "generation_kwargs": {"until": ["\n"]},
+        # strip surrounding whitespace so " 2" matches gold "2"
+        "filter_list": [
+            {
+                "name": "strip",
+                "filter": [
+                    {"function": "regex", "regex_pattern": r"^\s*(.*?)\s*$", "group_select": 0},
+                    {"function": "take_first"},
+                ],
+            },
+        ],
         "metric_list": [
             {"metric": "exact_match", "aggregation": "mean", "higher_is_better": True},
         ],
@@ -233,99 +244,137 @@ def evaluate(
         )
         raise typer.Exit(code = 1) from e
 
+    if batch_size == "auto":
+        bs = "auto"
+    else:
+        try:
+            bs = int(batch_size)
+            if bs <= 0:
+                raise ValueError
+        except ValueError:
+            typer.echo(
+                "Error: --batch-size must be a positive integer or 'auto'.", err = True
+            )
+            raise typer.Exit(code = 2)
+
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token  # both backends read it from the env
+
+    detected_base = resolve_base_model(model)
+    # --base-model => treat <model> as an adapter on this base
+    effective_base = base_model or detected_base
+
     tmp_dir = Path(tempfile.mkdtemp(prefix = "unsloth_eval_"))
     try:
-        task_names, include_paths = resolve_tasks(tasks, input_key, target_key, tmp_dir)
-    except (FileNotFoundError, ValueError) as e:
-        typer.echo(f"Error: {e}", err = True)
-        raise typer.Exit(code = 2) from e
+        try:
+            task_names, include_paths = resolve_tasks(tasks, input_key, target_key, tmp_dir)
+        except (FileNotFoundError, ValueError) as e:
+            typer.echo(f"Error: {e}", err = True)
+            raise typer.Exit(code = 2) from e
 
-    bs = int(batch_size) if batch_size.isdigit() else batch_size
-    detected_base = resolve_base_model(model)
-    task_manager = TaskManager(include_path = include_paths) if include_paths else None
+        # build once, reuse for validation and the eval run
+        task_manager = TaskManager(include_path = include_paths or None)
 
-    if backend == "unsloth":
-        with _silence():
-            import unsloth
+        registered = getattr(task_manager, "all_tasks", None)
+        if registered:
+            known = set(registered) | set(getattr(task_manager, "all_groups", []) or []) \
+                | set(getattr(task_manager, "all_tags", []) or [])
+            unknown = [t for t in task_names if t not in known]
+            if unknown:
+                typer.echo(
+                    f"Error: unknown task(s): {', '.join(unknown)}. Pass a built-in "
+                    "task name, a .yaml task file, or a .jsonl/.csv dataset.",
+                    err = True,
+                )
+                raise typer.Exit(code = 2)
 
-        if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
+        if num_fewshot and any((tmp_dir / f"{t}.yaml").exists() for t in task_names):
             typer.echo(
-                "Note: Apple Silicon (MLX) detected — Unsloth's backend can't feed "
-                "lm-eval's torch wrapper, so falling back to --backend hf "
-                "(plain transformers)."
+                "Note: few-shot examples for a generated task come from the same "
+                "file (no held-out split)."
             )
-            backend = "hf"
 
-    typer.echo(f"Running tasks: {', '.join(task_names)} (backend: {backend})")
+        if backend == "unsloth":
+            with _silence():
+                import unsloth
 
-    if backend == "hf":
-        if device is None:
-            import torch
+            if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
+                typer.echo(
+                    "Note: Apple Silicon (MLX) detected — falling back to "
+                    "--backend hf (plain transformers)."
+                )
+                backend = "hf"
 
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-                device = "mps"
+        typer.echo(f"Running tasks: {', '.join(task_names)} (backend: {backend})")
+
+        eval_kwargs = dict(
+            tasks = task_names,
+            num_fewshot = num_fewshot,
+            limit = limit,
+            task_manager = task_manager,
+            log_samples = False,
+        )
+
+        if backend == "hf":
+            if device is None:
+                import torch
+
+                if torch.cuda.is_available():
+                    device = "cuda"
+                elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                    device = "mps"
+                else:
+                    device = "cpu"
+            if bs == "auto" and not device.startswith("cuda"):
+                typer.echo("Note: batch_size 'auto' is slow on CPU/MPS — using 1 (override with --batch-size).")
+                bs = 1
+            # dict form: a comma in a path can't corrupt key=value parsing
+            if effective_base:
+                model_args = {"pretrained": effective_base, "peft": model}
+                typer.echo(f"Evaluating adapter '{model}' on base '{effective_base}'.")
             else:
-                device = "cpu"
-        if bs == "auto" and device != "cuda":
-            typer.echo("Note: batch_size 'auto' is slow on CPU/MPS — using 1 (override with --batch-size).")
-            bs = 1
-        if detected_base:
-            pretrained = base_model or detected_base
-            args = [f"pretrained={pretrained}", f"peft={model}"]
-            typer.echo(f"Evaluating adapter '{model}' on base '{pretrained}'.")
-        else:
-            args = [f"pretrained={model}"]
-        if load_in_4bit and device and device.startswith("cuda"):
-            args.append("load_in_4bit=True")
-        with _silence() as ui, _spinner(ui, f"Evaluating {', '.join(task_names)}…"):
-            results = lm_eval.simple_evaluate(
+                model_args = {"pretrained": model}
+            model_args["max_length"] = max_seq_length
+            if load_in_4bit and device.startswith("cuda"):
+                model_args["load_in_4bit"] = True
+            eval_kwargs.update(
                 model = "hf",
-                model_args = ",".join(args),
-                tasks = task_names,
-                num_fewshot = num_fewshot,
-                limit = limit,
+                model_args = model_args,
                 batch_size = bs,
                 device = device,
-                task_manager = task_manager,
             )
-    else:
-        from unsloth import FastLanguageModel
-
-        load_kwargs = dict(
-            max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
-            token = hf_token or None,
-        )
-        if base_model and detected_base:
-            typer.echo(f"Loading base model '{base_model}' with adapter '{model}'...")
-            with _silence():
-                lmodel, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = base_model, **load_kwargs
-                )
-                from peft import PeftModel
-
-                lmodel = PeftModel.from_pretrained(lmodel, model)
         else:
-            if detected_base:
-                typer.echo(f"Detected LoRA adapter (base: {detected_base}).")
-            typer.echo(f"Loading model: {model}")
+            from unsloth import FastLanguageModel
+
+            load_kwargs = dict(
+                max_seq_length = max_seq_length,
+                load_in_4bit = load_in_4bit,
+                token = hf_token or None,
+            )
+            if effective_base:
+                typer.echo(f"Loading base model '{effective_base}' with adapter '{model}'...")
+                with _silence():
+                    lmodel, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name = effective_base, **load_kwargs
+                    )
+                    from peft import PeftModel
+
+                    lmodel = PeftModel.from_pretrained(lmodel, model)
+            else:
+                typer.echo(f"Loading model: {model}")
+                with _silence():
+                    lmodel, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name = model, **load_kwargs
+                    )
             with _silence():
-                lmodel, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = model, **load_kwargs
-                )
+                FastLanguageModel.for_inference(lmodel)
+                lm = HFLM(pretrained = lmodel, tokenizer = tokenizer, batch_size = bs)
+            eval_kwargs["model"] = lm
 
         with _silence() as ui, _spinner(ui, f"Evaluating {', '.join(task_names)}…"):
-            FastLanguageModel.for_inference(lmodel)
-            lm = HFLM(pretrained = lmodel, tokenizer = tokenizer, batch_size = bs)
-            results = lm_eval.simple_evaluate(
-                model = lm,
-                tasks = task_names,
-                num_fewshot = num_fewshot,
-                limit = limit,
-                task_manager = task_manager,
-            )
+            results = lm_eval.simple_evaluate(**eval_kwargs)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors = True)
 
     if results is None:
         typer.echo("Error: evaluation returned no results.", err = True)
