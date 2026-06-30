@@ -363,6 +363,25 @@ async def start_training(
                 logger.warning("Could not shut down export subprocess: %s", e)
 
             try:
+                # A resident or in-flight diffusion (Images) pipeline also holds
+                # GPU memory the training run needs, and it can't be cheaply sized,
+                # so tear it down unconditionally like the export subprocess above
+                # (the chat block below fit-checks; diffusion can't). unload() is a
+                # no-op when nothing is loaded and also preempts an in-flight load;
+                # release the arbiter so it doesn't think the gone pipeline owns
+                # the GPU. Must precede the chat block, which early-returns.
+                from core.inference import gpu_arbiter
+                from core.inference.diffusion import get_diffusion_backend
+
+                diffusion = get_diffusion_backend()
+                if diffusion.is_loaded:
+                    logger.info("Unloading diffusion (Images) model to free GPU memory for training")
+                diffusion.unload()
+                gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+            except Exception as e:
+                logger.warning("Could not unload diffusion model for training: %s", e)
+
+            try:
                 from routes.training_vram import (
                     can_keep_chat_during_training,
                     free_chat_models_for_training,

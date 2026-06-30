@@ -282,6 +282,31 @@ def test_load_validation_failure_does_not_evict_chat(client, monkeypatch):
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
+def test_load_refused_during_training_does_not_evict_chat(client, monkeypatch):
+    # An image load while training is active is refused (409) before the GPU is
+    # taken, so the training run and the loaded chat model are both untouched.
+    import core.training as core_training
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    evicted = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append(True))
+
+    class _Training:
+        def is_training_active(self):
+            return True
+
+    monkeypatch.setattr(core_training, "get_training_backend", lambda: _Training())
+
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
+    )
+    assert resp.status_code == 409
+    assert "training" in resp.json()["detail"].lower()
+    assert evicted == []  # chat backend was never evicted
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+
+
 def test_load_progress_route(client):
     # Before load: idle.
     idle = client.get("/api/inference/images/load-progress")

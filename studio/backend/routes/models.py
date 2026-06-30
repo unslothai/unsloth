@@ -3331,6 +3331,24 @@ async def delete_cached_model(
     except Exception:
         pass
 
+    # Also refuse if the diffusion (Images) backend has this repo loaded; its
+    # delete guard is otherwise chat-only, so its GGUF could be removed from
+    # under a live pipeline. Repo-level match, like the chat guards above.
+    try:
+        from core.inference.diffusion import get_diffusion_backend
+        diffusion_status = get_diffusion_backend().status()
+        if diffusion_status.get("loaded") and diffusion_status.get("repo_id"):
+            loaded_id = str(diffusion_status["repo_id"]).lower()
+            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     try:
         cache_scans = _all_hf_cache_scans()
 

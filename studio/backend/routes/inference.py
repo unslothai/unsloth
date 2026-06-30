@@ -10178,6 +10178,29 @@ async def _openai_passthrough_non_streaming(
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def _guard_diffusion_load_against_training() -> None:
+    """Refuse loading an image model while a training run is active. Unlike chat,
+    a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
+    load is refused outright rather than fit-checked. No-op when training is
+    inactive or its state can't be read. Raises HTTP 409."""
+    from core.training import get_training_backend
+
+    try:
+        if not get_training_backend().is_training_active():
+            return
+    except Exception as e:
+        logger.warning("Could not check training state for image-load guard: %s", e)
+        return
+    raise HTTPException(
+        status_code = 409,
+        detail = (
+            "Can't load an image model while training is running: the diffusion "
+            "pipeline would compete with the training run for GPU memory. Training "
+            "was left untouched. Try again after training finishes."
+        ),
+    )
+
+
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -10196,6 +10219,10 @@ async def load_diffusion_model(
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
         )
+        # Refuse while training is running: a multi-GB diffusion pipeline would
+        # compete with the training subprocess for VRAM. The chat path does the
+        # same via _guard_chat_load_against_training; this is its image sibling.
+        _guard_diffusion_load_against_training()
         # Take the GPU from the chat backend, then kick the (slow) load onto a
         # background thread and return at once — the client polls images/load-progress.
         await asyncio.to_thread(acquire_for, DIFFUSION)
