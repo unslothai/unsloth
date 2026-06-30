@@ -708,6 +708,31 @@ def test_gguf_download_progress_counts_quant_subdir(monkeypatch, tmp_path):
     assert result["progress"] == 1.0
 
 
+def test_arch_to_task_hides_unsupported_diffusion_from_chat():
+    # Loadable diffusion archs -> the Images-picker task.
+    assert models_route._arch_to_task("flux") == "text-to-image"
+    assert models_route._arch_to_task("z_image") == "text-to-image"
+    assert models_route._arch_to_task("qwen_image") == "text-to-image"
+    # A real LLM arch stays a chat model; None passes through.
+    assert models_route._arch_to_task("llama") == "text-generation"
+    assert models_route._arch_to_task(None) is None
+    # Known-but-unsupported diffusion archs get a task that is NEITHER chat
+    # ("text-generation") NOR a loadable image task ("text-to-image"), so the chat
+    # picker hides them (they'd die in llama.cpp) and the Images picker leaves them
+    # out (they'd 400 in validate_load).
+    for arch in ("sdxl", "sd1", "sd3", "wan", "lumina2", "hidream", "cosmos"):
+        task = models_route._arch_to_task(arch)
+        assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
+        assert task not in ("text-generation", "text-to-image")
+    # Drift guard: every diffusion arch llama.cpp rejects as a chat model must be
+    # classified here as some image task (loadable OR unsupported), never chat.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    classified = models_route._DIFFUSION_GGUF_ARCHS | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+    missing = {a for a in LlamaCppBackend._DIFFUSION_ARCHES if a.lower() not in classified}
+    assert not missing, f"diffusion archs would still show in chat: {missing}"
+
+
 def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
     # The cached-delete guard refuses deleting a repo the diffusion (Images)
     # backend has loaded, mirroring the chat guard, so its GGUF can't be removed

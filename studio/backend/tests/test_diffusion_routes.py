@@ -29,10 +29,23 @@ class _FakeBackend:
     def is_loaded(self) -> bool:
         return self.loaded
 
-    def validate_load(self, model_path, **kwargs):
-        # The route runs this cheap pre-flight before taking the GPU. The fake
-        # accepts anything; tests that exercise rejection patch it to raise.
-        return None
+    def validate_load_request(
+        self,
+        model_path,
+        *,
+        gguf_filename = None,
+        family_override = None,
+    ):
+        # Mirror the real backend's cheap validation so the route's
+        # validate-before-evict ordering is exercised.
+        from core.inference.diffusion_families import detect_family
+
+        if not gguf_filename:
+            raise ValueError("gguf_filename is required.")
+        fam = detect_family(model_path, family_override)
+        if fam is None:
+            raise ValueError(f"Could not infer a diffusion family for '{model_path}'.")
+        return fam
 
     def begin_load(self, model_path, **kwargs):
         # The real backend loads on a thread; the fake completes instantly.
@@ -251,7 +264,7 @@ def test_load_unknown_family_returns_400(client, monkeypatch):
     backend = _FakeBackend()
     # Validation runs in the pre-flight (before the GPU is taken), so that is
     # where an unsupported model is rejected now.
-    backend.validate_load = _raise
+    backend.validate_load_request = _raise
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     resp = client.post(
         "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
@@ -272,7 +285,7 @@ def test_load_validation_failure_does_not_evict_chat(client, monkeypatch):
     def _raise(*a, **k):
         raise ValueError("'x/y' isn't a supported image-generation model.")
 
-    backend.validate_load = _raise
+    backend.validate_load_request = _raise
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     resp = client.post(
         "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
@@ -325,3 +338,44 @@ def test_routes_require_auth():
     app.include_router(studio_router, prefix = "/api/inference")
     unauth = TestClient(app)
     assert unauth.get("/api/inference/images/status").status_code in (401, 403)
+
+
+def test_invalid_family_returns_400_without_evicting_chat(client):
+    # An undetectable family fails validation BEFORE the GPU handoff, so the
+    # arbiter is never acquired and a loaded chat model would not be evicted.
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
+    )
+    assert resp.status_code == 400
+    assert "family" in resp.json()["detail"]
+    assert gpu_arbiter._owner is None
+
+
+def test_validate_filenotfound_maps_to_400_without_eviction(client, monkeypatch):
+    def _raise_fnf(*a, **k):
+        raise FileNotFoundError("'q.gguf' not found under /models/x.")
+
+    backend = _FakeBackend()
+    backend.validate_load_request = _raise_fnf
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "/models/x", "gguf_filename": "q.gguf"}
+    )
+    assert resp.status_code == 400
+    assert gpu_arbiter._owner is None
+
+
+def test_in_progress_returns_409_after_validation_passes(client, monkeypatch):
+    def _busy(*a, **k):
+        raise RuntimeError("A diffusion load is already in progress.")
+
+    backend = _FakeBackend()
+    backend.begin_load = _busy
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+    assert resp.status_code == 409
+    # Validation passed first, so the GPU WAS acquired before begin_load reported busy.
+    assert gpu_arbiter._owner == gpu_arbiter.DIFFUSION

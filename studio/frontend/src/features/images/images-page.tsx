@@ -348,12 +348,17 @@ function RecipeRow({
 function RecipePopover({
   image,
   onRestore,
+  active,
 }: {
   image: GalleryImage;
   onRestore: (image: GalleryImage) => void;
+  active: boolean;
 }) {
+  // Controlled + force-closed off-tab: PopoverContent portals to body, so the
+  // hidden/inert page wrapper can't contain it when the page is kept mounted.
+  const [open, setOpen] = useState(false);
   return (
-    <Popover>
+    <Popover open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <PopoverTrigger asChild>
         <Button size="sm" variant="ghost" className="gap-1.5">
           <HugeiconsIcon icon={InformationCircleIcon} className="size-4" />
@@ -389,7 +394,7 @@ function RecipePopover({
 
 type Busy = "loading" | "unloading" | "generating" | null;
 
-export function ImagesPage() {
+export function ImagesPage({ active = true }: { active?: boolean }) {
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
@@ -419,6 +424,11 @@ export function ImagesPage() {
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  // Controlled so the body-portaled overlays force-close when this page is mounted
+  // but off-tab (a hidden/inert parent can't contain a body portal): the model
+  // selector and the aspect-ratio dropdown.
+  const [selectorOpen, setSelectorOpen] = useState(false);
+  const [aspectOpen, setAspectOpen] = useState(false);
   // Records come from the backend (durable); srcById maps each id to its object
   // URL (loaded images) or data URL (the one just generated).
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
@@ -429,6 +439,10 @@ export function ImagesPage() {
   );
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
+  // False once the page truly unmounts (app close / chat-only eject). The page now
+  // stays mounted across tab switches, so a switch does NOT flip this -- a batch keeps
+  // generating off-tab; the multi-run loop only stops on a real unmount.
+  const isMounted = useRef(true);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -538,6 +552,9 @@ export function ImagesPage() {
     setSeed(String(image.seed));
     setWidth(image.width);
     setHeight(image.height);
+    // The batch shared one seed, so image batch_index>0 only reproduces by replaying the
+    // whole batch: restore the batch size too (older recipes without it default to 1).
+    setBatchSize(image.batch_size ?? 1);
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -579,6 +596,29 @@ export function ImagesPage() {
       // Status is best-effort; a failed poll shouldn't surface an error toast.
     }
   }, []);
+
+  // Track mount so a long generate run stops issuing GPU work when the page is
+  // truly unmounted (app close / chat-only eject). The page now stays mounted
+  // across tab switches (RootLayout keeps it alive like chat), so a switch no
+  // longer breaks the loop -- a batch keeps generating off-tab. The mount-time
+  // refreshStatus and timer/toast cleanup live in the load-resume effect below,
+  // so this one carries only the mount flag.
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
+
+  // Re-sync model status when the tab becomes active again: while off-tab the
+  // diffusion model may have been evicted (e.g. a chat load claimed the GPU),
+  // and the page no longer remounts on return to refresh it on its own.
+  useEffect(() => {
+    if (!active) return;
+    void (async () => {
+      await refreshStatus();
+    })();
+  }, [active, refreshStatus]);
 
   // Poll load-progress until the background load reaches "ready" or "error",
   // updating the persistent toast in place each tick.
@@ -692,12 +732,28 @@ export function ImagesPage() {
       // replacement load now would tear down the live poll/toast and reset
       // busy, while the backend rejects the second load with a 409.
       if (busy !== null) return;
-      if (!meta.ggufVariant || !meta.ggufFilename) return; // not a quant pick
-      setQuant(meta.ggufVariant);
-      const d = defaultsFor(id);
-      setSteps(d.steps);
-      setGuidance(d.guidance);
-      void handleLoad(id, meta.ggufFilename);
+      if (meta.ggufVariant && meta.ggufFilename) {
+        setQuant(meta.ggufVariant);
+        const d = defaultsFor(id);
+        setSteps(d.steps);
+        setGuidance(d.guidance);
+        void handleLoad(id, meta.ggufFilename);
+        return;
+      }
+      // A direct single-file local .gguf pick has no variant/filename (custom folder /
+      // LM Studio). Load it by splitting the path into (parent dir, basename) the backend
+      // resolves, instead of silently doing nothing.
+      if (meta.isGguf) {
+        const norm = id.replace(/\\/g, "/");
+        const slash = norm.lastIndexOf("/");
+        const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
+        const dir = slash >= 0 ? norm.slice(0, slash) : ".";
+        if (!filename.toLowerCase().endsWith(".gguf")) return;
+        const d = defaultsFor(id);
+        setSteps(d.steps);
+        setGuidance(d.guidance);
+        void handleLoad(dir, filename);
+      }
     },
     [busy, handleLoad],
   );
@@ -773,6 +829,9 @@ export function ImagesPage() {
     }, 300);
     try {
       for (let i = 0; i < runs; i++) {
+        // The page truly unmounted mid-run (app close / chat-only eject): stop
+        // issuing more GPU generations. A plain tab switch keeps it mounted.
+        if (!isMounted.current) break;
         const res = await generateDiffusionImage({
           prompt: prompt.trim(),
           // Only send a negative prompt when guidance uses it, so the recipe
@@ -785,6 +844,7 @@ export function ImagesPage() {
           seed: baseSeed + i,
           batch_size: batchSize,
         });
+        if (!isMounted.current) break;
         // Prepend this run's records (newest first) and load their blobs.
         setImages((prev) => [...res.images, ...prev]);
         if (res.images[0]) setSelectedId(res.images[0].id);
@@ -817,6 +877,8 @@ export function ImagesPage() {
           variant="ghost"
           className="!h-[34px]"
           task={IMAGE_GEN_TASKS}
+          open={active && selectorOpen}
+          onOpenChange={(o) => setSelectorOpen(active && o)}
         />
       </div>
 
@@ -850,7 +912,12 @@ export function ImagesPage() {
             hint="Pick a ratio to lock the proportions, then set the size with the sliders. Flip swaps width and height. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
           >
             <div className="flex items-center gap-2">
-              <Select value={aspect} onValueChange={changeAspect}>
+              <Select
+                value={aspect}
+                onValueChange={changeAspect}
+                open={active && aspectOpen}
+                onOpenChange={(o) => setAspectOpen(active && o)}
+              >
                 <SelectTrigger className="flex-1">
                   <SelectValue />
                 </SelectTrigger>
@@ -942,7 +1009,7 @@ export function ImagesPage() {
                     any image and read as a unit instead of blending into the canvas.
                     Size/seed live in the Recipe popover, so no separate chip here. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
-                  <RecipePopover image={selected} onRestore={restoreSettings} />
+                  <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <Button
                     size="sm"
                     variant="ghost"

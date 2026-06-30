@@ -3081,22 +3081,44 @@ def _repo_gguf_last_modified(repo_info) -> float:
 # image GGUFs in its On Device list.
 _DIFFUSION_GGUF_ARCHS = frozenset(
     {
-        "flux",
-        "flux2",
-        "sd1",
-        "sd2",
-        "sd3",
-        "sdxl",
-        "stable_diffusion",
-        "lumina2",
-        "qwen_image",
+        # ONLY the families the diffusion backend can actually assemble (see
+        # diffusion_families._FAMILIES). Other on-device diffusion archs (SD1/2/3,
+        # SDXL, PixArt, Lumina2, AuraFlow, Wan, HunyuanVideo, ...) would pass this
+        # Images-picker filter and then fail validate_load with a 400, so they are
+        # deliberately excluded until the backend supports them.
+        "flux",  # flux.1
+        "flux2",  # flux.2-klein
+        "qwen_image",  # qwen-image
         "qwenimage",
-        "auraflow",
-        "pixart",
-        "hunyuan_video",
-        "wan",
+        "z_image",  # z-image
+        "zimage",
     }
 )
+
+# Known diffusion / image-video GGUF archs the backend can NOT assemble yet. These
+# are the GGUF general.architecture values llama.cpp also has no architecture for,
+# kept in sync with core.inference.llama_cpp.LlamaCppBackend._DIFFUSION_ARCHES
+# (minus the loadable set above). Tagging them with a dedicated, non-loadable task
+# keeps them OUT of the chat picker -- loading one as a chat model dies with
+# "unknown model architecture" -- while also keeping them out of the Images picker
+# (the task is not an IMAGE_GEN_TASK), where they would 400 in validate_load.
+_UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
+    {
+        "sd1",
+        "sd3",
+        "sdxl",
+        "aura",
+        "hidream",
+        "cosmos",
+        "ltxv",
+        "hyvid",
+        "wan",
+        "lumina2",
+    }
+)
+
+# Task tag for the archs above; mirrored by the frontend NON_CHAT_TASKS gate.
+_UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
 
 def _gguf_architecture(path: str) -> Optional[str]:
@@ -3111,12 +3133,21 @@ def _gguf_architecture(path: str) -> Optional[str]:
 def _arch_to_task(arch: Optional[str]) -> Optional[str]:
     if arch is None:
         return None
-    return "text-to-image" if arch.lower() in _DIFFUSION_GGUF_ARCHS else "text-generation"
+    a = arch.lower()
+    if a in _DIFFUSION_GGUF_ARCHS:
+        return "text-to-image"
+    # A diffusion arch the backend can't assemble: hide it from chat (it would die
+    # in llama.cpp) without surfacing it in Images (it would 400 in validate_load).
+    if a in _UNSUPPORTED_DIFFUSION_GGUF_ARCHS:
+        return _UNSUPPORTED_DIFFUSION_TASK
+    return "text-generation"
 
 
 def _repo_gguf_task(repo_info) -> Optional[str]:
     """HF pipeline task of a cached GGUF repo, from its architecture:
-    'text-to-image' for diffusion archs, else 'text-generation' (None if unreadable)."""
+    'text-to-image' for a loadable diffusion arch, the non-loadable diffusion tag
+    for a recognized-but-unsupported image arch, else 'text-generation' (None if
+    unreadable)."""
     try:
         for path in _iter_gguf_paths(Path(repo_info.repo_path)):
             if _is_mmproj_filename(path.name):

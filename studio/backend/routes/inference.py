@@ -10211,10 +10211,11 @@ async def load_diffusion_model(
 
     backend = get_diffusion_backend()
     try:
-        # Reject an unsupported/malformed request BEFORE taking the GPU, so a
-        # bad image-model pick doesn't evict the user's loaded chat model only
-        # to 400. validate_load is pure (no I/O), so it runs inline.
-        backend.validate_load(
+        # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family,
+        # missing local GGUF) must not evict a working chat model and then 400.
+        # validate_load_request does local-path I/O, so run it off the event loop.
+        await asyncio.to_thread(
+            backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
@@ -10223,7 +10224,7 @@ async def load_diffusion_model(
         # compete with the training subprocess for VRAM. The chat path does the
         # same via _guard_chat_load_against_training; this is its image sibling.
         _guard_diffusion_load_against_training()
-        # Take the GPU from the chat backend, then kick the (slow) load onto a
+        # Now take the GPU from the chat backend, then kick the (slow) load onto a
         # background thread and return at once — the client polls images/load-progress.
         await asyncio.to_thread(acquire_for, DIFFUSION)
         status_dict = await asyncio.to_thread(
@@ -10236,7 +10237,7 @@ async def load_diffusion_model(
             cpu_offload = request.cpu_offload,
         )
         return DiffusionStatusResponse(**status_dict)
-    except ValueError as exc:
+    except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except RuntimeError as exc:
         # A load is already in progress.
@@ -10298,6 +10299,9 @@ async def generate_diffusion_image(
                         # Position within the batch: images here share a seed + timestamp,
                         # so the export filename needs this to stay unique.
                         "batch_index": index,
+                        # The batch shares one seed, so reproducing image batch_index>0
+                        # needs the original batch_size: persist it so restore can replay.
+                        "batch_size": request.batch_size,
                         "model": result.get("repo_id"),
                         "created_at": created_at,
                     },

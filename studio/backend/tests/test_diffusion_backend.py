@@ -17,7 +17,9 @@ import pytest
 
 from core.inference.diffusion import (
     DiffusionBackend,
+    _LoadState,
     _base_file_downloaded,
+    _resolve_diffusion_compute_dtype,
 )
 from core.inference.diffusion_families import (
     detect_family,
@@ -81,6 +83,11 @@ def test_resolve_local_gguf_child(tmp_path):
         resolve_local_gguf_child(tmp_path, "..\\secret.gguf")
     with pytest.raises(FileNotFoundError):
         resolve_local_gguf_child(tmp_path, "missing.gguf")
+    # A directory named like the gguf exists but isn't loadable; reject it here so
+    # the preflight doesn't pass and evict chat for a pick from_single_file can't load.
+    (tmp_path / "dir.gguf").mkdir()
+    with pytest.raises(FileNotFoundError):
+        resolve_local_gguf_child(tmp_path, "dir.gguf")
 
 
 def test_resolve_local_gguf_child_blocks_symlink_escape(tmp_path):
@@ -206,6 +213,12 @@ def fake_runtime(monkeypatch):
     # The backend imports clear_gpu_cache by reference; no-op it so unload doesn't
     # run real hardware detection against the stubbed torch.
     monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", lambda: None)
+    # Fake the hardware layer too: resolve_diffusion_device_target() consults
+    # utils.hardware.get_device(), so on a real XPU/ROCm box the host would leak
+    # through the stubbed torch and the device tests would resolve a non-CUDA
+    # target. None -> fall through to the (stubbed, monkeypatchable) torch probe.
+    monkeypatch.setattr("utils.hardware.get_device", lambda: None, raising = False)
+    monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", False, raising = False)
     _FakePipeline.last = {}
     _FakeTransformer.last = {}
     yield
@@ -312,8 +325,9 @@ def test_load_without_gguf_raises():
 
 def test_load_unknown_family_raises():
     backend = DiffusionBackend()
-    # User-facing message: names the supported models, no internal-API jargon.
-    with pytest.raises(ValueError, match = "isn't a supported image-generation model"):
+    # load_pipeline validates via validate_load_request, which rejects an
+    # undetectable family before any GPU/network work.
+    with pytest.raises(ValueError, match = "family"):
         backend.load_pipeline("some/unrecognised-repo", gguf_filename = "x.gguf")
 
 
@@ -447,9 +461,11 @@ def test_pick_dtype_bf16_only_on_ampere(fake_runtime, monkeypatch):
     backend = DiffusionBackend()
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True, raising = False)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (8, 0), raising = False)
-    assert backend._pick_device_and_dtype() == ("cuda", torch.bfloat16)
+    t = backend._resolve_device_target(None)
+    assert (t.device, t.dtype) == ("cuda", torch.bfloat16)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5), raising = False)
-    assert backend._pick_device_and_dtype() == ("cuda", torch.float16)
+    t = backend._resolve_device_target(None)
+    assert (t.device, t.dtype) == ("cuda", torch.float16)
 
 
 def test_unload_sets_cancel_event(fake_runtime):
@@ -502,6 +518,361 @@ def test_prefetch_downloads_gguf_and_base(monkeypatch, tmp_path):
     backend._prefetch_files(str(tmp_path), "model.gguf", "base/repo", ["vae/x.safetensors"], None)
     assert all(repo != str(tmp_path) for repo, _ in calls)
     assert ("base/repo", "vae/x.safetensors") in calls
+
+
+# fp16-incompatible guard + dtype promotion
+
+
+def test_zimage_is_fp16_incompatible():
+    # Only Z-Image-class families carry the guard (their activations overflow fp16).
+    assert detect_family("unsloth/Z-Image-Turbo-GGUF").fp16_incompatible is True
+    assert detect_family("unsloth/Z-Image-GGUF").fp16_incompatible is True
+    assert detect_family("unsloth/Qwen-Image-2512-GGUF").fp16_incompatible is False
+    assert detect_family("unsloth/FLUX.1-schnell-GGUF").fp16_incompatible is False
+    assert detect_family("unsloth/FLUX.2-klein-4B-GGUF").fp16_incompatible is False
+
+
+def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime):
+    torch = sys.modules["torch"]
+    z = detect_family("unsloth/Z-Image-GGUF")
+    q = detect_family("unsloth/Qwen-Image-GGUF")
+    # Z-Image: fp16 -> fp32; bf16 / fp32 pass through unchanged.
+    assert _resolve_diffusion_compute_dtype(z, torch.float16) is torch.float32
+    assert _resolve_diffusion_compute_dtype(z, torch.bfloat16) is torch.bfloat16
+    assert _resolve_diffusion_compute_dtype(z, torch.float32) is torch.float32
+    # An fp16-compatible family (and None) keep fp16.
+    assert _resolve_diffusion_compute_dtype(q, torch.float16) is torch.float16
+    assert _resolve_diffusion_compute_dtype(None, torch.float16) is torch.float16
+
+
+def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, tmp_path):
+    torch = sys.modules["torch"]
+    # Pre-Ampere CUDA -> the resolver picks fp16; the guard must promote Z-Image
+    # (and only Z-Image) to fp32 so it doesn't render a black image.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True, raising = False)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5), raising = False)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    z = DiffusionBackend().load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image"
+    )
+    assert z["device"] == "cuda" and z["dtype"] == "float32"
+    # The promoted dtype reaches the transformer build (and thus the quant config).
+    assert str(_FakeTransformer.last["torch_dtype"]) == "torch.float32"
+
+    q = DiffusionBackend().load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "qwen-image"
+    )
+    assert q["dtype"] == "float16"  # fp16-compatible family keeps fp16 on pre-Ampere
+
+
+# Lock split + mid-denoise cancellation
+
+
+def test_generate_lock_split_keeps_status_responsive_and_unload_waits(fake_runtime):
+    import threading
+
+    backend = DiffusionBackend()
+    started = threading.Event()
+    release = threading.Event()
+
+    class _BlockingPipe:
+        def __call__(self, **kwargs):
+            started.set()
+            release.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    backend._state = _LoadState(
+        pipe = _BlockingPipe(),
+        family = fam,
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = backend.generate(prompt = "p", steps = 4)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert started.wait(5)  # the denoise is in flight, holding _generate_lock
+
+    # status() / generate_progress() read _state lock-free, so they must NOT block
+    # behind the denoise.
+    assert backend.status()["loaded"] is True
+    assert backend.generate_progress()["active"] is True
+
+    # unload() signals THIS generation's cancel, then WAITS on _generate_lock for it
+    # to exit before freeing _state -- so when the GPU arbiter hands the card to chat
+    # the moment unload returns, the old pipeline is already gone (no dual-allocation
+    # OOM). Run it on a thread to observe that it blocks behind the live denoise.
+    unload_done = threading.Event()
+    threading.Thread(target = lambda: (backend.unload(), unload_done.set()), daemon = True).start()
+    assert not unload_done.wait(0.5)  # blocked behind the live denoise
+    assert backend._state is not None  # not freed while the pipeline is still live
+    assert backend._active_generate_cancel is not None
+    assert backend._active_generate_cancel.is_set()  # cancel was signalled up front
+
+    release.set()  # denoise returns and releases _generate_lock
+    t.join(5)
+    assert unload_done.wait(5)  # only now does unload free _state and return
+    assert backend.status()["loaded"] is False
+    # The cancelled generation raised rather than returning a now-evicted image.
+    assert "exc" in out and "cancelled" in str(out["exc"]).lower()
+
+
+def test_callback_cancellation_interrupts_denoise(fake_runtime):
+    import threading
+
+    backend = DiffusionBackend()
+    at_step0 = threading.Event()
+    resume = threading.Event()
+
+    class _SteppingPipe:
+        def __init__(self) -> None:
+            self._interrupt = False
+            self.steps_run = 0
+
+        def __call__(
+            self,
+            *,
+            callback_on_step_end = None,
+            num_inference_steps = 8,
+            **kwargs,
+        ):
+            for i in range(num_inference_steps):
+                if self._interrupt:  # diffusers' interrupt protocol
+                    break
+                if callback_on_step_end is not None:
+                    callback_on_step_end(self, i, 0.0, {})
+                self.steps_run = i + 1
+                if i == 0:
+                    at_step0.set()
+                    resume.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    pipe = _SteppingPipe()
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    backend._state = _LoadState(
+        pipe = pipe,
+        family = fam,
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = backend.generate(prompt = "p", steps = 8)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert at_step0.wait(5)  # step 0's callback ran with no cancel pending
+    # Simulate an eviction / superseding load signalling THIS generation's cancel.
+    assert backend._active_generate_cancel is not None
+    backend._active_generate_cancel.set()
+    resume.set()
+    t.join(5)
+    # The next step's callback saw the cancel, flipped pipe._interrupt, and the loop
+    # broke early, so the generation raised instead of returning a partial image.
+    assert pipe._interrupt is True
+    assert pipe.steps_run < 8
+    assert "exc" in out and "cancelled" in str(out["exc"]).lower()
+
+
+def test_validate_load_request(tmp_path):
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "gguf_filename"):
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF")
+    with pytest.raises(ValueError, match = "family"):
+        backend.validate_load_request("meta/Llama-3", gguf_filename = "q.gguf")
+    assert (
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf").name
+        == "z-image"
+    )
+    # A local path with a missing child fails here (before any GPU/network work).
+    with pytest.raises(FileNotFoundError):
+        backend.validate_load_request(
+            str(tmp_path), gguf_filename = "missing.gguf", family_override = "z-image"
+        )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    assert (
+        backend.validate_load_request(
+            str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image"
+        ).name
+        == "z-image"
+    )
+    # A path-shaped repo_id that does not exist is rejected here (it would otherwise
+    # be treated as remote, evict chat, and only fail in the background load).
+    with pytest.raises(FileNotFoundError):
+        backend.validate_load_request(
+            "/tmp/unsloth-definitely-missing-model",
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+        )
+    # Windows-shaped local paths (backslash separator / .\ ..\ prefixes) are also caught
+    # here, so a mistyped local pick on Windows can't be mistaken for a remote HF repo.
+    for missing in (r".\models\z-image", r"..\z-image", r"models\z-image", r"C:\models\z"):
+        with pytest.raises(FileNotFoundError):
+            backend.validate_load_request(
+                missing, gguf_filename = "m.gguf", family_override = "z-image"
+            )
+    # A bare "org/name" HF id is still treated as remote (not rejected as a local path).
+    assert (
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf").name
+        == "z-image"
+    )
+
+
+def test_replacement_load_waits_for_inflight_generation(fake_runtime, tmp_path):
+    # A superseding load must signal the in-flight generation's cancel AND wait for
+    # it to release _generate_lock before allocating, so two pipelines never sit in
+    # VRAM at once (unlike unload(), which returns promptly without waiting).
+    import threading
+
+    backend = DiffusionBackend()
+    started = threading.Event()
+    release = threading.Event()
+
+    class _BlockingPipe:
+        def __call__(self, **kwargs):
+            started.set()
+            release.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    backend._state = _LoadState(
+        pipe = _BlockingPipe(),
+        family = fam,
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+
+    gen_out: dict = {}
+
+    def _gen():
+        try:
+            backend.generate(prompt = "p", steps = 4)
+        except Exception as exc:  # noqa: BLE001
+            gen_out["exc"] = exc
+
+    gt = threading.Thread(target = _gen)
+    gt.start()
+    assert started.wait(5)  # generation in flight, holding _generate_lock
+
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    load_done = threading.Event()
+
+    def _load():
+        backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+        load_done.set()
+
+    lt = threading.Thread(target = _load)
+    lt.start()
+
+    # The load must NOT finish while the generation still holds _generate_lock; it
+    # has signalled the generation's cancel and is waiting to allocate.
+    assert not load_done.wait(0.5)
+    assert backend._active_generate_cancel is not None
+    assert backend._active_generate_cancel.is_set()
+
+    release.set()  # the blocked denoise returns; generate() sees cancel and raises
+    gt.join(5)
+    assert load_done.wait(5)  # only now does the replacement allocate
+    assert "exc" in gen_out and "cancelled" in str(gen_out["exc"]).lower()
+    assert backend.status()["loaded"] is True
+    assert backend.status()["repo_id"] == str(tmp_path)
+
+
+def test_superseded_load_does_not_cancel_unrelated_generation(fake_runtime, tmp_path):
+    # A stale worker (its _load_token already bumped by unload/a newer load) must bail on
+    # the token check BEFORE touching the current model's in-flight generation -- otherwise
+    # it would abort an unrelated denoise on its way out.
+    import threading
+
+    backend = DiffusionBackend()
+    started = threading.Event()
+    release = threading.Event()
+
+    class _BlockingPipe:
+        def __call__(self, **kwargs):
+            started.set()
+            release.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    backend._state = _LoadState(
+        pipe = _BlockingPipe(),
+        family = fam,
+        repo_id = "current",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+    backend._load_token = 7  # the "current" token
+
+    gen_out: dict = {}
+
+    def _gen():
+        try:
+            backend.generate(prompt = "p", steps = 4)
+        except Exception as exc:  # noqa: BLE001
+            gen_out["exc"] = exc
+
+    gt = threading.Thread(target = _gen)
+    gt.start()
+    assert started.wait(5)  # generation in flight
+    cancel_event = backend._active_generate_cancel
+    assert cancel_event is not None
+
+    # A superseded load arrives with a STALE token -> must raise without cancelling.
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.load_pipeline(
+            str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", _load_token = 1
+        )
+    # The in-flight generation's cancel must NOT have been signalled by the stale worker.
+    assert not cancel_event.is_set()
+
+    release.set()
+    gt.join(5)
+    # The generation completed normally (not cancelled).
+    assert "exc" not in gen_out
+    # The stale load did not replace the current model.
+    assert backend.status()["repo_id"] == "current"
+
+
+def test_detect_family_from_local_gguf_filename(tmp_path):
+    # A direct local .gguf pick splits into (parent dir, basename); the family
+    # keyword can live only in the filename, so validate must scan it too.
+    (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"w")
+    backend = DiffusionBackend()
+    fam = backend.validate_load_request(str(tmp_path), gguf_filename = "z-image-turbo-Q4_K_M.gguf")
+    assert fam.name == "z-image"
+    # An edit-checkpoint filename is still rejected even via the filename path.
+    (tmp_path / "FLUX.1-Kontext-dev-Q4.gguf").write_bytes(b"w")
+    with pytest.raises(ValueError):
+        backend.validate_load_request(str(tmp_path), gguf_filename = "FLUX.1-Kontext-dev-Q4.gguf")
+    # A bare parent dir whose name DOES carry the keyword still works (unchanged).
+    assert backend._detect_family_for_pick("unsloth/Z-Image-GGUF", "x.gguf", None).name == "z-image"
 
 
 def test_run_load_does_not_stamp_superseded_progress(fake_runtime, monkeypatch):

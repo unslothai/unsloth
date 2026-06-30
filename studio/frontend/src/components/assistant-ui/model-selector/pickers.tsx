@@ -985,6 +985,16 @@ export const IMAGE_GEN_TASKS = [
   "image-text-to-image",
 ] as const;
 
+// Diffusion GGUF archs the Images backend can't assemble yet (SD/SDXL/PixArt/Wan/
+// ...). The backend tags them with this task so the chat picker hides them -- they
+// die with "unknown model architecture" in llama.cpp -- while the Images picker,
+// which filters on IMAGE_GEN_TASKS, also leaves them out (they'd 400 on load).
+const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
+
+// Tasks that must never appear as a loadable chat model: the Images-handled
+// generation tasks plus the non-loadable diffusion tag above.
+const NON_CHAT_TASKS: readonly string[] = [...IMAGE_GEN_TASKS, UNSUPPORTED_DIFFUSION_TASK];
+
 // Editing/inpaint checkpoints are tagged image-to-image but need an input image,
 // which the text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by
 // id so they don't show in the Images picker only to 400 on load. Keeping the
@@ -1010,7 +1020,7 @@ function passesTaskGate(
   filter: HfTaskFilter,
 ): boolean {
   if (filter) return taskMatchesFilter(repoTask, filter) && !isImageEditModel(repoId);
-  return !(repoTask != null && (IMAGE_GEN_TASKS as readonly string[]).includes(repoTask));
+  return !(repoTask != null && NON_CHAT_TASKS.includes(repoTask));
 }
 
 // Module-level caches so re-mounting the popover shows results instantly
