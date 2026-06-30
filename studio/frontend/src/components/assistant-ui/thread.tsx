@@ -2615,15 +2615,20 @@ export function requestVoiceResume() {
 // the user as done and send. Reset on every transcript update so a mid-sentence
 // pause never clips speech; only a real pause this long auto-sends.
 const VOICE_SILENCE_DEBOUNCE_MS = 1500;
-// Barge-in guard: minimum transcript length before an in-progress utterance
-// interrupts TTS. Filters out the one or two stray characters the mic picks up
-// from the model's own voice through the speakers, so TTS doesn't barge itself.
-const VOICE_BARGE_IN_MIN_CHARS = 2;
+// Barge-in debounce: when speech is heard while TTS is playing, wait this long
+// and only interrupt if the transcript kept growing across the window. A cough
+// or stray blip produces one fragment that doesn't sustain, so it's ignored;
+// real "wait, stop" speech keeps adding words and cuts the model off.
+const VOICE_BARGE_IN_DEBOUNCE_MS = 300;
 
 const VoiceEngine: FC = () => {
   const aui = useAui();
   const [voiceMode, setVoiceModeState] = useState(_voiceMode);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Barge-in debounce: timer that confirms sustained speech, and the latest
+  // transcript so the timer can check whether it grew across the window.
+  const bargeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestTranscriptRef = useRef("");
   // voiceModeRef is only written in toggle/activate — never in the render body.
   const voiceModeRef = useRef(_voiceMode);
   const isSpeakingRef = useRef(false);
@@ -2788,14 +2793,23 @@ const VoiceEngine: FC = () => {
     if (dictationStatusType !== "running") return;
     if (voiceModeRef.current !== "active") return;
 
-    // Barge-in: a long-enough transcript while TTS is playing means the user is
-    // talking over the model → interrupt immediately. The min-length guard keeps
-    // the mic's pickup of the model's own voice from barging the model itself.
-    if (
-      isSpeakingRef.current &&
-      dictationTranscript.trim().length >= VOICE_BARGE_IN_MIN_CHARS
-    ) {
-      stop();
+    // Barge-in (debounced): speech while TTS is playing only interrupts if it's
+    // sustained. On the first fragment, open a window and snapshot the transcript
+    // length; when it elapses, barge only if the transcript grew (the user kept
+    // talking). A cough/blip doesn't grow, so it's ignored.
+    latestTranscriptRef.current = dictationTranscript;
+    if (isSpeakingRef.current && dictationTranscript.trim()) {
+      if (bargeTimerRef.current === null) {
+        const baseline = dictationTranscript.trim().length;
+        bargeTimerRef.current = setTimeout(() => {
+          bargeTimerRef.current = null;
+          if (!isSpeakingRef.current) return;
+          if (latestTranscriptRef.current.trim().length > baseline) stop();
+        }, VOICE_BARGE_IN_DEBOUNCE_MS);
+      }
+    } else if (bargeTimerRef.current !== null) {
+      clearTimeout(bargeTimerRef.current);
+      bargeTimerRef.current = null;
     }
 
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -2848,6 +2862,10 @@ const VoiceEngine: FC = () => {
         clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = null;
       }
+      if (bargeTimerRef.current) {
+        clearTimeout(bargeTimerRef.current);
+        bargeTimerRef.current = null;
+      }
       stop();
       const composer = auiRef.current.composer();
       if (composer.getState().dictation) composer.stopDictation();
@@ -2858,6 +2876,7 @@ const VoiceEngine: FC = () => {
   useEffect(() => {
     return () => {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (bargeTimerRef.current) clearTimeout(bargeTimerRef.current);
     };
   }, []);
 
