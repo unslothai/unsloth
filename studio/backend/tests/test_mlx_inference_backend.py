@@ -223,9 +223,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     captured_calls = []
 
     def _fake_apply(tokenizer, messages, **kwargs):
-        captured_calls.append(
-            {"tokenizer": tokenizer, "messages": messages, "kwargs": kwargs}
-        )
+        captured_calls.append({"tokenizer": tokenizer, "messages": messages, "kwargs": kwargs})
         return "<rendered prompt>"
 
     monkeypatch.setattr(

@@ -1626,9 +1626,7 @@ def _strip_tool_xml(text: str) -> str:
     The Gemma ``call:NAME{...}`` wrapper-less form has no XML and is not in
     ``_TOOL_XML_RE``; without this pass it leaks through Anthropic/display/history
     cleanup while the core/streaming paths strip it."""
-    return _TOOL_XML_RE.sub(
-        "", _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text))
-    )
+    return _TOOL_XML_RE.sub("", _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text)))
 
 
 def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
