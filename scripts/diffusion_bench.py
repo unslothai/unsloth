@@ -210,7 +210,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             base_repo = args.base_repo,
             family_override = args.family_override,
             hf_token = os.environ.get("HF_TOKEN"),
-            cpu_offload = args.cpu_offload,
             memory_mode = args.memory_mode,
             text_encoder_quant = args.text_encoder_quant,
         )
@@ -291,7 +290,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             "seed": args.seed,
             "batch_size": args.batch_size,
             "memory_mode": args.memory_mode,
-            "cpu_offload": args.cpu_offload,
             "text_encoder_quant": args.text_encoder_quant,
         },
     }
@@ -451,9 +449,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default = None,
         choices = ["fp8", "nvfp4"],
         help = "quantise the companion text encoder (fp8 or nvfp4)",
-    )
-    p.add_argument(
-        "--cpu-offload", action = "store_true", help = "legacy: force whole-module CPU offload"
     )
     p.add_argument(
         "--write-baseline",
