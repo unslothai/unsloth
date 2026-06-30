@@ -419,7 +419,6 @@ def test_build_rag_autoinject_skips_project_companion_over_budget(rag_conn, monk
     assert "project overflow" not in injected
 
 
-
 def test_build_rag_autoinject_thread_whole_doc_ignores_project_size(rag_conn, monkeypatch):
     # A large project corpus must not push a small thread attachment over budget;
     # whole-doc resolves the thread scope alone (companion retrieval stubbed out).
