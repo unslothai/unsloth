@@ -81,10 +81,6 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[rank]
 
 
-def _is_cuda(device: Optional[str]) -> bool:
-    return bool(device) and device.split(":", 1)[0] == "cuda"
-
-
 def _cuda_reset_peak() -> None:
     import torch
     if torch.cuda.is_available():

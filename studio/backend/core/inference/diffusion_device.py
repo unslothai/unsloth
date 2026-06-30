@@ -175,12 +175,10 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
     return _cpu_target(torch)
 
 
-def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
-    if dtype is None:
-        dtype = torch.float32
+def _cpu_target(torch: Any) -> DiffusionDeviceTarget:
     return DiffusionDeviceTarget(
         device = "cpu",
-        dtype = dtype,
+        dtype = torch.float32,
         backend = "cpu",
         vendor = None,
         supports_model_cpu_offload = False,
