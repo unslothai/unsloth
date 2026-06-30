@@ -76,6 +76,9 @@
       }
     },
     "linux": {
+      "appimage": {
+        "bundleMediaFramework": false
+      },
       "deb": {
         "postRemoveScript": "./linux/postremove.sh"
       }

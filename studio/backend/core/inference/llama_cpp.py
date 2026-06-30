@@ -1271,6 +1271,9 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
         self._tensor_parallel: bool = False
+        # Layer load kept multi-GPU only to honor a downgraded tensor request, so a
+        # later explicit tensor-off reloads instead of deduping to it (#6659).
+        self._layer_preserves_tensor_intent: bool = False
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
         # Canonical UI-facing mode the user requested
@@ -1642,6 +1645,11 @@ class LlamaCppBackend:
     def tensor_parallel(self) -> bool:
         """Whether --split-mode tensor is active on the loaded server."""
         return self._tensor_parallel
+
+    @property
+    def layer_preserves_tensor_intent(self) -> bool:
+        """True when a downgraded tensor request kept this layer load multi-GPU."""
+        return self._layer_preserves_tensor_intent
 
     @property
     def speculative_type(self) -> Optional[str]:
@@ -2430,6 +2438,37 @@ class LlamaCppBackend:
     # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
     _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
 
+    # (binary, mtime, model) that aborted on --split-mode tensor this process (#6415
+    # geometry limit, e.g. MQA n_head_kv=1). Model-keyed so one model's abort doesn't
+    # skip tensor for others; tensor is tried by default, recorded only on a real abort.
+    _tensor_split_abort_keys: set[tuple[str, int, str]] = set()
+
+    @classmethod
+    def _tensor_split_cache_key(
+        cls, binary: Optional[str], model: Optional[str]
+    ) -> Optional[tuple[str, int, str]]:
+        """(path, mtime_ns, model) key; ns mtime re-probes a same-second binary swap."""
+        if not binary or not model:
+            return None
+        try:
+            mtime = Path(binary).stat().st_mtime_ns
+        except OSError:
+            mtime = 0
+        return (binary, mtime, model)
+
+    @classmethod
+    def _tensor_split_aborts(cls, binary: Optional[str], model: Optional[str]) -> bool:
+        """True if (binary, model) aborted on --split-mode tensor this session."""
+        key = cls._tensor_split_cache_key(binary, model)
+        return key is not None and key in cls._tensor_split_abort_keys
+
+    @classmethod
+    def _record_tensor_split_abort(cls, binary: Optional[str], model: Optional[str]) -> None:
+        """Remember a (binary, model) that aborts on --split-mode tensor."""
+        key = cls._tensor_split_cache_key(binary, model)
+        if key is not None:
+            cls._tensor_split_abort_keys.add(key)
+
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
         """Return DLL dirs from pip-installed CUDA wheels under
@@ -2569,8 +2608,12 @@ class LlamaCppBackend:
         usable_fraction: Optional[float] = None,
         total_by_idx: Optional[dict[int, int]] = None,
         per_device_overhead_bytes: int = 0,
+        min_gpus: int = 1,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
+
+        ``min_gpus`` (default 1, capped at ``len(gpus)``) keeps a downgraded
+        tensor/multi-GPU request spread instead of collapsing to one card.
 
         ``model_size_bytes`` should include weights and estimated KV cache.
         ``usable_fraction`` (default ``_GPU_PIN_VRAM_FRACTION``) provides
@@ -2590,9 +2633,11 @@ class LlamaCppBackend:
         if not gpus:
             return None, True
 
+        min_gpus = max(1, min(min_gpus, len(gpus)))
         model_size_mib = model_size_bytes / (1024 * 1024)
         if usable_fraction is None:
             usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
+        overhead_mib = per_device_overhead_bytes / (1024 * 1024)
 
         # Per-GPU usable budget: free - (1-frac)*total when total is known, else
         # the legacy free*frac (also covers a total-0 two-column probe).
@@ -2606,19 +2651,26 @@ class LlamaCppBackend:
         # card can have less usable room than a less-used small one.
         ranked = sorted(gpus, key = lambda g: _usable(g[0], g[1]), reverse = True)
 
-        # Try 1 GPU at the usable-VRAM threshold.
-        if _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
+        # Cap a downgraded multi-GPU request to the usable count so it doesn't pull
+        # in a near-full card to hit min_gpus. No-op for the default min_gpus == 1.
+        usable_count = sum(1 for idx, free_mib in ranked if _usable(idx, free_mib) > overhead_mib)
+        min_gpus = max(1, min(min_gpus, usable_count or 1))
+
+        # Try 1 GPU at the usable-VRAM threshold (only when one device is allowed).
+        if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
             return [ranked[0][0]], False
 
-        # Try N GPUs (accumulate usable memory from most-free). Each GPU past the
-        # first adds a fixed per-device overhead the pool must hold.
-        overhead_mib = per_device_overhead_bytes / (1024 * 1024)
+        # Try N GPUs (most-free first); each past the first adds per-device overhead.
+        # Require at least min_gpus devices before accepting a fit.
         cumulative = 0.0
         selected = []
         for idx, free_mib in ranked:
             selected.append(idx)
             cumulative += _usable(idx, free_mib)
-            if cumulative >= model_size_mib + (len(selected) - 1) * overhead_mib:
+            if (
+                len(selected) >= min_gpus
+                and cumulative >= model_size_mib + (len(selected) - 1) * overhead_mib
+            ):
                 return sorted(selected), False
 
         # Too large even for all GPUs; let --fit handle it
@@ -3147,9 +3199,10 @@ class LlamaCppBackend:
                         except (ValueError, OSError):
                             # Log file closed under us; tee silently.
                             pass
-        except (ValueError, OSError):
-            # Pipe closed -- process terminating.
-            pass
+        except Exception:
+            # Never let the drain thread die: a full stdout pipe can deadlock
+            # llama-server (Windows). Pipe-closed on exit is the common case.
+            logger.debug("llama-server stdout drain stopped", exc_info = True)
 
     # GGUF KV type sizes for fast skipping
     _GGUF_TYPE_SIZE = {
@@ -3867,7 +3920,7 @@ class LlamaCppBackend:
                     logger.debug(f"Could not list repo files for {label}: {e}")
                     break
                 logger.debug(
-                    f"Could not list repo files for {label} " f"(attempt {attempt + 1}/3): {e}"
+                    f"Could not list repo files for {label} (attempt {attempt + 1}/3): {e}"
                 )
                 if attempt < 2:
                     self._cancel_event.wait(2**attempt)
@@ -4332,6 +4385,17 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _is_tensor_split_assert(output: str) -> bool:
+        """True only for the #6415 split-axis warmup assert (GGML_BACKEND_SPLIT_AXIS_*),
+        not any ggml assert/abort, so an unrelated invariant isn't cached. stderr is
+        merged into output."""
+        text = (output or "").lower()
+        if "ggml_assert" not in text and "ggml_abort" not in text:
+            return False
+        # the split-axis enum token, unique to this assert (not the source file).
+        return "split_axis" in text
+
+    @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
         """True only on a hard fault (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS or a
         Windows 0xC0000000+ status), not SIGKILL/SIGTERM/SIGINT (OOM killer /
@@ -4342,6 +4406,20 @@ class LlamaCppBackend:
         if returncode >= 0xC0000000:  # Windows access violation / illegal instruction
             return True
         return -returncode in (4, 6, 7, 8, 11)  # SIGILL SIGABRT SIGBUS SIGFPE SIGSEGV
+
+    @staticmethod
+    def _is_abort_exit(returncode: Optional[int]) -> bool:
+        """Windows CRT abort() exit code (3) from GGML_ASSERT on MSVC -- not a POSIX
+        signal or 0xC0000000+ NTSTATUS."""
+        return returncode == 3
+
+    @classmethod
+    def _should_record_tensor_split_abort(cls, returncode: Optional[int], output: str) -> bool:
+        """The #6415 split-axis abort: the marker plus a hard crash (POSIX signal or
+        Windows abort exit). Marker required so a generic crash isn't cached."""
+        return cls._is_tensor_split_assert(output) and (
+            cls._is_signal_crash(returncode) or cls._is_abort_exit(returncode)
+        )
 
     @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
@@ -4487,6 +4565,8 @@ class LlamaCppBackend:
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
         n_parallel: int = 1,
         extra_args: Optional[List[str]] = None,
+        # Route-level tensor->layer fallback retry: keep the layer split multi-GPU.
+        preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
         """Start llama-server with a GGUF model.
 
@@ -4517,6 +4597,8 @@ class LlamaCppBackend:
             "n_gpu_layers": n_gpu_layers,
             "n_parallel": n_parallel,
             "extra_args": list(extra_args) if extra_args is not None else None,
+            # Replayed by _respawn_if_dead so a downgraded model stays multi-GPU.
+            "preserve_multi_gpu_on_layer": preserve_multi_gpu_on_layer,
         }
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
@@ -4540,6 +4622,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                preserve_multi_gpu_on_layer = preserve_multi_gpu_on_layer,
             ):
                 logger.info(
                     f"load_model: backend already in target state for "
@@ -4625,6 +4708,9 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
+                # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
+                # prior load (this path skips the command builder that clears it).
+                self._layer_preserves_tensor_intent = False
                 with self._lock:
                     if self._cancel_event.is_set():
                         logger.info("Load cancelled before diffusion server start")
@@ -4779,6 +4865,9 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
+                # before the try so the --fit-on except path still has it (no UnboundLocal).
+                _layer_min_gpus = 1
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -5063,10 +5152,8 @@ class LlamaCppBackend:
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
                     def _restore_after_tensor_downgrade():
-                        # Tensor mode dropped a quantized KV and stripped the cache
-                        # extras (it rejects quantized); layer split supports them, so
-                        # restore the original type + extras (minus --split-mode) and
-                        # clear the env flag so the layer launch re-emits them.
+                        # Restore the quantized KV + extras tensor dropped (layer
+                        # split supports them), minus --split-mode.
                         nonlocal cache_type_kv, _cache_type_from_env, extra_args
                         if _tensor_dropped_cache_type_kv is not None:
                             cache_type_kv = _tensor_dropped_cache_type_kv
@@ -5077,13 +5164,22 @@ class LlamaCppBackend:
                             else extra_args
                         )
 
-                    if tensor_parallel and effective_is_vision:
+                    # The route fallback retry is tensor-off; keep it multi-GPU.
+                    if preserve_multi_gpu_on_layer:
+                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
+
+                    if tensor_parallel and self._tensor_split_aborts(binary, model_identifier):
+                        # Aborted on tensor for this model this session (#6415); skip
+                        # tensor upfront, layer split serves it.
                         logger.info(
-                            "Tensor parallelism skipped for vision model: "
-                            "--split-mode tensor is incompatible with --mmproj "
-                            "in the current llama.cpp build; using layer split."
+                            "Tensor parallelism skipped: this llama.cpp build aborted "
+                            "on --split-mode tensor for this model earlier this "
+                            "session; using layer split across %d GPU(s).",
+                            len(gpus),
                         )
                         tensor_parallel = False
+                        # Keep the multi-GPU request (gated on it, not the cache).
+                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         _restore_after_tensor_downgrade()
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
@@ -5123,6 +5219,11 @@ class LlamaCppBackend:
                             len(gpus),
                         )
                         tensor_parallel = False
+                        # GPUs below tensor's compute-buffer reserve can still do layer
+                        # split, so keep multi-GPU (mirrors the budget/geometry drops);
+                        # _select_gpus caps unusable cards.
+                        if len(gpus) >= 2:
+                            _layer_min_gpus = max(_layer_min_gpus, len(gpus))
                         # Layer split supports a quantized KV the tensor attempt
                         # dropped; restore the original cache type + extras (minus
                         # --split-mode) so the layer launch re-emits them.
@@ -5159,8 +5260,12 @@ class LlamaCppBackend:
                                 "per-device compute buffers; falling back to layer split."
                             )
                             tensor_parallel = False
-                            # Restore the dropped quantized KV + original cache extras
-                            # (minus --split-mode); layer split supports them.
+                            # Weights needed >1 card, so keep multi-GPU across the
+                            # usable tensor GPUs.
+                            if len(tp_gpus) >= 2:
+                                _layer_min_gpus = max(_layer_min_gpus, len(tp_gpus))
+                            # Restore the dropped quantized KV + cache extras (minus
+                            # --split-mode); layer split supports them.
                             _restore_after_tensor_downgrade()
 
                     if tensor_parallel and tp_gpus:
@@ -5262,6 +5367,7 @@ class LlamaCppBackend:
                                 usable_fraction = _pin_fraction,
                                 total_by_idx = total_by_idx,
                                 per_device_overhead_bytes = _pipeline_overhead_bytes,
+                                min_gpus = _layer_min_gpus,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
@@ -5272,7 +5378,22 @@ class LlamaCppBackend:
                             ranked = sorted(
                                 gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
                             )
-                            for n_gpus in range(1, len(ranked) + 1):
+                            # Skips _select_gpus, so apply its cap: count only cards
+                            # whose usable VRAM clears the per-device layer overhead.
+                            _pipeline_overhead_mib = _pipeline_overhead_bytes / (1024 * 1024)
+                            _auto_min_gpus = max(
+                                1,
+                                min(
+                                    _layer_min_gpus,
+                                    sum(
+                                        1
+                                        for g in ranked
+                                        if _gpu_usable(g, pin_fraction) > _pipeline_overhead_mib
+                                    )
+                                    or 1,
+                                ),
+                            )
+                            for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
                                 _ms = _subset_model_size(n_gpus)
@@ -5302,7 +5423,7 @@ class LlamaCppBackend:
                                 # at 131k may pin fine with a 4096 KV (#5106).
                                 effective_ctx = min(4096, effective_ctx)
                                 if effective_ctx > 0:
-                                    for n_gpus in range(1, len(ranked) + 1):
+                                    for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
                                         subset = ranked[:n_gpus]
                                         kv = self._estimate_kv_cache_bytes(
                                             effective_ctx,
@@ -5338,6 +5459,7 @@ class LlamaCppBackend:
                             usable_fraction = _pin_fraction,
                             total_by_idx = total_by_idx,
                             per_device_overhead_bytes = _pipeline_overhead_bytes,
+                            min_gpus = _layer_min_gpus,
                         )
                         if use_fit and not explicit_ctx:
                             # Weights don't fit on any subset; default UI to 4096
@@ -5475,6 +5597,15 @@ class LlamaCppBackend:
                     "--no-context-shift",
                 ]
 
+                # Report a clean public model id (matching GET /v1/models) rather
+                # than the raw -m path in llama-server's own /v1/models and the
+                # "model" field of its chat/completions responses.
+                from core.inference.model_ids import public_model_id
+
+                _alias = public_model_id(self._model_identifier or model_path)
+                if _alias:
+                    cmd.extend(["--alias", _alias])
+
                 fully_gpu_offloaded = False
                 if use_fit:
                     cmd.extend(["--fit", "on"])
@@ -5568,12 +5699,15 @@ class LlamaCppBackend:
                             ]
                         )
                     self._tensor_parallel = True
+                    self._layer_preserves_tensor_intent = False
                     logger.info(
                         "Tensor parallelism: --split-mode tensor, --tensor-split %s",
                         tp_tensor_split,
                     )
                 else:
                     self._tensor_parallel = False
+                    # > 1 only when a tensor request was downgraded but kept multi-GPU.
+                    self._layer_preserves_tensor_intent = _layer_min_gpus > 1
 
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
@@ -5857,7 +5991,17 @@ class LlamaCppBackend:
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
                         )
-                        if _spawn_attempt == 0 and _fit_retry_allowed and _startup_crashed:
+                        # A split-axis abort (#6415) is fit-independent: skip the
+                        # --fit off retry and let the caller latch it.
+                        _split_axis_crash = self._is_tensor_split_assert(
+                            "\n".join(self._stdout_lines[-50:])
+                        )
+                        if (
+                            _spawn_attempt == 0
+                            and _fit_retry_allowed
+                            and _startup_crashed
+                            and not _split_axis_crash
+                        ):
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
                                 "with the default memory-fit step enabled; Studio "
@@ -5903,6 +6047,21 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
+                # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
+                # the flash-attn-off retry below can't run tensor (needs flash_attn),
+                # so its output drops the marker and recording later would miss it,
+                # looping every load. Record and raise to the route's layer fallback,
+                # skipping the futile flash-attn/MTP retries.
+                if not healthy and self._tensor_parallel and not self._cancel_event.is_set():
+                    _ts_out = "\n".join(self._stdout_lines[-50:])
+                    _ts_rc = self._process.poll() if self._process is not None else None
+                    if self._should_record_tensor_split_abort(_ts_rc, _ts_out):
+                        LlamaCppBackend._record_tensor_split_abort(binary, model_identifier)
+                        self._kill_process()
+                        raise RuntimeError(
+                            "llama-server aborted on --split-mode tensor "
+                            "(split-axis geometry); retrying with layer split."
+                        )
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
                 # builds (frequently inside the vision tower). Disabling FA keeps
                 # both vision and MTP, so retry that way before dropping either.
@@ -6047,6 +6206,7 @@ class LlamaCppBackend:
                     # Read the crash code before _kill_process() clears _process.
                     _crash_rc = self._process.poll() if self._process is not None else None
                     self._kill_process()
+                    # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     if (
                         launched_with_mmproj
@@ -6478,6 +6638,7 @@ class LlamaCppBackend:
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
         mtp_draft_path: Optional[str] = None,
+        preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
 
@@ -6519,6 +6680,17 @@ class LlamaCppBackend:
         # the child env, so the env must not force an endless reload of a healthy
         # server. An identical request would downgrade the same way.
         if not _tensor_parallel_matches_loaded(extra_args, tensor_parallel, self._tensor_parallel):
+            return False
+        # Preserved tensor->layer fallback + an EXPLICIT tensor drop: reload so
+        # placement re-selects instead of keeping the all-GPU mask (mirrors the route,
+        # #6659). preserve_multi_gpu_on_layer carries the route's carry-forward decision
+        # (True for an implicit same-settings reload), so those still dedupe -- the HF
+        # auto-pick / local-dir flows skip the route guard and only reach here.
+        if (
+            self._layer_preserves_tensor_intent
+            and not _effective_tensor_parallel(extra_args, tensor_parallel)
+            and not preserve_multi_gpu_on_layer
+        ):
             return False
 
         # Compare on the canonical requested mode. With --spec-type in
@@ -6631,6 +6803,7 @@ class LlamaCppBackend:
             self._supports_tools = False
             self._cache_type_kv = None
             self._tensor_parallel = False
+            self._layer_preserves_tensor_intent = False
             self._speculative_type = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None

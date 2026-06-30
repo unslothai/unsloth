@@ -159,35 +159,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn apply_linux_appimage_webkit_workarounds() {
-    if std::env::var_os("APPIMAGE").is_none() {
-        return;
-    }
-
-    // AppImage bundles WebKitGTK/GTK while still using host Mesa/EGL.
-    // On some rolling Linux stacks that mixed path leaves WebKit blank.
-    set_env_if_missing("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-    set_env_if_missing("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-}
-
-#[cfg(target_os = "linux")]
-fn set_env_if_missing(key: &str, value: &str) {
-    if std::env::var_os(key).is_none() {
-        std::env::set_var(key, value);
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn apply_linux_appimage_webkit_workarounds() {}
-
 fn main() {
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
     let _ = fix_path_env::fix();
-
-    apply_linux_appimage_webkit_workarounds();
 
     setup_logging();
     info!("Unsloth Studio desktop app starting");
