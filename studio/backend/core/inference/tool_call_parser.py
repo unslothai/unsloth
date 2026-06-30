@@ -329,9 +329,7 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
     removes a trailing unclosed call to EOF; otherwise an unclosed call is left
     buffered (still streaming)."""
     starts = [
-        m
-        for m in _TC_FUNC_START_RE.finditer(text)
-        if not _inside_open_parameter(text, m.start())
+        m for m in _TC_FUNC_START_RE.finditer(text) if not _inside_open_parameter(text, m.start())
     ]
     if not starts:
         return text
