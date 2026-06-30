@@ -26,10 +26,7 @@ def _load_qwen3_5_vlm_save_helpers():
     helpers = [
         node
         for node in tree.body
-        if (
-            isinstance(node, ast.FunctionDef)
-            and node.name in names
-        )
+        if (isinstance(node, ast.FunctionDef) and node.name in names)
         or (
             isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id in names for target in node.targets)
@@ -180,7 +177,12 @@ def test_qwen3_5_gguf_save_handles_config_write_failure(tmp_path, monkeypatch):
 
     original_open = Path.open
 
-    def fail_writes(self, mode = "r", *args, **kwargs):
+    def fail_writes(
+        self,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
         if "w" in mode and self.name == "config.json":
             raise OSError("read-only config")
         return original_open(self, mode, *args, **kwargs)

@@ -641,7 +641,9 @@ def _is_qwen3_5_config_dict(config):
     if not isinstance(text_config, dict):
         text_config = {}
 
-    architectures = _as_list(config.get("architectures")) + _as_list(text_config.get("architectures"))
+    architectures = _as_list(config.get("architectures")) + _as_list(
+        text_config.get("architectures")
+    )
     if any(architecture in _QWEN3_5_GGUF_ARCHITECTURES for architecture in architectures):
         return True
 
@@ -718,7 +720,9 @@ def _qwen3_5_infer_mtp_layers_from_tensor_names(tensor_names, num_hidden_layers)
         match = mtp_pattern.match(name)
         if match is not None:
             layer = int(match.group(1))
-            highest_mtp_layer = layer if highest_mtp_layer is None else max(highest_mtp_layer, layer)
+            highest_mtp_layer = (
+                layer if highest_mtp_layer is None else max(highest_mtp_layer, layer)
+            )
             continue
 
         for pattern in layer_patterns:
@@ -728,9 +732,7 @@ def _qwen3_5_infer_mtp_layers_from_tensor_names(tensor_names, num_hidden_layers)
             layer = int(match.group(1))
             if layer >= num_hidden_layers:
                 highest_appended_layer = (
-                    layer
-                    if highest_appended_layer is None
-                    else max(highest_appended_layer, layer)
+                    layer if highest_appended_layer is None else max(highest_appended_layer, layer)
                 )
             break
 
