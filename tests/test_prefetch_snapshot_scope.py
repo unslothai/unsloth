@@ -479,19 +479,34 @@ def test_from_tf_root_load_ignores_nested_h5(capture):
 
 
 def test_sentence_transformer_from_pretrained_is_prefetch_wired():
-    """FastSentenceTransformer.from_pretrained must warm the repo via maybe_prefetch_hf_snapshot
-    BEFORE it instantiates SentenceTransformer / fetches modules.json, else an ST load downloads over
-    unprotected in-process Xet. Static source guard (importing ST pulls heavy optional deps)."""
+    """FastSentenceTransformer.from_pretrained must warm the repo via maybe_prefetch_hf_snapshot as an
+    UNCONDITIONAL top-level statement (so it fires on every load path: for_inference, fast-encoder,
+    fallback) and before any top-level return. Static AST guard (importing ST pulls heavy optional
+    deps); checking the call is top-level -- not nested in an if/for/try -- catches a dead-branch wire."""
+    import ast
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
     with open(src_path, "r", encoding = "utf-8") as f:
-        src = f.read()
-    fp_idx = src.index("def from_pretrained", src.index("class FastSentenceTransformer"))
-    body = src[fp_idx:]
-    prefetch_idx = body.find("maybe_prefetch_hf_snapshot(")
-    st_idx = body.find("SentenceTransformer(")
-    assert prefetch_idx != -1, "from_pretrained must call maybe_prefetch_hf_snapshot"
-    assert (
-        st_idx != -1 and prefetch_idx < st_idx
-    ), "prefetch must run before the SentenceTransformer load"
+        tree = ast.parse(f.read())
+    cls = next(
+        n for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "FastSentenceTransformer"
+    )
+    fp = next(
+        n for n in cls.body
+        if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
+    )
+
+    def _is_prefetch_call(node):
+        return (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "maybe_prefetch_hf_snapshot"
+        )
+
+    prefetch_pos = next((i for i, n in enumerate(fp.body) if _is_prefetch_call(n)), None)
+    return_pos = next((i for i, n in enumerate(fp.body) if isinstance(n, ast.Return)), len(fp.body))
+    assert prefetch_pos is not None, "from_pretrained must call maybe_prefetch_hf_snapshot at top level"
+    assert prefetch_pos < return_pos, "prefetch must run before any top-level return"
