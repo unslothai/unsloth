@@ -263,6 +263,9 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   if (store.params.checkpoint) {
     return true;
   }
+  if (store.modelLoading) {
+    return false;
+  }
 
   let status: InferenceStatusResponse;
   try {
@@ -281,10 +284,10 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   }
 
   // Re-check after the await: keep a checkpoint the user picked meanwhile.
-  const previousCheckpoint =
-    useChatRuntimeStore.getState().params.checkpoint;
-  if (previousCheckpoint) {
-    return true;
+  const latest = useChatRuntimeStore.getState();
+  const previousCheckpoint = latest.params.checkpoint;
+  if (previousCheckpoint || latest.modelLoading) {
+    return !!previousCheckpoint;
   }
   store.setCheckpoint(checkpointId, status.gguf_variant);
   applyActiveModelStatusToStore(status, { previousCheckpoint });

@@ -11,6 +11,7 @@ import type { ChatModelAdapter } from "@assistant-ui/react";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
+  isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
@@ -70,6 +71,8 @@ import {
 } from "../utils/parse-assistant-content";
 import {
   generateAudio,
+  getInferenceStatus,
+  getLoadProgress,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -1254,22 +1257,112 @@ async function resolveSandboxSessionId(
   return projectId ? `project-${projectId}` : threadId;
 }
 
-/** Wait for an in-progress model load to finish (polls store every 500ms). */
-function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const check = () => {
-      if (abortSignal?.aborted) {
-        reject(new Error("Aborted"));
-        return;
+/**
+ * Wait for an in-progress UI-initiated model load to finish. Returns as
+ * soon as ``modelLoading`` clears -- whether the load succeeded (checkpoint
+ * set) or ended without one (cancel/failure) -- so a cancelled load does
+ * not leave the send hanging. Adopting an externally loaded model is the
+ * empty-checkpoint path's job (see ``adoptInFlightServerLoad``), not this.
+ */
+async function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
+  while (useChatRuntimeStore.getState().modelLoading) {
+    if (abortSignal?.aborted) {
+      throw new Error("Aborted");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+/**
+ * Prefer a user-picked or UI-initiated load over adopting a CLI/API model.
+ * Returns true when the caller should stop waiting for server adoption.
+ */
+async function yieldToUserModelLoad(
+  abortSignal?: AbortSignal,
+): Promise<boolean> {
+  const hasUserCheckpoint = () =>
+    !!useChatRuntimeStore.getState().params.checkpoint;
+  if (hasUserCheckpoint()) {
+    return true;
+  }
+  if (!useChatRuntimeStore.getState().modelLoading) {
+    return false;
+  }
+  await waitForModelReady(abortSignal);
+  return hasUserCheckpoint();
+}
+
+async function serverLoadEvidence(): Promise<boolean> {
+  try {
+    const progress = await getLoadProgress();
+    if (progress.phase != null) {
+      return true;
+    }
+  } catch {
+    // Ignore transient load-progress errors.
+  }
+  try {
+    const status = await getInferenceStatus();
+    if (status.loading.length > 0) {
+      return true;
+    }
+  } catch {
+    // Ignore transient status errors.
+  }
+  return false;
+}
+
+/**
+ * On an empty checkpoint, adopt a model the server is already running or
+ * loading (e.g. ``unsloth studio run -m``) instead of auto-loading a
+ * different one. Only waits when there is real evidence of an in-flight
+ * load (``/status.loading``, or ``load-progress`` phase set); a genuinely
+ * idle session has no such evidence and returns ``false`` immediately so
+ * the caller auto-loads without delay.
+ */
+async function adoptInFlightServerLoad(
+  abortSignal?: AbortSignal,
+): Promise<boolean> {
+  if (await yieldToUserModelLoad(abortSignal)) {
+    return true;
+  }
+  if (await tryAdoptServerActiveModel()) {
+    return true;
+  }
+
+  let sawEvidence = await serverLoadEvidence();
+  if (!sawEvidence) {
+    return false;
+  }
+
+  toast.info("Waiting for model to finish loading…");
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    if (abortSignal?.aborted) {
+      throw new Error("Aborted");
+    }
+    if (await yieldToUserModelLoad(abortSignal)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (await yieldToUserModelLoad(abortSignal)) {
+      return true;
+    }
+    if (await tryAdoptServerActiveModel()) {
+      return true;
+    }
+    sawEvidence = await serverLoadEvidence();
+    if (!sawEvidence) {
+      if (await yieldToUserModelLoad(abortSignal)) {
+        return true;
       }
-      if (!useChatRuntimeStore.getState().modelLoading) {
-        resolve();
-        return;
-      }
-      setTimeout(check, 500);
-    };
-    check();
-  });
+      return await tryAdoptServerActiveModel();
+    }
+  }
+  if (await yieldToUserModelLoad(abortSignal)) {
+    return true;
+  }
+  return await tryAdoptServerActiveModel();
 }
 
 /**
@@ -1319,11 +1412,11 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
-async function autoLoadSmallestModel(): Promise<{
+async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
-  if (await tryAdoptServerActiveModel()) {
+  if (await adoptInFlightServerLoad(abortSignal)) {
     return { loaded: true, blockedByTrustRemoteCode: false };
   }
 
@@ -1686,7 +1779,7 @@ export function createOpenAIStreamAdapter(
         }
       };
 
-      // Wait for in-progress model load before inferring.
+      // Wait for an in-progress UI-initiated model load before inferring.
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
         try {
@@ -1699,11 +1792,11 @@ export function createOpenAIStreamAdapter(
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
         // Prefer a model already loaded by the CLI/API before auto-loading.
-        let loaded: boolean;
-        let blockedByTrustRemoteCode: boolean;
+        let loaded = false;
+        let blockedByTrustRemoteCode = false;
         try {
           ({ loaded, blockedByTrustRemoteCode } =
-            await autoLoadSmallestModel());
+            await autoLoadSmallestModel(abortSignal));
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;
