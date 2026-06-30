@@ -14,6 +14,7 @@ import { isCustomProviderType } from "@/features/chat/external-providers";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
+  CheckmarkCircle02Icon,
   CloudIcon,
   DashboardSquare01Icon,
   Download01Icon,
@@ -151,6 +152,7 @@ function ModelSelectorTrigger({
   size = "default",
   className,
   dataTour,
+  onEject,
 }: {
   currentModel?: ModelOption;
   isLoaded: boolean;
@@ -159,6 +161,7 @@ function ModelSelectorTrigger({
   size?: "sm" | "default" | "lg";
   className?: string;
   dataTour?: string;
+  onEject?: () => void;
 }) {
   return (
     <PopoverTrigger asChild={true}>
@@ -166,12 +169,15 @@ function ModelSelectorTrigger({
         type="button"
         data-tour={dataTour}
         className={cn(
-          "unsloth-model-selector-trigger flex min-w-0 items-center gap-2 transition-colors",
+          "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
+          // Suppress the pill's hover background while the eject hit area is
+          // hovered, so only the dot's own circle reacts.
           variant === "outline" &&
-            "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+            "rounded-full border border-border/60 hover:bg-[#ececec] has-[[data-eject-hit]:hover]:!bg-transparent dark:hover:bg-[#2d2e32]",
           variant === "ghost" &&
-            "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
-          variant === "muted" && "rounded-full bg-muted hover:bg-muted/80",
+            "rounded-full hover:bg-[#ececec] has-[[data-eject-hit]:hover]:!bg-transparent dark:hover:bg-[#2d2e32]",
+          variant === "muted" &&
+            "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the
           // label (below) so the trigger reads balanced around the text.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
@@ -180,9 +186,44 @@ function ModelSelectorTrigger({
           className,
         )}
       >
-        {isLoaded && (
-          <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
-        )}
+        {isLoaded &&
+          (onEject ? (
+            // Loaded status doubles as a mouse eject shortcut: green checkmark
+            // at rest, red eject icon on pill hover, click to eject. A plain
+            // span (no role/tabIndex) keeps it out of the trigger button's
+            // content model, which forbids focusable descendants. Keyboard and
+            // screen-reader users eject via the picker's "Eject model" button.
+            // aria-hidden marks it decorative; stopPropagation stops the
+            // popover from toggling. On touch (no hover) the eject icon and
+            // tooltip never reveal, so pointer-events-none disables the
+            // shortcut there and taps open the picker instead of ejecting.
+            <span
+              aria-hidden={true}
+              title="Eject model"
+              data-eject-hit={true}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onEject();
+              }}
+              // Hit area larger than the icon, with a hover circle. Negative
+              // margin keeps the icon in the dot's original spot.
+              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10 [@media(hover:none)]:pointer-events-none"
+            >
+              <HugeiconsIcon
+                icon={CheckmarkCircle02Icon}
+                strokeWidth={1.75}
+                className="size-3.5 text-emerald-500 group-hover/trigger:hidden"
+              />
+              <HugeiconsIcon
+                icon={RemoveCircleIcon}
+                strokeWidth={1.75}
+                className="hidden size-3.5 text-red-500 group-hover/trigger:block"
+              />
+            </span>
+          ) : (
+            <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+          ))}
         {currentModel?.icon ? (
           <span className="flex shrink-0 items-center">
             {currentModel.icon}
@@ -511,6 +552,7 @@ function ModelSelectorContent({
             onBrowseHub={onBrowseHub}
             onModelsChange={onModelsChange}
             deleteDisabled={deleteDisabled}
+            onEject={hasSelection && onEject ? onEject : undefined}
             section={effectiveHubSection}
             sectionToggle={
               <PillTabs
@@ -549,7 +591,7 @@ function ModelSelectorContent({
             </button>
           </div>
         ) : null}
-        {hasSelection && onEject ? (
+        {effectiveTab !== "hub" && hasSelection && onEject ? (
           <div className="mt-1.5 border-t border-border/70 pt-1.5 pb-2">
             <button
               type="button"
@@ -697,6 +739,7 @@ export function ModelSelector({
         size={size}
         className={className}
         dataTour={triggerDataTour}
+        onEject={onEject ? handleEject : undefined}
       />
       <ModelSelectorContent
         open={open}

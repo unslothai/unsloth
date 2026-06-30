@@ -49,6 +49,8 @@ export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
 export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_RAG_OCR_KEY = "unsloth_chat_rag_ocr_scanned";
+export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 
 // Persist only the model-agnostic intents (auto/ngram/off). MTP modes
@@ -67,6 +69,12 @@ export const DEFAULT_RAG_TOP_K = 5;
 export type RagAutoInject = "auto" | "on" | "off";
 export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
+// OCR scanned/image-only PDF pages at ingest time. On by default; off skips the
+// extra vision pass (only matters when the loaded chat model has vision).
+export const DEFAULT_RAG_OCR = true;
+// Describe figures/charts in PDFs at ingest time so they become searchable. On by
+// default (no-op without a vision model); off skips the per-figure vision calls.
+export const DEFAULT_RAG_CAPTION = true;
 
 function loadRagSource(): RagSource {
   if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
@@ -589,6 +597,10 @@ type ChatRuntimeStore = {
   // autoInject = forced first-pass retrieval before answering.
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
+  // OCR scanned/image-only PDF pages at ingest time (vision model required).
+  ragOcrScanned: boolean;
+  // Describe figures/charts at ingest time (vision model required).
+  ragCaptionFigures: boolean;
   /**
    * When on, local Studio tool calls pause for an explicit allow/deny in the
    * chat before they run.
@@ -748,6 +760,8 @@ type ChatRuntimeStore = {
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
   setRagAutoInjectMinScore: (score: number) => void;
+  setRagOcrScanned: (enabled: boolean) => void;
+  setRagCaptionFigures: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
@@ -817,6 +831,7 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
   "maxSeqLength",
   "maxTokens",
   "systemPrompt",
+  "systemVariables",
   "trustRemoteCode",
   "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];
@@ -1055,6 +1070,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
     { min: 0, max: 1 },
   ),
+  ragOcrScanned: loadBool(CHAT_RAG_OCR_KEY, DEFAULT_RAG_OCR),
+  ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
   toolStatus: null,
   generatingStatus: null,
   activeDiffusionCanvas: null,
@@ -1473,6 +1490,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         String(ragAutoInjectMinScore),
       );
       return { ragAutoInjectMinScore };
+    }),
+  setRagOcrScanned: (ragOcrScanned) =>
+    set(() => {
+      saveBool(CHAT_RAG_OCR_KEY, ragOcrScanned);
+      return { ragOcrScanned };
+    }),
+  setRagCaptionFigures: (ragCaptionFigures) =>
+    set(() => {
+      saveBool(CHAT_RAG_CAPTION_KEY, ragCaptionFigures);
+      return { ragCaptionFigures };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setActiveDiffusionCanvas: (activeDiffusionCanvas) =>

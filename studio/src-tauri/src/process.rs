@@ -735,6 +735,7 @@ pub fn start_backend(
 }
 
 async fn generic_backend_health_ok(port: u16) -> bool {
+    let started = std::time::Instant::now();
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -745,49 +746,75 @@ async fn generic_backend_health_ok(port: u16) -> bool {
             return false;
         }
     };
-    let response = match client
-        .get(format!("http://127.0.0.1:{port}/api/health"))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
+    let mut last_status = None;
+    let mut json = None;
+    for path in ["/api/liveness", "/api/health"] {
+        let response = match client
+            .get(format!("http://127.0.0.1:{port}{path}"))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                warn!(
+                    "Backend port candidate {} failed health request: {}",
+                    port, error
+                );
+                return false;
+            }
+        };
+        if response.status() == reqwest::StatusCode::NOT_FOUND && path == "/api/liveness" {
+            last_status = Some(response.status());
+            continue;
+        }
+        if !response.status().is_success() {
             warn!(
-                "Backend port candidate {} failed health request: {}",
-                port, error
+                "Backend port candidate {} returned HTTP {} from health",
+                port,
+                response.status()
             );
             return false;
         }
-    };
-    if !response.status().is_success() {
+        json = match response.json::<serde_json::Value>().await {
+            Ok(json) => Some(json),
+            Err(error) => {
+                warn!(
+                    "Backend port candidate {} returned invalid health JSON: {}",
+                    port, error
+                );
+                return false;
+            }
+        };
+        break;
+    }
+    let Some(json) = json else {
         warn!(
             "Backend port candidate {} returned HTTP {} from health",
             port,
-            response.status()
+            last_status
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
         );
         return false;
-    }
-    let json = match response.json::<serde_json::Value>().await {
-        Ok(json) => json,
-        Err(error) => {
-            warn!(
-                "Backend port candidate {} returned invalid health JSON: {}",
-                port, error
-            );
-            return false;
-        }
     };
-    let healthy = json
+    let live = json
         .get("status")
         .and_then(|v| v.as_str())
-        .map(|s| s == "healthy")
+        .map(|s| s == "alive" || s == "healthy")
         .unwrap_or(false);
     let service = json
         .get("service")
         .and_then(|v| v.as_str())
         .map(|s| s == "Unsloth UI Backend")
         .unwrap_or(false);
-    healthy && service
+    info!(
+        "Backend port candidate {} liveness live={} service={} in {}ms",
+        port,
+        live,
+        service,
+        started.elapsed().as_millis()
+    );
+    live && service
 }
 
 async fn validate_candidate_port(
@@ -798,6 +825,7 @@ async fn validate_candidate_port(
     generation: u64,
     port: u16,
 ) {
+    let started = std::time::Instant::now();
     let owner = {
         let proc = match state.lock() {
             Ok(proc) => proc,
@@ -851,6 +879,14 @@ async fn validate_candidate_port(
             false
         }
     };
+
+    info!(
+        "Validated backend port candidate {} valid={} emit={} in {}ms",
+        port,
+        valid,
+        should_emit,
+        started.elapsed().as_millis()
+    );
 
     if should_emit {
         diagnostics::record_backend_port(&diagnostics_state, &session_id, port);
