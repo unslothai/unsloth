@@ -46,6 +46,7 @@ export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
+const CHAT_STT_ENGINE_KEY = "unsloth_chat_stt_engine";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
@@ -709,11 +710,15 @@ type ChatRuntimeStore = {
   voiceMode: "off" | "configuring" | "active";
   /** The LoRA/GGUF model ID the user has chosen for the voice slot. Persisted to localStorage. */
   selectedVoiceModelId: string | null;
+  /** Speech-to-text engine for voice dictation: the browser Web Speech API, or
+   *  backend Whisper (works in Edge/Brave/Tauri where the browser API can't). Persisted. */
+  sttEngine: "browser" | "whisper";
   /** Derived orb state written by VoiceToggle; consumed by VoiceOrb. */
   voiceOrbState: "listening" | "thinking" | "speaking" | null;
   hydratePersistedSettings: () => Promise<void>;
   setVoiceMode: (mode: "off" | "configuring" | "active") => void;
   setSelectedVoiceModelId: (id: string | null) => void;
+  setSttEngine: (engine: "browser" | "whisper") => void;
   setVoiceOrbState: (state: "listening" | "thinking" | "speaking" | null) => void;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -1130,6 +1135,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathToken: null,
   voiceMode: "off" as const,
   selectedVoiceModelId: loadString(CHAT_VOICE_MODEL_ID_KEY, "") || null,
+  sttEngine:
+    loadString(CHAT_STT_ENGINE_KEY, "browser") === "whisper" ? "whisper" : "browser",
   voiceOrbState: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
@@ -1174,6 +1181,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId ?? "");
       return { selectedVoiceModelId };
+    }),
+  setSttEngine: (sttEngine) =>
+    set(() => {
+      saveString(CHAT_STT_ENGINE_KEY, sttEngine);
+      return { sttEngine };
     }),
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>

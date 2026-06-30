@@ -36,6 +36,7 @@ import {
 import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
 import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
+import { StudioWhisperDictationAdapter } from "./adapters/studio-whisper-dictation-adapter";
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
@@ -1003,13 +1004,17 @@ function useStudioRuntimeAdapters(
     [aui, modelType, pairId],
   );
 
-  const dictation = useMemo(
-    () =>
-      StudioWebSpeechDictationAdapter.isSupported()
-        ? new StudioWebSpeechDictationAdapter()
-        : undefined,
-    [],
-  );
+  const sttEngine = useChatRuntimeStore((s) => s.sttEngine);
+  const dictation = useMemo(() => {
+    // Whisper STT: backend transcription, works in Edge/Brave/Tauri where the
+    // browser Web Speech API can't reach a speech service.
+    if (sttEngine === "whisper" && StudioWhisperDictationAdapter.isSupported()) {
+      return new StudioWhisperDictationAdapter();
+    }
+    return StudioWebSpeechDictationAdapter.isSupported()
+      ? new StudioWebSpeechDictationAdapter()
+      : undefined;
+  }, [sttEngine]);
   const attachments = useMemo(
     () =>
       new CompositeAttachmentAdapter([

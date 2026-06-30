@@ -12,6 +12,7 @@ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MicVocalIcon } from "lucide-react";
 import { useState, type FC } from "react";
+import { useChatRuntimeStore } from "@/features/chat";
 import type { LoraModelOption } from "./model-selector/types";
 
 interface VoiceModelSelectorProps {
@@ -37,6 +38,8 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   className,
 }) => {
   const [open, setOpen] = useState(false);
+  const sttEngine = useChatRuntimeStore((s) => s.sttEngine);
+  const setSttEngine = useChatRuntimeStore((s) => s.setSttEngine);
 
   const selectedModel = value ? models.find((m) => m.id === value) : null;
   const displayName = selectedModel?.name ?? BROWSER_VOICE_LABEL;
@@ -87,6 +90,30 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
         sideOffset={6}
         className="menu-soft-surface w-[220px] rounded-lg border-0 p-1.5 ring-0"
       >
+        {/* Speech-to-text engine (listening): browser Web Speech vs backend Whisper */}
+        <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Listen with
+        </div>
+        <div className="mb-1 flex gap-1 px-0.5">
+          {(["browser", "whisper"] as const).map((engine) => (
+            <button
+              key={engine}
+              type="button"
+              onClick={() => setSttEngine(engine)}
+              className={cn(
+                "flex-1 rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors hover:bg-accent",
+                sttEngine === engine && "bg-accent",
+              )}
+            >
+              {engine === "browser" ? "Browser" : "Whisper"}
+            </button>
+          ))}
+        </div>
+        <div className="my-1 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+        <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Speak with
+        </div>
+
         {/* Browser voice fallback */}
         <button
           type="button"
