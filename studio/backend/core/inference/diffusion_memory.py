@@ -61,8 +61,10 @@ DEFAULT_BASE_OVERHEAD_MIB = 2048
 def normalize_memory_mode(value: Optional[str]) -> Optional[str]:
     """Lower/strip a requested mode, accepting dashes; None passes through.
 
-    Raises ValueError for an unsupported mode so a bad request can be rejected
-    cheaply (the route surfaces it as a 4xx before any GPU work)."""
+    Raises ValueError for an unsupported mode. The route already rejects bad values
+    at the Pydantic Literal boundary (422, before any GPU work); this is a defense-in-
+    depth guard for direct / script callers (bench, quality harness) that bypass it,
+    and runs on the load thread."""
     if value is None:
         return None
     normalized = str(value).strip().lower().replace("-", "_")

@@ -428,8 +428,8 @@ class DiffusionBackend:
         the VAE + text encoders. The raw ``_cache_bytes`` blob sum would also include any
         dense ``transformer/`` shards left in the cache by a previous diffusers run, which
         the GGUF path never loads -- inflating companion memory and pushing the auto plan
-        toward needless offload/tiling. Falls back to ``_cache_bytes`` if no snapshot
-        layout is present."""
+        toward needless offload/tiling. Returns 0 when the repo isn't cached or has no
+        snapshot layout; the planner then treats companion size as unknown."""
         from huggingface_hub import constants
 
         snaps = Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "snapshots"
