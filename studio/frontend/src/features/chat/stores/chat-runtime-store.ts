@@ -542,6 +542,10 @@ type ChatRuntimeStore = {
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
+  /** Expected per-slot context before --fit shrank runtime n_ctx. */
+  ggufRequestedContextLength: number | null;
+  /** Total -c from the last GGUF load (for reload, not usage bar). */
+  ggufLaunchContextLength: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -1045,6 +1049,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ggufContextLength: null,
   ggufMaxContextLength: null,
   ggufNativeContextLength: null,
+  ggufRequestedContextLength: null,
+  ggufLaunchContextLength: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -1318,6 +1324,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
+      ggufRequestedContextLength: null,
+      ggufLaunchContextLength: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       supportsReasoning: false,

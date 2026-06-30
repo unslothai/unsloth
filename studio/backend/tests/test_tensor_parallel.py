@@ -362,7 +362,9 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     assert captured["model_identifier"] == "owner/repo"
     assert captured["n_parallel"] == 4  # snapshot replayed faithfully
     deadline = time.monotonic() + 2
-    while b._spec_fallback_reason != "runtime_error" and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        if b._spec_fallback_reason == "runtime_error" and not b._mtp_runtime_fallback_in_progress:
+            break
         time.sleep(0.02)
     assert b._spec_fallback_reason == "runtime_error"
     # The reload thread clears the single-flight flag in its finally, a beat after

@@ -138,6 +138,10 @@ export interface LoadModelResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  /** Expected per-slot context before --fit shrank runtime n_ctx. */
+  requested_context_length?: number | null;
+  /** Total -c passed to llama-server on the last load (reload round-trip). */
+  launch_context_length?: number | null;
   supports_reasoning?: boolean;
   reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
@@ -188,6 +192,10 @@ export interface InferenceStatusResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  /** Expected per-slot context before --fit shrank runtime n_ctx. */
+  requested_context_length?: number | null;
+  /** Total -c passed to llama-server on the last load (reload round-trip). */
+  launch_context_length?: number | null;
   cache_type_kv?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */

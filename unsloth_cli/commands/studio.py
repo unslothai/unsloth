@@ -1330,8 +1330,6 @@ def run(
     # Steps 3-5 can abort (health timeout, model-load error, or Ctrl+C during the
     # slow load); tear the server and its children (llama-server, cloudflared) down
     # on any abort so they never orphan.
-    from studio.backend.run import _graceful_shutdown, _server
-
     try:
         # 3. Wait for server health.
         if not silent:
@@ -1361,7 +1359,7 @@ def run(
             typer.echo(f"Error: {exc}", err = True)
             raise typer.Exit(1)
     except BaseException:
-        _graceful_shutdown(_server)
+        run_mod._graceful_shutdown(run_mod._server)
         getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
         raise
 

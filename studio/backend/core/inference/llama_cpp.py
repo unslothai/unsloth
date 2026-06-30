@@ -33,6 +33,8 @@ from core.inference.llama_server_args import (
     parse_cache_override,
     parse_cache_override_per_axis,
     parse_ctx_override,
+    parse_fit_override,
+    parse_kv_unified,
     parse_split_mode_override,
     resolve_requested_ctx,
     strip_shadowing_flags,
@@ -1259,6 +1261,11 @@ class LlamaCppBackend:
         self._gpu_offload_active: Optional[bool] = None
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
+        self._launch_context_length: Optional[int] = None
+        self._launch_use_fit: Optional[bool] = None
+        self._launch_kv_unified: bool = False
+        self._launch_n_parallel: Optional[int] = None
+        self._requested_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._chat_template_override: Optional[str] = None
@@ -1442,8 +1449,67 @@ class LlamaCppBackend:
 
     @property
     def context_length(self) -> Optional[int]:
-        """Return the effective context length the server is running at."""
+        """Return the effective per-slot context llama-server is running at."""
         return self._effective_context_length or self._context_length
+
+    @property
+    def requested_context_length(self) -> Optional[int]:
+        """Per-slot context before ``--fit`` shrink; omitted when unchanged."""
+        return self._requested_context_length
+
+    @property
+    def launch_context_length(self) -> Optional[int]:
+        """Total ``-c`` llama-server used on the last successful load."""
+        if self._launch_context_length is not None and self._launch_context_length > 0:
+            return self._launch_context_length
+        n_ctx = self._requested_n_ctx
+        return n_ctx if n_ctx > 0 else None
+
+    @staticmethod
+    def _expected_per_slot_context(total_ctx: int, n_parallel: int) -> int:
+        """Split total ``-c`` across llama-server parallel slots."""
+        return max(1, total_ctx // max(1, n_parallel))
+
+    def _apply_runtime_context_probe(
+        self,
+        runtime_ctx: Optional[int],
+        *,
+        launch_ctx: Optional[int],
+        use_fit: bool,
+        n_parallel: int,
+        kv_unified: bool = False,
+    ) -> None:
+        """Sync effective/requested context from probed per-slot ``n_ctx``."""
+        slots = max(1, n_parallel)
+        # Reset first: a failed/skipped probe must not leave a previous
+        # load's reduction warning in place.
+        self._requested_context_length = None
+        if runtime_ctx is None or runtime_ctx <= 0:
+            return
+
+        if launch_ctx is not None and launch_ctx > 0:
+            # With --kv-unified, parallel slots share one KV pool sized to the
+            # full launch -c; only the non-unified split uses -c / --parallel.
+            if kv_unified and slots > 1:
+                expected_per_slot = launch_ctx
+            else:
+                expected_per_slot = self._expected_per_slot_context(launch_ctx, slots)
+            # Never advertise more context than the user requested; the server
+            # may round up, but Studio must not inflate above the launch cap.
+            self._effective_context_length = min(runtime_ctx, expected_per_slot)
+            if use_fit and runtime_ctx < expected_per_slot:
+                logger.warning(
+                    "llama-server per-slot context (%s) is below the launch "
+                    "expectation (%s from -c %s / --parallel %s); --fit likely "
+                    "reduced n_ctx",
+                    runtime_ctx,
+                    expected_per_slot,
+                    launch_ctx,
+                    slots,
+                )
+                self._requested_context_length = expected_per_slot
+        else:
+            self._effective_context_length = runtime_ctx
 
     @property
     def max_context_length(self) -> Optional[int]:
@@ -3658,6 +3724,13 @@ class LlamaCppBackend:
                 self._hf_variant = None
         else:
             self._hf_variant = None
+        # Clear llama-server context fields so a prior --fit reduction or
+        # launch -c does not leak into the diffusion LoadResponse.
+        self._requested_context_length = None
+        self._launch_context_length = None
+        self._launch_use_fit = None
+        self._launch_kv_unified = False
+        self._launch_n_parallel = None
         # Provisional until the server reports the budget it resolved (auto-size picks it from VRAM).
         self._effective_context_length = maxtok or self._context_length
         self._max_context_length = self._context_length or maxtok or None
@@ -5924,6 +5997,9 @@ class LlamaCppBackend:
                 # retry once with --fit off before declaring the load failed.
                 # Never retry when fit was requested (use_fit) or the caller
                 # passed an explicit fit flag via extra args.
+                # Track the command that actually starts the server so
+                # post-health parsing reflects a --fit off retry.
+                _llama_cmd_used: "list[str]" = cmd
                 # Argv actually launched (post --fit off / MTP); text-only retry strips this.
                 _last_spawn_cmd = list(cmd)
 
@@ -5934,7 +6010,7 @@ class LlamaCppBackend:
                     crashes during startup and run_cmd is eligible (see
                     _fit_off_retry_eligible).
                     """
-                    nonlocal _last_spawn_cmd
+                    nonlocal _llama_cmd_used, _last_spawn_cmd
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     for _spawn_attempt in (0, 1):
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -5987,6 +6063,7 @@ class LlamaCppBackend:
                         )
                         self._stdout_thread.start()
                         if self._wait_for_health(timeout = 600.0):
+                            _llama_cmd_used = run_cmd
                             return True
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
@@ -6041,10 +6118,11 @@ class LlamaCppBackend:
                 self._effective_context_length = (
                     effective_ctx if effective_ctx > 0 else self._context_length
                 )
-                self._reconcile_effective_ctx_with_server()
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
+                self._launch_context_length = effective_ctx if effective_ctx > 0 else None
+                self._launch_n_parallel = max(1, n_parallel)
 
                 healthy = _spawn_and_wait(cmd)
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
@@ -6255,6 +6333,36 @@ class LlamaCppBackend:
                         )
 
                 self._healthy = True
+
+                # Determine the kv-unified flag from the command that actually started.
+                self._launch_kv_unified = parse_kv_unified(_llama_cmd_used) or False
+
+                # Honor last-wins -c in the command that actually started.
+                # Pass-through ``--ctx-size 0`` appended after Studio's -c
+                # enables Auto; keep None as the launch sentinel in that case.
+                final_ctx_override = parse_ctx_override(_llama_cmd_used)
+                if final_ctx_override is not None:
+                    self._launch_context_length = (
+                        final_ctx_override if final_ctx_override > 0 else None
+                    )
+
+                # Resolve fit from the command that actually started (covers
+                # --fit off retry and pass-through overrides). llama-server
+                # defaults --fit on when the flag is omitted.
+                launched_fit = parse_fit_override(_llama_cmd_used)
+                self._launch_use_fit = launched_fit if launched_fit is not None else True
+
+                # /props readback backstop (#6164); runs post-health so the
+                # query hits the new server, not the freshly allocated port.
+                self._reconcile_effective_ctx_with_server()
+                runtime_ctx = self._probe_runtime_context_length()
+                self._apply_runtime_context_probe(
+                    runtime_ctx,
+                    launch_ctx = self._launch_context_length,
+                    use_fit = bool(self._launch_use_fit),
+                    n_parallel = self._launch_n_parallel or 1,
+                    kv_unified = self._launch_kv_unified,
+                )
 
                 # Commit caller intent only after _healthy=True so a failed start
                 # can't poison the next inheritance check. None keeps prior, []
@@ -6791,6 +6899,11 @@ class LlamaCppBackend:
             self._healthy = False
             self._context_length = None
             self._effective_context_length = None
+            self._launch_context_length = None
+            self._launch_use_fit = None
+            self._launch_kv_unified = False
+            self._launch_n_parallel = None
+            self._requested_context_length = None
             self._max_context_length = None
             self._chat_template = None
             self._chat_template_override = None
@@ -7245,6 +7358,56 @@ class LlamaCppBackend:
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
         self._kill_process()
+
+    _RUNTIME_N_CTX_STDOUT_RE = re.compile(r"new slot, n_ctx = (\d+)")
+
+    def _parse_runtime_n_ctx_from_stdout(self) -> Optional[int]:
+        """Parse per-slot ``n_ctx`` from llama-server startup logs."""
+        lines = self._stdout_lines
+        for i in range(len(lines)):
+            try:
+                line = lines[i]
+            except IndexError:
+                break
+            match = self._RUNTIME_N_CTX_STDOUT_RE.search(line)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _probe_runtime_context_length(self) -> Optional[int]:
+        """Read the context size llama-server actually allocated per slot."""
+        if self._port is None:
+            return None
+
+        slots_url = f"http://127.0.0.1:{self._port}/slots"
+        try:
+            resp = httpx.get(slots_url, timeout = 2.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    slot = data[0]
+                    if isinstance(slot, dict):
+                        n_ctx = slot.get("n_ctx")
+                        if isinstance(n_ctx, int) and n_ctx > 0:
+                            return n_ctx
+        except Exception as exc:
+            logger.debug("Runtime context probe via /slots failed: %s", exc)
+
+        props_url = f"http://127.0.0.1:{self._port}/props"
+        try:
+            resp = httpx.get(props_url, timeout = 2.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, dict):
+                    settings = data.get("default_generation_settings")
+                    if isinstance(settings, dict):
+                        n_ctx = settings.get("n_ctx")
+                        if isinstance(n_ctx, int) and n_ctx > 0:
+                            return n_ctx
+        except Exception as exc:
+            logger.debug("Runtime context probe via /props failed: %s", exc)
+
+        return self._parse_runtime_n_ctx_from_stdout()
 
     @staticmethod
     def _fit_off_retry_eligible(cmd: "list[str]", use_fit: bool) -> bool:

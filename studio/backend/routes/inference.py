@@ -674,6 +674,7 @@ try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        LlamaServerNotFoundError,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
@@ -711,6 +712,7 @@ except ImportError:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        LlamaServerNotFoundError,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
@@ -741,6 +743,12 @@ except ImportError:
         redact_native_paths,
         verify_native_path_lease,
     )
+
+
+def _is_llama_server_not_found(exc: BaseException) -> bool:
+    # importlib-loaded route modules can see a different class object than the
+    # test/runtime copy when llama_cpp was reloaded; match by name + base type.
+    return isinstance(exc, RuntimeError) and type(exc).__name__ == "LlamaServerNotFoundError"
 
 
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
@@ -2508,8 +2516,6 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
-    from core.inference.llama_cpp import LlamaServerNotFoundError
-
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -2601,6 +2607,8 @@ async def load_model(
                     context_length = llama_backend.context_length,
                     max_context_length = llama_backend.max_context_length,
                     native_context_length = llama_backend.native_context_length,
+                    requested_context_length = llama_backend.requested_context_length,
+                    launch_context_length = llama_backend.launch_context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
                     reasoning_style = llama_backend.reasoning_style,
                     reasoning_effort_levels = llama_backend.reasoning_effort_levels,
@@ -2960,6 +2968,8 @@ async def load_model(
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
+                requested_context_length = llama_backend.requested_context_length,
+                launch_context_length = llama_backend.launch_context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_style = llama_backend.reasoning_style,
                 reasoning_effort_levels = llama_backend.reasoning_effort_levels,
@@ -3107,6 +3117,9 @@ async def load_model(
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        if _is_llama_server_not_found(e):
+            logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
+            raise HTTPException(status_code = 400, detail = str(e))
         # Friendlier message for models Unsloth cannot load.
         if native_grant_backed:
             redacted_msg = redact_native_paths(str(e))
@@ -3205,8 +3218,6 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
-    from core.inference.llama_cpp import LlamaServerNotFoundError
-
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -3665,6 +3676,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
+                requested_context_length = llama_backend.requested_context_length,
+                launch_context_length = llama_backend.launch_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
                 chat_template_override = _reported_chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
