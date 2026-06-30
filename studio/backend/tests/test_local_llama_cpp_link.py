@@ -24,20 +24,21 @@ from core.inference.llama_cpp import LlamaCppBackend
 def _make_link(link: Path, target: Path) -> None:
     """Create a directory junction (Windows) / symlink (POSIX); neither needs
     elevation."""
-    target.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents = True, exist_ok = True)
     if os.name == "nt":
         subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-            check=True, capture_output=True, text=True,
+            check = True,
+            capture_output = True,
+            text = True,
         )
     else:
-        link.symlink_to(target, target_is_directory=True)
+        link.symlink_to(target, target_is_directory = True)
 
 
 def _server_subpath() -> Path:
     return Path(
-        "build/bin/Release/llama-server.exe" if os.name == "nt"
-        else "build/bin/llama-server"
+        "build/bin/Release/llama-server.exe" if os.name == "nt" else "build/bin/llama-server"
     )
 
 
@@ -68,7 +69,7 @@ def test_active_install_is_local_link(tmp_path: Path) -> None:
 
     # A plain (non-link) llama.cpp dir is Studio-managed, not a local link.
     plain = tmp_path / "plain" / "llama.cpp"
-    plain.mkdir(parents=True)
+    plain.mkdir(parents = True)
     assert u._active_install_is_local_link(str(plain / _server_subpath())) is False
 
 
@@ -93,12 +94,14 @@ def test_start_update_refuses_local_link(tmp_path: Path, monkeypatch) -> None:
 
 def _run_orphan_scan(monkeypatch, studio_root: Path, fake: _FakeProc) -> int:
     import psutil
+
     monkeypatch.setattr(
-        LlamaCppBackend, "_resolved_studio_root_and_is_legacy",
+        LlamaCppBackend,
+        "_resolved_studio_root_and_is_legacy",
         staticmethod(lambda: (studio_root.resolve(), False)),
     )
     monkeypatch.setattr(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0))
-    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter([fake]))
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs = None: iter([fake]))
     return LlamaCppBackend._kill_orphaned_servers()
 
 
@@ -106,7 +109,7 @@ def test_orphan_cleanup_spares_local_link_tree(tmp_path: Path, monkeypatch) -> N
     studio_root = tmp_path / "studio-home"
     studio_root.mkdir()
     external = tmp_path / "external"
-    (external / _server_subpath().parent).mkdir(parents=True)
+    (external / _server_subpath().parent).mkdir(parents = True)
     (external / _server_subpath()).write_text("x")
     _make_link(studio_root / "llama.cpp", external)
 
@@ -122,7 +125,7 @@ def test_orphan_cleanup_kills_under_real_root(tmp_path: Path, monkeypatch) -> No
     # the spare-the-link test above is meaningful (not a no-op).
     studio_root = tmp_path / "studio-home"
     bin_dir = studio_root / "llama.cpp" / _server_subpath().parent
-    bin_dir.mkdir(parents=True)
+    bin_dir.mkdir(parents = True)
     exe = studio_root / "llama.cpp" / _server_subpath()
     exe.write_text("x")
 
