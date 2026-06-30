@@ -7273,7 +7273,13 @@ class LlamaCppBackend:
         url = f"{self.base_url}/completion"
         payload = {"prompt": "Hi", "n_predict": 4, "temperature": 0.0, "stream": False}
         try:
-            resp = httpx.post(url, json = payload, timeout = timeout, headers = self._auth_headers)
+            resp = httpx.post(
+                url,
+                json = payload,
+                timeout = timeout,
+                headers = self._auth_headers,
+                trust_env = False,
+            )
         except Exception as e:
             logger.debug(f"MTP decode probe failed: {e}")
             return False
@@ -7425,7 +7431,10 @@ class LlamaCppBackend:
                 return False
 
             try:
-                resp = httpx.get(url, timeout = 2.0)
+                # trust_env=False: never route the loopback health probe through
+                # an ambient HTTP(S)_PROXY. A proxy that 503s for 127.0.0.1 makes
+                # the probe loop until timeout and hangs Studio load.
+                resp = httpx.get(url, timeout = 2.0, trust_env = False)
                 if resp.status_code == 200:
                     return True
             except (
@@ -7472,7 +7481,7 @@ class LlamaCppBackend:
         """
         url = f"{self.base_url}/props"
         try:
-            resp = httpx.get(url, timeout = 5.0)
+            resp = httpx.get(url, timeout = 5.0, trust_env = False)
             if resp.status_code != 200:
                 return None
             settings = resp.json().get("default_generation_settings") or {}
@@ -7552,7 +7561,9 @@ class LlamaCppBackend:
         which differ only in how they parse the SSE body."""
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
         with httpx.Client(
-            timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+            timeout = stream_timeout,
+            limits = httpx.Limits(max_keepalive_connections = 0),
+            trust_env = False,
         ) as client:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             with self._stream_with_retry(
@@ -9044,7 +9055,7 @@ class LlamaCppBackend:
             system_text = _block_text(system)
 
         try:
-            with httpx.Client(timeout = 10, headers = self._auth_headers) as client:
+            with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(
@@ -9160,7 +9171,7 @@ class LlamaCppBackend:
         """Codec name on match, None on non-audio, raises on transport/JSON errors."""
         if not self.is_loaded:
             return None
-        with httpx.Client(timeout = 10, headers = self._auth_headers) as client:
+        with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
 
             def _detok(tid: int) -> str:
                 # Non-200 means "marker not in vocab" -- keep probing.
@@ -9275,7 +9286,9 @@ class LlamaCppBackend:
             payload["n_probs"] = 1
 
         with httpx.Client(
-            timeout = httpx.Timeout(300, connect = 10), headers = self._auth_headers
+            timeout = httpx.Timeout(300, connect = 10),
+            headers = self._auth_headers,
+            trust_env = False,
         ) as client:
             resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
