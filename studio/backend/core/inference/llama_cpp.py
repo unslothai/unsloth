@@ -7337,12 +7337,20 @@ class LlamaCppBackend:
     # ── Message building (OpenAI format) ──────────────────────────
 
     @staticmethod
-    def _parse_tool_calls_from_text(content: str, *, allow_incomplete: bool = True) -> list[dict]:
+    def _parse_tool_calls_from_text(
+        content: str,
+        *,
+        allow_incomplete: bool = True,
+        enabled_tool_names: Optional[set] = None,
+    ) -> list[dict]:
         """Thin wrapper around the shared parser in tool_call_parser
-        so safetensors and llama_cpp pick up the same fixes."""
+        so safetensors and llama_cpp pick up the same fixes. ``enabled_tool_names``
+        gates the markerless bare-JSON form so an ordinary JSON answer is not misread
+        as a disabled-tool call."""
         return _shared_parse_tool_calls_from_text(
             content,
             allow_incomplete = allow_incomplete,
+            enabled_tool_names = enabled_tool_names,
         )
 
     @staticmethod
@@ -7957,6 +7965,14 @@ class LlamaCppBackend:
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
+            # Gate the markerless bare-JSON form on the enabled tool names so an
+            # ordinary JSON answer ({"name":"Alice",...}) is not misread as a
+            # disabled-tool call and dropped (GGUF always has a restricted set).
+            _enabled_tool_names = {
+                (tool.get("function") or {}).get("name")
+                for tool in active_tools
+                if (tool.get("function") or {}).get("name")
+            }
             # Reuse the shared signal tuple so GGUF BUFFERING wakes on every format
             # the parser knows (Llama-3 / Mistral / Gemma 4), like the safetensors path.
             _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
@@ -8271,6 +8287,7 @@ class LlamaCppBackend:
                                                 elif self._parse_tool_calls_from_text(
                                                     content_buffer,
                                                     allow_incomplete = auto_heal_tool_calls,
+                                                    enabled_tool_names = _enabled_tool_names,
                                                 ):
                                                     _drain_silently = True
 
@@ -8378,6 +8395,7 @@ class LlamaCppBackend:
                     _safety_tc = self._parse_tool_calls_from_text(
                         content_accum,
                         allow_incomplete = auto_heal_tool_calls,
+                        enabled_tool_names = _enabled_tool_names,
                     )
                     if not _safety_tc:
                         # ── Re-prompt on plan-without-action ──
@@ -8503,6 +8521,7 @@ class LlamaCppBackend:
                         tool_calls = self._parse_tool_calls_from_text(
                             content_accum,
                             allow_incomplete = auto_heal_tool_calls,
+                            enabled_tool_names = _enabled_tool_names,
                         )
                     if tool_calls and not has_structured_tc:
                         content_text = _strip_tool_markup(
@@ -8513,7 +8532,9 @@ class LlamaCppBackend:
                         # ``_strip_tool_markup`` only knows XML/bracket markup; also
                         # drop a leading Llama-3.2 bare-JSON call so the executed
                         # call is not replayed as visible text or next-turn history.
-                        content_text = strip_leading_bare_json_call(content_text)
+                        content_text = strip_leading_bare_json_call(
+                            content_text, _enabled_tool_names
+                        )
                     if tool_calls:
                         logger.info(
                             f"Parsed {len(tool_calls)} tool call(s) from "

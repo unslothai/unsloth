@@ -267,6 +267,10 @@ def run_safetensors_tool_loop(
 
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
+        # Gate the markerless bare-JSON form on the enabled tool names so an ordinary
+        # JSON answer ({"name":"Alice",...}) is not misread as a disabled-tool call
+        # and dropped. ``None`` in unrestricted mode -- any name may be a tool there.
+        _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
 
         detect_state = _state_buffering
         content_buffer = ""
@@ -436,6 +440,7 @@ def run_safetensors_tool_loop(
                     content_buffer,
                     id_offset = next_call_id,
                     allow_incomplete = auto_heal_tool_calls,
+                    enabled_tool_names = _enabled_tool_names,
                 ):
                     # Closed object that parses as a bare-JSON call -- drain silently.
                     detect_state = _state_draining
@@ -529,6 +534,7 @@ def run_safetensors_tool_loop(
                 content_accum,
                 id_offset = next_call_id,
                 allow_incomplete = auto_heal_tool_calls,
+                enabled_tool_names = _enabled_tool_names,
             )
             if not safety_tc:
                 # Re-prompt only when the model planned without acting (intent
@@ -584,6 +590,7 @@ def run_safetensors_tool_loop(
                 content_accum,
                 id_offset = next_call_id,
                 allow_incomplete = auto_heal_tool_calls,
+                enabled_tool_names = _enabled_tool_names,
             )
             if not tool_calls:
                 # Parser found nothing. Auto-Heal-enabled display cleanup
@@ -600,7 +607,9 @@ def run_safetensors_tool_loop(
                     # leaking the raw fragment; a plain JSON answer (no ``"name"``)
                     # is left untouched by the helper.
                     if tool_protocol_active:
-                        _drain_text = strip_leading_bare_json_call(_drain_text)
+                        _drain_text = strip_leading_bare_json_call(
+                            _drain_text, _enabled_tool_names
+                        )
                     if _drain_text:
                         yield {"type": "content", "text": _drain_text}
                 if provisional_render_html_started and not provisional_resolved:
@@ -627,7 +636,7 @@ def run_safetensors_tool_loop(
             # or fed back as next-turn history. ``_strip_tool_markup_final`` only
             # knows XML/bracket markup; this also covers the Llama-3.2 bare-JSON
             # form. No-op for plain JSON answers (no ``"name"`` key).
-            content_text = strip_leading_bare_json_call(content_text)
+            content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
 
         if final_attempt_done:
             # Final-answer turn re-called a tool -- stop the loop.

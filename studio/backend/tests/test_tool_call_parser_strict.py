@@ -327,3 +327,63 @@ def test_strip_leading_bare_json_call_preserves_plain_json_and_prose():
     assert strip_leading_bare_json_call('here is {"name":"x"}') == 'here is {"name":"x"}'
     # Ordinary text untouched.
     assert strip_leading_bare_json_call("just a sentence.") == "just a sentence."
+
+
+def test_bare_json_gated_on_enabled_tool_names():
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+    alice = '{"name":"Alice","parameters":{"age":30}}'
+    real = '{"name":"web_search","parameters":{"query":"cats"}}'
+    # With an enabled set, markerless JSON whose name is not a tool is NOT a call.
+    assert parse_tool_calls_from_text(alice, enabled_tool_names = {"web_search"}) == []
+    # A real call (enabled name) still parses.
+    got = parse_tool_calls_from_text(real, enabled_tool_names = {"web_search"})
+    assert [c["function"]["name"] for c in got] == ["web_search"]
+    # No enabled set (None) keeps the name-agnostic behaviour for direct callers.
+    assert [c["function"]["name"] for c in parse_tool_calls_from_text(alice)] == ["Alice"]
+    # Marker-based forms are NOT gated (an explicit signal is a real call attempt).
+    xml = '<tool_call>{"name":"Alice","arguments":{}}</tool_call>'
+    assert parse_tool_calls_from_text(xml, enabled_tool_names = {"web_search"})
+
+
+def test_strip_leading_bare_json_call_gated_on_enabled_tool_names():
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    alice = '{"name":"Alice","parameters":{"age":30}}'
+    # Not an enabled tool -> ordinary JSON answer, kept verbatim.
+    assert strip_leading_bare_json_call(alice, {"web_search"}) == alice
+    # Enabled tool -> a real call, stripped (trailing prose kept).
+    assert (
+        strip_leading_bare_json_call('{"name":"web_search","parameters":{"q":1}} hi', {"web_search"})
+        == "hi"
+    )
+
+
+def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    # The parser uses the LAST </function>; the strip must too, so a literal
+    # </function> inside a parameter value does not truncate the strip and leak the
+    # tail. Separate calls must still be stripped independently.
+    text = '<function=python><parameter=code>print("</function>")</parameter></function> done'
+    assert strip_tool_markup(text, final = True) == "done"
+    two = (
+        "a <function=f><parameter=x>1</parameter></function> mid "
+        "<function=g><parameter=y>2</parameter></function> end"
+    )
+    assert strip_tool_markup(two, final = True) == "a  mid  end"
+
+
+def test_mistral_single_object_call_is_stripped_for_display():
+    from core.inference.tool_call_parser import (
+        _strip_mistral_closed_calls,
+        parse_tool_calls_from_text,
+    )
+
+    # The parser accepts the single-object [TOOL_CALLS]{...} shape, so the display
+    # strip must remove it too (asymmetry would leak the raw object).
+    text = '[TOOL_CALLS]{"name":"web_search","arguments":{"filters":{"date":"2024"}}} tail'
+    assert [c["function"]["name"] for c in parse_tool_calls_from_text(text)] == ["web_search"]
+    assert _strip_mistral_closed_calls(text) == " tail"
+    # A literal [TOOL_CALLS] in prose (no following object) is left untouched.
+    assert _strip_mistral_closed_calls("See the [TOOL_CALLS] docs") == "See the [TOOL_CALLS] docs"

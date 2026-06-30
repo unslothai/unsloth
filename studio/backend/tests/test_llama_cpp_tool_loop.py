@@ -1861,6 +1861,35 @@ def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
     assert any("sunny in Sydney" in t for t in content_texts), content_texts
 
 
+def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypatch):
+    """Markerless JSON whose "name" is not an enabled tool (a person record
+    ``{"name":"Alice",...}``) must be shown as the answer, not misread as a call to
+    a disabled tool and dropped."""
+
+    answer = '{"name": "Alice", "parameters": {"age": 30}}'
+    first_stream = _streamed_content(answer)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "give me a person record"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("Alice" in t for t in content_texts), content_texts
+
+
 def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
     """If generation is cut off mid bare-JSON object (no closing brace), the held
     fragment must be stripped at stream end rather than dumped to the user."""
