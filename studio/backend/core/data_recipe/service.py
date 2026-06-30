@@ -357,7 +357,12 @@ def _attach_studio_evaluations(designer: Any, evaluations: list[dict[str, Any]])
             score_dataframe(results.dataset, evaluations)
         return results
 
-    def patched_create(config_builder, *, num_records, dataset_name = "dataset"):
+    def patched_create(
+        config_builder,
+        *,
+        num_records,
+        dataset_name = "dataset",
+    ):
         results = original_create(
             config_builder, num_records = num_records, dataset_name = dataset_name
         )
