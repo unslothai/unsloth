@@ -1811,10 +1811,19 @@ CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False
 DEFAULT_SYSTEM_MESSAGE["yi-chat"] = None
 
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
-    system_message_pattern = r"\{system_message\}"
-
     # For predefined templates, check if default system message exists
     default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
+
+    # Custom templates have no predefined default, but may still carry a
+    # {system_message} placeholder. Handle it before the no-default early return
+    # below, which would otherwise leave the literal "{system_message}" in the
+    # template. A placeholder with no system message is an error, not a no-op.
+    if default_system_message is None and "{system_message}" in template:
+        if system_message is None:
+            raise ValueError("Unsloth: You need to provide a system message for custom templates.")
+        new_template = template.replace("{system_message}", system_message)
+        return new_template, system_message
+
     if default_system_message is None:
         if system_message is not None:
             logger.warning_once(
@@ -1824,21 +1833,9 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
             )
         return template, system_message
 
-    # For custom templates
-    if type_chat_template is None:
-        has_placeholder = re.search(system_message_pattern, template) is not None
-
-        if has_placeholder:
-            if system_message is None:
-                raise ValueError("Unsloth: You need to provide a system message for custom templates.")
-            new_template = re.sub(system_message_pattern, system_message, template)
-            return new_template, system_message
-
-        return template, system_message
-
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
-    new_template = re.sub(system_message_pattern, message_to_use, template)
+    new_template = template.replace("{system_message}", message_to_use)
 
     return new_template, message_to_use
 
@@ -2313,28 +2310,28 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     if getattr(tokenizer, "bos_token", None) is not None:
         added_tokens_decoder = [x for x in added_tokens_decoder if x != tokenizer.bos_token]
 
-    repeatted_tokens = []
+    repeated_tokens = []
     # Join all vocab
     joined_text = "\x01\x00".join(added_tokens_decoder)
     for token in added_tokens_decoder:
         n = len(token)
-        repeatted_counts = joined_text.count(token[:n//2])
+        repeated_counts = joined_text.count(token[:n//2])
         # Try finding longer than 1/2 of the token in the rest
         # For eg <|reserved_special_token_0|>, <|reserved_special_token_1|>
-        if repeatted_counts > 2:
+        if repeated_counts > 2:
             for j in range(n//2+1, n):
-                if joined_text.count(token[:j]) < repeatted_counts:
+                if joined_text.count(token[:j]) < repeated_counts:
                     j -= 1
-                    # Remove repeatted tokens to reduce search space
+                    # Remove repeated tokens to reduce search space
                     joined_text = joined_text.replace(token[:j], "")
-                    repeatted_tokens.append(token[:j])
+                    repeated_tokens.append(token[:j])
                     break
 
     # Remove duplicates
-    splitted = joined_text.split("\x01\x00")
-    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, splitted) if old == new]
+    split = joined_text.split("\x01\x00")
+    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, split) if old == new]
     final_eos_tokens += extra_eos_tokens
-    final_eos_tokens += repeatted_tokens
+    final_eos_tokens += repeated_tokens
 
     # Remove new lines, spaces and HTML tags
     filtered_eos_tokens = []
