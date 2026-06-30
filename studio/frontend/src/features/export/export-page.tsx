@@ -3,6 +3,7 @@
 
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   Combobox,
   ComboboxContent,
@@ -24,8 +25,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -36,56 +37,77 @@ import {
   type LocalModelInfo,
   useTrainingConfigStore,
 } from "@/features/training";
-import {
-  useDebouncedValue,
-  useHfModelSearch,
-  useHfTokenValidation,
-} from "@/hooks";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
 import {
   AlertCircleIcon,
+  ArrowDown01Icon,
   FolderSearchIcon,
   InformationCircleIcon,
   Key01Icon,
   PackageIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { useSearch } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { collapseAnim } from "./anim";
 import type { ModelCheckpoints } from "./api/export-api";
-import {
-  cleanupExport,
-  exportBase,
-  exportGGUF,
-  exportLoRA,
-  exportMerged,
-  fetchCheckpoints,
-  loadCheckpoint,
-} from "./api/export-api";
-import { ExportDialog } from "./components/export-dialog";
+import { fetchCheckpoints } from "./api/export-api";
+import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
 import {
+  EXPORT_METHODS,
   type ExportMethod,
   GUIDE_STEPS,
+  MERGED_FORMATS,
+  type MergedFormat,
+  QUANT_OPTIONS,
+  buildQuantSizeLabels,
   getEstimatedSize,
 } from "./constants";
+import {
+  isExportPanelActive,
+  useExportRuntimeStore,
+} from "./stores/export-runtime-store";
+import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { exportTourSteps } from "./tour";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 
+type SourceTab = "local" | "checkpoint" | "hf";
+type SourceMode = "checkpoint" | "model";
+
+
+function safePathSegment(
+  value: string | null | undefined,
+  fallback = "model",
+  maxLength = 250,
+): string {
+  const safe = (value ?? "")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, maxLength)
+    .replace(/[._-]+$/g, "");
+  return safe || fallback;
+}
+
 function buildRelativeSaveDirectory(
   exportMethod: ExportMethod | null,
+  sourceMode: SourceMode,
   sourceBaseModelName: string,
   selectedModelIdx: string | null,
   checkpoint: string | null,
 ): string {
   if (exportMethod === "gguf") {
-    return `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
-      .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`;
+    const rawName =
+      sourceMode === "checkpoint"
+        ? checkpoint ?? selectedModelIdx ?? sourceBaseModelName
+        : sourceBaseModelName;
+    return `${safePathSegment(rawName)}-GGUF`;
   }
   return `${selectedModelIdx ?? "model"}/${checkpoint}`;
 }
@@ -94,6 +116,8 @@ function siblingGgufDirectory(sourcePath: string): string | null {
   const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
   if (!trimmed) return null;
   const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  // Lowercase `_gguf` matches the backend's intermediate dir (core/export/export.py);
+  // `_GGUF` would relocate+delete that sibling.
   if (slash < 0) return `${trimmed}_gguf`;
   const parent =
     slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
@@ -124,12 +148,8 @@ export function ExportPage() {
 
   const [selectedModelIdx, setSelectedModelIdx] = useState<string | null>(null);
   const [checkpoint, setCheckpoint] = useState<string | null>(null);
-  const [sourceMode, setSourceMode] = useState<"checkpoint" | "model">(
-    "checkpoint",
-  );
+  const [sourceMode, setSourceMode] = useState<SourceMode>("checkpoint");
   const [modelSource, setModelSource] = useState<"hf" | "local">("hf");
-  const [hfExportTrustRemoteCode, setHfExportTrustRemoteCode] =
-    useState(true);
   const [modelInput, setModelInput] = useState("");
   const [selectedSourceModel, setSelectedSourceModel] = useState<string | null>(
     null,
@@ -141,9 +161,34 @@ export function ExportPage() {
   const debouncedModelQuery = useDebouncedValue(modelInput);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
 
-  const [exportMethod, setExportMethod] = useState<ExportMethod | null>(null);
-  const [quantLevels, setQuantLevels] = useState<string[]>([]);
-  const [dialogOpen, setDialogOpen] = useState(false);
+  // Seed the method + quants from a live run so that navigating away and back
+  // (which remounts this page) keeps the method card selected and the run panel
+  // showing its logs/progress. The run itself lives in the global store; only
+  // this form state is local and would otherwise reset to null on remount.
+  const [exportMethod, setExportMethod] = useState<ExportMethod | null>(() => {
+    const s = useExportRuntimeStore.getState();
+    return isExportPanelActive(s) && s.summary ? s.summary.method : null;
+  });
+  const [quantLevels, setQuantLevels] = useState<string[]>(() => {
+    const s = useExportRuntimeStore.getState();
+    return isExportPanelActive(s) && s.summary?.method === "gguf"
+      ? s.summary.quantLevels
+      : [];
+  });
+  // GGUF importance matrix (required for the IQ quants) and merged-export precision.
+  const [useImatrix, setUseImatrix] = useState(false);
+  const [mergedFormat, setMergedFormat] = useState<MergedFormat>("16-bit (FP16)");
+  // IQ quants are imatrix-only, so force it on when one is selected; otherwise we would submit
+  // an IQ quant with no imatrix and llama.cpp would reject it.
+  const requiresImatrix = quantLevels.some(
+    (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
+  );
+  const effectiveImatrix = useImatrix || requiresImatrix;
+
+  // Whether the inline export panel is expanded. The panel also shows itself
+  // whenever a run is active/terminal (see `panelActive`), so it survives
+  // navigation even though this local flag resets on remount.
+  const [panelOpen, setPanelOpen] = useState(false);
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
   const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
@@ -153,12 +198,12 @@ export function ExportPage() {
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
 
-  const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState<string | null>(null);
-  const [exportSuccess, setExportSuccess] = useState(false);
-  // On-disk path of the last successful export, shown on the Export Complete
-  // screen so the user can find their model. Null for Hub-only pushes.
-  const [exportOutputPath, setExportOutputPath] = useState<string | null>(null);
+  // Export run state lives in the global runtime store so it keeps running and
+  // streaming in the background, in parallel with training and inference.
+  const runExport = useExportRuntimeStore((s) => s.runExport);
+  const resetExportRun = useExportRuntimeStore((s) => s.reset);
+  const isExporting = useExportRuntimeStore((s) => s.isExporting);
+  const panelActive = useExportRuntimeStore(isExportPanelActive);
 
   const hfComboboxAnchorRef = useRef<HTMLDivElement>(null);
   const localComboboxAnchorRef = useRef<HTMLDivElement>(null);
@@ -196,6 +241,29 @@ export function ExportPage() {
       cancelled = true;
     };
   }, []);
+
+  // Apply the ?run= deep link (e.g. from a finished run's "Export to GGUF"
+  // button) once its run appears in the checkpoint list: select the run and
+  // default to GGUF. The main checkpoint is auto-selected further below, after
+  // the model-change effect that clears the checkpoint.
+  const { run: preselectRun } = useSearch({ from: "/export" });
+  const appliedRunRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!preselectRun) {
+      // Deep link cleared (e.g. navigated to /export via the sidebar): stop
+      // treating the previously preselected run specially.
+      appliedRunRef.current = null;
+      return;
+    }
+    if (models.length === 0) return;
+    if (appliedRunRef.current === preselectRun) return;
+    const match = models.find((m) => m.name === preselectRun);
+    if (!match) return;
+    appliedRunRef.current = preselectRun;
+    setSourceMode("checkpoint");
+    setSelectedModelIdx(match.name);
+    setExportMethod("gguf");
+  }, [preselectRun, models]);
 
   // ---- Fetch local models for direct export ----
   useEffect(() => {
@@ -244,13 +312,36 @@ export function ExportPage() {
     ? selectedSourceModel ?? "—"
     : baseModelName;
 
+  // For a full fine-tune checkpoint the weights live in the checkpoint dir
+  // itself (its base_model may be a local/custom path that can't be sized), so
+  // size that dir; for LoRA adapters the export merges into the base model.
+  const sizeTargetModel = useMemo(() => {
+    if (sourceMode === "checkpoint" && !isAdapter) {
+      const cp = checkpointsForModel.find((c) => c.display_name === checkpoint);
+      if (cp?.path) {
+        return cp.path;
+      }
+    }
+    return sourceBaseModelName;
+  }, [sourceMode, isAdapter, checkpointsForModel, checkpoint, sourceBaseModelName]);
+
+  // Real (MoE-aware) fp16 size, used to scale the GGUF quant estimates.
+  const { fp16Bytes } = useExportSizeEstimate(sizeTargetModel, debouncedHfToken);
+  const quantSizeLabels = useMemo(
+    () => buildQuantSizeLabels(fp16Bytes),
+    [fp16Bytes],
+  );
+
   const {
     results: hfResults,
     isLoading: isLoadingHfModels,
     error: hfSearchError,
-  } = useHfModelSearch(debouncedModelQuery, {
+  } = useHubModelSearch(debouncedModelQuery, {
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
+    // Curated unsloth listing by default, but a typed query searches the whole
+    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    ownerScope: debouncedModelQuery.trim() ? "all" : "unsloth",
   });
   const { error: tokenValidationError, isChecking: isCheckingToken } =
     useHfTokenValidation(hfToken);
@@ -317,11 +408,22 @@ export function ExportPage() {
         : GUIDE_STEPS,
     [sourceMode],
   );
+  const sourceTab: SourceTab =
+    sourceMode === "checkpoint" ? "checkpoint" : modelSource;
 
   // Reset checkpoint when the selected model changes
   useEffect(() => {
     setCheckpoint(null);
   }, [selectedModelIdx]);
+
+  // For a ?run= deep link, default to the run's main checkpoint. Declared after
+  // the reset effect above so it runs last and isn't clobbered back to null.
+  useEffect(() => {
+    if (appliedRunRef.current == null) return;
+    if (appliedRunRef.current !== selectedModelIdx) return;
+    if (checkpoint != null || checkpointsForModel.length === 0) return;
+    setCheckpoint(checkpointsForModel[0].display_name);
+  }, [selectedModelIdx, checkpoint, checkpointsForModel]);
 
   // Auto-reset export method if incompatible with the selected model type
   useEffect(() => {
@@ -334,18 +436,22 @@ export function ExportPage() {
     }
   }, [isAdapter, isQuantized, exportMethod]);
 
-  const handleSourceModeSwitch = useCallback(
-    (next: "checkpoint" | "model") => {
-      setSourceMode(next);
-      if (next === "model") {
-        setExportMethod("gguf");
-      }
-      setSelectedSourceModel(null);
-      setLocalModelInput("");
-      setModelInput("");
-    },
-    [],
-  );
+  const handleSourceTabChange = useCallback((next: string) => {
+    if (next === "checkpoint") {
+      setSourceMode("checkpoint");
+    } else if (next === "hf" || next === "local") {
+      setSourceMode("model");
+      setModelSource(next);
+      setExportMethod("gguf");
+    } else {
+      return;
+    }
+    setSelectedSourceModel(null);
+    setLocalModelInput("");
+    setModelInput("");
+    hfModelInputRef.current = "";
+    localModelInputRef.current = "";
+  }, []);
 
   useEffect(() => {
     setSelectedSourceModel(null);
@@ -368,12 +474,13 @@ export function ExportPage() {
     }
   };
 
-  const estimatedSize = getEstimatedSize(exportMethod, quantLevels);
+  const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
   const defaultSaveDirectory = useMemo(() => {
     const relative = buildRelativeSaveDirectory(
       exportMethod,
+      sourceMode,
       sourceBaseModelName,
       selectedModelIdx,
       checkpoint,
@@ -463,113 +570,93 @@ export function ExportPage() {
     [],
   );
 
-  // ---- Export handler ----
-  const handleExport = useCallback(async () => {
+  // ---- Export handlers ----
+  // Assemble the run params from the current form and hand off to the global
+  // runtime store, which drives load -> export -> cleanup in the background.
+  const handleStart = useCallback(async () => {
     const source = sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
-    if (!source) return;
+    if (!source || !exportMethod) return;
+    // A GGUF export with no quant selected runs zero exports yet would still
+    // settle as success with no file; require at least one (mirrors canExport).
+    if (exportMethod === "gguf" && quantLevels.length === 0) return;
 
     const selectedCp = sourceMode === "checkpoint"
       ? checkpointsForModel.find((cp) => cp.display_name === checkpoint)
       : null;
     if (sourceMode === "checkpoint" && !selectedCp) return;
-    const checkpointPath = selectedCp?.path;
-
-    setExporting(true);
-    setExportError(null);
-    setExportSuccess(false);
-    setExportOutputPath(null);
+    const checkpointPath = selectedCp?.path ?? null;
 
     const pushToHub = destination === "hub";
     const repoId = pushToHub && hfUsername && modelName
       ? `${hfUsername}/${modelName}`
       : undefined;
     const token = pushToHub && hfToken ? hfToken : undefined;
+    const methodLabel =
+      EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ?? exportMethod;
+    const adapterExport = sourceMode === "checkpoint" && isAdapter;
 
-    try {
-      // 1. Load model source
-      if (sourceMode === "checkpoint") {
-        if (!checkpointPath) return;
-        await loadCheckpoint({ checkpoint_path: checkpointPath });
-      } else {
-        await loadCheckpoint({
-          checkpoint_path: source,
-          load_in_4bit: false,
-          trust_remote_code:
-            modelSource === "hf" ? hfExportTrustRemoteCode : true,
-        });
-      }
-
-      // 2. Run export. Capture the resolved output_path (when the backend
-      // wrote a local copy) for the success screen. Multi-quant GGUF runs
-      // share one directory, so we just keep the last response.
-      let lastOutputPath: string | null = null;
-      if (exportMethod === "merged") {
-        if (isAdapter) {
-          const resp = await exportMerged({
-            save_directory: saveDirectory,
-            push_to_hub: pushToHub,
-            repo_id: repoId,
-            hf_token: token,
-            private: privateRepo,
-          });
-          lastOutputPath = resp.details?.output_path ?? null;
-        } else {
-          const resp = await exportBase({
-            save_directory: saveDirectory,
-            push_to_hub: pushToHub,
-            repo_id: repoId,
-            hf_token: token,
-            private: privateRepo,
-            base_model_id: selectedModelData?.base_model,
-          });
-          lastOutputPath = resp.details?.output_path ?? null;
-        }
-      } else if (exportMethod === "gguf") {
-        for (const quant of quantLevels) {
-          const resp = await exportGGUF({
-            save_directory: saveDirectory,
-            quantization_method: quant,
-            push_to_hub: pushToHub,
-            repo_id: repoId,
-            hf_token: token,
-          });
-          lastOutputPath = resp.details?.output_path ?? lastOutputPath;
-        }
-      } else if (exportMethod === "lora") {
-        const resp = await exportLoRA({
-          save_directory: saveDirectory,
-          push_to_hub: pushToHub,
-          repo_id: repoId,
-          hf_token: token,
-          private: privateRepo,
-        });
-        lastOutputPath = resp.details?.output_path ?? null;
-      }
-
-      setExportOutputPath(lastOutputPath);
-      setExportSuccess(true);
-    } catch (err) {
-      setExportError(
-        err instanceof Error ? err.message : "Export failed",
-      );
-    } finally {
-      try {
-        await cleanupExport();
-      } catch {
-        // cleanup is best-effort
-      }
-      setExporting(false);
+    // Consent gate for an HF source's custom (auto_map) code, run before we hand
+    // off to runExport (which performs the load in the background). A local
+    // checkpoint/model the user exported is trusted by default.
+    let trustRemoteCode = modelSource !== "hf";
+    let approvedRemoteCodeFingerprint: string | null = null;
+    if (sourceMode !== "checkpoint") {
+      const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+        modelName: source,
+        hfToken: hfToken || null,
+        // An HF source can need trust_remote_code via its YAML default with no
+        // auto_map to review; signal it so a YAML-only model does not export
+        // with it false.
+        requiresTrustRemoteCode: modelSource === "hf",
+        onApprove: (fingerprint) => {
+          trustRemoteCode = true;
+          approvedRemoteCodeFingerprint = fingerprint;
+        },
+      });
+      if (!remoteCodeOk) return;
     }
+
+    void runExport({
+      sourceMode,
+      checkpointPath,
+      source,
+      modelSource,
+      trustRemoteCode,
+      approvedRemoteCodeFingerprint,
+      loadToken: hfToken || null,
+      exportMethod,
+      isAdapter: adapterExport,
+      quantLevels,
+      useImatrix: effectiveImatrix,
+      mergedFormat,
+      saveDirectory,
+      destination,
+      repoId,
+      token,
+      privateRepo,
+      baseModelId: selectedModelData?.base_model ?? undefined,
+      summary: {
+        baseModelName: sourceBaseModelName,
+        checkpointLabel: selectedExportSource,
+        methodLabel,
+        method: exportMethod,
+        quantLevels,
+        destination,
+      },
+    });
   }, [
     checkpoint,
     checkpointsForModel,
     sourceMode,
     selectedSourceModel,
-    selectedModelIdx,
     selectedModelData,
+    selectedExportSource,
+    sourceBaseModelName,
     exportMethod,
     isAdapter,
     quantLevels,
+    effectiveImatrix,
+    mergedFormat,
     destination,
     saveDirectory,
     hfUsername,
@@ -577,8 +664,52 @@ export function ExportPage() {
     hfToken,
     privateRepo,
     modelSource,
-    hfExportTrustRemoteCode,
+    runExport,
   ]);
+
+  // Open the inline panel into a fresh config state. Clears any previous
+  // terminal run (a still-running export cannot be cleared, so it stays).
+  const handleOpenPanel = useCallback(() => {
+    if (!isExporting) {
+      resetExportRun();
+    }
+    setPanelOpen(true);
+  }, [isExporting, resetExportRun]);
+
+  // Collapse the panel. Only reachable from config / terminal states (never
+  // mid-run), so resetting the store back to idle is safe.
+  const handleClosePanel = useCallback(() => {
+    resetExportRun();
+    setPanelOpen(false);
+  }, [resetExportRun]);
+
+  const showPanel = panelOpen || panelActive;
+
+  // Bring the panel into view when it opens and offer a scroll-down affordance
+  // (like Chat) when its end is below the fold.
+  const panelEndRef = useRef<HTMLDivElement>(null);
+  const [panelEndVisible, setPanelEndVisible] = useState(true);
+
+  useEffect(() => {
+    if (!showPanel) return;
+    const id = window.setTimeout(() => {
+      panelEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [showPanel]);
+
+  useEffect(() => {
+    const el = panelEndRef.current;
+    if (!showPanel || !el) return;
+    // The scroll-down button is also gated on showPanel, so there is no need to
+    // reset visibility when the panel closes; the observer self-corrects on open.
+    const obs = new IntersectionObserver(
+      ([entry]) => setPanelEndVisible(entry.isIntersecting),
+      { rootMargin: "0px 0px -40px 0px" },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [showPanel]);
 
   // ---- Render ----
   return (
@@ -622,10 +753,10 @@ export function ExportPage() {
             <>
               {/* Top row: Dropdowns + metadata | Guide */}
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-end justify-between">
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-2">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      {sourceMode === "checkpoint" ? "Training Run" : "Model Source"}
+                      Source
                       <Tooltip>
                         <TooltipTrigger asChild={true}>
                           <button
@@ -639,38 +770,51 @@ export function ExportPage() {
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          {sourceMode === "checkpoint"
-                            ? "Select the training run that produced the checkpoints you want to export."
-                            : "Select a Hugging Face model or local model path to export directly to GGUF."}
+                          Choose a local model, fine-tuned checkpoint, or
+                          Hugging Face model to export.
                         </TooltipContent>
                       </Tooltip>
                     </label>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleSourceModeSwitch(
-                          sourceMode === "checkpoint" ? "model" : "checkpoint",
-                        )
-                      }
-                      className="text-xs text-primary underline cursor-pointer leading-none"
+                    <Tabs
+                      value={sourceTab}
+                      onValueChange={handleSourceTabChange}
+                      className="w-full"
                     >
-                      {sourceMode === "checkpoint"
-                        ? "Use Hugging Face / Local Model"
-                        : "Use Training Checkpoints"}
-                    </button>
+                      <TabsList
+                        unstyled={true}
+                        className="hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full items-center rounded-full"
+                      >
+                        <TabsTrigger
+                          value="local"
+                          indicatorClassName="hub-tab-toggle-pill rounded-full"
+                          className="h-9 rounded-full border-0 px-3 text-[12.5px] text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                        >
+                          Local Model
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="checkpoint"
+                          indicatorClassName="hub-tab-toggle-pill rounded-full"
+                          className="h-9 rounded-full border-0 px-3 text-[12.5px] text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                        >
+                          Fine-tuned
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="hf"
+                          indicatorClassName="hub-tab-toggle-pill rounded-full"
+                          className="h-9 rounded-full border-0 px-3 text-[12.5px] text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                        >
+                          Hugging Face
+                        </TabsTrigger>
+                      </TabsList>
+                    </Tabs>
                   </div>
 
-                  <AnimatePresence mode="wait" initial={false}>
                   {sourceMode === "checkpoint" ? (
-                    <motion.div
-                      key="checkpoint"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-                      className="flex flex-col gap-2 overflow-visible"
-                    >
+                    <div className="flex flex-col gap-2 overflow-visible">
                       <div data-tour="export-training-run" className="flex flex-col gap-2">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Training Run
+                        </label>
                         <Select
                           value={selectedModelIdx ?? ""}
                           onValueChange={setSelectedModelIdx}
@@ -781,33 +925,9 @@ export function ExportPage() {
                           </SelectContent>
                         </Select>
                       </div>
-                    </motion.div>
+                    </div>
                   ) : (
-                    <motion.div
-                      key="model"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-                      className="flex flex-col gap-2 overflow-visible"
-                    >
-                      <div className="flex gap-2">
-                        <Button
-                          variant={modelSource === "hf" ? "dark" : "outline"}
-                          className="flex-1"
-                          onClick={() => setModelSource("hf")}
-                        >
-                          Hugging Face
-                        </Button>
-                        <Button
-                          variant={modelSource === "local" ? "dark" : "outline"}
-                          className="flex-1"
-                          onClick={() => setModelSource("local")}
-                        >
-                          Local Model
-                        </Button>
-                      </div>
-
+                    <div className="flex flex-col gap-2 overflow-visible">
                       {modelSource === "hf" ? (
                         <>
                           <div className="flex flex-col gap-2">
@@ -867,43 +987,8 @@ export function ExportPage() {
                               </p>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Switch
-                              id="hf-export-trust-remote-code"
-                              size="sm"
-                              checked={hfExportTrustRemoteCode}
-                              onCheckedChange={setHfExportTrustRemoteCode}
-                              disabled={exporting}
-                            />
-                            <label
-                              htmlFor="hf-export-trust-remote-code"
-                              className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground"
-                            >
-                              Trust remote code
-                            </label>
-                            <Tooltip>
-                              <TooltipTrigger asChild={true}>
-                                <button
-                                  type="button"
-                                  className="text-muted-foreground hover:text-foreground -m-1 inline-flex rounded p-1"
-                                  aria-label="About trust remote code"
-                                >
-                                  <HugeiconsIcon
-                                    icon={InformationCircleIcon}
-                                    className="size-3.5"
-                                  />
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                className="max-w-[260px] text-xs"
-                              >
-                                Loads custom Python from the repo if the model
-                                needs it. Turn off if you do not trust the
-                                source.
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
+                          {/* No persistent "trust remote code" toggle: custom code is
+                              consented per model via the load-time review dialog. */}
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-medium text-muted-foreground">
                               Hugging Face Token (Optional)
@@ -1022,9 +1107,8 @@ export function ExportPage() {
                           Direct model exports currently support GGUF only.
                         </p>
                       </div>
-                    </motion.div>
+                    </div>
                   )}
-                  </AnimatePresence>
 
                   {sourceMode === "checkpoint" && (
                     <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
@@ -1100,66 +1184,124 @@ export function ExportPage() {
                 }
               />
 
-              <AnimatePresence>
-                {exportMethod === "gguf" && (
-                  <motion.div {...collapseAnim} className="overflow-visible">
-                    <QuantPicker value={quantLevels} onChange={setQuantLevels} />
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              {exportMethod === "merged" && isAdapter && (
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Precision</div>
+                  <div className="flex flex-wrap gap-2">
+                    {MERGED_FORMATS.map((f) => (
+                      <Button
+                        key={f.value}
+                        type="button"
+                        variant={mergedFormat === f.value ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setMergedFormat(f.value)}
+                        title={f.hint}
+                      >
+                        {f.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {MERGED_FORMATS.find((f) => f.value === mergedFormat)?.hint}
+                  </div>
+                </div>
+              )}
 
-              <Separator />
-              <div className="flex items-center justify-end">
-                {/* TODO: unhide once estimated size comes from the backend API */}
-                {/* <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              {exportMethod === "gguf" && (
+                <>
+                  <QuantPicker
+                    value={quantLevels}
+                    onChange={setQuantLevels}
+                    sizes={quantSizeLabels}
+                  />
+                  <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                    <div className="space-y-0.5">
+                      <div className="text-sm font-medium">
+                        Importance matrix (imatrix)
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {requiresImatrix
+                          ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
+                          : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
+                      </div>
+                    </div>
+                    <Switch
+                      checked={effectiveImatrix}
+                      onCheckedChange={setUseImatrix}
+                      disabled={requiresImatrix}
+                    />
+                  </div>
+                </>
+              )}
+              {estimatedSize && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <HugeiconsIcon
                     icon={InformationCircleIcon}
                     className="size-3.5"
                   />
-                  <span>Est. size: {estimatedSize} · Free disk space: 120 GB</span>
-                </div> */}
-                <Button
-                  data-tour="export-cta"
-                  disabled={!canExport}
-                  onClick={() => { setExportSuccess(false); setExportError(null); setDialogOpen(true); }}
+                  <span>Est. size: {estimatedSize}</span>
+                </div>
+              )}
+
+              <Separator />
+              {showPanel && (
+                    <ExportRunPanel
+                      exportMethod={exportMethod}
+                      quantLevels={quantLevels}
+                      checkpoint={selectedExportSource}
+                      baseModelName={sourceBaseModelName}
+                      isAdapter={sourceMode === "checkpoint" && isAdapter}
+                      destination={destination}
+                      onDestinationChange={setDestination}
+                      saveDirectory={saveDirectory}
+                      defaultSaveDirectory={defaultSaveDirectory}
+                      saveDirectoryOverridden={!!customSaveDirectory}
+                      onSaveDirectoryChange={setCustomSaveDirectory}
+                      hfUsername={hfUsername}
+                      onHfUsernameChange={setHfUsername}
+                      modelName={modelName}
+                      onModelNameChange={setModelName}
+                      hfToken={hfToken}
+                      onHfTokenChange={setHfToken}
+                      privateRepo={privateRepo}
+                      onPrivateRepoChange={setPrivateRepo}
+                      onStart={handleStart}
+                      onClose={handleClosePanel}
+                    />
+                )}
+              {showPanel && (
+                <div ref={panelEndRef} aria-hidden="true" className="h-px w-full" />
+              )}
+              {showPanel && !panelEndVisible && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    panelEndRef.current?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "end",
+                    })
+                  }
+                  aria-label="Scroll to export output"
+                  className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full border border-border/60 bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
                 >
-                  Export Model
-                </Button>
-              </div>
+                  <HugeiconsIcon icon={ArrowDown01Icon} className="size-5" />
+                </button>
+              )}
+              {!showPanel && (
+                <div className="flex items-center justify-end">
+                  <Button
+                    data-tour="export-cta"
+                    disabled={!canExport}
+                    onClick={handleOpenPanel}
+                  >
+                    Export Model
+                  </Button>
+                </div>
+              )}
             </>
           )}
         </SectionCard>
       </main>
-
-      <ExportDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        exportMethod={exportMethod}
-        quantLevels={quantLevels}
-        estimatedSize={estimatedSize}
-        checkpoint={selectedExportSource}
-        baseModelName={sourceBaseModelName}
-        isAdapter={sourceMode === "checkpoint" && isAdapter}
-        destination={destination}
-        onDestinationChange={setDestination}
-        saveDirectory={saveDirectory}
-        defaultSaveDirectory={defaultSaveDirectory}
-        saveDirectoryOverridden={!!customSaveDirectory}
-        onSaveDirectoryChange={setCustomSaveDirectory}
-        hfUsername={hfUsername}
-        onHfUsernameChange={setHfUsername}
-        modelName={modelName}
-        onModelNameChange={setModelName}
-        hfToken={hfToken}
-        onHfTokenChange={setHfToken}
-        privateRepo={privateRepo}
-        onPrivateRepoChange={setPrivateRepo}
-        onExport={handleExport}
-        exporting={exporting}
-        exportError={exportError}
-        exportSuccess={exportSuccess}
-        exportOutputPath={exportOutputPath}
-      />
     </div>
   );
 }

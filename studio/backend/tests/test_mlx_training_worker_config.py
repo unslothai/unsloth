@@ -92,6 +92,17 @@ def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
     assert "processor = tokenizer if is_vlm else None" not in source
 
 
+def test_mlx_wandb_run_config_excludes_subject_and_secrets():
+    # The MLX W&B run config uploads the whole config minus a sensitive set. The owner's
+    # subject (authenticated username / API-key id) must be filtered alongside the secrets,
+    # otherwise it lands in W&B run config even though DB history already strips it.
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text()
+
+    assert (
+        '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source
+    ), "MLX W&B run config must exclude subject and the token/s3 secrets"
+
+
 def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
     assert _mlx_vlm_max_resized_size(1000, 500, 512) == (512, 256)
     assert _mlx_vlm_max_resized_size(500, 1000, 512) == (256, 512)
@@ -221,3 +232,46 @@ def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
 
     assert adapted[0]["image"].shape == (3, 80, 128)
     assert adapted[0]["messages"][0]["content"][0] == {"type": "image"}
+
+
+# ---- issue #6103: MLX transformers-version activation must not fail silently ----
+
+
+def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
+    """A failed activation in the MLX fast-path must be logged, not swallowed.
+
+    The non-MLX path already surfaces this failure; the MLX path used a bare
+    ``except Exception: pass`` so a missing/broken transformers venv produced
+    no trace and a confusing downstream crash.
+    """
+    warnings_logged = []
+    fake_logger = types.SimpleNamespace(
+        warning = lambda *a, **k: warnings_logged.append((a, k)),
+    )
+    monkeypatch.setattr(_worker, "logger", fake_logger)
+
+    def _boom(_name, _hf_token = None):
+        raise RuntimeError("venv .venv_t5_550 missing")
+
+    monkeypatch.setattr(_worker, "_activate_transformers_version", _boom)
+
+    # Non-fatal: the MLX path falls through, so this must not raise.
+    _worker._activate_transformers_version_or_warn("google/gemma-4-12b")
+
+    assert len(warnings_logged) == 1, "activation failure was not logged"
+    assert "gemma-4-12b" in str(warnings_logged[0]), "log does not name the model"
+
+
+def test_activate_transformers_version_or_warn_silent_on_success(monkeypatch):
+    warnings_logged = []
+    fake_logger = types.SimpleNamespace(
+        warning = lambda *a, **k: warnings_logged.append((a, k)),
+    )
+    monkeypatch.setattr(_worker, "logger", fake_logger)
+    monkeypatch.setattr(
+        _worker, "_activate_transformers_version", lambda _name, _hf_token = None: None
+    )
+
+    _worker._activate_transformers_version_or_warn("meta-llama/Llama-3-8B")
+
+    assert warnings_logged == [], "should not warn when activation succeeds"

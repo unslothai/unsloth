@@ -11,6 +11,7 @@ import {
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -66,6 +67,7 @@ import {
   listPromptEntries,
   type PromptEntry,
 } from "@/features/chat/api/prompts-api";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
@@ -124,6 +126,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -133,6 +136,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
+  CornerDownRightIcon,
   GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
@@ -161,6 +165,7 @@ import {
   useState,
 } from "react";
 import { create } from "zustand";
+import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -175,12 +180,33 @@ type PromptQueueUIEntry = {
   total: number;
 };
 
+type PromptQueueUIItemStatus = "queued" | "next" | "waiting" | "running";
+
+type PromptQueueUIItem = {
+  id: string;
+  prompt: string;
+  position: number;
+  total: number;
+  status: PromptQueueUIItemStatus;
+  threadIds: string[];
+  canEdit: boolean;
+  canRemove: boolean;
+};
+
 interface PromptQueueUIState {
   byThreadId: Record<string, PromptQueueUIEntry>;
+  current: number;
+  total: number;
+  items: PromptQueueUIItem[];
+  isRunning: boolean;
 }
 
 const usePromptQueueUI = create<PromptQueueUIState>(() => ({
   byThreadId: {},
+  current: 0,
+  total: 0,
+  items: [],
+  isRunning: false,
 }));
 
 type PromptQueueTarget = {
@@ -192,8 +218,10 @@ type PromptQueueTarget = {
 };
 
 type PromptQueueItem = {
+  id: string;
   prompt: string;
   target: PromptQueueTarget;
+  dispatched: boolean;
 };
 
 const PROMPT_QUEUE_INDEXING_RETRY_MS = 500;
@@ -211,6 +239,10 @@ function compactIds(ids: Array<string | null | undefined>) {
   return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
 }
 
+function createPromptQueueItemId() {
+  return `prompt-queue-${crypto.randomUUID()}`;
+}
+
 function stopPromptQueueSubscription({
   resetRunningState = true,
 }: {
@@ -225,7 +257,7 @@ function stopPromptQueueSubscription({
   }
 }
 
-function resetPromptQueue(showToast = false) {
+function resetPromptQueue() {
   promptQueueGeneration += 1;
   promptQueueIsRunning = false;
   promptQueueItems = [];
@@ -237,16 +269,10 @@ function resetPromptQueue(showToast = false) {
   }
   stopPromptQueueSubscription();
   syncPromptQueueUI();
-  if (showToast) {
-    toast.success("Prompt queue complete");
-  }
-}
-
-function queueToastDescription(prompt: string) {
-  return prompt.length > 80 ? `${prompt.slice(0, 80)}...` : prompt;
 }
 
 function appendQueuedPrompt(item: PromptQueueItem) {
+  item.dispatched = true;
   syncPromptQueueUI();
   item.target.append(item.prompt);
 }
@@ -332,8 +358,10 @@ async function dispatchQueuedPrompt(
 
 function createQueuedPrompt(prompt: string, target: PromptQueueTarget) {
   return {
+    id: createPromptQueueItemId(),
     prompt,
     target,
+    dispatched: false,
   };
 }
 
@@ -365,13 +393,62 @@ function findPromptQueueEntry(
   return null;
 }
 
+function canEditPromptQueueItem(item: PromptQueueItem) {
+  return !item.dispatched;
+}
+
+function canRemovePromptQueueItem(item: PromptQueueItem) {
+  return !item.dispatched;
+}
+
+function promptQueueItemMatchesThreadIds(
+  item: PromptQueueUIItem,
+  threadIds: string[],
+) {
+  return item.threadIds.some((threadId) => threadIds.includes(threadId));
+}
+
 function syncPromptQueueUI() {
   if (!promptQueueIsRunning || promptQueueItems.length === 0) {
-    usePromptQueueUI.setState({ byThreadId: {} });
+    usePromptQueueUI.setState({
+      byThreadId: {},
+      current: 0,
+      total: 0,
+      items: [],
+      isRunning: false,
+    });
     return;
   }
 
   const activeItemIndex = Math.max(promptQueueIndex, 0);
+  const total = promptQueueItems.length;
+  const current = promptQueueIndex >= 0 ? Math.min(activeItemIndex + 1, total) : 0;
+  const items = promptQueueItems
+    .map((item, index): PromptQueueUIItem | null => {
+      if (index < activeItemIndex || item.dispatched) {
+        return null;
+      }
+      const threadIds = getPromptQueueTargetIds(item.target);
+      const isActive = promptQueueIndex >= 0 && index === activeItemIndex;
+      const status: PromptQueueUIItemStatus = item.dispatched
+        ? "running"
+        : isActive
+          ? promptQueueWaitingForTargetIdle
+            ? "waiting"
+            : "next"
+          : "queued";
+      return {
+        id: item.id,
+        prompt: item.prompt,
+        position: index + 1,
+        total,
+        status,
+        threadIds,
+        canEdit: canEditPromptQueueItem(item),
+        canRemove: canRemovePromptQueueItem(item),
+      };
+    })
+    .filter((item): item is PromptQueueUIItem => Boolean(item));
   const groups: Array<{
     ids: Set<string>;
     current: number;
@@ -420,7 +497,80 @@ function syncPromptQueueUI() {
     });
   }
 
-  usePromptQueueUI.setState({ byThreadId });
+  usePromptQueueUI.setState({
+    byThreadId,
+    current,
+    total,
+    items,
+    isRunning: true,
+  });
+}
+
+function editPromptQueueItem(itemId: string, prompt: string) {
+  const nextPrompt = prompt.trim();
+  if (!nextPrompt) {
+    return false;
+  }
+  const itemIndex = promptQueueItems.findIndex(
+    (candidate) => candidate.id === itemId,
+  );
+  if (itemIndex < 0) {
+    return false;
+  }
+  const item = promptQueueItems[itemIndex];
+  if (!canEditPromptQueueItem(item)) {
+    return false;
+  }
+  item.prompt = nextPrompt;
+  syncPromptQueueUI();
+  return true;
+}
+
+function clearPromptQueueRetryTimer() {
+  if (!promptQueueRetryTimer) {
+    return;
+  }
+  clearTimeout(promptQueueRetryTimer);
+  promptQueueRetryTimer = null;
+}
+
+function removePromptQueueItem(itemId: string) {
+  const itemIndex = promptQueueItems.findIndex((item) => item.id === itemId);
+  if (itemIndex < 0) {
+    return false;
+  }
+  const item = promptQueueItems[itemIndex];
+  if (!canRemovePromptQueueItem(item)) {
+    return false;
+  }
+
+  const wasActive =
+    promptQueueIndex >= 0 && itemIndex === Math.max(promptQueueIndex, 0);
+  promptQueueItems.splice(itemIndex, 1);
+  if (promptQueueItems.length === 0) {
+    resetPromptQueue();
+    return true;
+  }
+
+  if (itemIndex < promptQueueIndex) {
+    promptQueueIndex -= 1;
+  }
+  if (wasActive && promptQueueIndex >= promptQueueItems.length) {
+    resetPromptQueue();
+    return true;
+  }
+
+  syncPromptQueueUI();
+  if (wasActive) {
+    clearPromptQueueRetryTimer();
+    promptQueueWaitingForTargetIdle = false;
+    promptQueuePrevStoreRunning = false;
+    const next = promptQueueItems[promptQueueIndex];
+    if (next) {
+      scheduleQueuedPromptDispatch(next, 50);
+    }
+  }
+  return true;
 }
 
 function isPromptQueueTargetRunning(
@@ -453,15 +603,12 @@ function isActivePromptQueueTargetRunning(
 function advancePromptQueue() {
   const nextIndex = promptQueueIndex + 1;
   if (nextIndex >= promptQueueItems.length) {
-    resetPromptQueue(true);
+    resetPromptQueue();
     return;
   }
   promptQueueIndex = nextIndex;
   syncPromptQueueUI();
   const next = promptQueueItems[nextIndex];
-  toast(`Prompt ${nextIndex + 1} / ${promptQueueItems.length}`, {
-    description: queueToastDescription(next.prompt),
-  });
   promptQueueWaitingForTargetIdle = false;
   promptQueuePrevStoreRunning = false;
   scheduleQueuedPromptDispatch(next, 100);
@@ -526,9 +673,6 @@ function startPromptQueue(
       ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
     );
     syncPromptQueueUI();
-    toast.success("Added to prompt queue", {
-      description: `${filtered.length} prompt${filtered.length === 1 ? "" : "s"} queued.`,
-    });
     return;
   }
 
@@ -544,12 +688,6 @@ function startPromptQueue(
   promptQueueIsRunning = true;
   promptQueuePrevStoreRunning = shouldWaitForCurrentRun;
   syncPromptQueueUI();
-  toast(
-    shouldWaitForCurrentRun ? "Prompt queued" : `Prompt 1 / ${filtered.length}`,
-    {
-      description: queueToastDescription(filtered[0]),
-    },
-  );
   startPromptQueueSubscription();
   if (!shouldWaitForCurrentRun) {
     const first = promptQueueItems[0];
@@ -560,10 +698,15 @@ function startPromptQueue(
 }
 
 function stopPromptQueueRun() {
-  const activeTarget = promptQueueItems[Math.max(promptQueueIndex, 0)]?.target;
+  const activeItem = promptQueueItems[Math.max(promptQueueIndex, 0)];
+  const activeTarget = activeItem?.target;
+  const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
   resetPromptQueue();
+  if (!shouldCancelActiveRun) {
+    return;
+  }
   try {
-    activeTarget?.cancel();
+    activeTarget.cancel();
   } catch {
     // The active run may have already ended.
   }
@@ -825,7 +968,9 @@ export const Thread: FC<{
             scrollToBottomOnThreadSwitch={false}
             className={cn(
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
-              hideComposer ? "pt-4" : "pt-[48px]",
+              hideComposer
+                ? "pt-4"
+                : "pt-[calc(var(--studio-content-top-inset,0px)+48px)]",
             )}
           >
             {!hideWelcome && (
@@ -1015,6 +1160,29 @@ const ThreadComposerDock: FC<{
   onHeightChange?: (height: number | null) => void;
 }> = ({ disabled, threadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.id,
+  );
+  const threadListItemRemoteId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
+  const promptQueueThreadIds = compactIds([
+    threadListItemId,
+    threadListItemRemoteId,
+    threadId,
+    activeThreadId,
+  ]);
+  const queueVisible = usePromptQueueUI(
+    (s) =>
+      Boolean(findPromptQueueEntry(s, promptQueueThreadIds)) &&
+      s.items.some((item) =>
+        promptQueueItemMatchesThreadIds(item, promptQueueThreadIds),
+      ),
+  );
+  const showModelDisclaimer = useChatPreferencesStore(
+    (s) => s.showModelDisclaimer,
+  );
 
   // Report dock height so the viewport reserves matching scroll space when
   // attachments or multiline input grow the composer.
@@ -1043,7 +1211,12 @@ const ThreadComposerDock: FC<{
       {/* Fade the top edge so scrolling text is not cut off by a hard line. */}
       <div
         aria-hidden={true}
-        className="absolute inset-x-0 bottom-0 top-[10px] bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-transparent"
+        className={cn(
+          "absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
+          queueVisible
+            ? "h-32 backdrop-blur-[1px] [mask-image:linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
+            : "top-[10px]",
+        )}
       />
       <div className="relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
@@ -1053,9 +1226,11 @@ const ThreadComposerDock: FC<{
             menuSide="top"
           />
         </div>
-        <p className="composer-footer-note">
-          LLMs can make mistakes. Double-check responses.
-        </p>
+        {showModelDisclaimer && (
+          <p className="composer-footer-note">
+            LLMs can make mistakes. Double-check responses.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -1245,6 +1420,7 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
   // More than 4 pills: collapse to icons only. Search and Code always show;
   // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
@@ -1366,6 +1542,8 @@ const Composer: FC<{
   }, [composerText, draftKey]);
   // Two-row layout shows once the input wraps or a tool is on. Tools can
   // pre-select before a model loads, so an active toggle expands it either way.
+  // Bypass permissions counts too: turning it on should drop the composer into
+  // the two-row layout immediately, same as Search/Code.
   const composerExpanded =
     isMultiline ||
     hasAttachments ||
@@ -1375,7 +1553,8 @@ const Composer: FC<{
     imageToolsEnabled ||
     ragEnabled ||
     artifactsEnabled ||
-    mcpEnabledForChat;
+    mcpEnabledForChat ||
+    bypassPermissions;
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -1736,14 +1915,15 @@ const Composer: FC<{
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
+      <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
       {isTauri ? (
         // Phase 1 native model owns Tauri local-path drops. Restore browser
         // attachment drops in Tauri once Phase 1d adds token bridging.
-        <div className="aui-composer-attachment-dropzone unsloth-composer-surface">
+        <div className="aui-composer-attachment-dropzone unsloth-composer-surface relative z-10">
           {composerContent}
         </div>
       ) : (
-        <ComposerPrimitive.AttachmentDropzone className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative">
+        <ComposerPrimitive.AttachmentDropzone className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative z-10">
           {composerContent}
           {/* Gemini-style drop affordance, shown while a file is dragged over
               the composer. Absolute + pointer-events-none so the outline adds
@@ -2071,7 +2251,11 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     return null;
   }
 
-  const isEffort = effectiveReasoningStyle === "reasoning_effort";
+  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort
+  // dropdown; it just also carries an Off row via supportsReasoningOff.
+  const isEffort =
+    effectiveReasoningStyle === "reasoning_effort" ||
+    effectiveReasoningStyle === "enable_thinking_effort";
   // Dropdown when there are effort levels or preserve-thinking; else a toggle.
   const useDropdown = isEffort || supportsPreserveThinking;
   const activeLook = isEffort
@@ -2428,7 +2612,7 @@ const ArtifactsToggle: FC = () => {
   );
 };
 
-// Red pill shown while Bypass Permissions is on; click to turn it off.
+// Claude gold pill shown while Bypass permissions is on; click to turn it off.
 // Mirror of shared-composer's badge so both composers surface the state.
 const BypassPermissionsToggle: FC = () => {
   const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
@@ -2443,11 +2627,17 @@ const BypassPermissionsToggle: FC = () => {
       className="composer-pill-btn"
       data-active="true"
       data-variant="danger"
-      aria-label="Disable Bypass Permissions"
-      title="Bypass Permissions is on (no confirmation, no sandbox). Click to turn off."
+      aria-label="Disable Bypass permissions"
+      title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
     >
-      <XIcon className="size-3" />
-      <span>Bypass Permissions</span>
+      <PillGlyph>
+        <HugeiconsIcon
+          icon={ShieldBanIcon}
+          strokeWidth={2}
+          className="size-[15px]"
+        />
+      </PillGlyph>
+      <span>Bypass permissions</span>
     </button>
   );
 };
@@ -2855,6 +3045,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           type="button"
           aria-label="Tools and attachments"
           className="unsloth-composer-plus"
+          data-tour="chat-plus-menu"
         >
           <PlusIcon className="size-[22px] stroke-[1.75px]" />
         </button>
@@ -2957,7 +3148,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
               <MoreHorizontalIcon className="size-4" />
               More
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+            <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
               {overflowPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}
@@ -2971,6 +3162,184 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         onOpenChange={setNewProjectOpen}
       />
     </>
+  );
+};
+
+function promptQueueStatusLabel(status: PromptQueueUIItemStatus) {
+  switch (status) {
+    case "running":
+      return "Running now";
+    case "waiting":
+      return "Waiting";
+    case "next":
+      return "Next";
+    case "queued":
+      return "Queued";
+    default: {
+      const exhaustiveStatus: never = status;
+      throw new Error(`Unhandled prompt queue status: ${exhaustiveStatus}`);
+    }
+  }
+}
+
+const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
+  queueThreadIds,
+}) => {
+  const queueEntry = usePromptQueueUI((s) =>
+    findPromptQueueEntry(s, queueThreadIds),
+  );
+  const items = usePromptQueueUI((s) => s.items);
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [draftPrompt, setDraftPrompt] = useState("");
+  const editInputRef = useRef<HTMLTextAreaElement>(null);
+  const visibleItems = items.filter((item) =>
+    promptQueueItemMatchesThreadIds(item, queueThreadIds),
+  );
+  const editingItem = visibleItems.find((item) => item.id === editingItemId);
+  const editingItemCanEdit = editingItem?.canEdit ?? false;
+  const activeEditingItemId = editingItem ? editingItemId : null;
+
+  useEffect(() => {
+    if (!activeEditingItemId) {
+      return;
+    }
+    editInputRef.current?.focus();
+    editInputRef.current?.select();
+  }, [activeEditingItemId]);
+
+  useEffect(() => {
+    if (!editingItemId || editingItemCanEdit) {
+      return;
+    }
+    setEditingItemId(null);
+    setDraftPrompt("");
+  }, [editingItemCanEdit, editingItemId]);
+
+  if (!queueEntry || visibleItems.length === 0) {
+    return null;
+  }
+
+  const { current, total } = queueEntry;
+
+  const startEditing = (item: PromptQueueUIItem) => {
+    if (!item.canEdit) {
+      return;
+    }
+    setEditingItemId(item.id);
+    setDraftPrompt(item.prompt);
+  };
+  const saveEditing = () => {
+    if (!activeEditingItemId) {
+      return;
+    }
+    if (editPromptQueueItem(activeEditingItemId, draftPrompt)) {
+      setEditingItemId(null);
+      setDraftPrompt("");
+    }
+  };
+  const cancelEditing = () => {
+    setEditingItemId(null);
+    setDraftPrompt("");
+  };
+
+  return (
+    <div
+      className="relative z-0 mx-7 mb-[-8px] max-h-[28vh] overflow-y-auto rounded-t-[18px] rounded-b-none border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
+      aria-label={`Prompt queue, ${current} of ${total}`}
+    >
+      <div className="divide-y divide-border/25">
+        {visibleItems.map((item, visibleIndex) => {
+          const isEditing = item.id === activeEditingItemId;
+          const visiblePosition = visibleIndex + 1;
+          return (
+            <div
+              key={item.id}
+              className={cn("min-h-10", isEditing ? "h-auto" : "h-10")}
+              aria-label={`${promptQueueStatusLabel(item.status)} prompt ${visiblePosition} of ${visibleItems.length}: ${item.prompt}`}
+            >
+              {isEditing ? (
+                <div className="grid min-h-10 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2.5 py-1">
+                  <textarea
+                    ref={editInputRef}
+                    value={draftPrompt}
+                    rows={1}
+                    onChange={(event) =>
+                      setDraftPrompt(event.currentTarget.value)
+                    }
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "Enter" &&
+                        (event.metaKey || event.ctrlKey)
+                      ) {
+                        event.preventDefault();
+                        saveEditing();
+                      } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        cancelEditing();
+                      }
+                    }}
+                    className="max-h-20 min-h-8 min-w-0 resize-none rounded-md border border-border/45 bg-transparent px-2 py-1.5 text-sm leading-5 text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35"
+                    aria-label={`Edit queued prompt ${visiblePosition}`}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs text-muted-foreground"
+                    onClick={cancelEditing}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={draftPrompt.trim().length === 0}
+                    onClick={saveEditing}
+                  >
+                    Save
+                  </Button>
+                </div>
+              ) : (
+                <div className="grid h-10 grid-cols-[minmax(0,1fr)_auto_2rem] items-center gap-2.5">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <CornerDownRightIcon className="size-4 shrink-0 text-muted-foreground/50" />
+                    <div className="truncate text-sm text-muted-foreground">
+                      {item.prompt}
+                    </div>
+                  </div>
+                  {item.canEdit ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-[5.25rem] justify-center gap-1 px-0 text-sm font-normal text-muted-foreground/80 hover:text-foreground"
+                      onClick={() => startEditing(item)}
+                    >
+                      <HugeiconsIcon icon={Edit03Icon} strokeWidth={2} />
+                      Edit
+                    </Button>
+                  ) : null}
+                  <TooltipIconButton
+                    tooltip="Remove from queue"
+                    side="bottom"
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="col-start-3 size-7 justify-self-center text-muted-foreground/70 hover:text-destructive"
+                    aria-label={`Remove queued prompt ${visiblePosition}`}
+                    disabled={!item.canRemove}
+                    onClick={() => removePromptQueueItem(item.id)}
+                  >
+                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} />
+                  </TooltipIconButton>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 };
 
@@ -2997,8 +3366,6 @@ const ComposerRightControls: FC<{
     findPromptQueueEntry(s, queueThreadIds),
   );
   const isQueueRunning = Boolean(queueEntry);
-  const queueCurrent = queueEntry?.current ?? 0;
-  const queueTotal = queueEntry?.total ?? 0;
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -3026,14 +3393,6 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
-      {isQueueRunning ? (
-        <span
-          className="ml-1 flex h-7 items-center rounded-full bg-primary/10 px-2 text-[11px] font-semibold text-primary"
-          aria-live="polite"
-        >
-          <span className="tabular-nums">Queue {queueCurrent}/{queueTotal}</span>
-        </span>
-      ) : null}
       <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
@@ -3194,40 +3553,138 @@ const DiffusionCanvas: FC = () => {
   );
 };
 
+/**
+ * AssistantMessage handles the display and inline-editing of AI responses.
+ *
+ * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users
+ * to edit structured reasoning and tool outputs within a plain-text textarea
+ * while preserving the underlying data schema and tool-call metadata.
+ */
 const AssistantMessage: FC = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const messageContent = useAuiState(({ message }) => message.content);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+
+  // Use global store for editing state to ensure a single source of truth
+  const editingId = useChatRuntimeStore((s) => s.editingMessageId);
+  const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
+  const isEditing = editingId === messageId;
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-grow textarea height based on content
+  const adjustHeight = () => {
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
+    }
+  };
+
+  useEffect(() => {
+    if (isEditing) setTimeout(adjustHeight, 0);
+  }, [isEditing]);
+
+  const handleSave = async () => {
+    const finalText = textareaRef.current?.value || "";
+
+    // Prioritize the specific thread item ID, then fallback to the global active thread ID
+    const remoteId = aui.threadListItem().getState().remoteId
+                  || useChatRuntimeStore.getState().activeThreadId;
+
+    if (!remoteId || remoteId === "" || remoteId === "/") {
+      toast.error("Save failed: No thread ID found.");
+      setEditingId(null);
+      return;
+    }
+
+    try {
+      await updateThreadMessage({
+        thread: {
+          export: () => aui.thread().export(),
+          import: (data) => aui.thread().import(data)
+        },
+        messageId,
+        remoteId,
+        newText: finalText,
+        isIncognito: incognito,
+      });
+    } catch (error) {
+      console.error("UI: Error during save:", error);
+      toast.error("Failed to save message edits.");
+    } finally {
+      setEditingId(null);
+    }
+  };
+
   return (
     <MessagePrimitive.Root
       className="aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
-        <GeneratingIndicator />
-        <CancelledIndicator />
-        <DiffusionCanvas />
-        <MessagePrimitive.Parts
-          components={{
-            Text: MarkdownText,
-            Reasoning: Reasoning,
-            ReasoningGroup: ReasoningGroup,
-            Source: Sources,
-            ToolGroup: ToolGroup,
-            tools: {
-              by_name: {
-                web_search: WebSearchToolUIConfirmable,
-                search_knowledge_base: KnowledgeBaseToolUIConfirmable,
-                python: PythonToolUIConfirmable,
-                terminal: TerminalToolUIConfirmable,
-                code_execution: CodeExecutionToolUIConfirmable,
-                image_generation: ImageGenerationToolUIConfirmable,
-                render_html: RenderHtmlToolUIConfirmable,
-              },
-              Fallback: ToolFallbackConfirmable,
-            },
-          }}
-        />
-        <SourcesGroup />
-        <RagSourcesGroup />
-        <MessageError />
+        {isEditing ? (
+          <div className="flex flex-col gap-2 w-full">
+            <textarea
+              ref={textareaRef}
+              defaultValue={extractTaggedText(messageContent)}
+              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
+              autoFocus
+              onInput={adjustHeight}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  handleSave();
+                }
+                if (e.key === 'Escape') {
+                  setEditingId(null); // UX: Close editor on Escape
+                }
+              }}
+            />
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setEditingId(null)} className="h-8 text-xs">Cancel</Button>
+              <Button size="sm" onClick={handleSave} className="h-8 text-xs">Save</Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <GeneratingIndicator />
+            <CancelledIndicator />
+            <DiffusionCanvas />
+
+            {/*
+                We use the standard MessagePrimitive.Parts. This ensures that
+                edited messages maintain the same professional styling,
+                Markdown rendering, and tool-call components as original responses.
+            */}
+            <MessagePrimitive.Parts
+              components={{
+                Text: MarkdownText,
+                Reasoning: Reasoning,
+                ReasoningGroup: ReasoningGroup,
+                Source: Sources,
+                ToolGroup: ToolGroup,
+                tools: {
+                  by_name: {
+                    web_search: WebSearchToolUIConfirmable,
+                    search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+                    python: PythonToolUIConfirmable,
+                    terminal: TerminalToolUIConfirmable,
+                    code_execution: CodeExecutionToolUIConfirmable,
+                    image_generation: ImageGenerationToolUIConfirmable,
+                    render_html: RenderHtmlToolUIConfirmable,
+                  },
+                  Fallback: ToolFallbackConfirmable,
+                },
+              }}
+            />
+            <SourcesGroup />
+            <RagSourcesGroup />
+            <MessageHtmlArtifacts />
+            <MessageError />
+          </>
+        )}
       </div>
 
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
@@ -3414,6 +3871,26 @@ const CopyButton: FC = () => {
   );
 };
 
+const EditAssistantMessageButton: FC = () => {
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
+
+  return (
+    <TooltipIconButton
+      tooltip="Edit response"
+      disabled={isRunning}
+      onClick={() => setEditingId(messageId)}
+    >
+      <HugeiconsIcon
+        icon={Edit03Icon}
+        strokeWidth={1.75}
+        className="size-icon"
+      />
+    </TooltipIconButton>
+  );
+};
+
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
 
@@ -3423,6 +3900,7 @@ const AssistantActionBar: FC = () => {
       className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
+      <EditAssistantMessageButton />
       <ActionBarPrimitive.Reload asChild={true}>
         <TooltipIconButton tooltip="Refresh">
           <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
@@ -3455,7 +3933,11 @@ const AssistantActionBar: FC = () => {
           </ActionBarMorePrimitive.Item>
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-              <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon
+                icon={Download01Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>

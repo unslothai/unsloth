@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""test_Llama3_1_(3B)_GRPO_LoRA (1).ipynb
-
-### Unsloth
-
-"""
+"""Llama 3.1 (3B) GRPO LoRA train + merged-model save/eval."""
 
 from unsloth import FastLanguageModel
 import torch
@@ -20,8 +16,8 @@ from tests.utils.cleanup_utils import safe_remove_directory
 from tests.utils.aime_eval import evaluate_model_aime, compare_aime_results
 
 
-max_seq_length = 2048  # Can increase for longer reasoning traces
-lora_rank = 64  # Larger rank = smarter, but slower
+max_seq_length = 2048
+lora_rank = 64
 
 
 def evaluate_merged_model(
@@ -32,16 +28,16 @@ def evaluate_merged_model(
     from unsloth import FastLanguageModel
     from tests.utils.aime_eval import evaluate_model_aime
 
-    max_seq_length = 2048  # Can increase for longer reasoning traces
-    lora_rank = 64  # Larger rank = smarter, but slower
+    max_seq_length = 2048
+    lora_rank = 64
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = "./final_merged_model",
         max_seq_length = max_seq_length,
-        load_in_4bit = True,  # False for LoRA 16bit
-        fast_inference = True,  # Enable vLLM fast inference
+        load_in_4bit = True,
+        fast_inference = True,
         max_lora_rank = lora_rank,
-        gpu_memory_utilization = 0.8,  # Reduce if out of memory
+        gpu_memory_utilization = 0.8,
     )
 
     print(f"\n{'='*60}")
@@ -79,10 +75,10 @@ def training_run(result_queue):
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = "meta-llama/Llama-3.2-3B-Instruct",
         max_seq_length = max_seq_length,
-        load_in_4bit = False,  # False for LoRA 16bit
-        fast_inference = True,  # Enable vLLM fast inference
+        load_in_4bit = False,
+        fast_inference = True,
         max_lora_rank = lora_rank,
-        gpu_memory_utilization = 0.8,  # Reduce if out of memory
+        gpu_memory_utilization = 0.8,
     )
 
     """### Helper Functions
@@ -190,7 +186,7 @@ def training_run(result_queue):
         matches = re.findall(pattern, text, re.DOTALL)
 
         if matches:
-            answer = matches[-1]  # Get the last match
+            answer = matches[-1]
             answer = re.sub(r"[%$,]", "", answer).strip()
             return answer
         return ""
@@ -450,7 +446,6 @@ def training_run(result_queue):
 
     all_results = []
 
-    # Single temperature evaluation on combined dataset.
     results = evaluate_model_aime(
         model = model,
         tokenizer = tokenizer,
@@ -494,7 +489,7 @@ def training_run(result_queue):
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r = lora_rank,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+        r = lora_rank,
         target_modules = [
             "q_proj",
             "k_proj",
@@ -503,9 +498,9 @@ def training_run(result_queue):
             "gate_proj",
             "up_proj",
             "down_proj",
-        ],  # Remove QKVO if out of memory
+        ],
         lora_alpha = lora_rank,
-        use_gradient_checkpointing = "unsloth",  # Enable long context finetuning
+        use_gradient_checkpointing = "unsloth",
         random_state = 3407,
     )
 
@@ -518,12 +513,12 @@ def training_run(result_queue):
             max_seq_length = max_seq_length,
             data_collator = DataCollatorForSeq2Seq(tokenizer = tokenizer),
             dataset_num_proc = 2,
-            packing = False,  # Can make training 5x faster for short sequences.
+            packing = False,
             args = TrainingArguments(
                 per_device_train_batch_size = 2,
                 gradient_accumulation_steps = 4,
                 warmup_steps = 5,
-                num_train_epochs = 1,  # Set this for 1 full training run.
+                num_train_epochs = 1,
                 # max_steps = 60,
                 learning_rate = 2e-4,
                 fp16 = not is_bfloat16_supported(),
@@ -534,7 +529,7 @@ def training_run(result_queue):
                 lr_scheduler_type = "linear",
                 seed = 3407,
                 output_dir = "outputs",
-                report_to = "none",  # Use this for WandB etc
+                report_to = "none",
             ),
         )
 
@@ -581,7 +576,6 @@ def training_run(result_queue):
         ]
 
         scores = []
-        # Print only every few steps.
         global PRINTED_TIMES
         global PRINT_EVERY_STEPS
         if PRINTED_TIMES % PRINT_EVERY_STEPS == 0:
@@ -600,7 +594,6 @@ def training_run(result_queue):
                 continue
             try:
                 true_answer = float(true_answer.strip())
-                # Remove commas like in 123,456.
                 guess = float(guess.strip().replace(",", ""))
                 scores.append(1.5 if guess == true_answer else -0.5)
             except:
@@ -613,7 +606,7 @@ def training_run(result_queue):
     print(f"{'*'*60}")
 
     max_prompt_length, _ = get_max_prompt_length(gsm8k_train, tokenizer)
-    max_prompt_length = min(max_prompt_length + 10, 512)  # Add buffer, cap at 512
+    max_prompt_length = min(max_prompt_length + 10, 512)
 
     print(f"Using max_prompt_length: {max_prompt_length}")
 
@@ -627,8 +620,8 @@ def training_run(result_queue):
         optim = "adamw_torch_fused",
         logging_steps = 1,
         per_device_train_batch_size = 1,
-        gradient_accumulation_steps = 4,  # Increase to 4 for smoother training
-        num_generations = 8,  # Decrease if out of memory
+        gradient_accumulation_steps = 4,
+        num_generations = 8,
         max_prompt_length = max_prompt_length,
         max_completion_length = max_seq_length - max_prompt_length,
         # num_train_epochs = 1, # Set to 1 for a full training run
@@ -636,7 +629,7 @@ def training_run(result_queue):
         max_steps = 1000,
         save_steps = 250,
         max_grad_norm = 0.1,
-        report_to = "none",  # Can use Weights & Biases
+        report_to = "none",
         output_dir = "outputs",
     )
 
@@ -749,7 +742,6 @@ if __name__ == "__main__":
     result_queue = mp.Queue()
     all_results = []
 
-    # Run main finetuning and GRPO loop.
     p = mp.Process(target = training_run, args = (result_queue,))
     p.start()
     p.join()
@@ -757,7 +749,7 @@ if __name__ == "__main__":
     results = result_queue.get()
     all_results = results
 
-    # Evaluate merged model loaded 16bits.
+    # Evaluate merged model loaded 16bit.
     p = mp.Process(target = evaluate_merged_model, args = (result_queue, False, False))
     p.start()
     p.join()

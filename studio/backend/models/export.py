@@ -51,6 +51,14 @@ class LoadCheckpointRequest(BaseModel):
         False,
         description = "Allow loading models with custom code. Only enable for checkpoints/base models you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
+    hf_token: Optional[str] = Field(
+        None,
+        description = "Hugging Face token used to scan/load gated checkpoints and their base models.",
+    )
 
 
 class ExportStatusResponse(BaseModel):
@@ -67,6 +75,37 @@ class ExportStatusResponse(BaseModel):
     is_peft: bool = Field(
         False,
         description = "True if the loaded checkpoint is a PEFT (LoRA) model",
+    )
+    is_export_active: bool = Field(
+        False,
+        description = "True while a load / export / cleanup operation is running",
+    )
+    # Recovery fields: when a blocking export POST is cut off by a Cloudflare tunnel
+    # timeout (524 at ~100s), the client polls this endpoint to learn the real
+    # outcome of the operation that kept running on the backend.
+    active_op_kind: Optional[str] = Field(
+        None,
+        description = "Kind of the currently running op (load_checkpoint / export_* / cleanup)",
+    )
+    last_op_seq: int = Field(
+        0,
+        description = "Monotonic counter of finished ops; client baseline to detect 'my op finished'",
+    )
+    last_op_kind: Optional[str] = Field(
+        None,
+        description = "Kind of the most recently finished op",
+    )
+    last_op_status: Optional[str] = Field(
+        None,
+        description = "Outcome of the most recently finished op: success / error / cancelled",
+    )
+    last_op_output_path: Optional[str] = Field(
+        None,
+        description = "Output path of the most recently finished op, if it produced one",
+    )
+    last_op_error: Optional[str] = Field(
+        None,
+        description = "Error message of the most recently finished op, if it failed",
     )
 
 
@@ -119,9 +158,15 @@ class ExportCommonOptions(BaseModel):
 class ExportMergedModelRequest(ExportCommonOptions):
     """Request for exporting a merged PEFT model."""
 
-    format_type: Literal["16-bit (FP16)", "4-bit (FP4)"] = Field(
+    format_type: Literal[
         "16-bit (FP16)",
-        description = "Export precision / format for the merged model",
+        "4-bit (FP4)",
+        "FP8 (compressed-tensors)",
+        "NVFP4 (compressed-tensors)",
+    ] = Field(
+        "16-bit (FP16)",
+        description = "Export precision / format for the merged model. The compressed-tensors "
+        "options run llm-compressor for vLLM (FP8 is data-free; NVFP4 calibrates).",
     )
 
 
@@ -159,6 +204,15 @@ class ExportGGUFRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None,
         description = "Hugging Face token for GGUF upload",
+    )
+    imatrix: bool = Field(
+        False,
+        description = "Use an importance matrix (auto-downloads the upstream unsloth GGUF "
+        "imatrix). Required for the IQ low-bit quants such as iq2_xxs / iq4_xs.",
+    )
+    imatrix_path: Optional[str] = Field(
+        None,
+        description = "Path to a custom imatrix file; overrides the auto-download when set.",
     )
 
 

@@ -26,7 +26,6 @@ import {
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import {
   Delete02Icon,
@@ -35,6 +34,7 @@ import {
   PencilEdit02Icon,
   PlayIcon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   memo,
@@ -144,7 +144,9 @@ function QuantBadge({
       <span
         className={cn(
           CHIP_BASE,
-          "gap-1.5 cursor-help",
+          // `shrink` overrides CHIP_BASE's shrink-0 so a long file-path quant
+          // label can shrink and truncate instead of overflowing the row.
+          "min-w-0 max-w-full shrink gap-1.5 cursor-help",
           active ? CHIP_ACTIVE : CHIP_DEFAULT,
         )}
       >
@@ -155,12 +157,12 @@ function QuantBadge({
             className={cn("size-3.5 shrink-0", meta.iconClassName)}
           />
         )}
-        <span>{quant}</span>
+        <span className="min-w-0 truncate">{quant}</span>
       </span>
     ) : (
       <span
         className={cn(
-          "inline-flex cursor-help items-center gap-1.5 text-[12.5px] font-medium tracking-tight tabular-nums",
+          "inline-flex min-w-0 max-w-full shrink cursor-help items-center gap-1.5 text-[12.5px] font-medium tracking-tight tabular-nums",
           active ? "text-emerald-600 dark:text-emerald-400" : "text-foreground",
         )}
       >
@@ -171,7 +173,7 @@ function QuantBadge({
             className={cn("size-3.5 shrink-0", meta.iconClassName)}
           />
         )}
-        <span>{quant}</span>
+        <span className="min-w-0 truncate">{quant}</span>
       </span>
     );
   if (!showFit || tooltipMode === "none") return inner;
@@ -588,7 +590,7 @@ export function GgufDownloadCard({
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
 
-  // Keep showing download progress even when the variant list is unavailable, so a
+  // Keep showing download progress while the variant list is unavailable, so a
   // remount never hides an in-flight download behind the variant status card.
   if (progress && variantListUnavailable) {
     return (
@@ -666,7 +668,7 @@ export function GgufDownloadCard({
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.1] dark:data-[state=open]:bg-white/[0.06]"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
             >
               {selected ? (
                 <QuantBadge
@@ -680,7 +682,7 @@ export function GgufDownloadCard({
                   Select quantization
                 </span>
               )}
-              <span className="ml-auto flex items-center gap-1.5 text-[12px] text-muted-foreground">
+              <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[12px] text-muted-foreground">
                 {selected?.downloaded && (
                   <DotTag
                     tone="success"
@@ -714,7 +716,6 @@ export function GgufDownloadCard({
                   )}
                 <HugeiconsIcon
                   icon={ChevronDownStandardIcon}
-                  strokeWidth={1.25}
                   className="ml-0.5 size-3.5 shrink-0"
                 />
               </span>
@@ -723,7 +724,7 @@ export function GgufDownloadCard({
           <PopoverContent
             align="start"
             side="bottom"
-            sideOffset={0}
+            sideOffset={8}
             avoidCollisions={false}
             className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[200px] gap-0 overflow-hidden p-0 py-2 ring-0"
           >
@@ -831,11 +832,7 @@ export function GgufDownloadCard({
             </>
           ) : selected?.downloaded ? (
             <>
-              <HugeiconsIcon
-                icon={PlayIcon}
-                strokeWidth={1.75}
-                className="translate-x-px"
-              />
+              <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
               Run
             </>
           ) : (

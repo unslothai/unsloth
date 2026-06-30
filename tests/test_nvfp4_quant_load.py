@@ -12,19 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Test cases for NVFP4 / compressed-tensors model loading.
-Ensures that models with non-bitsandbytes quantization configs
-don't conflict with Unsloth's default load_in_4bit=True behavior.
-
-Uses synthetic config objects (no network access) so this suite
-runs offline in CI where tests/security/conftest.py blocks socket
-connections.
+"""NVFP4 / compressed-tensors loading: non-bitsandbytes quant configs must not conflict with
+load_in_4bit=True. Uses synthetic configs (no network) so it runs offline in CI.
 """
 
 from types import SimpleNamespace
 
-# Import unsloth first to set UNSLOTH_IS_PRESENT env var
+# Import unsloth first to set UNSLOTH_IS_PRESENT env var.
 import unsloth
 from unsloth_zoo.utils import get_quant_type
 from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading

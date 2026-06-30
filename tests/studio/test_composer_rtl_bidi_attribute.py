@@ -1,11 +1,5 @@
-"""Lock down the RTL bidi auto-detection contract on the chat composers.
-
-The browser's Unicode bidi algorithm only flows Arabic / Hebrew / Persian /
-Urdu right-to-left when the textarea carries `dir="auto"`. The three
-composer surfaces (main chat, inline edit, compare mode) each need the
-attribute, and the IME / i18n Playwright smoke must keep its env contract
-minimal (no dead `STUDIO_OLD_PW`).
-"""
+"""RTL bidi contract on chat composers: all three need dir="auto", and the IME
+smoke must drop the dead STUDIO_OLD_PW env var."""
 
 from __future__ import annotations
 
@@ -30,10 +24,8 @@ def _block_around(
 
 
 def test_main_composer_has_dir_auto():
-    # PR #5784 rewrote the literal attribute into a JSX conditional
-    # (`aria-label={overlay ? "Image edit instructions" : "Message input"}`),
-    # so anchor on the inner string literal instead -- it survives both
-    # the old and new spellings.
+    # PR #5784 turned the attribute into a JSX conditional; anchor on the inner
+    # "Message input" literal, which survives both spellings.
     block = _block_around(THREAD_TSX.read_text(), '"Message input"')
     assert 'dir="auto"' in block, 'main composer is missing dir="auto"'
 
@@ -82,10 +74,8 @@ def test_ime_playwright_script_does_not_read_studio_old_pw():
 
 
 def test_main_composer_has_stuck_compositionend_watchdog():
-    """Issue #5546: Chrome on Windows over WSL never emits compositionend
-    after the IME commit. The composer keeps a watchdog that releases the
-    composing flag once events go silent; without it Send stays disabled
-    forever and CJK input is effectively dropped."""
+    """Issue #5546: WSL Chrome never emits compositionend after IME commit, so the
+    composer needs a watchdog releasing the composing flag or Send stays disabled."""
     src = THREAD_TSX.read_text()
     assert (
         "IME_STUCK_TIMEOUT_MS" in src
@@ -105,9 +95,8 @@ def test_compare_composer_has_stuck_compositionend_watchdog():
 
 
 def test_main_composer_keydown_repins_composing_during_ime():
-    """Issue #5546 watchdog can clear composingRef during a long candidate
-    pause; the IME keydown gate must re-pin it so a follow-up Enter does not
-    submit preedit text."""
+    """Issue #5546: the keydown IME gate must re-pin composingRef so a follow-up
+    Enter does not submit preedit text after the watchdog clears it."""
     src = THREAD_TSX.read_text()
     assert "onKeyDown" in src, "main composer is missing onKeyDown IME gate"
     assert "e.nativeEvent.isComposing" in src and "keyCode === 229" in src, (
@@ -118,8 +107,7 @@ def test_main_composer_keydown_repins_composing_during_ime():
 
 def test_compare_composer_keydown_repins_composing_during_ime():
     """Compare composer onKeyDown re-pins composingRef on IME keypress so a
-    follow-up click-Send during the watchdog window does not slip preedit
-    text through."""
+    follow-up click-Send during the watchdog window does not slip preedit text."""
     src = SHARED_TSX.read_text()
     assert "composingRef.current = true" in src, (
         "compare composer keydown gate must re-pin composingRef when the "
@@ -133,9 +121,8 @@ def _extract_block(
     opener: str = "(",
     closer: str = ")",
 ) -> str:
-    """Return the source within the first balanced opener/closer at or
-    after `anchor`. Scopes assertions to one handler so a re-arm call
-    elsewhere does not satisfy the gate test."""
+    """Source within the first balanced opener/closer after `anchor`, scoping
+    assertions to one handler."""
     start = src.find(anchor)
     assert start != -1, f"anchor {anchor!r} not found"
     open_idx = src.find(opener, start)
@@ -153,9 +140,8 @@ def _extract_block(
 
 
 def test_main_composer_keydown_rearms_watchdog():
-    """After the keydown re-pin sets composingRef=true the watchdog must
-    be re-armed; otherwise the WSL+Chrome no-compositionend path this PR
-    targets would lock Send permanently after any IME keypress."""
+    """After keydown re-pins composingRef the watchdog must re-arm, else the
+    WSL+Chrome no-compositionend path locks Send after any IME keypress (#5546)."""
     src = THREAD_TSX.read_text()
     block = _extract_block(src, "const onKeyDown = useCallback")
     assert "refreshStuckTimer" in block, (

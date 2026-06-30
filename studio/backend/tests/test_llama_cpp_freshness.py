@@ -520,3 +520,114 @@ def test_in_memory_only_reset_replays_stale_same_base_mix(monkeypatch, tmp_path)
     assert info["latest_tag"] == "b9596-mix-aaa"
     assert info["behind"] is True
     assert info["stale"] is True
+
+
+# update_download_size_bytes (banner download-size lookup).
+
+
+def _patch_assets(monkeypatch, mapping):
+    """Stub latest_release_assets with a per-repo {asset_name: size} lookup."""
+    monkeypatch.setattr(
+        fr,
+        "latest_release_assets",
+        lambda repo, *, force_refresh = False: mapping.get(repo),
+    )
+
+
+def test_update_size_unsloth_prebuilt_exact_match(monkeypatch):
+    # The unsloth fork's own bundle (app-<tag>-<platform>): the want= exact match
+    # on app-<latest>-<suffix> wins.
+    marker = {
+        "asset": "app-b9190-linux-x64-cuda13-newer.tar.gz",
+        "published_repo": "unslothai/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {
+            "unslothai/llama.cpp": {
+                "app-b9300-linux-x64-cuda13-newer.tar.gz": 123_456_789,
+                "app-b9300-windows-x64-cuda13-newer.zip": 999,
+            }
+        },
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 123_456_789
+
+
+def test_update_size_macos_fork_asset_suffix_fallback(monkeypatch):
+    # macOS bundles use the upstream-style llama-<tag>-bin-macos-*, matched via the
+    # endswith fallback in the publish repo.
+    marker = {
+        "asset": "llama-b9190-bin-macos-arm64.tar.gz",
+        "published_repo": "unslothai/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {"unslothai/llama.cpp": {"llama-b9300-bin-macos-arm64.tar.gz": 55_000_000}},
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 55_000_000
+
+
+def test_update_size_upstream_ubuntu_uses_binary_repo(monkeypatch):
+    # #6338 P2: ggml-org ubuntu-* prebuilt lives in binary_repo, not the fork
+    # publish repo. The size must still resolve.
+    marker = {
+        "asset": "llama-b9190-bin-ubuntu-x64.tar.gz",
+        "published_repo": "unslothai/llama.cpp",
+        "binary_repo": "ggml-org/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {
+            "unslothai/llama.cpp": {"app-b9300-linux-x64-cuda13-newer.tar.gz": 1},
+            "ggml-org/llama.cpp": {
+                "llama-b9673-bin-ubuntu-x64.tar.gz": 42_000_000,
+                "llama-b9673-bin-ubuntu-vulkan-x64.tar.gz": 7,
+            },
+        },
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 42_000_000
+
+
+def test_update_size_upstream_windows_uses_binary_repo(monkeypatch):
+    # Regression (#6338 P2): the Windows upstream CPU prebuilt uses a win-* token.
+    marker = {
+        "asset": "llama-b9190-bin-win-cpu-x64.zip",
+        "published_repo": "unslothai/llama.cpp",
+        "binary_repo": "ggml-org/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {"ggml-org/llama.cpp": {"llama-b9673-bin-win-cpu-x64.zip": 33_000_000}},
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 33_000_000
+
+
+def test_update_size_no_matching_asset_fails_open(monkeypatch):
+    # A ROCm version drift (installed 6.4 vs latest 7.2) leaves no suffix match;
+    # the helper fails open to None rather than guessing a wrong artifact.
+    marker = {
+        "asset": "llama-b9190-bin-ubuntu-rocm-6.4-x64.tar.gz",
+        "published_repo": "unslothai/llama.cpp",
+        "binary_repo": "ggml-org/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {"ggml-org/llama.cpp": {"llama-b9673-bin-ubuntu-rocm-7.2-x64.tar.gz": 9}},
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") is None
+
+
+def test_update_size_missing_inputs_fail_open(monkeypatch):
+    _patch_assets(
+        monkeypatch,
+        {"unslothai/llama.cpp": {"app-b9300-linux-x64-cpu.tar.gz": 5}},
+    )
+    # No marker, no latest tag, or no asset string -> None (never raise).
+    assert fr.update_download_size_bytes(None, "b9300", "unslothai/llama.cpp") is None
+    assert (
+        fr.update_download_size_bytes(
+            {"asset": "app-b9190-linux-x64-cpu.tar.gz"}, None, "unslothai/llama.cpp"
+        )
+        is None
+    )
+    assert fr.update_download_size_bytes({"asset": None}, "b9300", "unslothai/llama.cpp") is None

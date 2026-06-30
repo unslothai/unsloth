@@ -284,3 +284,13 @@ class BrowseFoldersResponse(BaseModel):
             "they contain only files, no subdirectories)."
         ),
     )
+
+
+class ModelsFolderResponse(BaseModel):
+    """The directory where downloaded models are stored (the active HF hub
+    cache, honoring ``HF_HOME`` / ``HF_HUB_CACHE``)."""
+
+    path: str = Field(
+        ...,
+        description = "Path to the model download directory.",
+    )

@@ -65,9 +65,17 @@ pub async fn desktop_preflight(
     shutdown: tauri::State<'_, ShutdownFlag>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
+    let started = Instant::now();
     let (result, adopted_watchdog_generation) =
         crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
     diagnostics::record_preflight(&diagnostics, &result);
+
+    info!(
+        "desktop_preflight completed disposition={:?} port={:?} in {}ms",
+        result.disposition,
+        result.port,
+        started.elapsed().as_millis()
+    );
 
     if let Some((generation, newly_adopted)) = adopted_watchdog_generation {
         if newly_adopted {
@@ -205,8 +213,16 @@ pub async fn start_managed_server(
     port: u16,
 ) -> Result<(), String> {
     info!("start_managed_server command called with port {}", port);
+
+    let started = Instant::now();
     let diagnostics_state = diagnostics.inner().clone();
     let generation = process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)?;
+
+    info!(
+        "start_managed_server spawned generation={} in {}ms",
+        generation,
+        started.elapsed().as_millis()
+    );
 
     let watchdog_state = state.inner().clone();
     let watchdog_shutdown = shutdown.inner().clone();
@@ -321,17 +337,29 @@ pub fn get_server_logs(state: tauri::State<'_, BackendState>) -> Vec<String> {
     }
 }
 
-/// Open the Unsloth Studio directory in the system file manager.
-#[tauri::command]
-pub fn open_logs_dir() -> Result<(), String> {
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let dir = home.join(".unsloth").join("studio");
-
-    if !dir.exists() {
+/// Open an existing directory in the system file manager. Validates the path
+/// up front so callers get a clean error instead of a raw OS failure.
+fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
+    if !dir.is_dir() {
         return Err(format!("Directory does not exist: {}", dir.display()));
     }
+    open::that(dir).map_err(|e| format!("Failed to open directory: {}", e))
+}
 
-    open::that(&dir).map_err(|e| format!("Failed to open directory: {}", e))
+/// Open the Unsloth Studio directory in the system file manager.
+#[tauri::command]
+pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&window)?;
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    open_existing_dir(&home.join(".unsloth").join("studio"))
+}
+
+/// Open a models directory (resolved by the backend, e.g. the HF cache) in the
+/// system file manager.
+#[tauri::command]
+pub fn open_models_dir(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&window)?;
+    open_existing_dir(std::path::Path::new(&path))
 }
 
 /// Start the first-launch installation process.

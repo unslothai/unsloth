@@ -390,9 +390,20 @@ try:
     from unsloth_zoo.gradient_checkpointing import reset_unsloth_gradient_checkpointing_buffers
 except:
     def reset_unsloth_gradient_checkpointing_buffers(): pass
+# Canonical reset lives in unsloth.models._utils so the SFT auto-packing wrapper and the plain
+# Trainer loop can import the same helper; fall back to a no-op only if it can't be imported.
+try:
+    from unsloth.models._utils import _unsloth_reset_stray_compile_cache
+except Exception:
+    def _unsloth_reset_stray_compile_cache(self): pass
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Drop any torch.compile graph cache poisoned by a stray pre-train forward.
+        try:
+            _unsloth_reset_stray_compile_cache(self)
+        except Exception:
+            pass
         # Finish the previous W&B run if this is a subsequent train() call.
         # We do this at the START of train() (not the end) so that
         # evaluate() / log() still work after train() completes.
@@ -983,8 +994,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "use_fp16 = getattr(args, 'fp16', False)\n"
             "if type(use_fp16) is not bool: use_fp16 = False\n"
             "force_float32 = False\n"
+            # device-aware bf16 check (CUDA/XPU/HIP), so V100/T4 never pick bf16
+            # but AMD/Intel are unaffected; fall back on older unsloth_zoo.
+            "try:\n"
+            "    from unsloth_zoo.device_type import device_is_bf16_supported as _bf16_supported\n"
+            "except Exception:\n"
+            "    _bf16_supported = torch.cuda.is_bf16_supported\n"
+            # FORCE_FLOAT32 models (Gemma3, gpt_oss, ...) cannot use float16. On a GPU without
+            # bf16 (V100/T4) keep them in float32 so they never autocast to fp16. On a bf16 GPU,
+            # full finetuning can still use bf16 autocast (master weights stay float32), which is
+            # faster and uses less memory; LoRA/QLoRA keep float32 when forced.
             "full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            "if not full_finetuning and (os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'):\n"
+            "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1' and not (full_finetuning and _bf16_supported()):\n"
             "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
             "    force_float32 = True\n"
             "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
@@ -993,8 +1014,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "from unsloth_zoo.utils import _get_dtype\n"
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
+            "bfloat16 = dtype == torch.bfloat16\n"
             "if not force_float32 and (float16 and use_bf16): raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"
-            "if not force_float32 and (not float16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"
+            "if not force_float32 and (bfloat16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"
             "if force_float32:\n"
             "    # Forced float32 training\n"
             "    args.fp16 = False\n"
@@ -1003,11 +1025,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
-            "    # Mixed precision training\n"
-            "    args.fp16 = float16\n"
-            "    args.bf16 = not float16\n"
-            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
-            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'fp16' if float16 else 'bf16'\n"
+            "    # Mixed precision training. bf16 only if the GPU supports it; V100/T4 use fp16.\n"
+            "    use_bf16_amp = (not float16) and _bf16_supported()\n"
+            "    args.fp16 = not use_bf16_amp\n"
+            "    args.bf16 = use_bf16_amp\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'bf16' if use_bf16_amp else 'fp16'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'bf16' if use_bf16_amp else 'fp16'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif mixed_precision_dtype == 'bfloat16':\n"
             "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n"
@@ -1901,10 +1924,14 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
                 if trl_version >= Version("0.23.0"):
-                    # We need to set this flag for sleep mode auto working with trl update
+                    # Align TRL sleep mode with the engine's actual enable_sleep_mode
+                    # (the vision standby gate may have disabled it); fall back to the
+                    # standby env var when the engine cannot be introspected.
                     vllm_setter += (
                         " " * 12
-                        + "if os.environ.get('UNSLOTH_VLLM_STANDBY', '0') == '1':\n"
+                        + "_unsloth_esm = getattr(getattr(getattr(getattr(model.vllm_engine, 'llm_engine', None), 'vllm_config', None), 'model_config', None), 'enable_sleep_mode', None)\n"
+                        + " " * 12
+                        + "if (_unsloth_esm if _unsloth_esm is not None else os.environ.get('UNSLOTH_VLLM_STANDBY', '0') != '0'):\n"
                         + " " * 16
                         + "args.vllm_enable_sleep_mode=True\n"
                     )

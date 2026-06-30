@@ -1,14 +1,10 @@
-"""Guard for config.rope_scaling being silently dropped (issue #2405).
+"""Guard against config.rope_scaling being silently dropped (issue #2405):
+the replacement rotary classes ignored it on the config path, so Llama-3.1
+ran with unscaled RoPE and produced gibberish past ~32K tokens.
 
-Unsloth's replacement rotary classes ignored rope_scaling when constructed
-from a config (the modern-transformers path), so Llama-3.1 ran with unscaled
-RoPE and collapsed into gibberish past ~32K tokens.
-
-Layers: (1) AST tripwire, stdlib only; (2) CPU checks of the pure helper
-_compute_config_rope_inv_freq against transformers' ROPE_INIT_FUNCTIONS;
-(3) CUDA checks instantiating the real class (skipped without a real device,
-probed by allocating a tensor so import-time CUDA spoofs cannot fool the gate).
-Layers 2 and 3 fail on the unfixed code.
+Three layers: (1) AST tripwire; (2) CPU checks of the pure helper
+_compute_config_rope_inv_freq vs ROPE_INIT_FUNCTIONS; (3) CUDA checks on the
+real class (skipped without a real device). Layers 2-3 fail on the unfixed code.
 """
 
 import ast
@@ -165,7 +161,7 @@ def test_llama3_scaling_applied_to_inv_freq():
     expected = _reference_inv_freq(config, "llama3")
     vanilla = _vanilla_inv_freq()
 
-    # Guard against a vacuous test.
+    # Guard against a vacuous test: scaled inv_freq must differ from vanilla.
     assert not torch.allclose(
         expected, vanilla, rtol = 1e-4
     ), "test setup error: llama3-scaled inv_freq should differ from vanilla"

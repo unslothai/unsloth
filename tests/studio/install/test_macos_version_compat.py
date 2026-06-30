@@ -1,14 +1,4 @@
-"""Tests for the host-macOS-version-aware llama.cpp prebuilt selection added
-for the Mac "Failing CI" fix.
-
-Covers: parse_macos_version, host_supports_macos_minos, the pure-Python Mach-O
-minimum-OS parser (macho_minimum_macos), the dyld-incompatibility classifier,
-the install preflight that rejects a too-new prebuilt, and the deeper macOS
-release walk-back in resolve_simple_install_release_plans.
-
-No GPU, no network, no torch, no real Mach-O toolchain required -- the Mach-O
-samples are synthesized in-process and all I/O is monkeypatched.
-"""
+"""Host-macOS-version-aware llama.cpp prebuilt selection; Mach-O samples synthesized in-process, all I/O monkeypatched."""
 
 import importlib.util
 import struct
@@ -233,16 +223,13 @@ def _fake_macos_releases(tags):
 
 
 class TestMacosReleasePin:
-    """A known pre-26 macOS host deterministically pins the last upstream release
-    whose prebuilt loads on it (b9415) instead of walking back release by release;
-    macOS 26+ and unknown-version hosts keep normal latest selection with the
-    conservative 2-release default."""
+    """Pre-26 upstream macOS pins the last loadable ggml-org release."""
 
     TAGS = [f"b{n}" for n in range(9442, 9400, -1)]  # newest-first, includes b9415
 
     def _patch_releases(self, monkeypatch):
         def fake_iter(repo, published_release_tag, requested_tag):
-            # The real iterator yields only the requested tag when one is pinned.
+            # Real iterator yields only the requested tag when one is pinned.
             if requested_tag and requested_tag != "latest":
                 return _fake_macos_releases([requested_tag])
             return _fake_macos_releases(self.TAGS)
@@ -285,10 +272,7 @@ class TestMacosReleasePin:
 
 
 class TestForwardsBackwardsCompat:
-    """The gate is host >= prebuilt minos with no hardcoded version, so it holds
-    for older and future macOS alike. Emulate the walk-back over a release set
-    spanning several minos tiers and assert each host takes the newest release
-    it can load."""
+    """The gate is host >= prebuilt minos with no hardcoded version; each host takes the newest release it can load across a multi-tier release set."""
 
     # Newest first: future 27 builds, current 26 builds, an old 14 tier, a 13.
     RELEASES = [

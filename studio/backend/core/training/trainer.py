@@ -46,58 +46,8 @@ if hasattr(torch._dynamo.config, "recompile_limit"):
     torch._dynamo.config.recompile_limit = 64
 
 
-def _ensure_real_packages(*names: str) -> None:
-    """Stop `import <name>` from binding to a namespace-package shadow.
-
-    A directory named like the package but missing __init__.py on sys.path (a
-    stray checkout, a partial clone, or a polluted PYTHONPATH) makes the path
-    finder return a namespace package, so `from unsloth import FastLanguageModel`
-    dies with "cannot import name ... (unknown location)". A normal
-    site-packages install always wins, so only source/editable installs are
-    exposed. Drop the offending entries, import the real packages, then restore
-    sys.path so other modules on those entries keep importing.
-    """
-    import importlib
-    import importlib.util
-
-    bad: set = set()
-    shadowed: list = []
-    for name in names:
-        try:
-            spec = importlib.util.find_spec(name)
-        except (ImportError, ValueError, AttributeError):
-            spec = None
-        # a real package exposes its __init__ via spec.origin; a namespace
-        # shadow has origin None/"namespace" and only search locations
-        if spec is None or spec.origin not in (None, "namespace"):
-            continue
-        dirs = {os.path.realpath(d) for d in (spec.submodule_search_locations or [])}
-        if not dirs:
-            continue
-        shadowed.append(name)
-        for entry in sys.path:
-            pkg = os.path.join(entry or os.getcwd(), name)
-            if os.path.realpath(pkg) in dirs and not os.path.isfile(
-                os.path.join(pkg, "__init__.py")
-            ):
-                bad.add(entry)
-    if not bad:
-        return
-    saved = list(sys.path)
-    sys.path[:] = [e for e in sys.path if e not in bad]
-    for name in shadowed:
-        for cached in [m for m in list(sys.modules) if m == name or m.startswith(name + ".")]:
-            del sys.modules[cached]
-    try:
-        importlib.invalidate_caches()
-        # Import unsloth before unsloth_zoo (names are dependency-first):
-        # unsloth.__init__ runs ROCm/Windows bnb fixes before it imports zoo,
-        # so importing zoo first here would skip them. Repeat import is a no-op.
-        for name in reversed(names):
-            importlib.import_module(name)
-    finally:
-        sys.path[:] = saved
-
+# Drop any unsloth/unsloth_zoo namespace-package shadow before importing them.
+from core.import_guards import ensure_real_packages as _ensure_real_packages
 
 _ensure_real_packages("unsloth_zoo", "unsloth")
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
@@ -111,7 +61,7 @@ import structlog
 from loggers import get_logger
 import time
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Any, Dict, List, Optional, Callable
 from dataclasses import dataclass
 import pandas as pd
 from datasets import Dataset
@@ -122,7 +72,8 @@ from utils.models import is_vision_model, detect_audio_type
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
-from utils.datasets.raw_text import prepare_raw_text_dataset
+from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
+from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
     ensure_dir,
     resolve_dataset_path,
@@ -137,6 +88,11 @@ from utils.subprocess_compat import (
 )
 
 logger = get_logger(__name__)
+
+# A streaming eval dataset has no __len__, so a streaming evaluation would
+# iterate the entire (potentially unbounded) source on every eval step. Cap it
+# to a fixed sample count so each evaluation terminates predictably.
+STREAMING_EVAL_MAX_SAMPLES = 500
 
 
 def _build_report_targets(training_args) -> list[str] | str:
@@ -2231,6 +2187,9 @@ class UnslothTrainer:
         for dataset_file in file_paths:
             if os.path.isabs(dataset_file):
                 file_path = dataset_file
+            elif os.path.exists(dataset_file):
+                # A path relative to the current working directory (CLI usage)
+                file_path = os.path.abspath(dataset_file)
             else:
                 file_path = str(resolve_dataset_path(dataset_file))
 
@@ -2271,17 +2230,18 @@ class UnslothTrainer:
 
     def load_and_format_dataset(
         self,
-        dataset_source: str,
+        dataset_source: Optional[str],
         format_type: str = "auto",
-        local_datasets: list = None,
-        local_eval_datasets: list = None,
-        custom_format_mapping: dict = None,
-        subset: str = None,
+        local_datasets: Optional[List[str]] = None,
+        local_eval_datasets: Optional[List[str]] = None,
+        custom_format_mapping: Optional[Dict[str, Any]] = None,
+        subset: Optional[str] = None,
         train_split: str = "train",
-        eval_split: str = None,
+        eval_split: Optional[str] = None,
+        dataset_streaming: bool = False,
         eval_steps: float = 0.00,
-        dataset_slice_start: int = None,
-        dataset_slice_end: int = None,
+        dataset_slice_start: Optional[int] = None,
+        dataset_slice_end: Optional[int] = None,
         is_cpt: bool = False,
         s3_config: dict = None,
     ) -> Optional[tuple]:
@@ -2389,46 +2349,88 @@ class UnslothTrainer:
                 if subset:
                     load_kwargs["name"] = subset
 
-                _slice_start = dataset_slice_start or 0
-                if (
-                    dataset_slice_end is not None
-                    and dataset_slice_end >= 0
-                    and dataset_slice_end >= _slice_start
-                ):
-                    # Manual slice — stream only needed rows, not the whole dataset.
-                    rows_to_stream = dataset_slice_end + 1
+                if dataset_streaming:
+                    self._update_progress(status_message = f"Streaming dataset: {dataset_source}...")
+                    dataset = load_dataset(**load_kwargs, streaming = True)
+
+                    # Optional iterable slicing
+                    if dataset_slice_start is not None and dataset_slice_start > 0:
+                        dataset = dataset.skip(dataset_slice_start)
+
+                    if dataset_slice_end is not None:
+                        slice_start = dataset_slice_start or 0
+                        take_count = dataset_slice_end - slice_start + 1
+                        if take_count <= 0:
+                            raise ValueError(
+                                "Train Split End must be greater than or equal to Train Split Start."
+                            )
+                        dataset = dataset.take(take_count)
+                        # IterableDataset.take(N) yields *at most* N samples — if
+                        # the source is shorter, the user silently gets fewer rows.
+                        logger.warning(
+                            f"Streaming slice requested up to {take_count} rows "
+                            f"[{slice_start}, {dataset_slice_end}]; actual yield "
+                            f"may be smaller if the dataset has fewer rows."
+                        )
+                        if take_count == 1:
+                            # start == end is a valid slice but produces a single
+                            # training row, which is almost always user error.
+                            logger.warning(
+                                "Dataset slice resolves to a single row "
+                                f"(start == end == {slice_start}); training on 1 "
+                                "sample is likely unintended."
+                            )
+
                     logger.info(
-                        f"[dataset-slice] Manual slice specified "
-                        f"(start={dataset_slice_start}, end={dataset_slice_end}), "
-                        f"streaming {rows_to_stream} rows\n"
+                        f"Loaded Hugging Face dataset in streaming mode: {dataset_source}\n"
                     )
-                    stream = load_dataset(**load_kwargs, streaming = True)
-                    dataset = Dataset.from_list(list(stream.take(rows_to_stream)))
-                    logger.info(
-                        f"[dataset-slice] Downloaded {len(dataset)} rows "
-                        f"(requested {rows_to_stream})\n"
-                    )
-                    self._update_progress(
-                        status_message = f"Streamed {len(dataset)} rows from HuggingFace"
-                    )
+                    self._update_progress(status_message = f"Streaming {dataset_source}")
                 else:
-                    self._update_progress(
-                        status_message = f"Downloading dataset: {dataset_source}..."
-                    )
-                    dataset = load_dataset(**load_kwargs)
+                    # Non-streaming: if a slice end is given, stream only the needed
+                    # rows and materialize them (avoids downloading the whole dataset);
+                    # the eager [start, end] trim happens further below.
+                    _slice_start = dataset_slice_start or 0
+                    # streaming=True rejects HF slice syntax (e.g. "train[:50%]")
+                    # with "Bad split", so the streaming shortcut is unusable when
+                    # train_split already carries a slice expression, so fall back to
+                    # the regular download path, which handles HF slice syntax.
+                    _split_has_slice = (train_split or "").find("[") != -1
+                    if (
+                        not _split_has_slice
+                        and dataset_slice_end is not None
+                        and dataset_slice_end >= 0
+                        and dataset_slice_end >= _slice_start
+                    ):
+                        rows_to_stream = dataset_slice_end + 1
+                        logger.info(
+                            f"[dataset-slice] Manual slice specified "
+                            f"(start={dataset_slice_start}, end={dataset_slice_end}), "
+                            f"streaming {rows_to_stream} rows\n"
+                        )
+                        stream = load_dataset(**load_kwargs, streaming = True)
+                        dataset = Dataset.from_list(list(stream.take(rows_to_stream)))
+                        logger.info(
+                            f"[dataset-slice] Downloaded {len(dataset)} rows "
+                            f"(requested {rows_to_stream})\n"
+                        )
+                    else:
+                        self._update_progress(
+                            status_message = f"Downloading dataset: {dataset_source}..."
+                        )
+                        dataset = load_dataset(**load_kwargs)
+
+                        n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
+                        self._update_progress(
+                            status_message = f"Downloaded {dataset_source} ({n_rows:,} rows)"
+                        )
+                        logger.info(
+                            f"Loaded dataset from Hugging Face: {dataset_source} ({n_rows:,} rows)\n"
+                        )
 
                 # Check if stopped during dataset loading
                 if self.should_stop:
                     logger.info("Stopped during dataset loading\n")
                     return None
-
-                n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
-                self._update_progress(
-                    status_message = f"Downloaded {dataset_source} ({n_rows:,} rows)"
-                )
-                logger.info(
-                    f"Loaded dataset from Hugging Face: {dataset_source} ({n_rows:,} rows)\n"
-                )
 
                 # Resolve eval split from a separate HF split (explicit or auto)
                 if eval_enabled:
@@ -2439,17 +2441,69 @@ class UnslothTrainer:
                         eval_load_kwargs = {"path": dataset_source, "split": eval_split}
                         if subset:
                             eval_load_kwargs["name"] = subset
-                        eval_dataset = load_dataset(**eval_load_kwargs)
+
+                        if dataset_streaming:
+                            # Probe available splits before the streaming load.
+                            # load_dataset(streaming=True) returns an IterableDataset
+                            # without validating the split name — a typo would only
+                            # surface on the first eval batch mid-training.
+                            from datasets import get_dataset_split_names
+
+                            probe_kwargs = {"path": dataset_source}
+                            if subset:
+                                probe_kwargs["config_name"] = subset
+                            try:
+                                available_splits = get_dataset_split_names(**probe_kwargs)
+                            except Exception as probe_err:
+                                raise ValueError(
+                                    f"Could not list splits for '{dataset_source}' "
+                                    f"to validate eval_split='{eval_split}': {probe_err}"
+                                )
+                            # Streaming rejects HF slice syntax, and the request
+                            # validator already blocks bracketed streaming splits,
+                            # so eval_split here is always a bare split name.
+                            if eval_split not in available_splits:
+                                raise ValueError(
+                                    f"Requested eval split '{eval_split}' not found in "
+                                    f"dataset '{dataset_source}'. Available splits: "
+                                    f"{available_splits}"
+                                )
+                            eval_dataset = load_dataset(**eval_load_kwargs, streaming = True)
+                            # A streaming eval dataset has no __len__; bound it so
+                            # each evaluation terminates instead of consuming the
+                            # whole stream. .take() stays lazy and survives the
+                            # later format/raw-text .map() passes.
+                            if not hasattr(eval_dataset, "__len__"):
+                                eval_dataset = eval_dataset.take(STREAMING_EVAL_MAX_SAMPLES)
+                                logger.info(
+                                    f"Streaming eval split capped to "
+                                    f"{STREAMING_EVAL_MAX_SAMPLES} samples\n"
+                                )
+                        else:
+                            eval_dataset = load_dataset(**eval_load_kwargs)
+
                         has_separate_eval_source = True
-                        logger.info(
-                            f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n"
-                        )
+                        if hasattr(eval_dataset, "__len__"):
+                            logger.info(
+                                f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n"
+                            )
+                        else:
+                            logger.info(f"Loaded eval split '{eval_split}' in streaming mode\n")
                     elif eval_split and eval_split == effective_train:
+                        if dataset_streaming:
+                            raise ValueError(
+                                "Streaming mode does not support using the same split for both train and eval. "
+                                "Please provide a separate eval split or set eval_steps to 0."
+                            )
                         # Same split as training — split 80/20 after formatting
                         logger.info(
                             f"Eval split '{eval_split}' is the same as train split — will split 80/20\n"
                         )
                     else:
+                        if dataset_streaming:
+                            raise ValueError(
+                                "Streaming mode currently requires an explicit eval split when evaluation is enabled."
+                            )
                         # Auto-detect eval split from HF (separate dataset or None)
                         eval_dataset = self._auto_detect_eval_split_from_hf(
                             dataset_source = dataset_source,
@@ -2463,8 +2517,12 @@ class UnslothTrainer:
             if dataset is None:
                 raise ValueError("No dataset provided")
 
-            # Apply index range slicing if requested (inclusive both ends)
-            if dataset_slice_start is not None or dataset_slice_end is not None:
+            # Apply eager-only index range slicing if requested (inclusive on both ends).
+            # Streaming already sliced lazily via skip()/take() above; the non-streaming
+            # manual-slice path fetched up to end+1 rows and is trimmed to [start, end] here.
+            if (not dataset_streaming) and (
+                dataset_slice_start is not None or dataset_slice_end is not None
+            ):
                 total_rows = len(dataset)
                 start = dataset_slice_start if dataset_slice_start is not None else 0
                 end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
@@ -2527,11 +2585,19 @@ class UnslothTrainer:
                 }
 
                 if has_separate_eval_source and eval_dataset is not None:
+                    eval_rows = (
+                        f"{len(eval_dataset):,} rows"
+                        if hasattr(eval_dataset, "__len__")
+                        else "streaming"
+                    )
                     logger.info(
                         f"{_raw_mode_label().capitalize()}: eval dataset "
-                        f"({len(eval_dataset)} rows) kept as raw text\n"
+                        f"({eval_rows}) kept as raw text\n"
                     )
-                elif eval_enabled and not has_separate_eval_source:
+                elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
+                    # _resolve_eval_split_from_dataset does a train_test_split (needs
+                    # len/random access). Streaming always provides a separate eval
+                    # split (route-enforced), so this auto-split is non-streaming only.
                     split_result = self._resolve_eval_split_from_dataset(dataset)
                     if split_result is not None:
                         train_portion, eval_dataset = split_result
@@ -2545,10 +2611,12 @@ class UnslothTrainer:
                 )
                 logger.info(f"Raw-text dataset ready ({n_display} samples)\n")
 
-                if "text" not in train_dataset.column_names:
-                    raise ValueError(
-                        f"Raw-text dataset missing 'text' column: {train_dataset.column_names}"
-                    )
+                # Streaming datasets can report column_names as None, which would
+                # make "text" not in None raise TypeError; resolve_column_names
+                # falls back to features/first-row probing.
+                train_columns = resolve_column_names(train_dataset)
+                if "text" not in train_columns:
+                    raise ValueError(f"Raw-text dataset missing 'text' column: {train_columns}")
                 return (dataset_info, eval_dataset)
 
             elif self.is_audio_vlm:
@@ -2587,13 +2655,16 @@ class UnslothTrainer:
             final_n = len(final_ds) if hasattr(final_ds, "__len__") else "?"
             self._update_progress(
                 status_message = f"Dataset ready ({final_n:,} samples, {detected} format)"
+                if isinstance(final_n, int)
+                else f"Dataset ready ({final_n} samples, {detected} format)"
             )
             logger.info(f"Dataset formatted successfully ({final_n} samples, {detected})\n")
 
             # ========== THEN SPLIT ==========
             if has_separate_eval_source and eval_dataset is not None:
                 # Eval came from a separate HF split — format it too
-                logger.info(f"Formatting eval dataset ({len(eval_dataset)} rows)...\n")
+                eval_n = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
+                logger.info(f"Formatting eval dataset ({eval_n} rows)...\n")
                 eval_info = format_and_template_dataset(
                     eval_dataset,
                     model_name = self.model_name,
@@ -2604,8 +2675,8 @@ class UnslothTrainer:
                     custom_format_mapping = custom_format_mapping,
                 )
                 eval_dataset = eval_info["dataset"]
-                logger.info(f"Eval dataset formatted successfully\n")
-            elif eval_enabled and not has_separate_eval_source:
+                logger.info("Eval dataset formatted successfully\n")
+            elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
                 # No separate eval source — split the already-formatted dataset
                 formatted_dataset = dataset_info["dataset"]
                 split_result = self._resolve_eval_split_from_dataset(formatted_dataset)
@@ -2778,8 +2849,87 @@ class UnslothTrainer:
             logger.error(f"Failed to start training thread: {e}")
             return False
 
-    def _train_worker(self, dataset: Dataset, **training_args):
-        """Worker function for training (runs in separate thread)"""
+    def _chat_template_renders_empty(self) -> bool:
+        """True when the chat template renders a sample to empty text (base-model signature)."""
+        try:
+            ds = getattr(self.trainer, "train_dataset", None)
+            if ds is None or len(ds) == 0:
+                return False
+            row = ds[0]
+            messages = row.get("messages") if isinstance(row, dict) else None
+            if not messages:
+                return False
+            tok = self.tokenizer
+            if not hasattr(tok, "apply_chat_template"):
+                return False
+            rendered = tok.apply_chat_template(
+                messages, tokenize = False, add_generation_prompt = False
+            )
+            return not (isinstance(rendered, str) and rendered.strip())
+        except Exception:
+            return False
+
+    def _preflight_first_batch(self) -> Optional[str]:
+        """Validate the first real batch before train(). A base model whose chat
+        template renders empty yields empty float32 input_ids that crash the
+        embedding on step 1; catch it here. Returns None for a valid batch."""
+        try:
+            loader = self.trainer.get_train_dataloader()
+            batch = next(iter(loader))
+        except StopIteration:
+            return (
+                "Cannot start training: the dataset produced no training rows. "
+                "This usually means a split/slice or streaming filter removed every "
+                "row. Check your train split, slice range, and dataset filters."
+            )
+        except Exception as e:
+            model = self.model_name or "this model"
+            return (
+                f"Cannot start training: failed to build the first training batch "
+                f"for '{model}': {e}"
+            )
+
+        try:
+            input_ids = batch["input_ids"] if "input_ids" in batch else None
+        except Exception:
+            input_ids = getattr(batch, "input_ids", None)
+        if input_ids is None:
+            return None  # some collators omit input_ids
+
+        seq_len = input_ids.shape[-1] if input_ids.ndim > 0 else 0
+        if not (input_ids.is_floating_point() or input_ids.numel() == 0 or seq_len == 0):
+            return None
+
+        model = self.model_name or "this model"
+        if self._chat_template_renders_empty():
+            low = model.lower()
+            suffix = (
+                f" such as '{model}-Instruct'"
+                if not any(t in low for t in ("instruct", "chat", "-it", "_it"))
+                else ""
+            )
+            return (
+                f"Cannot start training: the chat template for '{model}' produced "
+                f"no text for your dataset, so the first batch had empty token IDs. "
+                f"'{model}' looks like a base (pretrained) model without a chat "
+                f"template suited to conversational fine-tuning. Use the "
+                f"instruction-tuned variant{suffix} or provide a chat template."
+            )
+        return (
+            f"Cannot start training: the first batch produced invalid token IDs "
+            f"(dtype={input_ids.dtype}, length={seq_len}). Check that your dataset "
+            f"columns are mapped correctly for '{model}'."
+        )
+
+    def _train_worker(self, dataset: Dataset | dict, **training_args):
+        """Worker function for training (runs in separate thread).
+
+        ``dataset`` is either a raw ``datasets.Dataset`` (audio preprocessing
+        paths such as CSM / Whisper / SNAC / Audio-VLM) or a ``dict`` wrapper
+        returned by ``format_and_template_dataset`` (text and image VLM paths).
+        Streaming HF datasets arrive wrapped in the latter ``dict`` — they are
+        never passed as a bare ``IterableDataset``.
+        """
         try:
             # On spawn platforms, register compiled-cache dirs on sys.path/PYTHONPATH
             # before any dataset.map() so spawned workers can import compiled
@@ -3108,7 +3258,7 @@ class UnslothTrainer:
             else:
                 # Default if neither provided
                 config_args["warmup_steps"] = 5
-                logger.info(f"Using default warmup_steps: 5\n")
+                logger.info("Using default warmup_steps: 5\n")
 
             # Add save_steps if specified
             save_steps_val = training_args.get("save_steps", 0)
@@ -3116,7 +3266,7 @@ class UnslothTrainer:
                 config_args["save_steps"] = save_steps_val
                 config_args["save_strategy"] = "steps"
 
-            #  If max_steps is specified, use it instead of epochs
+            # If max_steps is specified, use it instead of epochs
             max_steps_val = training_args.get("max_steps", 0)
             if max_steps_val and max_steps_val > 0:
                 del config_args["num_train_epochs"]
@@ -3138,7 +3288,10 @@ class UnslothTrainer:
                     logger.info(
                         f"✅ Evaluation enabled: eval_steps={eval_steps_val} (fraction of total steps)\n"
                     )
-                    logger.info(f"Eval dataset: {len(eval_dataset)} rows\n")
+                    if hasattr(eval_dataset, "__len__"):
+                        logger.info(f"Eval dataset: {len(eval_dataset)} rows\n")
+                    else:
+                        logger.info("Eval dataset is streaming / length unknown\n")
                 else:
                     logger.info(
                         f"⚠️  Eval dataset provided but eval_steps={eval_steps_val} (disabled)\n"
@@ -3192,6 +3345,12 @@ class UnslothTrainer:
                 # Packing for text models only (DeepSeek OCR is VLM)
                 if not is_deepseek_ocr:
                     packing_enabled = training_args.get("packing", False)
+                    if packing_enabled and training_args.get("dataset_streaming", False):
+                        logger.warning(
+                            "Sequence packing is enabled with dataset streaming: "
+                            "max_steps governs training length and packed-sample "
+                            "counts are approximate since the stream length is unknown.\n"
+                        )
                     config_args["packing"] = packing_enabled
                     logger.info(
                         f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n"
@@ -3210,10 +3369,10 @@ class UnslothTrainer:
             logger.info("Training configuration prepared\n")
             # ========== TRAINER INITIALIZATION ==========
             if self.is_audio_vlm and not raw_text_mode:
-                # Audio VLM (e.g. Gemma 3N): raw Dataset from
-                # _format_audio_vlm_dataset, processing_class=processor.tokenizer.
-                # Raw-text runs go to the text path below.
-                train_dataset = dataset if isinstance(dataset, Dataset) else dataset["dataset"]
+                # Audio VLM (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset
+                # Notebook uses processing_class=processor.tokenizer (text tokenizer only)
+                # Raw-text runs are routed to the text path below.
+                train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset
                 processing_class = (
                     self.tokenizer.tokenizer
                     if hasattr(self.tokenizer, "tokenizer")
@@ -3254,9 +3413,7 @@ class UnslothTrainer:
                 if isinstance(self.tokenizer, ProcessorMixin) and hasattr(
                     self.tokenizer, "tokenizer"
                 ):
-                    logger.info(
-                        f"  ⚠️ Unwrapping Processor → raw tokenizer for text-only SFTTrainer"
-                    )
+                    logger.info("Unwrapping Processor → raw tokenizer for text-only SFTTrainer")
                     sft_tokenizer = self.tokenizer.tokenizer
 
                 if is_cpt:
@@ -3384,58 +3541,52 @@ class UnslothTrainer:
                     )
                     logger.info("Train on responses only configured successfully\n")
 
-                    # Safety net: train_on_responses_only masks non-response
-                    # tokens with -100. If max_seq_length is too short, the
-                    # response is truncated away, every sample becomes all -100,
-                    # and Unsloth drops them, leaving 0 usable samples.
-                    filtered_len = len(self.trainer.train_dataset)
-                    original_len = len(dataset["dataset"])
-                    dropped = original_len - filtered_len
-                    drop_pct = round(100 * dropped / original_len, 1) if original_len > 0 else 0
-
-                    if filtered_len == 0 or drop_pct > 30:
-                        max_seq = training_args.get("max_seq_length", 2048)
-                        error_msg = (
-                            f"{dropped}/{original_len} samples ({drop_pct}%) "
-                            f"were dropped after applying 'train on responses "
-                            f"only' — only {filtered_len} remain. This usually "
-                            f"means max_seq_length ({max_seq}) is too short "
-                            f"and the response portion is being truncated "
-                            f"away. Try increasing max_seq_length (e.g. 8192) "
-                            f"or disabling 'Train on completions'."
+                    # ── Safety net: check if all samples were filtered out ──
+                    # train_on_responses_only masks non-response tokens with -100;
+                    # a row becomes all -100 (and Unsloth drops it) when the response
+                    # template is not found in the formatted text. That is usually a
+                    # dataset/template mismatch (already-formatted data, or 'Train on
+                    # completions' applied to data that doesn't match the model's chat
+                    # template), and only sometimes max_seq_length truncating the
+                    # response away. Skip this len()-based check for streaming.
+                    if detect_streaming_dataset(self.trainer.train_dataset):
+                        logger.info("Skipping post-filter length check for streaming dataset\n")
+                    else:
+                        filtered_len = len(self.trainer.train_dataset)
+                        original_dataset_obj = (
+                            dataset["dataset"] if isinstance(dataset, dict) else dataset
                         )
-                        logger.error(error_msg)
-                        self._update_progress(error = error_msg, is_training = False)
-                        return
+                        original_len = len(original_dataset_obj)
+                        dropped = original_len - filtered_len
+                        drop_pct = round(100 * dropped / original_len, 1) if original_len > 0 else 0
 
-                    if dropped > 0:
-                        logger.info(
-                            f"⚠️ {dropped}/{original_len} samples "
-                            f"({drop_pct}%) were dropped (all labels "
-                            f"masked). {filtered_len} samples remain.\n"
-                        )
-                    logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
+                        if filtered_len == 0 or drop_pct > 30:
+                            max_seq = training_args.get("max_seq_length", 2048)
+                            error_msg = (
+                                f"{dropped}/{original_len} samples ({drop_pct}%) were "
+                                f"dropped after applying 'Train on completions': after "
+                                f"masking, those rows had no trainable response tokens "
+                                f"left. The usual cause is that this model's response "
+                                f"template was not found in the formatted samples, so "
+                                f"every token was masked out. That typically means the "
+                                f"dataset is already formatted, or its structure does "
+                                f"not match the model's chat template, so 'Train on "
+                                f"completions' should be turned off for this dataset. "
+                                f"Less commonly, a max_seq_length ({max_seq}) shorter "
+                                f"than the prompt can truncate the response away; only "
+                                f"raise it if your samples are actually longer than that."
+                            )
+                            logger.error(error_msg)
+                            self._update_progress(error = error_msg, is_training = False)
+                            return
 
-                    # [DEBUG] Decode first sample AFTER train_on_completions applied
-                    # try:
-                    #     _row = self.trainer.train_dataset[0]
-                    #     _space = self.tokenizer(
-                    #         " ", add_special_tokens = False
-                    #     ).input_ids[0]
-                    #     print("[DEBUG] === After train_on_completions ===", flush = True)
-                    #     print(
-                    #         f"[DEBUG] input_ids decoded:\n{self.tokenizer.decode(_row['input_ids'])}\n",
-                    #         flush = True,
-                    #     )
-                    #     print(
-                    #         f"[DEBUG] labels decoded (-100 → space):\n{self.tokenizer.decode([_space if x == -100 else x for x in _row['labels']])}\n",
-                    #         flush = True,
-                    #     )
-                    # except Exception as _dbg_e:
-                    #     print(
-                    #         f"[DEBUG] Could not decode post-completions sample: {_dbg_e}",
-                    #         flush = True,
-                    #     )
+                        if dropped > 0:
+                            logger.info(
+                                f"⚠️ {dropped}/{original_len} samples "
+                                f"({drop_pct}%) were dropped (all labels "
+                                f"masked). {filtered_len} samples remain.\n"
+                            )
+                        logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
 
                 except Exception as e:
                     logger.warning(f"Failed to apply train on responses only: {e}")
@@ -3449,28 +3600,49 @@ class UnslothTrainer:
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
 
-            num_samples = None
-            if hasattr(self.trainer, "train_dataset") and self.trainer.train_dataset is not None:
-                try:
-                    num_samples = len(self.trainer.train_dataset)
-                except TypeError:
-                    logger.debug(
-                        "train_dataset does not support len(); falling back to "
-                        "raw dataset size for step estimation."
-                    )
+            train_dataset_obj = dataset["dataset"] if isinstance(dataset, dict) else dataset
+            is_streaming_dataset = detect_streaming_dataset(train_dataset_obj)
 
-            if num_samples is None:
-                num_samples = len(dataset["dataset"] if isinstance(dataset, dict) else dataset)
+            max_steps_value = training_args.get("max_steps")
+            max_steps = 0 if max_steps_value is None else int(max_steps_value)
 
-            batch_size = training_args.get("batch_size", 2)
-            total_steps = self._calculate_total_steps(
-                num_samples,
-                batch_size,
-                training_args.get("gradient_accumulation_steps", 4),
-                training_args.get("num_epochs", 3),
-                training_args.get("max_steps", 0),
-            )
+            if is_streaming_dataset and max_steps <= 0:
+                raise ValueError(
+                    "Streaming mode requires max_steps > 0 because the training dataset has no length."
+                )
+
+            if is_streaming_dataset:
+                total_steps = max_steps
+            else:
+                # Prefer the trainer's processed dataset length (post
+                # train-on-responses filtering); fall back to the raw dataset
+                # if it has no len().
+                num_samples = None
+                if getattr(self.trainer, "train_dataset", None) is not None:
+                    try:
+                        num_samples = len(self.trainer.train_dataset)
+                    except TypeError:
+                        num_samples = None
+                if num_samples is None:
+                    num_samples = len(train_dataset_obj)
+                batch_size = training_args.get("batch_size", 2)
+                total_steps = self._calculate_total_steps(
+                    num_samples,
+                    batch_size,
+                    training_args.get("gradient_accumulation_steps", 4),
+                    training_args.get("num_epochs", 3),
+                    max_steps,
+                )
+
+            self._update_progress(total_steps = total_steps)
             # ========== START TRAINING ==========
+            # Fail fast on an invalid first batch (empty/float input_ids) vs a step-1 crash.
+            preflight_error = self._preflight_first_batch()
+            if preflight_error:
+                logger.error(preflight_error)
+                self._update_progress(error = preflight_error, is_training = False)
+                return
+
             self._update_progress(total_steps = total_steps, status_message = "Starting training...")
             logger.info("Starting training...\n")
             self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))

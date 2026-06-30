@@ -15,29 +15,43 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
+import { openModelsDir } from "@/features/native-intents";
+import { emitTrainingRunsChanged } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
+import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { Check, Eye, EyeOff } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import {
+  type HelperPrecacheSettings,
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
-  type HelperPrecacheSettings,
 } from "../api/helper-precache";
+import { type ModelsFolder, loadModelsFolder } from "../api/models-folder";
+import {
+  type PreviewSharingSettings,
+  loadPreviewSharing,
+  rotatePreviewLinks,
+  updatePreviewSharing,
+} from "../api/preview-sharing";
 import {
   DEFAULT_UPLOAD_LIMIT_MB,
+  type UploadLimitSettings,
   loadUploadLimitSettings,
   updateUploadLimitSettings,
-  type UploadLimitSettings,
 } from "../api/upload-limit";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
-import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Keys cleared by "Reset all local preferences".
 // NEVER include auth/session keys here — clearing them would log the user out
@@ -61,6 +75,11 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
   "unsloth_chat_preferences",
+  "unsloth_load_settings",
+  // Model selector settings ("Select model settings" group)
+  "unsloth_chat_load_on_selection",
+  "unsloth_chat_expand_quantizations",
+  "unsloth_chat_show_all_quantizations",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
@@ -103,7 +122,7 @@ export function GeneralTab() {
       pathname: s.location.pathname,
       search:
         "searchStr" in s.location
-          ? (s.location as { searchStr?: string }).searchStr ?? ""
+          ? ((s.location as { searchStr?: string }).searchStr ?? "")
           : typeof window !== "undefined"
             ? window.location.search
             : "",
@@ -134,6 +153,15 @@ export function GeneralTab() {
     null,
   );
   const [isSavingHelperPrecache, setIsSavingHelperPrecache] = useState(false);
+  const [previewSharing, setPreviewSharing] =
+    useState<PreviewSharingSettings | null>(null);
+  const [previewSharingError, setPreviewSharingError] = useState<string | null>(
+    null,
+  );
+  const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
+  const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
+  const [isRevokingPreview, setIsRevokingPreview] = useState(false);
+  const [modelsFolder, setModelsFolder] = useState<ModelsFolder | null>(null);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -159,6 +187,12 @@ export function GeneralTab() {
     if (trimmed !== hfToken) setHfToken(trimmed);
   };
 
+  // Show an "accepted" tick once a non-empty token has been committed to the
+  // store and the field still matches it (i.e. not mid-edit). Gives the user
+  // feedback that a pasted token was saved.
+  const tokenSaved =
+    draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
+
   useEffect(() => {
     let cancelled = false;
     void loadUploadLimitSettings()
@@ -170,7 +204,9 @@ export function GeneralTab() {
       .catch((error) => {
         if (cancelled) return;
         setUploadLimitError(
-          error instanceof Error ? error.message : "Failed to load upload limit.",
+          error instanceof Error
+            ? error.message
+            : "Failed to load upload limit.",
         );
       });
     return () => {
@@ -199,6 +235,64 @@ export function GeneralTab() {
     };
   }, [t]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void loadPreviewSharing()
+      .then((settings) => {
+        if (cancelled) return;
+        setPreviewSharing(settings);
+        setPreviewSharingError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setPreviewSharingError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.previewSharing.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadModelsFolder()
+      .then((folder) => {
+        if (cancelled) return;
+        setModelsFolder(folder);
+      })
+      .catch(() => {
+        // Non-critical: leave the row hidden if the path can't be resolved.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Desktop opens the folder in the OS file manager; the browser can't, so it
+  // falls back to copying the path (which is the info users actually want).
+  const handleModelsFolder = async () => {
+    const folder = modelsFolder;
+    if (!folder) return;
+    if (isTauri) {
+      try {
+        await openModelsDir(folder.path);
+      } catch (error) {
+        toast.error(t("settings.general.storage.openError"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+      return;
+    }
+    if (await copyToClipboard(folder.path)) {
+      toast.success(t("settings.general.storage.copied"));
+    } else {
+      toast.error(t("settings.general.storage.copyError"));
+    }
+  };
+
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
     setHelperPrecacheError(null);
@@ -213,6 +307,44 @@ export function GeneralTab() {
       );
     } finally {
       setIsSavingHelperPrecache(false);
+    }
+  };
+
+  const savePreviewSharing = async (enabled: boolean) => {
+    setIsSavingPreviewSharing(true);
+    setPreviewSharingError(null);
+    try {
+      const settings = await updatePreviewSharing(enabled);
+      setPreviewSharing(settings);
+      // Toggling sharing changes whether /api/train/runs returns preview_sig, so
+      // refresh the history grid (hide/show the Copy preview link buttons).
+      emitTrainingRunsChanged();
+    } catch (error) {
+      setPreviewSharingError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.previewSharing.saveError"),
+      );
+    } finally {
+      setIsSavingPreviewSharing(false);
+    }
+  };
+
+  const revokePreviewLinks = async () => {
+    setIsRevokingPreview(true);
+    try {
+      await rotatePreviewLinks();
+      // The secret rotated, so any preview_sig the history grid still holds is
+      // now stale. Refresh so copied links use freshly minted signatures.
+      emitTrainingRunsChanged();
+      setRevokePreviewOpen(false);
+      toast.success(t("settings.general.previewSharing.revoked"));
+    } catch (error) {
+      toast.error(t("settings.general.previewSharing.revokeError"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIsRevokingPreview(false);
     }
   };
 
@@ -268,8 +400,22 @@ export function GeneralTab() {
               value={draftToken}
               onChange={(e) => setDraftToken(e.target.value)}
               onBlur={commitToken}
-              className="h-8 w-full pr-8 font-mono text-xs"
+              className={cn(
+                "h-8 w-full font-mono text-xs",
+                tokenSaved ? "pr-14" : "pr-8",
+              )}
             />
+            {tokenSaved ? (
+              // Decorative: pointer-events-none lets clicks reach the input
+              // underneath so the field still focuses anywhere.
+              <span
+                className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
+                role="img"
+                aria-label={t("settings.general.tokenSaved")}
+              >
+                <Check className="size-4" strokeWidth={2.5} />
+              </span>
+            ) : null}
             <button
               type="button"
               onClick={() => setShowToken((s) => !s)}
@@ -281,11 +427,53 @@ export function GeneralTab() {
               }
               tabIndex={-1}
             >
-              {showToken ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+              {showToken ? (
+                <EyeOff className="size-3.5" />
+              ) : (
+                <Eye className="size-3.5" />
+              )}
             </button>
           </div>
         </SettingsRow>
+        {/* The desktop app authenticates via desktop auto-auth with a generated
+            secret, so there is no user-entered password to change here (and
+            changing it would clear the desktop secret). Web only. */}
+        {isTauri ? null : (
+          <SettingsRow
+            label={t("settings.general.password")}
+            description={t("settings.general.passwordDescription")}
+          >
+            <ChangePasswordDialog />
+          </SettingsRow>
+        )}
       </SettingsSection>
+
+      {modelsFolder ? (
+        <SettingsSection title={t("settings.general.storage.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.storage.modelsFolder")}
+            description={t("settings.general.storage.modelsFolderDescription")}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                title={modelsFolder.path}
+                className="max-w-[280px] truncate font-mono text-xs text-muted-foreground"
+              >
+                {modelsFolder.path}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleModelsFolder()}
+              >
+                {isTauri
+                  ? t("settings.general.storage.openAction")
+                  : t("settings.general.storage.copyAction")}
+              </Button>
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
@@ -296,7 +484,19 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <StudioVersionSection />
+      <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLlamaUpdates")}
+          description={t(
+            "settings.general.notifications.showLlamaUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showLlamaUpdates}
+            onCheckedChange={setShowLlamaUpdateBanner}
+          />
+        </SettingsRow>
+      </SettingsSection>
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow
@@ -328,17 +528,39 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+      <SettingsSection
+        title={t("settings.general.previewSharing.sectionTitle")}
+      >
         <SettingsRow
-          label={t("settings.general.notifications.showLlamaUpdates")}
-          description={t(
-            "settings.general.notifications.showLlamaUpdatesDescription",
-          )}
+          label={t("settings.general.previewSharing.enableLabel")}
+          description={t("settings.general.previewSharing.enableDescription")}
         >
-          <Switch
-            checked={showLlamaUpdates}
-            onCheckedChange={setShowLlamaUpdateBanner}
-          />
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              checked={previewSharing?.enabled ?? false}
+              disabled={!previewSharing || isSavingPreviewSharing}
+              onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
+            />
+            {previewSharingError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {previewSharingError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          destructive={true}
+          label={t("settings.general.previewSharing.revokeLabel")}
+          description={t("settings.general.previewSharing.revokeDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRevokePreviewOpen(true)}
+            className="text-destructive hover:text-destructive hover:border-destructive/60"
+          >
+            {t("settings.general.previewSharing.revokeAction")}
+          </Button>
         </SettingsRow>
       </SettingsSection>
 
@@ -374,9 +596,7 @@ export function GeneralTab() {
                 disabled={isSavingUploadLimit}
                 onClick={() => void saveUploadLimit()}
               >
-                {isSavingUploadLimit
-                  ? t("common.saving")
-                  : t("common.save")}
+                {isSavingUploadLimit ? t("common.saving") : t("common.save")}
               </Button>
             </div>
             {uploadLimitError ? (
@@ -409,9 +629,11 @@ export function GeneralTab() {
         </SettingsSection>
       )}
 
-      <SettingsSection title={t("settings.general.resetPreferences.sectionTitle")}>
+      <SettingsSection
+        title={t("settings.general.resetPreferences.sectionTitle")}
+      >
         <SettingsRow
-          destructive
+          destructive={true}
           label={t("settings.general.resetPreferences.label")}
           description={t("settings.general.resetPreferences.description")}
         >
@@ -445,6 +667,36 @@ export function GeneralTab() {
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {t("settings.general.resetPreferences.confirmAction")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={revokePreviewOpen} onOpenChange={setRevokePreviewOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {t("settings.general.previewSharing.revokeConfirmTitle")}
+            </DialogTitle>
+            <DialogDescription>
+              {t("settings.general.previewSharing.revokeConfirmDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRevokePreviewOpen(false)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              onClick={() => void revokePreviewLinks()}
+              disabled={isRevokingPreview}
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+            >
+              {isRevokingPreview
+                ? t("settings.general.previewSharing.revoking")
+                : t("settings.general.previewSharing.revokeConfirmAction")}
             </Button>
           </DialogFooter>
         </DialogContent>

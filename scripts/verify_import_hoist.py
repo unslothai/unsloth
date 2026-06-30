@@ -581,9 +581,16 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             )
 
     # 3. TARGET-CHANGED (same scope+name resolves to a different import target)
+    #    Only a *swap* is dangerous: a BEFORE target that is no longer reachable in
+    #    AFTER means a reference was silently re-pointed. A pure superset growth
+    #    (tbefore <= tafter) is the benign `import pkg.subA` + `import pkg.subB`
+    #    case: both statements bind the same top-level name `pkg` to the same
+    #    package object and only *add* submodule attributes (e.g. adding
+    #    `import urllib.error` next to `import urllib.request`). Nothing the name
+    #    resolved to before is lost, so no reference is re-pointed -- skip it.
     for key, tafter in b["target_by_use"].items():
         tbefore = a["target_by_use"].get(key)
-        if tbefore and tbefore != tafter:
+        if tbefore and tbefore != tafter and (tbefore - tafter):
             findings.append(
                 (
                     "BLOCKER",

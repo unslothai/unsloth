@@ -412,7 +412,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@uipath/functions-tool": {"1.0.1"},
     "@uipath/access-policy-sdk": {"0.3.1"},
     "@uipath/platform-tool": {"1.0.1"},
-    # Mini Shai-Hulud May-12 wave: @mistralai/* (npm) — separate from PyPI mistralai
+    # Mini Shai-Hulud May-12 wave: @mistralai/* (npm), separate from PyPI mistralai
     # (https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
     "@mistralai/mistralai": {"2.2.2", "2.2.3", "2.2.4"},
     "@mistralai/mistralai-gcp": {"1.7.1", "1.7.2", "1.7.3"},
@@ -916,6 +916,204 @@ def _evidence(
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Code-only scanning for JS/TS sources. Blank `//` and `/* */` comments
+# before matching (the top FP source: scary strings in JSDoc/changelog
+# comments), tracking string/template/regex context so a `//` inside
+# "http://..." is not mistaken for a comment. Strings are NOT blanked
+# (droppers hide payloads there). Fail open on lexer confusion: the raw
+# text is still scanned. JS sibling of scan_packages.py::_strip_noncode.
+# ─────────────────────────────────────────────────────────────────────
+_JS_FAMILY_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
+
+# Keywords after which a `/` begins a regex literal (not division).
+_REGEX_PRECEDING_KEYWORDS = frozenset(
+    {
+        "return",
+        "typeof",
+        "instanceof",
+        "in",
+        "of",
+        "new",
+        "delete",
+        "void",
+        "throw",
+        "yield",
+        "await",
+        "do",
+        "else",
+        "case",
+    }
+)
+_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+
+
+def _slash_is_regex(prev_tok: str) -> bool:
+    """Disambiguate a lone ``/``: regex literal vs division operator.
+
+    Biased toward regex when ambiguous -- regex state never blanks, so a
+    wrong guess only costs FP reduction (or a fail-open), never a missed
+    detection.
+    """
+    if prev_tok == "":
+        return True  # start of file -> expression position
+    if prev_tok in _REGEX_PRECEDING_KEYWORDS:
+        return True
+    last = prev_tok[-1]
+    if last.isalnum() or last in "_$)]":
+        return False  # previous token ends a value -> division
+    return True  # operators, punctuation, `{`, `}` -> regex (safe bias)
+
+
+def _strip_js_noncode(text: str) -> str:
+    """Blank JS/TS comments, preserving byte geometry. Fail-open on confusion."""
+    if "//" not in text and "/*" not in text:
+        return text  # nothing to strip
+    n = len(text)
+    out = list(text)
+    nl = ("\n", "\r")
+
+    def _blank(a: int, b: int) -> None:
+        for k in range(a, b):
+            if out[k] not in nl:
+                out[k] = " "
+
+    state = "code"
+    prev_tok = ""
+    tmpl_stack: list[str] = []
+    i = 0
+    try:
+        while i < n:
+            c = text[i]
+            nxt = text[i + 1] if i + 1 < n else ""
+            if state == "code":
+                if c == "/" and nxt == "/":
+                    start = i
+                    i += 2
+                    while i < n and text[i] not in nl:
+                        i += 1
+                    _blank(start, i)
+                    continue
+                if c == "/" and nxt == "*":
+                    start = i
+                    i += 2
+                    closed = False
+                    while i < n:
+                        if text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                            i += 2
+                            closed = True
+                            break
+                        i += 1
+                    if not closed:
+                        return text  # unterminated block comment
+                    _blank(start, i)
+                    continue
+                if c == "'":
+                    state = "sq"
+                    i += 1
+                    continue
+                if c == '"':
+                    state = "dq"
+                    i += 1
+                    continue
+                if c == "`":
+                    state = "tmpl"
+                    i += 1
+                    continue
+                if c == "/":
+                    if _slash_is_regex(prev_tok):
+                        state = "regex"
+                        i += 1
+                        continue
+                    prev_tok = "/"
+                    i += 1
+                    continue
+                if c.isspace():
+                    i += 1
+                    continue
+                if c in _IDENT_CHARS:
+                    j = i
+                    while j < n and text[j] in _IDENT_CHARS:
+                        j += 1
+                    prev_tok = text[i:j]
+                    i = j
+                    continue
+                if c == "}" and tmpl_stack:
+                    state = tmpl_stack.pop()
+                    i += 1
+                    continue
+                prev_tok = c
+                i += 1
+                continue
+            elif state in ("sq", "dq"):
+                q = "'" if state == "sq" else '"'
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == q:
+                    state = "code"
+                    prev_tok = "_v"
+                    i += 1
+                    continue
+                if c in nl:
+                    return text  # unterminated string literal
+                i += 1
+                continue
+            elif state == "tmpl":
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == "`":
+                    state = "code"
+                    prev_tok = "_v"
+                    i += 1
+                    continue
+                if c == "$" and nxt == "{":
+                    tmpl_stack.append("tmpl")
+                    state = "code"
+                    prev_tok = "{"
+                    i += 2
+                    continue
+                i += 1
+                continue
+            elif state == "regex":
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == "[":
+                    state = "regex_cc"
+                    i += 1
+                    continue
+                if c == "/":
+                    state = "code"
+                    prev_tok = "_v"
+                    i += 1
+                    continue
+                if c in nl:
+                    return text  # unterminated regex literal
+                i += 1
+                continue
+            elif state == "regex_cc":
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == "]":
+                    state = "regex"
+                    i += 1
+                    continue
+                if c in nl:
+                    return text
+                i += 1
+                continue
+            else:
+                return text
+        if state != "code" or tmpl_stack:
+            return text  # unterminated construct -> fail open
+    except Exception:
+        return text
+    return "".join(out)
+
+
 def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     try:
@@ -1041,6 +1239,14 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
 
 def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
+
+    # Code-only scanning for JS/TS sources: blank comments before matching so
+    # an IOC host / `eval(atob)` example / campaign marker quoted in a comment
+    # cannot manufacture a false positive. Assigned string literals (where real
+    # droppers hide base64 payloads) are preserved. Non-JS text (json/yaml/sh/
+    # py/html) is scanned as-is -- this lexer only understands JS comments.
+    if rel.lower().endswith(_JS_FAMILY_SUFFIXES):
+        text = _strip_js_noncode(text)
 
     # IOC substrings (literal, case-sensitive).
     for needle, (sev, why) in KNOWN_IOC_STRINGS.items():
@@ -1236,6 +1442,131 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
             pass
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Baseline allowlist: triaged known-good HIGH/CRITICAL findings so the gate
+# can enforce without red-failing on rare legitimate-library behavior.
+# Matched on ``(normalized package, package-relative path, pattern)`` -- not
+# evidence text -- so a version bump does not reopen a finding, but a *new*
+# kind of finding in a listed file is a different pattern and still fails.
+# Mirrors scan_packages.py. Regenerate with ``--write-baseline``.
+# ─────────────────────────────────────────────────────────────────────
+
+_DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
+
+# Bumped when the entry-key semantics change. v2 keys on the package-relative
+# path; v1 stored only a basename, so a v1 entry could suppress a same-named file
+# in a different directory. A pre-v2 baseline with entries is ignored (fail
+# closed) rather than mis-applied.
+_BASELINE_SCHEMA_VERSION = 2
+
+
+def _norm_pkg_name(display: str) -> str:
+    """``@scope/pkg@1.2.3`` / ``pkg@1.2.3`` -> name without the version.
+
+    The version is the LAST ``@``-separated field; a leading ``@`` (scope)
+    is preserved. Lower-cased (npm names are case-insensitive). Sentinels
+    like ``<root>`` / ``<lockfile>`` pass through unchanged.
+    """
+    s = (display or "").strip()
+    at = s.rfind("@")
+    if at > 0:  # >0 so a leading @scope is not treated as the version sep
+        s = s[:at]
+    return s.lower()
+
+
+_NPM_TARBALL_ROOT = "package/"
+
+
+def _relpath_in_package(filename: str) -> str:
+    """Path within the published package, stable across version bumps. npm
+    tarballs root every file at ``package/``; strip it so the key is the real
+    source path (``dist/index.js``) and a new file with the same basename in a
+    different directory is not silently suppressed."""
+    f = (filename or "").replace("\\", "/")
+    return f[len(_NPM_TARBALL_ROOT) :] if f.startswith(_NPM_TARBALL_ROOT) else f
+
+
+def _finding_key(f: Finding) -> tuple[str, str, str]:
+    """Stable allowlist key: normalized package, package-relative path, pattern."""
+    return (_norm_pkg_name(f.package), _relpath_in_package(f.filename), f.pattern)
+
+
+def _load_baseline(path: str) -> set[tuple[str, str, str]]:
+    """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
+    try:
+        with open(path, "r", encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return set()
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
+        return set()
+    entries = data.get("entries", [])
+    if entries and data.get("version") != _BASELINE_SCHEMA_VERSION:
+        print(
+            f"  [WARN] baseline schema v{data.get('version')} predates package-relative "
+            f"keys; ignoring {len(entries)} entr(y/ies). Regenerate with --write-baseline.",
+            file = sys.stderr,
+        )
+        return set()
+    keys: set[tuple[str, str, str]] = set()
+    for e in entries:
+        try:
+            keys.add((_norm_pkg_name(e["package"]), _relpath_in_package(e["file"]), e["pattern"]))
+        except (KeyError, TypeError):
+            continue
+    return keys
+
+
+def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> int:
+    """Persist at-or-above-threshold findings as an allowlist for triage."""
+    entries = []
+    seen: set[tuple[str, str, str]] = set()
+    for f in sorted(findings, key = lambda f: (_SEVERITY_RANK[f.severity], f.package)):
+        if _SEVERITY_RANK[f.severity] > threshold_rank:
+            continue
+        key = _finding_key(f)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(
+            {
+                "package": _norm_pkg_name(f.package),
+                "file": _relpath_in_package(f.filename),
+                "pattern": f.pattern,
+                "severity": f.severity,
+                "evidence": (f.evidence or f.detail)[:240],
+            }
+        )
+    doc = {
+        "_comment": (
+            "scan_npm_packages.py allowlist. Each entry is a HIGH/CRITICAL "
+            "finding manually judged benign. Matched on (package, "
+            "package-relative path, pattern); evidence/severity are for review "
+            "only. Regenerate with --write-baseline AFTER reviewing every line."
+        ),
+        "version": _BASELINE_SCHEMA_VERSION,
+        "entries": entries,
+    }
+    with open(path, "w", encoding = "utf-8") as fh:
+        json.dump(doc, fh, indent = 2, sort_keys = False)
+        fh.write("\n")
+    print(f"  Wrote {len(entries)} baseline entr(y/ies) to {path}")
+    return len(entries)
+
+
+def _partition_baseline(
+    findings: list[Finding], baseline: set[tuple[str, str, str]]
+) -> tuple[list[Finding], list[Finding]]:
+    """Split findings into (active, suppressed) by allowlist membership."""
+    if not baseline:
+        return list(findings), []
+    active, suppressed = [], []
+    for f in findings:
+        (suppressed if _finding_key(f) in baseline else active).append(f)
+    return active, suppressed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description = "Pre-install npm tarball content scanner.",
@@ -1261,6 +1592,30 @@ def main(argv: list[str] | None = None) -> int:
         help = (
             "Lowest severity that fails the run (default: high). "
             "Medium and below print but exit 0."
+        ),
+    )
+    parser.add_argument(
+        "--baseline",
+        metavar = "FILE",
+        default = None,
+        help = (
+            "Allowlist JSON of triaged known-good findings to suppress. "
+            "Defaults to scan_npm_packages_baseline.json next to this script "
+            "if present."
+        ),
+    )
+    parser.add_argument(
+        "--no-baseline",
+        action = "store_true",
+        help = "Ignore the auto-discovered baseline allowlist.",
+    )
+    parser.add_argument(
+        "--write-baseline",
+        metavar = "FILE",
+        default = None,
+        help = (
+            "Write the current at/above-threshold findings to FILE as an "
+            "allowlist, then exit 0. Review every entry before committing it."
         ),
     )
     args = parser.parse_args(argv)
@@ -1341,7 +1696,46 @@ def main(argv: list[str] | None = None) -> int:
         "critical": CRITICAL,
     }[args.fail_on]
     threshold_rank = _SEVERITY_RANK[threshold]
-    blocking = [f for f in all_findings if _SEVERITY_RANK[f.severity] <= threshold_rank]
+
+    # --write-baseline: persist the full current at/above-threshold set as the
+    # new allowlist (ignoring any loaded baseline), then exit 0. A hard error
+    # means the scan was incomplete, so warn -- a baseline baked from a partial
+    # run would silently allow whatever failed to download.
+    if args.write_baseline:
+        if hard_errors:
+            print(
+                f"  [WARN] {len(hard_errors)} hard error(s): baseline may be "
+                "incomplete (some packages did not scan).",
+                file = sys.stderr,
+            )
+        _write_baseline(args.write_baseline, all_findings, threshold_rank)
+        return 0
+
+    # Baseline allowlist: suppress triaged, known-good findings so the CI gate
+    # can be enforcing without red-failing on legitimate-library noise.
+    if args.no_baseline:
+        baseline_path = None
+    elif args.baseline:
+        baseline_path = args.baseline
+    elif os.path.isfile(_DEFAULT_BASELINE_PATH):
+        baseline_path = _DEFAULT_BASELINE_PATH
+    else:
+        baseline_path = None
+    baseline = _load_baseline(baseline_path) if baseline_path else set()
+    active, suppressed = _partition_baseline(all_findings, baseline)
+
+    if suppressed:
+        crit_s = sum(1 for f in suppressed if f.severity == CRITICAL)
+        high_s = sum(1 for f in suppressed if f.severity == HIGH)
+        print(
+            f"\n[scan-npm] {len(suppressed)} finding(s) suppressed by baseline "
+            f"{baseline_path} ({crit_s} CRITICAL, {high_s} HIGH).",
+            flush = True,
+        )
+
+    # Exit code: 1 on a hard error, or a NON-baselined finding at/above the
+    # threshold. This is the signal CI gates on once the baseline is clean.
+    blocking = [f for f in active if _SEVERITY_RANK[f.severity] <= threshold_rank]
     if hard_errors or blocking:
         if blocking:
             print(

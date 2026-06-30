@@ -13,14 +13,9 @@ import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
-import {
-  CheckIcon,
-  CopyIcon,
-  EyeIcon,
-  Maximize2Icon,
-  XIcon,
-} from "lucide-react";
+import { CopyIcon, EyeIcon, Maximize2Icon, XIcon } from "lucide-react";
 import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -31,6 +26,7 @@ import {
 } from "react";
 import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
+import { useChatArtifactsStore } from "./store";
 import type { ChatArtifact } from "./types";
 import { getArtifactFilename } from "./types";
 
@@ -119,6 +115,8 @@ export function ArtifactSurface({
   onOpenFullscreen?: () => void;
 }) {
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
+  // Follow the view the opener asked for (Preview vs Code button), per artifact.
+  const requestedView = useChatArtifactsStore((state) => state.requestedView);
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
@@ -137,6 +135,10 @@ export function ArtifactSurface({
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    setViewMode(requestedView);
+  }, [artifact.id, requestedView]);
 
   useEffect(() => {
     if (variant !== "overlay") return;
@@ -278,7 +280,7 @@ export function ArtifactSurface({
             aria-label="Copy canvas HTML"
           >
             {copied ? (
-              <CheckIcon className="size-4" />
+              <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
             ) : (
               <CopyIcon className="size-4" />
             )}
@@ -327,6 +329,8 @@ export function ArtifactSurface({
             code={artifact.code}
             title={artifact.title}
             fill={true}
+            // Network mode only for tool-rendered canvases, never fences.
+            allowNetworkAccess={artifact.source === "tool"}
             className="h-full"
           />
         ) : (

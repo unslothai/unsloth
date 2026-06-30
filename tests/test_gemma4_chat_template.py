@@ -157,7 +157,7 @@ def test_multi_turn_strips_all_historical_model_turns():
 
 
 def test_thinking_template_injects_empty_thought_channel_by_default():
-    # Author defaults enable_thinking=False, so the gen-prompt injection fires.
+    # enable_thinking defaults False, so the gen-prompt injection fires.
     msgs = [{"role": "user", "content": "Hi"}]
     out = _render("gemma4_thinking_template", msgs, add_generation_prompt = True)
     assert out.endswith("<|turn>model\n<|channel>thought\n<channel|>")

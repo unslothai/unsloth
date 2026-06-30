@@ -26,6 +26,7 @@ from utils.hardware import (
 )
 from core.inference.audio_codecs import AudioCodecManager
 from core.inference.runtime_context import runtime_context_length
+from core.inference.message_content import content_to_text
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -1018,7 +1019,7 @@ class InferenceBackend:
         user_message = ""
         if messages and messages[-1]["role"] == "user":
             import re
-            user_message = messages[-1]["content"]
+            user_message = content_to_text(messages[-1]["content"])
             user_message = re.sub(r"<img[^>]*>", "", user_message).strip()
 
         if not user_message:
@@ -1181,7 +1182,7 @@ class InferenceBackend:
         if messages:
             for msg in reversed(messages):
                 if msg["role"] == "user" and msg.get("content"):
-                    user_text = msg["content"]
+                    user_text = content_to_text(msg["content"])
                     break
 
         # ASR-specific default system prompt if none set
@@ -1713,7 +1714,7 @@ class InferenceBackend:
 
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            content = content_to_text(msg.get("content", ""))
 
             if role in ["system", "user", "assistant"] and content.strip():
                 if role == last_role:
@@ -1801,7 +1802,7 @@ class InferenceBackend:
 
         for msg in messages:
             role = msg["role"]
-            content = msg["content"]
+            content = content_to_text(msg["content"])
             formatted += f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
 
         formatted += "<|start_header_id|>assistant<|end_header_id|>\n\n"
@@ -1817,14 +1818,14 @@ class InferenceBackend:
 
         for msg in messages:
             if msg["role"] == "system":
-                system_msg = msg["content"]
+                system_msg = content_to_text(msg["content"])
             else:
                 conversation.append(msg)
 
         i = 0
         while i < len(conversation):
             if conversation[i]["role"] == "user":
-                user_content = conversation[i]["content"]
+                user_content = content_to_text(conversation[i]["content"])
 
                 if system_msg and i == 0:
                     user_content = f"{system_msg}\n\n{user_content}"
@@ -1832,7 +1833,7 @@ class InferenceBackend:
                 formatted += f"[INST] {user_content} [/INST]"
 
                 if i + 1 < len(conversation) and conversation[i + 1]["role"] == "assistant":
-                    formatted += f" {conversation[i + 1]['content']}</s>"
+                    formatted += f" {content_to_text(conversation[i + 1]['content'])}</s>"
                     i += 2
                 else:
                     formatted += " "
@@ -1848,7 +1849,7 @@ class InferenceBackend:
 
         for msg in messages:
             role = msg["role"]
-            content = msg["content"]
+            content = content_to_text(msg["content"])
             formatted += f"<|im_start|>{role}\n{content}<|im_end|>\n"
 
         formatted += "<|im_start|>assistant\n"
@@ -1860,16 +1861,17 @@ class InferenceBackend:
         system_msg = None
 
         for msg in messages:
+            content = content_to_text(msg["content"])
             if msg["role"] == "system":
-                system_msg = msg["content"]
+                system_msg = content
             elif msg["role"] == "user":
                 if system_msg:
-                    formatted += f"### Instruction:\n{system_msg}\n\n### Input:\n{msg['content']}\n\n### Response:\n"
+                    formatted += f"### Instruction:\n{system_msg}\n\n### Input:\n{content}\n\n### Response:\n"
                     system_msg = None
                 else:
-                    formatted += f"### Human:\n{msg['content']}\n\n### Assistant:\n"
+                    formatted += f"### Human:\n{content}\n\n### Assistant:\n"
             elif msg["role"] == "assistant":
-                formatted += f"{msg['content']}\n\n"
+                formatted += f"{content}\n\n"
 
         return formatted
 
@@ -1879,7 +1881,7 @@ class InferenceBackend:
 
         for msg in messages:
             role = msg["role"].title()
-            content = msg["content"]
+            content = content_to_text(msg["content"])
             formatted += f"{role}: {content}\n"
 
         formatted += "Assistant: "

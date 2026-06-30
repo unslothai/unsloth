@@ -82,7 +82,8 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
@@ -99,7 +100,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -276,6 +278,10 @@ jobs:
         run: |
           kill "${STUDIO_IME_PID}" 2>/dev/null || true
           sleep 2
+          # Capture backend + llama-server logs (all three Studios share this
+          # dir) so a stray 500 has a server-side traceback.
+          mkdir -p logs/server-logs
+          cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
 
       - name: Upload Playwright artifacts
         # Always upload so a green run's screenshots stay reviewable --
@@ -289,6 +295,7 @@ jobs:
             logs/studio_extra.log
             logs/studio_ime.log
             logs/install.log
+            logs/server-logs/
             logs/playwright
             logs/playwright_extra
             logs/playwright_ime

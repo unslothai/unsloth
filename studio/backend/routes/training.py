@@ -68,6 +68,11 @@ class TrainingStopRequest(PydanticBaseModel):
 router = APIRouter()
 logger = get_logger(__name__)
 
+# Consecutive 1s polls without a step update that count as a stall. Applied only
+# once stepping: the pre-first-step phase (model load + tokenization) can take far
+# longer, and timing out there made a healthy long-prep run look frozen.
+_PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
+
 
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
     """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
@@ -185,9 +190,72 @@ async def start_training(
                 )
             request.resume_from_checkpoint = resume_checkpoint
 
+        # Validate streaming-mode compatibility before any expensive work.
+        # Streaming is supported only for Hugging Face text datasets.
+        if request.dataset_streaming:
+            if not request.hf_dataset:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming requires hf_dataset; streaming is not supported for local datasets.",
+                )
+            if request.is_dataset_image or request.is_dataset_audio:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not supported for vision or audio datasets.",
+                )
+            if request.is_embedding:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
+                )
+            from utils.hardware import hardware as _hw
+
+            if _hw.DEVICE == _hw.DeviceType.MLX:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not yet supported on Apple Silicon (MLX); the MLX loader materializes the full dataset.",
+                )
+            if request.max_steps is None or request.max_steps <= 0:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "dataset_streaming requires max_steps > 0 because streaming datasets have no known length.",
+                )
+            if request.train_on_completions:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "dataset_streaming is not supported with train_on_completions yet.",
+                )
+            if request.eval_steps > 0:
+                train_split = request.train_split or "train"
+                if not request.eval_split or request.eval_split == train_split:
+                    raise HTTPException(
+                        status_code = 422,
+                        detail = "dataset_streaming with evaluation requires a separate eval_split.",
+                    )
+            # Streaming is HF-only: reject when the request also carries a local
+            # dataset path or an S3 config; those sources cannot be streamed via
+            # HF's streaming loader.
+            if request.local_datasets:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                        "Streaming is not supported with local file paths."
+                    ),
+                )
+            if request.s3_config is not None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                        "Streaming is not supported with S3 datasets."
+                    ),
+                )
+
         # Convert request to backend kwargs.
         training_kwargs = {
             "model_name": request.model_name,
+            "project_name": request.project_name,
             "training_type": request.training_type,
             "hf_token": request.hf_token or "",
             "load_in_4bit": request.load_in_4bit,
@@ -199,6 +267,7 @@ async def start_training(
             "format_type": request.format_type,
             "subset": request.subset,
             "train_split": request.train_split,
+            "dataset_streaming": request.dataset_streaming,
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
             "dataset_slice_start": request.dataset_slice_start,
@@ -248,49 +317,100 @@ async def start_training(
             "output_dir": resume_output_dir,
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
+            "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
+            "subject": current_subject,
             "gpu_ids": request.gpu_ids,
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
-        # Training page has no trust_remote_code toggle; as a safety net consult
-        # YAML model defaults directly so models that need it always get it.
+        # Training page has no trust_remote_code toggle, so honor the YAML default
+        # -- but only for genuine first-party (unsloth/nvidia) Hub repos, never a
+        # local path or a name merely starting with "unsloth/".
         if not training_kwargs["trust_remote_code"]:
+            from utils.security.trusted_org import is_trusted_org_repo
+
             model_defaults = load_model_defaults(request.model_name)
             yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
-            if yaml_trust:
+            if yaml_trust and is_trusted_org_repo(
+                request.model_name, hf_token = request.hf_token or None
+            ):
                 logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
                 training_kwargs["trust_remote_code"] = True
-
-        # Free GPU memory: shut down any running inference/export subprocesses
-        # before training (they'd compete for VRAM otherwise).
-        try:
-            from core.inference import get_inference_backend
-            inf_backend = get_inference_backend()
-            if inf_backend.active_model_name:
-                logger.info(
-                    "Unloading inference model '%s' to free GPU memory for training",
-                    inf_backend.active_model_name,
+            elif yaml_trust:
+                logger.warning(
+                    "YAML sets trust_remote_code=True for %s but it is not a trusted "
+                    "first-party repo; leaving disabled (user can opt in explicitly).",
+                    request.model_name,
                 )
-                inf_backend._shutdown_subprocess()
-                inf_backend.active_model_name = None
-                inf_backend.models.clear()
-        except Exception as e:
-            logger.warning("Could not unload inference model: %s", e)
 
-        try:
-            from core.export import get_export_backend
-            exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
-                logger.info("Shutting down export subprocess to free GPU memory for training")
-                exp_backend._shutdown_subprocess()
-                exp_backend.current_checkpoint = None
-                exp_backend.is_vision = False
-                exp_backend.is_peft = False
-        except Exception as e:
-            logger.warning("Could not shut down export subprocess: %s", e)
+        # Free VRAM for training: stop export, unload chat unless it can coexist.
+        # A before_spawn hook -> runs only after start_training's guards pass, so
+        # we never tear down chat/export VRAM for a start that is then refused.
+        def _free_vram_for_training() -> None:
+            try:
+                from core.export import get_export_backend
+                exp_backend = get_export_backend()
+                # Tear down the export subprocess whenever an export is in flight,
+                # not just once a checkpoint is loaded: during the load phase
+                # current_checkpoint is still unset while the worker is already
+                # allocating GPU memory, so gate on is_export_active() too.
+                if exp_backend.current_checkpoint or exp_backend.is_export_active():
+                    logger.info("Shutting down export subprocess to free GPU memory for training")
+                    exp_backend._shutdown_subprocess()
+                    exp_backend.current_checkpoint = None
+                    exp_backend.is_vision = False
+                    exp_backend.is_peft = False
+            except Exception as e:
+                logger.warning("Could not shut down export subprocess: %s", e)
 
-        # start_training spawns a subprocess (non-blocking).
-        success = backend.start_training(job_id = job_id, **training_kwargs)
+            try:
+                from routes.training_vram import (
+                    can_keep_chat_during_training,
+                    free_chat_models_for_training,
+                    summarize_resident_chat,
+                )
+
+                resident = summarize_resident_chat()
+                if not resident["any"]:
+                    return
+                if resident.get("loading"):
+                    # In-flight load can't be sized -> free rather than risk OOM.
+                    freed = free_chat_models_for_training(reason = "chat model still loading")
+                    logger.info("Freed in-flight chat load for training: %s", freed)
+                    return
+                keep, info = can_keep_chat_during_training(
+                    model_name = training_kwargs["model_name"],
+                    hf_token = training_kwargs["hf_token"],
+                    training_type = training_kwargs["training_type"],
+                    load_in_4bit = training_kwargs["load_in_4bit"],
+                    batch_size = training_kwargs["batch_size"],
+                    max_seq_length = training_kwargs["max_seq_length"],
+                    lora_rank = training_kwargs["lora_r"],
+                    target_modules = training_kwargs["target_modules"],
+                    gradient_checkpointing = training_kwargs["gradient_checkpointing"],
+                    optimizer = training_kwargs["optim"],
+                    gpu_ids = training_kwargs["gpu_ids"],
+                )
+                if keep:
+                    logger.info(
+                        "Keeping chat model(s) loaded during training "
+                        "(free ~%s GB, needs ~%s GB): %s",
+                        info.get("usable_gb"),
+                        info.get("required_gb"),
+                        resident,
+                    )
+                else:
+                    freed = free_chat_models_for_training(
+                        reason = "insufficient VRAM to run training alongside chat",
+                    )
+                    logger.info("Freed chat model(s) for training: %s", freed)
+            except Exception as e:
+                logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
+
+        # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        success = backend.start_training(
+            job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+        )
 
         if not success:
             progress_error = backend.trainer.training_progress.error
@@ -719,9 +839,20 @@ async def stream_training_progress(
         # ── Live polling loop ────────────────────────────────────
         last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
-        max_no_updates = 1800  # Timeout after 30 min (large models need compile time)
+        # The stall timeout applies only once the run is stepping (pre-step prep
+        # may legitimately emit no step for a long time). On reconnect to an
+        # already-stepping run, seed from the resume point / history, else a worker
+        # that hangs after step N never times out for a client that reconnects past it.
+        seen_live_step = (resume_from_step is not None and resume_from_step > 0) or bool(
+            backend.step_history
+        )
 
         while backend.is_training_active():
+            # Client gone: end the generator without falling through to the final
+            # "complete" frame, which a buffered/proxy consumer could otherwise read
+            # as a finished run while training is still active.
+            if await request.is_disconnected():
+                return
             try:
                 tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
                 live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0
@@ -757,6 +888,7 @@ async def stream_training_progress(
                         )
                         last_step = current_step
                         no_update_count = 0
+                        seen_live_step = True
                     else:
                         no_update_count += 1
                         # Heartbeat every 10 seconds.
@@ -799,8 +931,9 @@ async def stream_training_progress(
                             event_id = 0,
                         )
 
-                # Timeout check
-                if no_update_count > max_no_updates:
+                # Fires only once stepping: a long pre-first-step prep phase is not
+                # a stall, and ending the stream there made a healthy run look frozen.
+                if seen_live_step and no_update_count > _PROGRESS_STALL_TIMEOUT_POLLS:
                     logger.warning("Progress stream timeout - no updates received")
                     tp_timeout = getattr(
                         getattr(backend, "trainer", None), "training_progress", None

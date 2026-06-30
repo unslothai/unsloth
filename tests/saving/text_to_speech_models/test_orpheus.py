@@ -140,7 +140,7 @@ prompts = [
     "Hey there my name is Elise, <giggles> and I'm a speech generation model that can sound like a person.",
 ]
 
-chosen_voice = None  # None for single-speaker
+chosen_voice = None  # single-speaker
 
 prompts_ = [(f"{chosen_voice}: " + p) if chosen_voice else p for p in prompts]
 

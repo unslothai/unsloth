@@ -24,6 +24,7 @@ _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 is_managed_flag = _lsa.is_managed_flag
 parse_cache_override = _lsa.parse_cache_override
+parse_cache_override_per_axis = _lsa.parse_cache_override_per_axis
 parse_ctx_override = _lsa.parse_ctx_override
 parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
@@ -467,6 +468,25 @@ def test_parse_cache_override_rejects_malformed_values(args):
         parse_cache_override(args)
 
 
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        (["--cache-type-k", "f32", "--cache-type-v", "f16"], ("f32", "f16")),
+        (["-ctk", "q8_0", "-ctv", "q4_0"], ("q8_0", "q4_0")),
+        (["--cache-type-k=f32"], ("f32", None)),
+        (["--cache-type-v", "f16"], (None, "f16")),
+        (["-c", "4096"], (None, None)),
+        (None, (None, None)),
+        # Last-wins is kept per axis.
+        (["-ctk", "f16", "-ctk", "f32"], ("f32", None)),
+    ],
+)
+def test_parse_cache_override_per_axis(args, expected):
+    # Unlike parse_cache_override (collapses both axes to one last-wins value),
+    # this keeps K and V apart so an asymmetric cache can be budgeted per axis.
+    assert parse_cache_override_per_axis(args) == expected
+
+
 def test_resolve_cache_type_kv_uses_override_when_present():
     assert resolve_cache_type_kv(["--cache-type-k", "q8_0"], "f16") == "q8_0"
 
@@ -647,6 +667,53 @@ def test_strip_shadowing_flags_drops_model_draft_with_spec():
         strip_template = False,
     )
     assert out == ["--top-k", "20"]
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        ["--spec-draft-hf", "org/repo"],
+        ["-hfd", "org/repo"],
+        ["-hfrd", "org/repo"],
+        ["--hf-repo-draft", "org/repo"],
+        ["--spec-draft-hf=org/repo"],
+    ],
+)
+def test_strip_shadowing_flags_drops_hf_drafter_selectors_with_spec(selector):
+    # HF drafter selectors must reset on inherit like local --model-draft, or a
+    # stale inherited HF drafter last-wins over Studio's re-derived spec choice.
+    out = strip_shadowing_flags(
+        selector + ["--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = True,
+        strip_template = False,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_draft_tuning_with_spec():
+    # Per-drafter tuning knobs are deliberately preserved: the VRAM budget reads
+    # them via the same parsers the child honors (so they stay consistent on
+    # inherit), and stripping --spec-draft-ngl would move a CPU drafter to GPU.
+    keep = [
+        "--spec-draft-type-k",
+        "q4_0",
+        "--spec-draft-type-v",
+        "q4_0",
+        "--spec-draft-ngl",
+        "0",
+        "--spec-draft-device",
+        "cpu",
+    ]
+    out = strip_shadowing_flags(
+        list(keep),
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = True,
+        strip_template = False,
+    )
+    assert out == keep
 
 
 def test_strip_shadowing_flags_keeps_split_mode_when_not_requested():

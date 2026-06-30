@@ -5,15 +5,12 @@ import { authFetch, getAuthToken } from "@/features/auth";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// First check shortly after load, then re-surface as an hourly reminder. The
-// banner stays up until the user explicitly acts on it (X, Update, or
-// Remind me later).
+// Initial check plus hourly reminders until dismissed or applied.
 const FIRST_CHECK_DELAY_MS = 1000;
 const REMINDER_INTERVAL_MS = 60 * 60 * 1000; // ~1 hour
-// "Remind me later" re-surfaces sooner than the hourly reminder.
+// Snooze checks sooner than the hourly reminder.
 const SNOOZE_DELAY_MS = 15 * 60 * 1000; // ~15 minutes
-// Poll cadence while applying. Short so the installer's ~5% milestones are
-// observed instead of a fast download finishing between two slow polls.
+// Poll fast enough to catch installer progress milestones.
 const JOB_POLL_INTERVAL_MS = 500;
 
 export interface LlamaUpdateJob {
@@ -21,8 +18,9 @@ export interface LlamaUpdateJob {
   message: string;
   from_tag: string | null;
   to_tag: string | null;
+  reload_required: boolean | null;
   error: string | null;
-  // Download fraction (0..1) while running, 1 on success, null when unknown.
+  // Download fraction while running, 1 on success.
   progress: number | null;
 }
 
@@ -31,6 +29,8 @@ export interface LlamaUpdateStatus {
   update_available: boolean;
   installed_tag: string | null;
   latest_tag: string | null;
+  // Prebuilt download size in bytes, if known.
+  update_size_bytes: number | null;
   job: LlamaUpdateJob;
 }
 
@@ -43,11 +43,15 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
     update_available: s.update_available === true,
     installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
     latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
+    update_size_bytes:
+      typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
     job: {
       state: (job.state as LlamaUpdateJob["state"]) ?? "idle",
       message: typeof job.message === "string" ? job.message : "",
       from_tag: typeof job.from_tag === "string" ? job.from_tag : null,
       to_tag: typeof job.to_tag === "string" ? job.to_tag : null,
+      reload_required:
+        typeof job.reload_required === "boolean" ? job.reload_required : null,
       error: typeof job.error === "string" ? job.error : null,
       progress: typeof job.progress === "number" ? job.progress : null,
     },
@@ -69,9 +73,7 @@ async function fetchStatus(
   }
 }
 
-// Update probes force a refresh so a newly published build is not masked by the
-// backend's 24h release cache (the banner would otherwise lag up to a day). The
-// job-progress poll below stays cached; it only reads local job state.
+// Manual checks bypass the 24h release cache; job polls read local state.
 const recheckStatus = () => fetchStatus(true);
 
 interface UseLlamaUpdateCheckOptions {
@@ -81,16 +83,11 @@ interface UseLlamaUpdateCheckOptions {
 export interface LlamaApplyResult {
   ok: boolean;
   tag?: string | null;
+  reloadRequired?: boolean | null;
   error?: string | null;
 }
 
-/**
- * Polls the backend for a newer llama.cpp prebuilt. When one exists, `visible`
- * becomes true ~1s after load and stays up until the user dismisses it (X),
- * snoozes it ("Remind me later", ~15 min), or updates; it re-surfaces every
- * ~hour as a reminder. `apply()` triggers the in-place swap and tracks the
- * job.
- */
+/** Tracks llama.cpp update visibility and apply progress. */
 export function useLlamaUpdateCheck({
   enabled = true,
 }: UseLlamaUpdateCheckOptions = {}) {
@@ -107,8 +104,7 @@ export function useLlamaUpdateCheck({
     }
   }, []);
 
-  // Poll the job to completion. Shared by apply() and surfaceIfAvailable() so a
-  // job is tracked once whoever noticed it; onDone resolves with the result.
+  // Used by apply() and another-tab job tracking.
   const startJobPoll = useCallback(
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
@@ -122,13 +118,15 @@ export function useLlamaUpdateCheck({
         if (s.job.state === "success") {
           setVisible(false);
           void refreshHardwareInfo();
-          onDone?.({ ok: true, tag: s.job.to_tag });
+          onDone?.({
+            ok: true,
+            tag: s.job.to_tag,
+            reloadRequired: s.job.reload_required,
+          });
         } else if (s.job.state === "error") {
-          // Leave the banner up so the user can retry; clearing applying drops
-          // the "Updating..." state.
+          // Keep the banner visible so retry is available.
           onDone?.({ ok: false, error: s.job.error });
         } else {
-          // idle without a terminal result (job reset): stop tracking.
           onDone?.({ ok: false, error: "update did not complete" });
         }
       }, JOB_POLL_INTERVAL_MS);
@@ -136,14 +134,12 @@ export function useLlamaUpdateCheck({
     [clearPollTimer],
   );
 
-  // Surface the banner when an update is available; it stays up until dismissed.
   const surfaceIfAvailable = useCallback(
     (next: LlamaUpdateStatus | null) => {
       if (!next) return;
       setStatus(next);
       if (next.job.state === "running") {
-        // Swap in progress (e.g. another tab): keep the banner up and track the
-        // job so "Updating..." clears when it finishes instead of sticking.
+        // Another tab is applying; show progress here too.
         setApplying(true);
         setVisible(true);
         if (!pollTimer.current) startJobPoll();
@@ -158,9 +154,7 @@ export function useLlamaUpdateCheck({
 
   useEffect(() => {
     if (!enabled) {
-      // Disabled mid-update: stop showing and tracking, and clear `applying`
-      // so the banner's animation loop stops too. Re-enabling re-detects a
-      // still-running job below and resumes tracking via surfaceIfAvailable.
+      // Re-enabling will rediscover any still-running job.
       setVisible(false);
       setApplying(false);
       return;
@@ -195,7 +189,6 @@ export function useLlamaUpdateCheck({
     setVisible(false);
   }, []);
 
-  // Hide now, re-check and re-surface after SNOOZE_DELAY_MS.
   const snooze = useCallback(() => {
     setVisible(false);
     if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
@@ -230,9 +223,7 @@ export function useLlamaUpdateCheck({
       return { ok: false, error: String(e) };
     }
 
-    // 200 without a started job (no marker / installer missing) leaves it idle,
-    // so surface the reason instead of polling forever. already_running is the
-    // exception: a job is in flight, so track it to completion below.
+    // Non-started jobs stay idle; already_running is tracked below.
     if (
       action &&
       action.started === false &&

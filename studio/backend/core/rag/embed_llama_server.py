@@ -30,6 +30,7 @@ import numpy as np
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+from utils.process_lifetime import child_popen_kwargs
 
 from . import config
 
@@ -267,6 +268,7 @@ class LlamaServerBackend:
             text = True,
             env = env,
             **windows_hidden_subprocess_kwargs(),
+            **child_popen_kwargs(),
         )
         self._process = proc
         self._port = port

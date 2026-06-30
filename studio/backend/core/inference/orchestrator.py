@@ -18,7 +18,6 @@ import atexit
 import base64
 import os
 import signal
-import structlog
 from loggers import get_logger
 import multiprocessing as mp
 import queue
@@ -30,13 +29,13 @@ from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
 from utils.hardware import prepare_gpu_selection
 
+# Re-exported from the shared helper so GGUF, training, and inference share one
+# type; kept importable here for backwards compatibility.
+from utils.hf_xet_fallback import DownloadStallError
+
 logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
-
-
-class DownloadStallError(RuntimeError):
-    """Raised when the worker reports no download progress for too long."""
 
 
 # Dispatcher timeout constants (seconds)
@@ -61,7 +60,6 @@ class InferenceOrchestrator:
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
         self._cancel_event: Any = None  # mp.Event — set to cancel generation
-        self._lock = threading.Lock()
         self._gen_lock = threading.Lock()  # Serializes generation
 
         # Dispatcher state for compare mode (adapter-controlled requests):
@@ -76,15 +74,12 @@ class InferenceOrchestrator:
         self.active_model_name: Optional[str] = None
         self.models: dict = {}
         self.loading_models: set = set()
-        self.loaded_local_models: list = []
         from core.inference.defaults import get_default_models
 
         self._static_models = get_default_models()
         self._top_gguf_cache: Optional[list[str]] = None
         self._top_hub_cache: Optional[list[str]] = None
         self._top_models_ready = threading.Event()
-
-        self._current_transformers_major: Optional[str] = None  # "4" or "5"
 
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
@@ -177,6 +172,9 @@ class InferenceOrchestrator:
                 daemon = True,
             )
             self._proc.start()
+        from utils.process_lifetime import adopt_pid
+
+        adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
 
     def _cancel_generation(self) -> None:
@@ -390,6 +388,108 @@ class InferenceOrchestrator:
         logger.warning("Timed out waiting for gen_done after cancel")
 
     # ------------------------------------------------------------------
+    # Generation command + token-stream helpers (shared by all paths)
+    # ------------------------------------------------------------------
+
+    def _build_generate_cmd(
+        self,
+        request_id: str,
+        image_b64: Optional[str],
+        *,
+        messages: list = None,
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_new_tokens: int = 256,
+        repetition_penalty: float = 1.0,
+        use_adapter = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+    ) -> dict:
+        """Build the 'generate' command shared by the locked and dispatched paths."""
+        cmd = {
+            "type": "generate",
+            "request_id": request_id,
+            "messages": messages or [],
+            "system_prompt": system_prompt,
+            "image_base64": image_b64,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "min_p": min_p,
+            "max_new_tokens": max_new_tokens,
+            "repetition_penalty": repetition_penalty,
+        }
+        # Only forward template kwargs the caller set, for older worker compat.
+        if use_adapter is not None:
+            cmd["use_adapter"] = use_adapter
+        if tools is not None:
+            cmd["tools"] = tools
+        if enable_thinking is not None:
+            cmd["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            cmd["reasoning_effort"] = reasoning_effort
+        if preserve_thinking is not None:
+            cmd["preserve_thinking"] = preserve_thinking
+        return cmd
+
+    def _consume_token_stream(
+        self,
+        read_one,
+        drain_on_cancel,
+        *,
+        crash_context: str,
+        cancel_event = None,
+        stats_holder: Optional[dict] = None,
+        read_timeout: float = 30.0,
+    ) -> Generator[str, None, None]:
+        """Yield tokens from a response stream until gen_done/gen_error.
+
+        ``read_one(timeout)`` returns the next response (or None on timeout) and
+        owns the queue choice — the shared resp_queue under _gen_lock, or a
+        per-request mailbox on the dispatcher path — so this loop stays agnostic
+        of which queue is read. On cancel, ``drain_on_cancel()`` consumes the
+        cancel ack from that same source so stale events don't leak into the
+        next request.
+        """
+        while True:
+            resp = read_one(read_timeout)
+            if resp is None:
+                # Check subprocess health
+                if not self._ensure_subprocess_alive():
+                    yield f"Error: {self._subprocess_crash_message(crash_context)}"
+                    return
+                continue
+
+            rtype = resp.get("type", "")
+            if rtype == "status":
+                continue
+            # Subprocess-level error (no request_id); request-scoped failures
+            # arrive as gen_error below.
+            if rtype == "error" and not resp.get("request_id"):
+                yield f"Error: {resp.get('error', 'Unknown error')}"
+                return
+
+            if rtype == "token":
+                # Cancel from route (e.g. SSE connection closed).
+                if cancel_event is not None and cancel_event.is_set():
+                    self._cancel_generation()
+                    drain_on_cancel()
+                    return
+                yield resp.get("text", "")
+            elif rtype == "gen_done":
+                if stats_holder is not None:
+                    stats_holder["stats"] = resp.get("stats")
+                return
+            elif rtype == "gen_error":
+                yield f"Error: {resp.get('error', 'Unknown error')}"
+                return
+
+    # ------------------------------------------------------------------
     # Dispatcher — per-request mailbox routing for compare mode
     # ------------------------------------------------------------------
 
@@ -434,30 +534,34 @@ class InferenceOrchestrator:
             except (EOFError, OSError, ValueError):
                 break
 
-            rid = resp.get("request_id")
-            rtype = resp.get("type", "")
+            # Sole consumer of the response queue; if it died every in-flight
+            # stream would hang, so never let routing kill the dispatcher.
+            try:
+                rid = resp.get("request_id")
+                rtype = resp.get("type", "")
 
-            # Status messages — log and skip
-            if rtype == "status":
-                logger.info("Subprocess status: %s", resp.get("message", ""))
-                continue
-
-            # Route to mailbox if a matching request_id exists
-            if rid:
-                with self._mailbox_lock:
-                    mbox = self._mailboxes.get(rid)
-                if mbox is not None:
-                    mbox.put(resp)
+                # Status messages: log and skip
+                if rtype == "status":
+                    logger.info("Subprocess status: %s", resp.get("message", ""))
                     continue
 
-            # No matching mailbox (a _gen_lock reader or orphaned). Can't
-            # un-get from mp.Queue, so just log.
-            if rtype not in ("status",):
+                # Route to mailbox if a matching request_id exists
+                if rid:
+                    with self._mailbox_lock:
+                        mbox = self._mailboxes.get(rid)
+                    if mbox is not None:
+                        mbox.put(resp)
+                        continue
+
+                # No matching mailbox; can't un-get from mp.Queue, so just log.
                 logger.debug(
                     "Dispatcher: no mailbox for request_id=%s type=%s, dropping",
                     rid,
                     rtype,
                 )
+            except Exception:
+                logger.exception("Inference dispatcher: failed to route a response; continuing")
+                continue
 
     def _generate_dispatched(
         self,
@@ -502,30 +606,23 @@ class InferenceOrchestrator:
         if image is not None:
             image_b64 = self._pil_to_base64(image)
 
-        cmd = {
-            "type": "generate",
-            "request_id": request_id,
-            "messages": messages or [],
-            "system_prompt": system_prompt,
-            "image_base64": image_b64,
-            "temperature": temperature,
-            "top_p": top_p,
-            "top_k": top_k,
-            "min_p": min_p,
-            "max_new_tokens": max_new_tokens,
-            "repetition_penalty": repetition_penalty,
-        }
-
-        if use_adapter is not None:
-            cmd["use_adapter"] = use_adapter
-        if tools is not None:
-            cmd["tools"] = tools
-        if enable_thinking is not None:
-            cmd["enable_thinking"] = enable_thinking
-        if reasoning_effort is not None:
-            cmd["reasoning_effort"] = reasoning_effort
-        if preserve_thinking is not None:
-            cmd["preserve_thinking"] = preserve_thinking
+        cmd = self._build_generate_cmd(
+            request_id,
+            image_b64,
+            messages = messages,
+            system_prompt = system_prompt,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            max_new_tokens = max_new_tokens,
+            repetition_penalty = repetition_penalty,
+            use_adapter = use_adapter,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
 
         # Create mailbox BEFORE sending command
         mailbox: queue.Queue = queue.Queue()
@@ -540,36 +637,22 @@ class InferenceOrchestrator:
             yield f"Error: {exc}"
             return
 
-        # Read tokens from our private mailbox
+        def read_mailbox(timeout):
+            try:
+                return mailbox.get(timeout = timeout)
+            except queue.Empty:
+                return None
+
+        # Read tokens from our private mailbox (the dispatcher owns resp_queue).
         try:
-            while True:
-                try:
-                    resp = mailbox.get(timeout = _DISPATCH_READ_TIMEOUT)
-                except queue.Empty:
-                    # Timeout — check subprocess health
-                    if not self._ensure_subprocess_alive():
-                        yield f"Error: {self._subprocess_crash_message('generation')}"
-                        return
-                    continue
-
-                rtype = resp.get("type", "")
-
-                if rtype == "token":
-                    # Cancel from route (e.g. SSE connection closed)
-                    if cancel_event is not None and cancel_event.is_set():
-                        self._cancel_generation()
-                        self._drain_mailbox(mailbox, timeout = 5.0)
-                        return
-                    yield resp.get("text", "")
-
-                elif rtype == "gen_done":
-                    if stats_holder is not None:
-                        stats_holder["stats"] = resp.get("stats")
-                    return
-
-                elif rtype == "gen_error":
-                    yield f"Error: {resp.get('error', 'Unknown error')}"
-                    return
+            yield from self._consume_token_stream(
+                read_mailbox,
+                lambda: self._drain_mailbox(mailbox, timeout = 5.0),
+                crash_context = "generation",
+                cancel_event = cancel_event,
+                stats_holder = stats_holder,
+                read_timeout = _DISPATCH_READ_TIMEOUT,
+            )
         finally:
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
@@ -636,7 +719,9 @@ class InferenceOrchestrator:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        approved_remote_code_fingerprint: Optional[str] = None,
         gpu_ids: Optional[list[int]] = None,
+        subject: Optional[str] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -659,6 +744,8 @@ class InferenceOrchestrator:
                 "hf_token": hf_token or "",
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,
+                "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
+                "subject": subject,
                 "gpu_ids": gpu_ids,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
@@ -716,7 +803,6 @@ class InferenceOrchestrator:
                     )
 
                 if resp.get("success"):
-                    self._current_transformers_major = needed_major
                     model_info = resp.get("model_info", {})
                     self.active_model_name = model_info.get("identifier", model_name)
                     self.models[self.active_model_name] = {
@@ -738,7 +824,8 @@ class InferenceOrchestrator:
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
-                    error = resp.get("error", "Failed to load model")
+                    # Worker reports failures (consent gate included) under "message".
+                    error = resp.get("message") or resp.get("error") or "Failed to load model"
                     self.loading_models.discard(model_name)
                     self.active_model_name = None
                     self.models.clear()
@@ -984,127 +1071,42 @@ class InferenceOrchestrator:
         self._wait_dispatcher_idle()
 
         # Serialize generation: two concurrent readers on resp_queue would
-        # consume and drop each other's token events.
+        # consume and drop each other's token events. Hold _gen_lock across the
+        # cmd build + send + whole stream so we stay the sole resp_queue reader.
         with self._gen_lock:
-            yield from self._generate_locked(
+            request_id = str(uuid.uuid4())
+            image_b64 = self._pil_to_base64(image) if image is not None else None
+            cmd = self._build_generate_cmd(
+                request_id,
+                image_b64,
                 messages = messages,
                 system_prompt = system_prompt,
-                image = image,
                 temperature = temperature,
                 top_p = top_p,
                 top_k = top_k,
                 min_p = min_p,
                 max_new_tokens = max_new_tokens,
                 repetition_penalty = repetition_penalty,
-                cancel_event = cancel_event,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
-                stats_holder = stats_holder,
             )
 
-    def _generate_locked(
-        self,
-        messages: list = None,
-        system_prompt: str = "",
-        image = None,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        top_k: int = 40,
-        min_p: float = 0.0,
-        max_new_tokens: int = 256,
-        repetition_penalty: float = 1.0,
-        cancel_event = None,
-        use_adapter = None,
-        tools: Optional[list] = None,
-        enable_thinking: Optional[bool] = None,
-        reasoning_effort: Optional[str] = None,
-        preserve_thinking: Optional[bool] = None,
-        stats_holder: Optional[dict] = None,
-    ) -> Generator[str, None, None]:
-        """Actual generation logic — must be called under _gen_lock."""
-        request_id = str(uuid.uuid4())
-
-        # Convert PIL Image to base64 if needed
-        image_b64 = None
-        if image is not None:
-            image_b64 = self._pil_to_base64(image)
-
-        cmd = {
-            "type": "generate",
-            "request_id": request_id,
-            "messages": messages or [],
-            "system_prompt": system_prompt,
-            "image_base64": image_b64,
-            "temperature": temperature,
-            "top_p": top_p,
-            "top_k": top_k,
-            "min_p": min_p,
-            "max_new_tokens": max_new_tokens,
-            "repetition_penalty": repetition_penalty,
-        }
-
-        if use_adapter is not None:
-            cmd["use_adapter"] = use_adapter
-        # Only forward template kwargs the caller set, for older worker compat.
-        if tools is not None:
-            cmd["tools"] = tools
-        if enable_thinking is not None:
-            cmd["enable_thinking"] = enable_thinking
-        if reasoning_effort is not None:
-            cmd["reasoning_effort"] = reasoning_effort
-        if preserve_thinking is not None:
-            cmd["preserve_thinking"] = preserve_thinking
-
-        try:
-            self._send_cmd(cmd)
-        except RuntimeError as exc:
-            yield f"Error: {exc}"
-            return
-
-        # We are the only resp_queue reader (under _gen_lock).
-        while True:
-            resp = self._read_resp(timeout = 30.0)
-
-            if resp is None:
-                # Check subprocess health
-                if not self._ensure_subprocess_alive():
-                    yield f"Error: {self._subprocess_crash_message('generation')}"
-                    return
-                continue
-
-            rtype = resp.get("type", "")
-
-            # Status messages — skip
-            if rtype == "status":
-                continue
-
-            # Error without request_id = subprocess-level error
-            resp_rid = resp.get("request_id")
-            if rtype == "error" and not resp_rid:
-                yield f"Error: {resp.get('error', 'Unknown error')}"
+            try:
+                self._send_cmd(cmd)
+            except RuntimeError as exc:
+                yield f"Error: {exc}"
                 return
 
-            if rtype == "token":
-                # Cancel from route (e.g. SSE connection closed)
-                if cancel_event is not None and cancel_event.is_set():
-                    self._cancel_generation()
-                    # Wait for the cancel ack so stale events don't leak into
-                    # the next request.
-                    self._drain_until_gen_done(timeout = 5.0)
-                    return
-                yield resp.get("text", "")
-
-            elif rtype == "gen_done":
-                if stats_holder is not None:
-                    stats_holder["stats"] = resp.get("stats")
-                return
-
-            elif rtype == "gen_error":
-                yield f"Error: {resp.get('error', 'Unknown error')}"
-                return
+            yield from self._consume_token_stream(
+                self._read_resp,
+                lambda: self._drain_until_gen_done(timeout = 5.0),
+                crash_context = "generation",
+                cancel_event = cancel_event,
+                stats_holder = stats_holder,
+            )
 
     def reset_generation_state(self):
         """Cancel any ongoing generation and reset state."""
@@ -1139,8 +1141,6 @@ class InferenceOrchestrator:
             raise RuntimeError("Inference subprocess is not running")
         if not self.active_model_name:
             raise RuntimeError("No active model")
-
-        import uuid
 
         request_id = str(uuid.uuid4())
 
@@ -1254,8 +1254,6 @@ class InferenceOrchestrator:
             return
 
         with self._gen_lock:
-            import uuid
-
             request_id = str(uuid.uuid4())
 
             # numpy array -> list for mp.Queue serialization
@@ -1284,38 +1282,12 @@ class InferenceOrchestrator:
                 yield f"Error: {exc}"
                 return
 
-            # Yield tokens — same pattern as _generate_locked
-            while True:
-                resp = self._read_resp(timeout = 30.0)
-
-                if resp is None:
-                    if not self._ensure_subprocess_alive():
-                        yield ("Error: " + self._subprocess_crash_message("audio input generation"))
-                        return
-                    continue
-
-                rtype = resp.get("type", "")
-
-                if rtype == "status":
-                    continue
-
-                if rtype == "error" and not resp.get("request_id"):
-                    yield f"Error: {resp.get('error', 'Unknown error')}"
-                    return
-
-                if rtype == "token":
-                    if cancel_event is not None and cancel_event.is_set():
-                        self._cancel_generation()
-                        self._drain_until_gen_done(timeout = 5.0)
-                        return
-                    yield resp.get("text", "")
-
-                elif rtype == "gen_done":
-                    return
-
-                elif rtype == "gen_error":
-                    yield f"Error: {resp.get('error', 'Unknown error')}"
-                    return
+            yield from self._consume_token_stream(
+                self._read_resp,
+                lambda: self._drain_until_gen_done(timeout = 5.0),
+                crash_context = "audio input generation",
+                cancel_event = cancel_event,
+            )
 
     # ------------------------------------------------------------------
     # Local helpers (no subprocess needed)

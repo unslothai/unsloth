@@ -482,6 +482,37 @@ function Install-UnslothStudio {
         }
     }
 
+    # Retry Invoke-InstallCommand on transient uv download failures with backoff.
+    # Returns the last exit code on permanent failure so rollback still fires.
+    function Invoke-InstallCommandRetry {
+        param(
+            [Parameter(Mandatory = $true, Position = 0)][ScriptBlock]$Command,
+            [string]$Label = "install step"
+        )
+        # Sanitize overrides to a default of 3 (a typo must not disable retries; =1 disables).
+        # TryParse with bounds avoids an Int32 overflow throw. Bounds: 1..100 retries, 0..3600s.
+        $maxAttempts = 3
+        $parsedAttempts = 0
+        if ([int]::TryParse($env:UNSLOTH_INSTALL_RETRIES, [ref]$parsedAttempts) -and $parsedAttempts -ge 1 -and $parsedAttempts -le 100) {
+            $maxAttempts = $parsedAttempts
+        }
+        $delay = 3
+        $parsedDelay = 0
+        if ([int]::TryParse($env:UNSLOTH_INSTALL_RETRY_DELAY, [ref]$parsedDelay) -and $parsedDelay -ge 0 -and $parsedDelay -le 3600) {
+            $delay = $parsedDelay
+        }
+        $attempt = 1
+        while ($true) {
+            $code = Invoke-InstallCommand $Command
+            if ($code -eq 0) { return 0 }
+            if ($attempt -ge $maxAttempts) { return $code }
+            substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
+            Start-Sleep -Seconds $delay
+            $attempt++
+            $delay = $delay * 2
+        }
+    }
+
     function New-StudioShortcuts {
         param(
             [Parameter(Mandatory = $true)][string]$UnslothExePath
@@ -506,7 +537,6 @@ function Install-UnslothStudio {
             }
             $appDir = $StudioDataDir
             $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
-            $launcherVbs = Join-Path $appDir "launch-studio.vbs"
             $desktopDir = [Environment]::GetFolderPath("Desktop")
             $desktopLink = if ($desktopDir -and $desktopDir.Trim()) {
                 Join-Path $desktopDir "Unsloth Studio.lnk"
@@ -799,19 +829,30 @@ exit 0
             # even when install.ps1 is executed from PowerShell 7.
             $utf8Bom = New-Object System.Text.UTF8Encoding($true)
             [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
-            # shell.Run(cmd, 0, ...) already hides the window, so -WindowStyle Hidden
-            # is redundant; omitting it trims an AV-heuristic token (Kaspersky FP).
-            $vbsContent = @"
-Set shell = CreateObject("WScript.Shell")
-cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File ""$launcherPs1"""
-shell.Run cmd, 0, False
-"@
-            # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
-            Set-Content -LiteralPath $launcherVbs -Value $vbsContent -Encoding Unicode -Force
+            # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
+            # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
+            # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
+            # shortcuts instead point straight at powershell.exe running
+            # launch-studio.ps1 with a hidden window (selected below).
+
+            # Delete any launch-studio.vbs left by a pre-hardening install. New
+            # installs no longer generate it, but an upgrade that merely stopped
+            # generating it would leave the exact file AV flags on disk, so remove
+            # it explicitly. Covers default and env-mode installs (same $appDir).
+            $legacyLauncherVbs = Join-Path $appDir "launch-studio.vbs"
+            if (Test-Path -LiteralPath $legacyLauncherVbs) {
+                Remove-Item -LiteralPath $legacyLauncherVbs -Force -ErrorAction SilentlyContinue
+            }
 
             # Prefer bundled icon from local clone/dev installs.
             # If not available, best-effort download from raw GitHub.
             # We only attach the icon if the resulting file has a valid ICO header.
+            # Snapshot the existing icon first so we can tell whether it actually
+            # changed and gate the heavier icon-cache refresh on a real change.
+            $preIconHash = $null
+            if (Test-Path -LiteralPath $iconPath) {
+                try { $preIconHash = (Get-FileHash -LiteralPath $iconPath -Algorithm SHA256).Hash } catch {}
+            }
             $hasValidIcon = $false
             if ($bundledIcon -and (Test-Path -LiteralPath $bundledIcon)) {
                 try {
@@ -847,6 +888,24 @@ shell.Run cmd, 0, False
                 }
             }
 
+            # Did the icon content actually change vs the previous install?
+            # Only a real change (or a first/removed icon) should trigger the heavy
+            # refresh; a no-op reinstall with no icon at all must not.
+            $iconChanged = $false
+            if ($hasValidIcon) {
+                if (-not $preIconHash) {
+                    $iconChanged = $true
+                } else {
+                    try {
+                        $postIconHash = (Get-FileHash -LiteralPath $iconPath -Algorithm SHA256).Hash
+                        $iconChanged = ($postIconHash -ne $preIconHash)
+                    } catch { $iconChanged = $true }
+                }
+            } elseif ($preIconHash) {
+                # A previously present icon was removed or invalidated.
+                $iconChanged = $true
+            }
+
             # Env-mode: skip persistent Desktop / Start Menu .lnk shortcuts
             # that may point at a deleted workspace; launcher + icon stay.
             if ($StudioRedirectMode -eq 'env') {
@@ -854,8 +913,22 @@ shell.Run cmd, 0, False
                 return
             }
 
-            $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
-            $shortcutArgs = "//B //Nologo `"$launcherVbs`""
+            # Whether this is effectively a first install (no pre-existing .lnk).
+            # Used to gate the heavier icon-cache refresh below so a no-op reinstall
+            # does not repeatedly clear caches / restart StartMenuExperienceHost --
+            # a behavioral cluster AV heuristics can score as dropper-like.
+            $firstInstall = -not (
+                ($desktopLink -and (Test-Path -LiteralPath $desktopLink)) -or
+                ($startMenuLink -and (Test-Path -LiteralPath $startMenuLink))
+            )
+
+            # Launch transport for the shortcuts: powershell.exe runs
+            # launch-studio.ps1 with a hidden window. We deliberately avoid a
+            # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
+            # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
+            $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+            $shortcutTarget = $powershellForLnk
+            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPs1`""
 
             try {
                 $wshell = New-Object -ComObject WScript.Shell
@@ -865,9 +938,11 @@ shell.Run cmd, 0, False
                     if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
                     try {
                         $shortcut = $wshell.CreateShortcut($linkPath)
-                        $shortcut.TargetPath = $wscriptExe
+                        $shortcut.TargetPath = $shortcutTarget
                         $shortcut.Arguments = $shortcutArgs
                         $shortcut.WorkingDirectory = $appDir
+                        # Start minimized so the brief PowerShell console flash is muted.
+                        $shortcut.WindowStyle = 7
                         $shortcut.Description = "Launch Unsloth Studio"
                         if ($hasValidIcon) {
                             $shortcut.IconLocation = "$iconPath,0"
@@ -881,15 +956,13 @@ shell.Run cmd, 0, False
                 }
                 if ($createdShortcutCount -gt 0) {
                     substep "Created Unsloth Studio shortcut"
-                    # Force Explorer to re-read each new shortcut's icon so it renders
-                    # immediately instead of a stale/generic entry (a same-name .lnk
-                    # recreated across reinstalls keeps Explorer's cached per-item icon).
-                    # The reliable, non-disruptive fix (no explorer restart) is a per-item
-                    # SHChangeNotify SHCNE_UPDATEITEM + SHCNF_PATHW per .lnk; the global
-                    # SHCNE_ASSOCCHANGED broadcast alone does NOT recover a stale item.
-                    # Also clear the on-disk icon cache (covers heavier staleness).
-                    try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
-                    try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
+                    # Always do the cheap, non-disruptive per-item refresh so a
+                    # rewritten same-name .lnk renders with its new target/icon
+                    # immediately (a same-name .lnk recreated across reinstalls keeps
+                    # Explorer's cached per-item icon). The reliable fix (no explorer
+                    # restart) is a per-item SHChangeNotify SHCNE_UPDATEITEM +
+                    # SHCNF_PATHW per .lnk; the global SHCNE_ASSOCCHANGED broadcast
+                    # alone does NOT recover a stale item.
                     try {
                         Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int eventId, uint flags, string item1, System.IntPtr item2);' -ErrorAction SilentlyContinue
                         # SHCNE_UPDATEITEM (0x00002000) + SHCNF_PATHW (0x0005) per shortcut
@@ -899,21 +972,31 @@ shell.Run cmd, 0, False
                         # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
                         [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                     } catch {}
-                    # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
-                    # pre-rendered tile-icon cache that ie4uinit/explorer restart do NOT
-                    # invalidate, so a rewritten same-name shortcut shows the old tile
-                    # until the host restarts. Drop only the render caches (NEVER
-                    # start2.bin -- the pinned layout) and let the host rebuild.
-                    # Best-effort; Win10 has no such host (Test-Path skips it).
-                    try {
-                        $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
-                        if (Test-Path -LiteralPath $smehTemp) {
-                            Get-ChildItem -LiteralPath $smehTemp -Filter "TileCache_*" -ErrorAction SilentlyContinue |
-                                Remove-Item -Force -ErrorAction SilentlyContinue
-                            Remove-Item -LiteralPath (Join-Path $smehTemp "StartUnifiedTileModelCache.dat") -Force -ErrorAction SilentlyContinue
-                            Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
-                        }
-                    } catch {}
+                    # Heavier on-disk icon-cache clear + StartMenuExperienceHost tile
+                    # rebuild only when the icon actually changed or this is a first
+                    # install. Running "clear icon cache + kill StartMenuExperienceHost"
+                    # on every no-op reinstall is a dropper-like behavioral cluster and
+                    # is unnecessary when the icon is unchanged (the per-item notify
+                    # above already refreshes the rewritten shortcut).
+                    if ($firstInstall -or $iconChanged) {
+                        try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
+                        try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
+                        # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
+                        # pre-rendered tile-icon cache that ie4uinit/explorer restart do NOT
+                        # invalidate, so a rewritten same-name shortcut shows the old tile
+                        # until the host restarts. Drop only the render caches (NEVER
+                        # start2.bin -- the pinned layout) and let the host rebuild.
+                        # Best-effort; Win10 has no such host (Test-Path skips it).
+                        try {
+                            $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
+                            if (Test-Path -LiteralPath $smehTemp) {
+                                Get-ChildItem -LiteralPath $smehTemp -Filter "TileCache_*" -ErrorAction SilentlyContinue |
+                                    Remove-Item -Force -ErrorAction SilentlyContinue
+                                Remove-Item -LiteralPath (Join-Path $smehTemp "StartUnifiedTileModelCache.dat") -Force -ErrorAction SilentlyContinue
+                                Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+                            }
+                        } catch {}
+                    }
                 } else {
                     substep "no Unsloth Studio shortcuts were created" "Yellow"
                 }
@@ -1181,7 +1264,7 @@ shell.Run cmd, 0, False
 
     # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
-    $UvMinVersion = "0.7.22"
+    $UvMinVersion = "0.8.16"
     function Test-UvVersionOk {
         $cmd = Get-Command uv -ErrorAction SilentlyContinue
         if (-not $cmd) { return $false }
@@ -1250,6 +1333,15 @@ shell.Run cmd, 0, False
     # default on slow machines. Default to 180s, preserving overrides ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
+    }
+
+    # uv >= 0.8.16 retries HTTP/2 streaming body errors; raise retries and read
+    # timeout for large wheel downloads. User-provided values are preserved.
+    if (-not $env:UV_HTTP_RETRIES) {
+        $env:UV_HTTP_RETRIES = "5"
+    }
+    if (-not $env:UV_HTTP_TIMEOUT) {
+        $env:UV_HTTP_TIMEOUT = "180"
     }
 
     # ── Create venv (migrate old layout if possible, otherwise fresh) ──
@@ -1531,22 +1623,78 @@ shell.Run cmd, 0, False
     if (-not $HasNvidiaSmi) {
         # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
         # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
-        $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
-        if (-not $hipinfoExe) {
-            $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
-            $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
-            if ($hipRoot) {
-                $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
-                if (Test-Path $hipinfoCandidate) {
-                    Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
-                    Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
-                    Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
-                    $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
-                } else {
-                    Write-Host "  [WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" -ForegroundColor Yellow
-                    Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
-                    Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+        # Ignore the venv hipInfo.exe (AMD wheel, on PATH): not a HIP SDK, so
+        # amd-smi would still auto-elevate. Cf. _path_inside_venv().
+        function Test-HipinfoIsVenvInternal {
+            param([AllowNull()][string]$HipinfoPath)
+            if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
+            # Also derive the venv from the setup python + default Studio home, so
+            # the venv hipInfo is caught when VenvDir/VIRTUAL_ENV are unset.
+            $venvRoots = @()
+            if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
+            $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
+            if ($vd) { $venvRoots += $vd }
+            if ($env:UNSLOTH_SETUP_PYTHON) {
+                try { $venvRoots += (Split-Path -Parent (Split-Path -Parent $env:UNSLOTH_SETUP_PYTHON)) } catch {}
+            }
+            if ($env:USERPROFILE) { $venvRoots += (Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio") }
+            # A custom Studio home (UNSLOTH_STUDIO_HOME / STUDIO_HOME alias) moves the
+            # venv off the default path; seed it too or its hipInfo escapes the filter.
+            $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
+            if ($studioHomeEnv) {
+                # Expand a leading ~ like the canonical resolver; else GetFullPath
+                # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
+                if (($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+                    # A bare "~" leaves an empty child path; Join-Path rejects that on
+                    # PS 5.1, so use USERPROFILE directly and only join a real remainder.
+                    $studioHomeRest = $studioHomeEnv.Substring(1).TrimStart('/', '\')
+                    $studioHomeEnv = if ($studioHomeRest) { Join-Path $env:USERPROFILE $studioHomeRest } else { $env:USERPROFILE }
                 }
+                $venvRoots += (Join-Path $studioHomeEnv "unsloth_studio")
+            }
+            try { $hip = [System.IO.Path]::GetFullPath($HipinfoPath).TrimEnd('\', '/') } catch { return $false }
+            foreach ($root in $venvRoots) {
+                if ([string]::IsNullOrWhiteSpace($root)) { continue }
+                try { $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\', '/') } catch { continue }
+                # Skip a bare drive root (e.g. a non-venv UNSLOTH_SETUP_PYTHON like
+                # C:\Python311\python.exe yields C:) -- it would match every path on that drive.
+                if ($r -match '^[a-zA-Z]:$') { continue }
+                if ($hip.Equals($r, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $hip.StartsWith($r + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $true
+                }
+            }
+            return $false
+        }
+        # Scan all hipinfo and keep the first non-venv one (the venv copy from the
+        # bnb fix could shadow a real HIP SDK's). -CommandType Application matches
+        # only real executables, not a user alias/function named hipinfo.
+        $hipinfoExe = Get-Command hipinfo -CommandType Application -All -ErrorAction SilentlyContinue |
+            Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
+            Select-Object -First 1
+        if (-not $hipinfoExe) {
+            # Iterate the env roots (mirrors the Python list) and take the first non-venv
+            # bin\hipinfo.exe, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH.
+            $hipMissingLabel = $null; $hipMissingRoot = $null; $hipMissingCandidate = $null
+            foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH")) {
+                $hipRoot = [Environment]::GetEnvironmentVariable($hipEnvLabel)
+                if ([string]::IsNullOrWhiteSpace($hipRoot)) { continue }
+                $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+                if (-not (Test-Path $hipinfoCandidate)) {
+                    if (-not $hipMissingLabel) { $hipMissingLabel = $hipEnvLabel; $hipMissingRoot = $hipRoot; $hipMissingCandidate = $hipinfoCandidate }
+                    continue
+                }
+                if (Test-HipinfoIsVenvInternal $hipinfoCandidate) { continue }   # venv copy (AMD wheel): not a HIP SDK
+                Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
+                Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
+                Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
+                $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+                break
+            }
+            if ((-not $hipinfoExe) -and $hipMissingLabel) {
+                Write-Host "  [WARN] ${hipMissingLabel}=$hipMissingRoot is set but hipinfo.exe not found at $hipMissingCandidate" -ForegroundColor Yellow
+                Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
+                Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
             }
         }
         if ($hipinfoExe) {
@@ -1632,11 +1780,10 @@ shell.Run cmd, 0, False
             } catch {}
         }
         # ── Arch resolution: env-var override → name inference ──────────────
-        # Runs even when the hipinfo/amd-smi probe could NOT confirm a runtime
-        # ($HasROCm false): the gfx arch inferred from the WMI GPU name lets the
-        # studio setup forward --rocm-gfx and pull a GPU-accelerated ROCm
-        # llama.cpp, which bundles its own ROCm runtime. PyTorch's ROCm wheels
-        # still require a confirmed HIP SDK -- they stay gated on $HasROCm below.
+        # Runs even when the probe can't confirm a runtime ($HasROCm false): the
+        # WMI-name gfx arch drives both ROCm llama.cpp and torch. repo.amd.com
+        # wheels bundle their own runtime (no HIP SDK), so a mapped arch installs
+        # ROCm torch directly below -- no wasted CPU base.
         if (-not $ROCmGfxArch) {
             # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
             if ($env:UNSLOTH_ROCM_GFX_ARCH) {
@@ -1811,6 +1958,64 @@ shell.Run cmd, 0, False
         substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
         return "$baseUrl/cu126"
     }
+
+    # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
+    # torch.__version__ -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu,
+    # matching setup.ps1's stale-venv parse.
+    function ConvertTo-TorchFlavorTag {
+        param([string]$TorchVersion)
+        if (-not $TorchVersion) { return $null }
+        if ($TorchVersion -match '\+(cu\d+)') { return $Matches[1] }
+        if ($TorchVersion -match '\+rocm')    { return 'rocm' }
+        if ($TorchVersion -match '\+cpu')     { return 'cpu' }
+        return 'cpu'
+    }
+
+    # Expected tag from the index leaf: cuXXX / cpu / rocm ($ROCmIndexUrl or a
+    # gfx* leaf -> rocm). $null on an unknown leaf (odd mirror) so repair no-ops.
+    function Get-ExpectedTorchFlavorTag {
+        param([string]$TorchIndexUrl, [string]$ROCmIndexUrl)
+        if (-not [string]::IsNullOrWhiteSpace($ROCmIndexUrl)) { return 'rocm' }
+        if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return $null }
+        $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        if ($leaf -match '^cu\d+$') { return $leaf }
+        if ($leaf -eq 'cpu')        { return 'cpu' }
+        if ($leaf -match '^rocm')   { return 'rocm' }
+        if ($leaf -match '^gfx')    { return 'rocm' }
+        return $null
+    }
+
+    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Uses
+    # ProcessStartInfo (not &) so stderr doesn't trip $ErrorActionPreference.
+    function Get-InstalledTorchTag {
+        param([string]$PythonExe)
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $PythonExe
+            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            # Drain BOTH streams async, then WaitForExit. A synchronous ReadToEnd()
+            # before the wait would block forever if a wedged "import torch" never
+            # closes stdout; leaving the redirected stderr undrained would deadlock a
+            # child that floods it past the pipe buffer. Async reads let a noisy-but-
+            # exiting probe finish, while a truly hung one still hits the 30s timeout
+            # and is killed -- bounded either way.
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            $finished = $proc.WaitForExit(30000)
+            if (-not $finished) { try { $proc.Kill() } catch {}; return $null }
+            $torchVer = $outTask.GetAwaiter().GetResult().Trim()
+            [void]$errTask.GetAwaiter().GetResult()
+            if ($proc.ExitCode -ne 0 -or -not $torchVer) { return $null }
+            return ConvertTo-TorchFlavorTag $torchVer
+        } catch { return $null }
+    }
+
     $TorchIndexUrl = Get-TorchIndexUrl
 
     # ── GPU arch → newest compatible Windows ROCm wheel release ──
@@ -1822,7 +2027,7 @@ shell.Run cmd, 0, False
     # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
     $ROCmIndexUrl = $null
     $ROCmTorchFloor = $null
-    if ($HasROCm -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
+    if (($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         $archFamilyMap = @{
             "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
@@ -1844,6 +2049,17 @@ shell.Run cmd, 0, False
         $torchFloorMap = @{
             "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
             "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
+        }
+        # Companion ranges track the torch ceiling so pip resolves a consistent
+        # trio on AMD's per-arch index (each published independently). Mirrors
+        # setup.ps1 / install_python_stack.py; bump all three together for 2.12.x.
+        $torchvisionFloorMap = @{
+            "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
+            "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
+        }
+        $torchaudioFloorMap = @{
+            "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
+            "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
         if ($archFamily) {
@@ -1873,10 +2089,10 @@ shell.Run cmd, 0, False
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
         if ($ROCmGfxArch) {
-            # Known AMD arch: install.ps1 lays down CPU PyTorch as a base, then
-            # setup.ps1 swaps in AMD's bundled-runtime GPU ROCm wheels (no HIP SDK).
-            substep "Installing CPU PyTorch as a base -- Studio setup installs GPU ROCm" "Cyan"
-            substep "wheels for $ROCmGfxArch next (bundled runtime; HIP SDK not required)." "Cyan"
+            # Only an unmapped arch reaches here (a mapped one set $ROCmIndexUrl
+            # above). No ROCm torch wheels for this arch (e.g. RDNA2 gfx103X) -> CPU.
+            substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmGfxArch." "Yellow"
+            substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
         } else {
             if ($HipSdkInstalled -and -not $HasROCm) {
                 substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
@@ -1930,21 +2146,21 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
                 # is --no-deps). All transitive deps are torch-free.
-                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -1958,7 +2174,7 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -1971,15 +2187,34 @@ shell.Run cmd, 0, False
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch from $ROCmIndexUrl..."
             $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
+            # Pin the companions to match $torchSpec; bare names can resolve an
+            # ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
+            $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
+            $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             if ($torchInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
-                return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+                # Transient AMD-index failure: fall back to a CPU base so the install
+                # still completes; Studio setup retries ROCm afterwards.
+                substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Studio setup retries ROCm." "Yellow"
+                # --force-reinstall: a failed ROCm install can leave an unpinned ROCm
+                # torch (e.g. 2.10.0+rocm on gfx110X/gfx90a) that still satisfies the CPU
+                # torch>= range, so without it uv would keep the ROCm build and only swap
+                # the companions -- a mismatched venv the flavor-repair block won't fix.
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+                if ($torchInstallExit -ne 0) {
+                    Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
+                    return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+                }
+                # CPU base is in; drop the ROCm expectation so the flavor-repair
+                # block below won't retry the just-failed index and abort. setup.ps1
+                # reinstalls ROCm afterwards (recomputes its own index URL).
+                $ROCmIndexUrl = $null
+                $ROCmTorchFloor = $null
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($TorchIndexUrl)..."
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -1991,21 +2226,21 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
-                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7" }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2020,7 +2255,7 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -2031,7 +2266,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.7" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.6.7" "unsloth>=2026.6.9" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2043,16 +2278,64 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
+            }
+        }
+    }
+
+    # ── Enforce the installed torch flavor matches the detected GPU build ──
+    # PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
+    # keeps a stale torch==X+cpu against a CUDA index and setup.ps1 then loops on
+    # "torch cpu != required cuXXX". Reinstall the right triplet when a GPU build is
+    # expected: CUDA from $TorchIndexUrl, ROCm from $ROCmIndexUrl (repo.amd.com gfx*
+    # is a PEP 503 index uv resolves via --index-url, same URL the fresh ROCm install
+    # above uses). --no-torch / CPU-only hosts (expected cpu) are no-ops.
+    if (-not $SkipTorch) {
+        $expectedTorchTag = Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl
+        if ($expectedTorchTag -and $expectedTorchTag -ne 'cpu') {
+            $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+            if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+                if ($expectedTorchTag -eq 'rocm' -and $ROCmIndexUrl) {
+                    # AMD: a migrated venv can keep a stale CPU torch the fresh ROCm path
+                    # would have force-reinstalled. Repair from the same repo.amd.com index.
+                    $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
+                    # Pin companions like the fresh ROCm path (bare names can pull an
+                    # ABI-incompatible torchvision/torchaudio from the per-arch index).
+                    $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
+                    $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+                    substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                    if ($torchFixExit -ne 0) {
+                        Write-Host "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
+                        return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
+                    }
+                    $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+                } elseif ($expectedTorchTag -ne 'rocm') {
+                    # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
+                    substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    if ($torchFixExit -ne 0) {
+                        Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
+                        return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
+                    }
+                    $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+                }
+            }
+            # Safety net (incl. AMD): GPU build expected but still CPU -> warn loudly.
+            if ($installedTorchTag -eq 'cpu') {
+                Write-Host ""
+                Write-Host "  [WARN] PyTorch is CPU-only but a $expectedTorchTag GPU build was expected for this machine." -ForegroundColor Yellow
+                Write-Host "  [WARN] Training and GPU inference will run on CPU until this is fixed." -ForegroundColor Yellow
+                Write-Host "  [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU." -ForegroundColor Yellow
             }
         }
     }
@@ -2104,7 +2387,9 @@ shell.Run cmd, 0, False
 
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
-    # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
+    # CUDA Toolkit, and other dependencies automatically via winget. Node.js is
+    # NOT installed via winget -- setup.ps1 uses an isolated Node it manages and
+    # never touches the system Node/npm.
     Write-TauriLog "STEP" "Running studio setup"
     step "setup" "running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
@@ -2310,6 +2595,7 @@ shell.Run cmd, 0, False
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
             substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
             Write-Host ""
         }
     } else {
@@ -2330,6 +2616,7 @@ shell.Run cmd, 0, False
             substep "unsloth studio -p 8888"
         }
         substep "(add -H 0.0.0.0 to allow network / cloud access)"
+        substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
         Write-Host ""
     }
 }

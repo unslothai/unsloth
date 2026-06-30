@@ -7,7 +7,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useT, type TranslationKey } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
@@ -23,8 +23,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef } from "react";
 import {
-  useSettingsDialogStore,
   type SettingsTab,
+  useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
 import { AboutTab } from "./tabs/about-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
@@ -49,12 +49,16 @@ const TABS: TabDef[] = [
     labelKey: "settings.tabs.appearance",
     icon: PaintBrush02Icon,
   },
-  { id: "chat", labelKey: "settings.tabs.chat", icon: Message01Icon },
+  {
+    id: "chat",
+    labelKey: "settings.tabs.chat",
+    icon: Message01Icon,
+    badgeKey: "common.new",
+  },
   {
     id: "api-keys",
     labelKey: "settings.tabs.apiKeys",
     icon: Globe02Icon,
-    badgeKey: "common.new",
   },
   {
     id: "connections",
@@ -114,7 +118,7 @@ export function SettingsDialog() {
     <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
       <DialogContent
         showCloseButton={false}
-        overlayClassName="bg-background/40"
+        overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
         onCloseAutoFocus={(e) => {
           // Restore focus to the element that triggered openDialog(). Radix's
           // FocusScope races our rAF-scheduled tab focus and loses the
@@ -134,7 +138,9 @@ export function SettingsDialog() {
           "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
         )}
       >
-        <DialogTitle className="sr-only">{t("settings.dialog.title")}</DialogTitle>
+        <DialogTitle className="sr-only">
+          {t("settings.dialog.title")}
+        </DialogTitle>
         <DialogDescription className="sr-only">
           {t("settings.dialog.description")}
         </DialogDescription>

@@ -23,6 +23,7 @@ export const en = {
     brand: "unsloth",
     product: "Unsloth Studio",
     accountMenu: "{name} account menu",
+    updateAvailable: "Update available",
     aria: {
       home: "Unsloth home",
       closeSidebar: "Close sidebar",
@@ -32,6 +33,7 @@ export const en = {
     },
     navigation: {
       newChat: "New Chat",
+      returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
       hub: "Hub",
@@ -104,6 +106,28 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
+      tokenSaved: "Token saved",
+      password: "Password",
+      passwordDescription: "Change the password for this Studio account.",
+      passwordDialog: {
+        trigger: "Change password",
+        title: "Change password",
+        description:
+          "Enter your current password and choose a new one (at least {minLength} characters).",
+        currentPassword: "Current password",
+        newPassword: "New password",
+        confirmPassword: "Confirm new password",
+        currentTooShort:
+          "Current password must be at least {minLength} characters.",
+        newTooShort: "New password must be at least {minLength} characters.",
+        mismatch: "Passwords do not match.",
+        samePassword:
+          "New password must be different from your current password.",
+        update: "Update password",
+        updating: "Updating...",
+        updated: "Password updated.",
+        updateFailed: "Password update failed.",
+      },
       chatDefaults: "Chat defaults",
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
@@ -118,11 +142,30 @@ export const en = {
         loadError: "Failed to load Helper LLM settings.",
         saveError: "Failed to save Helper LLM settings.",
       },
+      previewSharing: {
+        sectionTitle: "Preview sharing",
+        enableLabel: "Public preview links",
+        enableDescription:
+          "Let anyone with a signed link chat with a finished model, no login required. Turn off to take the public preview surface offline; shared links stop working.",
+        loadError: "Failed to load preview sharing settings.",
+        saveError: "Failed to save preview sharing settings.",
+        revokeLabel: "Revoke all preview links",
+        revokeDescription:
+          "Rotate the signing secret so every link you've shared stops working. Newly copied links keep working.",
+        revokeAction: "Revoke links",
+        revoking: "Revoking...",
+        revokeConfirmTitle: "Revoke all preview links?",
+        revokeConfirmDescription:
+          "Every preview link you've shared will stop working immediately. This can't be undone.",
+        revokeConfirmAction: "Revoke all links",
+        revoked: "All preview links revoked",
+        revokeError: "Couldn't revoke preview links",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "llama.cpp update notifications",
         showLlamaUpdatesDescription:
-          "Notify when a newer llama.cpp build is available. Turn off if you only train.",
+          "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
       },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",
@@ -132,8 +175,17 @@ export const en = {
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
-        maxUploadSizeDescription:
-          "Default is {defaultSize} MB.",
+        maxUploadSizeDescription: "Default is {defaultSize} MB.",
+      },
+      storage: {
+        sectionTitle: "Storage",
+        modelsFolder: "Models folder",
+        modelsFolderDescription: "Where downloaded models are stored.",
+        openAction: "Open",
+        copyAction: "Copy path",
+        copied: "Path copied",
+        openError: "Couldn't open the folder",
+        copyError: "Couldn't copy the path",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
@@ -196,6 +248,9 @@ export const en = {
     chat: {
       title: "Chat",
       description: "Manage chat history stored on this device.",
+      modelDisclaimer: "Show model disclaimer",
+      modelDisclaimerDescription:
+        'Show "LLMs can make mistakes" under the chat box.',
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
@@ -207,8 +262,7 @@ export const en = {
       },
       data: "Data",
       exportHistory: "Export chat history",
-      exportHistoryDescription:
-        "Download all chats and messages as JSON.",
+      exportHistoryDescription: "Download all chats and messages as JSON.",
       exportAction: "Export",
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
@@ -268,8 +322,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description:
-        "Access Unsloth via the OpenAI-compatible API.",
+      description: "Access Unsloth via the OpenAI-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       newBadge: "New",
@@ -325,8 +378,7 @@ export const en = {
     },
     about: {
       title: "About",
-      description:
-        "Docs, release notes, feedback, and build info.",
+      description: "Docs, release notes, feedback, and build info.",
       studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
       llamaCppVersion: "llama.cpp Version",
@@ -345,8 +397,7 @@ export const en = {
         sectionTitle: "License",
         studioLabel: "Unsloth Studio",
         studioLicense: "AGPL-3.0",
-        studioDescription:
-          "Open source under the GNU AGPL v3.0.",
+        studioDescription: "Open source under the GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
         libraryDescription: "Licensed under Apache 2.0.",
@@ -370,7 +421,8 @@ export const en = {
         installCommandWindows: "Windows install command",
         localInstallDetected:
           "Local install detected. Update from your original checkout to avoid replacing it with PyPI.",
-        pullThenUpdate: "Pull the latest changes, then run the local installer:",
+        pullThenUpdate:
+          "Pull the latest changes, then run the local installer:",
         gitPullCommand: "git pull command",
         localInstallerCommand: "local installer command",
         sourceInstallDetected:
@@ -530,7 +582,8 @@ export const en = {
       subset: "Subset",
       s3: {
         title: "S3 Configuration",
-        description: "Load .parquet, .json, .jsonl, or .csv datasets from Amazon S3",
+        description:
+          "Load .parquet, .json, .jsonl, or .csv datasets from Amazon S3",
         bucket: "Bucket Name",
         bucketPlaceholder: "my-training-data-bucket",
         region: "AWS Region",
@@ -543,17 +596,23 @@ export const en = {
         secretAccessKey: "Secret Access Key",
         secretAccessKeyPlaceholder: "Your AWS secret access key",
         useIamRole: "Use IAM Role",
-        useIamRoleTooltip: "Use IAM role credentials instead of access keys (recommended for EC2/SageMaker)",
+        useIamRoleTooltip:
+          "Use IAM role credentials instead of access keys (recommended for EC2/SageMaker)",
         testConnection: "Test Connection",
         connectionSuccess: "Successfully connected to S3 bucket",
         connectionFailed: "Failed to connect to S3 bucket",
         comingSoon: "S3 integration coming soon",
-        comingSoonDescription: "S3 dataset loading requires boto3. This feature is under development.",
+        comingSoonDescription:
+          "S3 dataset loading requires boto3. This feature is under development.",
       },
     },
     params: {
       title: "Parameters",
       description: "Configure training hyperparameters",
+      projectName: "Project Name",
+      optional: "Optional",
+      projectNameDescription:
+        "Used in training output folder names, export defaults, and history.",
       loraSettings: "LoRA Settings",
       trainingHyperparameters: "Training Hyperparameters",
       maxSteps: "Max Steps",
@@ -726,6 +785,9 @@ export const en = {
         running: "Training in progress",
         errored: "Training errored",
       },
+      copyPreviewLink: "Copy preview link",
+      previewLinkCopied: "Preview link copied",
+      previewLinkCopyFailed: "Couldn't copy the link",
     },
     charts: {
       settings: "Chart Settings",
@@ -771,6 +833,7 @@ export const en = {
     progress: {
       title: "Training Progress",
       liveMetrics: "Live training metrics",
+      exportGguf: "Export to GGUF",
       openConfig: "Open training config",
       configLabel: "Training Config",
       hyperparams: "Hyperparams",
@@ -791,6 +854,7 @@ export const en = {
       loss: "Loss",
       lr: "LR",
       gradNorm: "Grad Norm",
+      project: "Project",
       model: "Model",
       method: "Method",
       elapsed: "Elapsed: {value}",
@@ -830,6 +894,7 @@ export const en = {
       resumingTraining: "Resuming training...",
       startingTraining: "starting training...",
       dataset: "Dataset",
+      datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
     },
     tour: {

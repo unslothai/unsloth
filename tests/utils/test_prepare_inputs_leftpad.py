@@ -1,29 +1,16 @@
 """Regression guard for batched left-padded generation (issues #1066, #3699).
 
-`_fast_prepare_inputs_for_generation` in unsloth/models/llama.py is shared by
-every decoder family wired through `fix_prepare_inputs_for_generation` (llama,
-qwen2/3, qwen3_moe, mistral, gemma/2, cohere, granite). Two historical bugs
-lived in it:
+Guards `_fast_prepare_inputs_for_generation` (unsloth/models/llama.py),
+shared by every decoder family wired through fix_prepare_inputs_for_generation,
+against two historical bugs:
+  (a) 2D attention mask truncated to its last column during cached decode,
+      losing padding info (fixed by #2216);
+  (b) position_ids taken from cache_position (which counts left-pad tokens),
+      so padded rows generated garbage (fixed by #4100).
 
-  (a) the 2D attention mask was truncated to its last column during cached
-      decode, losing padding information (introduced cc4c5d77, fixed by #2216);
-  (b) position_ids were taken directly from cache_position, a global counter
-      that includes left-pad tokens, so padded rows generated garbage
-      (introduced cc4c5d77, reported in #1066/#3699, fixed by #4100).
-
-Two layers in this file, both CPU-only and deterministic:
-
-  1. AST structural checks (TestAstGuard section): parse llama.py with the
-     stdlib `ast` module only, no unsloth import, so they keep working even
-     when the package itself fails to import.
-  2. Behavioral checks: call the real function with synthetic left-padded
-     masks and fake caches; unsloth is imported lazily inside each test.
-
-Both layers fail on the historical bug patterns (validated against the code
-states immediately before #2216 and before #4100). Staging proof on GPU-less
-hosted runners: danielhanchen/unsloth-staging-2 PRs 170 (green) and 171 (red).
-
-Companion manual GPU end-to-end check (skipped without CUDA):
+Two CPU-only deterministic layers: (1) AST structural checks (no unsloth
+import); (2) behavioral checks calling the real function with synthetic
+left-padded masks and fake caches. Companion GPU check:
 tests/utils/test_batched_leftpad_generation_gpu.py
 """
 
@@ -43,10 +30,9 @@ FUNC_NAME = "_fast_prepare_inputs_for_generation"
 # Layer 1: AST structural guard (stdlib only, no unsloth import)
 # --------------------------------------------------------------------------
 
-# Model files that call fix_prepare_inputs_for_generation(...) and therefore
-# share the guarded function. glm4_moe and falcon_h1 are intentionally absent:
-# GLM4 MoE does not patch the Llama-compatible generation path (MLA attention)
-# and falcon_h1 ships its own _fast_prepare_inputs_for_generation variant.
+# Model files that call fix_prepare_inputs_for_generation(...) and share the
+# guarded function. glm4_moe (MLA attention, different path) and falcon_h1
+# (its own variant) are intentionally absent.
 WIRED_MODEL_FILES = [
     "mistral.py",
     "gemma.py",

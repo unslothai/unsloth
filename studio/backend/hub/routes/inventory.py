@@ -29,6 +29,7 @@ from hub.schemas.inventory import (
     DeleteCachedModelResponse,
     GgufVariantsResponse,
     LocalModelListResponse,
+    ModelsFolderResponse,
     RecommendedFoldersResponse,
     RemoveScanFolderResponse,
     ScanFolderInfo,
@@ -89,6 +90,11 @@ def browse_folders(
     current_subject: str = Depends(get_current_subject),
 ):
     return folder_browser.browse_folders_response(path, show_hidden)
+
+
+@router.get("/models-folder", response_model = ModelsFolderResponse)
+def get_models_folder(current_subject: str = Depends(get_current_subject)):
+    return local_inventory.get_models_folder_response()
 
 
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)

@@ -17,11 +17,12 @@ import {
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
-  CheckIcon,
   ChevronDownIcon,
   LoaderIcon,
   XCircleIcon,
 } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -95,9 +96,15 @@ function ToolFallbackRoot({
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
+// The shared app tick is icon data, not a component; wrap it to slot into the
+// status map alongside the lucide icons.
+function CompleteTickIcon(props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">) {
+  return <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} {...props} />;
+}
+
 const statusIconMap: Record<ToolStatus, ElementType> = {
   running: LoaderIcon,
-  complete: CheckIcon,
+  complete: CompleteTickIcon,
   incomplete: XCircleIcon,
   "requires-action": AlertCircleIcon,
 };

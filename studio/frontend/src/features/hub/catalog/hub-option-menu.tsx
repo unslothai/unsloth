@@ -6,9 +6,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -167,18 +167,13 @@ export function HubOptionMenu<T extends string>({
             }
           }}
         >
-          <span className="flex min-w-0 items-center gap-2">
-            {triggerContent ?? (
-              <span className="min-w-0 truncate">
-                {selected?.triggerLabel ?? selected?.label ?? value}
-              </span>
-            )}
+          <span className="min-w-0 flex-1 truncate text-left">
+            {triggerContent ?? selected?.triggerLabel ?? selected?.label ?? value}
           </span>
           {showChevron && (
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
-              strokeWidth={1.5}
-              className="size-3 shrink-0 text-muted-foreground"
+              className="size-3.5 shrink-0 text-muted-foreground"
             />
           )}
         </button>
@@ -186,11 +181,11 @@ export function HubOptionMenu<T extends string>({
       <PopoverContent
         align={align}
         side="bottom"
-        sideOffset={0}
+        sideOffset={8}
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
-          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[21px] px-[9px] py-2 ring-0",
+          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[14px] p-1 ring-0",
           contentClassName,
         )}
       >
@@ -219,14 +214,16 @@ export function HubOptionMenu<T extends string>({
                 }}
                 onPointerEnter={() => activateIndex(index)}
                 className={cn(
-                  "relative flex w-full min-w-0 cursor-pointer select-none items-center gap-2.5 rounded-[12px] py-2 px-3 text-left text-sm leading-snug outline-none transition-colors",
+                  // 14px menu radius minus the 4px padding, so the hover nests
+                  // cleanly into the dropdown's corners.
+                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-[10px] py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
                 )}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">
                   {option.label}
                 </span>
                 {selectedOption && (
-                  <span className="pointer-events-none flex size-4 shrink-0 items-center justify-center">
+                  <span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
                     <HugeiconsIcon
                       icon={Tick02Icon}
                       strokeWidth={2}

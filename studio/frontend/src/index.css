@@ -43,7 +43,45 @@
 		inset-inline: 0;
 		bottom: 0;
 		height: 40px;
-		background: linear-gradient(to top, var(--sidebar), transparent);
+		/* Fade to sidebar colour at 0 alpha, not `transparent` (transparent
+		   black), which shows a grey midtone in Safari 27 Liquid Glass. */
+		background: linear-gradient(
+			to top,
+			var(--sidebar),
+			rgb(from var(--sidebar) r g b / 0)
+		);
+	}
+	/* Model picker list: once scrolled, the top edge fades so rows dissolve as
+	   they pass under the pinned search / tab bar. */
+	.model-list-scroll.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+	}
+	/* Bottom edge fades while more rows sit below the fold. */
+	.model-list-scroll.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+	}
+	/* Both edges fade when scrolled with rows above and below. */
+	.model-list-scroll.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
 	}
 	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
 	   the scroll fold (JS-toggled). */
@@ -129,6 +167,8 @@
 	--accent: oklch(0.9596 0.0275 167.8295);
 	--accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
+	--bypass: #c99d00;
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
 	--ring: #17b88b;
@@ -251,6 +291,8 @@
 	--accent: #3a3d43;
 	--accent-foreground: #ececee;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
+	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. */
@@ -344,6 +386,7 @@
 	--color-input: var(--input);
 	--color-border: var(--border);
 	--color-destructive: var(--destructive);
+	--color-bypass: var(--bypass);
 	--color-accent-foreground: var(--accent-foreground);
 	--color-accent: var(--accent);
 	--color-muted-foreground: var(--muted-foreground);
@@ -906,8 +949,9 @@
 		border: none;
 		/* Pin to the dark --radius so rounded-3xl corners stay consistent. */
 		--radius: 0.625rem;
-		/* Match the chat box: soft elevation. */
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		/* Prominent, wide ChatGPT-style elevation. */
+		box-shadow: 0 24px 70px -16px rgba(0, 0, 0, 0.28),
+			0 8px 24px -12px rgba(0, 0, 0, 0.18);
 	}
 
 	/* Dark: page-bg shadow so the dialog does not merge into same-color
@@ -946,12 +990,14 @@
 	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
 	   Pin --radius to the light value so the corners match in both themes. */
 	.unsloth-model-selector-menu.menu-soft-surface {
-		--radius: 1.1rem;
+		--radius: 1.25rem;
 		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
 			var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
 
 	.dark .unsloth-model-selector-menu.menu-soft-surface {
+		/* Match the left sidebar background. */
+		background-color: var(--sidebar);
 		box-shadow: none;
 	}
 
@@ -1046,10 +1092,18 @@
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
-	/* Bypass Permissions badge: red, always-visible active warning. */
+	/* Bypass permissions badge: bright yellow text, no resting fill; the
+	   rounded hover pill picks up the yellow accent like other toggles. */
 	.composer-pill-btn[data-variant="danger"] {
-		@apply bg-destructive/10 hover:bg-destructive/15;
-		color: var(--destructive);
+		background-color: transparent;
+		color: var(--bypass);
+	}
+	.composer-pill-btn[data-variant="danger"]:hover {
+		background-color: color-mix(in oklab, var(--bypass) 7%, transparent);
+	}
+	/* Match the hover-X circle to the yellow accent instead of the green primary. */
+	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
+		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
 	}
 
 	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
@@ -1628,6 +1682,11 @@
 		border-radius: 0 !important;
 		background: transparent !important;
 		padding: 0 !important;
+	}
+
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		/* Keep overlay scrollbars below one-line code. */
+		padding-bottom: 0.625rem !important;
 	}
 
 	[data-streamdown="code-block"] {

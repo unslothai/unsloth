@@ -3,6 +3,7 @@
 
 """Model management API routes."""
 
+import asyncio
 import hashlib
 import json
 import os
@@ -10,7 +11,7 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from typing import List, Optional
 import structlog
 from loggers import get_logger
@@ -41,12 +42,21 @@ def _safe_is_dir(path) -> bool:
 
 def _is_hidden_model(*values: str | None) -> bool:
     """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
-    EMBED_GGUF_REPO basename), so pickers hide it (GGUF and non-GGUF)."""
+    EMBED_GGUF_REPO basename) or the llama.cpp install validation probe
+    (ggml-org/models / stories260K), so pickers hide them (GGUF and non-GGUF).
+    None are usable chat models; the probe can be cached as a side effect of
+    installing the prebuilt llama-server and otherwise sorts smallest, so it
+    would be auto-selected."""
     from core.rag import config as rag_config
 
     needles = (
         rag_config.EMBEDDING_MODEL.split("/")[-1].lower(),
         rag_config.EMBED_GGUF_REPO.split("/")[-1].lower(),
+        # The validation probe's repo (matches the cached repo id) and its exact
+        # filename (matches the on-disk path). The filename carries the .gguf so
+        # it does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
+        "ggml-org/models",
+        "stories260k.gguf",
     )
     return any(v and any(n in v.lower() for n in needles) for v in values)
 
@@ -81,6 +91,7 @@ try:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _is_big_endian_gguf_path,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -112,6 +123,7 @@ except ImportError:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _is_big_endian_gguf_path,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -138,6 +150,7 @@ from models import (
 from models.models import (
     BrowseEntry,
     BrowseFoldersResponse,
+    ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
     ModelType,
@@ -212,6 +225,29 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
 
+# Weight ``.bin`` files the local scanners accept (PyTorch checkpoints), as
+# opposed to companion ``.bin`` files like ``tokenizer.bin``. Mirrors the gating
+# in ``_is_weight_file`` so every weight check classifies the same files.
+_WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
+
+
+def _is_weight_bin(name: str) -> bool:
+    low = name.lower()
+    return low.endswith(".bin") and low.startswith(_WEIGHT_BIN_PREFIXES)
+
+
+def _has_non_gguf_weights(path: Path) -> bool:
+    """True if *path* holds non-GGUF weight files (``.safetensors`` or a weight
+    ``.bin``), ignoring companion ``.bin`` files such as ``tokenizer.bin`` so a
+    GGUF-only folder is not misread as a plain checkpoint."""
+    try:
+        if any(path.glob("*.safetensors")):
+            return True
+        return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
+    except OSError:
+        return False
+
+
 def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
@@ -229,6 +265,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 display_name = models_dir.name,
                 path = str(models_dir),
                 source = "models_dir",
+                model_format = _dir_model_format(models_dir),
                 updated_at = updated_at,
             ),
         ]
@@ -240,13 +277,12 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         try:
             if not child.is_dir():
                 continue
-            has_model_files = (
-                (child / "config.json").exists()
-                or (child / "adapter_config.json").exists()
-                or any(child.glob("*.safetensors"))
-                or any(child.glob("*.bin"))
-                or any(child.glob("*.gguf"))
-            )
+            has_gguf = any(child.glob("*.gguf"))
+            has_non_gguf_weights = _has_non_gguf_weights(child)
+            has_config = (child / "config.json").exists() or (
+                child / "adapter_config.json"
+            ).exists()
+            has_model_files = has_gguf or has_non_gguf_weights or has_config
         except OSError:
             # Skip unreadable children rather than failing the scan.
             continue
@@ -256,12 +292,17 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             updated_at = child.stat().st_mtime
         except OSError:
             updated_at = None
+        # A folder whose only weights are .gguf is GGUF-format even when it also
+        # ships a config.json (common for HF GGUF repos); such folders often lack
+        # a -GGUF suffix, so surface the format for the UI's GGUF classification.
+        model_format = "gguf" if has_gguf and not has_non_gguf_weights else None
         found.append(
             LocalModelInfo(
                 id = str(child),
                 display_name = child.name,
                 path = str(child),
                 source = "models_dir",
+                model_format = model_format,
                 updated_at = updated_at,
             ),
         )
@@ -281,6 +322,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                         display_name = gguf_file.stem,
                         path = str(gguf_file),
                         source = "models_dir",
+                        model_format = "gguf",
                         updated_at = updated_at,
                     ),
                 )
@@ -320,6 +362,21 @@ def _scan_hf_cache(cache_dir: Path) -> List[LocalModelInfo]:
     return found
 
 
+def _dir_model_format(path: Path) -> Optional[str]:
+    """Return ``"gguf"`` for a directory whose only weights are ``.gguf`` files.
+
+    LM Studio and custom GGUF folders frequently lack a ``-GGUF`` name suffix,
+    so the UI relies on this hint to route them through the GGUF load path
+    rather than treating them as plain local checkpoints.
+    """
+    try:
+        if not any(path.glob("*.gguf")):
+            return None
+        return None if _has_non_gguf_weights(path) else "gguf"
+    except OSError:
+        return None
+
+
 def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     """Scan an LM Studio models directory for model files.
 
@@ -342,6 +399,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 display_name = lm_dir.name,
                 path = str(lm_dir),
                 source = "lmstudio",
+                model_format = _dir_model_format(lm_dir),
                 updated_at = updated_at,
             ),
         ]
@@ -361,6 +419,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             display_name = child.stem,
                             path = str(child),
                             source = "lmstudio",
+                            model_format = "gguf",
                             updated_at = updated_at,
                         ),
                     )
@@ -379,6 +438,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         display_name = child.name,
                         path = str(child),
                         source = "lmstudio",
+                        model_format = _dir_model_format(child),
                         updated_at = updated_at,
                     ),
                 )
@@ -407,6 +467,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 display_name = model_dir.name,
                                 path = str(model_dir),
                                 source = "lmstudio",
+                                model_format = _dir_model_format(model_dir),
                                 updated_at = updated_at,
                             ),
                         )
@@ -422,6 +483,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 display_name = model_dir.stem,
                                 path = str(model_dir),
                                 source = "lmstudio",
+                                model_format = "gguf",
                                 updated_at = updated_at,
                             ),
                         )
@@ -660,6 +722,94 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     return found
 
 
+def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
+    """Scan ``models_root``, the HF caches, LM Studio dirs, and user scan folders,
+    returning a deduplicated, hidden-filtered list of discovered local models.
+
+    Shared by ``GET /models/local`` (the model picker) and the OpenAI-compatible
+    catalog (``GET /v1/models``) so the UI and the API never drift. ``models_root``
+    must already be validated/trusted by the caller.
+    """
+    from storage.studio_db import list_scan_folders
+    from utils.paths import (
+        hf_default_cache_dir,
+        legacy_hf_cache_dir,
+        lmstudio_model_dirs,
+    )
+
+    hf_cache_dir = _resolve_hf_cache_dir()
+    legacy_hf = legacy_hf_cache_dir()
+    hf_default = hf_default_cache_dir()
+    lm_dirs = lmstudio_model_dirs()
+
+    local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
+
+    # Resolve once; an inaccessible aux cache must skip that scan, not 500.
+    hf_cache_real = _safe_resolve(hf_cache_dir)
+    legacy_real = _safe_resolve(legacy_hf)
+    default_real = _safe_resolve(hf_default)
+
+    # Scan legacy Unsloth HF cache for backward compatibility.
+    if _safe_is_dir(legacy_hf) and legacy_real != hf_cache_real:
+        local_models += _scan_hf_cache(legacy_hf)
+
+    # Scan HF system default cache (may differ under env overrides).
+    if _safe_is_dir(hf_default) and default_real != hf_cache_real and default_real != legacy_real:
+        local_models += _scan_hf_cache(hf_default)
+
+    # Scan LM Studio directories.
+    for lm_dir in lm_dirs:
+        local_models += _scan_lmstudio_dir(lm_dir)
+
+    # Scan user-added custom folders (per-folder cap).
+    _MAX_MODELS_PER_FOLDER = 200
+    try:
+        custom_folders = list_scan_folders()
+    except Exception as e:
+        logger.warning("Could not load custom scan folders: %s", e)
+        custom_folders = []
+    for folder in custom_folders:
+        folder_path = Path(folder["path"])
+        try:
+            # Filter Ollama .studio_links/ from generic scanners to
+            # avoid duplicates and leaking internal paths into the UI.
+            _generic = [
+                m
+                for m in (
+                    _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
+                    + _scan_hf_cache(folder_path)
+                    + _scan_lmstudio_dir(folder_path)
+                )
+                if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
+            ]
+            custom_models = _generic
+            if len(custom_models) < _MAX_MODELS_PER_FOLDER:
+                custom_models += _scan_ollama_dir(
+                    folder_path,
+                    limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                )
+        except OSError as e:
+            logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+            continue
+        local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
+
+    # Deduplicate, but always keep custom folder entries (keyed by
+    # (id, source)) so they show in the "Custom Folders" UI section
+    # even when the model is also in the HF cache.
+    deduped: dict[str, LocalModelInfo] = {}
+    for model in local_models:
+        key = f"{model.id}\x00custom" if model.source == "custom" else model.id
+        if key not in deduped:
+            deduped[key] = model
+
+    models = sorted(
+        deduped.values(),
+        key = lambda item: (item.updated_at or 0),
+        reverse = True,
+    )
+    return [m for m in models if not _is_hidden_model(m.id, m.path)]
+
+
 @router.get("/local", response_model = LocalModelListResponse)
 async def list_local_models(
     models_dir: str = Query(
@@ -708,78 +858,7 @@ async def list_local_models(
         )
 
     try:
-        local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
-
-        # Resolve once; an inaccessible aux cache must skip that scan, not 500.
-        hf_cache_real = _safe_resolve(hf_cache_dir)
-        legacy_real = _safe_resolve(legacy_hf)
-        default_real = _safe_resolve(hf_default)
-
-        # Scan legacy Unsloth HF cache for backward compatibility.
-        if _safe_is_dir(legacy_hf) and legacy_real != hf_cache_real:
-            local_models += _scan_hf_cache(legacy_hf)
-
-        # Scan HF system default cache (may differ under env overrides).
-        if (
-            _safe_is_dir(hf_default)
-            and default_real != hf_cache_real
-            and default_real != legacy_real
-        ):
-            local_models += _scan_hf_cache(hf_default)
-
-        # Scan LM Studio directories.
-        for lm_dir in lm_dirs:
-            local_models += _scan_lmstudio_dir(lm_dir)
-
-        # Scan user-added custom folders (per-folder cap).
-        from storage.studio_db import list_scan_folders
-
-        _MAX_MODELS_PER_FOLDER = 200
-        try:
-            custom_folders = list_scan_folders()
-        except Exception as e:
-            logger.warning("Could not load custom scan folders: %s", e)
-            custom_folders = []
-        for folder in custom_folders:
-            folder_path = Path(folder["path"])
-            try:
-                # Filter Ollama .studio_links/ from generic scanners to
-                # avoid duplicates and leaking internal paths into the UI.
-                _generic = [
-                    m
-                    for m in (
-                        _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                        + _scan_hf_cache(folder_path)
-                        + _scan_lmstudio_dir(folder_path)
-                    )
-                    if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
-                ]
-                custom_models = _generic
-                if len(custom_models) < _MAX_MODELS_PER_FOLDER:
-                    custom_models += _scan_ollama_dir(
-                        folder_path,
-                        limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
-                    )
-            except OSError as e:
-                logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
-                continue
-            local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
-
-        # Deduplicate, but always keep custom folder entries (keyed by
-        # (id, source)) so they show in the "Custom Folders" UI section
-        # even when the model is also in the HF cache.
-        deduped: dict[str, LocalModelInfo] = {}
-        for model in local_models:
-            key = f"{model.id}\x00custom" if model.source == "custom" else model.id
-            if key not in deduped:
-                deduped[key] = model
-
-        models = sorted(
-            deduped.values(),
-            key = lambda item: (item.updated_at or 0),
-            reverse = True,
-        )
-        models = [m for m in models if not _is_hidden_model(m.id, m.path)]
+        models = collect_local_models(models_root)
 
         return LocalModelListResponse(
             models_dir = str(models_root),
@@ -834,13 +913,88 @@ async def remove_scan_folder_endpoint(
     return {"ok": True}
 
 
+def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
+    """True if *directory* actually holds a downloaded model.
+
+    Recommended-folder chips should only appear once the well-known dir
+    has real weights, not just an empty LM Studio/Ollama scaffold. Two
+    layouts: a GGUF/safetensors/PyTorch-bin weight file anywhere in the
+    tree (LM Studio, plain dirs) or the Ollama content-addressable store
+    (a non-empty ``manifests/`` beside ``blobs/``, whose blobs carry no
+    extension). Weight detection mirrors the local scanner so a folder the
+    chip leads to is one the scanner would actually surface a model from.
+    Bounded by *max_entries* so a huge tree can't stall the request.
+    """
+    # Ollama layout: each manifest is JSON referencing content-addressable
+    # blobs. A manifest file alone is not enough -- a failed or pruned pull
+    # leaves the manifest behind with its model blob missing, so we resolve the
+    # ``application/vnd.ollama.image.model`` layer to an on-disk blob before
+    # counting it, mirroring _scan_ollama_dir (which only surfaces a model once
+    # its blob resolves). Otherwise the chip leads to an empty picker.
+    visited = 0
+    manifests = directory / "manifests"
+    blobs = directory / "blobs"
+    try:
+        if _safe_is_dir(manifests) and _safe_is_dir(blobs):
+            for m in manifests.rglob("*"):
+                visited += 1
+                if visited > max_entries:
+                    break
+                if not m.is_file():
+                    continue
+                try:
+                    manifest = json.loads(m.read_text())
+                except (json.JSONDecodeError, OSError, ValueError):
+                    continue
+                for layer in manifest.get("layers") or []:
+                    if layer.get("mediaType") != "application/vnd.ollama.image.model":
+                        continue
+                    digest = layer.get("digest", "")
+                    if digest and (blobs / digest.replace(":", "-")).is_file():
+                        return True
+    except OSError:
+        pass
+    # Generic weights: any GGUF/safetensors in a bounded BFS that skips hidden
+    # directories (``.git``/``.cache``/venvs). ``rglob`` walks in arbitrary order
+    # and counts every entry, so a large hidden subtree could exhaust the budget
+    # before reaching real weights and falsely report "no model".
+    queue = [directory]
+    visited = 0
+    while queue:
+        current = queue.pop(0)
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            visited += 1
+            if visited > max_entries:
+                return False
+            try:
+                if entry.is_dir():
+                    if not entry.name.startswith("."):
+                        queue.append(entry)
+                else:
+                    low = entry.name.lower()
+                    if low.endswith((".gguf", ".safetensors")):
+                        return True
+                    # PyTorch checkpoints the scanner also accepts; gate by name
+                    # so tokenizer.bin and friends don't count as weights.
+                    if _is_weight_bin(entry.name):
+                        return True
+            except OSError:
+                continue
+    return False
+
+
 @router.get("/recommended-folders")
 async def get_recommended_folders(current_subject: str = Depends(get_current_subject)):
-    """Return well-known model directories that exist on this machine.
+    """Return well-known model directories that hold a downloaded model.
 
     Lightweight alternative to ``browse-folders`` for the frontend's
-    one-click "Recommended" chips; returns existing paths only (HF
-    cache, LM Studio, Ollama, ``~/models``, etc.).
+    one-click "Recommended" chips. Only paths that actually contain
+    weights are returned, so an empty LM Studio/Ollama scaffold no longer
+    shows up as a suggestion.
     """
     from utils.paths.storage_roots import lmstudio_model_dirs
 
@@ -856,7 +1010,11 @@ async def get_recommended_folders(current_subject: str = Depends(get_current_sub
             return
         if resolved in seen:
             return
-        if _safe_is_dir(resolved) and os.access(resolved, os.R_OK | os.X_OK):
+        if (
+            _safe_is_dir(resolved)
+            and os.access(resolved, os.R_OK | os.X_OK)
+            and _dir_has_downloaded_model(Path(resolved))
+        ):
             seen.add(resolved)
             folders.append(resolved)
 
@@ -1521,16 +1679,22 @@ async def get_model_config(
         except Exception:
             pass
 
-        # Fallback: try AutoConfig directly.
+        # Fallback: read raw config.json (declarative fields only) -- a selection-time
+        # metadata probe that must never execute a repo's auto_map Python.
         if max_position_embeddings is None:
             try:
-                from transformers import AutoConfig as _AutoConfig
+                from utils.transformers_version import _load_config_json
+                from types import SimpleNamespace
 
-                _trust = model_name.lower().startswith("unsloth/")
-                _ac = _AutoConfig.from_pretrained(
-                    model_name, trust_remote_code = _trust, token = hf_token
-                )
-                max_position_embeddings = _get_max_position_embeddings(_ac)
+                _cfg = _load_config_json(model_name, hf_token = hf_token)
+                if _cfg is not None:
+
+                    def _to_ns(d):
+                        if isinstance(d, dict):
+                            return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+                        return d
+
+                    max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
             except Exception:
                 pass
 
@@ -1561,6 +1725,225 @@ async def get_model_config(
             event = "models.get_model_config_failed",
             log = logger,
         )
+
+
+def _consent_provider(
+    model_name: str,
+    scanned_targets: List[str],
+    external_refs: Optional[List[str]] = None,
+) -> Optional[str]:
+    """HF org for the consent dialog's `from "<provider>"` tag, or None.
+
+    Returns the owner only for a single, non-local, canonical ``owner/repo`` id; a LoRA's
+    extra base, a local path, or an external ``auto_map`` ref yields None so the dialog
+    never misattributes scanned code.
+    """
+    if len(scanned_targets) != 1 or external_refs or is_local_path(model_name):
+        return None
+    parts = model_name.split("/")
+    return parts[0] if len(parts) == 2 and all(parts) else None
+
+
+@router.post("/remote-code-scan")
+async def scan_model_remote_code(
+    model_name: str = Body(..., embed = True),
+    hf_token: Optional[str] = Body(None, embed = True),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Scan a model's ``auto_map`` custom code so the UI can show findings before
+    the user enables ``trust_remote_code``. Code-free: reads ``config.json`` and
+    statically scans the repo ``.py`` (never loads the model). Returns
+    ``has_remote_code`` plus the severity-tagged findings + a pinning fingerprint.
+
+    POST (not GET) so the ``hf_token`` for gated repos travels in the body and
+    never lands in a URL, browser history, or access log.
+    """
+    try:
+        from utils.security import preflight_remote_code_consent_for_targets
+
+        if not is_local_path(model_name):
+            model_name = resolve_cached_repo_id_case(model_name)
+        # Scan the adapter AND the base together (a LoRA runs both repos' code; a pickle
+        # can live in either), pinned by one combined fingerprint. Snapshot the primary's
+        # cache state BEFORE resolving the base: for a remote adapter that resolve
+        # downloads adapter_config.json, which would otherwise hide the adapter from
+        # cleanup on decline. On error treat as pre-existing so a decline never deletes it.
+        try:
+            _primary_preexisting = is_local_path(model_name) or _repo_in_any_hf_cache(model_name)
+        except Exception:
+            _primary_preexisting = True
+        security_targets = [model_name]
+        try:
+            from utils.models.model_config import get_base_model_from_lora_identifier
+
+            # Resolve a LOCAL or REMOTE adapter's base so its code/weights are scanned too.
+            _base = get_base_model_from_lora_identifier(model_name, hf_token)
+            if _base:
+                security_targets.append(_base)
+        except Exception:
+            pass
+        security_targets = list(dict.fromkeys(security_targets))
+        # Record every repo OUR scan is first to pull into the cache (adapter, base, and
+        # external auto_map repos like owner/name--module.Class), so a decline purges
+        # exactly what was downloaded. Computed BEFORE the preflight downloads, against
+        # every cache the discard searches, so a repo the user already had is not deleted.
+        from utils.security.remote_code_scan import external_auto_map_repos
+
+        scan_created_repos: list = []
+        _seen_created: set = set()
+
+        def _mark_scan_created(repo: str, *, preexisting: Optional[bool] = None) -> None:
+            if not repo or repo in _seen_created:
+                return
+            _seen_created.add(repo)
+            try:
+                already = (
+                    preexisting
+                    if preexisting is not None
+                    else (is_local_path(repo) or _repo_in_any_hf_cache(repo))
+                )
+                if not already:
+                    scan_created_repos.append(repo)
+            except Exception:
+                pass
+
+        external_refs: list = []
+        for _target in security_targets:
+            # Use the pre-base-resolution snapshot for the primary (see above).
+            _mark_scan_created(
+                _target, preexisting = _primary_preexisting if _target == model_name else None
+            )
+            for _ext in external_auto_map_repos(_target, hf_token):
+                external_refs.append(_ext)
+                _mark_scan_created(_ext)
+        decision = preflight_remote_code_consent_for_targets(
+            security_targets, hf_token = hf_token, subject = current_subject
+        )
+        payload = decision.response_payload()
+        payload["requires_trust_remote_code"] = decision.has_remote_code
+        # Prior approval for the unchanged repo lets the dialog be skipped; the scan still
+        # ran, so this is a real fingerprint match under the current ruleset.
+        payload["already_approved"] = (
+            decision.has_remote_code
+            and not decision.blocked
+            and decision.reason == "approved by fingerprint"
+        )
+        # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
+        payload["created_by_scan"] = model_name in scan_created_repos
+        payload["scan_created_repos"] = scan_created_repos
+        # Provider tag decided here, where locality/scan scope/external refs are known.
+        payload["provider"] = _consent_provider(model_name, security_targets, external_refs)
+
+        # Malware gate (metadata-only): surface HF-flagged unsafe files so the dialog can
+        # hard-block. Orthogonal to remote code -- a poisoned pickle needs no auto_map.
+        from utils.security import evaluate_file_security, security_load_subdirs
+
+        unsafe_files: list = []
+        security_blocked = False
+        for _target in security_targets:
+            _sec = evaluate_file_security(
+                _target, hf_token = hf_token, load_subdirs = security_load_subdirs(_target, hf_token)
+            )
+            security_blocked = security_blocked or _sec.blocked
+            unsafe_files.extend(_sec.unsafe_files)
+        payload["unsafe_files"] = unsafe_files
+        payload["security_blocked"] = security_blocked
+        if security_blocked:
+            # Non-approvable hard block: approvable False hides "Enable and continue", and
+            # requires_trust_remote_code forces the dialog open even with no custom code.
+            payload["approvable"] = False
+            payload["requires_trust_remote_code"] = True
+            payload["error_kind"] = "malware_blocked"
+        return payload
+    except Exception as e:
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to scan model remote code",
+            event = "models.remote_code_scan_failed",
+            log = logger,
+        )
+
+
+@router.post("/discard-remote-code")
+async def discard_remote_code_download(
+    model_name: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
+):
+    """Purge a repo the consent scan downloaded after the user DECLINED its custom
+    code, so untrusted code is not left on disk.
+
+    Safety: only ever deletes a metadata-only cache entry the scan created. It
+    refuses a local path (never touches user files), a currently-loaded model, and
+    any repo that has weight files cached (``*.safetensors`` / ``*.bin`` /
+    ``*.gguf``) -- i.e. a model the user actually downloaded. The frontend only
+    calls this when the scan reported ``created_by_scan``.
+    """
+    if is_local_path(model_name):
+        return {"deleted": False, "reason": "local"}
+    if not _is_valid_repo_id(model_name):
+        return {"deleted": False, "reason": "invalid"}
+
+    # Never delete a model that is loaded for inference.
+    try:
+        from routes.inference import get_llama_cpp_backend
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded and llama_backend.model_identifier:
+            loaded = llama_backend.model_identifier.lower()
+            if loaded == model_name.lower() or loaded.startswith(model_name.lower()):
+                return {"deleted": False, "reason": "loaded"}
+    except Exception:
+        pass
+    try:
+        inference_backend = get_inference_backend()
+        if inference_backend.active_model_name:
+            active = inference_backend.active_model_name.lower()
+            if active == model_name.lower() or active.startswith(model_name.lower()):
+                return {"deleted": False, "reason": "loaded"}
+    except Exception:
+        pass
+
+    _WEIGHTS = (
+        ".safetensors",
+        ".bin",
+        ".pt",
+        ".pth",
+        ".h5",
+        ".msgpack",
+        ".gguf",
+        ".onnx",
+        ".ckpt",
+    )
+    try:
+        target_repo = None
+        hf_cache = None
+        for cache in _all_hf_cache_scans():
+            for repo_info in cache.repos:
+                if repo_info.repo_type != "model":
+                    continue
+                if repo_info.repo_id.lower() == model_name.lower():
+                    target_repo, hf_cache = repo_info, cache
+                    break
+            if target_repo is not None:
+                break
+
+        if target_repo is None:
+            return {"deleted": False, "reason": "not_cached"}
+
+        # Hard guard: a repo with weights is a real model the user has -- leave it.
+        for rev in target_repo.revisions:
+            for f in rev.files:
+                if f.file_name.lower().endswith(_WEIGHTS):
+                    return {"deleted": False, "reason": "has_weights"}
+
+        revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
+        if not revision_hashes:
+            return {"deleted": False, "reason": "not_cached"}
+        hf_cache.delete_revisions(*revision_hashes).execute()
+        logger.info("Discarded declined remote-code download: %s", model_name)
+        return {"deleted": True}
+    except Exception as e:
+        logger.warning("Could not discard remote-code download for %s: %s", model_name, e)
+        return {"deleted": False, "reason": "error"}
 
 
 @router.get("/loras")
@@ -1979,7 +2362,11 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 
 
 @router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
-async def check_vision_model(model_name: str, current_subject: str = Depends(get_current_subject)):
+async def check_vision_model(
+    model_name: str,
+    hf_token: Optional[str] = Query(None),
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Check if a model is a vision model.
 
@@ -1987,7 +2374,8 @@ async def check_vision_model(model_name: str, current_subject: str = Depends(get
     """
     try:
         logger.info(f"Checking if vision model: {model_name}")
-        is_vision = is_vision_model(model_name)
+        # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
+        is_vision = is_vision_model(model_name, hf_token = hf_token)
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
@@ -2036,6 +2424,170 @@ async def check_embedding_model(
         )
 
 
+def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
+    """Native max context from a downloaded GGUF for this repo, or None.
+
+    The value is identical across quants, so reading one non-mmproj shard's
+    header is enough. Only resolves once a file is on disk. Never raises.
+    """
+    try:
+        from utils.models.gguf_metadata import read_gguf_context_length
+        if is_local:
+            roots = [Path(repo_id)]
+        else:
+            from huggingface_hub import constants as hf_constants
+
+            if not _is_valid_repo_id(repo_id):
+                return None
+            cache_dir = Path(hf_constants.HF_HUB_CACHE)
+            target = f"models--{repo_id.replace('/', '--')}".lower()
+            roots = [e for e in cache_dir.iterdir() if e.name.lower() == target]
+
+        for root in roots:
+            for f in _iter_gguf_paths(root):
+                if _is_mmproj_filename(f.name):
+                    continue
+                n = read_gguf_context_length(str(f))
+                if n:
+                    return n
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optional[str], int]:
+    """Primary shard path and total weight bytes for a downloaded quant, or
+    (None, 0). Metadata lives in shard 1, so the lexicographically first file of
+    the matching quant is returned. Scoped to one snapshot to avoid summing the
+    same quant across revisions; when several snapshots hold the quant the most
+    complete one (largest total) wins so a partial revision can't shadow it.
+    Mirrors list_local_gguf_variants: quant labels are read from the snapshot-
+    relative path (so layouts like ``BF16/model.gguf`` resolve) and MTP drafter
+    files are skipped (so a ``...-Q8_0-MTP.gguf`` drafter can't be picked as the
+    Q8_0 weights). Never raises.
+    """
+    try:
+        from utils.models.model_config import (
+            _extract_quant_label,
+            _is_big_endian_gguf_path,
+            _is_mtp_drafter,
+        )
+
+        if is_local:
+            roots = [Path(repo_id)]
+        else:
+            from huggingface_hub import constants as hf_constants
+
+            if not _is_valid_repo_id(repo_id):
+                return None, 0
+            cache_dir = Path(hf_constants.HF_HUB_CACHE)
+            target = f"models--{repo_id.replace('/', '--')}".lower()
+            roots = []
+            for entry in cache_dir.iterdir():
+                if entry.name.lower() == target:
+                    snaps = entry / "snapshots"
+                    if snaps.is_dir():
+                        roots.extend(s for s in snaps.iterdir() if s.is_dir())
+
+        want = quant.lower().replace("-", "").replace("_", "")
+        best_total = 0
+        best_first: Optional[str] = None
+        for root in roots:
+            matches: list[tuple[str, Path]] = []
+            total = 0
+            for f in _iter_gguf_paths(root):
+                if _is_mmproj_filename(f.name):
+                    continue
+                try:
+                    rel = f.relative_to(root).as_posix()
+                except ValueError:
+                    rel = f.name
+                if _is_mtp_drafter(rel):
+                    continue
+                q = _extract_quant_label(rel)
+                if _is_big_endian_gguf_path(rel, q):
+                    continue
+                if q.lower().replace("-", "").replace("_", "") != want:
+                    continue
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    continue
+                matches.append((rel, f))
+            # Prefer the most complete snapshot so a partial older revision can't
+            # shadow a newer complete one and underestimate the weight bytes.
+            if matches and total > best_total:
+                matches.sort(key = lambda m: m[0])
+                best_total = total
+                best_first = str(matches[0][1])
+        if best_first is not None:
+            return best_first, best_total
+    except Exception:
+        pass
+    return None, 0
+
+
+@router.get("/kv-cache-estimate")
+async def get_kv_cache_estimate(
+    repo_id: str = Query(..., description = "HF repo ID or local path"),
+    quant: str = Query(..., description = "Quantization label (e.g. Q4_K_M)"),
+    n_ctx: int = Query(..., ge = 1, description = "Context length to size the KV cache for"),
+    cache_type_kv: Optional[str] = Query(None, description = "KV cache dtype (e.g. q8_0)"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Estimate KV cache + weight bytes for a downloaded GGUF at n_ctx.
+
+    Powers the load dialog's "exceeds memory" warning using the same
+    architecture-aware estimator as load. Best-effort: returns nulls when the
+    metadata is unavailable so the UI simply shows no warning.
+    """
+    null = {"kv_bytes": None, "weights_bytes": None, "native_context": None}
+    try:
+        from utils.models.model_config import is_local_path
+
+        is_local = is_local_path(repo_id)
+        path, weights_bytes = _resolve_quant_gguf(repo_id, quant, is_local)
+        if not path:
+            return null
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        be = LlamaCppBackend.__new__(LlamaCppBackend)
+        for attr in (
+            "_context_length",
+            "_n_layers",
+            "_n_kv_heads",
+            "_n_heads",
+            "_embedding_length",
+            "_kv_key_length",
+            "_kv_value_length",
+            "_kv_lora_rank",
+            "_sliding_window",
+            "_sliding_window_pattern",
+            "_ssm_inner_size",
+            "_full_attention_interval",
+            "_key_length_mla",
+            "_n_kv_heads_by_layer",
+            "_kv_key_length_swa",
+            "_kv_value_length_swa",
+            "_shared_kv_layers",
+            "_nextn_predict_layers",
+        ):
+            setattr(be, attr, None)
+        be._model_identifier = "kv-estimate"
+        be._read_gguf_metadata(path)
+
+        kv = be._estimate_kv_cache_bytes(n_ctx, cache_type_kv)
+        return {
+            "kv_bytes": int(kv) if kv else None,
+            "weights_bytes": weights_bytes or None,
+            "native_context": be._context_length,
+        }
+    except Exception as e:
+        logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")
+        return null
+
+
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)
 async def get_gguf_variants(
     repo_id: str = Query(
@@ -2073,6 +2625,7 @@ async def get_gguf_variants(
                 ],
                 has_vision = has_vision,
                 default_variant = default_variant,
+                context_length = _read_native_context_length(repo_id, is_local = True),
             )
 
         # Remote HuggingFace repo — query HF API.
@@ -2106,7 +2659,11 @@ async def get_gguf_variants(
                                     size = f.stat().st_size
                                 except OSError:
                                     continue  # broken symlink / unreadable: skip
-                                q = _extract_quant_label(f.name).lower()
+                                rel = f.relative_to(snap).as_posix()
+                                q = _extract_quant_label(rel)
+                                if _is_big_endian_gguf_path(rel, q):
+                                    continue
+                                q = q.lower()
                                 by_quant[q] = by_quant.get(q, 0) + size
                             if by_quant:
                                 cached_bytes_by_quant_per_snapshot.append(by_quant)
@@ -2137,6 +2694,7 @@ async def get_gguf_variants(
             ],
             has_vision = has_vision,
             default_variant = default_variant,
+            context_length = _read_native_context_length(repo_id, is_local = False),
         )
 
     except Exception as e:
@@ -2182,8 +2740,12 @@ async def get_gguf_download_progress(
                 for f in _iter_gguf_paths(entry):
                     if _is_mmproj_filename(f.name):
                         continue
-                    fname = f.name.lower().replace("-", "").replace("_", "")
-                    if not variant_lower or variant_lower in fname:
+                    rel = f.relative_to(entry).as_posix()
+                    quant = _extract_quant_label(rel)
+                    if _is_big_endian_gguf_path(rel, quant):
+                        continue
+                    rel_key = rel.lower().replace("-", "").replace("_", "")
+                    if not variant_lower or variant_lower in rel_key:
                         try:
                             downloaded_bytes += f.stat().st_size
                         except OSError:
@@ -2329,6 +2891,51 @@ def _get_repo_size_cached(repo_id: str) -> int:
         return 0
 
 
+def _repo_in_any_hf_cache(model_name: str) -> bool:
+    """Whether ``model_name`` already exists in ANY HF cache the discard searches
+    (active, legacy, default).
+
+    ``created_by_scan`` must be True only when the scan itself first pulled the repo;
+    checking just the active cache (``get_cache_path``) would mark a repo the user
+    already had in a legacy/default cache as scan-created, so declining the consent
+    would delete a model they did not download via the scan. Mirrors the cache set in
+    ``_all_hf_cache_scans`` but only probes for the one repo dir (cheap, no full scan).
+    """
+    from utils.paths import (
+        hf_default_cache_dir,
+        legacy_hf_cache_dir,
+        resolve_cached_repo_id_case,
+    )
+
+    dirname = f"models--{resolve_cached_repo_id_case(model_name).replace('/', '--')}"
+    dirname_lower = dirname.lower()
+    candidates = []
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        candidates.append(Path(HF_HUB_CACHE))
+    except Exception:
+        pass
+    for fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+        try:
+            candidates.append(fn())
+        except Exception:
+            continue
+    # resolve_cached_repo_id_case only normalizes the ACTIVE cache, but discard deletes
+    # case-insensitively across all caches, so detect case-insensitively too -- else a
+    # pre-existing case-variant repo is misreported as scan-created and deleted on decline.
+    for cache in candidates:
+        try:
+            if (cache / dirname).exists():
+                return True
+            if cache.is_dir():
+                for entry in cache.iterdir():
+                    if entry.name.lower() == dirname_lower and entry.is_dir():
+                        return True
+        except Exception:
+            continue
+    return False
+
+
 def _all_hf_cache_scans():
     """scan_cache_dir for the active, legacy, and default HF caches.
 
@@ -2384,6 +2991,14 @@ def _is_main_gguf_filename(name: str) -> bool:
     """A GGUF file that is a primary weight, not an mmproj vision
     adapter."""
     return _is_gguf_filename(name) and not _is_mmproj_filename(name)
+
+
+def _repo_has_mmproj(repo_info) -> bool:
+    """True if the repo ships a GGUF vision adapter (mmproj), so it can
+    take image inputs. Cheap: scans already-listed file names only."""
+    return any(
+        _is_mmproj_filename(f.file_name) for revision in repo_info.revisions for f in revision.files
+    )
 
 
 def _iter_gguf_paths(root: Path):
@@ -2483,6 +3098,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
+                            "has_vision": _repo_has_mmproj(repo_info),
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
@@ -2744,3 +3360,121 @@ async def list_checkpoints(
             event = "models.list_checkpoints_failed",
             log = logger,
         )
+
+
+# Successful estimates only, keyed by model id (token-independent, never stored).
+# Failures are not cached so a transient offline/gated error can recover later.
+_EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
+
+
+def _is_sizable_local_path(model: str) -> bool:
+    """True only for local paths under a Studio data root.
+
+    Containment is decided lexically (no filesystem access) before the path is
+    touched, then the path is symlink-resolved and re-checked so a symlink
+    inside a root can't point the sizer outside it. A user-controlled path thus
+    can't trigger a scan of an arbitrary dir.
+    """
+    from utils.paths import outputs_root, exports_root, studio_root
+    from utils.paths.storage_roots import cache_root
+
+    def _lexical(p: str) -> str:
+        # Lexical only (no filesystem read); normpath collapses '..'.
+        return os.path.normpath(os.path.abspath(os.path.expanduser(p)))
+
+    raw_roots = [studio_root(), outputs_root(), exports_root(), cache_root()]
+    roots = []
+    for root in raw_roots:
+        try:
+            roots.append(_lexical(str(root)))
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+    try:
+        candidate = _lexical(model)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for root in roots:
+        if candidate == root or candidate.startswith(root + os.sep):
+            # Contained lexically; resolve symlinks and re-verify the real path
+            # is still under a root before touching the filesystem.
+            try:
+                real = os.path.realpath(candidate)
+            except (OSError, RuntimeError, ValueError):
+                return False
+            for raw in raw_roots:
+                try:
+                    real_root = os.path.realpath(str(raw))
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if real == real_root or real.startswith(real_root + os.sep):
+                    return os.path.exists(real)
+            return False
+    return False
+
+
+def _export_size_cached(
+    model: str, hf_token: Optional[str]
+) -> tuple[Optional[int], Optional[int], str]:
+    """Estimate a model's fp16/bf16-equivalent size in bytes (+ total params).
+
+    Memoizes successful results by model id; never raises (failures return
+    (None, None, "unavailable") and are not cached). Blocking I/O; call off-thread.
+    """
+    cached = _EXPORT_SIZE_CACHE.get(model)
+    if cached is not None:
+        return cached
+    try:
+        from utils.hardware.hardware import (
+            _resolve_model_identifier_for_gpu_estimate,
+            estimate_fp16_model_size_bytes,
+        )
+
+        # A local LoRA adapter is sized via its base model, which the sizer
+        # reads from the adapter config; re-validate that resolved base so a
+        # crafted adapter can't redirect the local scan outside the roots.
+        if is_local_path(model):
+            base = _resolve_model_identifier_for_gpu_estimate(model, hf_token = hf_token)
+            if is_local_path(base) and not _is_sizable_local_path(base):
+                return None, None, "unavailable"
+
+        fp16_bytes, source = estimate_fp16_model_size_bytes(model, hf_token = hf_token)
+        if not fp16_bytes or fp16_bytes <= 0:
+            return None, None, source or "unavailable"
+        result = (int(fp16_bytes), int(fp16_bytes) // 2, source)
+        _EXPORT_SIZE_CACHE[model] = result
+        return result
+    except Exception as e:  # a size hint must never break export
+        logger.warning("Could not estimate export size for '%s': %s", model, e)
+        return None, None, "unavailable"
+
+
+@router.get("/export-size", response_model = ExportSizeResponse)
+async def get_export_size(
+    model: str = Query(..., description = "Base model id or local model path to size"),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Estimate a model's fp16/bf16-equivalent size for the Export page.
+
+    Returns nulls with HTTP 200 when the size can't be determined. The HF token
+    (for gated repos) comes from the X-HF-Token header so it never hits URLs/logs.
+    """
+    if is_local_path(model):
+        if not _is_sizable_local_path(model):
+            return ExportSizeResponse(
+                model = model, fp16_bytes = None, total_params = None, source = "unavailable"
+            )
+        resolved = model
+    else:
+        resolved = resolve_cached_repo_id_case(model)
+    # Blocking network/disk I/O: run off the event loop.
+    fp16_bytes, total_params, source = await asyncio.to_thread(
+        _export_size_cached, resolved, hf_token
+    )
+    return ExportSizeResponse(
+        model = resolved,
+        fp16_bytes = fp16_bytes,
+        total_params = total_params,
+        source = source,
+    )

@@ -194,7 +194,7 @@ class _DummyTrainer:
                 break
             except TypeError:
                 continue
-        # Ensure attributes exist even if the constructor rejected them.
+        # Ensure attributes exist even if the constructor rejected the flags.
         if not hasattr(self.data_collator, "padding_free"):
             self.data_collator.padding_free = True
         if not hasattr(self.data_collator, "return_position_ids"):
@@ -221,7 +221,7 @@ def test_enable_sample_packing():
 
     enable_sample_packing(model, trainer)
 
-    # model hierarchy should now allow packed overlength inputs
+    # model hierarchy now allows packed overlength inputs
     assert getattr(model, "_unsloth_allow_packed_overlength") is True
     assert getattr(model.child, "_unsloth_allow_packed_overlength") is True
 
@@ -243,7 +243,7 @@ def test_enable_sample_packing():
     ]
     batch = collator.torch_call(examples)
 
-    # packed lengths are aggregated into a single tensor
+    # packed lengths aggregated into one tensor
     assert "packed_seq_lengths" in batch
     assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
 

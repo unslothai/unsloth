@@ -37,10 +37,13 @@ from utils.llama_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
     latest_published_release,
+    latest_release_assets,
     parse_base_build,
     read_install_marker,
     reset_caches,
+    update_download_size_bytes,
 )
+from utils.process_lifetime import child_popen_kwargs
 
 logger = structlog.get_logger(__name__)
 
@@ -59,6 +62,7 @@ _job: dict = {
     "message": "",
     "from_tag": None,
     "to_tag": None,
+    "reload_required": None,
     "error": None,
     "progress": None,
     "started_at": None,
@@ -291,6 +295,18 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         update_available = False
     # Display the mix tag when that's what makes it newer; otherwise the base.
     latest = release_tag if latest_is_mix else base_tag
+    # Size of the resolved prebuilt, so source builds show it like the marker
+    # path. Fails open to None (offline / asset absent from the release).
+    update_size_bytes = None
+    if update_available:
+        asset_name = res.get("asset")
+        if isinstance(asset_name, str) and asset_name:
+            try:
+                assets = latest_release_assets(res.get("repo"), force_refresh = force_refresh)
+                if assets:
+                    update_size_bytes = assets.get(asset_name)
+            except Exception as exc:  # pragma: no cover - network defensive
+                logger.debug("llama update: source-build size lookup failed", error = str(exc))
     with _job_lock:
         job = dict(_job)
     return {
@@ -303,6 +319,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         "installed_at_utc": None,
         "age_days": None,
         "source_build": True,
+        "update_size_bytes": update_size_bytes,
         "job": job,
     }
 
@@ -345,6 +362,20 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     # (see llama_cpp_freshness.is_behind).
     update_available = bool(freshness.get("has_marker") and freshness.get("behind"))
 
+    # Size of the prebuilt that Update would download, for the banner. Only when
+    # an update is offered; fails open to None (offline / no matching asset).
+    update_size_bytes = None
+    if update_available:
+        try:
+            update_size_bytes = update_download_size_bytes(
+                marker,
+                latest,
+                freshness.get("published_repo") or repo,
+                force_refresh = force_refresh,
+            )
+        except Exception as exc:  # pragma: no cover - network defensive
+            logger.debug("llama update: size lookup failed", error = str(exc))
+
     with _job_lock:
         job = dict(_job)
 
@@ -358,6 +389,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         "installed_at_utc": freshness.get("installed_at_utc"),
         "age_days": freshness.get("age_days"),
         "source_build": False,
+        "update_size_bytes": update_size_bytes,
         "job": job,
     }
 
@@ -385,8 +417,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
     backend = None
     model_was_active = False
     try:
-        # Maintenance state so no load starts a server from the half-swapped binary
-        # (and the old binary is freed for the swap). Fails open without a backend.
+        # Block loads and free the binary while the installer swaps it.
         try:
             from routes.inference import get_llama_cpp_backend
             backend = get_llama_cpp_backend()
@@ -400,8 +431,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             try:
                 with backend._serial_load_lock:
                     backend._llama_update_in_progress = True
-                    # is_active covers the loading/unhealthy window is_loaded misses
-                    # (a live process also locks the exe on Windows during the swap).
+                    # Active processes can lock the exe on Windows.
                     if getattr(backend, "is_active", False):
                         model_was_active = True
                         backend.unload_model()
@@ -420,8 +450,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
         ]
         cmd.extend(_rocm_install_args(asset))
         logger.info("llama update: installing", cmd = " ".join(cmd))
-        # Stream the installer output so download percent lines feed
-        # job["progress"]; finer milestones via UNSLOTH_PROGRESS_PERCENT_STEP.
+        # Stream progress lines into job["progress"].
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
         proc = subprocess.Popen(
             cmd,
@@ -429,6 +458,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             stderr = subprocess.STDOUT,
             text = True,
             env = env,
+            **child_popen_kwargs(),
         )
         timed_out = threading.Event()
 
@@ -461,19 +491,15 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             tail = "".join(tail_lines).strip()[-1500:]
             raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
 
-        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop the in-memory AND the
-        # on-disk freshness caches, then re-prime the 24h disk cache with the
-        # true newest, so the banner can't linger on a stale same-base value
-        # after the swap. drop_disk matters when the refresh below can't reach
-        # GitHub: without it, latest_published_release would replay the stale
-        # disk value; with it, latest reads as None and the banner fails open.
+        # Drop stale caches so the banner re-checks the swapped marker.
+        # If GitHub is offline, latest stays unknown and the banner fails open.
         reset_caches(drop_disk = True)
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive
             logger.debug("llama update: post-install freshness refresh failed", error = str(exc))
         new_marker = read_install_marker(_find_binary())
-        new_tag = (new_marker or {}).get("tag") or (new_marker or {}).get("release_tag")
+        new_tag = (new_marker or {}).get("release_tag") or (new_marker or {}).get("tag")
 
         with _job_lock:
             _job.update(
@@ -483,6 +509,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
                     + (" Reload your model to use it." if model_was_active else "")
                 ),
                 to_tag = new_tag,
+                reload_required = model_was_active,
                 error = None,
                 progress = 1.0,
                 finished_at = _utcnow(),
@@ -498,7 +525,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
                 finished_at = _utcnow(),
             )
     finally:
-        # Lift the maintenance state so model loads work again, success or not.
+        # Always clear maintenance state.
         if backend is not None:
             try:
                 backend._llama_update_in_progress = False
@@ -586,6 +613,7 @@ def start_update() -> dict:
             message = "Downloading and installing the latest llama.cpp prebuilt...",
             from_tag = from_tag,
             to_tag = None,
+            reload_required = None,
             error = None,
             progress = 0.0,
             started_at = _utcnow(),
@@ -611,6 +639,7 @@ def _reset_job_for_tests() -> None:
             message = "",
             from_tag = None,
             to_tag = None,
+            reload_required = None,
             error = None,
             progress = None,
             started_at = None,

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from loggers import get_logger
+from utils.node_runtime import resolve_node_executable
 from utils.paths import ensure_dir, oxc_validator_tmp_root
 
 logger = get_logger(__name__)
@@ -231,6 +232,14 @@ def _run_oxc_batch(
         "code_shape": code_shape,
         "codes": code_values,
     }
+    # Resolve a usable Node (system or the isolated install, which is not on the
+    # user's PATH); a bare "node" would fail for isolated-Node users.
+    node_executable = resolve_node_executable()
+    if not node_executable:
+        return _fallback_results(
+            len(code_values),
+            "Node.js not found (install Node >= 20.19, or re-run Studio setup to provision it).",
+        )
     try:
         tmp_dir = ensure_dir(oxc_validator_tmp_root())
         env = child_env_without_native_path_secret()
@@ -238,8 +247,13 @@ def _run_oxc_batch(
         env["TMPDIR"] = tmp_dir_str
         env["TMP"] = tmp_dir_str
         env["TEMP"] = tmp_dir_str
+        # Resolved node's dir first on the child PATH so it finds its own npm/npx.
+        node_bin_dir = os.path.dirname(node_executable)
+        if node_bin_dir:
+            env["PATH"] = node_bin_dir + os.pathsep + env.get("PATH", "")
+        env.pop("NODE_PATH", None)
         proc = subprocess.run(
-            ["node", str(_OXC_RUNNER_PATH)],
+            [node_executable, str(_OXC_RUNNER_PATH)],
             cwd = str(_OXC_TOOL_DIR),
             input = json.dumps(payload),
             text = True,

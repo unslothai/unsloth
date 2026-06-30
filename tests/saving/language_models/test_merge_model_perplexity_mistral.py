@@ -101,7 +101,7 @@ def load_and_compute_8bit_ppl(
 
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-    # Convert to Python float if it's a tensor.
+    # Coerce to a plain Python float.
     if torch.is_tensor(ppl_value):
         ppl_value = ppl_value.cpu().item()
     elif hasattr(ppl_value, "item"):

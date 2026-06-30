@@ -1,18 +1,4 @@
-"""Tests for the GPU-detection follow-ups to PR 6174.
-
-PR 6174 made NVIDIA take precedence and added a /proc/driver/nvidia/gpus
-fallback in install.sh and studio/install_python_stack.py. These tests cover the
-same hardening ported to the llama.cpp prebuilt installer
-(studio/install_llama_prebuilt.py) and the Studio shell setup (studio/setup.sh):
-
-  * detect_host() recognises NVIDIA via /proc/driver/nvidia/gpus when nvidia-smi
-    is unavailable, and skips ROCm probing when NVIDIA is usable.
-  * setup.sh routes through a timeout-bounded NVIDIA probe with a /proc fallback
-    and only selects a CUDA/ROCm source build when the matching GPU is detected.
-
-All tests use mocks or source-level assertions -- no GPU, network, or real
-nvidia-smi/rocminfo invocation.
-"""
+"""GPU-detection follow-ups to PR 6174: NVIDIA precedence + /proc/driver/nvidia/gpus fallback ported to install_llama_prebuilt.py and setup.sh. Mocks/source-level only, no GPU."""
 
 import importlib.util
 import sys
@@ -41,8 +27,7 @@ SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 
 
 def _make_run_capture(rocminfo_stdout: str = ""):
-    """Return a fake run_capture: rocminfo reports rocminfo_stdout, everything
-    else (nvidia-smi, amd-smi) returns empty so only the patched probes matter."""
+    """Fake run_capture: rocminfo returns rocminfo_stdout, everything else empty."""
 
     def _run_capture(cmd, *args, **kwargs):
         exe = str(cmd[0]) if cmd else ""
@@ -102,8 +87,7 @@ def _run_detect_host(
     for p in patches:
         p.start()
     try:
-        # Ensure CUDA_VISIBLE_DEVICES does not leak in from the test host unless
-        # the scenario sets it explicitly.
+        # Don't let the host's CUDA_VISIBLE_DEVICES leak in unless the scenario sets it.
         if env is None or "CUDA_VISIBLE_DEVICES" not in env:
             prebuilt_mod.os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         return detect_host()
@@ -239,11 +223,7 @@ class TestSetupShHardening:
         assert "command -v timeout" in body
 
     def test_cuda_source_build_gated_on_usable_nvidia(self, setup_src):
-        """The nvcc source-build search must be gated on _setup_nvidia_usable.
-
-        The hidden-GPU policy (CUDA_VISIBLE_DEVICES=""/-1) lives inside
-        _setup_has_usable_nvidia_gpu, so the gate itself only needs the flag.
-        """
+        """The nvcc source-build search must be gated on _setup_nvidia_usable."""
         anchor = setup_src.find('NVCC_PATH=""\n')
         assert anchor >= 0
         window = setup_src[anchor : anchor + 700]
@@ -252,9 +232,7 @@ class TestSetupShHardening:
         ), "CUDA toolkit search must require a usable NVIDIA GPU, not just nvcc"
 
     def test_nvidia_helper_honours_hidden_cvd(self, setup_src):
-        """_setup_has_usable_nvidia_gpu must consult the hidden-CVD helper so
-        CUDA_VISIBLE_DEVICES=""/-1 suppresses NVIDIA before the AMD probes are
-        gated (mixed hosts steered to the AMD card keep the ROCm route)."""
+        """_setup_has_usable_nvidia_gpu must consult the hidden-CVD helper so CVD ""/-1 suppresses NVIDIA before AMD gating."""
         assert "_setup_cvd_hides_nvidia()" in setup_src
         start = setup_src.find("_setup_has_usable_nvidia_gpu() {")
         end = setup_src.find("\n}", start)
@@ -271,7 +249,20 @@ class TestSetupShHardening:
         ), "ROCm toolkit search must require a detected AMD GPU, not just hipcc"
 
     def test_compute_cap_probe_timeout_wrapped(self, setup_src):
-        assert "_setup_run_smi nvidia-smi --query-gpu=compute_cap" in setup_src
+        # nvidia-smi is now a variable ($_smi_bin), so check the wrapper precedes
+        # the probe rather than matching a literal. The string also appears in a
+        # comment, so scan all occurrences and accept if any is wrapped.
+        wrapped = False
+        start = 0
+        while True:
+            idx = setup_src.find("--query-gpu=compute_cap", start)
+            if idx < 0:
+                break
+            if "_setup_run_smi" in setup_src[max(0, idx - 80) : idx]:
+                wrapped = True
+                break
+            start = idx + 1
+        assert wrapped, "compute_cap probe must be wrapped in _setup_run_smi (timeout-bounded)"
 
     def test_driver_version_probe_timeout_wrapped(self, setup_src):
         start = setup_src.find("_cuda_driver_max_version()")
@@ -284,9 +275,7 @@ class TestSetupShHardening:
 
 
 class TestBackendExportLeafClassification:
-    """A custom UNSLOTH_PYTORCH_MIRROR whose base path contains "rocm" or
-    "gfx" must not mislabel a cu*/cpu index as ROCm; classification uses the
-    final path segment of TORCH_INDEX_URL only."""
+    """A mirror base path containing "rocm"/"gfx" must not mislabel a cu*/cpu index; classification uses TORCH_INDEX_URL's leaf only."""
 
     @pytest.fixture(scope = "class")
     def install_src(self) -> str:
@@ -343,8 +332,7 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 
 
 def _stack_nvidia_usable(cvd):
-    """Drive install_python_stack._has_usable_nvidia_gpu with a mocked
-    nvidia-smi that always reports a GPU; cvd = None removes the env var."""
+    """Drive _has_usable_nvidia_gpu with a mocked nvidia-smi that always reports a GPU; cvd=None unsets the env var."""
 
     def fake_run(cmd, *args, **kwargs):
         result = MagicMock()
@@ -368,11 +356,7 @@ def _stack_nvidia_usable(cvd):
 
 
 class TestHiddenCvdNotUsable:
-    """CUDA_VISIBLE_DEVICES set to "" or "-1" deliberately hides every NVIDIA
-    device (mixed AMD+NVIDIA hosts steering work to the AMD card). All three
-    _has_usable_nvidia_gpu implementations (install_python_stack.py, install.sh,
-    setup.sh) must report the GPU as not usable so the AMD/CPU routes run,
-    matching install_llama_prebuilt.py's has_usable_nvidia."""
+    """CVD ""/-1 hides every NVIDIA device; all three _has_usable_nvidia_gpu impls must report not-usable so AMD/CPU routes run."""
 
     def test_python_unset_cvd_is_usable(self):
         assert _stack_nvidia_usable(None) is True
@@ -393,9 +377,7 @@ class TestHiddenCvdNotUsable:
         assert _stack_nvidia_usable("0,1") is True
 
     def test_hidden_nvidia_restores_rocm_detection(self):
-        """Mixed host, NVIDIA hidden via CVD=-1, rocminfo reports gfx1100:
-        _has_rocm_gpu must proceed past the NVIDIA guard and return True
-        (before this fix the guard ignored CVD and blocked ROCm)."""
+        """Mixed host, NVIDIA hidden via CVD=-1: _has_rocm_gpu must pass the NVIDIA guard and return True (pre-fix it ignored CVD)."""
 
         def fake_run(cmd, *args, **kwargs):
             result = MagicMock()
@@ -420,8 +402,7 @@ class TestHiddenCvdNotUsable:
 
     @staticmethod
     def _run_sh_helper(tmp_path, src: str, fn_names: list, cvd):
-        """Extract shell functions, run the usable-GPU one against a fake
-        nvidia-smi, and return "usable"/"not_usable"."""
+        """Extract shell functions, run the usable-GPU one against a fake nvidia-smi; return "usable"/"not_usable"."""
         import os as _os
         import subprocess as sp
 

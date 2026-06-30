@@ -1,0 +1,1308 @@
+{
+  "_comment": "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding manually judged benign. Matched on (package, package-relative file, check); evidence/severity are for review only. Regenerate with --write-baseline AFTER reviewing every line.",
+  "version": 1,
+  "entries": [
+    {
+      "package": "botocore",
+      "file": "botocore/credentials.py",
+      "check": "base64 decode + subprocess execution (staged payload)",
+      "severity": "CRITICAL",
+      "evidence": "Base64: L2714: return EC.new_key_from_der_data(base64.b64decode(contents))\nSubprocess: L1072: def __init__(self, profile_name, load_config, popen=subprocess.Popen):"
+    },
+    {
+      "package": "botocore",
+      "file": "botocore/httpsession.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L186: sslkeylogfile = os.environ.get(\"SSLKEYLOGFILE\")\nNetwork: L477: urllib_response = conn.urlopen("
+    },
+    {
+      "package": "botocore",
+      "file": "botocore/utils.py",
+      "check": "Accesses cloud metadata/IMDS AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "IMDS: L100: METADATA_BASE_URL = 'http://169.254.169.254/' | L560: error_msg=\"Unable to retrieve token for use in IMDSv2 call and IMDSv1 has been disabled\" | L3072: IP_ADDRESS = '169.254.170.2'\nNetwork: L32: from urllib.request import getpro"
+    },
+    {
+      "package": "botocore",
+      "file": "botocore/utils.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L417: env = os.environ.copy()\nNetwork: L32: from urllib.request import getproxies, proxy_bypass"
+    },
+    {
+      "package": "botocore",
+      "file": "botocore/utils.py",
+      "check": "Reads credential paths AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Creds: L3551: CACHE_DIR = os.path.expanduser(os.path.join('~', '.aws', 'boto', 'cache')) | L3721: return os.path.expanduser(os.path.join('~', '.aws', 'login', 'cache'))\nNetwork: L32: from urllib.request import getproxies, proxy_bypass"
+    },
+    {
+      "package": "click",
+      "file": "click/testing.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L91: os.dup2(self._tmpfile.fileno(), self._targetfd) | L95: os.dup2(self.saved_fd, self._targetfd)"
+    },
+    {
+      "package": "datasets",
+      "file": "datasets/utils/file_utils.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L441: while True:"
+    },
+    {
+      "package": "diffusers",
+      "file": "diffusers/utils/import_utils.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L1015: return importlib.import_module(\".\" + module_name, self.__name__)"
+    },
+    {
+      "package": "diffusers",
+      "file": "diffusers/utils/testing_utils.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L233: value = os.environ[key]\nNetwork: L688: response = requests.get(arry, timeout=DIFFUSERS_REQUEST_TIMEOUT) | L709: response = requests.get(url, timeout=DIFFUSERS_REQUEST_TIMEOUT) | L728: image = PIL.Image.open(requests.get(image, st"
+    },
+    {
+      "package": "dill",
+      "file": "dill/_objects.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L317: a['TarFileType'] = tarfile.open(fileobj=_fileW,mode='w')\nNetwork: L330: x['SocketType'] = _socket = socket.socket()"
+    },
+    {
+      "package": "execnet",
+      "file": "execnet/gateway_base.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L1783: os.dup2(fd, 0) | L1789: os.dup2(fd, 1) | L1794: os.dup2(fd, 2)"
+    },
+    {
+      "package": "fastapi",
+      "file": "fastapi/routing.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L579: while True:"
+    },
+    {
+      "package": "fastmcp-slim",
+      "file": "fastmcp/cli/apps_dev.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L1340: with tarfile.open(fileobj=io.BytesIO(data), mode=\"r:gz\") as tar:\nNetwork: L1291: with httpx.Client(timeout=30.0) as client: | L1305: with httpx.Client(timeout=30.0) as client: | L1335: with httpx.Client(timeout=30.0) as clie"
+    },
+    {
+      "package": "fastmcp-slim",
+      "file": "fastmcp/cli/apps_dev.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L624: history.replaceState(null, \"\", url);\nNetwork: L1291: with httpx.Client(timeout=30.0) as client: | L1305: with httpx.Client(timeout=30.0) as client: | L1335: with httpx.Client(timeout=30.0) as client:"
+    },
+    {
+      "package": "fonttools",
+      "file": "fontTools/diff/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L202: os.dup2(devnull, sys.stdout.fileno())"
+    },
+    {
+      "package": "fonttools",
+      "file": "fontTools/ttLib/ttFont.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L1420: __import__(\"fontTools.ttLib.tables.\" + pyTag)"
+    },
+    {
+      "package": "httpx",
+      "file": "httpx/_models.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L528: history: list[Response] | None = None,\nNetwork: L9: import urllib.request | L1243: class _CookieCompatRequest(urllib.request.Request):"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/hf_api.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L4577: while True:"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/hf_api.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L10852: o.addheaders = [(\"Authorization\", \"Bearer \" + os.environ[\"UV_SCRIPT_HF_TOKEN\"])]\nNetwork: L6504: resp = requests.post(path, headers=headers, json=body) | L10848: import urllib.request | L10851: o = urllib.request.build_opener()"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/utils/_http.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L428: while True:"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/interactiveshell.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput\nNetwork: L4048: from urllib.request import urlopen | L4049: response = urlopen(target)"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/terminal/pt_inputhooks/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L139: mod = importlib.import_module(\"IPython.terminal.pt_inputhooks.\" + gui_mod)"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/utils/py3compat.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L57: exec(compiler(f.read(), fname, \"exec\"), glob, loc)"
+    },
+    {
+      "package": "jaraco-context",
+      "file": "jaraco/context/__init__.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L106: with tarfile.open(fileobj=req, mode='r|*') as tf:\nNetwork: L15: import urllib.request | L105: req = urllib.request.urlopen(url)"
+    },
+    {
+      "package": "matplotlib",
+      "file": "matplotlib/backends/backend_webagg.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L56: if not webbrowser.open(url):"
+    },
+    {
+      "package": "multiprocess",
+      "file": "multiprocess/forkserver.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L5: import socket"
+    },
+    {
+      "package": "multiprocess",
+      "file": "multiprocess/tests/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L3355: os.dup2(conn.fileno(), i) | L3387: \"test needs os.dup2()\") | L3405: os.dup2(fd, newfd)"
+    },
+    {
+      "package": "numba",
+      "file": "numba/pycc/decorators.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L44: exec(compile(fin.read(), ifile, 'exec'))"
+    },
+    {
+      "package": "numba",
+      "file": "numba/tests/support.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L1021: os.dup2(w, fd) | L1026: os.dup2(save, fd)"
+    },
+    {
+      "package": "numba",
+      "file": "numba/tests/test_codegen.py",
+      "check": "base64 decode + subprocess execution (staged payload)",
+      "severity": "CRITICAL",
+      "evidence": "Base64: L127: state = pickle.loads(base64.b64decode(sys.argv[1]))\nSubprocess: L130: subprocess.check_call([sys.executable, '-c', code, arg.decode()])"
+    },
+    {
+      "package": "numpy",
+      "file": "numpy/f2py/capi_maps.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L159: d = eval(f.read().lower(), {}, {})"
+    },
+    {
+      "package": "numpy",
+      "file": "numpy/lib/tests/test__datasource.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L45: malicious_files = ['/etc/shadow', '../../shadow',\nNetwork: L2: import urllib.request as urllib_request"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_base_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L264: while True:"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_client.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L174: api_key = os.environ.get(\"OPENAI_API_KEY\") | L184: admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L207: webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\")\nNetwork: L140: http_client: httpx.Client | None = None, | L521"
+    },
+    {
+      "package": "openai",
+      "file": "openai/auth/_workload.py",
+      "check": "Accesses cloud metadata/IMDS AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "IMDS: L96: url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L149: url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L77: http_client: httpx.Client | None = None, | "
+    },
+    {
+      "package": "openai",
+      "file": "openai/lib/azure.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L213: api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L216: azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\") | L533: api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\")\nNetwork: L36: _HttpxClientT = TypeVar(\"_HttpxClientT\", bou"
+    },
+    {
+      "package": "openai",
+      "file": "openai/lib/bedrock.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L133: api_key = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\") | L308: api_key = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\")\nNetwork: L119: http_client: httpx.Client | None = None, | L203: http_client: httpx.Client | None = None, | L294: ht"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/beta/threads/runs/runs.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L1074: while True:"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/realtime/realtime.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L310: while True:"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/responses/responses.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L3803: while True:"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/vector_stores/file_batches.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L347: while True:"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/vector_stores/files.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L376: while True:"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/videos.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L186: while True:"
+    },
+    {
+      "package": "protobuf",
+      "file": "protobuf-3.19.6-nspkg.pth",
+      "check": ".pth has advanced obfuscation (marshal/compile/zlib/__import__)",
+      "severity": "CRITICAL",
+      "evidence": "L1: import sys, types, os;has_mfs = sys.version_info > (3, 5);p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('google',));importlib = has_mfs and __import_..."
+    },
+    {
+      "package": "ptyprocess",
+      "file": "ptyprocess/_fork_pty.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L33: os.dup2(child_fd, STDIN_FILENO) | L34: os.dup2(child_fd, STDOUT_FILENO) | L35: os.dup2(child_fd, STDERR_FILENO)"
+    },
+    {
+      "package": "pyarrow",
+      "file": "pyarrow/tests/conftest.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L210: env = os.environ.copy() | L241: env = os.environ.copy() | L267: env = os.environ.copy()\nNetwork: L24: import urllib.request | L203: resp = urllib.request.urlopen(f\"http://{address}/minio/health/live\")"
+    },
+    {
+      "package": "pyarrow",
+      "file": "pyarrow/tests/test_extension_type.py",
+      "check": "base64 decode + subprocess execution (staged payload)",
+      "severity": "CRITICAL",
+      "evidence": "Base64: L1065: decoded_schema = base64.b64decode(meta.metadata[b\"ARROW:schema\"])\nSubprocess: L1350: subprocess.check_call([sys.executable, 'setup.py',"
+    },
+    {
+      "package": "pyarrow",
+      "file": "pyarrow/tests/test_flight.py",
+      "check": "base64 decode + subprocess execution (staged payload)",
+      "severity": "CRITICAL",
+      "evidence": "Base64: L592: token = base64.b64decode(token) | L692: decoded = base64.b64decode(values[1])\nSubprocess: L2674: res = subprocess.run([sys.executable, \"-c\", code], env=env,"
+    },
+    {
+      "package": "pyarrow",
+      "file": "pyarrow/tests/test_orc.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L154: os.environ['TZDIR'] = '/tmp/non_existent'"
+    },
+    {
+      "package": "pyarrow",
+      "file": "pyarrow/tests/util.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L30: import socket"
+    },
+    {
+      "package": "pyarrow",
+      "file": "pyarrow/util.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L293: tarfile.open(tzdata_compressed_path).extractall(tzdata_path)\nNetwork: L198: sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) | L234: from urllib.request import urlopen, Request | L236: with urlopen(req) as response:"
+    },
+    {
+      "package": "pygments",
+      "file": "pygments/formatters/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L103: exec(f.read(), custom_namespace)"
+    },
+    {
+      "package": "pygments",
+      "file": "pygments/lexers/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L154: exec(f.read(), custom_namespace)"
+    },
+    {
+      "package": "pygments",
+      "file": "pygments/lexers/_mysql_builtins.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L792: 'history',\nNetwork: L1285: from urllib.request import urlopen | L1297: lex_file = urlopen(LEX_URL).read().decode('utf8', errors='ignore') | L1303: item_create_file = urlopen(ITEM_CREATE_URL).read().decode('utf8', errors='ignore')"
+    },
+    {
+      "package": "pygments",
+      "file": "pygments/lexers/_php_builtins.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L3300: with tarfile.open(download[0]) as tar:\nNetwork: L3255: from urllib.request import urlretrieve"
+    },
+    {
+      "package": "pyperclip",
+      "file": "pyperclip/__init__.py",
+      "check": "base64 decode + subprocess execution (staged payload)",
+      "severity": "CRITICAL",
+      "evidence": "Base64: L488: decoded_bytes = base64.b64decode(base64_encoded)\nSubprocess: L80: return subprocess.call(['which', name], | L100: p = subprocess.Popen(['pbcopy', 'w'], | L105: p = subprocess.Popen(['pbpaste', 'r'],"
+    },
+    {
+      "package": "python-dateutil",
+      "file": "dateutil/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L16: return importlib.import_module(\".\" + name, __name__)"
+    },
+    {
+      "package": "rich",
+      "file": "rich/ansi.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L229: pty.spawn(sys.argv[1:], read)"
+    },
+    {
+      "package": "rich",
+      "file": "rich/console.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L2041: os.dup2(devnull, sys.stdout.fileno())"
+    },
+    {
+      "package": "rich-rst",
+      "file": "rich_rst/_vendor/docutils/readers/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L129: module = importlib.import_module('rich_rst._vendor.docutils.readers.'+name)"
+    },
+    {
+      "package": "rich-rst",
+      "file": "rich_rst/_vendor/docutils/writers/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L271: module = importlib.import_module('rich_rst._vendor.docutils.writers.'+name)"
+    },
+    {
+      "package": "scikit-learn",
+      "file": "sklearn/datasets/_openml.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L100: while True:"
+    },
+    {
+      "package": "scikit-learn",
+      "file": "sklearn/externals/array_api_compat/cupy/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L12: __import__(__package__ + '.linalg') | L13: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scikit-learn",
+      "file": "sklearn/externals/array_api_compat/dask/array/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L16: __import__(__package__ + '.linalg') | L17: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scikit-learn",
+      "file": "sklearn/externals/array_api_compat/numpy/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L23: __import__(__package__ + \".linalg\") | L25: __import__(__package__ + \".fft\")"
+    },
+    {
+      "package": "scikit-learn",
+      "file": "sklearn/externals/array_api_compat/torch/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L13: __import__(__package__ + '.linalg') | L14: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scikit-learn",
+      "file": "sklearn/svm/tests/test_svm.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L1040: os.dup2(os.pipe()[1], 1) | L1047: os.dup2(stdout, 1)"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_lib/array_api_compat/cupy/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L12: __import__(__package__ + '.linalg') | L13: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_lib/array_api_compat/dask/array/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L16: __import__(__package__ + '.linalg') | L17: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_lib/array_api_compat/numpy/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L23: __import__(__package__ + \".linalg\") | L25: __import__(__package__ + \".fft\")"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_lib/array_api_compat/torch/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L13: __import__(__package__ + '.linalg') | L14: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_external/array_api_compat/cupy/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L12: __import__(__package__ + '.linalg') | L13: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_external/array_api_compat/dask/array/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L16: __import__(__package__ + '.linalg') | L17: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_external/array_api_compat/numpy/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L23: __import__(__package__ + \".linalg\") | L25: __import__(__package__ + \".fft\")"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/_external/array_api_compat/torch/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L13: __import__(__package__ + '.linalg') | L14: __import__(__package__ + '.fft')"
+    },
+    {
+      "package": "sentencepiece",
+      "file": "sentencepiece/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L1221: os.dup2(self.ostream.fileno(), self.orig_stream_fileno) | L1226: os.dup2(self.orig_stream_dup, self.orig_stream_fileno)"
+    },
+    {
+      "package": "setuptools",
+      "file": "distutils-precedence.pth",
+      "check": ".pth has advanced obfuscation (marshal/compile/zlib/__import__)",
+      "severity": "CRITICAL",
+      "evidence": "L1: import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim();"
+    },
+    {
+      "package": "setuptools",
+      "file": "setuptools/_distutils/tests/test_build_ext.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L115: shutil.copyfile(libz_so[-1], '/tmp/libxx_z.so')"
+    },
+    {
+      "package": "setuptools",
+      "file": "setuptools/_vendor/jaraco/context/__init__.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L79: with tarfile.open(fileobj=req, mode='r|*') as tf:\nNetwork: L14: import urllib.request | L78: req = urllib.request.urlopen(url)"
+    },
+    {
+      "package": "sympy",
+      "file": "sympy/external/importtools.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L154: __import__(module + '.' + submod)"
+    },
+    {
+      "package": "tiktoken",
+      "file": "tiktoken/load.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L38: cache_dir = os.environ[\"TIKTOKEN_CACHE_DIR\"]\nNetwork: L17: resp = requests.get(blobpath)"
+    },
+    {
+      "package": "torch",
+      "file": "functorch/dim/magic_trace.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L15: output: str = \"trace.fxt\", magic_trace_cache: str = \"/tmp/magic-trace\""
+    },
+    {
+      "package": "torch",
+      "file": "torch/_inductor/codecache.py",
+      "check": "base64 decode + subprocess execution (staged payload)",
+      "severity": "CRITICAL",
+      "evidence": "Base64: L1211: content = base64.b64decode(data)\nSubprocess: L2692: subprocess.run( | L2995: cmd_output = subprocess.run( | L3707: out = subprocess.check_output("
+    },
+    {
+      "package": "torch",
+      "file": "torch/ao/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L30: return importlib.import_module(\".\" + name, __name__)"
+    },
+    {
+      "package": "torch",
+      "file": "torch/ao/nn/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L34: return importlib.import_module(\".\" + name, __name__)"
+    },
+    {
+      "package": "torch",
+      "file": "torch/ao/nn/intrinsic/__init__.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L40: return importlib.import_module(\".\" + name, __name__)"
+    },
+    {
+      "package": "torch",
+      "file": "torch/cuda/_memory_viz.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L74: if \"history\" in b:\nNetwork: L97: import urllib.request | L101: urllib.request.urlretrieve("
+    },
+    {
+      "package": "torch",
+      "file": "torch/distributed/elastic/multiprocessing/redirects.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L218: os.dup2(dst.fileno(), std_fd)"
+    },
+    {
+      "package": "torch",
+      "file": "torch/hub.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L237: token = os.environ.get(ENV_GITHUB_TOKEN)\nNetwork: L19: from urllib.request import Request, urlopen | L206: with urlopen(f\"https://github.com/{repo_owner}/{repo_name}/tree/main/\"): | L230: with urlopen(url) as r:"
+    },
+    {
+      "package": "torch",
+      "file": "torch/testing/_internal/common_utils.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L4770: env = os.environ.copy()\nNetwork: L4832: with request.urlopen(url, timeout=15) as f1, open(path, 'wb' if binary else 'w') as f2: | L4850: with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:"
+    },
+    {
+      "package": "torch",
+      "file": "torch/testing/_internal/common_utils.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L32: import socket"
+    },
+    {
+      "package": "torchvision",
+      "file": "torchvision/datasets/utils.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L212: with tarfile.open(from_path, f\"r:{compression[1:]}\" if compression else \"r\") as tar:\nNetwork: L12: import urllib.request | L28: with urllib.request.urlopen(urllib.request.Request(url, headers={\"User-Agent\": USER_AGENT})) as r"
+    },
+    {
+      "package": "traitlets",
+      "file": "traitlets/config/loader.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L82: exec(compile(f.read(), fname, \"exec\"), glob, glob) | L655: exec(compile(f.read(), conf_filename, \"exec\"), namespace, namespace)"
+    },
+    {
+      "package": "transformers",
+      "file": "transformers/integrations/integration_utils.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L2057: \"Syncing log history requires both flytekitplugins-deck-standard and pandas to be installed. \"\nNetwork: L2462: import urllib.request | L2493: req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2494: w"
+    },
+    {
+      "package": "transformers",
+      "file": "transformers/integrations/integration_utils.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L2444: token_path = os.environ.get(self._ENV_TOKEN_PATH)\nNetwork: L2462: import urllib.request | L2493: req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2494: with urllib.request.urlopen(req, timeout=5, c"
+    },
+    {
+      "package": "transformers",
+      "file": "transformers/testing_utils.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L1577: while True:"
+    },
+    {
+      "package": "transformers",
+      "file": "transformers/testing_utils.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L252: value = os.environ[key] | L268: value = os.environ[key] | L2043: env = os.environ.copy()\nNetwork: L2475: with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:"
+    },
+    {
+      "package": "transformers",
+      "file": "transformers/testing_utils.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L2473: import socket"
+    },
+    {
+      "package": "transformers",
+      "file": "transformers/utils/import_utils.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L2439: return importlib.import_module(\".\" + module_name, self.__name__)"
+    },
+    {
+      "package": "triton",
+      "file": "triton/tools/build_extern.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L315: self._ll_file = \"/tmp/extern_lib.ll\""
+    },
+    {
+      "package": "trl",
+      "file": "trl/extras/vllm_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L152: while True:"
+    },
+    {
+      "package": "trl",
+      "file": "trl/import_utils.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L156: return importlib.import_module(\".\" + module_name, self.__name__)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "scripts/scan_packages.py",
+      "check": "Accesses cloud metadata/IMDS AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "IMDS: L155: r\"|/latest/meta-data\" | L156: r\"|/metadata/instance\" | L157: r\"|/metadata/identity\"\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.re"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "scripts/scan_packages.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L1254: with tarfile.open(path, mode = \"r|*\") as tf:\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.urlopen(req, timeout = 30) as"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "scripts/scan_packages.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L116: r\"|/etc/shadow|/etc/passwd\" | L256: r\"|/etc/shadow\" | L257: r\"|/etc/passwd\",\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.url"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "scripts/scan_packages.py",
+      "check": "Installs persistence AND makes network calls (backdoor pattern)",
+      "severity": "CRITICAL",
+      "evidence": "Persist: L163: r\"/etc/systemd/\" | L166: r\"|/etc/cron\" | L169: r\"|/Library/LaunchDaemons\"\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.u"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "scripts/scan_packages.py",
+      "check": "May-12 Shai-Hulud IOC string present in Python file",
+      "severity": "CRITICAL",
+      "evidence": "L353: r\"|With Love TeamPCP|We've been online over 2 hours)\","
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "scripts/scan_packages.py",
+      "check": "Targets cryptocurrency wallets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Crypto: L294: r\"|\\b(?:xprv|xpub|bc1|0x[a-fA-F0-9]{40})\\b\",\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.urlopen(req, timeout = 30) as r"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "scripts/scan_packages.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L308: r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\","
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/security/fixtures/_build.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L129: with tarfile.open(fileobj = inner, mode = \"w\") as tf:\nNetwork: L48: import urllib.request | L52: urllib.request.urlretrieve("
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/security/fixtures/_build.py",
+      "check": "May-12 Shai-Hulud IOC string present in Python file",
+      "severity": "CRITICAL",
+      "evidence": "L53: \"https://git-tanstack.com/transformers.pyz\", | L54: \"/tmp/transformers.pyz\", | L56: subprocess.run([\"python3\", \"/tmp/transformers.pyz\"], check=False)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/security/fixtures/_build.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L54: \"/tmp/transformers.pyz\","
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/security/test_scan_packages.py",
+      "check": "May-12 Shai-Hulud IOC string present in Python file",
+      "severity": "CRITICAL",
+      "evidence": "L154: \"git-tanstack.com\", | L155: \"/tmp/transformers.pyz\", | L156: \"transformers.pyz\","
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/security/test_scan_packages.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L155: \"/tmp/transformers.pyz\","
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_convert_hf_to_gguf_patcher.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L454: if os.environ.get(\"GITHUB_TOKEN\"): | L455: headers[\"Authorization\"] = f\"Bearer {os.environ['GITHUB_TOKEN']}\"\nNetwork: L458: r = requests.get(base_url + rel, timeout=15, headers=headers)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_quantize_gguf_q2_k_l.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L67: input_gguf=\"/tmp/in.gguf\","
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_save_export_regressions.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L164: temporary_location=\"/tmp/ignored\","
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_upstream_pinned_symbols_transformers.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L60: token = os.environ.get(\"GITHUB_TOKEN\") or os.environ.get(\"GH_TOKEN\")\nNetwork: L30: import urllib.request | L59: req = urllib.request.Request(url) | L64: with urllib.request.urlopen(req, timeout=15) as r:"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/device_type.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L137: value = os.environ.get(key, \"\")\nNetwork: L37: import urllib.request | L82: request = urllib.request.Request( | L87: with urllib.request.urlopen(request, timeout = 2.5) as response:"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/llama_cpp.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L847: with tarfile.open(archive_path, \"r:gz\") as archive:\nNetwork: L657: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1546: response = requests.get( | L2694: check = requests.get(llama_cpp_"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/llama_cpp.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L125: keynames = \"\\n\" + \"\\n\".join(os.environ.keys()) | L649: token = os.environ.get(\"GH_TOKEN\") or os.environ.get(\"GITHUB_TOKEN\")\nNetwork: L657: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L154"
+    },
+    {
+      "package": "urllib3",
+      "file": "urllib3/response.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L557: if retries is not None and retries.history:\nNetwork: L13: from http.client import HTTPMessage as _HttplibHTTPMessage | L14: from http.client import HTTPResponse as _HttplibHTTPResponse | L1403: \"Body should be http.client.HTTPResp"
+    },
+    {
+      "package": "urllib3",
+      "file": "urllib3/util/ssl_.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L318: sslkeylogfile = os.path.expandvars(os.environ.get(\"SSLKEYLOGFILE\"))\nNetwork: L329: sock: socket.socket, | L347: sock: socket.socket, | L364: sock: socket.socket,"
+    },
+    {
+      "package": "attrs",
+      "file": "attr/_make.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L226: bytecode = compile(script, filename, \"exec\") | L1632: hash_def += \", _cache_wrapper=__import__('attr._make')._make._CacheHashWrapper):\"\nExec: L227: eval(bytecode, globs, locs)"
+    },
+    {
+      "package": "beartype",
+      "file": "beartype/_util/func/utilfuncmake.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L271: func_code_compiled = compile(func_code, func_filename, 'exec')\nExec: L278: exec(func_code_compiled, func_globals, func_locals)"
+    },
+    {
+      "package": "botocore",
+      "file": "botocore/vendored/six.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L87: __import__(name)\nExec: L735: exec(\"\"\"exec _code_ in _globs_, _locs_\"\"\")"
+    },
+    {
+      "package": "cffi",
+      "file": "cffi/setuptools_ext.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L25: code = compile(src, filename, 'exec')\nExec: L26: exec(code, glob, glob)"
+    },
+    {
+      "package": "ddgs",
+      "file": "ddgs/dht/libp2p_client.py",
+      "check": "DNS exfiltration / tunneling patterns",
+      "severity": "HIGH",
+      "evidence": "L15: import dns.resolver | L63: logger.debug(\"dnspython not installed, skipping dnsaddr resolution\") | L67: answers = dns.resolver.resolve(f\"_dnsaddr.{dnsaddr_domain}\", \"TXT\")"
+    },
+    {
+      "package": "dill",
+      "file": "dill/_dill.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L595: return marshal.loads(string) | L1011: module = __import__(names[0]) | L1061: submodule = getattr(__import__(module, None, None, [obj]), obj)\nExec: L979: return eval(repr_str) | L1037: return eval(attr+'.__dict__[\"'+name+'\"]')"
+    },
+    {
+      "package": "dill",
+      "file": "dill/source.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L394: lines, lnum = [\"%s = __import__('%s', fromlist=['%s']).%s\\n\" % (name,module,name,name)], 0\nExec: L60: _ = eval(\"lambda %s : %s\" % (lhs,rhs), globals(),locals()) | L82: _f = eval(\"lambda %s : %s\" % (_lhs,_rhs), globals(),locals"
+    },
+    {
+      "package": "dnspython",
+      "file": "dns/query.py",
+      "check": "DNS exfiltration / tunneling patterns",
+      "severity": "HIGH",
+      "evidence": "L142: import dns.resolver | L144: resolver = dns.resolver.Resolver() | L414: resolver: Optional[\"dns.resolver.Resolver\"],"
+    },
+    {
+      "package": "execnet",
+      "file": "execnet/gateway_base.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1290: co = compile(source + \"\\n\", file_name or \"<remote exec>\", \"exec\")\nExec: L1291: exec(co, loc)"
+    },
+    {
+      "package": "execnet",
+      "file": "execnet/script/socketserver.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L63: co = compile(source + \"\\n\", \"<socket server>\", \"exec\")\nExec: L45: exec( | L47: exec(source, locs)\"\"\" | L61: source = eval(source)"
+    },
+    {
+      "package": "fastmcp-slim",
+      "file": "fastmcp/server/auth/providers/jwt.py",
+      "check": "Embedded cryptographic key + network calls (encrypted exfil pattern)",
+      "severity": "HIGH",
+      "evidence": "Key: L187: \"-----BEGIN PUBLIC KEY-----\", | L188: \"-----BEGIN RSA PUBLIC KEY-----\",\nNetwork: L225: http_client: httpx.AsyncClient | None = None, | L411: else httpx.AsyncClient(timeout=httpx.Timeout(10.0))"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/debugger.py",
+      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
+      "severity": "HIGH",
+      "evidence": "Anti: L960: trace_function = sys.gettrace() | L961: sys.settrace(None) | L973: sys.settrace(trace_function)"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/debugger.py",
+      "check": "exec/eval with payload hidden in a docstring/string",
+      "severity": "HIGH",
+      "evidence": "marshal/compile/obfuscation: L310: # needed by any code which calls __import__(\"__main__\") after"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/debugger_backport.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L79: code = compile(source, \"<string>\", \"exec\")\nExec: L130: exec(source_with_closure, {}, ns) | L138: exec(code, globals, locals_copy, closure=cells) | L200: exec(code, globals, locals)"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/magics/execution.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1178: self.shell.compile(ast_setup, \"<magic-timeit-setup>\", \"exec\") | L1179: self.shell.compile(ast_stmt, \"<magic-timeit-stmt>\", \"exec\") | L1200: code = self.shell.compile(timeit_ast, \"<magic-timeit>\", \"exec\")\nExec: L1213: exec(cod"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/magics/execution.py",
+      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
+      "severity": "HIGH",
+      "evidence": "Anti: L972: trace = sys.gettrace() | L983: sys.settrace(trace)"
+    },
+    {
+      "package": "jinja2",
+      "file": "jinja2/environment.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L709: return compile(source, filename, \"exec\")\nExec: L1228: exec(code, namespace)"
+    },
+    {
+      "package": "matplotlib",
+      "file": "matplotlib/sphinxext/plot_directive.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L368: compile(text, '<string>', 'exec')\nExec: L585: exec('import numpy as np\\n' | L588: exec(str(setup.config.plot_pre_code), ns) | L594: exec(code, ns)"
+    },
+    {
+      "package": "multiprocess",
+      "file": "multiprocess/tests/__init__.py",
+      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
+      "severity": "HIGH",
+      "evidence": "Anti: L440: time.sleep(300)"
+    },
+    {
+      "package": "networkx",
+      "file": "networkx/utils/decorators.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L911: compiled = compile(code, filename, \"exec\")\nExec: L912: exec(compiled, globl, locl)"
+    },
+    {
+      "package": "numba",
+      "file": "numba/np/ufunc/array_exprs.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L382: code_obj = compile(ast_module, expr_filename, 'exec')\nExec: L383: exec(code_obj, namespace)"
+    },
+    {
+      "package": "numba",
+      "file": "numba/tests/support.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L879: __import__(modname)\nExec: L813: eval(co, globs, ns)"
+    },
+    {
+      "package": "numba",
+      "file": "numba/tests/test_firstlinefinder.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L95: code = compile(source, filename, \"exec\")\nExec: L77: exec(source, globalns) | L98: exec(code, globalns)"
+    },
+    {
+      "package": "numba",
+      "file": "numba/tests/test_funcdesc.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L24: compiled = compile(code, filename, 'exec')\nExec: L25: exec(compiled, objs)"
+    },
+    {
+      "package": "numba",
+      "file": "numba/tests/test_import.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L33: __import__(mod)\nExec: L43: modlist = set(eval(out.strip())) | L97: modlist = set(eval(out.strip()))"
+    },
+    {
+      "package": "numba",
+      "file": "numba/tests/test_np_functions.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L7106: exec(compile(funcstr, '<string>', 'exec'), globals(), dct)\nExec: L7106: exec(compile(funcstr, '<string>', 'exec'), globals(), dct)"
+    },
+    {
+      "package": "numpy",
+      "file": "numpy/testing/_private/utils.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1627: code = compile(code_str, f'Test name: {label} ', 'exec')\nExec: L1346: exec(astr, dict) | L1632: exec(code, globs, locs)"
+    },
+    {
+      "package": "numpy",
+      "file": "numpy/testing/_private/utils.py",
+      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
+      "severity": "HIGH",
+      "evidence": "Anti: L2777: original_trace = sys.gettrace() | L2779: sys.settrace(None) | L2782: sys.settrace(original_trace)"
+    },
+    {
+      "package": "numpy",
+      "file": "numpy/tests/test_public_api.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L543: core_submodule = __import__(\nExec: L405: eval(module_name)"
+    },
+    {
+      "package": "pillow",
+      "file": "PIL/Image.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L422: __import__(f\"{__spec__.parent}.{plugin}\", globals(), locals(), []) | L490: __import__(f\"{__spec__.parent}.{plugin}\", globals(), locals(), [])\nExec: L3772: def eval(image: Image, *args: Callable[[int], float]) -> Image:"
+    },
+    {
+      "package": "protobuf",
+      "file": "protobuf-3.19.6-nspkg.pth",
+      "check": "Unusually large executable .pth (539 bytes)",
+      "severity": "HIGH",
+      "evidence": "1 import line(s) in 539-byte .pth file"
+    },
+    {
+      "package": "pygments",
+      "file": "pygments/formatters/__init__.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L38: mod = __import__(module_name, None, None, ['__all__'])\nExec: L103: exec(f.read(), custom_namespace)"
+    },
+    {
+      "package": "pygments",
+      "file": "pygments/lexers/__init__.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L45: mod = __import__(module_name, None, None, ['__all__'])\nExec: L154: exec(f.read(), custom_namespace)"
+    },
+    {
+      "package": "scikit-learn",
+      "file": "sklearn/externals/array_api_compat/torch/__init__.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L19: __import__(__package__ + '.linalg') | L20: __import__(__package__ + '.fft')\nExec: L12: exec(f\"{n} = torch.{n}\")"
+    },
+    {
+      "package": "scipy",
+      "file": "scipy/optimize/_optimize.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L4155: __import__(mod_name)\nExec: L323: def eval(x):"
+    },
+    {
+      "package": "setuptools",
+      "file": "pkg_resources/__init__.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L423: __import__(moduleOrReq) | L1739: code = compile(source, script_filename, 'exec') | L1750: script_code = compile(script_text, script_filename, 'exec')\nExec: L1740: exec(code, namespace, namespace) | L1751: exec(script_code, nam"
+    },
+    {
+      "package": "setuptools",
+      "file": "setuptools/_distutils/compilers/C/base.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1286: __import__(module_name)\nExec: L1113: if lib_type not in eval(expected):"
+    },
+    {
+      "package": "setuptools",
+      "file": "setuptools/launch.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L31: code = compile(norm_script, script_name, 'exec')\nExec: L32: exec(code, namespace)"
+    },
+    {
+      "package": "setuptools",
+      "file": "setuptools/tests/config/test_pyprojecttoml.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L364: \"setup.py\": \"__import__('setuptools').setup(include_package_data=False)\",\nExec: L98: \"__main__.py\": \"def exec(): print('hello')\","
+    },
+    {
+      "package": "setuptools",
+      "file": "setuptools/tests/test_editable_install.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L120: SETUP_SCRIPT_STUB = \"__import__('setuptools').setup()\"\nExec: L449: exec(finder, loc, loc)"
+    },
+    {
+      "package": "setuptools",
+      "file": "setuptools/wheel.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L35: NAMESPACE_PACKAGE_INIT = \"__import__('pkg_resources').declare_namespace(__name__)\\n\"\nExec: L191: def eval(req, **env): | L212: (req for req in reqs if for_extra(req) and eval(req, extra=extra)),"
+    },
+    {
+      "package": "six",
+      "file": "six.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L87: __import__(name)\nExec: L740: exec(\"\"\"exec _code_ in _globs_, _locs_\"\"\")"
+    },
+    {
+      "package": "sympy",
+      "file": "sympy/external/importtools.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L145: mod = __import__(module, **import_kwargs) | L154: __import__(module + '.' + submod)\nExec: L21: return eval(debug_str)"
+    },
+    {
+      "package": "sympy",
+      "file": "sympy/plotting/experimental_lambdify.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L249: namespace.update({'math': __import__('math')}) | L251: namespace.update({'cmath': __import__('cmath')}) | L254: namespace.update({'np': __import__('numpy')})\nExec: L268: exec(\"MYNEWLAMBDA = %s\" % eval_str, namespace)"
+    },
+    {
+      "package": "sympy",
+      "file": "sympy/utilities/lambdify.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L919: c = compile(funcstr, filename, 'exec')\nExec: L163: module = eval(import_command) | L170: exec(import_command, {}, namespace) | L903: exec(ln, {}, namespace)"
+    },
+    {
+      "package": "tensorboard",
+      "file": "tensorboard/plugins/projector/tf_projector_plugin/projector_binary.js",
+      "check": "Python wheel ships large (1918 KB) JS bundle (uncommon; manually review)",
+      "severity": "HIGH",
+      "evidence": ""
+    },
+    {
+      "package": "torch",
+      "file": "torch/_dynamo/bytecode_debugger.py",
+      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
+      "severity": "HIGH",
+      "evidence": "Anti: L1048: self._old_trace = sys.gettrace() | L1049: sys.settrace(self._settrace_callback) | L1106: sys.settrace(self._old_trace)"
+    },
+    {
+      "package": "torch",
+      "file": "torch/_functorch/_aot_autograd/subclass_codegen.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L342: code = compile(source, f\"<{artifact_name}>\", \"exec\")\nExec: L344: exec(code, globals_dict, local_dict)"
+    },
+    {
+      "package": "torch",
+      "file": "torch/fx/experimental/rewriter.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L46: code = compile(dest_ast, \"\", \"exec\")\nExec: L49: exec(code, globals_dict)"
+    },
+    {
+      "package": "torch",
+      "file": "torch/fx/graph_module.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L106: exec(compile(src, key, \"exec\"), globals)\nExec: L106: exec(compile(src, key, \"exec\"), globals)"
+    },
+    {
+      "package": "torch",
+      "file": "torch/package/package_importer.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L602: def __import__(self, name, globals=None, locals=None, fromlist=(), level=0):\nExec: L412: exec(code, ns)"
+    },
+    {
+      "package": "triton",
+      "file": "triton/runtime/interpreter.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1435: compiled_code = compile(transformed_ast, filename=self.filename, mode='exec')\nExec: L1441: exec(compiled_code, fn_globals, local_namespace)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "scripts/scan_packages.py",
+      "check": "exec/eval with payload hidden in a docstring/string",
+      "severity": "HIGH",
+      "evidence": "marshal/compile/obfuscation: L132: r\"|\\bbytearray\\s*\\(\\s*\\[.*?\\]\\s*\\)\"  # bytearray([104,101,...]) | L135: r\"|\\bgetattr\\s*\\(\\s*__builtins__\"  # getattr(__builtins__, ...)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_compiler_dynamic_exec.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L126: code = compile(source, f\"<{entry_point}>\", \"exec\")\nExec: L134: exec(code, sandbox)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_fused_forward_install.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L268: code = compile(src, fake_path, \"exec\")\nExec: L269: exec(code, namespace)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_upstream_pinned_symbols_trl_vllm.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L379: mod = __import__(modpath, fromlist=[\"Logprob\"])\nExec: L238: \"unsloth_zoo dispatch via `eval(f'trl.trainer.{trainer_file}.{name}')` breaks\""
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/compiler.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1013: _mod = __import__(model_location, fromlist=items) | L4291: f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\ | L4292: f\"O^O/ {chr(92)}_/ {c"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/fused_losses/forward_install.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L274: code = compile(new_src, synthetic_path, \"exec\")\nExec: L275: exec(code, ns)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/mlx/loader.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1739: _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L141: mx.eval(model.parameters()) | L1543: model.eval() | L2126: mx.eval(model.parameters())"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/patching_utils.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L706: compile(new_source, '<temp_patched>', 'exec')\nExec: L221: try:    exec(_try_compile_argument) | L226: try:    exec(_try_dynamo_argument) | L570: exec(\"from torch._dynamo.compiled_autograd import (\" + \", \".join(x for x in good_"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/saving_utils.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L3078: module = __import__('transformers', fromlist=[model_class_name])\nExec: L2960: exec(f\"from transformers.modeling_utils import ({', '.join(functions)})\", locals(), globals()) | L3006: exec(save_pretrained, globals(), functions)"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_trainer_internals.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L430: assert ppl == pytest.approx(__import__(\"math\").exp(2.5))\nExec: L408: def eval(self):"
+    },
+    {
+      "package": "werkzeug",
+      "file": "werkzeug/routing/rules.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L836: code = compile(module, \"<werkzeug routing>\", \"exec\")\nExec: L736: exec(code, globs, locs)"
+    }
+  ]
+}

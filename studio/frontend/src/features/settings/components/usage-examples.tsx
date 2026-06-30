@@ -320,7 +320,7 @@ function HighlightedCode({
     [code, language],
   );
   return (
-    <div className="max-w-full overflow-x-auto p-3 pr-16 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0">
+    <div className="max-w-full overflow-x-auto p-3 pr-16 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-[11px] [&_pre]:!leading-relaxed [&_code]:!text-[11px] [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-[11px]">
       <Streamdown
         mode="static"
         plugins={{ code: codePlugin }}
@@ -467,9 +467,9 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   onClick={() => setLang(tab.id)}
                   aria-pressed={active}
                   className={cn(
-                    "rounded px-2 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     active
-                      ? "bg-background text-foreground shadow-border"
+                      ? "hub-tab-toggle-pill text-foreground"
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
@@ -488,7 +488,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               className={cn(
                 "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 os === "unix"
-                  ? "bg-foreground/[0.08] text-foreground dark:bg-white/[0.12]"
+                  ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -501,7 +501,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               className={cn(
                 "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 os === "windows"
-                  ? "bg-foreground/[0.08] text-foreground dark:bg-white/[0.12]"
+                  ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >

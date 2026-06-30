@@ -1,17 +1,4 @@
-"""Tests for Studio GGUF export pinning convert_hf_to_gguf.py via
-UNSLOTH_LLAMA_CPP_SCRIPTS_DIR with graceful fallback when unsloth_zoo
-lacks the local-script resolver.
-
-Verifies:
-  - export.py imports LLAMA_CPP_DEFAULT_DIR and _resolve_local_convert_script
-    from unsloth_zoo.llama_cpp inside a single try/except ImportError so a
-    zoo missing either symbol degrades to a warning instead of crashing.
-  - os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-    is called inside the try; setdefault preserves explicit user overrides
-    and assigns the default when unset.
-  - The compatibility warning is gated on a module-level flag so it fires
-    once per process rather than on every export call.
-"""
+"""Studio GGUF export pins convert_hf_to_gguf.py via UNSLOTH_LLAMA_CPP_SCRIPTS_DIR, with a once-per-process warning fallback when unsloth_zoo lacks the local-script resolver."""
 
 from __future__ import annotations
 

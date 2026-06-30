@@ -20,23 +20,26 @@ const INITIAL: HfPaginatedState<never> = {
   hasMore: false,
   error: null,
 };
-const BATCH = 20;
+// listModels returns up to 500 models per fetch, so a bigger batch just walks
+// the in-memory page (essentially free) and fills the viewport in one commit.
+const BATCH = 48;
 const MAX_RAW_ITEMS_PER_BATCH = BATCH * 4;
 type BusyKind = "initial" | "more";
 
 /**
- * Min gap between fetchMore() calls. Two observers can fire in one tick and React
- * commits the in-flight flag asynchronously, so this caps the worst case at one
- * request per window. Pairs with a trailing-edge schedule: a blocked call queues
- * one fire at the window end so filters that starve the visible list keep paginating.
+ * Min gap between fetchMore() calls. Sibling observers can fire in one tick and
+ * React commits the in-flight flag asynchronously, so this caps the worst case
+ * at one request per window. A blocked call queues a trailing-edge fire so
+ * filters that starve the visible list keep paginating instead of dead-locking.
  */
-const MIN_FETCH_INTERVAL_MS = 1000;
+const MIN_FETCH_INTERVAL_MS = 350;
 
-// Preserved results older than this are refetched on re-enable so the feed can't
-// lag the Hub. Reset by every successful pull (idle time only). Mirrors hf-cache TTL.
+// Preserved results older than this refetch on re-enable so the feed can't lag
+// the Hub. Reset by every successful pull (idle time only). Mirrors the
+// modelInfo TTL in hf-cache.ts.
 const STALE_AFTER_MS = 5 * 60 * 1000;
 
-async function pullBatch<T>(
+export async function pullBatch<T>(
   iter: AsyncGenerator<unknown>,
   mapItem: (raw: unknown) => T | null,
   size: number,
@@ -82,19 +85,21 @@ export function useHubPaginatedSearch<T>(
 
   const iterRef = useRef<AsyncGenerator<unknown> | null>(null);
   const versionRef = useRef(0);
-  // Aborts the live iterator's in-flight fetches; replaced when a new query
-  // supersedes the feed so the abandoned listing stops fetching/priming.
+  // Aborts the live iterator's in-flight fetches; the prior one is aborted and
+  // replaced when a new query supersedes the feed so the abandoned listing stops
+  // fetching and priming the cache.
   const abortRef = useRef<AbortController | null>(null);
 
   // Identity of the last-fetched query. A fetch (re)starts only when one of these
-  // changes, never just on `enabled` toggling — keeps tab switches instant.
+  // changes, never just on `enabled` toggling, which keeps tab switches instant.
   const loadedFactoryRef = useRef<typeof createIter | null>(null);
   const loadedMapItemRef = useRef<typeof mapItem | null>(null);
   const loadedNonceRef = useRef(-1);
   const loadedAtRef = useRef(0);
 
-  // Synchronous in-flight guard, set before any setState so back-to-back
+  // Synchronous in-flight guard. Set before any setState so back-to-back
   // fetchMore() calls can't both pass the gate while React batches the commit.
+  // Cleared in finally() of the matching pull.
   const busyRef = useRef(false);
   const busyKindRef = useRef<BusyKind | null>(null);
   const busyTokenRef = useRef(0);
@@ -233,8 +238,9 @@ export function useHubPaginatedSearch<T>(
       queuedWhileHiddenRef.current = false;
       return false;
     }
-    // Synchronous in-flight gate before any setState, so concurrent fires from
-    // sibling observers all see the same truth and only one proceeds.
+    // Synchronous in-flight gate before any setState so concurrent fires from
+    // sibling observers all see the same truth and only one proceeds, closing
+    // the race window React's batched commit opens.
     if (busyRef.current) {
       if (busyKindRef.current === "more" && stateRef.current.isLoadingMore) {
         if (queuedAfterBusyRef.current) return false;
@@ -310,8 +316,9 @@ export function useHubPaginatedSearch<T>(
         setState((prev) => ({
           ...prev,
           isLoadingMore: false,
-          // Keep results and hasMore=true: the iterator is still valid, so the next
-          // fetchMore() resumes the failed page without discarding the list (retry() restarts from page 1).
+          // Keep results and hasMore=true: the iterator is still valid, so the
+          // next fetchMore() resumes the failed page without discarding the list
+          // (retry() restarts from page 1).
           error: err instanceof Error ? err.message : "Failed to load more",
         }));
       })

@@ -130,11 +130,9 @@ trainer = train_on_responses_only(
     response_part = "<|start_header_id|>assistant<|end_header_id|>\n\n",
 )
 
-# run training
 trainer_stats = trainer.train()
 
 
-# save and merge the model to local disk
 hf_username = os.environ.get("HF_USER", "")
 if not hf_username:
     hf_username = input("Please enter your Hugging Face username: ").strip()
@@ -152,7 +150,7 @@ success = {
     "download": False,
 }
 
-# Stage 1: Upload model to Hub
+# Stage 1: Upload model to Hub.
 try:
     print("\n" + "=" * 80)
     print("=== UPLOADING MODEL TO HUB ===".center(80))
@@ -165,14 +163,13 @@ except Exception as e:
     raise Exception("Model upload failed.")
 
 t
-# Stage 2: Test downloading the model (even if cached)
+# Stage 2: Test downloading the model.
 safe_remove_directory(f"./{hf_username}")
 
 try:
     print("\n" + "=" * 80)
     print("=== TESTING MODEL DOWNLOAD ===".center(80))
     print("=" * 80 + "\n")
-    # Force download even if cached
     model, tokenizer = FastLanguageModel.from_pretrained(f"{hf_username}/merged_llama_text_model")
     success["download"] = True
     print("✅ Model downloaded successfully!")
@@ -180,7 +177,7 @@ except Exception as e:
     print(f"❌ Download failed: {e}")
     raise Exception("Model download failed.")
 
-# Final report
+# Final report.
 print("\n" + "=" * 80)
 print("=== VALIDATION REPORT ===".center(80))
 print("=" * 80 + "\n")
@@ -194,6 +191,6 @@ if all(success.values()):
 else:
     raise Exception("Validation failed for one or more stages.")
 
-# final cleanup
+# final cleanup.
 safe_remove_directory("./outputs")
 safe_remove_directory("./unsloth_compiled_cache")

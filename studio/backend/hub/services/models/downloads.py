@@ -64,7 +64,7 @@ def _spawn_download_worker(
     repo_id: str,
     variant: Optional[str],
     hf_token: Optional[str],
-    use_xet: bool = False,
+    use_xet: bool = True,
     protected_blob_hashes: Optional[frozenset[str]] = None,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
@@ -96,7 +96,8 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
-    transport = download_lifecycle.resolve_transport(body.use_xet)
+    use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
+    transport = download_lifecycle.resolve_transport(use_xet)
     variant_blob_hashes = frozenset()
     variant_progress_blob_hashes = frozenset()
     completed_baseline_bytes = 0
@@ -171,7 +172,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             repo_id,
             variant,
             hf_token,
-            use_xet = body.use_xet,
+            use_xet = use_xet,
             protected_blob_hashes = protected_blob_hashes,
         ),
         hf_token = hf_token,

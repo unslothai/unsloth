@@ -211,6 +211,22 @@ class TestWindowsGpuDetectionAfter5106Fix:
             gpus = LlamaCppBackend._get_gpu_free_memory()
         assert gpus == [(1, 24576)], gpus
 
+    def test_get_gpu_memory_parses_three_and_two_column(self, monkeypatch):
+        """Total is parsed when present; a legacy two-column line or a non-integer
+        total ("N/A") yields total 0 (back-compat) rather than dropping the GPU,
+        which would silently spill to CPU."""
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        with _mock_nvidia_smi_run("0, 22805, 24576\n"):
+            assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 24576)]
+        with _mock_nvidia_smi_run("0, 22805\n"):
+            assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 0)]
+        # A non-integer total must keep the GPU (total 0), not drop it.
+        with _mock_nvidia_smi_run("0, 22805, N/A\n"):
+            assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 0)]
+        # A bad free still skips that line (free is required).
+        with _mock_nvidia_smi_run("0, N/A, 24576\n1, 22805, 24576\n"):
+            assert LlamaCppBackend._get_gpu_memory() == [(1, 22805, 24576)]
+
     def test_windows_install_dir_has_all_three_cudart_dlls(self, tmp_path):
         """All three bundle DLLs must land in install_dir/build/bin/
         Release; any missing one breaks ggml-cuda.dll's PE import chain."""

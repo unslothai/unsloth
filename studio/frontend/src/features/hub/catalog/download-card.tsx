@@ -34,8 +34,9 @@ import {
 } from "./use-download-card-state";
 
 /**
- * Shared shell for every download surface (safetensors, GGUF, dataset): card frame,
- * progress bar, transport-conflict dialog, plus card-specific `dialogs` and children.
+ * Shared shell for every download surface (safetensors, GGUF, dataset): card
+ * frame, progress bar, transport-conflict dialog, plus card-specific `dialogs`
+ * and children.
  */
 export function DownloadCard({
   job,
@@ -94,7 +95,7 @@ export function CardDeleteButton({
             e.stopPropagation();
             onClick();
           }}
-          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-rose-500/10 hover:text-rose-600 focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-rose-500/15 dark:hover:text-rose-400"
+          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-rose-500/10 hover:text-rose-600 focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-rose-500/15 dark:hover:text-rose-400"
         >
           <HugeiconsIcon
             icon={Delete02Icon}
@@ -110,10 +111,7 @@ export function CardDeleteButton({
   );
 }
 
-/**
- * Download / Cancel / Resume button for the safetensors and dataset cards
- * (the GGUF card folds Run/Chat into its own bespoke CTA).
- */
+/** Download / Cancel / Resume button for the safetensors and dataset cards. */
 export function DownloadActionButton({
   downloading,
   cancelling,

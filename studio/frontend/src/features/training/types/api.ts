@@ -5,6 +5,7 @@ import type { S3Config } from "@/types/training";
 
 export interface TrainingStartRequest {
   model_name: string;
+  project_name: string | null;
   training_type: string;
   hf_token: string | null;
   load_in_4bit: boolean;
@@ -12,10 +13,13 @@ export interface TrainingStartRequest {
   vision_image_size?: number | null;
   /** Allow loading models with custom code. Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
+  approved_remote_code_fingerprint?: string | null;
   hf_dataset: string | null;
   subset: string | null;
   train_split: string | null;
   eval_split: string | null;
+  dataset_streaming: boolean;
   dataset_slice_start: number | null;
   dataset_slice_end: number | null;
   local_datasets: string[];

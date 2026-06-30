@@ -23,12 +23,15 @@ import {
   listScanFolders,
   removeScanFolder,
 } from "@/features/hub/inventory";
+import { openModelsDir } from "@/features/native-intents/api";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
   FileSearchIcon,
   FolderAddIcon,
-  Folder02Icon,
+  FolderExportIcon,
+  FolderOpenIcon,
   FolderSearchIcon,
   PlusSignIcon,
   RefreshIcon,
@@ -138,6 +141,16 @@ export function OnDeviceFoldersDialog({
     [handleInventoryChanged, pending],
   );
 
+  // Scan folders are arbitrary paths that may be moved or deleted after they
+  // were registered, so surface the command's failure as a toast.
+  const handleOpen = useCallback(async (folder: ScanFolderInfo) => {
+    try {
+      await openModelsDir(folder.path);
+    } catch (err) {
+      toast.error("Couldn't open location", { description: formatError(err) });
+    }
+  }, []);
+
   const handleRemove = useCallback(
     async (folder: ScanFolderInfo) => {
       const key = `remove:${folder.id}` as const;
@@ -167,7 +180,7 @@ export function OnDeviceFoldersDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
-          className="max-w-[600px] gap-0 overflow-hidden p-0"
+          className="gap-0 overflow-hidden p-0 sm:max-w-[620px] lg:max-w-[660px] xl:max-w-[680px] [&_[data-slot=dialog-close]]:right-3 [&_[data-slot=dialog-close]]:top-3"
           overlayClassName="bg-black/20 backdrop-blur-none"
         >
           <DialogHeader className="border-b border-border/60 px-5 py-4">
@@ -270,7 +283,7 @@ export function OnDeviceFoldersDialog({
                       aria-label="Refresh locations"
                       onClick={refreshFolders}
                       disabled={loading}
-                      className="inline-flex size-7 items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
                     >
                       <HugeiconsIcon
                         icon={RefreshIcon}
@@ -294,7 +307,7 @@ export function OnDeviceFoldersDialog({
                 ) : sortedFolders.length === 0 ? (
                   <div className="flex h-28 flex-col items-center justify-center gap-2 px-4 text-center text-[12px] text-muted-foreground">
                     <HugeiconsIcon
-                      icon={Folder02Icon}
+                      icon={FolderOpenIcon}
                       strokeWidth={1.75}
                       className="size-5 text-muted-foreground/60"
                     />
@@ -306,26 +319,64 @@ export function OnDeviceFoldersDialog({
                     return (
                       <div
                         key={folder.id}
-                        className="flex min-h-12 items-center gap-3 border-b border-border/50 px-3 py-2 last:border-b-0"
+                        className={cn(
+                          "grid min-h-12 w-full items-center gap-3 border-b border-border/50 px-3 py-2 last:border-b-0",
+                          isTauri
+                            ? "grid-cols-[2rem_minmax(0,1fr)_2rem_2rem]"
+                            : "grid-cols-[2rem_minmax(0,1fr)_2rem]",
+                        )}
                       >
                         <div className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-muted text-muted-foreground">
                           <HugeiconsIcon
-                            icon={Folder02Icon}
+                            icon={FolderOpenIcon}
                             strokeWidth={1.75}
                             className="size-4"
                           />
                         </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[12.5px] font-medium text-foreground">
+                        <div className="min-w-0 overflow-hidden">
+                          <p
+                            className="block w-full truncate text-[12.5px] font-medium text-foreground"
+                            title={pathTail(folder.path)}
+                          >
                             {pathTail(folder.path)}
                           </p>
-                          <p
-                            title={folder.path}
-                            className="truncate font-mono text-[10.5px] text-muted-foreground"
-                          >
-                            {folder.path}
-                          </p>
+                          <Tooltip>
+                            <TooltipTrigger asChild={true}>
+                              <p
+                                className="block w-full truncate font-mono text-[10.5px] text-muted-foreground"
+                              >
+                                {folder.path}
+                              </p>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="bottom"
+                              className="tooltip-compact max-w-xs break-all"
+                            >
+                              {folder.path}
+                            </TooltipContent>
+                          </Tooltip>
                         </div>
+                        {isTauri ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild={true}>
+                              <button
+                                type="button"
+                                aria-label={`Open ${folder.path}`}
+                                onClick={() => void handleOpen(folder)}
+                                className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                              >
+                                <HugeiconsIcon
+                                  icon={FolderExportIcon}
+                                  strokeWidth={1.75}
+                                  className="size-4"
+                                />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="left" className="tooltip-compact">
+                              Open in file manager
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : null}
                         <Tooltip>
                           <TooltipTrigger asChild={true}>
                             <button
@@ -333,7 +384,7 @@ export function OnDeviceFoldersDialog({
                               aria-label={`Remove ${folder.path}`}
                               onClick={() => void handleRemove(folder)}
                               disabled={pending !== null}
-                              className="inline-flex size-8 shrink-0 items-center justify-center rounded-[9px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                              className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                             >
                               {removing ? (
                                 <Spinner className="size-3.5" />

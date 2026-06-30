@@ -91,7 +91,8 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
@@ -136,6 +137,17 @@ jobs:
             }
           }
 
+      - name: Seed a legacy launch-studio.vbs (upgrade-cleanup check)
+        # Simulate a pre-hardening install so the post-install assertion below
+        # proves the installer DELETES an existing launch-studio.vbs (the exact
+        # Kaspersky-flagged file), not merely stops generating it.
+        shell: pwsh
+        run: |
+          $appDir = Join-Path $env:LOCALAPPDATA 'Unsloth Studio'
+          New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+          Set-Content -LiteralPath (Join-Path $appDir 'launch-studio.vbs') -Value 'WScript.Echo "legacy"' -Encoding Unicode
+          Write-Host "seeded legacy launch-studio.vbs at $appDir"
+
       - name: Install Studio (--local, --no-torch)
         # install.ps1 is the supported Windows installer. install.sh
         # has no Windows branch (apt-get / brew calls). The PS1
@@ -144,7 +156,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 redirects ALL PowerShell streams (stdout, stderr,
@@ -191,6 +204,69 @@ jobs:
           fi
           echo "install.ps1 installed the Windows prebuilt llama.cpp:"
           cat "$INFO"
+
+      - name: Assert Studio launcher chain (no VBS, hidden PowerShell shortcut)
+        # The shortcut launch path is otherwise untested here (the steps below
+        # boot `unsloth studio` directly). Guard against re-introducing the VBS
+        # that tripped Kaspersky HEUR:Trojan.VBS.Agent.gen and against the .lnk
+        # pointing anywhere other than hidden PowerShell over launch-studio.ps1.
+        shell: pwsh
+        run: |
+          $appDir = Join-Path $env:LOCALAPPDATA 'Unsloth Studio'
+          if (Test-Path -LiteralPath (Join-Path $appDir 'launch-studio.vbs')) {
+            throw "regression: launch-studio.vbs exists (the Kaspersky VBS-FP shape)"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $appDir 'launch-studio.ps1'))) {
+            throw "missing launch-studio.ps1 in $appDir"
+          }
+          $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Unsloth Studio.lnk'
+          if (-not (Test-Path -LiteralPath $lnk)) {
+            $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Unsloth Studio.lnk'
+          }
+          if (-not (Test-Path -LiteralPath $lnk)) { throw "no Unsloth Studio.lnk on Desktop or Start Menu" }
+          $sc = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+          Write-Host "shortcut target: $($sc.TargetPath)"
+          Write-Host "shortcut args:   $($sc.Arguments)"
+          if ($sc.TargetPath -match 'wscript\.exe$') { throw "shortcut still targets wscript.exe (VBS host)" }
+          if ($sc.TargetPath -notmatch 'powershell\.exe$') { throw "unexpected shortcut target: $($sc.TargetPath)" }
+          if ($sc.Arguments -notmatch '-WindowStyle Hidden') {
+            throw "shortcut must launch windowless (-WindowStyle Hidden)"
+          }
+          Write-Host "launcher chain OK (no VBS; hidden powershell over launch-studio.ps1)"
+
+      - name: Launch Studio via the shortcut and assert health
+        # Run the exact command the .lnk stores (hidden PowerShell over
+        # launch-studio.ps1) and confirm it brings the backend up. This is the
+        # only step that proves the shortcut launch is not silently broken.
+        # Default port range is 8888-8908; the later UI tests use 18896/18897, so
+        # there is no conflict, and we tear this server down before they boot.
+        shell: pwsh
+        run: |
+          $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Unsloth Studio.lnk'
+          if (-not (Test-Path -LiteralPath $lnk)) {
+            $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Unsloth Studio.lnk'
+          }
+          $sc = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+          Write-Host "launching: $($sc.TargetPath) $($sc.Arguments)"
+          Start-Process -FilePath $sc.TargetPath -ArgumentList $sc.Arguments -WorkingDirectory $sc.WorkingDirectory
+          $foundPort = 0
+          foreach ($i in 1..180) {
+            foreach ($port in 8888..8908) {
+              try {
+                $r = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -TimeoutSec 1
+                if ($r.status -eq 'healthy' -and $r.service -eq 'Unsloth UI Backend') { $foundPort = $port; break }
+              } catch {}
+            }
+            if ($foundPort) { break }
+            Start-Sleep -Seconds 1
+          }
+          # Tear down the shortcut-launched server before the main UI tests boot.
+          try {
+            $owner = (Get-NetTCPConnection -LocalPort $foundPort -State Listen -ErrorAction Stop | Select-Object -First 1).OwningProcess
+            if ($owner) { taskkill /PID $owner /T /F 2>$null | Out-Null }
+          } catch {}
+          if (-not $foundPort) { throw "Studio did not become healthy when launched via the shortcut" }
+          Write-Host "Studio healthy on port $foundPort (launched via the shortcut)"
 
       - name: Add Studio shim to GITHUB_PATH
         # install.ps1 puts unsloth.exe at $StudioHome\bin\unsloth.exe

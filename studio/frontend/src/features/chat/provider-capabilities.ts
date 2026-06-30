@@ -30,7 +30,10 @@ export interface ProviderCapabilities {
 
 export type ExternalReasoningCapabilities = {
   supportsReasoning: boolean;
-  reasoningStyle: "enable_thinking" | "reasoning_effort";
+  // Mirrors the store's ReasoningStyle. External providers only ever use the
+  // first two; "enable_thinking_effort" exists so a local model's caps can be
+  // assigned here without narrowing.
+  reasoningStyle: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
   reasoningAlwaysOn: boolean;
   supportsReasoningOff: boolean;
   reasoningEffortLevels: readonly (

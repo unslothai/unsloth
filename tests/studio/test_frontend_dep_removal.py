@@ -3,14 +3,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """Edge-case suite for scripts/check_frontend_dep_removal.py.
 
-Each case patches a copy of studio/frontend/package.json to remove (or
-move) a specific dependency, invokes the checker against the real
-working tree's lockfile, and asserts the verdict matches expectations.
-
-Run:
-  python tests/studio/test_frontend_dep_removal.py
-
-Exits 0 iff every case behaves as expected.
+Each case patches a copy of package.json to remove/move a dependency,
+runs the checker against the real lockfile, and asserts the verdict.
+Run: `python tests/studio/test_frontend_dep_removal.py` (exit 0 iff all pass).
 """
 
 from __future__ import annotations
@@ -315,8 +310,8 @@ def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
     )
 
 
-# Classifier unit tests: feed hand-crafted snippets into classify() and assert
-# the returned kind. Covers sneaky import shapes used to obscure a real usage.
+# Classifier unit tests: feed snippets into classify(), assert the kind.
+# Covers sneaky import shapes used to obscure a real usage.
 
 # Import classify() by file path so this test needs no installed package.
 import importlib.util as _ilu
@@ -633,11 +628,8 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         'type C = import("react").ComponentType;',
         "dynamic_import",
     ),
-    # File-type gating (codex P1: JS classifiers must not fire on
-    # non-script files). Python fixtures and Markdown code blocks often
-    # contain literal JS-shaped strings for documentation or test data,
-    # so a bare `import x from "pkg"` inside a .py / .md / .sh / .yml is
-    # not a real npm usage.
+    # File-type gating: JS classifiers must not fire on non-script files
+    # (.py/.md/.sh/.yml), whose JS-shaped strings are docs/test data, not usages.
     ClassifyCase(
         "U37",
         "JS import snippet inside a Python fixture string is NOT a usage",
@@ -696,8 +688,7 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         '<script src="/node_modules/foo/dist/index.js"></script>',
         "html_script",
     ),
-    # CSS url() unquoted variant -- valid CSS, must classify the same
-    # as the quoted variant.
+    # CSS url() unquoted variant must classify the same as the quoted one.
     ClassifyCase(
         "U44",
         "CSS url() unquoted bare package path",
@@ -735,9 +726,8 @@ def run_classify_unit_tests() -> int:
     return 0 if passed == len(CLASSIFY_CASES) else 1
 
 
-# Adversarial end-to-end cases: drop a sneaky synthetic file into src/, run the
-# checker, then clean up. Catches detection regressions in the full
-# grep+classify pipeline (not just classify in isolation).
+# Adversarial end-to-end cases: drop a synthetic file into src/, run the
+# checker, clean up. Catches regressions in the full grep+classify pipeline.
 
 ADVERSARIAL_TMP_DIR = REPO / "studio/frontend/src/__dep_check_adversarial__"
 
@@ -794,9 +784,7 @@ ADV_CASES: list[AdvCase] = [
         "A05",
         "package with similar prefix should NOT trigger FAIL",
         "adv05.ts",
-        # The file imports __adv_only_pkg_e_extra__, but we will try
-        # to "remove" the shorter __adv_only_pkg_e__ name. The shorter
-        # name has zero real usage, so removal must be safe.
+        # Imports the *_extra* name; removing the shorter name is safe (zero usage).
         'import x from "__adv_only_pkg_e_extra__";\n',
         "__adv_only_pkg_e__",
         "PASS",
@@ -867,12 +855,8 @@ ADV_CASES: list[AdvCase] = [
         "FAIL",
         ["__adv_only_pkg_l__"],
     ),
-    # Prettier formats a long named-import list one identifier per line.
-    # 22 imports + braces puts the `import` keyword ~22 lines away from
-    # the `from "pkg"` clause. Before the window widening, the classify
-    # multi-line fallback used ±4 lines, which silently missed every
-    # such block. This case fails with the old window and passes once
-    # the window is wide enough (currently ±25).
+    # Prettier puts `import` ~22 lines from the `from "pkg"` clause; the old
+    # ±4-line classify fallback missed it. Exercises the widened (±25) window.
     AdvCase(
         "A13",
         "Prettier-style 22-identifier multi-line import should FAIL "
@@ -888,9 +872,8 @@ ADV_CASES: list[AdvCase] = [
 ]
 
 
-# package.json field-reference cases: simulate `prettier: "@x/config"`,
-# `eslintConfig.extends`, `overrides`, `peerDependenciesMeta`, etc., testing
-# package_json_extra_refs() coverage across common tool manifests.
+# package.json field-reference cases: simulate prettier/eslintConfig/overrides/
+# peerDependenciesMeta etc., testing package_json_extra_refs() coverage.
 
 
 @dataclass
@@ -1069,9 +1052,8 @@ def run_pkg_field_cases() -> int:
         # Apply the field patch (deep-merge isn't needed; we control the keys).
         for k, v in pc.field_patch.items():
             synth_head[k] = v
-        # Base has the target in dependencies; head does not. The extra field
-        # in synth_head references the target pkg even though it's no longer
-        # in deps.
+        # Base declares the target; head drops it from deps but references it
+        # via the extra field.
         synth_base = json.loads(json.dumps(head_pkg))
         synth_base.setdefault("dependencies", {})[pc.target_pkg] = "^1.0.0"
         with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
@@ -1108,8 +1090,7 @@ def run_pkg_field_cases() -> int:
                 continue
             if in_summary and line.strip().startswith("- "):
                 fails.append(line.strip()[2:])
-        # The expected_failures includes the tolerated-FP case (P15); we
-        # accept BOTH expected_status and expected_failures matches.
+        # Both status and failure set must match.
         ok = actual_status == pc.expected_status and set(fails) == set(pc.expected_failures)
         mark = "PASS" if ok else "FAIL"
         print(f"  [{mark}] {pc.id}: {pc.desc}")
@@ -1134,9 +1115,8 @@ def run_adversarial_cases() -> int:
         fpath = ADVERSARIAL_TMP_DIR / ac.filename
         try:
             fpath.write_text(ac.content)
-            # Build a synthetic base that has the target pkg added; head
-            # is the real head (without it). The script sees the pkg as
-            # removed and scans the repo, which now includes our file.
+            # Base adds the target pkg; real head lacks it, so the script
+            # treats it as removed and scans the repo (now with our file).
             synth_base = json.loads(json.dumps(head_pkg))
             synth_base.setdefault("dependencies", {})[ac.target_pkg] = "^1.0.0"
             with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
@@ -1370,9 +1350,9 @@ def run_enum_cases() -> int:
     return 0 if passed == len(ENUM_CASES) else 1
 
 
-# Script-wrapper cases: exercise scripts_bin_refs / _next_real_bin so a script
-# like `cross-env CI=1 biome check` credits `@biomejs/biome`, not the wrapper.
-# The original "first non-env token" heuristic missed cross-env / dotenv / etc.
+# Script-wrapper cases: scripts_bin_refs / _next_real_bin must credit the real
+# bin (`biome` -> @biomejs/biome), not the wrapper. The old "first non-env
+# token" heuristic missed cross-env / dotenv / etc.
 
 
 @dataclass
@@ -1469,10 +1449,8 @@ def run_wrapper_cases() -> int:
         if ok:
             passed += 1
 
-    # End-to-end integration: feed scripts_bin_refs a synthetic head_pkg
-    # whose scripts use a wrapper, and confirm the package owning the
-    # wrapped bin is credited (rather than the wrapper). This is the
-    # actual call path used by find_command_usage().
+    # End-to-end: feed scripts_bin_refs a head_pkg whose scripts use a wrapper
+    # and confirm the wrapped bin's owner is credited (the find_command_usage path).
     int_total = 0
     int_passed = 0
     int_cases = [

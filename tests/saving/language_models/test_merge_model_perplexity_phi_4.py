@@ -63,7 +63,7 @@ def load_and_compute_8bit_ppl(
         chat_template = "phi-4",
     )
 
-    # Load dataset fresh in subprocess
+    # Load dataset fresh in subprocess.
     dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
     def formatting_prompts_func(examples):
@@ -78,7 +78,7 @@ def load_and_compute_8bit_ppl(
 
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-    # Coerce to a Python float regardless of source type.
+    # Coerce to a Python float.
     if torch.is_tensor(ppl_value):
         ppl_value = ppl_value.cpu().item()
     elif hasattr(ppl_value, "item"):

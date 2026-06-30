@@ -97,7 +97,8 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
@@ -114,7 +115,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -317,7 +319,7 @@ jobs:
     timeout-minutes: 25
     env:
       # Tool calling is the highest-volume GGUF in this workflow
-      # (Qwen3.5-2B at IQ3_XXS = ~890 MiB). Caching HF_HOME would
+      # (Qwen3.5-2B at Q4_K_XL = ~1.28 GiB). Caching HF_HOME would
       # store xet chunks + blobs + snapshots = ~4 GiB compressed --
       # 4-5x file-size inflation, dominated by xet chunks. Use main's
       # `--local-dir gguf-cache` pattern to cache the flat .gguf only.
@@ -326,8 +328,11 @@ jobs:
       # path keeps the test off HF_HOME entirely so the cache size
       # tracks the GGUF file 1:1. The OpenAI/Anth and JSON+images
       # jobs still cover the gguf_variant resolution path.
+      # Q4_K_XL, not IQ3_XXS: at IQ3_XXS this model emits malformed
+      # tool calls that llama-server's peg-native parser rejects with a
+      # 500. Mac/Windows already use Q4_K_XL for the same reason.
       GGUF_REPO: unsloth/Qwen3.5-2B-GGUF
-      GGUF_FILE: Qwen3.5-2B-UD-IQ3_XXS.gguf
+      GGUF_FILE: Qwen3.5-2B-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18889'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -361,7 +366,8 @@ jobs:
         id: download-gguf
         if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p gguf-cache
@@ -377,7 +383,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -772,6 +779,9 @@ jobs:
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
           ss -tln | grep ":${STUDIO_PORT}" || true
+          # Capture backend + llama-server logs so a 500 has a server-side traceback.
+          mkdir -p logs/server-logs
+          cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
 
       - name: Upload logs
         # Always upload so green runs are still reviewable.
@@ -784,6 +794,7 @@ jobs:
           path: |
             logs/studio.log
             logs/install.log
+            logs/server-logs/
           retention-days: 7
 
   # ─────────────────────────────────────────────────────────────────────
@@ -838,7 +849,8 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
@@ -856,7 +868,8 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail

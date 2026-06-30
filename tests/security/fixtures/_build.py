@@ -1,13 +1,4 @@
-"""Deterministic builder for the wheel + sdist binary fixtures.
-
-Not run from CI; the produced .whl / .tar.gz bytes are committed alongside
-it. Re-run only when the IOC literal changes.
-
-Determinism: fixed timestamps (SOURCE_DATE_EPOCH=0), uid/gid=0, empty
-uname/gname, fixed perms (0o644 files / 0o755 dirs), sorted member order,
-and DEFLATE compresslevel=6 for stability across stdlib versions. Diffing
-re-built .whl bytes against git is the regression test (see test_scan_packages).
-"""
+"""Deterministic builder for the committed wheel + sdist fixtures; re-run only when the IOC literal changes."""
 
 from __future__ import annotations
 
@@ -80,17 +71,12 @@ def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
 
 
 def _build_wheel(out_path: Path, *, name: str, payload_files: dict[str, bytes]) -> None:
-    """Write a deterministic .whl at `out_path`.
-
-    `payload_files` maps archive-relative paths to their bytes. Standard
-    `.dist-info/METADATA`, `WHEEL`, and `RECORD` are added automatically.
-    """
+    """Write a deterministic .whl; .dist-info METADATA/WHEEL/RECORD are added automatically."""
     dist_info = f"{name}-0.0.1.dist-info"
     members: dict[str, bytes] = dict(payload_files)
     members[f"{dist_info}/METADATA"] = WHEEL_METADATA.format(name = name).encode()
     members[f"{dist_info}/WHEEL"] = WHEEL_FILE.encode()
-    # RECORD is intentionally minimal; the scanner only inspects file
-    # bodies, not hash integrity.
+    # RECORD is minimal; the scanner inspects file bodies, not hash integrity.
     record_lines = []
     for path in sorted(members):
         record_lines.append(f"{path},,")
@@ -106,11 +92,7 @@ def _build_wheel(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
 
 
 def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) -> None:
-    """Write a deterministic .tar.gz sdist at `out_path`.
-
-    `payload_files` maps archive-relative paths to their bytes; a
-    leading `{name}-0.0.1/` prefix is added automatically.
-    """
+    """Write a deterministic .tar.gz sdist; a `{name}-0.0.1/` prefix is added automatically."""
     prefix = f"{name}-0.0.1"
     buf = io.BytesIO()
     # gzip mtime fixed via mtime=0 (gzip member header).

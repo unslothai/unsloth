@@ -571,6 +571,7 @@ function SidebarMenuButton({
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const Comp = asChild ? Slot.Root : "button"
   const { isMobile, state } = useSidebar()
+  const isDisabled = Boolean(props.disabled || props["aria-disabled"])
 
   const button = (
     <Comp
@@ -594,13 +595,26 @@ function SidebarMenuButton({
     }
   }
 
+  // A disabled <button> fires no pointer events (and is not focusable), so the
+  // tooltip would never open. Wrap it in a focusable span with a hoverable box
+  // so the explanation (e.g. why Train/Export are greyed out) is reachable.
+  const trigger = isDisabled ? (
+    <span tabIndex={0} className="flex w-full">
+      {button}
+    </span>
+  ) : (
+    button
+  )
+
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipTrigger asChild>{trigger}</TooltipTrigger>
       <TooltipContent
         side="right"
         align="center"
-        hidden={state !== "collapsed" || isMobile}
+        // Enabled items only show the tooltip when collapsed (icon labels);
+        // a disabled item shows it while expanded too, since it explains why.
+        hidden={isMobile || (!isDisabled && state !== "collapsed")}
         {...tooltip}
       />
     </Tooltip>
@@ -766,4 +780,6 @@ export {
   SidebarSeparator,
   SidebarTrigger,
   useSidebar,
+  SIDEBAR_WIDTH,
+  SIDEBAR_WIDTH_ICON,
 }

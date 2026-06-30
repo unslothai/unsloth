@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the `--secure/--not-secure` Studio flag: option registration,
+"""Tests for the `--secure/--no-secure` Studio flag: option registration,
 re-exec/run_server forwarding, the forced 127.0.0.1 bind, and rejection
 alongside --no-cloudflare or before a subcommand. Modeled on
 test_studio_cloudflare_flag.py."""
@@ -35,7 +35,7 @@ def test_run_exposes_secure_option_default_off():
 
     opt = inspect.signature(_studio().run).parameters["secure"].default
     decls = set(getattr(opt, "param_decls", []) or [])
-    assert "--secure/--not-secure" in decls
+    assert "--secure/--no-secure" in decls
     assert getattr(opt, "default", None) is False
 
 
@@ -44,8 +44,19 @@ def test_studio_default_exposes_secure_option_default_off():
 
     opt = inspect.signature(_studio().studio_default).parameters["secure"].default
     decls = set(getattr(opt, "param_decls", []) or [])
-    assert "--secure/--not-secure" in decls
+    assert "--secure/--no-secure" in decls
     assert getattr(opt, "default", None) is False
+
+
+def test_secure_exposes_hidden_not_secure_alias():
+    # --not-secure is a hidden, deprecated alias for --no-secure on both commands.
+    import inspect
+    for fn in (_studio().run, _studio().studio_default):
+        opt = inspect.signature(fn).parameters["not_secure"].default
+        decls = set(getattr(opt, "param_decls", []) or [])
+        assert "--not-secure" in decls
+        assert getattr(opt, "hidden", False) is True
+        assert getattr(opt, "default", None) is False
 
 
 # ── re-exec capture plumbing (mirrors test_studio_cloudflare_flag.py) ─
@@ -129,9 +140,10 @@ def _invoke_studio_default(monkeypatch, args):
 @pytest.mark.parametrize(
     "user_flag,expected,unexpected",
     [
-        (None, "--not-secure", "--secure"),  # default off
-        ("--secure", "--secure", "--not-secure"),
-        ("--not-secure", "--not-secure", "--secure"),
+        (None, "--no-secure", "--secure"),  # default off
+        ("--secure", "--secure", "--no-secure"),
+        ("--no-secure", "--no-secure", "--secure"),
+        ("--not-secure", "--no-secure", "--secure"),  # deprecated alias -> canonical
     ],
 )
 def test_run_reexec_forwards_secure_polarity(monkeypatch, user_flag, expected, unexpected):
@@ -158,6 +170,31 @@ def test_studio_default_reexec_forwards_secure(monkeypatch):
     assert "--secure" in argv
     # studio_default also forces the loopback bind under --secure.
     assert argv[argv.index("--host") + 1] == "127.0.0.1", argv
+
+
+def test_studio_default_not_secure_alias_forwards_no_secure(monkeypatch):
+    # --not-secure on `unsloth studio` forwards the canonical --no-secure.
+    captured = _invoke_studio_default(monkeypatch, ["--not-secure"])
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert "--no-secure" in argv and "--secure" not in argv, argv
+
+
+@pytest.mark.parametrize(
+    "argv_order,expected,unexpected",
+    [
+        # --not-secure tracks --no-secure: the last secure flag on argv wins,
+        # matching the backend BooleanOptionalAction.
+        (["--secure", "--not-secure"], "--no-secure", "--secure"),
+        (["--not-secure", "--secure"], "--secure", "--no-secure"),
+    ],
+)
+def test_run_not_secure_alias_respects_last_wins(monkeypatch, argv_order, expected, unexpected):
+    monkeypatch.setattr(sys, "argv", ["unsloth", "studio", "run", *argv_order])
+    captured = _invoke_run(monkeypatch, _BASE + argv_order)
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert expected in argv and unexpected not in argv, argv
 
 
 # ── in-venv path forwards secure + forced host into run_server ────────
@@ -237,11 +274,12 @@ def test_studio_default_rejects_secure_with_subcommand():
     assert "--secure" in combined, combined
 
 
-# ── secure resolves tools against the PUBLIC exposure, not the loopback bind ──
+# ── secure resolves tools against the loopback bind (tools stay ON) ──
 
 
-def test_run_secure_resolves_tools_against_public_host(monkeypatch):
-    # --secure is public via the tunnel, so tools resolve against 0.0.0.0 (OFF), not loopback (ON).
+def test_run_secure_resolves_tools_against_loopback(monkeypatch):
+    # --secure is a loopback bind behind an authenticated tunnel, so tools resolve
+    # against 127.0.0.1 (ON): the child gets --enable-tools, not --disable-tools.
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
@@ -261,7 +299,7 @@ def test_run_secure_resolves_tools_against_public_host(monkeypatch):
 
     def rec(host, flag, yes, silent):
         calls.append(host)
-        return (not _tp_mod.is_external_host(host)) if flag is None else bool(flag)
+        return True if flag is None else bool(flag)  # default ON everywhere
 
     monkeypatch.setattr(_tp_mod, "resolve_tool_policy", rec)
 
@@ -281,14 +319,74 @@ def test_run_secure_resolves_tools_against_public_host(monkeypatch):
     )(studio_mod.run)
     CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions = True)
 
-    assert calls and calls[0] == "0.0.0.0", calls
+    # Resolved against the forced-loopback bind, not the public 0.0.0.0 exposure.
+    assert calls and calls[0] == "127.0.0.1", calls
+    assert len(captured) == 1, captured
+    assert "--enable-tools" in captured[0] and "--disable-tools" not in captured[0], captured[0]
+
+
+def test_run_secure_enable_tools_no_auto_yes(monkeypatch):
+    # No prompt now, so a secure --enable-tools forwards --enable-tools but not
+    # --yes (only an explicit --yes is forwarded).
+    captured = _invoke_run(monkeypatch, _BASE + ["-H", "0.0.0.0", "--secure", "--enable-tools"])
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert "--enable-tools" in argv, argv
+    assert "--yes" not in argv, argv
+
+
+# ── plain `unsloth studio` exposes + forwards --enable-tools/--disable-tools ──
+
+
+def test_studio_default_exposes_enable_tools_option_default_none():
+    import inspect
+
+    opt = inspect.signature(_studio().studio_default).parameters["enable_tools"].default
+    decls = set(getattr(opt, "param_decls", []) or [])
+    assert "--enable-tools/--disable-tools" in decls
+    assert opt.default is None  # tri-state: omitted -> leave policy unset (tools on)
+
+
+def test_studio_default_forwards_disable_tools(monkeypatch):
+    captured = _invoke_studio_default(monkeypatch, ["--disable-tools"])
     assert len(captured) == 1, captured
     assert "--disable-tools" in captured[0] and "--enable-tools" not in captured[0], captured[0]
 
 
-def test_run_secure_enable_tools_forwards_yes(monkeypatch):
-    # Enabling tools on a secure endpoint forwards --yes so the child doesn't re-prompt.
-    captured = _invoke_run(monkeypatch, _BASE + ["-H", "0.0.0.0", "--secure", "--enable-tools"])
+def test_studio_default_forwards_enable_tools(monkeypatch):
+    captured = _invoke_studio_default(monkeypatch, ["--enable-tools"])
     assert len(captured) == 1, captured
-    argv = captured[0]
-    assert "--enable-tools" in argv and "--yes" in argv, argv
+    assert "--enable-tools" in captured[0] and "--disable-tools" not in captured[0], captured[0]
+
+
+def test_studio_default_no_tool_flag_omits_both(monkeypatch):
+    # No flag -> neither flag forwarded; run.py leaves the policy unset (tools on).
+    captured = _invoke_studio_default(monkeypatch, [])
+    assert len(captured) == 1, captured
+    assert "--enable-tools" not in captured[0] and "--disable-tools" not in captured[0], captured[0]
+
+
+def test_studio_default_rejects_enable_tools_with_subcommand():
+    import typer as _typer
+
+    studio_mod = _studio()
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+    result = CliRunner().invoke(app, ["studio", "--enable-tools", "run", "--model", "X"])
+    assert result.exit_code == 2, result.output
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--enable-tools" in combined, combined
+
+
+def test_run_tool_help_reflects_default_on_everywhere():
+    # Help must match the new policy (tools on everywhere, no prompt).
+    import inspect
+
+    params = inspect.signature(_studio().run).parameters
+    tools_help = params["enable_tools"].default.help or ""
+    assert "on for every bind" in tools_help, tools_help
+    assert "0.0.0.0" not in tools_help, tools_help
+
+    yes_help = params["yes"].default.help or ""
+    assert "Skip the 0.0.0.0" not in yes_help, yes_help
+    assert "no longer prompts" in yes_help, yes_help

@@ -1,21 +1,4 @@
-"""Comprehensive simulation suite for the #5642 fix.
-
-Covers:
-  1.  Behavioural canary (the bug class)             — 2 tests
-  2.  Behavioural fix-validation                     — 1 test
-  3.  Functional equivalence (sync == to_thread)     — 6 tests, one per codec branch
-  4.  Failure modes (HTTP 500, malformed JSON,
-      connection reset, unreachable, not-loaded)     — 5 tests
-  5.  Stress (50 concurrent probes / 100 healths)    — 2 tests
-  6.  Drift / regression guards                      — 3 tests
-  7.  Timing budgets                                 — 1 test
-
-Designed to run from inside ``temp/sim/`` after ``uv venv`` + minimal
-``uv pip install`` of pytest/httpx/fastapi/uvicorn/anyio. Resolves
-``studio/backend`` automatically by walking up from this file looking
-for the workspace clone of ``unslothai/unsloth`` (search order: this
-dir's parents → ``../../unsloth`` → ``UNSLOTH_REPO_ROOT`` env var).
-"""
+"""Simulation suite for the #5642 fix (sync detect_audio_type blocking the event loop)."""
 
 from __future__ import annotations
 
@@ -34,8 +17,6 @@ import pytest
 
 
 # Repo discovery
-
-
 def _find_repo_root() -> Path | None:
     env = os.environ.get("UNSLOTH_REPO_ROOT")
     if env:
@@ -78,8 +59,6 @@ from llama_server_shim import FakeLlamaServer  # noqa: E402
 
 
 # Fixtures / helpers
-
-
 def _make_backend(port: int, *, loaded: bool = True) -> LlamaCppBackend:
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._port = port
@@ -205,8 +184,6 @@ def _drive_concurrent_probe_and_health(
 
 
 # (1) Behavioural canary
-
-
 def test_buggy_route_blocks_event_loop():
     """Sync detect_audio_type call inside async route stalls /health."""
     with FakeLlamaServer(tok_delay = 0.6, detok_delay = 0.6) as shim:
@@ -234,20 +211,13 @@ def test_fixed_route_keeps_event_loop_responsive():
 
 
 # (2) Functional equivalence -- sync == to_thread for each codec branch
-
-
 @pytest.fixture
 def shim_no_match():
-    """A shim whose responses make detect_audio_type fall through every
-    codec branch and return None."""
+    """Shim whose responses make detect_audio_type fall through every codec branch -> None."""
     with FakeLlamaServer(
-        # detok responds with a 1-char unique string per tid -> doesn't
-        # start with "<custom_token_" so snac branch fails.
+        # detok strings don't start with "<custom_token_" so snac branch fails.
         detok_map = {128258: "abc", 128259: "def"},
-        # tokenize responds with len-of-words tokens, which is always
-        # 1 for single-word inputs so we need >1 token for the codec
-        # branches NOT to match. Map every audio probe text to a 2-token
-        # response so all `len(_tok(...)) == 1` checks fail.
+        # 2-token responses make every `len(_tok(...)) == 1` codec check fail.
         tok_response_map = {
             "<|AUDIO|>": [0, 1],
             "<|audio_eos|>": [0, 1],
@@ -271,8 +241,7 @@ def test_functional_equivalence_no_match(shim_no_match):
 
 
 def test_functional_equivalence_snac_match():
-    # snac match requires _detok(128258) AND _detok(128259) to start
-    # with "<custom_token_".
+    # snac: both _detok(128258) and _detok(128259) start with "<custom_token_".
     with FakeLlamaServer(
         detok_map = {128258: "<custom_token_99>", 128259: "<custom_token_98>"}
     ) as srv:
@@ -284,8 +253,7 @@ def test_functional_equivalence_snac_match():
 
 
 def test_functional_equivalence_csm_match():
-    # csm match: _tok("<|AUDIO|>") == 1 token AND _tok("<|audio_eos|>") == 1 token.
-    # Also snac match must fail first.
+    # csm: snac fails, then both <|AUDIO|> and <|audio_eos|> are 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {"<|AUDIO|>": [0], "<|audio_eos|>": [0]},
@@ -298,7 +266,7 @@ def test_functional_equivalence_csm_match():
 
 
 def test_functional_equivalence_whisper_match():
-    # whisper: snac fails, csm fails, then _tok("<|startoftranscript|>") == 1
+    # whisper: snac/csm fail, then <|startoftranscript|> is 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
@@ -315,10 +283,8 @@ def test_functional_equivalence_whisper_match():
 
 
 def test_functional_equivalence_audio_vlm_match():
-    # audio_vlm: snac/csm/whisper fail first, then the Gemma 4 <|audio|>
-    # probe tokenises to a single token. #6000 added this arm alongside
-    # Gemma 3n's <audio_soft_token>; keep <audio_soft_token> at 2 tokens so
-    # it is specifically the new <|audio|> arm that triggers the match.
+    # audio_vlm: snac/csm/whisper fail, then the Gemma 4 <|audio|> arm (#6000)
+    # tokenises to 1 token while <audio_soft_token> stays 2 to isolate it.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
@@ -337,8 +303,7 @@ def test_functional_equivalence_audio_vlm_match():
 
 
 def test_functional_equivalence_bicodec_match():
-    # bicodec: snac/csm/whisper/audio_vlm all fail first, then both
-    # bicodec_semantic_0 and bicodec_global_0 are single tokens.
+    # bicodec: all prior branches fail, then bicodec_semantic_0/global_0 are 1 token.
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
@@ -359,25 +324,19 @@ def test_functional_equivalence_bicodec_match():
 
 
 # (3) Failure modes
-
-
 def test_shim_returns_500_on_tokenize_returns_none():
-    """detect_audio_type's `r.status_code == 200` check filters out
-    non-200 responses; the function gracefully falls through and
-    returns None. Both sync and threaded paths see identical behaviour."""
+    """Non-200 responses fall through to None on both sync and threaded paths."""
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_status = 500,
     ) as srv:
         backend = _make_backend(srv.port)
-        # Sync
         assert backend.detect_audio_type() is None
-        # Threaded
         assert asyncio.run(asyncio.to_thread(backend.detect_audio_type)) is None
 
 
 def test_shim_returns_malformed_json_returns_none():
-    """detect_audio_type's outer try/except catches r.json() failures."""
+    """Outer try/except catches r.json() failures."""
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_body = b"{this is not json",
@@ -388,8 +347,7 @@ def test_shim_returns_malformed_json_returns_none():
 
 
 def test_shim_connection_reset_returns_none():
-    """Connection drops mid-response (RemoteProtocolError / ReadError)
-    must be caught by detect_audio_type's outer try/except."""
+    """Mid-response connection drop (RemoteProtocolError / ReadError) is caught."""
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_reset = True,
@@ -400,16 +358,14 @@ def test_shim_connection_reset_returns_none():
 
 
 def test_unreachable_port_returns_none():
-    """Pointing the backend at a port nothing is listening on triggers
-    httpx.ConnectError. detect_audio_type's try/except swallows it."""
+    """ConnectError on a dead port is swallowed -> None."""
     backend = _make_backend(_free_port())  # nothing listening
     assert backend.detect_audio_type() is None
     assert asyncio.run(asyncio.to_thread(backend.detect_audio_type)) is None
 
 
 def test_backend_not_loaded_short_circuits():
-    """is_loaded=False -> detect_audio_type returns None without doing
-    any network I/O. Confirm sub-millisecond on both paths."""
+    """is_loaded=False short-circuits to None with no network I/O (sub-ms both paths)."""
     backend = _make_backend(_free_port(), loaded = False)
     t0 = time.perf_counter()
     sync = backend.detect_audio_type()
@@ -423,11 +379,8 @@ def test_backend_not_loaded_short_circuits():
 
 
 # (4) Stress / concurrency
-
-
 def test_50_concurrent_probes_complete_without_deadlock():
-    """Fire 50 /probe calls in parallel against a fast shim. Threadpool
-    must not deadlock; route handler must not lock or serialise."""
+    """50 parallel /probe calls must not deadlock or serialise."""
     with FakeLlamaServer(tok_delay = 0.05, detok_delay = 0.05) as shim:
         backend = _make_backend(shim.port)
         app = _build_app(backend, wrap_in_thread = True)
@@ -444,18 +397,14 @@ def test_50_concurrent_probes_complete_without_deadlock():
                 results = [f.result(60.0) for f in futs]
             elapsed = time.perf_counter() - t0
     assert all(r.status_code == 200 for r in results)
-    # 50 probes at ~0.4s each, threadpool size 32 default -> ~1-2 batches.
-    # Bound generously to absorb CI jitter while catching pathological
-    # serialisation (would be ~20s).
+    # Generous bound absorbs CI jitter but still catches serialisation (~20s).
     assert (
         elapsed < 15.0
     ), f"50 concurrent probes took {elapsed:.1f}s; threadpool may be serialising"
 
 
 def test_100_concurrent_healths_during_slow_probe_all_responsive():
-    """Heavier version of the canary: 100 /health requests across 8
-    worker threads during a slow /probe. With the fix, max latency
-    stays bounded; without the fix, requests pile up."""
+    """100 /health across 8 threads during a slow /probe: latency stays bounded with the fix."""
     with FakeLlamaServer(tok_delay = 0.4, detok_delay = 0.4) as shim:
         backend = _make_backend(shim.port)
         app = _build_app(backend, wrap_in_thread = True)
@@ -478,7 +427,7 @@ def test_100_concurrent_healths_during_slow_probe_all_responsive():
 
             with ThreadPoolExecutor(max_workers = 9) as pool:
                 probe_f = pool.submit(probe)
-                time.sleep(0.05)  # let probe enter detect_audio_type
+                time.sleep(0.05)  # let probe enter detect_audio_type first
                 health_fs = [pool.submit(health_burst, 13) for _ in range(8)]
                 assert probe_f.result(60.0) == 200
                 latencies = [x for f in health_fs for x in f.result(60.0)]
@@ -488,25 +437,16 @@ def test_100_concurrent_healths_during_slow_probe_all_responsive():
 
 
 # (5) Drift / regression guards on the production source
-
-
 def test_load_model_caches_audio_type_inside_serial_load_lock():
-    """The audio-type detection (and codec init, where applicable) must
-    happen inside ``LlamaCppBackend.load_model`` so the full load
-    sequence is atomic under ``_serial_load_lock``. Running it from the
-    route opens a race where a concurrent /load can replace the backend
-    mid-probe (gemini-code-assist review on #5669)."""
+    """Audio-type detection must run inside load_model under _serial_load_lock,
+    else a concurrent /load can replace the backend mid-probe (review on #5669)."""
     f = _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
     text = f.read_text()
-    # The lock must be acquired.
     assert (
         "with self._serial_load_lock" in text
     ), "LlamaCppBackend.load_model must hold self._serial_load_lock"
-    # The cache writes must be present. The strict variant
-    # `_detect_audio_type_strict` was added in the chatgpt-codex
-    # P2 3284185168 follow-up to distinguish definitive non-audio
-    # from transient probe failure; either call shape satisfies
-    # the static guard.
+    # Either call shape satisfies the guard; _detect_audio_type_strict was a
+    # follow-up to distinguish definitive non-audio from transient probe failure.
     assert (
         "self._audio_type = self.detect_audio_type()" in text
         or "detected = self.detect_audio_type()" in text
@@ -519,11 +459,8 @@ def test_load_model_caches_audio_type_inside_serial_load_lock():
 
 
 def test_routes_inference_reads_cached_audio_type_not_calls_detect():
-    """Static guard: routes/inference.py must NOT call
-    ``llama_backend.detect_audio_type`` or
-    ``llama_backend.init_audio_codec`` directly any more -- both moved
-    inside ``LlamaCppBackend.load_model`` under the lock. The route
-    reads the cached ``_audio_type`` / ``_is_audio`` attributes."""
+    """routes/inference.py must read cached _audio_type/_is_audio, not call
+    detect_audio_type / init_audio_codec directly (both moved into load_model)."""
     f = _REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
     text = f.read_text()
     assert "llama_backend.detect_audio_type(" not in text, (
@@ -534,38 +471,29 @@ def test_routes_inference_reads_cached_audio_type_not_calls_detect():
         "routes/inference.py should not call init_audio_codec directly; "
         "load_model already invoked it under the lock when audio_type was a TTS codec."
     )
-    # Verify the route DOES read the cached values somewhere.
+    # Route must read the cached values.
     assert "llama_backend._audio_type" in text
     assert "llama_backend._is_audio" in text
 
 
 def test_no_other_async_route_calls_detect_audio_type_unwrapped():
-    """Walk every .py under studio/backend/routes/ and confirm no file
-    contains a ``LlamaCppBackend.detect_audio_type()`` call inside an
-    async function. Re-introducing the bug means putting back the sync
-    call AND opening the race condition the lock fix closes."""
+    """No routes/*.py may call llama_backend.detect_audio_type() in an async fn;
+    that reintroduces the sync bug and the load race the lock fix closes."""
     routes_dir = _REPO_ROOT / "studio" / "backend" / "routes"
     offenders = []
-    # Match `<anything>.detect_audio_type(` so this catches both
-    # `llama_backend.detect_audio_type(` and `self.detect_audio_type(`.
-    # We exclude the `utils.models.model_config.detect_audio_type`
-    # free function which is a separate, harmless static helper.
+    # Matches both llama_backend. and self. prefixes; the model_config free
+    # function helper is excluded below.
     pattern = re.compile(r"\b\w+\.detect_audio_type\s*\(")
     for path in routes_dir.rglob("*.py"):
         for i, line in enumerate(path.read_text().splitlines(), start = 1):
             m = pattern.search(line)
             if not m:
                 continue
-            # Skip the free function import-site uses (no llama_backend prefix
-            # and called outside async context). Easiest: only treat the
-            # LlamaCppBackend instance call as an offender.
+            # Only the LlamaCppBackend instance call is an offender.
             if "llama_backend.detect_audio_type" not in line:
                 continue
             if "asyncio.to_thread" in line:
-                # Wrapped sync call is acceptable (event-loop responsive)
-                # but not preferred -- detect_audio_type belongs inside
-                # load_model now. Surface but don't fail; comment in PR
-                # if seen.
+                # Wrapped sync call is acceptable (not preferred); surface in PR.
                 continue
             offenders.append(f"{path.relative_to(_REPO_ROOT)}:{i}: {line.strip()}")
     assert not offenders, (
@@ -575,8 +503,6 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
 
 
 # (6) Timing budgets
-
-
 def test_load_response_under_2s_with_fast_shim():
     """Regression budget: fast shim must complete /probe in <2 s."""
     with FakeLlamaServer(tok_delay = 0.0, detok_delay = 0.0) as shim:
@@ -592,9 +518,7 @@ def test_load_response_under_2s_with_fast_shim():
 
 
 def test_repeated_loads_bounded_total_time():
-    """Five sequential /probe calls against a fast shim must complete
-    in well under 10 s total. Locks in that there's no per-call leak
-    (open connections, threads, etc.) that compounds across loads."""
+    """Five sequential /probe calls finish under 10 s, guarding against per-call leaks."""
     with FakeLlamaServer(tok_delay = 0.05, detok_delay = 0.05) as shim:
         backend = _make_backend(shim.port)
         app = _build_app(backend, wrap_in_thread = True)
@@ -609,13 +533,8 @@ def test_repeated_loads_bounded_total_time():
 
 
 # (7) Browser-compatibility surface
-
-
 def test_response_is_valid_browser_parseable_json():
-    """The fix changes the route's internal scheduling but must not
-    change the response shape any browser sees. Round-trip the response
-    through json.loads() (the canonical equivalent of
-    JSON.parse() in any browser) and assert the expected keys."""
+    """The fix must not change the response shape a browser sees (valid JSON, expected keys)."""
     import json as _json
 
     with FakeLlamaServer(tok_delay = 0.0, detok_delay = 0.0) as shim:
@@ -625,27 +544,16 @@ def test_response_is_valid_browser_parseable_json():
         with _UvicornServerThread(app, port = port) as uv:
             with httpx.Client(timeout = 5.0) as c:
                 r = c.get(f"http://127.0.0.1:{uv.port}/probe")
-    # 1. Status code is one a browser will surface as success.
     assert r.status_code == 200
-    # 2. Content-Type is exactly application/json (browsers use this
-    #    header to decide if they can JSON-parse the body).
     assert r.headers["content-type"].startswith("application/json")
-    # 3. Body is valid JSON. Every modern browser (Firefox, Safari,
-    #    Chrome, Edge) uses the same JSON.parse semantics; parse via
-    #    Python's strict json module here as a stand-in.
     parsed = _json.loads(r.text)
-    # 4. Expected key present.
     assert "audio_type" in parsed
-    # 5. No NaN / Infinity / non-JSON-spec types that would break
-    #    browser parsers.
+    # No NaN / Infinity that would break browser parsers.
     assert _json.dumps(parsed)
 
 
 def test_response_shape_matches_pre_fix_for_no_match():
-    """The fix's only externally-observable effect must be timing.
-    Confirm sync and threaded paths return byte-identical response
-    bodies for the no-match scenario (the dominant code path in
-    practice for non-audio models)."""
+    """Sync and threaded paths return identical bodies for the no-match scenario."""
     import json as _json
     with FakeLlamaServer(
         detok_map = {128258: "abc", 128259: "def"},
@@ -662,7 +570,7 @@ def test_response_shape_matches_pre_fix_for_no_match():
         },
     ) as shim:
         backend = _make_backend(shim.port)
-        # Two apps -- sync (pre-fix) and to_thread (post-fix).
+        # sync (pre-fix) then to_thread (post-fix).
         for wrap in (False, True):
             app = _build_app(backend, wrap_in_thread = wrap)
             port = _free_port()
@@ -675,14 +583,8 @@ def test_response_shape_matches_pre_fix_for_no_match():
 
 
 # (8) Cancellation
-
-
 def test_client_disconnect_during_probe_does_not_crash_server():
-    """If the HTTP client disconnects mid-probe, uvicorn must continue
-    serving subsequent requests. The threadpool task keeps running
-    (asyncio.to_thread doesn't propagate cancellation), but that's
-    matched by the existing init_audio_codec wrap and is not a
-    regression. After the disconnect, /health must still respond."""
+    """A client disconnect mid-probe must not crash the server; /health still responds."""
     with FakeLlamaServer(tok_delay = 0.5, detok_delay = 0.5) as shim:
         backend = _make_backend(shim.port)
         app = _build_app(backend, wrap_in_thread = True)
@@ -690,13 +592,11 @@ def test_client_disconnect_during_probe_does_not_crash_server():
         with _UvicornServerThread(app, port = port) as uv:
             base = f"http://127.0.0.1:{uv.port}"
 
-            # Connect and immediately drop. httpx with a very short
-            # timeout simulates a client that gave up.
+            # Short timeout simulates a client that gave up mid-probe.
             with pytest.raises(httpx.TimeoutException):
                 with httpx.Client(timeout = 0.2) as c:
                     c.get(f"{base}/probe")
 
-            # The server must still serve /health afterwards.
             with httpx.Client(timeout = 5.0) as c:
                 r = c.get(f"{base}/health")
             assert r.status_code == 200

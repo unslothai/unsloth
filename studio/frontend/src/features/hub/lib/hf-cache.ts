@@ -9,11 +9,30 @@ import { fingerprintToken } from "./token-fingerprint";
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 256;
 const MAX_CONCURRENT = 3;
-const ALL_FIELDS: ("safetensors" | "tags")[] = ["safetensors", "tags"];
+type CachedAdditionalField =
+  | "safetensors"
+  | "tags"
+  | "library_name"
+  | "config"
+  | "createdAt"
+  | "downloadsAllTime";
+
+const DEFAULT_FIELDS: CachedAdditionalField[] = [
+  "safetensors",
+  "tags",
+  "library_name",
+  "config",
+  "createdAt",
+  "downloadsAllTime",
+];
 
 export type CachedResult = ModelEntry & {
   safetensors?: { total?: number; parameters?: Record<string, number> };
   tags?: string[];
+  library_name?: string;
+  config?: { quantization_config?: { quant_method?: string } };
+  createdAt?: string | Date;
+  downloadsAllTime?: number;
 };
 
 interface CacheEntry {
@@ -88,9 +107,15 @@ export async function cachedModelInfo(
   const promise = (async () => {
     await acquire();
     try {
+      const additionalFields = Array.from(
+        new Set([
+          ...DEFAULT_FIELDS,
+          ...((params.additionalFields ?? []) as CachedAdditionalField[]),
+        ]),
+      );
       const result = await modelInfo({
         ...params,
-        additionalFields: ALL_FIELDS,
+        additionalFields,
       });
       const entry = { data: result as CachedResult, ts: Date.now() };
       cache.set(key, entry);
