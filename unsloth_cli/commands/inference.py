@@ -6,9 +6,11 @@ from typing import List, Optional
 import typer
 
 from unsloth_cli._inference import (
+    collect_stream,
     configure_quiet_logging,
     connect_studio_server,
     load_chat_backend,
+    mlx_distributed_info,
     stream_to_stdout,
 )
 
@@ -69,8 +71,11 @@ def inference(
     if not verbose:
         configure_quiet_logging()
 
+    is_mlx_distributed, rank, _world_size = mlx_distributed_info()
+
     # A running Studio server keeps the model warm between runs, which is
-    # exactly what a one-shot command wants.
+    # exactly what a one-shot command wants. Under mlx.launch, every rank must
+    # enter the local MLX path instead of rank 0 alone talking to a server.
     load_opts = dict(
         hf_token = hf_token,
         max_seq_length = max_seq_length,
@@ -78,7 +83,9 @@ def inference(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
-    chat_backend = None if no_server else connect_studio_server(model, **load_opts)
+    chat_backend = (
+        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+    )
     if chat_backend is None:
         chat_backend = load_chat_backend(model, **load_opts)
     try:
@@ -92,7 +99,10 @@ def inference(
             repetition_penalty = repetition_penalty,
             enable_thinking = think,
         )
-        typer.echo("Assistant:")
-        stream_to_stdout(stream, show_thinking = think)
+        if rank == 0:
+            typer.echo("Assistant:")
+            stream_to_stdout(stream, show_thinking = think)
+        else:
+            collect_stream(stream, show_thinking = think)
     finally:
         chat_backend.close()

@@ -7,6 +7,7 @@ import asyncio
 import os
 import re
 import sys
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,6 +19,13 @@ _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
 # Cloudflare (in front of remote Studio proxies like RunPod) 403s the default
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
 _USER_AGENT = "unsloth-cli"
+_MPI_ENV_PAIRS = (
+    ("OMPI_COMM_WORLD_RANK", "OMPI_COMM_WORLD_SIZE"),
+    ("PMI_RANK", "PMI_SIZE"),
+    ("PMIX_RANK", "PMIX_SIZE"),
+    ("MPI_RANK", "MPI_WORLD_SIZE"),
+    ("MV2_COMM_WORLD_RANK", "MV2_COMM_WORLD_SIZE"),
+)
 
 # Built lazily; urllib stays function-local to match this module.
 _no_redirect_opener = None
@@ -59,6 +67,70 @@ def configure_quiet_logging() -> None:
     level = getattr(logging, level_name, logging.WARNING)
     structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+
+def _parse_nonnegative_int(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _first_mpi_env_pair() -> tuple[Optional[int], Optional[int]]:
+    for rank_name, size_name in _MPI_ENV_PAIRS:
+        rank = _parse_nonnegative_int(os.environ.get(rank_name))
+        world_size = _parse_nonnegative_int(os.environ.get(size_name))
+        if rank is not None and world_size is not None and world_size > 1 and rank < world_size:
+            return rank, world_size
+    return None, None
+
+
+def mlx_distributed_info() -> tuple[bool, int, Optional[int]]:
+    """Return launch-context metadata without initializing MLX distributed."""
+    rank = _parse_nonnegative_int(os.environ.get("MLX_RANK"))
+    world_size = _parse_nonnegative_int(os.environ.get("MLX_WORLD_SIZE"))
+    if rank is not None:
+        return True, rank, world_size
+
+    mpi_rank, mpi_world_size = _first_mpi_env_pair()
+    return mpi_rank is not None, mpi_rank or 0, mpi_world_size
+
+
+def mlx_distributed_uses_mpi() -> bool:
+    """Whether the current distributed context was launched through MPI."""
+    return (
+        _parse_nonnegative_int(os.environ.get("MLX_RANK")) is None
+        and _first_mpi_env_pair()[0] is not None
+    )
+
+
+@contextmanager
+def quiet_if_nonzero_mlx_rank():
+    """Silence parent and child-process stdout/stderr on nonzero ranks."""
+    if mlx_distributed_info()[1] == 0:
+        yield
+        return
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+    with open(os.devnull, "w") as devnull:
+        try:
+            os.dup2(devnull.fileno(), 1)
+            os.dup2(devnull.fileno(), 2)
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                yield
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(saved_stdout_fd, 1)
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stdout_fd)
+            os.close(saved_stderr_fd)
 
 
 def visible_text(text: str, show_thinking: bool) -> str:
@@ -293,36 +365,38 @@ def load_chat_backend(
     fresh_backend uses a private orchestrator so a second model (compare's
     base column) can run alongside the main one.
     """
-    if model_config is None:
-        model_config = resolve_model_config(model, hf_token = hf_token)
+    with quiet_if_nonzero_mlx_rank():
+        if model_config is None:
+            model_config = resolve_model_config(model, hf_token = hf_token)
 
-    typer.echo(f"Loading {model}", err = True)
+        if mlx_distributed_info()[1] == 0:
+            typer.echo(f"Loading {model}", err = True)
 
-    if model_config.is_gguf:
-        return _load_gguf_backend(
-            model_config,
-            hf_token = hf_token,
+        if model_config.is_gguf:
+            return _load_gguf_backend(
+                model_config,
+                hf_token = hf_token,
+                max_seq_length = max_seq_length,
+                tensor_parallel = tensor_parallel,
+                llama_extra_args = llama_extra_args,
+            )
+
+        if fresh_backend:
+            ensure_studio_backend_path()
+            from core.inference import InferenceOrchestrator
+            backend = InferenceOrchestrator()
+        else:
+            ensure_studio_backend_path()
+            from core.inference import get_inference_backend
+            backend = get_inference_backend()
+        if not backend.load_model(
+            config = model_config,
             max_seq_length = max_seq_length,
-            tensor_parallel = tensor_parallel,
-            llama_extra_args = llama_extra_args,
-        )
-
-    if fresh_backend:
-        ensure_studio_backend_path()
-        from core.inference import InferenceOrchestrator
-        backend = InferenceOrchestrator()
-    else:
-        ensure_studio_backend_path()
-        from core.inference import get_inference_backend
-        backend = get_inference_backend()
-    if not backend.load_model(
-        config = model_config,
-        max_seq_length = max_seq_length,
-        load_in_4bit = load_in_4bit,
-        hf_token = hf_token,
-    ):
-        typer.echo("Model load failed", err = True)
-        raise typer.Exit(code = 1)
+            load_in_4bit = load_in_4bit,
+            hf_token = hf_token,
+        ):
+            typer.echo("Model load failed", err = True)
+            raise typer.Exit(code = 1)
     return ChatBackend("unsloth", backend)
 
 

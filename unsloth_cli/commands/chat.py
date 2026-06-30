@@ -12,6 +12,9 @@ from unsloth_cli._inference import (
     connect_studio_server,
     ensure_studio_backend_path,
     load_chat_backend,
+    mlx_distributed_info,
+    mlx_distributed_uses_mpi,
+    quiet_if_nonzero_mlx_rank,
     render_columns,
     resolve_model_config,
     stream_markdown,
@@ -195,15 +198,38 @@ def chat(
 
     console = Console()
     err = Console(stderr = True)
+    is_mlx_distributed, rank, _world_size = mlx_distributed_info()
+    should_print = rank == 0
+
+    if is_mlx_distributed and mlx_distributed_uses_mpi():
+        if should_print:
+            err.print(
+                "Distributed `unsloth chat` with MPI needs rank-0 prompt broadcast, "
+                "which is not enabled yet. Use `unsloth inference` under MPI or a "
+                "non-MPI MLX launcher backend for now.",
+                style = "red",
+                markup = False,
+            )
+        raise typer.Exit(code = 1)
 
     if model is None:
+        if is_mlx_distributed:
+            if should_print:
+                err.print(
+                    "Distributed `unsloth chat` requires an explicit model id or path.",
+                    style = "red",
+                    markup = False,
+                )
+            raise typer.Exit(code = 1)
         model = _pick_trained_model(console)
 
     # Resolve first so --compare can be rejected before the slow load.
-    model_config = resolve_model_config(model, hf_token = hf_token)
+    with quiet_if_nonzero_mlx_rank():
+        model_config = resolve_model_config(model, hf_token = hf_token)
     compare_blocked = _compare_blocked_reason(model_config)
     if compare and compare_blocked:
-        err.print(f"--compare unavailable: {compare_blocked}", style = "red", markup = False)
+        if should_print:
+            err.print(f"--compare unavailable: {compare_blocked}", style = "red", markup = False)
         raise typer.Exit(code = 1)
 
     load_opts = dict(
@@ -215,9 +241,11 @@ def chat(
     )
 
     # Prefer a running Studio server: instant starts, model shared with the UI.
-    chat_backend = None if no_server else connect_studio_server(model, **load_opts)
+    chat_backend = (
+        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+    )
     server_mode = chat_backend is not None
-    if server_mode:
+    if server_mode and should_print:
         console.print(
             "(Studio server connected — model stays warm after /exit)",
             style = "bright_black",
@@ -242,23 +270,26 @@ def chat(
             return True
         base_id = model_config.base_model
         if not base_id:
-            console.print(
-                "(compare unavailable: this adapter doesn't record its base model)",
-                style = "yellow",
-            )
+            if should_print:
+                console.print(
+                    "(compare unavailable: this adapter doesn't record its base model)",
+                    style = "yellow",
+                )
             return False
-        console.print(
-            f"(loading base model {base_id} for compare — keeps two models in memory)",
-            style = "bright_black",
-            markup = False,
-        )
+        if should_print:
+            console.print(
+                f"(loading base model {base_id} for compare — keeps two models in memory)",
+                style = "bright_black",
+                markup = False,
+            )
         try:
             # Use the same precision as the tuned model for fair comparison
             base_load_opts = dict(load_opts)  # Copy original options
             base_load_opts["load_in_4bit"] = _get_base_load_in_4bit(model_config)
             base_backend = load_chat_backend(base_id, fresh_backend = True, **base_load_opts)
         except Exception as exc:
-            err.print(f"(base model load failed: {exc})", style = "red", markup = False)
+            if should_print:
+                err.print(f"(base model load failed: {exc})", style = "red", markup = False)
             return False
         return True
 
@@ -279,12 +310,15 @@ def chat(
             use_adapter = use_adapter,
         )
 
-    console.print()
-    console.print(f"Chatting with {name}", style = "bold green", markup = False)
-    console.print(_HELP, style = "bright_black")
+    if should_print:
+        console.print()
+        console.print(f"Chatting with {name}", style = "bold green", markup = False)
+        console.print(_HELP, style = "bright_black")
 
     # legacy_windows: pre-VT consoles print raw ANSI as ←[1;36m garbage.
-    you_prompt = _you_prompt(console.is_terminal and not console.legacy_windows)
+    you_prompt = (
+        _you_prompt(console.is_terminal and not console.legacy_windows) if should_print else ""
+    )
     assistant_label = "[bold magenta]Assistant:[/bold magenta]"
 
     try:
@@ -292,7 +326,8 @@ def chat(
             try:
                 user = input(you_prompt).strip()
             except (EOFError, KeyboardInterrupt):
-                console.print()
+                if should_print:
+                    console.print()
                 break
 
             if not user:
@@ -301,54 +336,66 @@ def chat(
                 break
             if user == "/reset":
                 messages = []
-                console.print("(history cleared)", style = "bright_black")
+                if should_print:
+                    console.print("(history cleared)", style = "bright_black")
                 continue
             if user == "/think":
                 show_thinking = not show_thinking
-                state = "on" if show_thinking else "off"
-                console.print(f"(thinking {state})", style = "bright_black")
+                if should_print:
+                    state = "on" if show_thinking else "off"
+                    console.print(f"(thinking {state})", style = "bright_black")
                 continue
             if user == "/compare":
                 if compare_blocked:
-                    console.print(f"(compare unavailable: {compare_blocked})", style = "yellow")
+                    if should_print:
+                        console.print(f"(compare unavailable: {compare_blocked})", style = "yellow")
                     continue
                 if not compare_mode and dual_compare and not load_base_for_compare():
                     continue
                 compare_mode = not compare_mode
-                state = "on" if compare_mode else "off"
-                console.print(f"(compare {state})", style = "bright_black")
+                if should_print:
+                    state = "on" if compare_mode else "off"
+                    console.print(f"(compare {state})", style = "bright_black")
                 continue
             if user in ("/help", "/?"):
-                console.print(_HELP, style = "bright_black")
+                if should_print:
+                    console.print(_HELP, style = "bright_black")
                 continue
 
             messages.append({"role": "user", "content": user})
 
             try:
                 if compare_mode:
-                    console.print("(comparing base vs tuned…)", style = "bright_black")
+                    if should_print:
+                        console.print("(comparing base vs tuned…)", style = "bright_black")
                     if dual_compare:
                         base_text = collect_stream(generate(backend = base_backend), show_thinking)
                         tuned_text = collect_stream(generate(), show_thinking)
                     else:
                         base_text = collect_stream(generate(use_adapter = False), show_thinking)
                         tuned_text = collect_stream(generate(use_adapter = True), show_thinking)
-                    console.print()
-                    render_columns(
-                        "base", base_text, f"{name} (tuned)", tuned_text, console = console
-                    )
+                    if should_print:
+                        console.print()
+                        render_columns(
+                            "base", base_text, f"{name} (tuned)", tuned_text, console = console
+                        )
                     # History continues as the tuned model; base is just the reference.
                     answer = tuned_text
                 else:
-                    console.print(assistant_label)
-                    answer = stream_markdown(generate(), show_thinking, console = console)
+                    if should_print:
+                        console.print(assistant_label)
+                        answer = stream_markdown(generate(), show_thinking, console = console)
+                    else:
+                        answer = collect_stream(generate(), show_thinking)
             except KeyboardInterrupt:
                 # Ctrl-C aborts this answer only; drop the unanswered turn.
-                console.print("\n(interrupted)", style = "bright_black")
+                if should_print:
+                    console.print("\n(interrupted)", style = "bright_black")
                 messages.pop()
                 continue
             except Exception as exc:
-                err.print(f"\n(error: {exc})", style = "red", markup = False)
+                if should_print:
+                    err.print(f"\n(error: {exc})", style = "red", markup = False)
                 messages.pop()
                 continue
 
@@ -359,4 +406,5 @@ def chat(
         chat_backend.close()
         if base_backend is not None:
             base_backend.close()
-        err.print("\nBye.", style = "bright_black")
+        if should_print:
+            err.print("\nBye.", style = "bright_black")
