@@ -630,6 +630,8 @@ function GeneralCompareHeader({
   loraModels,
   externalModels,
   value,
+  label,
+  labelTone = "muted",
   onValueChange,
   onFoldersChange,
   onModelsChange,
@@ -640,6 +642,8 @@ function GeneralCompareHeader({
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value: string;
+  label?: string;
+  labelTone?: "muted" | "primary";
   onValueChange: (
     id: string,
     meta: { isLora: boolean; ggufVariant?: string },
@@ -653,6 +657,7 @@ function GeneralCompareHeader({
   const active = useChatActive();
   const [selectorOpen, setSelectorOpen] = useState(false);
   const { pinned } = useSidebar();
+  const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   return (
     <div
       className={cn(
@@ -661,7 +666,9 @@ function GeneralCompareHeader({
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
             : "pl-12 pr-3 md:pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
-          : "pl-3 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+          : settingsOpen
+            ? "pl-3 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]"
+            : "pl-3 pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
       <ModelSelector
@@ -678,8 +685,27 @@ function GeneralCompareHeader({
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
+      {label ? (
+        <span
+          className={cn(
+            "pointer-events-none hidden h-[var(--studio-chat-control-height,34px)] shrink-0 translate-y-[2px] items-center text-[10px] font-semibold uppercase leading-none tracking-wider text-muted-foreground sm:flex",
+            side === "right" && "ml-auto",
+            labelTone === "primary" && "text-primary",
+          )}
+        >
+          {label}
+        </span>
+      ) : null}
     </div>
   );
+}
+
+function getLoraBaseModel(
+  loraModels: LoraModelOption[],
+  model: CompareModelSelection,
+): string | null {
+  if (!model.isLora) return null;
+  return loraModels.find((lora) => lora.id === model.id)?.baseModel ?? null;
 }
 
 /** General path: any two models, sequential load → generate. */
@@ -765,6 +791,25 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     };
   }, [pairId, compareRunning, compareSubmitting]);
 
+  const model1LoraBase = getLoraBaseModel(loraModels, model1);
+  const model2LoraBase = getLoraBaseModel(loraModels, model2);
+  const model1IsFineTunedFromModel2 =
+    Boolean(model1LoraBase) &&
+    normalizeModelRef(model1LoraBase) === normalizeModelRef(model2.id);
+  const model2IsFineTunedFromModel1 =
+    Boolean(model2LoraBase) &&
+    normalizeModelRef(model2LoraBase) === normalizeModelRef(model1.id);
+  const model1Label = model1IsFineTunedFromModel2
+    ? "Fine-tuned"
+    : model2IsFineTunedFromModel1
+      ? "Base Model"
+      : undefined;
+  const model2Label = model2IsFineTunedFromModel1
+    ? "Fine-tuned"
+    : model1IsFineTunedFromModel2
+      ? "Base Model"
+      : undefined;
+
   return (
     <CompareShell
       handlesRef={handlesRef}
@@ -798,6 +843,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               loraModels={loraModels}
               externalModels={externalModels}
               value={model1.id}
+              label={model1Label}
+              labelTone={model1Label === "Fine-tuned" ? "primary" : "muted"}
               onValueChange={(id, meta) =>
                 setModel1({
                   id,
@@ -825,6 +872,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               loraModels={loraModels}
               externalModels={externalModels}
               value={model2.id}
+              label={model2Label}
+              labelTone={model2Label === "Fine-tuned" ? "primary" : "muted"}
               onValueChange={(id, meta) =>
                 setModel2({
                   id,
@@ -2399,7 +2448,7 @@ export function ChatPage({
                 ? "pl-2"
                 : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-[10px] left-auto z-50 w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">
