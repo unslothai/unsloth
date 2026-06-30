@@ -123,6 +123,26 @@ def test_ocr_pages_transcribes_and_caps(monkeypatch):
     assert out == {1: "transcribed text"}  # page 2 dropped by the cap
     assert len(calls) == 1
 
+def test_ocr_scanned_pages_merges_short_text_layer(rag_conn, monkeypatch):
+    # Near-empty pages can still have meaningful extractable text; OCR augments it
+    # rather than replacing it with a fallible vision transcription.
+    scope = store.thread_scope("t1")
+    document_id = store.create_document(rag_conn, scope = scope, filename = "scan.pdf", sha256 = "h")
+    job_id = ingestion._new_job(rag_conn, document_id, scope)
+    pages = [parsers.Page("ID-42", 1, 5)]
+
+    monkeypatch.setattr(captioner.config, "OCR_SCANNED", True)
+    monkeypatch.setattr(captioner.config, "OCR_MIN_CHARS", 16)
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
+    monkeypatch.setattr(parsers, "render_pdf_pages", lambda *a, **k: {1: b"png"})
+    monkeypatch.setattr(captioner, "ocr_pages", lambda page_pngs: {1: "OCR body text"})
+
+    out, ocred = ingestion._ocr_scanned_pages(pages, "scan.pdf", rag_conn, job_id)
+    assert ocred == {1}
+    assert out[0].text == "ID-42\n\nOCR body text"
+
+
+
 
 # ── end-to-end ingestion ─────────────────────────────────────────────
 

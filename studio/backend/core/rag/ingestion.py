@@ -142,7 +142,9 @@ def _ocr_scanned_pages(
     for page in pages:
         text = texts.get(page.page_number)
         if text:
-            out.append(Page(text = text, page_number = page.page_number, char_count = len(text)))
+            original = (page.text or "").strip()
+            merged = text if not original or original in text else f"{original}\n\n{text}"
+            out.append(Page(text = merged, page_number = page.page_number, char_count = len(merged)))
             ocred.add(page.page_number)
         else:
             out.append(page)

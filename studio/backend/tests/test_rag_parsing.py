@@ -54,6 +54,27 @@ def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     assert "#" not in text and "|" not in text  # plain text path emits no Markdown markup
 
 
+def test_pdf_markdown_disables_pymupdf4llm_ocr(monkeypatch):
+    # Studio owns the OCR policy; Markdown extraction must not invoke PyMuPDF4LLM's
+    # automatic OCR path behind the user's per-upload OCR toggle.
+    from core.rag import parsers
+
+    captured = {}
+
+    class _FakePymupdf4llm:
+        @staticmethod
+        def to_markdown(doc, **kwargs):
+            captured.update(kwargs)
+            return [{"text": "plain markdown"}]
+
+    class _Doc:
+        page_count = 1
+
+    monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
+    assert parsers._pdf_markdown(_Doc()) == ["plain markdown"]
+    assert captured["use_ocr"] is False
+
+
 def test_pdf_markdown_falls_back_when_lib_missing(tmp_path, monkeypatch):
     # If pymupdf4llm extraction returns None (missing/failed), parsing still yields the
     # plain-text pages rather than raising.

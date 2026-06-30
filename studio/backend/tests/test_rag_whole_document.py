@@ -221,6 +221,39 @@ def test_build_rag_autoinject_uses_whole_doc(rag_conn):
     assert inf_tools.RAG_SOURCES_SENTINEL not in injected
 
 
+def test_build_rag_autoinject_whole_doc_runs_when_autoinject_false(rag_conn, monkeypatch):
+    # Large-model Auto sets autoinject=False, but whole-doc is a separate thread-doc
+    # context mode and should still inject a fitting attachment.
+    _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["entire file body"])
+    monkeypatch.setattr(
+        tool,
+        "search_for_autoinject",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
+    )
+    result = inf_tools.build_rag_autoinject(
+        _convo(), {"thread_id": "t1", "autoinject": False, "whole_doc": True}
+    )
+    assert result is not None
+    assert "entire file body" in _injected_text(result)
+
+
+def test_build_rag_autoinject_explicit_off_disables_whole_doc(rag_conn, monkeypatch):
+    # The UI Off switch sends both autoinject=False and whole_doc=False.
+    _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["small body"])
+    monkeypatch.setattr(
+        tool,
+        "search_for_autoinject",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
+    )
+    assert (
+        inf_tools.build_rag_autoinject(
+            _convo(), {"thread_id": "t1", "autoinject": False, "whole_doc": False}
+        )
+        is None
+    )
+
+
+
 def test_build_rag_autoinject_falls_back_over_budget(rag_conn, monkeypatch):
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000])
@@ -231,6 +264,19 @@ def test_build_rag_autoinject_falls_back_over_budget(rag_conn, monkeypatch):
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1"})
     assert result is not None
     assert _injected_text(result) == "TOPK_FALLBACK_TEXT"
+
+
+def test_build_rag_autoinject_context_budget_falls_back(rag_conn, monkeypatch):
+    # Runtime context can be smaller than RAG_WHOLE_DOC_MAX_TOKENS; cap whole-doc to
+    # the active context and fall back to retrieval when it would overflow.
+    _add_doc(rag_conn, store.thread_scope("t1"), "d1", "small.pdf", "h1", ["fits global"], tokens = [900])
+    sentinel = ("TOPK_CONTEXT_FALLBACK", [{"citationId": 1, "filename": "small.pdf", "text": "x"}])
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
+    result = inf_tools.build_rag_autoinject(
+        _convo(), {"thread_id": "t1", "context_length": 1200, "whole_doc": True}
+    )
+    assert result is not None
+    assert _injected_text(result) == "TOPK_CONTEXT_FALLBACK"
 
 
 def test_build_rag_autoinject_whole_doc_disabled_via_override(rag_conn, monkeypatch):

@@ -1134,12 +1134,40 @@ def _thread_whole_doc_enabled(scope: dict) -> bool:
     return _rag_config.THREAD_WHOLE_DOC
 
 
-def _whole_doc_budget() -> int:
+def _message_token_estimate(conversation: list[dict]) -> int:
+    """Cheap prompt-size estimate for budget guards; exact tokenization happens later."""
+    total = 0
+    for msg in conversation:
+        content = msg.get("content")
+        if isinstance(content, str):
+            total += max(1, len(content) // 4)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    total += max(1, len(str(part.get("text") or "")) // 4)
+        total += 4  # chat-template role / separator overhead estimate
+    return total
+
+
+def _whole_doc_budget(scope: dict | None = None, conversation: list[dict] | None = None) -> int:
     try:
         from core.rag import config as _rag_config
     except Exception:  # noqa: BLE001
-        return 6000
-    return _rag_config.WHOLE_DOC_MAX_TOKENS
+        budget = 6000
+    else:
+        budget = _rag_config.WHOLE_DOC_MAX_TOKENS
+    if not scope:
+        return budget
+    context = _opt_int(scope.get("context_length") or scope.get("max_context_tokens"))
+    if context is None or context <= 0:
+        return budget
+    headroom = _opt_int(scope.get("response_headroom"))
+    if headroom is None:
+        headroom = max(1024, context // 4)
+    used = _message_token_estimate(conversation or [])
+    # Leave room for tool XML wrappers, citation metadata, and chat-template overhead.
+    available = context - headroom - used - 512
+    return min(budget, max(0, available))
 
 
 def _last_user_text(conversation: list[dict]) -> str:
@@ -1175,7 +1203,15 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     enabled = rag_scope.get("autoinject")
     if enabled is None:
         enabled = _autoinject_enabled()
-    if not enabled:
+    thread_id = rag_scope.get("thread_id")
+    whole_doc_override = rag_scope.get("whole_doc")
+    whole_doc_requested = (
+        bool(thread_id)
+        and not rag_scope.get("kb_id")
+        and _thread_whole_doc_enabled(rag_scope)
+        and (enabled or whole_doc_override is True)
+    )
+    if not enabled and not whole_doc_requested:
         return None
     query = _last_user_text(conversation)
     if not query:
@@ -1204,12 +1240,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     # preempts it; in a project chat the project sources are still retrieved top-K and
     # appended under one citation numbering. Oversized files (or no thread doc) fall
     # through to the combined top-K retrieval below.
-    thread_id = rag_scope.get("thread_id")
-    if thread_id and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope):
+    if whole_doc_requested:
         try:
             whole = whole_document_context(
                 scope_thread_id = thread_id,
-                max_tokens = _whole_doc_budget(),
+                max_tokens = _whole_doc_budget(rag_scope, conversation),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG whole-document context failed: %s", exc)
@@ -1234,7 +1269,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     text = render_sources(sources)
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
-    if text is None:
+    if text is None and enabled:
         try:
             found = search_for_autoinject(
                 query = query,
@@ -1252,6 +1287,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
             return None
         text, sources = found
+    if text is None:
+        return None
+
     import json as _json
     import uuid as _uuid
 
