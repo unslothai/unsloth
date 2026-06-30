@@ -83,11 +83,6 @@ def _module_bindings(tree: ast.Module) -> set[str]:
     return out
 
 
-# Regex fallbacks used only when ast.parse fails (e.g., the fetched source
-# uses syntax newer than the running Python). Coarser than AST: can
-# false-positive on docstrings and string literals. AST path is preferred.
-
-
 def _re_is_bound(src: str, name: str) -> bool:
     n = re.escape(name)
     patterns = (

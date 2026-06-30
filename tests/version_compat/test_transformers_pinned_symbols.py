@@ -10,6 +10,7 @@ CPU-only, no install. Anchor versions: transformers 4.57.6, 5.5.0.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import pytest
 
@@ -226,49 +227,146 @@ def test_processing_utils_unpack_importable(tag: str):
     )
 
 
-# Models: gemma3, gpt_oss, qwen3 forward signature drift.
+@dataclass(frozen = True)
+class ModelingContract:
+    name: str
+    path: str 
+    classes: tuple[str, ...]
+    rope_name: str | None = None
+    extra_bindings: tuple[str, ...] = ()
+    patch_site: str = ""
+
+
+MODELING_CONTRACTS: tuple[ModelingContract, ...] = (
+    ModelingContract(
+        name = "llama",
+        path = "src/transformers/models/llama/modeling_llama.py",
+        classes = ("LlamaAttention", "LlamaDecoderLayer", "LlamaModel", "LlamaForCausalLM"),
+        rope_name = "LlamaRotaryEmbedding",
+        # LlamaLinearScalingRotaryEmbedding is an Unsloth-side additive shim, not an upstream rebind.
+        patch_site = "unsloth/models/llama.py:FastLlamaModel.pre_patch",
+    ),
+    ModelingContract(
+        name = "qwen2",
+        path = "src/transformers/models/qwen2/modeling_qwen2.py",
+        classes = ("Qwen2Attention", "Qwen2DecoderLayer", "Qwen2Model", "Qwen2ForCausalLM"),
+        rope_name = "Qwen2RotaryEmbedding",
+        patch_site = "unsloth/models/qwen2.py:FastQwen2Model.pre_patch",
+    ),
+    ModelingContract(
+        name = "qwen3",
+        path = "src/transformers/models/qwen3/modeling_qwen3.py",
+        classes = ("Qwen3Attention", "Qwen3DecoderLayer", "Qwen3Model", "Qwen3ForCausalLM"),
+        rope_name = "Qwen3RotaryEmbedding",
+        patch_site = "unsloth/models/qwen3.py:FastQwen3Model.pre_patch",
+    ),
+    ModelingContract(
+        name = "qwen3_moe",
+        path = "src/transformers/models/qwen3_moe/modeling_qwen3_moe.py",
+        classes = (
+            "Qwen3MoeAttention",
+            "Qwen3MoeSparseMoeBlock",
+            "Qwen3MoeMLP",
+            "Qwen3MoeDecoderLayer",
+            "Qwen3MoeModel",
+            "Qwen3MoeForCausalLM",
+        ),
+        rope_name = "Qwen3MoeRotaryEmbedding",
+        patch_site = "unsloth/models/qwen3_moe.py:FastQwen3MoeModel.pre_patch",
+    ),
+    ModelingContract(
+        name = "gemma",
+        path = "src/transformers/models/gemma/modeling_gemma.py",
+        classes = ("GemmaAttention", "GemmaDecoderLayer", "GemmaModel", "GemmaForCausalLM"),
+        rope_name = "GemmaRotaryEmbedding",
+        patch_site = "unsloth/models/gemma.py:FastGemmaModel.pre_patch",
+    ),
+    ModelingContract(
+        name = "gemma2",
+        path = "src/transformers/models/gemma2/modeling_gemma2.py",
+        classes = ("Gemma2Attention", "Gemma2DecoderLayer", "Gemma2Model", "Gemma2ForCausalLM"),
+        rope_name = "Gemma2RotaryEmbedding",
+        patch_site = "unsloth/models/gemma2.py:FastGemma2Model.pre_patch",
+    ),
+    ModelingContract(
+        name = "gemma3",
+        path = "src/transformers/models/gemma3/modeling_gemma3.py",
+        classes = ("Gemma3Attention",),
+        patch_site = "early-warning: gemma3 modeling still present upstream",
+    ),
+    ModelingContract(
+        name = "gpt_oss",
+        path = "src/transformers/models/gpt_oss/modeling_gpt_oss.py",
+        classes = ("GptOssModel",),
+        patch_site = "early-warning: gpt_oss modeling still present upstream",
+    ),
+    ModelingContract(
+        name = "mistral",
+        path = "src/transformers/models/mistral/modeling_mistral.py",
+        classes = (
+            "MistralAttention",
+            "MistralDecoderLayer",
+            "MistralModel",
+            "MistralForCausalLM",
+        ),
+        rope_name = "MistralRotaryEmbedding",
+        patch_site = "unsloth/models/mistral.py:FastMistralModel.pre_patch",
+    ),
+    ModelingContract(
+        name = "cohere",
+        path = "src/transformers/models/cohere/modeling_cohere.py",
+        classes = ("CohereAttention", "CohereDecoderLayer", "CohereModel", "CohereForCausalLM"),
+        rope_name = "CohereRotaryEmbedding",
+        patch_site = "unsloth/models/cohere.py:FastCohereModel.pre_patch",
+    ),
+    ModelingContract(
+        name = "granite",
+        path = "src/transformers/models/granite/modeling_granite.py",
+        classes = (
+            "GraniteAttention",
+            "GraniteDecoderLayer",
+            "GraniteModel",
+            "GraniteForCausalLM",
+        ),
+        rope_name = "GraniteRotaryEmbedding",
+        patch_site = "unsloth/models/granite.py:FastGraniteModel.pre_patch",
+    ),
+    ModelingContract(
+        name = "falcon_h1",
+        path = "src/transformers/models/falcon_h1/modeling_falcon_h1.py",
+        classes = (
+            "FalconH1Attention",
+            "FalconH1DecoderLayer",
+            "FalconH1Model",
+            "FalconH1ForCausalLM",
+        ),
+        rope_name = "FalconH1RotaryEmbedding",
+        extra_bindings = ("FalconH1RMSNorm",),
+        patch_site = "unsloth/models/falcon_h1.py:FastFalconH1Model.pre_patch",
+    ),
+    # glm4_moe: omitted — upstream renamed Glm4MoeLiteNaiveMoe -> Glm4MoeLiteExperts on main; add with the Unsloth-side fix.
+)
 
 
 @pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
-def test_gemma3_attention_forward_present(tag: str):
-    src = fetch_text(
-        "huggingface/transformers",
-        tag,
-        "src/transformers/models/gemma3/modeling_gemma3.py",
-    )
+@pytest.mark.parametrize("contract", MODELING_CONTRACTS, ids = lambda c: c.name)
+def test_modeling_contract(tag: str, contract: ModelingContract):
+    src = fetch_text("huggingface/transformers", tag, contract.path)
     if src is None:
-        pytest.skip(f"{tag}: modeling_gemma3.py missing")
-    assert has_def(src, "Gemma3Attention", "class"), f"{tag}: class Gemma3Attention missing"
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
-def test_gpt_oss_model_forward_present(tag: str):
-    src = fetch_text(
-        "huggingface/transformers",
-        tag,
-        "src/transformers/models/gpt_oss/modeling_gpt_oss.py",
-    )
-    if src is None:
-        pytest.skip(f"{tag}: modeling_gpt_oss.py missing (legacy)")
-    assert has_def(src, "GptOssModel", "class"), f"{tag}: class GptOssModel missing"
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
-def test_qwen3_modeling_symbols_present(tag: str):
-    """unsloth/models/qwen3.py:pre_patch patches Qwen3Attention/DecoderLayer/Model/ForCausalLM and rebinds Qwen3RotaryEmbedding."""
-    src = fetch_text(
-        "huggingface/transformers",
-        tag,
-        "src/transformers/models/qwen3/modeling_qwen3.py",
-    )
-    if src is None:
-        pytest.skip(f"{tag}: modeling_qwen3.py missing")
-    for cls in ("Qwen3Attention", "Qwen3DecoderLayer", "Qwen3Model", "Qwen3ForCausalLM"):
-        assert has_def(src, cls, "class"), f"{tag}: class {cls} missing"
-    assert is_bound(src, "Qwen3RotaryEmbedding"), (
-        f"{tag}: Qwen3RotaryEmbedding missing; "
-        f"FastQwen3Model.pre_patch RoPE rebind silently no-ops"
-    )
+        pytest.skip(f"{tag}/{contract.name}: {contract.path} missing")
+    for cls in contract.classes:
+        assert has_def(src, cls, "class"), (
+            f"{tag}/{contract.name}: class {cls} missing — {contract.patch_site}"
+        )
+    if contract.rope_name is not None:
+        assert is_bound(src, contract.rope_name), (
+            f"{tag}/{contract.name}: {contract.rope_name} missing; "
+            f"{contract.patch_site} RoPE rebind silently no-ops"
+        )
+    for n in contract.extra_bindings:
+        assert is_bound(src, n), (
+            f"{tag}/{contract.name}: {n} missing — {contract.patch_site}"
+        )
 
 
 # auto_factory: unsloth#5155 _LazyAutoMapping private API.
