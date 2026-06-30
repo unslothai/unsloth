@@ -160,37 +160,6 @@ def test_auto_group_offload_when_transformer_overflows_but_companions_fit():
     assert plan.offload_policy == OFFLOAD_GROUP
 
 
-def test_legacy_cpu_offload_forces_whole_module_over_auto_group():
-    # Legacy cpu_offload=True (no explicit memory_mode) must keep its historical
-    # whole-module meaning even when auto would otherwise pick the lighter group
-    # offload on a tight card.
-    plan = plan_diffusion_memory(
-        target = _target(),
-        device_memory = _discrete(8000, 8000),
-        model_dense_mib = 40000,
-        companion_dense_mib = 1500,
-        runtime_headroom_mib = 1000,
-        base_overhead_mib = 1000,
-        explicit_offload = True,
-    )
-    assert plan.offload_policy == OFFLOAD_MODEL
-
-
-def test_explicit_balanced_mode_still_honored_over_legacy_cpu_offload():
-    # An explicit memory_mode wins over the legacy flag: balanced stays group offload.
-    plan = plan_diffusion_memory(
-        target = _target(),
-        device_memory = _discrete(8000, 8000),
-        model_dense_mib = 40000,
-        companion_dense_mib = 1500,
-        runtime_headroom_mib = 1000,
-        base_overhead_mib = 1000,
-        explicit_offload = True,
-        requested_mode = "balanced",
-    )
-    assert plan.offload_policy == OFFLOAD_GROUP
-
-
 def test_auto_model_offload_when_companions_exceed_budget():
     # The text encoder itself is too big to stay resident -> offload everything.
     plan = plan_diffusion_memory(
@@ -225,7 +194,7 @@ def test_auto_stays_resident_when_budget_unknown():
     assert any("unknown" in r for r in plan.reasons)
 
 
-# ── planner: explicit modes + cpu_offload override ────────────────────────────
+# ── planner: explicit modes ───────────────────────────────────────────────────
 
 
 def test_explicit_modes_force_policy_regardless_of_budget():
@@ -271,30 +240,6 @@ def test_fast_falls_back_to_model_offload_when_it_does_not_fit():
         requested_mode = MEMORY_MODE_FAST,
     )
     assert plan.offload_policy == OFFLOAD_MODEL
-
-
-def test_explicit_cpu_offload_overrides_resident_auto_choice():
-    # Roomy GPU -> auto would stay resident, but cpu_offload=True forces offload.
-    plan = plan_diffusion_memory(
-        target = _target(),
-        device_memory = _discrete(80000),
-        model_dense_mib = 4000,
-        runtime_headroom_mib = 2000,
-        explicit_offload = True,
-    )
-    assert plan.offload_policy == OFFLOAD_MODEL
-    assert any("explicit cpu_offload" in r for r in plan.reasons)
-
-
-def test_explicit_cpu_offload_ignored_on_cpu_target():
-    plan = plan_diffusion_memory(
-        target = _target(device = "cpu", backend = "cpu", supports_offload = False),
-        device_memory = DeviceMemory("cpu", "cpu", "system_memory", 8000, 16000),
-        model_dense_mib = 4000,
-        runtime_headroom_mib = 2000,
-        explicit_offload = True,
-    )
-    assert plan.offload_policy == OFFLOAD_NONE
 
 
 # ── snapshot ──────────────────────────────────────────────────────────────────

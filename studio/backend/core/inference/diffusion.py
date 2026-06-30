@@ -263,7 +263,6 @@ class DiffusionBackend:
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
-        cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
@@ -294,7 +293,6 @@ class DiffusionBackend:
                 base_repo = base_repo,
                 family_override = family_override,
                 hf_token = hf_token,
-                cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 text_encoder_quant = text_encoder_quant,
@@ -468,7 +466,6 @@ class DiffusionBackend:
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
-        cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
@@ -553,10 +550,9 @@ class DiffusionBackend:
                 # estimated resident size (transformer GGUF dequantised + the
                 # companion text-encoder / VAE already cached for `base`), then
                 # apply it. Computed here, after the build but before placement,
-                # because the weights are still on CPU so free VRAM is the real
-                # budget. `cpu_offload=True` stays an explicit override.
+                # because the weights are still on CPU so free VRAM is the real budget.
                 plan = self._plan_memory(
-                    target, gguf_path, gguf_filename, base, fam, memory_mode, cpu_offload
+                    target, gguf_path, gguf_filename, base, fam, memory_mode
                 )
                 # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
                 # may fall back to whole-module offload, and tiling is a no-op on a
@@ -600,7 +596,6 @@ class DiffusionBackend:
         base: str,
         fam: DiffusionFamily,
         memory_mode: Optional[str],
-        cpu_offload: bool,
     ):
         """Build the memory plan for this load: snapshot free device memory and
         estimate the model's resident footprint, then let the planner pick an
@@ -630,7 +625,6 @@ class DiffusionBackend:
             companion_dense_mib = companion_mib,
             runtime_headroom_mib = runtime_headroom,
             requested_mode = memory_mode,
-            explicit_offload = cpu_offload,
         )
 
     def generate(

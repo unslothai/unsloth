@@ -10234,7 +10234,6 @@ async def load_diffusion_model(
             base_repo = request.base_repo,
             family_override = request.family_override,
             hf_token = request.hf_token,
-            cpu_offload = request.cpu_offload,
             memory_mode = request.memory_mode,
             speed_mode = request.speed_mode,
             text_encoder_quant = request.text_encoder_quant,

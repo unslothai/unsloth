@@ -244,15 +244,13 @@ def plan_diffusion_memory(
     companion_dense_mib: Optional[int] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     requested_mode: Optional[str] = None,
-    explicit_offload: bool = False,
 ) -> MemoryPlan:
     """Pick an offload policy + VAE memory savers for the current load.
 
     ``model_dense_mib`` is the estimated resident device size of all weights
     (transformer + companion text-encoder / VAE); ``companion_dense_mib`` is just
     the companions, which stay resident under streamed (group) offload while the
-    transformer is streamed block by block. ``explicit_offload`` is the back-compat
-    ``cpu_offload=True`` request: it forces whole-module offload.
+    transformer is streamed block by block.
 
     Policy meanings, ordered by measured speed/VRAM tradeoff:
       none   - everything resident: fastest, highest VRAM.
@@ -307,20 +305,6 @@ def plan_diffusion_memory(
     else:
         policy = OFFLOAD_MODEL
         reasons.append("companions exceed budget; whole-module offload of every component")
-
-    # Legacy cpu_offload=True means whole-module offload. Honor it over the AUTO plan
-    # whenever auto chose something lighter (resident OR streamed group offload), so the
-    # flag keeps its historical meaning on a tight card instead of silently degrading to
-    # group offload. An explicit memory_mode (fast/balanced/low_vram) still wins.
-    if (
-        explicit_offload
-        and mode == MEMORY_MODE_AUTO
-        and policy != OFFLOAD_MODEL
-        and can_offload
-        and not device_memory.is_unified
-    ):
-        policy = OFFLOAD_MODEL
-        reasons.append("explicit cpu_offload requests whole-module offload")
 
     # VAE TILING decodes in spatially-overlapping chunks and blends the seams,
     # capping the decode-time VRAM spike at high resolution -- but it is LOSSY above

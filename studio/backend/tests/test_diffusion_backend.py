@@ -286,7 +286,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert backend.is_loaded is False
 
 
-def test_cpu_offload_ignored_off_cuda(fake_runtime, tmp_path):
+def test_low_vram_ignored_off_cuda(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     status = backend.load_pipeline(
@@ -294,9 +294,9 @@ def test_cpu_offload_ignored_off_cuda(fake_runtime, tmp_path):
         gguf_filename = "model.gguf",
         family_override = "z-image",
         base_repo = "base/repo",
-        cpu_offload = True,
+        memory_mode = "low_vram",
     )
-    # No CUDA in the stub, so offload is not engaged.
+    # No CUDA in the stub, so offload is not engaged regardless of the request.
     assert status["cpu_offload"] is False
 
 
@@ -877,20 +877,6 @@ def test_load_memory_mode_low_vram_engages_model_offload(fake_runtime, tmp_path,
     assert status["offload_policy"] == "model" and status["cpu_offload"] is True
     pipe = backend._state.pipe
     assert pipe.offloaded is True and pipe.moved_to is None  # offload owns placement
-
-
-def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(
-    fake_runtime, tmp_path, monkeypatch
-):
-    # cpu_offload=True with no mode: auto would stay resident (budget unknown under
-    # the stub), but the explicit flag forces whole-module offload.
-    (tmp_path / "m.gguf").write_bytes(b"x")
-    backend = DiffusionBackend()
-    _force_cuda_target(backend, monkeypatch)
-    status = backend.load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", cpu_offload = True
-    )
-    assert status["offload_policy"] == "model" and status["cpu_offload"] is True
 
 
 def test_load_speed_mode_threads_and_defaults_off(fake_runtime, tmp_path):
