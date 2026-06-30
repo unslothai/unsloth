@@ -50,6 +50,7 @@ class _FakeBackend:
     def begin_load(self, model_path, **kwargs):
         # The real backend loads on a thread; the fake completes instantly.
         self.loaded = True
+        self.last_load_kwargs = dict(kwargs)
         return {
             "loaded": True,
             "repo_id": model_path,
@@ -58,6 +59,9 @@ class _FakeBackend:
             "device": "cpu",
             "dtype": "float32",
             "cpu_offload": False,
+            "offload_policy": "none",
+            "vae_tiling": False,
+            "memory_mode": kwargs.get("memory_mode") or "auto",
         }
 
     def load_progress(self):
@@ -362,6 +366,29 @@ def test_validate_filenotfound_maps_to_400_without_eviction(client, monkeypatch)
         "/api/inference/images/load", json = {"model_path": "/models/x", "gguf_filename": "q.gguf"}
     )
     assert resp.status_code == 400
+    assert gpu_arbiter._owner is None
+
+
+def test_memory_mode_threads_through_to_backend(client, monkeypatch):
+    backend = _FakeBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "memory_mode": "low_vram"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["memory_mode"] == "low_vram"
+    assert backend.last_load_kwargs.get("memory_mode") == "low_vram"
+
+
+def test_invalid_memory_mode_returns_422_without_eviction(client):
+    # An unsupported memory_mode is rejected by the request schema (Literal), so the
+    # GPU is never acquired and no chat model is evicted.
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "memory_mode": "ultra"},
+    )
+    assert resp.status_code == 422
     assert gpu_arbiter._owner is None
 
 

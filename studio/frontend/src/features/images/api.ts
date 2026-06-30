@@ -36,7 +36,6 @@ export interface DiffusionLoadRequest {
   base_repo?: string;
   family_override?: string;
   hf_token?: string;
-  cpu_offload?: boolean;
 }
 
 export interface DiffusionGenerateRequest {

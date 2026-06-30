@@ -210,6 +210,8 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             base_repo = args.base_repo,
             family_override = args.family_override,
             hf_token = os.environ.get("HF_TOKEN"),
+            memory_mode = args.memory_mode,
+            text_encoder_quant = args.text_encoder_quant,
         )
         _wait_for_load(backend)
         _cuda_sync()
@@ -287,6 +289,8 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             "guidance": args.guidance,
             "seed": args.seed,
             "batch_size": args.batch_size,
+            "memory_mode": args.memory_mode,
+            "text_encoder_quant": args.text_encoder_quant,
         },
     }
 
@@ -434,6 +438,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type = int, default = 1)
     p.add_argument("--warmup", type = int, default = 1, help = "discarded warmup generations")
     p.add_argument("--iters", type = int, default = 3, help = "measured generations")
+    p.add_argument(
+        "--memory-mode",
+        default = None,
+        choices = ["auto", "fast", "balanced", "low_vram"],
+        help = "memory policy (default: backend auto)",
+    )
+    p.add_argument(
+        "--text-encoder-quant",
+        default = None,
+        choices = ["fp8", "nvfp4"],
+        help = "quantise the companion text encoder (fp8 or nvfp4)",
+    )
     p.add_argument(
         "--write-baseline",
         metavar = "PATH",

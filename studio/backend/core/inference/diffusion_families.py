@@ -35,6 +35,10 @@ class DiffusionFamily:
     # (~6.5e4) and produce inf -> NaN latents -> a black image. The backend
     # promotes a resolved float16 to float32 for these at load time.
     fp16_incompatible: bool = False
+    # False for families whose denoiser block doesn't compile cleanly with
+    # regional torch.compile (Z-Image). The GGUF transformer compiles cleanly, so
+    # this gates the opt-in speed-mode compile for every family.
+    supports_torch_compile: bool = True
 
 
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
@@ -77,6 +81,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("zimage", "z_image"),
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
         fp16_incompatible = True,
+        # Z-Image's denoiser block is excluded from regional torch.compile.
+        supports_torch_compile = False,
     ),
 )
 

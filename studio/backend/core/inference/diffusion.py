@@ -33,6 +33,16 @@ from .diffusion_device import (
     DiffusionDeviceTarget,
     resolve_diffusion_device_target,
 )
+from .diffusion_memory import (
+    OFFLOAD_NONE,
+    apply_memory_plan,
+    estimate_image_runtime_mib,
+    file_size_mib,
+    plan_diffusion_memory,
+    snapshot_device_memory,
+)
+from .diffusion_speed import SPEED_OFF, apply_speed_optims, restore_tf32
+from .diffusion_precision import quantize_text_encoders
 
 logger = get_logger(__name__)
 
@@ -48,6 +58,16 @@ class _LoadState:
     device: str
     dtype: str
     cpu_offload: bool
+    # The resolved memory profile (Phase 2A). Appended with defaults so older
+    # positional constructions (and the back-compat status shape) keep working.
+    offload_policy: str = OFFLOAD_NONE
+    vae_tiling: bool = False
+    memory_mode: str = "auto"
+    # The opt-in speed profile (Phase 3).
+    speed_mode: str = SPEED_OFF
+    speed_optims: tuple = ()
+    # Text-encoder quantisation actually engaged: "fp8" | "nvfp4" | None (Phase 2B/2C).
+    text_encoder_quant: Optional[str] = None
 
 
 @dataclass
@@ -243,7 +263,9 @@ class DiffusionBackend:
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
-        cpu_offload: bool = False,
+        memory_mode: Optional[str] = None,
+        speed_mode: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         fam = self.validate_load_request(
@@ -271,7 +293,9 @@ class DiffusionBackend:
                 base_repo = base_repo,
                 family_override = family_override,
                 hf_token = hf_token,
-                cpu_offload = cpu_offload,
+                memory_mode = memory_mode,
+                speed_mode = speed_mode,
+                text_encoder_quant = text_encoder_quant,
                 _load_token = token,
             ),
             daemon = True,
@@ -391,6 +415,47 @@ class DiffusionBackend:
             return 0  # repo not in cache yet
         return total
 
+    @staticmethod
+    def _cache_bytes_loaded(repo_id: str) -> int:
+        """Cached bytes of only the base-repo files the GGUF pipeline actually loads.
+
+        Walks the snapshot dir (filename -> blob symlinks) and keeps the files
+        ``_base_file_downloaded`` accepts, so the companion-memory estimate counts just
+        the VAE + text encoders. The raw ``_cache_bytes`` blob sum would also include any
+        dense ``transformer/`` shards left in the cache by a previous diffusers run, which
+        the GGUF path never loads -- inflating companion memory and pushing the auto plan
+        toward needless offload/tiling. Returns 0 when the repo isn't cached or has no
+        snapshot layout; the planner then treats companion size as unknown."""
+        from huggingface_hub import constants
+
+        snaps = Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+        total = 0
+        counted: set = set()
+        try:
+            snap_dirs = list(snaps.iterdir())
+        except OSError:
+            return 0  # repo not in cache yet
+        if not snap_dirs:
+            return 0
+        for snap in snap_dirs:
+            try:
+                for f in snap.rglob("*"):
+                    if not f.is_file():
+                        continue
+                    if not _base_file_downloaded(f.relative_to(snap).as_posix()):
+                        continue
+                    try:
+                        blob = f.resolve()
+                        if blob in counted:  # same blob shared across snapshots
+                            continue
+                        counted.add(blob)
+                        total += blob.stat().st_size
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+        return total
+
     # ── Synchronous load / generate / unload ───────────────────────────────
 
     def load_pipeline(
@@ -401,7 +466,9 @@ class DiffusionBackend:
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
-        cpu_offload: bool = False,
+        memory_mode: Optional[str] = None,
+        speed_mode: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -461,11 +528,38 @@ class DiffusionBackend:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
                 pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
 
-                use_offload = bool(cpu_offload and target.supports_model_cpu_offload)
-                if use_offload:
-                    pipe.enable_model_cpu_offload()
-                else:
-                    pipe.to(device)
+                # Opt-in speed optims run BEFORE placement (channels_last / compile
+                # must precede CPU offload). Off by default -> bit-identical output.
+                speed_applied = apply_speed_optims(
+                    pipe,
+                    target,
+                    family = fam,
+                    speed_mode = speed_mode or SPEED_OFF,
+                    logger = logger,
+                )
+                # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
+                # also before placement so the offload hooks move the smaller weights.
+                te_quant = quantize_text_encoders(
+                    pipe,
+                    target,
+                    mode = text_encoder_quant,
+                    logger = logger,
+                )
+
+                # Decide placement from MEASURED free device memory vs the model's
+                # estimated resident size (transformer GGUF dequantised + the
+                # companion text-encoder / VAE already cached for `base`), then
+                # apply it. Computed here, after the build but before placement,
+                # because the weights are still on CPU so free VRAM is the real budget.
+                plan = self._plan_memory(
+                    target, gguf_path, gguf_filename, base, fam, memory_mode
+                )
+                # apply_memory_plan returns the (policy, tiling) ACTUALLY engaged (it
+                # may fall back to whole-module offload, and tiling is a no-op on a
+                # pipeline with no tiling control), so status stays honest.
+                effective_policy, effective_tiling = apply_memory_plan(
+                    pipe, plan, device = device, logger = logger
+                )
 
                 self._state = _LoadState(
                     pipe = pipe,
@@ -474,11 +568,64 @@ class DiffusionBackend:
                     base_repo = base,
                     device = device,
                     dtype = str(dtype).replace("torch.", ""),
-                    cpu_offload = use_offload,
+                    cpu_offload = effective_policy != OFFLOAD_NONE,
+                    offload_policy = effective_policy,
+                    vae_tiling = effective_tiling,
+                    memory_mode = plan.requested_mode,
+                    speed_mode = (speed_mode or SPEED_OFF),
+                    speed_optims = tuple(k for k, v in speed_applied.items() if v),
+                    text_encoder_quant = te_quant,
                 )
 
-        logger.info("diffusion.loaded: repo=%s base=%s device=%s", repo_id, base, device)
+        logger.info(
+            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s",
+            repo_id,
+            base,
+            device,
+            effective_policy,
+            effective_tiling,
+            "; ".join(plan.reasons),
+        )
         return self.status()
+
+    def _plan_memory(
+        self,
+        target: DiffusionDeviceTarget,
+        gguf_path: str,
+        gguf_filename: Optional[str],
+        base: str,
+        fam: DiffusionFamily,
+        memory_mode: Optional[str],
+    ):
+        """Build the memory plan for this load: snapshot free device memory and
+        estimate the model's resident footprint, then let the planner pick an
+        offload policy + VAE memory savers. Kept on the backend so the cached base
+        repo (companion text-encoder / VAE) feeds the size estimate."""
+        device_memory = snapshot_device_memory(target)
+        # diffusers keeps the GGUF transformer PACKED on the device (uint8) and
+        # dequantises each layer transiently during the forward, so its resident
+        # footprint is ~the on-disk file size, NOT the dequantised dense size. (The
+        # transient per-layer dequant + activations are covered by the planner's
+        # runtime headroom + base overhead.) Measured: a 2463 MiB Q4 GGUF sits resident
+        # at ~2482 MiB.
+        transformer_resident = file_size_mib(gguf_path)
+        # The companion components (VAE + text encoders) load dense, near their on-disk
+        # size; sum only the base-repo files the GGUF pipeline actually loads (NOT any
+        # leftover dense transformer/ shards), so the plan isn't skewed toward offload.
+        companion = self._cache_bytes_loaded(base)
+        companion_mib = int(companion // (1024 * 1024)) if companion else None
+        model_dense_mib = None
+        if transformer_resident is not None:
+            model_dense_mib = transformer_resident + (companion_mib or 0)
+        runtime_headroom = estimate_image_runtime_mib(family = fam.name)
+        return plan_diffusion_memory(
+            target = target,
+            device_memory = device_memory,
+            model_dense_mib = model_dense_mib,
+            companion_dense_mib = companion_mib,
+            runtime_headroom_mib = runtime_headroom,
+            requested_mode = memory_mode,
+        )
 
     def generate(
         self,
@@ -625,6 +772,13 @@ class DiffusionBackend:
         return self.status()
 
     def _unload_locked(self) -> None:
+        # Restore TF32 before the no-state early return: a speed_mode="max" load flips
+        # process-global TF32 (in apply_speed_optims) and can then fail before _state is
+        # committed, leaving the flag on with _state still None. This is the universal
+        # handoff gate (explicit unload, an arbiter eviction for chat, and the start of
+        # the next load all route here), so it's the only place that reliably puts TF32
+        # back before the next tenant runs. No-op when no max load ever flipped it.
+        restore_tf32()
         state = self._state
         if state is None:
             return
@@ -643,6 +797,12 @@ class DiffusionBackend:
                 "device": None,
                 "dtype": None,
                 "cpu_offload": False,
+                "offload_policy": None,
+                "vae_tiling": False,
+                "memory_mode": None,
+                "speed_mode": None,
+                "speed_optims": [],
+                "text_encoder_quant": None,
             }
         return {
             "loaded": True,
@@ -652,6 +812,12 @@ class DiffusionBackend:
             "device": state.device,
             "dtype": state.dtype,
             "cpu_offload": state.cpu_offload,
+            "offload_policy": state.offload_policy,
+            "vae_tiling": state.vae_tiling,
+            "memory_mode": state.memory_mode,
+            "speed_mode": state.speed_mode,
+            "speed_optims": list(state.speed_optims),
+            "text_encoder_quant": state.text_encoder_quant,
         }
 
 
