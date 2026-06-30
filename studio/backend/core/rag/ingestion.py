@@ -26,6 +26,11 @@ _jobs_lock = threading.Lock()
 
 _EMBED_BATCH = 64  # bounds peak memory
 
+# Poll with a timeout so the generator wakes periodically to detect a gone
+# client or a terminal job whose worker died without the None sentinel.
+_SSE_POLL_SECONDS = 1.0
+_TERMINAL_JOB_STATUSES = {"completed", "failed"}
+
 
 def _sha256_file(path: str) -> str:
     h = hashlib.sha256()
@@ -261,6 +266,9 @@ def start_ingestion(
     if ext not in config.UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")
 
+    # Reclaim queues for finished jobs so the registry stays bounded.
+    _reap_finished_jobs()
+
     sha = _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
@@ -341,19 +349,86 @@ def _new_job(
     return job_id
 
 
+def _reap_finished_jobs() -> None:
+    """Drop per-job queues whose DB row already reached a terminal status.
+
+    Otherwise removed only by ``job_events`` after the ``None`` sentinel, so a
+    caller that polls ``/jobs/{id}`` instead of streaming would grow ``_jobs``
+    forever. Safe while streaming: ``job_events`` holds its queue reference.
+    """
+    with _jobs_lock:
+        job_ids = list(_jobs.keys())
+    for jid in job_ids:
+        row = get_job_status(jid)
+        if row is not None and row.get("status") in _TERMINAL_JOB_STATUSES:
+            with _jobs_lock:
+                _jobs.pop(jid, None)
+
+
 def job_events(job_id: str):
-    """Yield job events for SSE; ends when the worker signals completion."""
+    """Yield job events for SSE; ends when the worker signals completion.
+
+    Timed ``get`` so the generator can't block forever: it wakes to heartbeat,
+    to notice a disconnected client, and to stop on a terminal DB status (a hard
+    worker death that skipped the ``None`` sentinel). Drops the queue only on a
+    terminal exit, never on an early client disconnect.
+
+    It deliberately does *not* end on idle alone: a long silent stage (e.g.
+    embedding a large doc) is not a failure, and ending there would send
+    ``[DONE]`` with the row still pending, which the client treats as completion.
+    The stream ends only on a terminal status, the ``None`` sentinel, or disconnect.
+    """
     with _jobs_lock:
         q = _jobs.get(job_id)
     if q is None:
         return
-    while True:
-        event = q.get()
-        if event is None:
-            break
-        yield event
-    with _jobs_lock:
-        _jobs.pop(job_id, None)
+    terminal = False
+    try:
+        while True:
+            try:
+                event = q.get(timeout = _SSE_POLL_SECONDS)
+            except queue.Empty:
+                try:
+                    row = get_job_status(job_id)
+                except Exception:  # noqa: BLE001
+                    # A transient status read (e.g. the DB momentarily locked) must
+                    # not abort the stream: routes/rag.py would turn the raised
+                    # exception into a terminal {type: error} frame and the UI would
+                    # drop a document whose worker is still running. Heartbeat and
+                    # retry on the next poll instead.
+                    logger.warning(
+                        "job_events status read failed for %s; continuing", job_id, exc_info = True
+                    )
+                    yield {"type": "heartbeat"}
+                    continue
+                if row is None or row.get("status") in _TERMINAL_JOB_STATUSES:
+                    # Worker finished (or row gone); stop and let the client reconcile via getJob.
+                    terminal = True
+                    break
+                yield {"type": "heartbeat"}
+                continue
+            if event is None:
+                terminal = True
+                break
+            yield event
+    finally:
+        # Drop the queue once nothing more will be emitted into it: either a
+        # terminal exit, or a disconnect after the job already finished (the UI
+        # stops on the terminal event, before [DONE], so terminal is still False
+        # here -- _run writes the terminal DB status before emitting it). Keep it
+        # only while the worker is still running, so an early disconnect can
+        # reconnect and resume its events.
+        if not terminal:
+            try:
+                row = get_job_status(job_id)
+                terminal = row is None or row.get("status") in _TERMINAL_JOB_STATUSES
+            except Exception:  # noqa: BLE001
+                # Can't confirm terminality (transient DB error) -- keep the queue so
+                # a reconnect can resume rather than orphaning a live worker's events.
+                terminal = False
+        if terminal:
+            with _jobs_lock:
+                _jobs.pop(job_id, None)
 
 
 def get_job_status(job_id: str) -> dict | None:
