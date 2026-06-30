@@ -148,7 +148,10 @@ _LLAMA3_CALL_CHAIN_RE = re.compile(r"\s*;\s*([\w\.\-]+)\s*\.\s*call\s*\(")
 # of a long word run / unterminated quote (quadratic ReDoS).
 _LLAMA3_KEY_RE = re.compile(r"\w+")
 _LLAMA3_WS_RE = re.compile(r"\s*")
-_LLAMA3_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+# Accept integers, decimals (1.5, 1., .5) and scientific notation (1e-3, -2E+4).
+# The trailing ``(?![\w.])`` stops a partial match that would truncate a token like
+# ``1.2.3`` into ``1.2`` (which would then mis-parse the remainder).
+_LLAMA3_NUM_RE = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?![\w.])")
 _LLAMA3_LIT_RE = re.compile(r"true|false|null")
 
 # Mistral ``[TOOL_CALLS]`` trigger. v11+ chains them, each followed by a bare name
@@ -558,7 +561,10 @@ def _llama3_kv_value(body: str, p: int, n: int) -> tuple[Any, int | None]:
     nm = _LLAMA3_NUM_RE.match(body, p)
     if nm:
         v = nm.group(0)
-        return (float(v) if "." in v else int(v)), nm.end() - p
+        # Scientific notation (1e-3, -2E+4, 0.5e2) and decimals decode as float; a
+        # bare integer stays int. ``"." in v`` alone missed the exponent forms and
+        # truncated them to the mantissa (1e-3 -> 1).
+        return (float(v) if any(c in v for c in ".eE") else int(v)), nm.end() - p
     lm = _LLAMA3_LIT_RE.match(body, p)
     if lm:
         return {"true": True, "false": False, "null": None}[lm.group(0)], lm.end() - p

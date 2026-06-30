@@ -1916,6 +1916,96 @@ def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
     assert all('{"name"' not in t for t in content_texts), content_texts
 
 
+def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkeypatch):
+    """A truncated ordinary JSON answer whose name is NOT an enabled tool
+    (``{"name":"Alice","parameters":{"age": 30`` cut off) must still be shown. The
+    end-of-stream resolver and the no-tool DRAINING fallback previously routed any
+    ``{...,"name",...}`` to suppression regardless of the name, dropping the visible
+    answer; both are now gated on the enabled tool names."""
+
+    truncated = '{"name": "Alice", "parameters": {"age": 30'
+    stream = _streamed_content(truncated)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "give json"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("Alice" in t for t in content_texts), content_texts
+
+
+def test_gguf_truncated_enabled_name_json_is_still_suppressed(monkeypatch):
+    """Counterpart guard: a truncated ENABLED-tool bare call (``web_search``) cut off
+    mid-JSON still must NOT leak -- the gate only spares disabled / non-tool names."""
+
+    truncated = '{"name": "web_search", "parameters": {"query": "weather in S'
+    stream = _streamed_content(truncated)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no complete call")),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("web_search" not in t for t in content_texts), content_texts
+    assert all('{"name"' not in t for t in content_texts), content_texts
+
+
+def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
+    """An oversized (> _MAX_BARE_JSON_BUFFER) still-open JSON answer whose name is
+    not an enabled tool must stream as content, not be drained as a phantom call.
+    The oversized branch previously gated only on the presence of a ``"name"`` key."""
+
+    cap = 16384
+    big = "A" * (cap + 5000)
+    answer = '{"name":"Alice","parameters":{"bio":"' + big  # never closes
+    first_stream = [_sse({"content": answer[i : i + 2000]}) for i in range(0, len(answer), 2000)]
+    first_stream.append(_done())
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "long json"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("Alice" in t for t in content_texts), content_texts[:1]
+
+
 def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
     """A terminal SSE chunk carrying llama-server's ``usage`` block, the way the
     real server reports it on the final chunk of a completion."""

@@ -253,6 +253,17 @@ class TestParserLinearity:
             "z": None,
         }
 
+    def test_llama3_call_scientific_notation_args_parse(self):
+        # The numeric kwarg regex matched only the mantissa, so scientific notation
+        # was truncated to its leading digits (1e-3 -> 1) and the call executed with
+        # the wrong value. Exponent and decimal forms must decode as float.
+        text = "<|python_tag|>calc.call(x=1e-3, y=-2E+4, z=0.5e2, n=42)"
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args == {"x": 1e-3, "y": -2e4, "z": 50.0, "n": 42}
+        assert isinstance(args["n"], int) and isinstance(args["x"], float)
+
     def test_mistral_unclosed_array_recovers_top_level_objects(self):
         text = (
             '[TOOL_CALLS] [{"name":"a","arguments":{"k":1}},'
