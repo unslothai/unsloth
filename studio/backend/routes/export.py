@@ -343,6 +343,8 @@ async def export_gguf(
     """
     try:
         backend = get_export_backend()
+        # A custom path wins; otherwise the imatrix toggle requests the upstream auto-download.
+        imatrix_file = request.imatrix_path or (True if request.imatrix else None)
         success, message, output_path = await asyncio.to_thread(
             backend.export_gguf,
             save_directory = request.save_directory,
@@ -350,6 +352,7 @@ async def export_gguf(
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
             hf_token = request.hf_token,
+            imatrix_file = imatrix_file,
         )
 
         if not success:

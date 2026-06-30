@@ -119,6 +119,10 @@ def get_connection() -> sqlite3.Connection:
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    # Wait for a lock instead of erroring immediately: a figure/scan-heavy ingest can
+    # hold its connection across many seconds of vision calls, and a concurrent ingest
+    # or autoinject read would otherwise hit "database is locked".
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)

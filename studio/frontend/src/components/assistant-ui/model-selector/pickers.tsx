@@ -1114,6 +1114,17 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
+function localPathTooltip(name: string, path: string): ReactNode {
+  return (
+    <>
+      <span className="block break-words">{name}</span>
+      <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+        {path}
+      </span>
+    </>
+  );
+}
+
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so
  * callers gate visibility on the host being a Mac. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
@@ -2389,7 +2400,11 @@ export function HubModelPicker({
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search Unsloth models"
+            placeholder={
+              section === "downloaded"
+                ? "Search local models"
+                : "Search Unsloth models"
+            }
             data-model-picker-search-input={true}
             className="field-soft h-9 border-0 pl-8 pr-8"
           />
@@ -2928,6 +2943,10 @@ export function HubModelPicker({
                           <ModelRow
                             label={m.model_id ?? m.display_name}
                             meta={isGguf ? "GGUF" : "Local"}
+                            tooltipText={localPathTooltip(
+                              m.model_id ?? m.display_name,
+                              m.path,
+                            )}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
@@ -3017,6 +3036,10 @@ export function HubModelPicker({
                           <ModelRow
                             label={m.model_id ?? m.display_name}
                             meta={isGguf ? "GGUF" : "Local"}
+                            tooltipText={localPathTooltip(
+                              m.model_id ?? m.display_name,
+                              m.path,
+                            )}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
@@ -3098,6 +3121,10 @@ export function HubModelPicker({
                           <ModelRow
                             label={m.model_id ?? m.display_name}
                             meta={isGguf ? "GGUF" : "Local"}
+                            tooltipText={localPathTooltip(
+                              m.model_id ?? m.display_name,
+                              m.path,
+                            )}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
@@ -3424,7 +3451,7 @@ export function HubModelPicker({
           <button
             type="button"
             onClick={onEject}
-            className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
+            className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
             title="Eject model"
           >
             <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
