@@ -2611,6 +2611,15 @@ export function requestVoiceResume() {
   _voiceResume?.();
 }
 
+// Silence debounce: how long the transcript must stop growing before we treat
+// the user as done and send. Reset on every transcript update so a mid-sentence
+// pause never clips speech; only a real pause this long auto-sends.
+const VOICE_SILENCE_DEBOUNCE_MS = 1500;
+// Barge-in guard: minimum transcript length before an in-progress utterance
+// interrupts TTS. Filters out the one or two stray characters the mic picks up
+// from the model's own voice through the speakers, so TTS doesn't barge itself.
+const VOICE_BARGE_IN_MIN_CHARS = 2;
+
 const VoiceEngine: FC = () => {
   const aui = useAui();
   const [voiceMode, setVoiceModeState] = useState(_voiceMode);
@@ -2779,8 +2788,13 @@ const VoiceEngine: FC = () => {
     if (dictationStatusType !== "running") return;
     if (voiceModeRef.current !== "active") return;
 
-    // Barge-in: new non-empty transcript fragment while TTS is playing → interrupt immediately.
-    if (isSpeakingRef.current && dictationTranscript.trim()) {
+    // Barge-in: a long-enough transcript while TTS is playing means the user is
+    // talking over the model → interrupt immediately. The min-length guard keeps
+    // the mic's pickup of the model's own voice from barging the model itself.
+    if (
+      isSpeakingRef.current &&
+      dictationTranscript.trim().length >= VOICE_BARGE_IN_MIN_CHARS
+    ) {
       stop();
     }
 
@@ -2804,7 +2818,7 @@ const VoiceEngine: FC = () => {
         // re-checks it.
         setTimeout(() => resumeListen(), 0);
       }
-    }, 1500);
+    }, VOICE_SILENCE_DEBOUNCE_MS);
 
     return () => {
       if (silenceTimerRef.current) {
