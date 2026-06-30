@@ -1450,8 +1450,7 @@ def run(
             typer.echo(f"Local:   {base_url}")
         else:
             typer.echo(f"URL:     {base_url}")
-            if _cf_url:
-                typer.echo(f"Secure link access via Cloudflare: {_cf_url}")
+            _emit_run_cloudflare_notice(run_mod, host, display_host, actual_port, secure)
         if context_length_line:
             typer.echo(context_length_line.strip())
         typer.echo(f"API Key: {api_key}")
