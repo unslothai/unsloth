@@ -182,6 +182,25 @@ function pickBestLoraForBase(
   return partial ?? sorted[0] ?? null;
 }
 
+function normalizeLoraPath(value: string | null | undefined): string {
+  return value?.trim().replace(/[/\\]+$/, "").toLowerCase() ?? "";
+}
+
+function findLoraByPath(
+  loras: LoraCandidate[],
+  loraPath: string | null,
+): LoraCandidate | null {
+  const normalized = normalizeLoraPath(loraPath);
+  if (!normalized) return null;
+  return (
+    loras.find(
+      (lora) =>
+        lora.exportType === "lora" &&
+        normalizeLoraPath(lora.id) === normalized,
+    ) ?? null
+  );
+}
+
 function messageHasImage(message: MessageRecord): boolean {
   const contentParts = Array.isArray(message.content) ? message.content : [];
   if (contentParts.some((part) => part.type === "image")) {
@@ -2291,7 +2310,9 @@ export function ChatPage({
         if (canceled) return;
 
         const state = useChatRuntimeStore.getState();
-        const targetLora = pickBestLoraForBase(state.loras, handoff.baseModel);
+        const targetLora =
+          findLoraByPath(state.loras, handoff.loraPath) ??
+          pickBestLoraForBase(state.loras, handoff.baseModel);
         if (targetLora) {
           console.info("[chat-handoff] loading lora", {
             id: targetLora.id,
