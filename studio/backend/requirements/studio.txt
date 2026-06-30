@@ -22,4 +22,5 @@ fastmcp>=3.0.2
 # extras-no-deps.txt; these add the lexical+dense store and document parsing.
 sqlite-vec==0.1.9
 pymupdf==1.27.2.3
+pymupdf4llm==1.27.2.3
 python-docx==1.2.0

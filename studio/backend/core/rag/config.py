@@ -27,6 +27,11 @@ UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 # + vision work at ingest. 0 disables the cap. Default 200 MB.
 MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
+# Extract PDF text as layout-aware Markdown (pymupdf4llm) instead of flat text, so
+# tables, headings and lists survive into chunks and retrieval. Falls back to plain
+# PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.
+PDF_MARKDOWN = os.environ.get("RAG_PDF_MARKDOWN", "1") == "1"
+
 # Figure captioning via the loaded vision model: detected figures are transcribed +
 # described so they become searchable. On by default, a no-op without a vision model;
 # the chat's "Describe figures & charts" toggle overrides it per upload.

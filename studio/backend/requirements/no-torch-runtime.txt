@@ -73,4 +73,5 @@ pillow
 # this file installs --no-deps; without them Studio runs with RAG disabled.
 sqlite-vec==0.1.9
 pymupdf==1.27.2.3
+pymupdf4llm==1.27.2.3
 python-docx==1.2.0

@@ -15,6 +15,8 @@ import os
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from . import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +69,24 @@ def _html(raw: str) -> list[Page]:
     return [_page("\n".join(parser.out), 1)]
 
 
+def _pdf_markdown(doc) -> list[str] | None:
+    """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
+    i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
+    page count does not line up, so the caller falls back to plain PyMuPDF text."""
+    try:
+        import pymupdf4llm
+    except Exception:
+        return None
+    try:
+        chunks = pymupdf4llm.to_markdown(doc, page_chunks = True, show_progress = False)
+    except Exception:  # noqa: BLE001 - never let Markdown extraction break ingestion
+        logger.warning("pymupdf4llm extraction failed; using plain text", exc_info = True)
+        return None
+    if not isinstance(chunks, list) or len(chunks) != doc.page_count:
+        return None
+    return [str(c.get("text") or "") for c in chunks]
+
+
 def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
     import fitz  # PyMuPDF
 
@@ -74,8 +94,11 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
     images: list[ParsedImage] = []
     doc = fitz.open(path)
     try:
+        md = _pdf_markdown(doc) if config.PDF_MARKDOWN else None
         for i, page in enumerate(doc):
-            text = page.get_text("text") or ""
+            # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval);
+            # fall back to plain text when Markdown is off, unavailable, or empty here.
+            text = (md[i] if md else "") or page.get_text("text") or ""
             pages.append(_page(text, i + 1))
             if want_images:
                 for img in page.get_images(full = True):
