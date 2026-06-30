@@ -1512,6 +1512,7 @@ exit 0
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
         }
+        try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
         # Trust neither uv's exit code nor a half-baked Scripts\python.exe.
         function Test-VenvPythonReady {
             param(
@@ -1542,16 +1543,11 @@ exit 0
                 Write-Host "[ERROR] Rebuilt virtual environment is still unusable" -ForegroundColor Red
                 return (Exit-InstallFailure "Rebuilt virtual environment is still unusable" $venvExit)
             }
+            try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
         }
     } else {
         step "venv" "using migrated environment"
         substep "$VenvDir"
-    }
-
-    # Mark the freshly-created venv as Studio-owned so a partial install can be
-    # repaired by re-running install.ps1; the env-mode deletion guard above
-    # accepts this marker as the primary sentinel.
-    if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
     }
 
