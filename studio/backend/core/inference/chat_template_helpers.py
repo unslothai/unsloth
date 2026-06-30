@@ -188,14 +188,27 @@ def render_with_native_template_fallback(
         return formatted_prompt
     if apply_fn is None:
         apply_fn = apply_chat_template_for_generation
-    probe_no_tools = apply_fn(
-        tokenizer,
-        messages,
-        tools = None,
-        enable_thinking = enable_thinking,
-        reasoning_effort = reasoning_effort,
-        preserve_thinking = preserve_thinking,
-    )
+    # The no-tools probe re-renders the live template with ``tools=None`` to detect
+    # whether it dropped the schema. A template that *requires* tools can raise here;
+    # that is not a reason to discard the already-valid tools prompt, so on any error
+    # keep ``formatted_prompt`` (the transformers path would otherwise fall back to
+    # manual formatting and lose the schema, and the MLX path would let it escape).
+    try:
+        probe_no_tools = apply_fn(
+            tokenizer,
+            messages,
+            tools = None,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
+    except Exception as exc:
+        logger.warning(
+            "No-tools probe failed for '%s'; keeping the existing tools prompt: %s",
+            active_model_name,
+            exc,
+        )
+        return formatted_prompt
     if formatted_prompt != probe_no_tools:
         return formatted_prompt  # template already emits the tools schema
     native_prompt = render_native_template(

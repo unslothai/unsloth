@@ -3178,9 +3178,12 @@ def test_render_with_native_template_returns_render_only_when_tools_emitted():
     # an override drops the tools schema. It must return the rendered prompt only
     # when the native template actually emits tools (render differs with vs
     # without tools); otherwise None, so the caller keeps the override render.
+    # Tests the dependency-light helper directly. Importing InferenceBackend pulls in
+    # unsloth, which reads optional ``vllm`` package metadata that need not be present
+    # in a backend/test environment; the helper itself has no such dependency.
     from types import SimpleNamespace
 
-    from core.inference.inference import InferenceBackend
+    from core.inference.chat_template_helpers import render_native_template
 
     messages = [{"role": "user", "content": "hi"}]
     tools = [{"type": "function", "function": {"name": "web_search"}}]
@@ -3196,20 +3199,24 @@ def test_render_with_native_template_returns_render_only_when_tools_emitted():
     def ignoring(tokenizer, msgs, *, tools, **_kw):
         return "".join(m["content"] for m in msgs)  # never reflects tools
 
-    emit_self = SimpleNamespace(active_model_name = "x", _apply_chat_template_for_generation = emitting)
-    out = InferenceBackend._render_with_native_template(
-        emit_self, dict(model_info), messages, tools, None, None, False
+    out = render_native_template(
+        model_info = dict(model_info),
+        active_model_name = "x",
+        messages = messages,
+        tools = tools,
+        apply_fn = emitting,
     )
     assert out == "hi|TOOLS=web_search"
     # The native template must be restored on the live tokenizer after probing.
     assert model_info["tokenizer"].chat_template == "OVERRIDE"
 
-    ignore_self = SimpleNamespace(
-        active_model_name = "x", _apply_chat_template_for_generation = ignoring
-    )
     assert (
-        InferenceBackend._render_with_native_template(
-            ignore_self, dict(model_info), messages, tools, None, None, False
+        render_native_template(
+            model_info = dict(model_info),
+            active_model_name = "x",
+            messages = messages,
+            tools = tools,
+            apply_fn = ignoring,
         )
         is None
     )
@@ -3217,8 +3224,12 @@ def test_render_with_native_template_returns_render_only_when_tools_emitted():
     # No tokenizer and no processor -> return None instead of an AttributeError.
     no_tok = {"native_chat_template": "TPL"}
     assert (
-        InferenceBackend._render_with_native_template(
-            emit_self, no_tok, messages, tools, None, None, False
+        render_native_template(
+            model_info = no_tok,
+            active_model_name = "x",
+            messages = messages,
+            tools = tools,
+            apply_fn = emitting,
         )
         is None
     )
@@ -3230,7 +3241,7 @@ def test_render_with_native_template_does_not_mutate_shared_tokenizer():
     # could otherwise render with the wrong template.
     from types import SimpleNamespace
 
-    from core.inference.inference import InferenceBackend
+    from core.inference.chat_template_helpers import render_native_template
 
     shared = SimpleNamespace(chat_template = "OVERRIDE")
     seen = []
@@ -3240,16 +3251,13 @@ def test_render_with_native_template_does_not_mutate_shared_tokenizer():
         body = "".join(m["content"] for m in msgs)
         return body + ("|T" if tools else "")
 
-    self_ns = SimpleNamespace(active_model_name = "x", _apply_chat_template_for_generation = capture)
     model_info = {"native_chat_template": "TPL", "tokenizer": shared}
-    InferenceBackend._render_with_native_template(
-        self_ns,
-        model_info,
-        [{"role": "user", "content": "hi"}],
-        [{"type": "function", "function": {"name": "web_search"}}],
-        None,
-        None,
-        False,
+    render_native_template(
+        model_info = model_info,
+        active_model_name = "x",
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        apply_fn = capture,
     )
     # Rendering happened on a copy, and the shared tokenizer stayed "OVERRIDE"
     # throughout (never the temporary "TPL").
@@ -3265,7 +3273,7 @@ def test_native_template_loads_from_base_model_for_lora(monkeypatch):
 
     import transformers
 
-    from core.inference.inference import InferenceBackend
+    from core.inference.chat_template_helpers import render_native_template
 
     captured = {}
 
@@ -3279,21 +3287,16 @@ def test_native_template_loads_from_base_model_for_lora(monkeypatch):
         body = "".join(m["content"] for m in msgs)
         return body + ("|T" if tools else "")
 
-    self_ns = SimpleNamespace(
-        active_model_name = "adapter/path", _apply_chat_template_for_generation = emitting
-    )
     model_info = {
         "base_model": "base/model-id",
         "tokenizer": SimpleNamespace(chat_template = "OVERRIDE"),
     }
-    out = InferenceBackend._render_with_native_template(
-        self_ns,
-        model_info,
-        [{"role": "user", "content": "hi"}],
-        [{"type": "function", "function": {"name": "web_search"}}],
-        None,
-        None,
-        False,
+    out = render_native_template(
+        model_info = model_info,
+        active_model_name = "adapter/path",
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        apply_fn = emitting,
     )
     assert captured["source"] == "base/model-id"
     assert out == "hi|T"
@@ -3376,6 +3379,34 @@ def test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted():
         apply_fn = emitting,
     )
     assert passthrough == "hi"
+
+
+def test_render_with_native_template_fallback_keeps_prompt_when_no_tools_probe_raises():
+    # A template that REQUIRES tools can raise on the no-tools probe. That must not
+    # discard the already-valid tools prompt (transformers would fall back to manual
+    # formatting and drop the schema; MLX would let the exception escape).
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_with_native_template_fallback
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+
+    def raises_without_tools(tokenizer, msgs, *, tools, **_kw):
+        if not tools:
+            raise RuntimeError("template requires tools")
+        return "".join(m["content"] for m in msgs) + "|T"
+
+    out = render_with_native_template_fallback(
+        formatted_prompt = "hi|T",
+        tokenizer = SimpleNamespace(),
+        model_info = {"native_chat_template": "TPL", "tokenizer": SimpleNamespace()},
+        active_model_name = "x",
+        messages = messages,
+        tools = tools,
+        apply_fn = raises_without_tools,
+    )
+    assert out == "hi|T", out
 
 
 def test_truncated_bare_json_at_eof_is_not_leaked():
