@@ -70,10 +70,14 @@ _TOOL_OPEN_XML_TAIL_PATS = [
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
-_TOOL_ALL_PATS = _TOOL_CLOSED_PATS + _TOOL_OPEN_XML_TAIL_PATS + [
-    re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
-    re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*(?:\{.*)?$", re.DOTALL),
-]
+_TOOL_ALL_PATS = (
+    _TOOL_CLOSED_PATS
+    + _TOOL_OPEN_XML_TAIL_PATS
+    + [
+        re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
+        re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*(?:\{.*)?$", re.DOTALL),
+    ]
+)
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")

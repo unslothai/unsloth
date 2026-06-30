@@ -486,7 +486,9 @@ def test_incomplete_xml_call_with_literal_think_in_arg_is_stripped():
     assert _strip(text, final = True) == "before"
 
     # A real reasoning block with no tool call is still preserved verbatim.
-    assert _strip("answer <think>real</think> done", final = True) == "answer <think>real</think> done"
+    assert (
+        _strip("answer <think>real</think> done", final = True) == "answer <think>real</think> done"
+    )
 
     # A complete call followed by a real reasoning block: call stripped, block kept.
     mixed = '<tool_call>{"name":"a","arguments":{}}</tool_call> mid <think>r</think> end'

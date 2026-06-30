@@ -208,7 +208,9 @@ class TestParser:
         # serializations the PR added, not only the XML forms.
         assert _detect_render_html_tool_start('[TOOL_CALLS]render_html{"code":"<html>"}')
         assert _detect_render_html_tool_start('[TOOL_CALLS]render_html[ARGS]{"code":"x"}')
-        assert _detect_render_html_tool_start('[TOOL_CALLS] [{"name":"render_html","arguments":{}}]')
+        assert _detect_render_html_tool_start(
+            '[TOOL_CALLS] [{"name":"render_html","arguments":{}}]'
+        )
         assert _detect_render_html_tool_start('render_html[ARGS]{"code":"<html>"}')
         # A different first tool (or a prose mention with no JSON body) must not fire.
         assert not _detect_render_html_tool_start('[TOOL_CALLS]web_search{"q":"x"}')
