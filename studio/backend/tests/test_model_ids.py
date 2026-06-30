@@ -8,7 +8,7 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from core.inference.model_ids import public_model_id  # noqa: E402
+from core.inference.model_ids import model_id_matches, public_model_id  # noqa: E402
 
 
 def test_local_gguf_path_becomes_clean_stem():
@@ -51,3 +51,12 @@ def test_dotted_repo_id_not_mistaken_for_relative_path():
     # A leading dot that is not ./ or ../ is an ordinary clean name.
     assert public_model_id(".hidden-model") == ".hidden-model"
     assert public_model_id("org/.config") == "org/.config"
+
+
+def test_matches_clean_and_legacy():
+    path = "/srv/models/Qwen3-Q4.gguf"
+    assert model_id_matches("Qwen3-Q4", path)  # clean public id
+    assert model_id_matches(path, path)  # legacy raw path
+    assert not model_id_matches("other", path)
+    assert not model_id_matches(None, path)
+    assert not model_id_matches("x", None)

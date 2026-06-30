@@ -3,7 +3,10 @@ use super::version::{
     backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
+
+use log::info;
 use std::time::Duration;
+use std::time::Instant;
 
 #[derive(Debug, Deserialize)]
 struct DesktopOwnerHealth {
@@ -24,6 +27,7 @@ pub(super) struct BackendHealth {
 }
 
 pub(super) async fn backend_health(client: &reqwest::Client, port: u16) -> Option<BackendHealth> {
+    let started = Instant::now();
     let url = format!("http://127.0.0.1:{port}/api/health");
     let response = client.get(url).send().await.ok()?;
     if !response.status().is_success() {
@@ -40,6 +44,14 @@ pub(super) async fn backend_health(client: &reqwest::Client, port: u16) -> Optio
         .and_then(|v| v.as_str())
         .map(|s| s == "Unsloth UI Backend")
         .unwrap_or(false);
+    info!(
+        "Desktop preflight: health probe on port {} healthy={} service={} in {}ms",
+        port,
+        healthy,
+        service,
+        started.elapsed().as_millis()
+    );
+
     if !healthy || !service {
         return None;
     }
