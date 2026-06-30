@@ -35,7 +35,7 @@ def _extract_venv_bootstrap_body(source: str) -> str:
     end = None
     for idx, line in enumerate(lines):
         stripped = line.strip()
-        if stripped == 'if (-not (Test-Path -LiteralPath $VenvPython)) {':
+        if stripped == "if (-not (Test-Path -LiteralPath $VenvPython)) {":
             start = idx + 1
             continue
         if start is not None and stripped == "} else {":
@@ -59,15 +59,17 @@ def _write_uv_stub(stub_dir: Path, mode: str) -> Path:
             """
         )
     elif mode == "fail":
-        body = "@echo off\r\n>>\"%UV_LOG%\" echo %*\r\nexit /b 7\r\n"
+        body = '@echo off\r\n>>"%UV_LOG%" echo %*\r\nexit /b 7\r\n'
     else:
-        body = "@echo off\r\n>>\"%UV_LOG%\" echo %*\r\nexit /b 0\r\n"
+        body = '@echo off\r\n>>"%UV_LOG%" echo %*\r\nexit /b 0\r\n'
     with uv_path.open("w", encoding = "utf-8", newline = "") as fh:
         fh.write(body)
     return uv_path
 
 
-def _run_bootstrap(tmp_path: Path, mode: str, source_text: str) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+def _run_bootstrap(
+    tmp_path: Path, mode: str, source_text: str
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     if PWSH is None:
         pytest.skip("pwsh not available")
 
@@ -168,7 +170,10 @@ def _run_bootstrap(tmp_path: Path, mode: str, source_text: str) -> tuple[subproc
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 def test_install_ps1_rechecks_uv_success_before_continuing():
     body = _extract_venv_bootstrap_body(_source())
-    assert "uv venv returned success but left an unusable venv; rebuilding with python -m venv..." in body
+    assert (
+        "uv venv returned success but left an unusable venv; rebuilding with python -m venv..."
+        in body
+    )
     assert "& $DetectedPython.Path -m venv $VenvDir" in body
 
 
