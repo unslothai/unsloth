@@ -11,6 +11,7 @@
 import { en } from "./locales/en.ts";
 import { zhCN } from "./locales/zh-CN.ts";
 import { ptBR } from "./locales/pt-br.ts";
+import { ja } from "./locales/ja.ts";
 
 type Tree = { readonly [k: string]: string | Tree };
 
@@ -90,7 +91,8 @@ function checkExtras(
 
 const overlays: Record<string, Tree> = { 
   "zh-CN": zhCN as unknown as Tree,
-  "pt-BR": ptBR as unknown as Tree
+  "pt-BR": ptBR as unknown as Tree,
+  "ja": ja as unknown as Tree,
 };
 let anyError = false;
 

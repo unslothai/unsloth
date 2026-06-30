@@ -5,12 +5,14 @@ import { getLocale } from "./locale-store";
 import { en } from "./locales/en";
 import { zhCN } from "./locales/zh-CN";
 import { ptBR } from "./locales/pt-br";
+import { ja } from "./locales/ja";
 import type { InterpolationValues, MessageKey } from "./types";
 
 export const LOCALES = {
   en: { label: "English", nativeLabel: "English" },
   "zh-CN": { label: "Chinese (Simplified)", nativeLabel: "简体中文" },
   "pt-BR": { label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)" },
+  "ja": { label: "Japanese", nativeLabel: "日本語" },
 } as const;
 
 export type Locale = keyof typeof LOCALES;
@@ -19,7 +21,8 @@ export type TranslationKey = MessageKey<typeof en>;
 export const messages = { 
   en, 
   "zh-CN": zhCN,
-  "pt-BR": ptBR
+  "pt-BR": ptBR,
+  ja
 } as const;
 
 const PLACEHOLDER_PATTERN = /\{([a-zA-Z0-9_]+)\}/g;
