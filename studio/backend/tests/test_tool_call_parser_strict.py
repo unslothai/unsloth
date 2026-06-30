@@ -354,7 +354,9 @@ def test_strip_leading_bare_json_call_gated_on_enabled_tool_names():
     assert strip_leading_bare_json_call(alice, {"web_search"}) == alice
     # Enabled tool -> a real call, stripped (trailing prose kept).
     assert (
-        strip_leading_bare_json_call('{"name":"web_search","parameters":{"q":1}} hi', {"web_search"})
+        strip_leading_bare_json_call(
+            '{"name":"web_search","parameters":{"q":1}} hi', {"web_search"}
+        )
         == "hi"
     )
 

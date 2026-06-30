@@ -607,9 +607,7 @@ def run_safetensors_tool_loop(
                     # leaking the raw fragment; a plain JSON answer (no ``"name"``)
                     # is left untouched by the helper.
                     if tool_protocol_active:
-                        _drain_text = strip_leading_bare_json_call(
-                            _drain_text, _enabled_tool_names
-                        )
+                        _drain_text = strip_leading_bare_json_call(_drain_text, _enabled_tool_names)
                     if _drain_text:
                         yield {"type": "content", "text": _drain_text}
                 if provisional_render_html_started and not provisional_resolved:
