@@ -36,10 +36,8 @@ from .diffusion_device import (
 from .diffusion_memory import (
     OFFLOAD_NONE,
     apply_memory_plan,
-    estimate_gguf_dense_mib,
     estimate_image_runtime_mib,
     file_size_mib,
-    infer_gguf_quant_label,
     plan_diffusion_memory,
     snapshot_device_memory,
 )
@@ -538,7 +536,6 @@ class DiffusionBackend:
                 speed_applied = apply_speed_optims(
                     pipe,
                     target,
-                    is_gguf = bool(gguf_filename),
                     family = fam,
                     speed_mode = speed_mode or SPEED_OFF,
                     logger = logger,
@@ -610,23 +607,21 @@ class DiffusionBackend:
         offload policy + VAE memory savers. Kept on the backend so the cached base
         repo (companion text-encoder / VAE) feeds the size estimate."""
         device_memory = snapshot_device_memory(target)
-        # The transformer dequantises to the compute dtype; a float32 load (Z-Image
-        # pre-Ampere, CPU/older-macOS) is 4 bytes/elt, not the bf16/fp16 2 bytes the
-        # estimate assumes, so size it by the effective dtype to avoid undercounting.
-        dtype_bytes = 4 if "float32" in str(target.dtype) else 2
-        transformer_dense = estimate_gguf_dense_mib(
-            file_size_mib(gguf_path),
-            infer_gguf_quant_label(gguf_filename),
-            compute_dtype_bytes = dtype_bytes,
-        )
-        # The companion components (VAE + text encoders) load near their on-disk
+        # diffusers keeps the GGUF transformer PACKED on the device (uint8) and
+        # dequantises each layer transiently during the forward, so its resident
+        # footprint is ~the on-disk file size, NOT the dequantised dense size. (The
+        # transient per-layer dequant + activations are covered by the planner's
+        # runtime headroom + base overhead.) Measured: a 2463 MiB Q4 GGUF sits resident
+        # at ~2482 MiB.
+        transformer_resident = file_size_mib(gguf_path)
+        # The companion components (VAE + text encoders) load dense, near their on-disk
         # size; sum only the base-repo files the GGUF pipeline actually loads (NOT any
         # leftover dense transformer/ shards), so the plan isn't skewed toward offload.
         companion = self._cache_bytes_loaded(base)
         companion_mib = int(companion // (1024 * 1024)) if companion else None
         model_dense_mib = None
-        if transformer_dense is not None:
-            model_dense_mib = transformer_dense + (companion_mib or 0)
+        if transformer_resident is not None:
+            model_dense_mib = transformer_resident + (companion_mib or 0)
         runtime_headroom = estimate_image_runtime_mib(family = fam.name)
         return plan_diffusion_memory(
             target = target,

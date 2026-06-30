@@ -193,58 +193,6 @@ def file_size_mib(path: Any) -> Optional[int]:
         return None
 
 
-def infer_gguf_quant_label(filename: Optional[str]) -> Optional[str]:
-    """Pull a quant tag (Q4_K_M, Q8_0, BF16, ...) out of a GGUF filename."""
-    if not filename:
-        return None
-    from pathlib import Path
-
-    stem = Path(filename).name
-    if stem.lower().endswith(".gguf"):
-        stem = stem[:-5]
-    parts = [p.upper() for p in stem.replace("-", "_").split("_") if p]
-    for index, part in enumerate(parts):
-        if part in ("BF16", "F16", "FP16", "FP8", "Q8", "Q6", "Q5", "Q4", "Q3", "Q2"):
-            suffix = parts[index + 1 :]
-            # Quant names carry either a K-family suffix (Q4_K_M) or a legacy
-            # numeric one (Q8_0, Q5_1); keep up to two suffix tokens.
-            if suffix and suffix[0] in ("K", "M", "S", "L", "XS", "XXS", "0", "1"):
-                return "_".join([part] + suffix[:2])
-            return part
-        if part.startswith("IQ") or part.startswith("UD"):
-            return "_".join(parts[index : index + 3])
-    return None
-
-
-def estimate_gguf_dense_mib(
-    storage_mib: Optional[int], quant: Optional[str], *, compute_dtype_bytes: int = 2
-) -> Optional[int]:
-    """Approximate the dequantised (device) size of a GGUF from its on-disk size
-    and quant label. The multipliers assume a 2-byte compute dtype (bf16/fp16);
-    ``compute_dtype_bytes`` scales them, so a float32 (4-byte) load -- Z-Image on
-    pre-Ampere CUDA, or the CPU/older-macOS fallback -- doubles the estimate. A
-    4-bit file roughly quadruples once unpacked; higher-bit quants expand less.
-    The quant label may carry an Unsloth Dynamic ``UD`` prefix (e.g. UD_IQ2_XXS);
-    match on the real bit-width token, never the ``UD`` family marker."""
-    if storage_mib is None:
-        return None
-    q = (quant or "").upper()
-    scale = compute_dtype_bytes / 2
-    if any(t in q for t in ("BF16", "F16", "FP16")):
-        return int(storage_mib * scale)
-    if "FP8" in q or "Q8" in q:
-        return int(storage_mib * 2.0 * scale)
-    if "Q6" in q:
-        return int(storage_mib * 2.8 * scale)
-    if "Q5" in q:
-        return int(storage_mib * 3.3 * scale)
-    if "Q4" in q or "IQ4" in q:
-        return int(storage_mib * 4.0 * scale)
-    if "Q3" in q or "IQ3" in q:
-        return int(storage_mib * 5.3 * scale)
-    if "Q2" in q or "Q1" in q or "IQ2" in q or "IQ1" in q:
-        return int(storage_mib * 8.0 * scale)
-    return int(storage_mib * 4.0 * scale)  # unknown: assume 4-bit-ish
 
 
 def estimate_image_runtime_mib(*, family: Optional[str] = None) -> int:

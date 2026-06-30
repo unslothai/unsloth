@@ -25,9 +25,7 @@ from core.inference.diffusion_memory import (
     DeviceMemory,
     MemoryPlan,
     apply_memory_plan,
-    estimate_gguf_dense_mib,
     estimate_image_runtime_mib,
-    infer_gguf_quant_label,
     normalize_memory_mode,
     plan_diffusion_memory,
     snapshot_device_memory,
@@ -65,37 +63,7 @@ def test_normalize_memory_mode_accepts_and_rejects():
         normalize_memory_mode("ultra")
 
 
-# ── filename / size estimates ─────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "filename,expected",
-    [
-        ("z-image-turbo-Q4_K_M.gguf", "Q4_K_M"),
-        ("flux1-dev-Q8_0.gguf", "Q8_0"),
-        ("model-BF16.gguf", "BF16"),
-        ("qwen-image-IQ4_XS.gguf", "IQ4_XS"),
-        ("no-quant-here.gguf", None),
-        (None, None),
-    ],
-)
-def test_infer_gguf_quant_label(filename, expected):
-    assert infer_gguf_quant_label(filename) == expected
-
-
-def test_estimate_gguf_dense_mib_expansion():
-    # 4-bit roughly quadruples once dequantised to bf16; F16 is already dense.
-    assert estimate_gguf_dense_mib(1000, "Q4_K_M") == 4000
-    assert estimate_gguf_dense_mib(1000, "Q8_0") == 2000
-    assert estimate_gguf_dense_mib(1000, "BF16") == 1000
-    assert estimate_gguf_dense_mib(None, "Q4_K_M") is None
-    # Unknown quant falls back to the conservative 4-bit-ish factor.
-    assert estimate_gguf_dense_mib(1000, None) == 4000
-    # An Unsloth Dynamic prefix must not mask the real bit-width token: UD_IQ2 is
-    # 2-bit (8x), not the 4x the bare "UD" catch-all used to give.
-    assert estimate_gguf_dense_mib(1000, "UD_IQ2_XXS") == 8000
-    # A float32 compute dtype (Z-Image pre-Ampere, CPU/older-macOS) doubles the size.
-    assert estimate_gguf_dense_mib(1000, "Q4_K_M", compute_dtype_bytes = 4) == 8000
+# ── size estimates ────────────────────────────────────────────────────────────
 
 
 def test_estimate_image_runtime_scales_by_family():
