@@ -1,0 +1,7 @@
+- Completed: fixed `scripts/studio_tool_demo.py` to load/select models via backend API, skip fragile UI picker, ensure Search/Code by aria-label, and filter SSE evidence to real tool streams.
+- Completed Studio runs: `unsloth/gemma-4-E2B-it` and `unsloth/Qwen3.5-4B` with prompt `What is the weather in Sydney`; both fired real `web_search` tool calls.
+- Artifacts: `/mnt/disks/unslothai/ubuntu/workspace_38/outputs/studio/gifs/gemma_weather.gif`, `/mnt/disks/unslothai/ubuntu/workspace_38/outputs/studio/gifs/qwen_weather.gif`, plus evidence JSON/screenshots under `outputs/studio/{gemma,qwen}/`.
+- MLX validated via `danielhanchen/unsloth-staging-2` PR `#233`; `macos-14` Apple Silicon + Linux workflows green on push and PR. PR closed, not merged.
+- Key commands: `python -m py_compile scripts/studio_tool_demo.py` OK; Studio driver runs OK; staging CI final status all success.
+- Resolved errors: `pick_model` timeout; pills toggled off due `aria-pressed=null`; false-positive `/api/inference/status` SSE evidence; CI `--deselect` mismatch fixed with precise `-k`.
+- Pending: user was asked whether to post GIFs inline on the three PRs; no answer yet.

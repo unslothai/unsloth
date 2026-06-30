@@ -1599,7 +1599,13 @@ _TOOL_XML_RE = _re.compile(
     # ``<function=name>`` (Qwen3.5) and the attribute form ``<function name="name">``
     # (MiniCPM-5 / MiniMax-M2); name class ``[\w.\-]`` mirrors the parser so this
     # form is stripped from the UI instead of leaking.
-    r'<(?:tool_call|function(?:=[\w.\-]+|\s+name="[\w.\-]+"))>.*?(?:</(?:tool_call|function)>|\Z)'
+    # A CLOSED ``<function=...>...</function>`` extends to the call's real close
+    # (last ``</function>`` before the next opener), so a literal ``</function>``
+    # inside a parameter value -- e.g. ``print("</function>")`` -- does not truncate
+    # the strip and leak the tail. This arm runs first; the combined arm below still
+    # handles ``<tool_call>`` and orphan (unclosed) ``<function=...>`` tails.
+    r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>(?:(?!<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>).)*</function>'
+    r'|<(?:tool_call|function(?:=[\w.\-]+|\s+name="[\w.\-]+"))>.*?(?:</(?:tool_call|function)>|\Z)'
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"

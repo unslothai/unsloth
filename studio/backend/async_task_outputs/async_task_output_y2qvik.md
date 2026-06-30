@@ -1,0 +1,1 @@
+Continue the latest directive: finish the GGUF streaming fixes for V3g and V5 after completing the parser and safetensors fixes. The next action is to inspect and edit the GGUF `llama_cpp.py` buffering/end-of-stream logic using the already-read imports and buffering block context, adding markerless bare-JSON and rehearsal handling without re-running completed reads or tests.

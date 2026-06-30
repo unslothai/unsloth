@@ -24,7 +24,7 @@ Missing closing tags / brackets are tolerated: models often truncate mid-stream.
 
 import json
 import re
-from typing import Any
+from typing import Any, Optional
 
 # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 are parsed by the shared
 # ``core.tool_healing`` helper (also imported by external servers), which carries
@@ -68,7 +68,18 @@ _DEEPSEEK_OPEN_RE_SRC = r"<｜(?:" + _DEEPSEEK_OPEN_ALT + r")｜>"
 # ``^[a-zA-Z0-9_-]{1,64}$`` so hyphenated MCP names parse like built-ins.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
-    re.compile(r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>.*?</function>', re.DOTALL),
+    # Extend to the call's REAL ``</function>`` (the last one before the next
+    # ``<function=`` opener or end), so a literal ``</function>`` inside a
+    # parameter value -- e.g. ``print("</function>")`` -- does not truncate the
+    # strip and leak the tail. Mirrors the parser's rfind-based close detection.
+    # The negative lookahead keeps the match within one call so separate calls are
+    # stripped independently (greedy ``.*`` would merge them).
+    re.compile(
+        r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>'
+        r'(?:(?!<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>).)*'
+        r"</function>",
+        re.DOTALL,
+    ),
     re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
     re.compile(r"\[TOOL_CALLS\]\s*\[.*?\](?:\s*</s>)?", re.DOTALL),
     # Mistral v11+ ``[TOOL_CALLS]name{json}`` (may chain), close at ``}``.
@@ -355,6 +366,18 @@ def _strip_mistral_closed_calls(text: str) -> str:
             if text.startswith("</s>", cursor):
                 cursor += len("</s>")
             continue
+        # Single-object shape: ``[TOOL_CALLS] { json }`` (no name, no array). The
+        # parser accepts this, so the display strip must remove it too -- otherwise
+        # the raw object leaks while the name/array shapes are stripped (asymmetry).
+        if i < n and text[i] == "{":
+            end = _balanced_brace_end(text, i)
+            if end is None:
+                out.append(text[idx:])
+                break
+            cursor = end + 1
+            if text.startswith("</s>", cursor):
+                cursor += len("</s>")
+            continue
         # Named shape: ``[TOOL_CALLS] name [ARGS]? { json }``.
         name_match = _MISTRAL_V11_NAME_RE.match(text, i)
         if not name_match:
@@ -430,13 +453,18 @@ def parse_tool_calls_from_text(
     *,
     id_offset: int = 0,
     allow_incomplete: bool = True,
+    enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
     """Return OpenAI-format tool calls, trying each format and returning at the
     first match so we never double-count.
 
     ``allow_incomplete=True`` (default) heals truncated calls (missing close tag /
     unclosed parameter); ``False`` accepts only well-formed closed calls (trailing
-    prose tolerated), matching llama-server's strict path when Auto-Heal is off."""
+    prose tolerated), matching llama-server's strict path when Auto-Heal is off.
+
+    ``enabled_tool_names`` gates only the markerless Llama-3.2 bare-JSON form (the
+    marker-based forms carry an explicit signal, so a disabled-tool name there is a
+    real call attempt). ``None`` keeps the name-agnostic behaviour."""
     # DeepSeek / Kimi use unique (often full-width) markers that do not collide
     # with the shared formats, so try them first.
     for parser in (
@@ -476,7 +504,9 @@ def parse_tool_calls_from_text(
 
     # Llama-3.2 bare ``{"name":..., "parameters":...}``. Strict (starts with ``{``
     # and parses to the right shape) so plain prose stays untouched.
-    return _parse_llama3_bare_json(content, id_offset = id_offset)
+    return _parse_llama3_bare_json(
+        content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+    )
 
 
 def _parse_tool_call_json(
@@ -863,10 +893,17 @@ def _parse_llama3_bare_json(
     *,
     id_offset: int,
     allow_incomplete: bool = True,
+    enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
     """Llama-3.2 ``custom_tools``: bare ``{"name":..., "parameters":{...}}`` without
     ``<|python_tag|>``. Strict (starts with ``{`` after sentinel strip; ``name``
-    non-empty; ``parameters``/``arguments`` a dict) so prose and echoes don't fire."""
+    non-empty; ``parameters``/``arguments`` a dict) so prose and echoes don't fire.
+
+    ``enabled_tool_names`` (when given) gates on the parsed name: a markerless
+    object is only a tool call when its ``name`` is an enabled tool. Without this an
+    ordinary JSON answer like ``{"name":"Alice","parameters":{"age":30}}`` is
+    misread as a call to a disabled tool and dropped from the visible response.
+    ``None`` keeps the name-agnostic behaviour (unrestricted mode / direct callers)."""
     out: list[dict] = []
     stripped = strip_llama3_leading_sentinels(content)
     if not stripped.startswith("{"):
@@ -889,6 +926,10 @@ def _parse_llama3_bare_json(
             break
         name = obj.get("name") or obj.get("function") or ""
         if not isinstance(name, str) or not name:
+            break
+        # Markerless JSON is ambiguous: only treat it as a call when the name is an
+        # enabled tool, else it is an ordinary JSON answer (do not steal it).
+        if enabled_tool_names is not None and name not in enabled_tool_names:
             break
         # ``parameters`` must be a dict (Llama-3 spec); ``arguments`` may be a dict
         # or JSON-string of one (OpenAI). Looser would fire on prose like
@@ -1172,7 +1213,10 @@ def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
     return None
 
 
-def strip_leading_bare_json_call(text: str) -> str:
+_BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
+
+
+def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Remove a leading (optionally sentinel-prefixed) bare-JSON tool call
     ``{"name":..,"parameters":..}`` from ``text``.
 
@@ -1181,10 +1225,20 @@ def strip_leading_bare_json_call(text: str) -> str:
     visible stream or the next-turn assistant content. Returns ``text`` unchanged
     when it is not such a call (no leading ``{`` or no ``"name"`` key), so a plain
     JSON answer survives. A truncated call (no closing brace) collapses to ``""``;
-    a complete one is dropped and any trailing prose is kept."""
+    a complete one is dropped and any trailing prose is kept.
+
+    ``enabled_tool_names`` gates the strip the same way the parser gates parsing: a
+    markerless object whose ``name`` is not an enabled tool is an ordinary JSON
+    answer and must be kept, not suppressed. ``None`` keeps the prior behaviour."""
     probe = strip_llama3_leading_sentinels(text.lstrip())
     if not (probe.startswith("{") and '"name"' in probe):
         return text
+    if enabled_tool_names is not None:
+        # Only suppress when the leading object is (or may be) a real call, i.e. its
+        # name is an enabled tool. An unknown / un-extractable name is kept content.
+        _m = _BARE_JSON_NAME_RE.search(probe)
+        if not (_m and _m.group(1) in enabled_tool_names):
+            return text
     end = _balanced_brace_end(probe, 0)
     if end is None:
         return ""  # truncated bare-JSON call -- nothing recoverable

@@ -1360,6 +1360,18 @@ def test_bare_json_tool_call_is_not_streamed_as_content():
     assert any("Here are the results." in t for t in contents)
 
 
+def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call():
+    # Markerless JSON whose "name" is not an enabled tool (e.g. a person record
+    # ``{"name":"Alice",...}``) must be shown as the answer, not misread as a call
+    # to a disabled tool and dropped. _make_loop enables web_search/python/terminal.
+    answer = '{"name":"Alice","parameters":{"age":30}}'
+    loop, exec_fn = _make_loop(turns = [[answer]], max_tool_iterations = 1)
+    events = _collect_events(loop)
+    assert exec_fn.calls == [], exec_fn.calls
+    contents = "".join(e["text"] for e in events if e["type"] == "content")
+    assert "Alice" in contents, contents
+
+
 def test_bare_json_tool_call_split_across_chunks_is_not_streamed():
     # Same as above but the bare object arrives split mid-key, so the buffer is
     # held open across chunks before it balances.
