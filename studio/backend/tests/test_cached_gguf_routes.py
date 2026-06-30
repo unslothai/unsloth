@@ -720,22 +720,27 @@ def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
     # delete_cached_model resolves get_inference_backend from the models module
     # namespace, so patch it there (not on core.inference) to isolate that guard.
     monkeypatch.setattr(
-        routes_inference, "get_llama_cpp_backend",
+        routes_inference,
+        "get_llama_cpp_backend",
         lambda: SimpleNamespace(is_loaded = False, model_identifier = None),
     )
     monkeypatch.setattr(
-        models_route, "get_inference_backend",
+        models_route,
+        "get_inference_backend",
         lambda: SimpleNamespace(active_model_name = None),
     )
     monkeypatch.setattr(
-        diffusion_mod, "get_diffusion_backend",
+        diffusion_mod,
+        "get_diffusion_backend",
         lambda: SimpleNamespace(status = lambda: {"loaded": True, "repo_id": "org/Z-Image-GGUF"}),
     )
 
     try:
         asyncio.run(
             models_route.delete_cached_model(
-                repo_id = "org/Z-Image-GGUF", variant = None, current_subject = "u",
+                repo_id = "org/Z-Image-GGUF",
+                variant = None,
+                current_subject = "u",
             )
         )
         assert False, "expected HTTPException refusing the delete"
