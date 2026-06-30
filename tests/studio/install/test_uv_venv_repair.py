@@ -17,16 +17,7 @@ PWSH = shutil.which("pwsh")
 
 
 def _source(refspec: str | None = None) -> str:
-    if refspec is None:
-        return INSTALL_PS1.read_text(encoding = "utf-8")
-    result = subprocess.run(
-        ["git", "show", refspec],
-        capture_output = True,
-        check = True,
-        cwd = REPO_ROOT,
-        text = True,
-    )
-    return result.stdout
+    return INSTALL_PS1.read_text(encoding = "utf-8")
 
 
 def _extract_venv_bootstrap_body(source: str) -> str:
@@ -44,6 +35,16 @@ def _extract_venv_bootstrap_body(source: str) -> str:
     if start is None or end is None:
         raise AssertionError("failed to locate the install.ps1 venv bootstrap block")
     return "\n".join(lines[start:end])
+
+
+def _source_without_uv_repair() -> str:
+    source = _source()
+    body = _extract_venv_bootstrap_body(source)
+    anchor = "        # Trust neither uv's exit code nor a half-baked Scripts\\python.exe."
+    if anchor not in body:
+        raise AssertionError("failed to locate the uv repair block")
+    stripped_body = body[: body.index(anchor)].rstrip()
+    return source.replace(body, stripped_body, 1)
 
 
 def _write_uv_stub(stub_dir: Path, mode: str) -> Path:
@@ -200,9 +201,9 @@ def test_uv_venv_empty_head_passes(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
-def test_uv_venv_empty_origin_main_fails(tmp_path):
+def test_uv_venv_empty_without_repair_fails(tmp_path):
     proc, venv_dir, log_file, partial_marker = _run_bootstrap(
-        tmp_path, "empty", _source("origin/main:install.ps1")
+        tmp_path, "empty", _source_without_uv_repair()
     )
     assert proc.returncode == 91, proc.stdout + proc.stderr
     assert not (venv_dir / "Scripts" / "python.exe").exists()
