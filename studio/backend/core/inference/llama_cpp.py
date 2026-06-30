@@ -7942,6 +7942,18 @@ class LlamaCppBackend:
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
 
+        def _looks_like_enabled_bare_json(text: str, enabled_tool_names: set) -> bool:
+            """True when ``text`` opens with a markerless bare-JSON tool call whose
+            name is an ENABLED tool, i.e. the gated strip would remove it. An ordinary
+            JSON answer whose name is not a tool ({"name":"Alice",...}) returns False
+            so it streams as content instead of being suppressed -- matching the
+            parser / safetensors enabled-name gate. Handles truncated and oversized
+            bodies (the gated strip collapses them once the name qualifies)."""
+            probe = strip_llama3_leading_sentinels(text.lstrip())
+            if not (probe.startswith("{") and '"name"' in probe):
+                return False
+            return strip_leading_bare_json_call(probe, enabled_tool_names) != probe
+
         tool_controller = ToolLoopController(
             tools = tools,
             auto_heal_tool_calls = auto_heal_tool_calls,
@@ -8293,14 +8305,17 @@ class LlamaCppBackend:
                                                 if _balanced_brace_end(_bare, 0) is None:
                                                     if len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
                                                         _hold_buffer = True
-                                                    elif '"name"' in _bare:
+                                                    elif _looks_like_enabled_bare_json(
+                                                        _bare, _enabled_tool_names
+                                                    ):
                                                         # Oversized but still-open
-                                                        # bare-JSON call: stop holding
-                                                        # (memory bound) yet DRAIN
-                                                        # rather than leak the raw JSON
-                                                        # prefix. Gated on a ``"name"``
-                                                        # key so a giant plain JSON
-                                                        # answer still streams.
+                                                        # bare-JSON call for an ENABLED
+                                                        # tool: stop holding (memory
+                                                        # bound) yet DRAIN rather than
+                                                        # leak the raw JSON prefix.
+                                                        # Gated on the enabled tool name
+                                                        # so a giant ordinary JSON answer
+                                                        # ({"name":"Alice",...}) streams.
                                                         _drain_silently = True
                                                 elif self._parse_tool_calls_from_text(
                                                     content_buffer,
@@ -8372,16 +8387,12 @@ class LlamaCppBackend:
                     # the signal-only gate below would otherwise flush the raw
                     # JSON to the user.
                     _bare_eos = strip_llama3_leading_sentinels(stripped_buf)
-                    _is_bare_tc = (
-                        bool(active_tools) and _bare_eos.startswith("{") and '"name"' in _bare_eos
+                    # Gate on the enabled tool names so an ordinary JSON answer whose
+                    # name is not a tool ({"name":"Alice",...}) is not routed to
+                    # DRAINING (and dropped); only a real enabled-tool call drains.
+                    _is_bare_tc = bool(active_tools) and _looks_like_enabled_bare_json(
+                        _bare_eos, _enabled_tool_names
                     )
-                    # Only treat it as a call fragment when the name is an enabled
-                    # tool; an ordinary (possibly truncated) JSON answer like
-                    # ``{"name":"Alice","age":`` must stream, not drain to nothing.
-                    if _is_bare_tc:
-                        _nm = re.search(r'"name"\s*:\s*"([^"]+)"', _bare_eos)
-                        if not (_nm and _nm.group(1) in _enabled_tool_names):
-                            _is_bare_tc = False
                     if stripped_buf and any(s in stripped_buf for s in _tool_xml_signals):
                         detect_state = _S_DRAINING
                     elif _is_bare_tc:
@@ -8411,6 +8422,15 @@ class LlamaCppBackend:
                                     "text": cumulative_display,
                                 }
                     else:
+                        # The held buffer never matched a tool signal and is not an
+                        # enabled bare-JSON call. A buffer that starts with ``{`` is an
+                        # ordinary JSON answer (name not a tool, or no name) and must be
+                        # shown -- it was only held on the chance it was a Llama-3.2
+                        # bare call. Any other partial-markup prefix (``<tool_c``...) is
+                        # dropped as before since it is incomplete markup, not content.
+                        _held = strip_llama3_leading_sentinels(content_buffer.lstrip())
+                        if _held.startswith("{") and not _suppress_visible_output:
+                            yield {"type": "content", "text": _held}
                         return
 
                 # ── STREAMING path: no tool call ──
@@ -8582,14 +8602,15 @@ class LlamaCppBackend:
                             content_accum = _strip_tool_markup(content_accum, final = True)
                         # A truncated bare-JSON tool call (``{"name":..`` cut off
                         # by max_tokens) has no XML markup for the strip above to
-                        # remove and did not parse to a call. Drop it rather than
-                        # dumping the raw fragment to the user. Context-aware: only
-                        # when tools are active and the content is exactly that
-                        # fragment, so genuine JSON answers are untouched.
+                        # remove and did not parse to a call. Strip a leading
+                        # ENABLED-tool bare-JSON call (truncated -> "", complete ->
+                        # keep trailing prose) rather than dumping the raw fragment.
+                        # Gated on the enabled tool names so an ordinary JSON answer
+                        # whose name is not a tool ({"name":"Alice",...}) is untouched.
                         if content_accum and active_tools:
-                            _probe = strip_llama3_leading_sentinels(content_accum.lstrip())
-                            if _probe.startswith("{") and '"name"' in _probe:
-                                content_accum = ""
+                            content_accum = strip_leading_bare_json_call(
+                                content_accum, _enabled_tool_names
+                            )
                         if content_accum:
                             yield {"type": "content", "text": content_accum}
                         _meta = _build_metadata_event(
