@@ -59,10 +59,18 @@ _TOOL_CLOSED_PATS = [
 # its brace is stripped instead of leaking, like `<tool_call>.*$` strips a bare open.
 # The rehearsal tail requires a following `{` or end-of-text so prose that merely
 # mentions ``foo[ARGS] to the template`` is not truncated as a phantom call.
-_TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
+# Open-ended XML openers (no closing tag): an INCOMPLETE ``<tool_call>`` /
+# ``<function=`` call that the parser still executes via ``allow_incomplete``. Each
+# runs to end-of-text. Reused by ``_tool_call_markup_spans`` so a literal
+# ``<think>`` / ``[THINK]`` inside an UNCLOSED call's arguments is recognised as
+# argument data (not a reasoning block) and the open call's markup is stripped
+# instead of leaking after the call is parsed.
+_TOOL_OPEN_XML_TAIL_PATS = [
     re.compile(r"<tool_call>.*$", re.DOTALL),
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
+]
+_TOOL_ALL_PATS = _TOOL_CLOSED_PATS + _TOOL_OPEN_XML_TAIL_PATS + [
     re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
     re.compile(r"(?<!\[CALL_ID\])\b[\w-]+\[ARGS\]\s*(?:\{.*)?$", re.DOTALL),
 ]
@@ -702,11 +710,24 @@ def _strip_bracket_tag_calls(text: str) -> str:
 
 
 def _tool_call_markup_spans(text: str) -> list[tuple[int, int]]:
-    """Spans of complete tool-call markup. A literal ``<think>`` / ``[THINK]`` inside
-    a call's arguments lives within one of these spans and must be stripped WITH the
-    call, not preserved as a reasoning block."""
+    """Spans of tool-call markup. A literal ``<think>`` / ``[THINK]`` inside a call's
+    arguments lives within one of these spans and must be stripped WITH the call, not
+    preserved as a reasoning block.
+
+    Covers complete (closed) XML/bracket calls AND an INCOMPLETE (unclosed) XML call:
+    the parser executes the unclosed call via ``allow_incomplete``, so a literal
+    ``<think>`` in its arguments is argument data too -- without the open-ended span
+    the call's markup leaks after execution (the segment stripper never sees the open
+    tag and the (missing) close together)."""
     spans = [m.span() for pat in _TOOL_CLOSED_PATS for m in pat.finditer(text)]
     spans.extend((start, end) for start, end, _kind, _m in _iter_bracket_spans(text))
+    # An unclosed XML opener is only a real incomplete call when it is not already
+    # inside a closed/bracket span (a complete call's opener matches the same
+    # position but must not extend the span to EOF).
+    for pat in _TOOL_OPEN_XML_TAIL_PATS:
+        for m in pat.finditer(text):
+            if not any(s <= m.start() < e for s, e in spans):
+                spans.append(m.span())
     return spans
 
 

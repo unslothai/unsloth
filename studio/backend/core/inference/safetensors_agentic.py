@@ -229,23 +229,51 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
 
 _FUNCTION_SIGNAL_RE = re.compile(r"<function=([\w-]+)>")
 _TOOL_CALL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w-]+)"')
+# Mistral ``[TOOL_CALLS]name{json}`` / ``[TOOL_CALLS]name[CALL_ID]id[ARGS]{json}``
+# (name form) and rehearsal ``name[ARGS]{json}`` -- aligned with the parser regexes
+# so the provisional render-html card also fires for the bracket-tag serializations,
+# not only the XML forms.
+_MISTRAL_RENDER_NAME_RE = re.compile(
+    r"\[TOOL_CALLS\]\s*([\w-]+)(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?=\{)"
+)
+_REHEARSAL_RENDER_NAME_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
 
 
 def _detect_render_html_tool_start(content: str) -> bool:
-    """Return True when the first drained tool call is clearly render_html."""
-    function_match = _FUNCTION_SIGNAL_RE.search(content)
-    tool_call_index = content.find("<tool_call>")
-    if not function_match and tool_call_index < 0:
+    """Return True when the FIRST tool call in ``content`` is clearly render_html.
+
+    Covers every serialization the loop executes -- XML ``<function=>`` and
+    ``<tool_call>{...}``, Mistral ``[TOOL_CALLS]render_html...`` and rehearsal
+    ``render_html[ARGS]...`` -- so the early provisional render-html card surfaces for
+    the bracket-tag forms too (previously XML-only). A render_html marker that is NOT
+    the earliest tool call (e.g. inside another tool's argument) is data, not the
+    first call, so the earliest marker wins."""
+    candidates: list[tuple[int, str]] = []
+    fm = _FUNCTION_SIGNAL_RE.search(content)
+    if fm:
+        candidates.append((fm.start(), fm.group(1)))
+    tc = content.find("<tool_call>")
+    if tc >= 0:
+        nm = _TOOL_CALL_NAME_RE.search(content[tc:])
+        candidates.append((tc, nm.group(1) if nm else ""))
+    mt = content.find("[TOOL_CALLS]")
+    if mt >= 0:
+        mm = _MISTRAL_RENDER_NAME_RE.match(content, mt)
+        if mm:
+            candidates.append((mt, mm.group(1)))
+        else:
+            # Array / single-object shape: ``[TOOL_CALLS] [{"name":...}]``.
+            nm = _TOOL_CALL_NAME_RE.search(content[mt:])
+            if nm:
+                candidates.append((mt, nm.group(1)))
+    rm = _REHEARSAL_RENDER_NAME_RE.search(content)
+    if rm:
+        candidates.append((rm.start(1), rm.group(1)))
+
+    if not candidates:
         return False
-
-    if function_match and (tool_call_index < 0 or function_match.start() < tool_call_index):
-        return function_match.group(1) == "render_html"
-
-    if tool_call_index >= 0:
-        name_match = _TOOL_CALL_NAME_RE.search(content[tool_call_index:])
-        return bool(name_match and name_match.group(1) == "render_html")
-
-    return False
+    _pos, name = min(candidates, key = lambda c: c[0])
+    return name == "render_html"
 
 
 def _coerce_arguments_with_provenance(

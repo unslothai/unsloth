@@ -470,3 +470,24 @@ def test_route_display_strip_removes_orphan_tool_calls_closer_named_form_keeps_t
     out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
     assert "[/TOOL_CALLS]" not in out
     assert out.strip() == "tail"
+
+
+def test_incomplete_xml_call_with_literal_think_in_arg_is_stripped():
+    # An INCOMPLETE (unclosed) <tool_call> the parser still executes via
+    # allow_incomplete, whose argument contains a literal <think>, must have its
+    # markup stripped (to EOS) instead of the literal being treated as a reasoning
+    # block and leaking the raw call. The complete-call case already worked; this
+    # covers the unclosed tail that _tool_call_markup_spans previously missed.
+    from core.tool_healing import parse_tool_calls_from_text as _parse
+    from core.tool_healing import strip_tool_call_markup as _strip
+
+    text = 'before <tool_call>{"name":"write","arguments":{"text":"literal <think> marker"}} after'
+    assert [c["function"]["name"] for c in _parse(text)] == ["write"]
+    assert _strip(text, final = True) == "before"
+
+    # A real reasoning block with no tool call is still preserved verbatim.
+    assert _strip("answer <think>real</think> done", final = True) == "answer <think>real</think> done"
+
+    # A complete call followed by a real reasoning block: call stripped, block kept.
+    mixed = '<tool_call>{"name":"a","arguments":{}}</tool_call> mid <think>r</think> end'
+    assert _strip(mixed, final = True) == "mid <think>r</think> end"

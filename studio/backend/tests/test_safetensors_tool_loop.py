@@ -203,6 +203,19 @@ class TestParser:
             '<tool_call>{"name":"python","arguments":{"code":"<function=render_html>"}}'
         )
 
+    def test_render_html_start_detector_covers_mistral_and_rehearsal_forms(self):
+        # The provisional render-html card must also fire for the bracket-tag
+        # serializations the PR added, not only the XML forms.
+        assert _detect_render_html_tool_start('[TOOL_CALLS]render_html{"code":"<html>"}')
+        assert _detect_render_html_tool_start('[TOOL_CALLS]render_html[ARGS]{"code":"x"}')
+        assert _detect_render_html_tool_start('[TOOL_CALLS] [{"name":"render_html","arguments":{}}]')
+        assert _detect_render_html_tool_start('render_html[ARGS]{"code":"<html>"}')
+        # A different first tool (or a prose mention with no JSON body) must not fire.
+        assert not _detect_render_html_tool_start('[TOOL_CALLS]web_search{"q":"x"}')
+        assert not _detect_render_html_tool_start('web_search[ARGS]{"q":"x"}')
+        assert not _detect_render_html_tool_start('python[ARGS]{"code":"render_html[ARGS]{}"}')
+        assert not _detect_render_html_tool_start("use render_html[ARGS] to render")
+
     def test_strip_markup_closed(self):
         text = "before <tool_call>{}</tool_call> after"
         assert strip_tool_markup(text) == "before  after"
