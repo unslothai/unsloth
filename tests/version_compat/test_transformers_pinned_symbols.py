@@ -230,7 +230,7 @@ def test_processing_utils_unpack_importable(tag: str):
 @dataclass(frozen = True)
 class ModelingContract:
     name: str
-    path: str 
+    path: str
     classes: tuple[str, ...]
     rope_name: str | None = None
     extra_bindings: tuple[str, ...] = ()
@@ -355,18 +355,16 @@ def test_modeling_contract(tag: str, contract: ModelingContract):
     if src is None:
         pytest.skip(f"{tag}/{contract.name}: {contract.path} missing")
     for cls in contract.classes:
-        assert has_def(src, cls, "class"), (
-            f"{tag}/{contract.name}: class {cls} missing — {contract.patch_site}"
-        )
+        assert has_def(
+            src, cls, "class"
+        ), f"{tag}/{contract.name}: class {cls} missing — {contract.patch_site}"
     if contract.rope_name is not None:
         assert is_bound(src, contract.rope_name), (
             f"{tag}/{contract.name}: {contract.rope_name} missing; "
             f"{contract.patch_site} RoPE rebind silently no-ops"
         )
     for n in contract.extra_bindings:
-        assert is_bound(src, n), (
-            f"{tag}/{contract.name}: {n} missing — {contract.patch_site}"
-        )
+        assert is_bound(src, n), f"{tag}/{contract.name}: {n} missing — {contract.patch_site}"
 
 
 # auto_factory: unsloth#5155 _LazyAutoMapping private API.
