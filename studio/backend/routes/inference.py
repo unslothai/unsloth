@@ -1111,6 +1111,7 @@ from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.tool_call_parser import (
     _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
     _strip_mistral_closed_calls,
 )
 from core.inference.tool_call_parser import TOOL_XML_SIGNALS as _PARSER_TOOL_SIGNALS
@@ -1634,8 +1635,13 @@ def _strip_tool_xml(text: str) -> str:
     """Combine the Mistral and Gemma balanced-brace helpers with ``_TOOL_XML_RE``.
     The Gemma ``call:NAME{...}`` wrapper-less form has no XML and is not in
     ``_TOOL_XML_RE``; without this pass it leaks through Anthropic/display/history
-    cleanup while the core/streaming paths strip it."""
-    return _TOOL_XML_RE.sub("", _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text)))
+    cleanup while the core/streaming paths strip it. The GLM scan finds each call's
+    real ``</tool_call>`` so a literal ``</tool_call>`` inside an arg value is data,
+    not a leaked tail (the ``<tool_call>.*?</tool_call>`` regex arm stops at it)."""
+    cleaned = _strip_glm_calls(
+        _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text)), final = True
+    )
+    return _TOOL_XML_RE.sub("", cleaned)
 
 
 def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:

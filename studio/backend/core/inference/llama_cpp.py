@@ -46,6 +46,7 @@ from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
     _balanced_brace_end,
     _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
     _strip_mistral_closed_calls,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -7897,6 +7898,9 @@ class LlamaCppBackend:
             # arms); no final trim so incremental length comparisons still hold.
             text = _strip_mistral_closed_calls(text)
             text = _strip_gemma_wrapperless_calls(text)
+            # GLM scan finds each call's real </tool_call> so a literal </tool_call>
+            # in an arg value is data, not a leaked tail.
+            text = _strip_glm_calls(text, final = True)
             for pat in _TOOL_ALL_PATS:
                 text = pat.sub("", text)
             return text

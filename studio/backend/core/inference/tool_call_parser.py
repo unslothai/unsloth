@@ -488,6 +488,64 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def _strip_glm_calls(text: str, *, final: bool) -> str:
+    """Strip GLM 4.x ``<tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value>
+    ...</tool_call>`` calls by scanning to each call's REAL ``</tool_call>``.
+
+    The real close is the ``</tool_call>`` that follows the last consumed
+    ``<arg_value>`` and precedes the next ``<arg_key>`` (mirrors
+    ``_parse_glm_tool_calls``), so a literal ``</tool_call>`` inside an argument value
+    -- e.g. ``print("</tool_call>")`` -- is treated as data instead of the non-greedy
+    ``<tool_call>.*?</tool_call>`` regex stopping there and leaking the call's tail.
+    Qwen / Hermes ``<tool_call>{json}`` has no NAME token after the opener, so
+    ``_GLM_TC_OPEN_RE`` does not match it and it is left to the regex arms. With
+    ``final`` a truncated call (no real close) is dropped to EOS; otherwise the
+    unclosed call is left buffered for a later pass."""
+    out: list[str] = []
+    cursor = 0
+    n = len(text)
+    while True:
+        m = _GLM_TC_OPEN_RE.search(text, cursor)
+        if not m:
+            break
+        apos = m.end()
+        close = -1
+        while True:
+            ks = text.find(_GLM_ARG_KEY_OPEN, apos)
+            tc = text.find(_GLM_TC_CLOSE, apos)
+            if tc >= 0 and (ks < 0 or tc < ks):
+                close = tc
+                break
+            if ks < 0:
+                break  # no close and no more keys -- truncated body
+            ke = text.find(_GLM_ARG_KEY_CLOSE, ks + len(_GLM_ARG_KEY_OPEN))
+            if ke < 0:
+                break
+            vstart = ke + len(_GLM_ARG_KEY_CLOSE)
+            while vstart < n and text[vstart] in " \t\r\n":
+                vstart += 1
+            if not text.startswith(_GLM_ARG_VAL_OPEN, vstart):
+                apos = ke + len(_GLM_ARG_KEY_CLOSE)
+                continue
+            vs = vstart + len(_GLM_ARG_VAL_OPEN)
+            ve = text.find(_GLM_ARG_VAL_CLOSE, vs)
+            if ve < 0:
+                break  # unclosed <arg_value> -- truncated
+            apos = ve + len(_GLM_ARG_VAL_CLOSE)
+        if close >= 0:
+            out.append(text[cursor : m.start()])
+            cursor = close + len(_GLM_TC_CLOSE)
+            continue
+        # Truncated GLM call (no real close yet).
+        if final:
+            out.append(text[cursor : m.start()])
+            cursor = n
+        # Non-final: leave the unclosed call (and any tail) buffered as-is.
+        break
+    out.append(text[cursor:])
+    return "".join(out)
+
+
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
     """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
     ``final=True`` also drops trailing unclosed runs and trims."""
@@ -499,6 +557,11 @@ def strip_tool_markup(text: str, *, final: bool = False) -> str:
     # cover the other formats. The function regex arms stay in the pattern lists for
     # the streaming callers but no-op here once the scan ran.
     text = _strip_function_xml_calls(text, final = final)
+    # GLM 4.x <tool_call>NAME<arg_key>..<arg_value>..</tool_call>: scan to the call's
+    # real close so a literal </tool_call> inside an arg value is data, not a leak
+    # (the regex <tool_call>.*?</tool_call> arm would stop at that literal). Qwen
+    # <tool_call>{json} is left to the regex arms.
+    text = _strip_glm_calls(text, final = final)
     pats = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in pats:
         text = pat.sub("", text)

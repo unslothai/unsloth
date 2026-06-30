@@ -36,6 +36,7 @@ assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(
 from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
 from core.inference.tool_call_parser import (
     _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
     _strip_mistral_closed_calls,
 )
 
@@ -44,6 +45,7 @@ _ns = {
     "_DS_OPEN_SRC": _DS_OPEN_SRC,
     "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
     "_strip_gemma_wrapperless_calls": _strip_gemma_wrapperless_calls,
+    "_strip_glm_calls": _strip_glm_calls,
 }
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
@@ -422,3 +424,28 @@ def test_python_tag_strip_restarts_on_second_python_tag():
     text = '<|python_tag|>{"name": "a"}<|python_tag|>{"name": "b"}'
     cleaned = _TOOL_XML_RE.sub("", text)
     assert cleaned == "", f"second python_tag region leaked: {cleaned!r}"
+
+
+def test_glm_call_with_literal_close_tag_in_arg_value_is_stripped_whole():
+    # GLM 4.x emits <tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value>
+    # ...</tool_call>. When an arg VALUE contains a literal </tool_call>, the
+    # non-greedy <tool_call>.*?</tool_call> regex stopped at that literal and leaked
+    # the call's tail. The route strip now scans to the call's real close (matching
+    # the parser) so the whole call is removed and only the prose remains.
+    text = (
+        "<tool_call>web_search\n<arg_key>query</arg_key>\n"
+        "<arg_value>find </tool_call> here</arg_value>\n</tool_call> done"
+    )
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "</arg_value>" not in out
+    assert "<arg_key>" not in out
+    assert out.strip() == "done"
+
+
+def test_glm_normal_and_qwen_calls_still_stripped_by_route():
+    # Regression: a normal GLM call (no literal close tag) and a Qwen
+    # <tool_call>{json}</tool_call> are still stripped; trailing prose is kept.
+    glm = "<tool_call>get_time\n<arg_key>tz</arg_key>\n<arg_value>UTC</arg_value>\n</tool_call> ok"
+    assert _strip_tool_xml_for_display(glm, auto_heal_tool_calls = True).strip() == "ok"
+    qwen = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call> after'
+    assert _strip_tool_xml_for_display(qwen, auto_heal_tool_calls = True).strip() == "after"

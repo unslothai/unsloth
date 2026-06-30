@@ -602,3 +602,19 @@ def test_tool_call_parser_declares_future_annotations_for_py39_import():
 
     src = (Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py").read_text()
     assert "from __future__ import annotations" in src
+
+
+def test_glm_strip_treats_literal_close_tag_in_arg_value_as_data():
+    # Core strip parity with the parser: a literal </tool_call> inside a GLM
+    # <arg_value> is argument data, so the whole call is stripped (no leaked tail),
+    # while the parser extracts the call with the literal preserved in the argument.
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    text = (
+        "<tool_call>web_search\n<arg_key>query</arg_key>\n"
+        "<arg_value>see </tool_call> tag</arg_value>\n</tool_call> tail"
+    )
+    assert strip_tool_markup(text, final = True) == "tail"
+    calls = parse_tool_calls_from_text(text)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    assert json.loads(calls[0]["function"]["arguments"]) == {"query": "see </tool_call> tag"}

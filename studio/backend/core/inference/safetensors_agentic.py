@@ -25,6 +25,7 @@ from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
     _balanced_brace_end,
     _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
     _strip_mistral_closed_calls,
     BUDGET_EXHAUSTED_NUDGE,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -106,9 +107,12 @@ def strip_tool_markup_streaming(
         return text
     # Balanced strip first so nested Mistral / Gemma JSON ({"a":{"b":1}},
     # call:f{a:{b:1}}) is removed whole instead of the non-greedy pattern arms
-    # truncating at the first ``}`` and leaving a trailing brace visible.
+    # truncating at the first ``}`` and leaving a trailing brace visible. The GLM
+    # scan finds each call's real </tool_call> so a literal </tool_call> in an arg
+    # value is data, not a leak.
     text = _strip_mistral_closed_calls(text)
     text = _strip_gemma_wrapperless_calls(text)
+    text = _strip_glm_calls(text, final = True)
     for pat in _TOOL_ALL_PATS:
         text = pat.sub("", text)
     return text
