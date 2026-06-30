@@ -385,12 +385,11 @@ function modelMatchesDeleted(
  * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
  * compare that uses the fast simultaneous adapter-toggle path.
  */
-function useIsLoraCompare(): boolean {
-  return useChatRuntimeStore((s) => {
-    const cp = s.params.checkpoint;
-    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
-    return selected?.exportType === "lora";
-  });
+function getIsLoraCompareSnapshot(): boolean {
+  const state = useChatRuntimeStore.getState();
+  const cp = state.params.checkpoint;
+  const selected = cp ? state.loras.find((l) => l.id === cp) : undefined;
+  return selected?.exportType === "lora";
 }
 
 const CompareContent = memo(function CompareContent({
@@ -414,7 +413,10 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  const isLoraCompare = useIsLoraCompare();
+  // Freeze the compare variant for this pair. Generalized compare loads mutate
+  // the global checkpoint; if model 1 is a LoRA, a live subscription here would
+  // swap model1/model2 panes to base/lora panes mid-run.
+  const [isLoraCompare] = useState(getIsLoraCompareSnapshot);
 
   return isLoraCompare ? (
     <LoraCompareContent
@@ -545,7 +547,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const active = useChatActive();
 
   const compareRunning = useChatRuntimeStore(
-    (s) => Object.keys(s.runningByThreadId).length > 0,
+    (s) => Object.values(s.runningByThreadId).some(Boolean),
   );
 
   useEffect(() => {
@@ -710,8 +712,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const active = useChatActive();
   const compareRunning = useChatRuntimeStore(
-    (s) => Object.keys(s.runningByThreadId).length > 0,
+    (s) => Object.values(s.runningByThreadId).some(Boolean),
   );
+  const [compareSubmitting, setCompareSubmitting] = useState(false);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -736,7 +739,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if (compareRunning) return;
+    if (compareRunning || compareSubmitting) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -760,7 +763,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, compareRunning]);
+  }, [pairId, compareRunning, compareSubmitting]);
 
   return (
     <CompareShell
@@ -772,6 +775,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             model1={model1}
             model2={model2}
             onExitCompare={onExitCompare}
+            onComparingChange={setCompareSubmitting}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
           />

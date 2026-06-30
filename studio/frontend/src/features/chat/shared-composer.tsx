@@ -67,7 +67,7 @@ import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import { loadModel, validateModel } from "./api/chat-api";
+import { loadModel, unloadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -85,6 +85,7 @@ import {
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { resolveLoadMaxSeqLength } from "./presets/preset-policy";
 import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
@@ -123,6 +124,8 @@ export interface CompareHandle {
   /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
+
+type CompareHandleName = "base" | "lora" | "model1" | "model2";
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
@@ -328,11 +331,20 @@ export function RegisterCompareHandle({
       isRunning: () => aui.thread().getState().isRunning,
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
-          let wasRunning = false;
+          let threadId = aui.threads().getState().mainThreadId || null;
+          let wasRunning = threadId
+            ? Boolean(useChatRuntimeStore.getState().runningByThreadId[threadId])
+            : false;
           const unsub = useChatRuntimeStore.subscribe((state) => {
-            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
-            if (anyRunning) wasRunning = true;
-            if (wasRunning && !anyRunning) {
+            if (!threadId) {
+              threadId = aui.threads().getState().mainThreadId || null;
+            }
+            if (!threadId) {
+              return;
+            }
+            const isRunning = Boolean(state.runningByThreadId[threadId]);
+            if (isRunning) wasRunning = true;
+            if (wasRunning && !isRunning) {
               unsub();
               resolve();
             }
@@ -400,6 +412,7 @@ export function SharedComposer({
   model1,
   model2,
   onExitCompare,
+  onComparingChange,
   model1ThreadId,
   model2ThreadId,
 }: {
@@ -407,6 +420,7 @@ export function SharedComposer({
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
+  onComparingChange?: (comparing: boolean) => void;
   model1ThreadId?: string;
   model2ThreadId?: string;
 }): ReactElement {
@@ -452,12 +466,34 @@ export function SharedComposer({
   const prevRunningRef = useRef(false);
   const prevComparingRef = useRef(false);
   const compareStepSucceededRef = useRef(false);
+  const compareLoadAbortRef = useRef<AbortController | null>(null);
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+
+  async function waitForCompareHandle(
+    ...names: CompareHandleName[]
+  ): Promise<CompareHandle | undefined> {
+    for (const name of names) {
+      const existing = handlesRef.current[name];
+      if (existing) {
+        return existing;
+      }
+    }
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+      for (const name of names) {
+        const handle = handlesRef.current[name];
+        if (handle) {
+          return handle;
+        }
+      }
+    }
+    return undefined;
+  }
 
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;
@@ -914,7 +950,6 @@ export function SharedComposer({
     // Generalized compare: load each model before dispatching to its side
     if (isGeneralizedCompare) {
       const store = useChatRuntimeStore.getState();
-      const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
       const chatTemplateOverride = store.chatTemplateOverride;
       const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
@@ -923,6 +958,16 @@ export function SharedComposer({
       const specSettings = resolveSpeculativeSettingsForLoad({
         usePersistedPreference: true,
       });
+      compareLoadAbortRef.current?.abort();
+      const abortCtrl = new AbortController();
+      compareLoadAbortRef.current = abortCtrl;
+      const compareSignal = abortCtrl.signal;
+
+      function throwIfCompareCancelled(): void {
+        if (compareSignal.aborted) {
+          throw new Error("Compare cancelled");
+        }
+      }
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -936,124 +981,172 @@ export function SharedComposer({
         const currentStore = useChatRuntimeStore.getState();
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
+        const activeCheckpoint = currentStore.params.checkpoint;
+        const activeGgufVariant = currentStore.activeGgufVariant ?? null;
+        const nextGgufVariant = sel.ggufVariant ?? null;
+        const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+          modelId: sel.id,
+          ggufVariant: nextGgufVariant,
+          isGguf: nextGgufVariant != null || sel.id.toLowerCase().endsWith(".gguf"),
+          customContextLength: currentStore.customContextLength,
+          ggufContextLength: currentStore.ggufContextLength,
+          currentCheckpoint: activeCheckpoint,
+          activeGgufVariant,
+          maxSeqLength: currentStore.params.maxSeqLength,
+          presetSource: currentStore.activePresetSource,
+        });
         const isAlreadyActive =
-          currentStore.params.checkpoint === sel.id &&
-          (currentStore.activeGgufVariant ?? null) ===
-            (sel.ggufVariant ?? null);
+          activeCheckpoint === sel.id && activeGgufVariant === nextGgufVariant;
         // Already loaded (gate passed at first load): skip a redundant reload that would
         // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
         if (isAlreadyActive) {
           return "ready";
         }
-        const validation = await validateModel({
-          model_path: sel.id,
-          hf_token: currentStore.hfToken || null,
-          max_seq_length: maxSeqLength,
-          load_in_4bit: true,
-          is_lora: sel.isLora,
-          gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: loadTrustRemoteCode,
-          chat_template_override: effectiveChatTemplateOverride,
-        });
-        if (
-          validation.requires_trust_remote_code ||
-          validation.requires_security_review
-        ) {
-          const approved = await confirmRemoteCodeIfNeeded({
-            modelName: sel.id,
-            hfToken: currentStore.hfToken || null,
-            requiresTrustRemoteCode: true,
-            onApprove: (fp) => {
-              loadTrustRemoteCode = true;
-              approvedRemoteCodeFingerprint = fp;
+        useChatRuntimeStore.getState().setModelLoading(true);
+        try {
+          const validation = await validateModel(
+            {
+              model_path: sel.id,
+              hf_token: currentStore.hfToken || null,
+              max_seq_length: effectiveMaxSeqLength,
+              load_in_4bit: true,
+              is_lora: sel.isLora,
+              gguf_variant: nextGgufVariant,
+              trust_remote_code: loadTrustRemoteCode,
+              chat_template_override: effectiveChatTemplateOverride,
             },
-          });
-          if (!approved) {
-            throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code approval to load.`,
+            { signal: compareSignal },
+          );
+          throwIfCompareCancelled();
+          if (
+            validation.requires_trust_remote_code ||
+            validation.requires_security_review
+          ) {
+            const approved = await confirmRemoteCodeIfNeeded({
+              modelName: sel.id,
+              hfToken: currentStore.hfToken || null,
+              requiresTrustRemoteCode: true,
+              onApprove: (fp) => {
+                loadTrustRemoteCode = true;
+                approvedRemoteCodeFingerprint = fp;
+              },
+            });
+            throwIfCompareCancelled();
+            if (!approved) {
+              throw new Error(
+                `${modelDisplayName(sel.id)} needs custom code approval to load.`,
+              );
+            }
+          }
+
+          const preLoadStore = useChatRuntimeStore.getState();
+          const previousCheckpoint = preLoadStore.params.checkpoint;
+          const previousVariant = preLoadStore.activeGgufVariant ?? null;
+          if (
+            previousCheckpoint &&
+            (previousCheckpoint !== sel.id || previousVariant !== nextGgufVariant)
+          ) {
+            await unloadModel(
+              { model_path: previousCheckpoint },
+              { signal: compareSignal },
             );
+            throwIfCompareCancelled();
+            useChatRuntimeStore.getState().clearCheckpoint();
+          }
+
+          const loadStore = useChatRuntimeStore.getState();
+          const resp = await loadModel(
+            {
+              model_path: sel.id,
+              hf_token: loadStore.hfToken || null,
+              max_seq_length: effectiveMaxSeqLength,
+              load_in_4bit: true,
+              is_lora: sel.isLora,
+              gguf_variant: nextGgufVariant,
+              trust_remote_code: loadTrustRemoteCode,
+              approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+              chat_template_override: effectiveChatTemplateOverride,
+              cache_type_kv: currentStore.kvCacheDtype,
+              speculative_type: specSettings.speculativeType,
+              spec_draft_n_max: specSettings.specDraftNMax,
+              // Honor the Tensor Parallelism toggle on compare loads too.
+              tensor_parallel: currentStore.tensorParallel,
+            },
+            { signal: compareSignal },
+          );
+          throwIfCompareCancelled();
+          saveSpeculativeType(specSettings.speculativeType);
+          const store = useChatRuntimeStore.getState();
+          store.setCheckpoint(
+            resp.model,
+            resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+          );
+          store.setModelRequiresTrustRemoteCode(
+            resp.requires_trust_remote_code ?? false,
+          );
+          useChatRuntimeStore.setState({
+            supportsReasoning: resp.supports_reasoning ?? false,
+            reasoningAlwaysOn: resp.reasoning_always_on ?? false,
+            ...reasoningCapsFromLoad(resp),
+            supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
+            supportsTools: resp.supports_tools ?? false,
+            tensorParallel: resp.tensor_parallel ?? false,
+            loadedTensorParallel: resp.tensor_parallel ?? false,
+            loadedIsMultimodal: isMultimodalResponse(resp),
+            ...resolveLoadedSpeculativeSettings(resp),
+          });
+          // Sync the models[] entry with the load response so attach/send gates
+          // read fresh capabilities. /api/models/list can lag a model's actual
+          // state (e.g. a GGUF whose mmproj arrived after the snapshot).
+          const currentModels = useChatRuntimeStore.getState().models;
+          const idx = currentModels.findIndex((m) => m.id === sel.id);
+          const synced = {
+            isVision: Boolean(resp.is_vision),
+            isGguf: Boolean(resp.is_gguf),
+            isAudio: Boolean(resp.is_audio),
+            audioType: resp.audio_type ?? null,
+            hasAudioInput: Boolean(resp.has_audio_input),
+          };
+          if (idx === -1) {
+            store.setModels([
+              ...currentModels,
+              {
+                id: sel.id,
+                name: resp.display_name ?? sel.id,
+                isLora: sel.isLora,
+                ...synced,
+              },
+            ]);
+          } else {
+            const next = [...currentModels];
+            next[idx] = { ...next[idx], ...synced };
+            store.setModels(next);
+          }
+          return resp.status;
+        } finally {
+          if (compareLoadAbortRef.current === abortCtrl) {
+            useChatRuntimeStore.getState().setModelLoading(false);
           }
         }
-        const resp = await loadModel({
-          model_path: sel.id,
-          hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
-          load_in_4bit: true,
-          is_lora: sel.isLora,
-          gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: loadTrustRemoteCode,
-          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
-          chat_template_override: effectiveChatTemplateOverride,
-          speculative_type: specSettings.speculativeType,
-          spec_draft_n_max: specSettings.specDraftNMax,
-          // Honor the Tensor Parallelism toggle on compare loads too.
-          tensor_parallel: currentStore.tensorParallel,
-        });
-        saveSpeculativeType(specSettings.speculativeType);
-        const store = useChatRuntimeStore.getState();
-        store.setCheckpoint(
-          resp.model,
-          resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
-        );
-        store.setModelRequiresTrustRemoteCode(
-          resp.requires_trust_remote_code ?? false,
-        );
-        useChatRuntimeStore.setState({
-          supportsReasoning: resp.supports_reasoning ?? false,
-          reasoningAlwaysOn: resp.reasoning_always_on ?? false,
-          ...reasoningCapsFromLoad(resp),
-          supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
-          supportsTools: resp.supports_tools ?? false,
-          tensorParallel: resp.tensor_parallel ?? false,
-          loadedTensorParallel: resp.tensor_parallel ?? false,
-          loadedIsMultimodal: isMultimodalResponse(resp),
-          ...resolveLoadedSpeculativeSettings(resp),
-        });
-        // Sync the models[] entry with the load response so attach/send gates
-        // read fresh capabilities. /api/models/list can lag a model's actual
-        // state (e.g. a GGUF whose mmproj arrived after the snapshot).
-        const currentModels = useChatRuntimeStore.getState().models;
-        const idx = currentModels.findIndex((m) => m.id === sel.id);
-        const synced = {
-          isVision: Boolean(resp.is_vision),
-          isGguf: Boolean(resp.is_gguf),
-          isAudio: Boolean(resp.is_audio),
-          audioType: resp.audio_type ?? null,
-          hasAudioInput: Boolean(resp.has_audio_input),
-        };
-        if (idx === -1) {
-          store.setModels([
-            ...currentModels,
-            {
-              id: sel.id,
-              name: resp.display_name ?? sel.id,
-              isLora: sel.isLora,
-              ...synced,
-            },
-          ]);
-        } else {
-          const next = [...currentModels];
-          next[idx] = { ...next[idx], ...synced };
-          store.setModels(next);
-        }
-        return resp.status;
       }
 
-      const handle1 = handlesRef.current["model1"];
-      const handle2 = handlesRef.current["model2"];
-
       // Show user messages immediately on both sides
-      if (handle1) handle1.appendMessage(content);
-      if (handle2) handle2.appendMessage(content);
+      const [messageHandle1, messageHandle2] = await Promise.all([
+        model1?.id ? waitForCompareHandle("model1", "base") : undefined,
+        model2?.id ? waitForCompareHandle("model2", "lora") : undefined,
+      ]);
+      messageHandle1?.appendMessage(content);
+      messageHandle2?.appendMessage(content);
 
       const name1 = model1?.id ? modelDisplayName(model1.id) : "";
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);
+      onComparingChange?.(true);
       try {
         // Side 1: load → generate → wait
-        if (handle1 && model1?.id) {
+        if (model1?.id) {
           toast("Loading Model 1…", {
             id: toastId,
             description: name1,
@@ -1065,13 +1158,17 @@ export function SharedComposer({
             description: `${name1} (${status1})`,
             duration: Infinity,
           });
+          const handle1 = await waitForCompareHandle("model1", "base");
+          if (!handle1) {
+            throw new Error("Model 1 chat pane is not ready.");
+          }
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
         }
 
         // Side 2: load → generate → wait
-        if (handle2 && model2?.id) {
+        if (model2?.id) {
           const needsLoad =
             model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
             (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
@@ -1088,6 +1185,10 @@ export function SharedComposer({
             description: `${name2} (${status2})`,
             duration: Infinity,
           });
+          const handle2 = await waitForCompareHandle("model2", "lora");
+          if (!handle2) {
+            throw new Error("Model 2 chat pane is not ready.");
+          }
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
@@ -1097,13 +1198,22 @@ export function SharedComposer({
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
         compareStepSucceededRef.current = false;
-        toast.error("Compare failed", {
-          id: toastId,
-          description: err instanceof Error ? err.message : "Unknown error",
-          duration: 4000,
-        });
+        if (compareSignal.aborted) {
+          toast.info("Compare stopped", { id: toastId, duration: 2000 });
+        } else {
+          toast.error("Compare failed", {
+            id: toastId,
+            description: err instanceof Error ? err.message : "Unknown error",
+            duration: 4000,
+          });
+        }
       } finally {
+        if (compareLoadAbortRef.current === abortCtrl) {
+          compareLoadAbortRef.current = null;
+          useChatRuntimeStore.getState().setModelLoading(false);
+        }
         setComparing(false);
+        onComparingChange?.(false);
       }
     } else {
       // Original behavior: fire all handles simultaneously
@@ -1116,6 +1226,12 @@ export function SharedComposer({
 
   function stop() {
     if (isDictating) stopDictation();
+    compareLoadAbortRef.current?.abort();
+    if (comparing) {
+      useChatRuntimeStore.getState().setModelLoading(false);
+      setComparing(false);
+      onComparingChange?.(false);
+    }
     for (const handle of Object.values(handlesRef.current)) {
       handle.cancel();
     }
