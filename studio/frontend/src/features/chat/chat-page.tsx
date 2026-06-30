@@ -606,7 +606,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           handleName="lora"
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end">
+            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
