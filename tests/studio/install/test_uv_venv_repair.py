@@ -61,7 +61,15 @@ def _write_uv_stub(stub_dir: Path, mode: str) -> Path:
     elif mode == "fail":
         body = '@echo off\r\n>>"%UV_LOG%" echo %*\r\nexit /b 7\r\n'
     else:
-        body = '@echo off\r\n>>"%UV_LOG%" echo %*\r\nexit /b 0\r\n'
+        body = textwrap.dedent(
+            """\
+            @echo off
+            >>"%UV_LOG%" echo %*
+            if not exist "%~2" mkdir "%~2"
+            >"%~2\\uv-partial.txt" echo broken
+            exit /b 0
+            """
+        )
     with uv_path.open("w", encoding = "utf-8", newline = "") as fh:
         fh.write(body)
     return uv_path
@@ -69,7 +77,7 @@ def _write_uv_stub(stub_dir: Path, mode: str) -> Path:
 
 def _run_bootstrap(
     tmp_path: Path, mode: str, source_text: str
-) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
     if PWSH is None:
         pytest.skip("pwsh not available")
 
@@ -163,7 +171,7 @@ def _run_bootstrap(
         text = True,
         env = env,
     )
-    return proc, venv_dir, log_file
+    return proc, venv_dir, log_file, venv_dir / "uv-partial.txt"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
@@ -174,31 +182,36 @@ def test_install_ps1_rechecks_uv_success_before_continuing():
         "uv venv returned success but left an unusable venv; rebuilding with python -m venv..."
         in body
     )
+    assert '& $PythonExe -c "import sys; print(sys.executable)" 2>$null | Out-Null' in body
+    assert "Invoke-InstallCommand { & $PythonExe -c" not in body
+    assert "Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue" in body
     assert "& $DetectedPython.Path -m venv $VenvDir" in body
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 def test_uv_venv_empty_head_passes(tmp_path):
-    proc, venv_dir, log_file = _run_bootstrap(tmp_path, "empty", _source())
+    proc, venv_dir, log_file, partial_marker = _run_bootstrap(tmp_path, "empty", _source())
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (venv_dir / "Scripts" / "python.exe").is_file()
+    assert not partial_marker.exists()
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 def test_uv_venv_empty_origin_main_fails(tmp_path):
-    proc, venv_dir, log_file = _run_bootstrap(tmp_path, "empty", _source("origin/main:install.ps1"))
+    proc, venv_dir, log_file, partial_marker = _run_bootstrap(tmp_path, "empty", _source("origin/main:install.ps1"))
     assert proc.returncode == 91, proc.stdout + proc.stderr
     assert not (venv_dir / "Scripts" / "python.exe").exists()
+    assert partial_marker.exists()
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 def test_uv_venv_healthy_skips_fallback(tmp_path):
-    proc, venv_dir, log_file = _run_bootstrap(tmp_path, "healthy", _source())
+    proc, venv_dir, log_file, _ = _run_bootstrap(tmp_path, "healthy", _source())
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (venv_dir / "Scripts" / "python.exe").is_file()
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
@@ -207,7 +220,7 @@ def test_uv_venv_healthy_skips_fallback(tmp_path):
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 def test_uv_venv_nonzero_failure_is_preserved(tmp_path):
-    proc, _, log_file = _run_bootstrap(tmp_path, "fail", _source())
+    proc, _, log_file, _ = _run_bootstrap(tmp_path, "fail", _source())
     assert proc.returncode == 7, proc.stdout + proc.stderr
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
