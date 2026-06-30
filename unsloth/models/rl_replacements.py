@@ -1553,14 +1553,20 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_ok = True
                                 _pk_use = True
                             else:
-                                unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
-                                    _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
-                                )
                                 _pk_use = False
-                                if _pk_ok is None and _pk_T <= _pk_maxseg + 8:
-                                    # failed at a small T (no LongRoPE story) -> backend genuinely
-                                    # ignores packing; disable entirely.
+                                if _pk_diff >= 1.5:
+                                    # large mismatch = cross-sample contamination: this model's
+                                    # attention does not honor the block-diagonal packed mask (seen on
+                                    # some MoE / custom-attention models), so disable packing entirely
+                                    # and stop paying the verification cost on later batches.
                                     unwrapped_model._unsloth_seq_packing_nograd_ok = False
+                                else:
+                                    # moderate mismatch -> more likely a length-boundary effect (e.g. a
+                                    # LongRoPE short/long cache switch): mark this length region unsafe
+                                    # but keep packing available for smaller shapes.
+                                    unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
+                                        _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
+                                    )
                                 if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
                                     print(
                                         f"[Unsloth] GRPO seq-packing (no-grad) fell back at T={_pk_T} (diff={_pk_diff:.3f})",
