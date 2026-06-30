@@ -23,6 +23,10 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
+# Phone tokens: scoped to /api/phone/*, never full-access routes.
+PHONE_VIEW_SCOPE = "phone_view"
+PHONE_TOKEN_EXPIRE_HOURS = 12
+
 security = HTTPBearer()  # Reads Authorization: Bearer <token>
 
 
@@ -72,6 +76,59 @@ def create_access_token(
         _get_secret_for_subject(subject),
         algorithm = ALGORITHM,
     )
+
+
+def create_phone_token(subject: str, run_id: str) -> Tuple[str, datetime]:
+    expire = datetime.now(timezone.utc) + timedelta(hours = PHONE_TOKEN_EXPIRE_HOURS)
+    to_encode = {
+        "sub": subject,
+        "scope": PHONE_VIEW_SCOPE,
+        "run_id": run_id,
+        "exp": expire,
+    }
+    token = jwt.encode(
+        to_encode,
+        _get_secret_for_subject(subject),
+        algorithm = ALGORITHM,
+    )
+    return token, expire
+
+
+async def get_phone_viewer(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> Tuple[str, str]:
+    token = credentials.credentials
+    subject = _decode_subject_without_verification(token)
+    if subject is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid token payload",
+        )
+
+    record = get_user_and_secret(subject)
+    if record is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
+        )
+
+    _salt, _pwd_hash, jwt_secret, _must_change_password = record
+    try:
+        payload = jwt.decode(token, jwt_secret, algorithms = [ALGORITHM])
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
+        )
+
+    if payload.get("sub") != subject or payload.get("scope") != PHONE_VIEW_SCOPE:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid token scope",
+        )
+
+    run_id = payload.get("run_id")
+    return subject, run_id if isinstance(run_id, str) else ""
 
 
 def is_desktop_access_token(token: str) -> bool:
@@ -187,6 +244,12 @@ async def _get_current_subject(
     _salt, _pwd_hash, jwt_secret, must_change_password = record
     try:
         payload = jwt.decode(token, jwt_secret, algorithms = [ALGORITHM])
+        # Phone tokens must never satisfy a full-access route.
+        if payload.get("scope") == PHONE_VIEW_SCOPE:
+            raise HTTPException(
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Invalid or expired token",
+            )
         if payload.get("sub") != subject:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,

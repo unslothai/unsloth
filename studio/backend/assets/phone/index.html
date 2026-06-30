@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>Unsloth — Training</title>
+    <style>
+      :root {
+        --bg: #fefefd;
+        --card: #ffffff;
+        --fg: #2f3133;
+        --muted: #8a8f8c;
+        --border: #e7ebe9;
+        --track: #eef1ef;
+        --brand: #17b88b;
+        --amber: #d9942b;
+        --red: #e5564f;
+        --grey: #9aa0a6;
+        --shadow:
+          0 1px 2px rgba(16, 24, 20, 0.04), 0 8px 30px rgba(16, 24, 20, 0.06);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1b1e;
+          --card: #2d2e32;
+          --fg: #ececee;
+          --muted: #9a9ca1;
+          --border: #3a3c41;
+          --track: #3a3c41;
+          --brand: #1ec79a;
+          --amber: #e8a94a;
+          --red: #ef6a64;
+          --grey: #8b9096;
+          --shadow:
+            0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 36px rgba(0, 0, 0, 0.35);
+        }
+      }
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .wrap {
+        --c: var(--brand);
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 18px;
+        padding: 26px 18px calc(26px + env(safe-area-inset-bottom));
+      }
+      .wrap[data-state="loading_model"],
+      .wrap[data-state="configuring"] {
+        --c: var(--amber);
+      }
+      .wrap[data-state="error"] {
+        --c: var(--red);
+      }
+      .wrap[data-state="stopped"],
+      .wrap[data-state="idle"],
+      .wrap[data-state="reconnect"],
+      .wrap[data-state="invalid"] {
+        --c: var(--grey);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        opacity: 0.85;
+        margin-top: 6px;
+      }
+      .brand span {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--muted);
+      }
+
+      .card {
+        width: 100%;
+        max-width: 380px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        padding: 22px 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+      }
+      .name {
+        font-size: 16px;
+        font-weight: 600;
+        text-align: center;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .ring {
+        position: relative;
+        width: 220px;
+        height: 220px;
+      }
+      .ring svg {
+        transform: rotate(-90deg);
+      }
+      .ring .track {
+        fill: none;
+        stroke: var(--track);
+        stroke-width: 13;
+      }
+      .ring .bar {
+        fill: none;
+        stroke: var(--c);
+        stroke-width: 13;
+        stroke-linecap: round;
+        transition:
+          stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1),
+          stroke 0.4s ease;
+      }
+      .center {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+      }
+      .pct {
+        font-size: 50px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -1px;
+      }
+      .eta {
+        color: var(--muted);
+        font-size: 13.5px;
+        margin-top: 8px;
+        font-weight: 500;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 7px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--c);
+      }
+      .status .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--c);
+      }
+
+      .meta {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        width: 100%;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .spark {
+        width: 132px;
+        height: 30px;
+      }
+      .spark polyline {
+        fill: none;
+        stroke: var(--c);
+        stroke-width: 2;
+        stroke-linejoin: round;
+        stroke-linecap: round;
+      }
+      .sep {
+        width: 1px;
+        height: 18px;
+        background: var(--border);
+      }
+
+      .msg {
+        color: var(--muted);
+        font-size: 13.5px;
+        text-align: center;
+        max-width: 320px;
+        line-height: 1.45;
+      }
+      .msg.err {
+        color: var(--red);
+      }
+
+      .details {
+        width: 100%;
+        max-width: 380px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        box-shadow: var(--shadow);
+        padding: 0 18px;
+        max-height: 0;
+        overflow: hidden;
+        transition:
+          max-height 0.3s ease,
+          padding 0.3s ease;
+        margin-top: -4px;
+      }
+      .details.open {
+        max-height: 340px;
+        padding: 6px 18px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 11px 0;
+        font-size: 13.5px;
+        border-bottom: 1px solid var(--border);
+      }
+      .row:last-child {
+        border-bottom: 0;
+      }
+      .row .k {
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .row .v {
+        font-weight: 500;
+      }
+
+      .foot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .foot .pip {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--c);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap" id="wrap">
+      <div class="brand">
+        <span>Unsloth Studio</span>
+      </div>
+
+      <div class="card">
+        <div class="name" id="name">Training run</div>
+        <div class="ring" aria-label="progress">
+          <svg width="220" height="220" viewBox="0 0 220 220">
+            <circle class="track" cx="110" cy="110" r="98"></circle>
+            <circle
+              class="bar"
+              id="bar"
+              cx="110"
+              cy="110"
+              r="98"
+              stroke-dasharray="615.75"
+              stroke-dashoffset="615.75"
+            ></circle>
+          </svg>
+          <div class="center">
+            <div class="pct" id="pct">—</div>
+            <div class="eta" id="eta"></div>
+          </div>
+        </div>
+        <div class="status" id="status">
+          <span class="dot"></span><span id="statusText">Connecting…</span>
+        </div>
+        <div class="meta">
+          <svg
+            class="spark"
+            id="spark"
+            viewBox="0 0 132 30"
+            preserveAspectRatio="none"
+          >
+            <polyline id="sparkLine" points=""></polyline>
+          </svg>
+          <span class="sep"></span>
+          <span class="mono" id="vram">—</span>
+        </div>
+      </div>
+
+      <div class="msg" id="msg"></div>
+
+      <div class="details" id="details">
+        <div class="row">
+          <span class="k">Step</span><span class="v mono" id="d-step">—</span>
+        </div>
+        <div class="row">
+          <span class="k">Epoch</span><span class="v mono" id="d-epoch">—</span>
+        </div>
+        <div class="row">
+          <span class="k">Loss</span><span class="v mono" id="d-loss">—</span>
+        </div>
+        <div class="row">
+          <span class="k">Learning rate</span
+          ><span class="v mono" id="d-lr">—</span>
+        </div>
+        <div class="row">
+          <span class="k">GPU temp</span
+          ><span class="v mono" id="d-temp">—</span>
+        </div>
+      </div>
+
+      <div class="foot">
+        <span class="pip"></span><span id="footText">tap for details</span>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        // Token rides in the fragment, never sent to the server.
+        var token = location.hash.replace(/^#/, "");
+        var H = { headers: { Authorization: "Bearer " + token } };
+        var CIRC = 2 * Math.PI * 98;
+
+        var LABEL = {
+          training: "Training",
+          loading_model: "Loading model",
+          configuring: "Preparing",
+          completed: "Done",
+          stopped: "Stopped",
+          error: "Failed",
+          idle: "Idle",
+        };
+        var LIVE = { training: 1, loading_model: 1, configuring: 1 };
+
+        var lastStep = null,
+          lastTime = null,
+          eps = null,
+          stopped = false;
+        function $(id) {
+          return document.getElementById(id);
+        }
+
+        function fmtETA(sec) {
+          if (sec == null || !isFinite(sec) || sec < 0) return "";
+          sec = Math.round(sec);
+          if (sec < 90) return "~" + sec + "s left";
+          var m = Math.round(sec / 60);
+          return m < 90
+            ? "~" + m + " min left"
+            : "~" + Math.round(m / 6) / 10 + " h left";
+        }
+
+        function setState(state, label, footText) {
+          $("wrap").dataset.state = state;
+          $("statusText").textContent = label;
+          $("footText").textContent = footText;
+        }
+
+        function paintStatus(s) {
+          var d = (s && s.details) || {};
+          var step = d.step || 0,
+            total = d.total_steps || 0;
+          var phase = (s && s.phase) || "idle";
+
+          var frac = total > 0 ? Math.min(1, step / total) : 0;
+          $("bar").style.strokeDashoffset = (CIRC * (1 - frac)).toFixed(1);
+          $("pct").textContent = total > 0 ? Math.round(frac * 100) + "%" : "—";
+
+          if (d.output_dir)
+            $("name").textContent = d.output_dir
+              .split(/[\\/]/)
+              .filter(Boolean)
+              .pop();
+
+          var now = Date.now();
+          if (lastStep != null && step > lastStep && lastTime != null) {
+            var inst = (step - lastStep) / ((now - lastTime) / 1000);
+            eps = eps == null ? inst : eps * 0.6 + inst * 0.4;
+          }
+          lastStep = step;
+          lastTime = now;
+
+          var live = !!LIVE[phase];
+          $("eta").textContent =
+            live && eps && total > step ? fmtETA((total - step) / eps) : "";
+          setState(
+            phase,
+            LABEL[phase] || "Idle",
+            live
+              ? "live · updates every 2s · tap for details"
+              : "tap for details",
+          );
+
+          $("msg").textContent =
+            phase === "error" ? s.error || s.message || "Training failed" : "";
+          $("msg").classList.toggle("err", phase === "error");
+
+          $("d-step").textContent = total ? step + " / " + total : step || "—";
+          $("d-epoch").textContent =
+            d.epoch != null ? Math.round(d.epoch * 100) / 100 : "—";
+          $("d-loss").textContent =
+            d.loss != null ? Number(d.loss).toFixed(4) : "—";
+          $("d-lr").textContent =
+            d.learning_rate != null
+              ? Number(d.learning_rate).toExponential(1)
+              : "—";
+
+          drawSpark((s && s.metric_history && s.metric_history.loss) || []);
+          if (phase === "completed" || phase === "stopped" || phase === "error")
+            stopped = true;
+        }
+
+        function drawSpark(vals) {
+          if (!vals || vals.length < 2) {
+            $("sparkLine").setAttribute("points", "");
+            return;
+          }
+          var v = vals.slice(-40),
+            mn = Math.min.apply(null, v),
+            mx = Math.max.apply(null, v);
+          var rng = mx - mn || 1,
+            W = 132,
+            Hh = 30,
+            pad = 3;
+          $("sparkLine").setAttribute(
+            "points",
+            v
+              .map(function (y, i) {
+                var x = (i / (v.length - 1)) * W;
+                return (
+                  x.toFixed(1) +
+                  "," +
+                  (Hh - pad - ((y - mn) / rng) * (Hh - 2 * pad)).toFixed(1)
+                );
+              })
+              .join(" "),
+          );
+        }
+
+        function paintHw(h) {
+          if (!h || h.available === false) {
+            $("vram").textContent = "";
+            $("d-temp").textContent = "—";
+            return;
+          }
+          var parts = [];
+          if (h.vram_used_gb != null && h.vram_total_gb != null)
+            parts.push(
+              h.vram_used_gb.toFixed(0) +
+                "/" +
+                h.vram_total_gb.toFixed(0) +
+                " GB",
+            );
+          if (h.gpu_utilization_pct != null)
+            parts.push(Math.round(h.gpu_utilization_pct) + "%");
+          $("vram").textContent = parts.join("  ·  ");
+          $("d-temp").textContent =
+            h.temperature_c != null ? Math.round(h.temperature_c) + "°C" : "—";
+        }
+
+        function showError(text, invalid) {
+          setState(
+            invalid ? "invalid" : "reconnect",
+            invalid ? "Link invalid" : "Reconnecting",
+            "",
+          );
+          $("msg").textContent = text;
+          $("msg").classList.add("err");
+        }
+
+        async function tick() {
+          try {
+            var sr = await fetch("/api/phone/status", H);
+            if (sr.status === 401 || sr.status === 410) {
+              stopped = true;
+              return showError(
+                sr.status === 410
+                  ? "This run has ended. Ask for a fresh link to watch the current run."
+                  : "This link has expired or is invalid.",
+                true,
+              );
+            }
+            if (!sr.ok) throw 0;
+            paintStatus(await sr.json());
+            try {
+              var hr = await fetch("/api/phone/hardware", H);
+              if (hr.ok) paintHw(await hr.json());
+            } catch (e) {}
+          } catch (e) {
+            showError("Lost connection to Studio. Retrying…");
+          }
+        }
+
+        $("wrap").addEventListener("click", function () {
+          $("details").classList.toggle("open");
+        });
+        tick();
+        var timer = setInterval(function () {
+          if (stopped) {
+            clearInterval(timer);
+            return;
+          }
+          tick();
+        }, 2000);
+      })();
+    </script>
+  </body>
+</html>

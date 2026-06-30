@@ -59,6 +59,37 @@ export async function getTrainingStatus(): Promise<TrainingStatusResponse> {
   return parseJson<TrainingStatusResponse>(response);
 }
 
+export interface PhoneShareResponse {
+  page_url: string;
+  expires_at: string;
+}
+
+export class PhoneNotReachableError extends Error {
+  readonly command: string;
+  constructor(command: string) {
+    super("Studio is only reachable on this computer.");
+    this.name = "PhoneNotReachableError";
+    this.command = command;
+  }
+}
+
+export async function shareTrainingToPhone(): Promise<PhoneShareResponse> {
+  const response = await authFetch("/api/phone/share", { method: "POST" });
+  if (response.status === 409) {
+    let command = "unsloth studio -H 0.0.0.0";
+    try {
+      const body = (await response.json()) as {
+        detail?: { command?: string };
+      };
+      if (body.detail?.command) command = body.detail.command;
+    } catch {
+      // keep the default command
+    }
+    throw new PhoneNotReachableError(command);
+  }
+  return parseJson<PhoneShareResponse>(response);
+}
+
 export async function getTrainingMetrics(): Promise<TrainingMetricsResponse> {
   const response = await authFetch("/api/train/metrics");
   return parseJson<TrainingMetricsResponse>(response);

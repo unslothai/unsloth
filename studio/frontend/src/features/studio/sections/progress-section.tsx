@@ -45,6 +45,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { type ReactElement, type ReactNode, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
+import { PhoneShareButton } from "./phone-share-button";
 import {
   formatDuration,
   formatNumber,
@@ -543,6 +544,7 @@ function TrainingHeaderActions({
   const t = useT();
   return (
     <div className="flex items-center gap-2">
+      <PhoneShareButton />
       <ConfigPopoverButton configItems={configItems} />
       <ChartSettingsSheet />
       <AlertDialog open={stopDialogOpen} onOpenChange={onOpenStopDialog}>

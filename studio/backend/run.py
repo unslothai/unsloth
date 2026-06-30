@@ -1075,6 +1075,9 @@ def run_server(
     if secure:
         os.environ["UNSLOTH_SECURE"] = "1"
 
+    # Bind host, for the phone-share loopback check.
+    os.environ["UNSLOTH_BIND_HOST"] = host
+
     import nest_asyncio
 
     nest_asyncio.apply()

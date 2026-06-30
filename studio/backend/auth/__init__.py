@@ -6,6 +6,8 @@
 from .authentication import (
     create_access_token,
     create_refresh_token,
+    create_phone_token,
+    get_phone_viewer,
     refresh_access_token,
     get_current_subject,
     get_current_subject_allow_password_change,
@@ -33,6 +35,8 @@ from .hashing import hash_password, verify_password
 __all__ = [
     "create_access_token",
     "create_refresh_token",
+    "create_phone_token",
+    "get_phone_viewer",
     "refresh_access_token",
     "get_current_subject",
     "get_current_subject_allow_password_change",

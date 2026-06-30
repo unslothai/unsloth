@@ -881,6 +881,24 @@ export const en = {
         stopped: "Stopped",
       },
     },
+    phoneShare: {
+      button: "View on phone",
+      dialogTitle: "Watch on your phone",
+      dialogDescription:
+        "Scan with your phone camera. Same Wi-Fi only · view-only · the link expires automatically.",
+      creatingLink: "Creating link…",
+      error: "Could not create a phone link.",
+      copied: "Copied ✓",
+      notReachableTitle: "Enable phone access",
+      notReachableDescription:
+        "Studio is only available on this computer right now.",
+      notReachableBody:
+        "Restart Studio with local network access, then come back here:",
+      copyCommand: "Copy",
+      commandCopied: "Copied ✓",
+      notReachableHint:
+        "Only use this on trusted Wi‑Fi. Other devices on your local network may be able to reach Studio.",
+    },
     trainingStart: {
       ready: "Ready",
       downloading: "Downloading",
