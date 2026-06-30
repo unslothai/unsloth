@@ -803,6 +803,37 @@ _MTP_MIN_SIZE_B = 3.0
 # of free (see _fit_context_to_vram), plus a byte-accurate MTP draft reserve.
 _CTX_FIT_VRAM_FRACTION = 0.95
 
+# Floor under the absolute VRAM cushion (1 - frac) * total. On a 24 GB card 5% is
+# only ~1.2 GB, too thin for what the byte estimate misses (CUDA context, compute
+# buffers, the nvidia-smi-vs-CUDA free gap, a shared desktop); auto-fit then sized a
+# context that spilled to CPU and ~halved tok/s (#6682). 3 GiB ~restores the headroom
+# #6312 dropped (10%-of-free -> 5%-of-total). The cap (12.5% = 3 GiB / 24 GB) stops
+# small cards over-reserving; where 5% already tops 3 GiB (>= 60 GB) it's unchanged.
+_MIN_VRAM_RESERVE_MIB = 3072
+_MAX_VRAM_RESERVE_FRAC = 0.125
+
+
+def _vram_reserve_mib(total_mib: float, frac: float) -> float:
+    """Per-card VRAM reserve: ``(1 - frac) * total`` floored at _MIN_VRAM_RESERVE_MIB
+    and capped at _MAX_VRAM_RESERVE_FRAC * total (see _MIN_VRAM_RESERVE_MIB for why)."""
+    return min(
+        max((1.0 - frac) * total_mib, _MIN_VRAM_RESERVE_MIB), _MAX_VRAM_RESERVE_FRAC * total_mib
+    )
+
+
+def _pooled_usable_mib(subset, frac, total_by_idx):
+    """Usable VRAM (MiB) over a GPU ``subset`` of (idx, free) pairs, reserving the
+    floor ONCE on the pooled total (a k-GPU split must not hold out k x the floor,
+    #6682). Unknown-total GPUs (MIG/vGPU) keep their own ``free * frac``; single GPU
+    is unchanged."""
+    known_free = sum(f for i, f in subset if total_by_idx.get(i, 0) > 0)
+    known_total = sum(total_by_idx.get(i, 0) for i, _ in subset if total_by_idx.get(i, 0) > 0)
+    budget = sum(f * frac for i, f in subset if total_by_idx.get(i, 0) <= 0)
+    if known_total > 0:
+        budget += max(0.0, known_free - _vram_reserve_mib(known_total, frac))
+    return budget
+
+
 # Apple unified memory is shared with the OS, so tighter than VRAM. Matches the
 # 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
@@ -4892,10 +4923,9 @@ class LlamaCppBackend:
                         return free * frac
 
                     def _pool_budget_mib(subset, frac):
-                        # Sum each GPU's own usable budget. Pooling free and total
-                        # separately would let an unknown-total GPU (MIG/vGPU/N/A)
-                        # add full free with no cushion among known-total GPUs.
-                        return sum(max(0.0, _gpu_usable(g, frac)) for g in subset)
+                        # Reserve the VRAM floor once across the pool (not per device);
+                        # this is the only place the auto-context budget applies it.
+                        return _pooled_usable_mib(subset, frac, total_by_idx)
 
                     # Resolve effective context: 0 means let llama-server use
                     # the model's native length. Only expand to a known native
@@ -5311,8 +5341,8 @@ class LlamaCppBackend:
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(
-                                    g, _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
+                                key = lambda g: _pool_budget_mib(
+                                    [g], _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
                                 ),
                                 reverse = True,
                             )
@@ -5373,10 +5403,15 @@ class LlamaCppBackend:
                         else:
                             # Auto context: prefer fewer GPUs, cap to fit. Same
                             # headroom threshold as _select_gpus (#5106). Rank by the
-                            # active pin fraction so the order matches the fit budget.
+                            # floored single-GPU budget (_pool_budget_mib), the same
+                            # value the per-subset fit then admits, so a one-GPU fit
+                            # isn't split across two; the unfloored 5% mis-orders
+                            # mixed card sizes (#6688 review).
                             pin_fraction = _pin_fraction
                             ranked = sorted(
-                                gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
+                                gpus,
+                                key = lambda g: _pool_budget_mib([g], pin_fraction),
+                                reverse = True,
                             )
                             # Skips _select_gpus, so apply its cap: count only cards
                             # whose usable VRAM clears the per-device layer overhead.

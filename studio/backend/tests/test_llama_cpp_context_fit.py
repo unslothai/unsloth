@@ -70,7 +70,11 @@ sys.modules.setdefault("httpx", _httpx_stub)
 from core.inference.llama_cpp import (
     _APPLE_UNIFIED_MEMORY_FRACTION,
     _CTX_FIT_VRAM_FRACTION,
+    _MAX_VRAM_RESERVE_FRAC,
+    _MIN_VRAM_RESERVE_MIB,
     LlamaCppBackend,
+    _pooled_usable_mib,
+    _vram_reserve_mib,
     classify_gpu_offload_lines,
 )
 from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
@@ -733,6 +737,110 @@ def test_select_gpus_reserves_per_device_overhead():
         small, gpus, total_by_idx = totals, per_device_overhead_bytes = gib
     )
     assert a == [0] and b == [0]
+
+
+# ---------------------------------------------------------------------------
+# VRAM reserve floor (#6682): 5% of total is too thin on consumer cards (1.2 GB
+# on 24 GB) to absorb CUDA context, the nvidia-smi vs CUDA free gap, and a shared
+# desktop's drift, so auto-fit advertised a context that pinned then offloaded to
+# CPU at runtime. The reserve is floored at _MIN_VRAM_RESERVE_MIB, capped at
+# _MAX_VRAM_RESERVE_FRAC, and unchanged where 5% already exceeds the floor.
+# ---------------------------------------------------------------------------
+
+
+def test_vram_reserve_floor_on_consumer_card():
+    # 24 GB: 5% = 1229 MiB is below the floor, so the floor wins (and equals the
+    # 12.5% cap = 3072), giving a real cushion instead of #6312's thin 5%.
+    total = 24576
+    assert (1.0 - _CTX_FIT_VRAM_FRACTION) * total < _MIN_VRAM_RESERVE_MIB
+    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MIN_VRAM_RESERVE_MIB
+
+
+def test_vram_reserve_unchanged_on_datacenter_card():
+    # 80 GB: 5% = 4096 MiB already exceeds the floor, so behaviour is unchanged
+    # from #6312 (no over-reserving the big cards it was tuned for).
+    total = 81920
+    assert (
+        _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == (1.0 - _CTX_FIT_VRAM_FRACTION) * total
+    )
+
+
+def test_vram_reserve_capped_on_small_card():
+    # 8 GB: a flat floor would be 37% of the card; the cap holds it to the 24 GB
+    # design fraction (12.5%) so a small card running a model that nearly fills it
+    # isn't pushed off the GPU, and never reserves a larger fraction than a 24 GB card.
+    total = 8192
+    assert _MIN_VRAM_RESERVE_MIB > _MAX_VRAM_RESERVE_FRAC * total
+    assert _vram_reserve_mib(total, _CTX_FIT_VRAM_FRACTION) == _MAX_VRAM_RESERVE_FRAC * total
+
+
+def test_pooled_usable_single_gpu_applies_floor():
+    # Single GPU: pool budget == free - floor (unchanged by the per-pool refactor).
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(1, 23700)]
+    totals = {1: 24576}
+    assert _pooled_usable_mib(subset, frac, totals) == 23700 - _vram_reserve_mib(24576, frac)
+
+
+def test_pooled_usable_floor_applied_once_across_pool():
+    # Two 24 GB cards: the floor is reserved ONCE on the pooled total (3072), not
+    # 2x (6144). That is the #6682 multi-GPU fix -- the old per-device sum reserved
+    # 2x the floor and dropped tight pools to the 4096 fallback.
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(0, 12000), (1, 12000)]
+    totals = {0: 24576, 1: 24576}
+    pooled = _pooled_usable_mib(subset, frac, totals)
+    assert pooled == 24000 - _vram_reserve_mib(2 * 24576, frac)  # one floor on the pool
+    per_device = sum(max(0.0, f - _vram_reserve_mib(totals[i], frac)) for i, f in subset)
+    assert pooled > per_device  # the refactor recovers ~one floor's worth of budget
+
+
+def test_pooled_usable_unknown_total_keeps_per_device_cushion():
+    # An unknown-total GPU (MIG/vGPU/N/A: total 0) keeps free*frac; the known card
+    # gets the pooled floor. The two contributions add, no full-free-no-reserve leak.
+    frac = _CTX_FIT_VRAM_FRACTION
+    subset = [(0, 24000), (1, 12000)]
+    totals = {0: 0, 1: 24576}  # GPU 0 total unknown
+    expected = 24000 * frac + max(0.0, 12000 - _vram_reserve_mib(24576, frac))
+    assert _pooled_usable_mib(subset, frac, totals) == expected
+
+
+def test_floored_budget_defers_tight_consumer_model_to_fit():
+    # noahterbest's #5106-class case (carried over from #6688): a 20.8 GB model with
+    # 22805 MiB free on a 24 GB card. The floored reserve leaves 19733 MiB usable, so
+    # the model can't pin and auto-fit defers to --fit instead of advertising a
+    # context that spills at runtime (#6682). A smaller model still pins.
+    frac = _CTX_FIT_VRAM_FRACTION
+    budget = _pooled_usable_mib([(0, 22805)], frac, {0: 24576})
+    assert int(20.8 * 1024) > budget  # tight model exceeds the floored budget -> --fit
+    assert int(18.5 * 1024) < budget  # a smaller model fits and pins
+
+
+def test_auto_subset_ranking_orders_by_floored_budget_not_raw_fraction():
+    # #6688 review: auto/cap ranking must sort by the floored single-GPU budget
+    # (_pool_budget_mib([g], frac)), the value the per-subset fit then admits, not
+    # by the unfloored free-(1-frac)*total. On a mixed pair (24 GB / 80 GB) the
+    # two orders disagree, and the unfloored one would split a one-GPU fit in two.
+    frac = _CTX_FIT_VRAM_FRACTION
+    totals = {0: 24576, 1: 81920}
+    gpus = [(0, 24000), (1, 26000)]  # 24 GB and 80 GB cards
+
+    def floored(g):
+        return _pooled_usable_mib([g], frac, totals)
+
+    def unfloored(g):
+        idx, free = g
+        return free - (1.0 - frac) * totals[idx]
+
+    # Floored: the 80 GB card has the larger single-GPU budget, so it ranks first.
+    assert sorted(gpus, key = floored, reverse = True)[0] == (1, 26000)
+    # Unfloored: the 24 GB card wins the raw-fraction sort -> the old mis-order.
+    assert sorted(gpus, key = unfloored, reverse = True)[0] == (0, 24000)
+    # A ~21.5 GiB footprint fits the 80 GB card alone but not the 24 GB card, so
+    # the floored order finds a one-GPU fit the unfloored order would have split.
+    footprint = 21504
+    assert footprint <= floored((1, 26000))
+    assert footprint > floored((0, 24000))
 
 
 # ---------------------------------------------------------------------------
