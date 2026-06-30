@@ -11,7 +11,13 @@ export interface DiffusionStatus {
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
+  // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls
+  // (the dense transformer_quant fast path only engages on gguf). Null when not loaded.
+  model_kind?: string | null;
   cpu_offload: boolean;
+  // Image workflows the loaded family supports (drives tab gating): txt2img, img2img,
+  // inpaint. Absent/empty when nothing is loaded or on the native sd.cpp engine.
+  workflows?: string[];
 }
 
 export interface DiffusionGenerateProgress {
@@ -32,11 +38,33 @@ export interface DiffusionLoadProgress {
 
 export interface DiffusionLoadRequest {
   model_path: string;
-  gguf_filename: string;
+  // Optional now: required for the gguf / single_file kinds, omitted for a full
+  // pipeline (a diffusers repo loaded via from_pretrained).
+  gguf_filename?: string;
+  // How to load the model (omit to auto-detect from gguf_filename): "gguf" (single-file
+  // GGUF transformer), "single_file" (single-file safetensors transformer, e.g. fp8), or
+  // "pipeline" (a full diffusers repo). Non-GGUF kinds are restricted to unsloth/* repos.
+  model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
   hf_token?: string;
   cpu_offload?: boolean;
+  // Advanced (load-time) tuning. All optional; omit for the backend's auto defaults.
+  speed_mode?: "off" | "eager" | "default" | "max";
+  transformer_quant?: "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8";
+  attention_backend?:
+    | "auto"
+    | "native"
+    | "cudnn"
+    | "flash"
+    | "flash2"
+    | "flash3"
+    | "flash4"
+    | "sage"
+    | "xformers"
+    | "aiter";
+  memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
+  transformer_cache?: "off" | "fbcache";
 }
 
 export interface DiffusionGenerateRequest {
@@ -48,6 +76,16 @@ export interface DiffusionGenerateRequest {
   guidance?: number;
   seed?: number;
   batch_size?: number;
+  // Image-conditioned workflows. init_image alone = img2img; init_image + mask_image =
+  // inpaint. Base64 or data-URL. strength is the denoise amount (0 keeps source, 1 redraws).
+  init_image?: string;
+  mask_image?: string;
+  strength?: number;
+  // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises
+  // it at low strength. Requires init_image; ignored for txt2img/inpaint/edit.
+  upscale?: number;
+  // Additional reference images for the FLUX.2 reference workflow, combined with init_image.
+  reference_images?: string[];
 }
 
 // A persisted image's full generation recipe (also embedded in the PNG).

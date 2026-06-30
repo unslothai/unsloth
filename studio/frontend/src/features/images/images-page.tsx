@@ -9,6 +9,8 @@ import {
   Download01Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
+  LayoutAlignRightIcon,
+  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -28,6 +30,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/components/assistant-ui/model-selector";
@@ -67,6 +70,39 @@ const txt2img = (id: string, name: string): ModelOption => ({
   description: "Text-to-image · GGUF",
   isGguf: true,
 });
+
+// Instruction-editing GGUF (Qwen-Image-Edit). Same single-file GGUF flow as txt2img
+// (the picker expands quant variants); the backend resolves it to the edit family, which
+// exposes only the "edit" workflow.
+const editGguf = (id: string, name: string): ModelOption => ({
+  id,
+  name,
+  description: "Image editing · GGUF",
+  isGguf: true,
+});
+
+// How to load a curated non-GGUF (safetensors) model. "pipeline" = a full diffusers
+// repo (from_pretrained, embedded bnb-4bit quant auto-applied); "single_file" = a
+// single safetensors transformer (e.g. fp8) assembled onto its base repo. The backend
+// gates these to unsloth/* repos. Keyed by repo id so the load handler knows the kind
+// (and, for single_file, the exact filename).
+type SafetensorsSpec = { kind: "pipeline" | "single_file"; filename?: string };
+const SAFETENSORS_MODELS: Record<string, SafetensorsSpec> = {
+  "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": { kind: "pipeline" },
+  "unsloth/Qwen-Image-2512-unsloth-bnb-4bit": { kind: "pipeline" },
+  "unsloth/Qwen-Image-2512-FP8": {
+    kind: "single_file",
+    filename: "qwen-image-2512-fp8.safetensors",
+  },
+};
+// Curated non-GGUF picker entries (isGguf:false -> no quant expander, direct load).
+const safetensors = (id: string, name: string, label: string): ModelOption => ({
+  id,
+  name,
+  description: `Text-to-image · ${label}`,
+  isGguf: false,
+});
+
 const MODELS: ModelOption[] = [
   txt2img("unsloth/Z-Image-Turbo-GGUF", "Z-Image-Turbo"),
   txt2img("unsloth/Z-Image-GGUF", "Z-Image"),
@@ -76,6 +112,72 @@ const MODELS: ModelOption[] = [
   txt2img("unsloth/FLUX.1-dev-GGUF", "FLUX.1 dev"),
   txt2img("unsloth/FLUX.2-klein-4B-GGUF", "FLUX.2 klein 4B"),
   txt2img("unsloth/FLUX.2-klein-9B-GGUF", "FLUX.2 klein 9B"),
+  editGguf("unsloth/Qwen-Image-Edit-2511-GGUF", "Qwen-Image-Edit 2511"),
+  editGguf("unsloth/FLUX.1-Kontext-dev-GGUF", "FLUX.1 Kontext dev"),
+  safetensors(
+    "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+    "Z-Image-Turbo (bnb-4bit)",
+    "Safetensors · bnb-4bit",
+  ),
+  safetensors(
+    "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
+    "Qwen-Image 2512 (bnb-4bit)",
+    "Safetensors · bnb-4bit",
+  ),
+  safetensors(
+    "unsloth/Qwen-Image-2512-FP8",
+    "Qwen-Image 2512 (FP8)",
+    "Safetensors · fp8",
+  ),
+];
+
+// Workflow tabs. `requires` is the backend workflow id (status.workflows) that must
+// be supported by the loaded model for the tab to enable; null = always available.
+type WorkflowId = "create" | "transform" | "inpaint" | "extend" | "upscale" | "reference" | "edit";
+
+const WORKFLOW_TABS: Array<{
+  id: WorkflowId;
+  label: string;
+  requires: string | null;
+  hint?: string;
+}> = [
+  { id: "create", label: "Create", requires: null, hint: "Generate a new image from a prompt" },
+  {
+    id: "transform",
+    label: "Transform",
+    requires: "img2img",
+    hint: "Redraw an uploaded image guided by your prompt (img2img)",
+  },
+  {
+    id: "inpaint",
+    label: "Inpaint",
+    requires: "inpaint",
+    hint: "Paint over a region to regenerate just that area, keeping the rest",
+  },
+  {
+    id: "extend",
+    label: "Extend",
+    requires: "outpaint",
+    hint: "Outpaint: grow the canvas and fill the new edges from your prompt",
+  },
+  {
+    id: "upscale",
+    label: "Upscale",
+    requires: "upscale",
+    hint: "Hires fix: enlarge an uploaded image and re-detail it at higher resolution",
+  },
+  {
+    id: "reference",
+    label: "Reference",
+    requires: "reference",
+    hint: "Generate a new image guided by a reference image + your prompt (FLUX.2)",
+  },
+  {
+    id: "edit",
+    label: "Edit",
+    requires: "edit",
+    hint: "Instruction editing: change an image with a prompt (Qwen-Image-Edit)",
+  },
 ];
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring,
@@ -88,6 +190,8 @@ const DEFAULT_GEN = { steps: 9, guidance: 0 };
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "z-image-turbo", steps: 9, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
+  // Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
+  { match: "kontext", steps: 28, guidance: 2.5 },
   { match: "flux.1", steps: 28, guidance: 3.5 },
   { match: "flux.2-klein", steps: 4, guidance: 0 },
   { match: "qwen-image", steps: 20, guidance: 4 },
@@ -284,7 +388,11 @@ function SliderField({
           min={min}
           max={max}
           step={step}
-          className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+          // The slider is the primary control, so the native number spinners are
+          // redundant — and on this narrow field their up/down arrows overlapped and
+          // covered the value. Remove them on every engine: appearance:textfield for
+          // Firefox, and zero out the webkit inner/outer spin buttons.
+          className="w-14 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [appearance:textfield] [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none"
         />
       </div>
     </div>
@@ -310,6 +418,335 @@ function Field({
       {children}
     </div>
   );
+}
+
+// A compact labeled Select row for the Advanced Options panel.
+function AdvancedSelect({
+  label,
+  hint,
+  value,
+  onValueChange,
+  options,
+}: {
+  label: string;
+  hint?: ReactNode;
+  value: string;
+  onValueChange: (v: string) => void;
+  options: Array<[string, string]>;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+        {label}
+        {hint && <InfoHint>{hint}</InfoHint>}
+      </span>
+      <Select value={value} onValueChange={onValueChange}>
+        <SelectTrigger className="h-8 w-[160px] text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map(([v, l]) => (
+            <SelectItem key={v} value={v} className="text-xs">
+              {l}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+// Source-image picker for the Transform (img2img) workflow: click or drag-drop an
+// image, read it to a data URL the generate request sends as init_image. Shows a
+// thumbnail preview with a Clear button once an image is set.
+function ImageDropzone({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (dataUrl: string | null) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const readFile = useCallback(
+    (file: File | undefined | null) => {
+      if (!file || !file.type.startsWith("image/")) {
+        if (file) toast.error("Please choose an image file");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => onChange(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => toast.error("Could not read the image");
+      reader.readAsDataURL(file);
+    },
+    [onChange],
+  );
+
+  if (value) {
+    return (
+      <div className="relative overflow-hidden rounded-xl border border-border">
+        <img src={value} alt="Source" className="max-h-44 w-full object-contain bg-muted/30" />
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon"
+          aria-label="Remove source image"
+          title="Remove"
+          className="absolute right-1.5 top-1.5 size-7"
+          onClick={() => {
+            onChange(null);
+            if (inputRef.current) inputRef.current.value = "";
+          }}
+        >
+          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => inputRef.current?.click()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        readFile(e.dataTransfer.files?.[0]);
+      }}
+      className={cn(
+        "flex h-28 w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed text-xs transition-colors",
+        dragging
+          ? "border-primary/60 bg-primary/5 text-foreground"
+          : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+      )}
+    >
+      <HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />
+      <span>Click or drop an image</span>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => readFile(e.target.files?.[0])}
+      />
+    </button>
+  );
+}
+
+// A brush-based mask editor for inpainting. Shows the source image with a paintable
+// overlay and exports a grayscale PNG mask at the image's NATIVE resolution, following
+// the diffusers inpaint convention (white = repaint, black = keep). Strokes are drawn to
+// both a visible tinted overlay (feedback) and an offscreen mask canvas kept in lockstep,
+// so the exported mask always matches what the user sees. `brushPct` sizes the brush as a
+// fraction of the image's shorter side, so it stays consistent across resolutions.
+function MaskCanvas({
+  image,
+  brushPct,
+  resetKey,
+  onMaskChange,
+}: {
+  image: string;
+  brushPct: number;
+  resetKey: number;
+  onMaskChange: (dataUrl: string | null) => void;
+}) {
+  const dispRef = useRef<HTMLCanvasElement | null>(null);
+  const maskRef = useRef<HTMLCanvasElement | null>(null);
+  const dims = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
+  const drawing = useRef(false);
+  const last = useRef<{ x: number; y: number } | null>(null);
+  const [ready, setReady] = useState(false);
+
+  // (Re)initialise both canvases whenever the image changes or Clear is pressed:
+  // size them to the image's native pixels and reset the mask to all-black (keep all).
+  useEffect(() => {
+    setReady(false);
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      dims.current = { w, h };
+      const disp = dispRef.current;
+      const mask = maskRef.current ?? document.createElement("canvas");
+      maskRef.current = mask;
+      if (!disp) return;
+      disp.width = w;
+      disp.height = h;
+      mask.width = w;
+      mask.height = h;
+      const mctx = mask.getContext("2d");
+      const dctx = disp.getContext("2d");
+      if (!mctx || !dctx) return;
+      mctx.fillStyle = "#000";
+      mctx.fillRect(0, 0, w, h);
+      dctx.clearRect(0, 0, w, h);
+      setReady(true);
+      onMaskChange(null);
+    };
+    img.src = image;
+  }, [image, resetKey, onMaskChange]);
+
+  const radius = useCallback(() => {
+    const base = Math.min(dims.current.w, dims.current.h) || 1024;
+    return Math.max(2, (brushPct / 100) * base);
+  }, [brushPct]);
+
+  const toNatural = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const disp = dispRef.current;
+    if (!disp) return { x: 0, y: 0 };
+    const r = disp.getBoundingClientRect();
+    return {
+      x: ((e.clientX - r.left) / r.width) * dims.current.w,
+      y: ((e.clientY - r.top) / r.height) * dims.current.h,
+    };
+  };
+
+  const stroke = (from: { x: number; y: number } | null, to: { x: number; y: number }) => {
+    const disp = dispRef.current;
+    const mask = maskRef.current;
+    if (!disp || !mask) return;
+    const r = radius();
+    const layers: Array<[CanvasRenderingContext2D | null, string]> = [
+      [disp.getContext("2d"), "rgba(244,114,114,0.55)"],
+      [mask.getContext("2d"), "#ffffff"],
+    ];
+    for (const [ctx, style] of layers) {
+      if (!ctx) continue;
+      ctx.strokeStyle = style;
+      ctx.fillStyle = style;
+      ctx.lineWidth = r * 2;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.arc(to.x, to.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      if (from) {
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+      }
+    }
+  };
+
+  const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!ready) return;
+    drawing.current = true;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // setPointerCapture can throw for synthetic events; safe to ignore.
+    }
+    const p = toNatural(e);
+    last.current = p;
+    stroke(null, p);
+  };
+  const onMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawing.current) return;
+    const p = toNatural(e);
+    stroke(last.current, p);
+    last.current = p;
+  };
+  const onUp = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    last.current = null;
+    const mask = maskRef.current;
+    if (mask) onMaskChange(mask.toDataURL("image/png"));
+  };
+
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-border bg-muted/30">
+      <img
+        src={image}
+        alt="Inpaint source"
+        className="block w-full select-none"
+        draggable={false}
+      />
+      <canvas
+        ref={dispRef}
+        data-testid="mask-canvas"
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerLeave={onUp}
+        className="absolute inset-0 h-full w-full cursor-crosshair touch-none"
+      />
+    </div>
+  );
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+// Which sides to grow when outpainting.
+type ExtendSides = { left: boolean; right: boolean; top: boolean; bottom: boolean };
+
+// Build the (image, mask) pair for outpaint by reusing the inpaint backend: grow the
+// canvas by `pct` of each dimension on the selected sides, edge-bleed the original pixels
+// into the new bands (so the VAE encodes plausible content), and mask the new bands white
+// (= repaint) with a small overlap into the original on each grown side so the seam blends.
+async function buildOutpaint(
+  src: string,
+  sides: ExtendSides,
+  pct: number,
+): Promise<{ image: string; mask: string }> {
+  const img = await loadImage(src);
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const px = Math.round((pct / 100) * w);
+  const py = Math.round((pct / 100) * h);
+  const l = sides.left ? px : 0;
+  const r = sides.right ? px : 0;
+  const t = sides.top ? py : 0;
+  const b = sides.bottom ? py : 0;
+  const nw = w + l + r;
+  const nh = h + t + b;
+
+  const ic = document.createElement("canvas");
+  ic.width = nw;
+  ic.height = nh;
+  const ictx = ic.getContext("2d");
+  if (!ictx) throw new Error("Could not build the extended canvas");
+  ictx.drawImage(img, l, t, w, h); // original, centred by the chosen offsets
+  // Edge-bleed: stretch the 1px border strips into each new band (and corners).
+  if (l) ictx.drawImage(img, 0, 0, 1, h, 0, t, l, h);
+  if (r) ictx.drawImage(img, w - 1, 0, 1, h, l + w, t, r, h);
+  if (t) ictx.drawImage(img, 0, 0, w, 1, l, 0, w, t);
+  if (b) ictx.drawImage(img, 0, h - 1, w, 1, l, t + h, w, b);
+  if (l && t) ictx.drawImage(img, 0, 0, 1, 1, 0, 0, l, t);
+  if (r && t) ictx.drawImage(img, w - 1, 0, 1, 1, l + w, 0, r, t);
+  if (l && b) ictx.drawImage(img, 0, h - 1, 1, 1, 0, t + h, l, b);
+  if (r && b) ictx.drawImage(img, w - 1, h - 1, 1, 1, l + w, t + h, r, b);
+
+  const overlap = Math.round(Math.min(w, h) * 0.02);
+  const ol = l ? overlap : 0;
+  const or = r ? overlap : 0;
+  const ot = t ? overlap : 0;
+  const ob = b ? overlap : 0;
+  const mc = document.createElement("canvas");
+  mc.width = nw;
+  mc.height = nh;
+  const mctx = mc.getContext("2d");
+  if (!mctx) throw new Error("Could not build the extend mask");
+  mctx.fillStyle = "#ffffff"; // repaint everything...
+  mctx.fillRect(0, 0, nw, nh);
+  mctx.fillStyle = "#000000"; // ...except the kept original (inset by the seam overlap).
+  mctx.fillRect(l + ol, t + ot, w - ol - or, h - ot - ob);
+
+  return { image: ic.toDataURL("image/png"), mask: mc.toDataURL("image/png") };
 }
 
 // One labeled row in the recipe popover.
@@ -405,6 +842,55 @@ export function ImagesPage() {
   // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
   const [batchSize, setBatchSize] = useState(1);
   const [count, setCount] = useState(1);
+  // Active workflow tab. "create" = text-to-image; "transform" = img2img; "inpaint" =
+  // mask-guided redraw. More tabs (edit/extend/control/enhance) slot in here.
+  const [workflow, setWorkflow] = useState<WorkflowId>("create");
+  // Transform (img2img) / Inpaint inputs: the uploaded source image as a data URL, and
+  // the denoise strength (how far to redraw it: low = keep source, high = reimagine).
+  const [initImage, setInitImage] = useState<string | null>(null);
+  const [strength, setStrength] = useState(0.6);
+  // Inpaint mask (grayscale PNG data URL, white = repaint), the brush size as a percent
+  // of the image's shorter side, and a key bumped to clear the painted mask.
+  const [maskImage, setMaskImage] = useState<string | null>(null);
+  const [brushPct, setBrushPct] = useState(8);
+  const [maskResetKey, setMaskResetKey] = useState(0);
+  // Extend (outpaint): how far to grow each dimension and which sides to grow. Reuses the
+  // inpaint backend by building a padded image + border mask at generate time.
+  const [extendPct, setExtendPct] = useState(25);
+  const [extendSides, setExtendSides] = useState<ExtendSides>({
+    left: true,
+    right: true,
+    top: true,
+    bottom: true,
+  });
+  // Upscale (hires fix): the enlargement factor and the (low) denoise strength used to
+  // re-detail the enlarged image. The backend caps the factor and rounds the target size.
+  const [upscaleFactor, setUpscaleFactor] = useState(2);
+  const [upscaleStrength, setUpscaleStrength] = useState(0.35);
+  // Reference (FLUX.2): up to 3 ADDITIONAL reference images beyond the primary one, combined
+  // by the model (subject + style, character + scene).
+  const [referenceImages, setReferenceImages] = useState<string[]>([]);
+  // Advanced options live in a right-docked panel (like Chat's settings panel). Closed by
+  // default; a single fixed toggle in the top bar opens/closes it (the icon never moves).
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Advanced (load-time) options. "auto"/"off"/"none" map to the backend defaults
+  // (sent through on load). They apply when a model loads; changing them while a model
+  // is loaded shows a "Reapply" button that reloads the same model with the new values.
+  const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
+  const [transformerQuant, setTransformerQuant] = useState<
+    "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
+  >("none");
+  const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
+    "auto",
+  );
+  const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
+  const [transformerCache, setTransformerCache] = useState<"off" | "fbcache">("off");
+  const [cpuOffload, setCpuOffload] = useState(false);
+  // The last load descriptor, so "Reapply" can reload the same model with new advanced
+  // options without the user re-picking it from the dropdown.
+  const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
+    null,
+  );
 
   const [busy, setBusy] = useState<Busy>(null);
   // {done, total} while a multi-run generation is in flight (for the button).
@@ -620,7 +1106,13 @@ export function ImagesPage() {
   }, [dismissLoadToast]);
 
   const handleLoad = useCallback(
-    async (repoId: string, ggufFilename: string) => {
+    async (
+      repoId: string,
+      opts: {
+        kind: "gguf" | "single_file" | "pipeline";
+        filename?: string;
+      },
+    ) => {
       // Cancel any prior poll loop so two can't run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
       setBusy("loading");
@@ -628,14 +1120,26 @@ export function ImagesPage() {
       dismissLoadToast();
       lastLoadSig.current = null;
       loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
+      // Remember what was loaded so "Reapply" can reload it with new advanced options.
+      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       try {
         // Returns immediately — the load runs in the background; we poll for it.
         // The backend infers the family + base diffusers repo from the repo id.
         // Forward the saved HF token so gated bases (FLUX dev/klein) can download.
+        // A pipeline load carries no filename (the repo IS the pipeline); the
+        // single-file kinds send the GGUF / safetensors filename. Advanced options map
+        // sentinels ("auto"/"off"/"none") to omitted so the backend uses its defaults.
         await loadDiffusionModel({
           model_path: repoId,
-          gguf_filename: ggufFilename,
+          model_kind: opts.kind,
+          gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
+          cpu_offload: cpuOffload,
+          speed_mode: speedMode === "auto" ? undefined : speedMode,
+          transformer_quant: transformerQuant === "none" ? undefined : transformerQuant,
+          attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
+          memory_mode: memoryMode === "auto" ? undefined : memoryMode,
+          transformer_cache: transformerCache === "off" ? undefined : transformerCache,
         });
       } catch (err) {
         dismissLoadToast();
@@ -646,19 +1150,54 @@ export function ImagesPage() {
       }
       void pollLoadProgress();
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast],
+    [
+      pollLoadProgress,
+      refreshStatus,
+      dismissLoadToast,
+      cpuOffload,
+      speedMode,
+      transformerQuant,
+      attentionBackend,
+      memoryMode,
+      transformerCache,
+    ],
   );
 
-  // The chat picker emits (modelId, picked quant + its exact filename); load it,
-  // and seed the inputs with that model's defaults.
+  // Set (or clear) the Transform/Inpaint source image; always drop any painted mask so it
+  // can't be applied to a different image (the mask is sized to the previous source).
+  const handleInitChange = useCallback((dataUrl: string | null) => {
+    setInitImage(dataUrl);
+    setMaskImage(null);
+    setMaskResetKey((k) => k + 1);
+  }, []);
+
+  // Reload the current model with the current advanced options.
+  const handleReapply = useCallback(() => {
+    const l = lastLoad.current;
+    if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
+  }, [handleLoad]);
+
+  // The chat picker emits (modelId, picked quant + its exact filename) for a GGUF,
+  // or just (modelId) for a curated non-GGUF safetensors pick; load it, and seed the
+  // inputs with that model's defaults.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
+      // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
+      const spec = SAFETENSORS_MODELS[id];
+      if (spec) {
+        setQuant(null);
+        const d = defaultsFor(id);
+        setSteps(d.steps);
+        setGuidance(d.guidance);
+        void handleLoad(id, { kind: spec.kind, filename: spec.filename });
+        return;
+      }
       if (!meta.ggufVariant || !meta.ggufFilename) return; // not a quant pick
       setQuant(meta.ggufVariant);
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void handleLoad(id, meta.ggufFilename);
+      void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename });
     },
     [handleLoad],
   );
@@ -679,6 +1218,80 @@ export function ImagesPage() {
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
+      return;
+    }
+    const isTransform = workflow === "transform";
+    const isInpaint = workflow === "inpaint";
+    const isExtend = workflow === "extend";
+    const isUpscale = workflow === "upscale";
+    const isReference = workflow === "reference";
+    const isEdit = workflow === "edit";
+    const usesInit = isTransform || isInpaint || isExtend || isUpscale || isReference || isEdit;
+    const tabLabel = isInpaint
+      ? "Inpaint"
+      : isExtend
+        ? "Extend"
+        : isUpscale
+          ? "Upscale"
+          : isReference
+            ? "Reference"
+            : isEdit
+              ? "Edit"
+              : "Transform";
+    if (usesInit && !initImage) {
+      toast.error(`Upload a source image for ${tabLabel}`);
+      return;
+    }
+    if (isInpaint && !maskImage) {
+      toast.error("Paint a mask over the region to regenerate");
+      return;
+    }
+    if (isExtend && !(extendSides.left || extendSides.right || extendSides.top || extendSides.bottom)) {
+      toast.error("Pick at least one side to extend");
+      return;
+    }
+
+    // Resolve the conditioning image/mask/strength for this workflow up front. Extend
+    // (outpaint) is built here from the source by padding + masking the new border, then
+    // sent through the same inpaint path. txt2img leaves all three undefined.
+    let condInit: string | undefined;
+    let condMask: string | undefined;
+    let condStrength: number | undefined;
+    let condUpscale: number | undefined;
+    let condRefImages: string[] | undefined;
+    try {
+      if (isTransform) {
+        condInit = initImage ?? undefined;
+        condStrength = strength;
+      } else if (isInpaint) {
+        condInit = initImage ?? undefined;
+        condMask = maskImage ?? undefined;
+        condStrength = strength;
+      } else if (isExtend) {
+        const built = await buildOutpaint(initImage!, extendSides, extendPct);
+        condInit = built.image;
+        condMask = built.mask;
+        condStrength = 1; // the new border is blank canvas: redraw it fully
+      } else if (isUpscale) {
+        // Hires fix: the backend enlarges the source by `upscale` and re-denoises it at
+        // this low strength so it gains detail without changing the content.
+        condInit = initImage ?? undefined;
+        condUpscale = upscaleFactor;
+        condStrength = upscaleStrength;
+      } else if (isReference) {
+        // FLUX.2 reference conditioning: send the primary reference + any extra references
+        // (combined by the model). The model generates a fresh image at the slider size
+        // guided by the references + prompt. No mask, no strength (not a denoise blend).
+        condInit = initImage ?? undefined;
+        const extras = referenceImages.filter(Boolean);
+        if (extras.length) condRefImages = extras;
+      } else if (isEdit) {
+        // Instruction editing: send the source image; the prompt IS the instruction.
+        // No mask, no strength (the edit pipeline fully regenerates from the instruction).
+        condInit = initImage ?? undefined;
+      }
+    } catch {
+      toast.error("Could not prepare the source image");
       return;
     }
     // Resolve a base seed up front. With an explicit seed the run is fully
@@ -731,6 +1344,14 @@ export function ImagesPage() {
           guidance,
           seed: baseSeed + i,
           batch_size: batchSize,
+          // Transform/Inpaint/Extend send the source image (+ mask for inpaint/extend) and
+          // a denoise strength, resolved above. The backend derives output size from the
+          // image, so width/height are advisory here.
+          init_image: condInit,
+          mask_image: condMask,
+          strength: condStrength,
+          upscale: condUpscale,
+          reference_images: condRefImages,
         });
         // Prepend this run's records (newest first) and load their blobs.
         setImages((prev) => [...res.images, ...prev]);
@@ -747,14 +1368,128 @@ export function ImagesPage() {
       setGenDone(null);
       setGenStep(null);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, ensureSrc]);
+  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, ensureSrc]);
+
+  // Keep the active workflow valid for the loaded model: an edit-only model (Qwen-Image-
+  // Edit) has no Create/Transform tabs, a base model has no Edit tab. Snap to the first
+  // supported workflow whenever the loaded model's capabilities change.
+  useEffect(() => {
+    if (!status?.loaded) return;
+    const wf = status.workflows ?? [];
+    const ok = (id: WorkflowId) => {
+      const t = WORKFLOW_TABS.find((x) => x.id === id);
+      if (!t) return false;
+      return t.requires === null ? wf.includes("txt2img") : wf.includes(t.requires);
+    };
+    if (!ok(workflow)) {
+      const first = WORKFLOW_TABS.find((t) => ok(t.id));
+      if (first) setWorkflow(first.id);
+    }
+  }, [status?.loaded, status?.workflows, workflow]);
+
+  // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
+  const advancedControls = (
+    <>
+      <AdvancedSelect
+        label="Speed"
+        hint="Auto picks per model (GGUF compiles, dense stays eager). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
+        value={speedMode}
+        onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
+        options={[
+          ["auto", "Auto"],
+          ["off", "Off (bit-exact)"],
+          ["eager", "Eager"],
+          ["default", "Default (compile)"],
+          ["max", "Max"],
+        ]}
+      />
+      {/* The dense transformer_quant fast path only engages on the GGUF kind; on a loaded
+          safetensors pipeline / single-file model it is a silent no-op, so gate the control
+          to GGUF (or nothing loaded) and otherwise show why it is unavailable. */}
+      {!status?.loaded || status.model_kind === "gguf" ? (
+        <AdvancedSelect
+          label="Transformer quant"
+          hint="Load the dense transformer and quantise it onto low-precision tensor cores instead of the GGUF. fp8/int8 are faster than GGUF dequant at higher VRAM. GGUF models only; needs CUDA + room, falls back to GGUF otherwise."
+          value={transformerQuant}
+          onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
+          options={[
+            ["none", "GGUF default"],
+            ["auto", "Auto (best for GPU)"],
+            ["fp8", "FP8"],
+            ["int8", "INT8"],
+            ["nvfp4", "NVFP4 (Blackwell)"],
+            ["mxfp8", "MXFP8 (Blackwell)"],
+          ]}
+        />
+      ) : (
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <span className="text-muted-foreground">Transformer quant</span>
+          <span className="text-muted-foreground/70">GGUF models only</span>
+        </div>
+      )}
+      <AdvancedSelect
+        label="Attention"
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (small quality cost)."
+        value={attentionBackend}
+        onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
+        options={[
+          ["auto", "Auto"],
+          ["native", "Native SDPA"],
+          ["cudnn", "cuDNN"],
+          ["flash3", "FlashAttention 3"],
+          ["sage", "SageAttention (INT8)"],
+        ]}
+      />
+      <AdvancedSelect
+        label="Memory"
+        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
+        value={memoryMode}
+        onValueChange={(v) => setMemoryMode(v as typeof memoryMode)}
+        options={[
+          ["auto", "Auto"],
+          ["fast", "Fast (resident)"],
+          ["balanced", "Balanced"],
+          ["low_vram", "Low VRAM"],
+        ]}
+      />
+      <AdvancedSelect
+        label="Step cache"
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Leave off for few-step distilled models."
+        value={transformerCache}
+        onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
+        options={[
+          ["off", "Off"],
+          ["fbcache", "First-Block-Cache"],
+        ]}
+      />
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          CPU offload
+          <InfoHint>Offload to CPU to fit low-VRAM cards (slower). Overridden by Memory mode when that is not Auto.</InfoHint>
+        </span>
+        <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
+      </div>
+      {status?.loaded && (
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy !== null}
+          onClick={handleReapply}
+          title="Reload the current model with these advanced options"
+        >
+          <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-3.5" />
+          Reapply to loaded model
+        </Button>
+      )}
+    </>
+  );
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* ── Top: the model selector, kept at the chat tab's exact position so the
           shared element matches. The load progress shows in a chat-style toast,
           not here. ── */}
-      <div className="flex h-[48px] shrink-0 items-start pl-2 pr-2 pt-[11px]">
+      <div className="flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
         <ModelSelector
           models={MODELS}
           value={status?.loaded ? status.repo_id ?? undefined : undefined}
@@ -765,6 +1500,23 @@ export function ImagesPage() {
           className="!h-[34px]"
           task={IMAGE_GEN_TASKS}
         />
+        {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
+            toggle, same icon in both states so it never moves). Highlighted when open. */}
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen((o) => !o)}
+          aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
+          aria-pressed={advancedOpen}
+          title="Advanced options"
+          className={cn(
+            "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            advancedOpen
+              ? "bg-muted text-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
+        </button>
       </div>
 
       {/* ── Controls rail + preview canvas. Padding mirrors the other tabs
@@ -773,8 +1525,284 @@ export function ImagesPage() {
         {/* The controls rail. Plain card (the gray surface) with no header —
             the prompt + Generate button make the panel self-explanatory. */}
         <div className="bg-card corner-squircle flex w-[340px] shrink-0 flex-col gap-4 overflow-y-auto rounded-3xl p-5 ring-1 ring-foreground/10">
-          <Field label="Prompt">
-            <Textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+          {/* Workflow tabs. Create = text-to-image; Transform = img2img (needs a
+              source image). A tab is disabled until the loaded model supports it
+              (status.workflows), with a tooltip explaining why. More workflows
+              (Edit/Extend/Control/Enhance) slot in here as they land. */}
+          <div className="flex gap-1 rounded-xl bg-muted/50 p-1">
+            {WORKFLOW_TABS.map((t) => {
+              const wf = status?.workflows ?? [];
+              // Create (requires null) needs txt2img once a model is loaded -- an
+              // edit-only model (workflows: ["edit"]) has no text-to-image mode, so its
+              // Create tab is disabled and Edit is the only enabled one. With nothing
+              // loaded, Create stays available so the user can pick a model.
+              const enabled =
+                t.requires === null
+                  ? !status?.loaded || wf.includes("txt2img")
+                  : wf.includes(t.requires);
+              const active = workflow === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  disabled={!enabled}
+                  title={enabled ? t.hint : `Load a model that supports ${t.label.toLowerCase()}`}
+                  onClick={() => setWorkflow(t.id)}
+                  className={cn(
+                    "flex-1 rounded-lg px-2 py-1 text-xs font-medium transition-colors",
+                    active
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                    !enabled && "cursor-not-allowed opacity-40 hover:text-muted-foreground",
+                  )}
+                >
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {workflow === "transform" && (
+            <>
+              <Field
+                label="Source image"
+                hint="The image to transform. Generation redraws it guided by your prompt; the Strength below controls how far."
+              >
+                <ImageDropzone value={initImage} onChange={handleInitChange} />
+              </Field>
+              <SliderField
+                label="Strength"
+                hint="How much to redraw the source. Low keeps the original composition; high reimagines it from the prompt."
+                value={strength}
+                min={0.1}
+                max={1}
+                step={0.05}
+                onChange={setStrength}
+              />
+            </>
+          )}
+
+          {workflow === "inpaint" && (
+            <>
+              {!initImage ? (
+                <Field
+                  label="Source image"
+                  hint="The image to edit. After uploading, paint over the area you want to regenerate; the rest is kept."
+                >
+                  <ImageDropzone value={null} onChange={handleInitChange} />
+                </Field>
+              ) : (
+                <>
+                  <Field
+                    label="Mask"
+                    hint="Brush over the region to regenerate (shown in red). Those pixels are repainted from your prompt; everything else is preserved."
+                  >
+                    <MaskCanvas
+                      image={initImage}
+                      brushPct={brushPct}
+                      resetKey={maskResetKey}
+                      onMaskChange={setMaskImage}
+                    />
+                  </Field>
+                  <SliderField
+                    label="Brush size"
+                    hint="Brush radius as a percent of the image's shorter side."
+                    value={brushPct}
+                    min={2}
+                    max={25}
+                    step={1}
+                    onChange={setBrushPct}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => {
+                        setMaskImage(null);
+                        setMaskResetKey((k) => k + 1);
+                      }}
+                    >
+                      <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                      Clear mask
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => handleInitChange(null)}
+                    >
+                      <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                      Replace image
+                    </Button>
+                  </div>
+                  <SliderField
+                    label="Strength"
+                    hint="How much to redraw the masked region. Low blends with the source; high fully reimagines it from the prompt."
+                    value={strength}
+                    min={0.1}
+                    max={1}
+                    step={0.05}
+                    onChange={setStrength}
+                  />
+                </>
+              )}
+            </>
+          )}
+
+          {workflow === "extend" && (
+            <>
+              <Field
+                label="Source image"
+                hint="The image to outpaint. The canvas grows on the selected sides and the new area is filled from your prompt; the original is kept."
+              >
+                <ImageDropzone value={initImage} onChange={handleInitChange} />
+              </Field>
+              <SliderField
+                label="Expand by"
+                hint="How far to grow each selected side, as a percent of the image's size."
+                value={extendPct}
+                min={10}
+                max={100}
+                step={5}
+                onChange={setExtendPct}
+              />
+              <Field label="Sides" hint="Which edges to extend.">
+                <div className="grid grid-cols-2 gap-1.5">
+                  {(
+                    [
+                      ["top", "Top"],
+                      ["bottom", "Bottom"],
+                      ["left", "Left"],
+                      ["right", "Right"],
+                    ] as Array<[keyof ExtendSides, string]>
+                  ).map(([key, label]) => {
+                    const on = extendSides[key];
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setExtendSides((s) => ({ ...s, [key]: !s[key] }))}
+                        className={cn(
+                          "rounded-lg px-2 py-1.5 text-xs font-medium ring-1 transition-colors",
+                          on
+                            ? "bg-primary/10 text-foreground ring-primary/40"
+                            : "text-muted-foreground ring-border hover:text-foreground",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+            </>
+          )}
+
+          {workflow === "upscale" && (
+            <>
+              <Field
+                label="Source image"
+                hint="The image to upscale. It is enlarged by the factor below, then re-detailed at higher resolution guided by your prompt; keep the prompt describing the same content."
+              >
+                <ImageDropzone value={initImage} onChange={handleInitChange} />
+              </Field>
+              <SliderField
+                label="Scale"
+                hint="How much larger to make the image. The output size is the source size times this factor (capped and rounded to a multiple of 16)."
+                value={upscaleFactor}
+                min={1.5}
+                max={4}
+                step={0.5}
+                onChange={setUpscaleFactor}
+              />
+              <SliderField
+                label="Detail strength"
+                hint="How much new detail to add while upscaling. Low keeps the image faithful to the source; high adds more (and may drift). 0.35 is a good hires-fix default."
+                value={upscaleStrength}
+                min={0.1}
+                max={0.6}
+                step={0.05}
+                onChange={setUpscaleStrength}
+              />
+            </>
+          )}
+
+          {workflow === "reference" && (
+            <>
+              <Field
+                label="Reference image"
+                hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
+              >
+                <ImageDropzone value={initImage} onChange={handleInitChange} />
+              </Field>
+              {referenceImages.map((img, i) => (
+                <Field
+                  key={i}
+                  label={`Reference ${i + 2}`}
+                  hint="An extra reference combined with the others (e.g. one for the subject, one for the style)."
+                >
+                  <div className="space-y-1.5">
+                    <ImageDropzone
+                      value={img}
+                      onChange={(v) =>
+                        // Keep the slot in place (empty string when cleared) so other slots
+                        // don't renumber mid-edit; empty slots are dropped only at send time
+                        // and removed explicitly via the button below. Stable key={i}.
+                        setReferenceImages((prev) =>
+                          prev.map((p, j) => (j === i ? (v ?? "") : p)),
+                        )
+                      }
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                      Remove reference {i + 2}
+                    </Button>
+                  </div>
+                </Field>
+              ))}
+              {referenceImages.length < 3 && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="w-full"
+                  disabled={!initImage}
+                  onClick={() => setReferenceImages((prev) => [...prev, ""])}
+                >
+                  <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                  Add another reference
+                </Button>
+              )}
+            </>
+          )}
+
+          {workflow === "edit" && (
+            <Field
+              label="Source image"
+              hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
+            >
+              <ImageDropzone value={initImage} onChange={handleInitChange} />
+            </Field>
+          )}
+
+          <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
+            <Textarea
+              rows={4}
+              placeholder={
+                workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
+              }
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+            />
           </Field>
           {/* A negative prompt only does anything with guidance on, so hide it at
               guidance 0 (Z-Image-Turbo's default) instead of showing a dead field. */}
@@ -874,6 +1902,7 @@ export function ImagesPage() {
               ? `Generating ${genDone}/${count}…`
               : "Generate"}
           </Button>
+
         </div>
 
         <div className="bg-card corner-squircle relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
@@ -1007,6 +2036,26 @@ export function ImagesPage() {
             </div>
           )}
         </div>
+
+        {/* Right-docked Advanced panel (mirrors Chat's settings panel): open by default and
+            toggleable, so the optimisation controls are discoverable instead of buried at the
+            bottom of the left rail. */}
+        {advancedOpen && (
+          <div className="bg-card corner-squircle flex w-[300px] shrink-0 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
+            <div className="flex h-[52px] shrink-0 items-center border-b border-border/60 px-4">
+              <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                <HugeiconsIcon icon={Settings02Icon} className="size-4" />
+                Advanced
+              </span>
+            </div>
+            <div className="flex flex-col gap-3 overflow-y-auto p-4">
+              <p className="text-xs text-muted-foreground">
+                Load-time tuning. Changes apply on the next load; Reapply reloads the current model.
+              </p>
+              {advancedControls}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

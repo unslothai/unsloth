@@ -50,9 +50,24 @@ def test_detect_family_from_repo_id():
     # Qwen-Image guides via true_cfg_scale, not guidance_scale.
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").cfg_kwarg == "true_cfg_scale"
     assert detect_family("unsloth/Z-Image-GGUF").cfg_kwarg == "guidance_scale"
-    # Image-editing checkpoints are rejected (text-to-image backend only).
-    assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF") is None
-    assert detect_family("unsloth/FLUX.1-Kontext-dev-GGUF") is None
+    # Qwen-Image-Edit is a SUPPORTED instruction-editing family (its own edit pipeline);
+    # the most-specific match wins so it doesn't fall back to the generic qwen-image.
+    edit = detect_family("unsloth/Qwen-Image-Edit-2511-GGUF")
+    assert edit.name == "qwen-image-edit"
+    assert edit.pipeline_class == "QwenImageEditPlusPipeline"
+    assert edit.edit is True
+    assert detect_family("unsloth/Qwen-Image-Edit-2509-GGUF").name == "qwen-image-edit"
+    # FLUX Kontext is a SUPPORTED editing family (FluxKontextPipeline); the "kontext"
+    # keyword is un-rejected for it, and it must win over the generic "flux.1" match.
+    kontext = detect_family("unsloth/FLUX.1-Kontext-dev-GGUF")
+    assert kontext.name == "flux.1-kontext"
+    assert kontext.pipeline_class == "FluxKontextPipeline"
+    assert kontext.edit is True
+    assert kontext.cfg_kwarg == "guidance_scale"
+    # A plain FLUX.1 checkpoint must still resolve to the base flux.1 family, not kontext.
+    assert detect_family("unsloth/FLUX.1-dev-GGUF").name == "flux.1"
+    # A plain Qwen-Image checkpoint must still resolve to the base family, not edit.
+    assert detect_family("unsloth/Qwen-Image-2512-GGUF").name == "qwen-image"
     assert detect_family("meta-llama/Llama-3-8B") is None
 
 
@@ -194,6 +209,86 @@ class _FakeTransformer:
         return object()
 
 
+class _FakeImg2ImgPipe:
+    """An img2img pipeline call: records the image-conditioned kwargs. Its signature
+    declares image/strength but NOT width/height, mirroring real img2img pipelines
+    (which derive the output size from the input image)."""
+
+    last_kwargs: dict = {}
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        image = None,
+        strength = None,
+        negative_prompt = None,
+        callback_on_step_end = None,
+        guidance_scale = None,
+        true_cfg_scale = None,
+        **kwargs,
+    ):
+        _FakeImg2ImgPipe.last_kwargs = {
+            "prompt": prompt,
+            "image": image,
+            "strength": strength,
+            **kwargs,
+        }
+        n = kwargs.get("num_images_per_prompt", 1)
+        return types.SimpleNamespace(images = [_FakeImage() for _ in range(n)])
+
+
+class _FakeImg2ImgPipeline:
+    built_from: object = None
+    from_pipe_kwargs: dict = {}
+
+    @classmethod
+    def from_pipe(cls, base_pipe, **kwargs):
+        _FakeImg2ImgPipeline.built_from = base_pipe
+        _FakeImg2ImgPipeline.from_pipe_kwargs = kwargs
+        return _FakeImg2ImgPipe()
+
+
+class _FakeInpaintPipe:
+    """An inpaint pipeline call: records image + mask_image + strength. Real inpaint
+    pipelines take both an init image and a grayscale mask and derive output size from
+    the input, so width/height are not in its signature."""
+
+    last_kwargs: dict = {}
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        image = None,
+        mask_image = None,
+        strength = None,
+        negative_prompt = None,
+        callback_on_step_end = None,
+        guidance_scale = None,
+        true_cfg_scale = None,
+        **kwargs,
+    ):
+        _FakeInpaintPipe.last_kwargs = {
+            "prompt": prompt,
+            "image": image,
+            "mask_image": mask_image,
+            "strength": strength,
+            **kwargs,
+        }
+        n = kwargs.get("num_images_per_prompt", 1)
+        return types.SimpleNamespace(images = [_FakeImage() for _ in range(n)])
+
+
+class _FakeInpaintPipeline:
+    built_from: object = None
+
+    @classmethod
+    def from_pipe(cls, base_pipe, **kwargs):
+        _FakeInpaintPipeline.built_from = base_pipe
+        return _FakeInpaintPipe()
+
+
 @pytest.fixture
 def fake_runtime(monkeypatch):
     torch = types.ModuleType("torch")
@@ -210,9 +305,15 @@ def fake_runtime(monkeypatch):
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
     diffusers.ZImagePipeline = _FakePipeline
     diffusers.ZImageTransformer2DModel = _FakeTransformer
+    diffusers.ZImageImg2ImgPipeline = _FakeImg2ImgPipeline
+    diffusers.ZImageInpaintPipeline = _FakeInpaintPipeline
     # Qwen-Image too, so the true_cfg_scale cfg-kwarg path is exercisable.
     diffusers.QwenImagePipeline = _FakePipeline
     diffusers.QwenImageTransformer2DModel = _FakeTransformer
+    diffusers.QwenImageImg2ImgPipeline = _FakeImg2ImgPipeline
+    diffusers.QwenImageInpaintPipeline = _FakeInpaintPipeline
+    # Instruction-editing pipeline (Qwen-Image-Edit): its own pipeline IS the loaded one.
+    diffusers.QwenImageEditPlusPipeline = _FakePipeline
 
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
@@ -221,6 +322,10 @@ def fake_runtime(monkeypatch):
     monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", lambda: None)
     _FakePipeline.last = {}
     _FakeTransformer.last = {}
+    _FakeImg2ImgPipeline.built_from = None
+    _FakeImg2ImgPipe.last_kwargs = {}
+    _FakeInpaintPipeline.built_from = None
+    _FakeInpaintPipe.last_kwargs = {}
     yield
 
 
@@ -273,6 +378,453 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert backend.is_loaded is False
 
 
+def _tiny_png_b64() -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), (120, 30, 30)).save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
+    """An init_image routes generate() through the family's img2img pipeline, built via
+    Pipeline.from_pipe around the loaded pipe (no reload), with image + strength passed
+    and width/height dropped (the img2img pipe derives size from the input image)."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    # The loaded family advertises the image-conditioned workflows for UI gating
+    # (upscale rides the img2img pipeline, so it appears whenever img2img does).
+    assert backend.status()["workflows"] == ["txt2img", "img2img", "upscale", "inpaint", "outpaint"]
+
+    loaded_pipe = backend._state.pipe
+    out = backend.generate(
+        prompt = "a car at sunset", steps = 4, guidance = 0.0, seed = 3,
+        init_image = _tiny_png_b64(), strength = 0.5,
+    )
+    assert len(out["images"]) == 1
+    # from_pipe was handed the loaded text-to-image pipe (component reuse, no reload).
+    assert _FakeImg2ImgPipeline.built_from is loaded_pipe
+    # ...and with torch_dtype=None so from_pipe SKIPS its default float32 recast, which
+    # both upcasts the reused bf16 modules and crashes on torchao-quantized weights.
+    assert _FakeImg2ImgPipeline.from_pipe_kwargs.get("torch_dtype", "MISSING") is None
+    call = _FakeImg2ImgPipe.last_kwargs
+    assert call["image"] is not None          # decoded source image passed through
+    assert call["strength"] == 0.5
+    assert "width" not in call and "height" not in call  # img2img derives size from image
+
+    # A txt2img call after it still uses the base pipe (no image kwarg).
+    backend.generate(prompt = "plain", steps = 4, seed = 1)
+    assert backend._state.pipe.last_kwargs.get("image") is None
+
+
+def test_generate_img2img_unsupported_family_raises(fake_runtime, tmp_path, monkeypatch):
+    """A family with no image-conditioning at all (no img2img/inpaint/edit/reference) rejects
+    an init_image with a clear error rather than failing deep in the pipeline."""
+    from core.inference.diffusion_families import DiffusionFamily
+
+    # A synthetic txt2img-only family: no img2img/inpaint pipeline, not edit, not reference.
+    # (Every shipped family now supports some image workflow, so build one for this case.)
+    plain = DiffusionFamily(
+        name = "plain-test",
+        pipeline_class = "ZImagePipeline",
+        transformer_class = "ZImageTransformer2DModel",
+        base_repo = "base/repo",
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion.detect_family", lambda repo_id, override = None: plain
+    )
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo")
+    assert backend.status()["workflows"] == ["txt2img"]
+    with pytest.raises(ValueError, match = "img2img"):
+        backend.generate(prompt = "x", steps = 4, init_image = _tiny_png_b64())
+
+
+def test_generate_upscale_enlarges_and_low_strength(fake_runtime, tmp_path):
+    """An init_image + upscale factor routes generate() through the family's img2img
+    pipeline (hires fix): the source is enlarged to size*factor (rounded to /16) before the
+    denoise, the strength defaults low, and the factor is capped so a huge value can't OOM."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    # Upscale rides the img2img pipeline, so it is advertised alongside img2img.
+    assert "upscale" in backend.status()["workflows"]
+
+    loaded_pipe = backend._state.pipe
+    out = backend.generate(
+        prompt = "a crisp photo", steps = 4, guidance = 0.0, seed = 3,
+        init_image = _tiny_png_b64(), upscale = 2.0,  # 64 -> 128, no explicit strength
+    )
+    assert len(out["images"]) == 1
+    # Reuses the resident modules via from_pipe (no reload, no extra VRAM).
+    assert _FakeImg2ImgPipeline.built_from is loaded_pipe
+    call = _FakeImg2ImgPipe.last_kwargs
+    # The image handed to the pipe is the ENLARGED source (64 * 2 = 128, already /16).
+    assert call["image"].size == (128, 128)
+    # Strength defaults to the hires-fix value when the caller sends none.
+    assert call["strength"] == 0.35
+
+    # The factor is capped at 4x so a large request can't blow up the VAE/transformer.
+    backend.generate(
+        prompt = "x", steps = 4, seed = 1, init_image = _tiny_png_b64(), upscale = 99.0,
+    )
+    assert _FakeImg2ImgPipe.last_kwargs["image"].size == (256, 256)  # 64 * 4 (capped)
+
+    # An explicit strength overrides the hires-fix default.
+    backend.generate(
+        prompt = "x", steps = 4, seed = 1, init_image = _tiny_png_b64(),
+        upscale = 1.5, strength = 0.2,
+    )
+    assert _FakeImg2ImgPipe.last_kwargs["strength"] == 0.2
+    # 64 * 1.5 = 96, already a multiple of 16.
+    assert _FakeImg2ImgPipe.last_kwargs["image"].size == (96, 96)
+
+
+def _png_b64(side: int) -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (side, side), (10, 20, 30)).save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_decode_image_rejects_oversized(fake_runtime, tmp_path):
+    """An input image larger than the per-side cap is rejected with a clear error (protects
+    img2img / inpaint / reference from decompression-bomb / OOM inputs), not a 500."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    with pytest.raises(ValueError, match = "too large"):
+        backend.generate(prompt = "x", steps = 4, init_image = _png_b64(4112))  # > 4096/side
+
+
+def test_upscale_output_is_capped(fake_runtime, tmp_path):
+    """Upscale bounds the absolute output side to 2048 even when input*factor exceeds it, so a
+    large upload at 4x can't OOM the VAE/transformer."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    backend.generate(prompt = "x", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 4.0)
+    # 1024 * 4 = 4096 -> clamped to 2048 (longest side), still a multiple of 16.
+    assert _FakeImg2ImgPipe.last_kwargs["image"].size == (2048, 2048)
+
+
+def _mask_b64(side: int) -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    img = Image.new("L", (side, side), 0)
+    for y in range(side // 4, 3 * side // 4):
+        for x in range(side // 4, 3 * side // 4):
+            img.putpixel((x, y), 255)
+    img.save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_img2img_snaps_non_multiple_of_16(fake_runtime, tmp_path):
+    """An odd-sized img2img upload (not divisible by 16) is auto-resized to the nearest
+    multiple of 16 so the pipeline's divisibility check passes instead of erroring."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    backend.generate(prompt = "x", steps = 4, seed = 1, init_image = _png_b64(186), strength = 0.5)
+    # 186 / 16 = 11.625 -> round to 12 -> 192.
+    assert _FakeImg2ImgPipe.last_kwargs["image"].size == (192, 192)
+
+
+def test_inpaint_snaps_image_and_mask_together(fake_runtime, tmp_path):
+    """Inpaint snaps the odd-sized input to /16 AND resizes the mask to match, so the image
+    and mask stay aligned (a mismatch would crash the inpaint pipeline)."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    backend.generate(
+        prompt = "x", steps = 4, seed = 1,
+        init_image = _png_b64(186), mask_image = _mask_b64(186), strength = 0.5,
+    )
+    assert _FakeInpaintPipe.last_kwargs["image"].size == (192, 192)
+    assert _FakeInpaintPipe.last_kwargs["mask_image"].size == (192, 192)
+
+
+def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_path):
+    """A reference family (FLUX.2-klein) advertises txt2img + reference, and a generate with
+    an init_image passes it as the loaded pipe's `image` arg (no from_pipe, no strength) while
+    the output size stays the REQUESTED slider size (the pipe resizes the reference itself)."""
+    import diffusers
+
+    diffusers.Flux2KleinPipeline = _FakePipeline
+    diffusers.Flux2KleinInpaintPipeline = _FakeInpaintPipeline
+    diffusers.Flux2Transformer2DModel = _FakeTransformer
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        family_override = "flux.2-klein",
+    )
+    # FLUX.2-klein: txt2img + reference (own pipe) + inpaint (dedicated pipe). No img2img class,
+    # so no img2img/upscale.
+    assert backend.status()["workflows"] == ["txt2img", "reference", "inpaint"]
+
+    loaded_pipe = backend._state.pipe
+    out = backend.generate(
+        prompt = "a portrait in this style", steps = 6, guidance = 4.0, seed = 5,
+        width = 768, height = 512, init_image = _tiny_png_b64(), strength = 0.5,
+    )
+    assert len(out["images"]) == 1
+    call = loaded_pipe.last_kwargs
+    assert call["image"] is not None                 # reference handed to the loaded pipe
+    assert call["width"] == 768 and call["height"] == 512  # OUTPUT size = sliders, not input
+    assert "strength" not in call                     # reference conditioning has no strength
+    assert "mask_image" not in call
+    # Guidance flows via guidance_scale (FLUX.2 default behaviour).
+    assert call["guidance_scale"] == 4.0
+
+    # Multi-reference: extra reference_images are combined with init_image into a LIST so the
+    # model can blend several references (subject + style).
+    backend.generate(
+        prompt = "combine these", steps = 6, seed = 9, width = 1024, height = 1024,
+        init_image = _tiny_png_b64(), reference_images = [_tiny_png_b64(), _tiny_png_b64()],
+    )
+    img_arg = loaded_pipe.last_kwargs["image"]
+    assert isinstance(img_arg, list) and len(img_arg) == 3  # primary + 2 extras
+
+    # Branch ordering: an init image + MASK on a reference family must route to inpaint (the
+    # dedicated pipeline), NOT be swallowed by the reference branch (which ignores the mask).
+    backend.generate(
+        prompt = "repaint here", steps = 6, seed = 2,
+        init_image = _tiny_png_b64(), mask_image = _tiny_mask_b64(), strength = 0.8,
+    )
+    assert _FakeInpaintPipeline.built_from is loaded_pipe   # built via from_pipe off the load
+    assert _FakeInpaintPipe.last_kwargs["mask_image"] is not None
+    assert _FakeInpaintPipe.last_kwargs["strength"] == 0.8
+
+    # Without an init image the same family does plain txt2img (no image arg).
+    backend.generate(prompt = "just text", steps = 6, seed = 1)
+    assert backend._state.pipe.last_kwargs.get("image") is None
+
+
+def _tiny_mask_b64() -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    # A grayscale mask: white square (repaint) on black (keep).
+    img = Image.new("L", (64, 64), 0)
+    for y in range(16, 48):
+        for x in range(16, 48):
+            img.putpixel((x, y), 255)
+    img.save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_generate_inpaint_uses_from_pipe(fake_runtime, tmp_path):
+    """An init_image + mask_image routes generate() through the family's inpaint pipeline,
+    built via Pipeline.from_pipe around the loaded pipe (no reload), with the decoded image
+    + mask + strength passed through and width/height dropped (size derives from the input)."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    loaded_pipe = backend._state.pipe
+    out = backend.generate(
+        prompt = "a red door", steps = 4, guidance = 0.0, seed = 5,
+        init_image = _tiny_png_b64(), mask_image = _tiny_mask_b64(), strength = 0.7,
+    )
+    assert len(out["images"]) == 1
+    # The inpaint pipe (not img2img) was selected and built from the loaded pipe.
+    assert _FakeInpaintPipeline.built_from is loaded_pipe
+    assert _FakeImg2ImgPipeline.built_from is None
+    call = _FakeInpaintPipe.last_kwargs
+    assert call["image"] is not None and call["mask_image"] is not None
+    assert call["strength"] == 0.7
+    assert "width" not in call and "height" not in call  # inpaint derives size from image
+
+
+def test_image_conditioned_passes_image_size_not_slider(fake_runtime, tmp_path):
+    """When the workflow pipe DOES accept width/height, an image-conditioned call must pass
+    the INPUT IMAGE's size, never the txt2img slider size -- otherwise a non-slider-sized
+    input (e.g. a 1536px outpaint canvas with a 1024 slider) mismatches the latents
+    ("tensor a (128) must match tensor b (192)"). Covers Transform + Extend with any size."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    class _SizePipe:
+        last: dict = {}
+
+        def __call__(
+            self,
+            *,
+            prompt = None,
+            image = None,
+            strength = None,
+            width = None,
+            height = None,
+            negative_prompt = None,
+            callback_on_step_end = None,
+            guidance_scale = None,
+            true_cfg_scale = None,
+            **kwargs,
+        ):
+            _SizePipe.last = {"width": width, "height": height}
+            n = kwargs.get("num_images_per_prompt", 1)
+            return types.SimpleNamespace(images = [_FakeImage() for _ in range(n)])
+
+    class _SizePipeline:
+        @classmethod
+        def from_pipe(cls, base_pipe, **kwargs):
+            return _SizePipe()
+
+    import diffusers
+
+    diffusers.ZImageImg2ImgPipeline = _SizePipeline
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+    buf = io.BytesIO()
+    Image.new("RGB", (96, 64), (10, 20, 30)).save(buf, format = "PNG")  # non-square, non-slider
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    backend.generate(prompt = "x", steps = 4, width = 1024, height = 1024, init_image = b64, strength = 0.5)
+    # The pipe got the IMAGE's 96x64, not the 1024x1024 slider.
+    assert _SizePipe.last == {"width": 96, "height": 64}
+
+
+def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path):
+    """An instruction-editing family (Qwen-Image-Edit) exposes only the 'edit' workflow,
+    runs the image through its OWN loaded pipeline (no from_pipe), and rejects a call with
+    no input image."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+    )
+    # Edit families advertise only the edit workflow (no txt2img / img2img / inpaint).
+    assert backend.status()["workflows"] == ["edit"]
+    loaded_pipe = backend._state.pipe
+
+    out = backend.generate(
+        prompt = "make it night", steps = 8, guidance = 4.0, seed = 1,
+        init_image = _tiny_png_b64(),
+    )
+    assert len(out["images"]) == 1
+    # The loaded pipe handled it directly -- no from_pipe img2img/inpaint was built.
+    assert backend._state.pipe is loaded_pipe
+    assert _FakeImg2ImgPipeline.built_from is None and _FakeInpaintPipeline.built_from is None
+    assert loaded_pipe.last_kwargs.get("image") is not None
+
+    # An edit model with no input image fails fast with a clear message.
+    with pytest.raises(ValueError, match = "image"):
+        backend.generate(prompt = "make it night", steps = 8)
+
+
+def test_load_pipeline_kind_uses_from_pretrained(fake_runtime):
+    """A full-pipeline (no single-file) load on an unsloth/* repo builds the pipe with
+    pipeline_cls.from_pretrained(repo_id) -- NO single-file transformer build, NO GGUF
+    quant config -- so an embedded bnb-4bit config is reloaded by diffusers itself."""
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        "unsloth/Z-Image-Turbo-unsloth-bnb-4bit", family_override = "z-image"
+    )
+    assert status["loaded"] is True
+    assert status["family"] == "z-image"
+    # from_pretrained pointed at the repo itself (it IS its own base), with no transformer.
+    assert _FakePipeline.last["base"] == "unsloth/Z-Image-Turbo-unsloth-bnb-4bit"
+    assert "transformer" not in _FakePipeline.last
+    # The GGUF single-file build path was never taken.
+    assert _FakeTransformer.last == {}
+
+
+def test_load_single_file_safetensors_no_gguf_config(fake_runtime, tmp_path):
+    """A single-file *.safetensors transformer is built with from_single_file WITHOUT the
+    GGUF dequant config (it carries its own dtype), then assembled from the base repo."""
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        base_repo = "base/repo",
+        family_override = "qwen-image",
+    )
+    assert status["loaded"] is True
+    assert _FakeTransformer.last["path"] == str((tmp_path / "model.safetensors").resolve())
+    assert _FakeTransformer.last["subfolder"] == "transformer"
+    # No GGUF quant config on the safetensors path (the GGUF path sets one).
+    assert "quantization_config" not in _FakeTransformer.last
+    assert _FakePipeline.last["base"] == "base/repo"
+    assert "transformer" in _FakePipeline.last
+
+
+def test_load_pipeline_rejects_non_unsloth_repo(fake_runtime):
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "unsloth"):
+        backend.load_pipeline("randomorg/Z-Image-bnb-4bit", family_override = "z-image")
+
+
+def test_detect_family_rejects_layered():
+    # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond); it must be
+    # rejected so it fails fast at load instead of crashing at the first denoise step.
+    assert detect_family("unsloth/Qwen-Image-Layered-GGUF") is None
+    assert detect_family("unsloth/qwen_image_layered") is None
+
+
+def test_failed_load_rolls_back_eager_patches(fake_runtime, tmp_path, monkeypatch):
+    """A load failure AFTER the eager patches install but BEFORE the _LoadState commit must
+    roll the process-wide patches back, so the next bit-identical `off` load is not
+    contaminated (the asymmetric-cleanup bug the reviewers flagged)."""
+    from core.inference import diffusion as diff_mod
+    from core.inference import diffusion_eager_patches as ep
+
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    ep.uninstall_patches()  # clean slate
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("placement boom")
+
+    # apply_memory_plan runs AFTER the patches are installed, before _LoadState commits.
+    monkeypatch.setattr(diff_mod, "apply_memory_plan", _boom)
+    backend = DiffusionBackend()
+    with pytest.raises(RuntimeError):
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "model.gguf",
+            family_override = "z-image",
+            base_repo = "base/repo",
+            speed_mode = "eager",  # != off -> installs the shared patches
+        )
+    assert ep.is_installed() is False  # rolled back by the load-failure finally
+    assert backend.is_loaded is False
+
+
 def test_cpu_offload_ignored_off_cuda(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
@@ -319,8 +871,10 @@ def test_resolve_base_repo_prefers_caller_then_hf_tag_then_fallback(monkeypatch)
 
 def test_load_without_gguf_raises():
     backend = DiffusionBackend()
-    with pytest.raises(ValueError):
-        backend.load_pipeline("unsloth/Z-Image-Turbo-GGUF")  # no gguf_filename
+    # No gguf_filename -> a full-pipeline load, gated to unsloth/*; a non-unsloth repo
+    # is rejected before any GPU/network work.
+    with pytest.raises(ValueError, match = "unsloth"):
+        backend.load_pipeline("some-org/Z-Image-bnb-4bit")
 
 
 def test_load_unknown_family_raises():
@@ -685,8 +1239,24 @@ def test_callback_cancellation_interrupts_denoise(fake_runtime):
 
 def test_validate_load_request(tmp_path):
     backend = DiffusionBackend()
-    with pytest.raises(ValueError, match = "gguf_filename"):
-        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF")
+    # No filename + unsloth repo -> a full-pipeline load (allowed for unsloth/*).
+    assert (
+        backend.validate_load_request("unsloth/Z-Image-Turbo-unsloth-bnb-4bit").name == "z-image"
+    )
+    # No filename + non-unsloth repo -> a pipeline load, gated to unsloth/* -> rejected.
+    with pytest.raises(ValueError, match = "unsloth"):
+        backend.validate_load_request("some-org/Z-Image-bnb-4bit")
+    # An explicit gguf/single_file kind still requires a single-file name.
+    with pytest.raises(ValueError, match = "single-file"):
+        backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", model_kind = "gguf")
+    # A pipeline kind must NOT carry a single-file name.
+    with pytest.raises(ValueError, match = "pipeline"):
+        backend.validate_load_request(
+            "unsloth/Z-Image-Turbo-bnb-4bit", gguf_filename = "q.gguf", model_kind = "pipeline"
+        )
+    # A single-file safetensors load is also gated to unsloth/* repos.
+    with pytest.raises(ValueError, match = "unsloth"):
+        backend.validate_load_request("some-org/Z-Image", gguf_filename = "model.safetensors")
     with pytest.raises(ValueError, match = "family"):
         backend.validate_load_request("meta/Llama-3", gguf_filename = "q.gguf")
     assert (

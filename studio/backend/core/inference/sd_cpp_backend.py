@@ -232,6 +232,9 @@ class SdCppDiffusionBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        # Accepted for a uniform engine interface; the native engine is GGUF-only, so a
+        # non-GGUF kind never routes here (the router forces diffusers for those).
+        model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # An empty / whitespace token is "no token": passing "" verbatim to HfApi /
@@ -454,10 +457,27 @@ class SdCppDiffusionBackend:
         guidance: float = 0.0,
         seed: Optional[int] = None,
         batch_size: int = 1,
+        # Accepted for a uniform engine interface. The native engine is text-to-image
+        # only for now (sd-cli's init-img/mask plumbing is not wired), so an image-
+        # conditioned request is rejected clearly rather than silently dropping the input.
+        init_image: Optional[str] = None,
+        mask_image: Optional[str] = None,
+        strength: Optional[float] = None,
+        # Accepted for the uniform engine interface; upscale needs an init image, so the
+        # init_image guard below rejects it on the native engine like img2img/inpaint.
+        upscale: Optional[float] = None,
+        # Reference workflow is GPU/diffusers-only (FLUX.2); accepted for interface parity.
+        reference_images: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         import tempfile
 
         from PIL import Image
+
+        if init_image is not None or mask_image is not None or reference_images:
+            raise ValueError(
+                "img2img / inpaint / reference are not yet supported on the native sd.cpp "
+                "engine; run on a GPU (diffusers) for image-conditioned workflows."
+            )
 
         cancel = threading.Event()
         with self._generate_lock:

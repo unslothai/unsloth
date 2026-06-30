@@ -10057,7 +10057,7 @@ async def _openai_passthrough_non_streaming(
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
-    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion import get_diffusion_backend, resolve_model_kind
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.diffusion_engine_router import (
         active_engine_name,
@@ -10070,19 +10070,25 @@ async def load_diffusion_model(
 
     backend = get_diffusion_backend()
     try:
+        # Resolve the load kind once (gguf / single_file / pipeline) so validation,
+        # engine selection, and the load all agree. A bad explicit kind raises here -> 400.
+        kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # Validate cheaply BEFORE touching the GPU: an unloadable pick (bad family,
-        # missing local GGUF) must not evict a working chat model and then 400. The
-        # validated family also drives engine selection below.
+        # missing local GGUF, a non-unsloth non-GGUF repo) must not evict a working chat
+        # model and then 400. The validated family also drives engine selection below.
         fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
+            model_kind = kind,
         )
         # Pick the engine for this host (diffusers on GPU, native sd.cpp with no GPU),
         # installing the sd-cli binary if needed -- all BEFORE evicting chat, so a
-        # native fallback never strands a half-loaded state.
-        engine = await asyncio.to_thread(select_and_activate_engine, fam, hf_token = request.hf_token)
+        # native fallback never strands a half-loaded state. Non-GGUF kinds force diffusers.
+        engine = await asyncio.to_thread(
+            select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
+        )
         # Take the GPU from the chat backend only when this load will actually use it.
         # diffusers always does; a *force-native* sd.cpp load on a CUDA/XPU/MPS box does
         # too. But a native sd.cpp load on a pure-CPU host never touches the GPU, so
@@ -10110,6 +10116,7 @@ async def load_diffusion_model(
             attention_backend = request.attention_backend,
             transformer_cache = request.transformer_cache,
             transformer_cache_threshold = request.transformer_cache_threshold,
+            model_kind = kind,
         )
         return DiffusionStatusResponse(**annotate_status(status_dict))
     except (ValueError, FileNotFoundError) as exc:
@@ -10138,7 +10145,16 @@ async def generate_diffusion_image(
             guidance = request.guidance,
             seed = request.seed,
             batch_size = request.batch_size,
+            init_image = request.init_image,
+            mask_image = request.mask_image,
+            strength = request.strength,
+            upscale = request.upscale,
+            reference_images = request.reference_images,
         )
+    except ValueError as exc:
+        # Bad client input (undecodable image/mask, or a workflow the loaded family
+        # doesn't support) — a 400 with the reason, not a generic 500.
+        raise HTTPException(status_code = 400, detail = str(exc))
     except RuntimeError as exc:
         # Only "no model loaded" / cancelled are client-state (409). The native
         # sd.cpp engine also raises RuntimeError for execution failures (nonzero
@@ -10146,10 +10162,10 @@ async def generate_diffusion_image(
         msg = str(exc)
         if "No diffusion model is loaded" in msg or "cancelled" in msg.lower():
             raise HTTPException(status_code = 409, detail = msg)
-        logger.error("diffusion.generate_failed: %s", exc)
+        logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
     except Exception as exc:
-        logger.error("diffusion.generate_failed: %s", exc)
+        logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
     # Persist each image with its full recipe embedded. The diffusers batch shares

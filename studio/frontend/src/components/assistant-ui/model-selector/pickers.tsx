@@ -989,11 +989,17 @@ export const IMAGE_GEN_TASKS = [
 // which the text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by
 // id so they don't show in the Images picker only to 400 on load. Keeping the
 // image-to-image task itself is required: some supported models (FLUX.2-klein)
-// carry that tag too.
-const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint"] as const;
+// carry that tag too. "layered" hides Qwen-Image-Layered, which needs a dedicated
+// pipeline (additional_t_cond) the standard text-to-image path can't drive.
+const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "layered"] as const;
+// Editing families the backend now SUPPORTS (their own Edit workflow) -- must not be
+// hidden even though their id contains an edit keyword. Mirrors the backend's
+// qwen-image-edit family in diffusion_families.py.
+const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext"] as const;
 function isImageEditModel(repoId: string | null | undefined): boolean {
   if (!repoId) return false;
   const id = repoId.toLowerCase();
+  if (SUPPORTED_EDIT_KEYWORDS.some((kw) => id.includes(kw))) return false;
   return IMAGE_EDIT_KEYWORDS.some((kw) => id.includes(kw));
 }
 
@@ -1675,6 +1681,19 @@ export function HubModelPicker({
     gpu,
     isChatSupported,
   ]);
+
+  // Curated non-GGUF (safetensors) models for the Images picker. The HF listing +
+  // Recommended gate only surface GGUF on a GPU host (isRecommendableFormat), so a
+  // bnb-4bit / fp8 safetensors model would never appear there. These curated entries
+  // (the non-GGUF ModelOptions passed in) are shown explicitly above the GGUF rows so
+  // the user can pick a full diffusers pipeline. Only the Images picker (task set)
+  // curates them; already-downloaded ones show under Downloaded instead.
+  const curatedSafetensorsRows = useMemo(() => {
+    if (!task) return [];
+    return models.filter(
+      (m) => m.isGguf === false && !downloadedSet.has(m.id.toLowerCase()),
+    );
+  }, [models, task, downloadedSet]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
   const recommendedMeta = useMemo(() => {
@@ -3244,6 +3263,30 @@ export function HubModelPicker({
 
               {showRecommendedSection ? (
                 <>
+                  {/* Curated safetensors models (full diffusers pipelines / single-file
+                      fp8). Shown above the GGUF rows; clicking loads directly (no quant
+                      expander), the same path as a non-GGUF Recommended row. */}
+                  {curatedSafetensorsRows.map((m) => {
+                    const optionKey = makeModelOptionKey("curated-safetensors", m.id);
+                    return (
+                      <div key={m.id}>
+                        <ModelRow
+                          label={m.id}
+                          hideOwner={true}
+                          downloaded={downloadedSet.has(m.id.toLowerCase())}
+                          capabilities={capsById.get(m.id)}
+                          meta={m.description ?? "Safetensors"}
+                          selected={value === m.id}
+                          optionProps={hubModelList.getOptionProps(
+                            optionKey,
+                            value === m.id,
+                          )}
+                          onClick={() => handleModelClick(m.id)}
+                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        />
+                      </div>
+                    );
+                  })}
                   {recommendedSearch.isLoading &&
                   recommendedRows.length === 0 ? (
                     <div className="flex items-center gap-2 px-5 py-3">
@@ -3252,7 +3295,8 @@ export function HubModelPicker({
                         Loading models…
                       </span>
                     </div>
-                  ) : recommendedRows.length === 0 ? (
+                  ) : recommendedRows.length === 0 &&
+                    curatedSafetensorsRows.length === 0 ? (
                     <div className="px-2.5 py-2 text-xs text-muted-foreground">
                       No models found.
                     </div>
