@@ -21,12 +21,6 @@ function usageIndicatorClass(percent: number): string {
   return "bg-primary";
 }
 
-function usageTextClass(percent: number): string {
-  if (percent >= 90) return "text-destructive";
-  if (percent >= 70) return "text-amber-600 dark:text-amber-400";
-  return "text-primary";
-}
-
 function formatGb(value: number): string {
   const digits = value >= 10 ? 1 : 2;
   return `${value.toFixed(digits)} GB`;
@@ -67,14 +61,10 @@ export function FloatingMonitor() {
         dragConstraints={constraintsRef}
         dragElastic={0.1}
         dragMomentum={false}
-        initial={{ opacity: 0, scale: 0.9, x: "calc(100vw - 260px)", y: "calc(100vh - 180px)" }}
+        initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.9 }}
-        className="fixed pointer-events-auto rounded-xl border border-border bg-background p-3 shadow-2xl w-60 cursor-default select-none overflow-hidden"
-        style={{
-          bottom: "auto",
-          right: "auto",
-        }}
+        className="fixed resize bottom-4 right-4 pointer-events-auto rounded-xl border border-border bg-background p-3 shadow-2xl w-60 cursor-default select-none overflow-hidden"
       >
         <div className="flex items-center justify-between border-b pb-2 mb-2 gap-2">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground truncate flex-1">
@@ -101,7 +91,7 @@ export function FloatingMonitor() {
           <div className="space-y-1">
             <div className="flex justify-between text-[11px] font-medium font-mono">
               <span>RAM</span>
-              <span className={cn("tabular-nums", usageTextClass(ramPercent))}>
+              <span className={cn("tabular-nums", ramPercent)}>
                 {Math.round(ramPercent)}%
               </span>
             </div>
@@ -121,7 +111,7 @@ export function FloatingMonitor() {
                 <span className="truncate flex-1 pr-2">
                   VRAM {devices.length > 1 ? `(${devices.length} GPUs)` : `(${devices[0].name ?? "GPU"})`}
                 </span>
-                <span className={cn("shrink-0 tabular-nums", usageTextClass(vramPercent))}>
+                <span className={cn("shrink-0 tabular-nums", vramPercent)}>
                   {Math.round(vramPercent)}%
                 </span>
               </div>
