@@ -2729,11 +2729,11 @@ export function createOpenAIStreamAdapter(
                           ),
                           autoinject_min_score: ragAutoInjectMinScore,
 
-                          whole_doc:
-                            ragEnabled &&
-                            ragSource.type === "thread" &&
-                            ragAutoInject !== "off",
-                          context_length: runtime.ggufContextLength ?? undefined,
+                          ...(ragAutoInject === "off"
+                            ? { whole_doc: false }
+                            : {}),
+                          context_length:
+                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
                         },
                       }
                     : {}),

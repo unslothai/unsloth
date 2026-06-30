@@ -259,7 +259,10 @@ def whole_document_context(
         }
         for i, r in enumerate(rows, 1)
     ]
-    return render_sources(sources), sources
+    rendered = render_sources(sources)
+    if max(1, len(rendered) // 4) > max_tokens:
+        return None
+    return rendered, sources
 
 
 def search_knowledge_base(

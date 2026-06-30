@@ -1123,10 +1123,10 @@ def _autoinject_top_k() -> int:
 
 def _thread_whole_doc_enabled(scope: dict) -> bool:
     """Whether a thread-attached file should be injected in full rather than
-    retrieved top-K. ``rag_scope.whole_doc`` overrides the config default."""
+    retrieved top-K. ``rag_scope.whole_doc=False`` disables it for this request."""
     override = scope.get("whole_doc")
-    if override is not None:
-        return bool(override)
+    if override is False:
+        return False
     try:
         from core.rag import config as _rag_config
     except Exception:  # noqa: BLE001
@@ -1204,12 +1204,10 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     if enabled is None:
         enabled = _autoinject_enabled()
     thread_id = rag_scope.get("thread_id")
-    whole_doc_override = rag_scope.get("whole_doc")
     whole_doc_requested = (
         bool(thread_id)
         and not rag_scope.get("kb_id")
         and _thread_whole_doc_enabled(rag_scope)
-        and (enabled or whole_doc_override is True)
     )
     if not enabled and not whole_doc_requested:
         return None

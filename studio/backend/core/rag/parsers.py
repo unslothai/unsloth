@@ -82,7 +82,6 @@ def _pdf_markdown(doc) -> list[str] | None:
             doc,
             page_chunks = True,
             show_progress = False,
-            use_ocr = False,
         )
     except Exception:  # noqa: BLE001 - never let Markdown extraction break ingestion
         logger.warning("pymupdf4llm extraction failed; using plain text", exc_info = True)
