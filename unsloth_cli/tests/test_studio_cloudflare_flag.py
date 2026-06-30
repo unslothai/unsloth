@@ -273,7 +273,6 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     assert calls == []
 
 
-
 def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     import types
 
@@ -347,6 +346,7 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     assert result.exit_code == 0, result.output
     assert ("verify", "198.51.100.7", 8888) in calls
     assert ("print", {"secure": False, "loopback_host": "127.0.0.1"}) in calls
+
 
 # ── parent-level --no-cloudflare with a subcommand is rejected ───────
 
