@@ -61,6 +61,12 @@ class LlamaServerBackend:
         self._binary: str | None = None
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
+        # Whether the live child was started on GPU (CPU-only holds no VRAM, so
+        # unload() leaves it running).
+        self._started_on_gpu = False
+        # Bumped by unload() so a POST that drops because we killed the child (not
+        # the reaper) doesn't respawn it into the model's VRAM.
+        self._unload_epoch = 0
         # Pooled client; requests pass full URLs, so a respawn's new port needs
         # no rebuild.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S)
@@ -272,6 +278,7 @@ class LlamaServerBackend:
         )
         self._process = proc
         self._port = port
+        self._started_on_gpu = use_gpu
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout,
             args = (proc,),
@@ -354,6 +361,26 @@ class LlamaServerBackend:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
 
+    def unload(self) -> bool:
+        """Kill a GPU embedding subprocess to free its VRAM for a GGUF model load
+        (the next deliberate call respawns it). Bumps ``_unload_epoch`` so a
+        concurrent in-flight POST won't respawn us on the kill-induced error. A
+        CPU-only child holds no VRAM, so it is left running. Returns True when a GPU
+        child was killed, so the caller waits for the driver's async reclaim before
+        probing; False otherwise. Non-blocking on the lifecycle lock: if the
+        embedder is mid spawn/restart, skip rather than stall the load behind a cold
+        start (returns False)."""
+        if not self._lifecycle_lock.acquire(blocking = False):
+            return False
+        try:
+            if not self._process_alive() or not self._started_on_gpu:
+                return False
+            self._unload_epoch += 1
+            self._kill_process()
+            return True
+        finally:
+            self._lifecycle_lock.release()
+
     def _shutdown(self) -> None:
         try:
             self._kill_process()
@@ -369,6 +396,7 @@ class LlamaServerBackend:
         wedges a request); a fresh server unsticks both."""
         last_exc: Exception | None = None
         for attempt in range(2):
+            epoch = self._unload_epoch
             self._ensure_ready()
             try:
                 resp = self._client.post(f"{self._base_url}{path}", json = payload)
@@ -376,9 +404,12 @@ class LlamaServerBackend:
                 return resp.json()
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
                 last_exc = e
-                if attempt == 0:
+                # Don't respawn if a model load unloaded us mid-POST (epoch moved):
+                # the kill was deliberate, and respawning re-takes the model's VRAM.
+                if attempt == 0 and self._unload_epoch == epoch:
                     self._restart()
                     continue
+                break
             except httpx.HTTPStatusError as e:
                 body = e.response.text[:500] if e.response is not None else ""
                 raise RuntimeError(

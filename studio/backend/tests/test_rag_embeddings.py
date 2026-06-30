@@ -220,3 +220,184 @@ def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
     embeddings._reset_backend()
     with pytest.raises(RuntimeError, match = "CUDA error during encode"):
         embeddings.encode(["alpha", "beta"])
+
+
+class _RecordingBackend:
+    """A backend that records unload() and reports whether it killed a GPU process."""
+
+    def __init__(self, killed_gpu_process = False):
+        self.unloaded = False
+        self._killed = killed_gpu_process
+
+    def unload(self):
+        self.unloaded = True
+        return self._killed
+
+
+def test_unload_noop_when_no_backend_built():
+    # The common no-RAG path: load_model calls unload() on every GGUF load, and
+    # with no backend resolved it must be a safe no-op (no build, no error) and
+    # report no GPU-process kill so the caller skips the VRAM-settle wait.
+    embeddings._reset_backend()
+    assert embeddings._backend is None
+    assert embeddings.unload() is False  # must not raise or build a backend
+    assert embeddings._backend is None
+
+
+def test_unload_dispatches_and_reports_gpu_kill():
+    # unload() frees whatever backend is live and propagates whether an external
+    # GPU process was killed (True for llama-server) so load_model waits for the
+    # driver's async reclaim; False for the in-process ST drop.
+    st_like = _RecordingBackend(killed_gpu_process = False)
+    embeddings._backend = st_like
+    try:
+        assert embeddings.unload() is False
+    finally:
+        embeddings._reset_backend()
+    assert st_like.unloaded is True
+
+    llama_like = _RecordingBackend(killed_gpu_process = True)
+    embeddings._backend = llama_like
+    try:
+        assert embeddings.unload() is True
+    finally:
+        embeddings._reset_backend()
+    assert llama_like.unloaded is True
+
+
+def test_st_unload_drops_cached_model(monkeypatch):
+    # _st_unload clears the cached ST model so its VRAM is released; the next
+    # encode/warm reloads lazily.
+    monkeypatch.setattr(embeddings, "_model", object(), raising = False)
+    monkeypatch.setattr(embeddings, "_name", "some-model", raising = False)
+    embeddings._st_unload()
+    assert embeddings._model is None
+    assert embeddings._name is None
+
+
+def test_st_unload_noop_when_nothing_loaded(monkeypatch):
+    # No model loaded -> _st_unload must not touch torch (it would otherwise
+    # create a CUDA context on a process that never embedded).
+    monkeypatch.setattr(embeddings, "_model", None, raising = False)
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", None)  # any torch use would raise
+    embeddings._st_unload()  # must early-return before importing torch
+    assert embeddings._model is None
+
+
+def test_llama_unload_skips_cpu_only_server(monkeypatch):
+    # A CPU-only embedder holds no VRAM, so a model load must leave it running
+    # (killing it would abort ingestion for no GPU-probe gain). A GPU child is
+    # killed so its VRAM is reclaimed.
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    monkeypatch.setattr(b, "_process_alive", lambda: True)
+    killed = {"n": 0}
+    monkeypatch.setattr(b, "_kill_process", lambda: killed.__setitem__("n", killed["n"] + 1))
+
+    b._started_on_gpu = False
+    assert b.unload() is False  # CPU-only: leave it running
+    assert killed["n"] == 0
+
+    b._started_on_gpu = True
+    assert b.unload() is True  # GPU child: kill to free VRAM
+    assert killed["n"] == 1
+
+
+def test_llama_unload_skips_when_lifecycle_busy(monkeypatch):
+    # unload() must not stall the model load behind an in-flight spawn/restart that
+    # holds the lifecycle lock (a cold start can take up to EMBED_STARTUP_TIMEOUT_S).
+    # It skips (returns False) rather than block.
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    b._started_on_gpu = True
+    monkeypatch.setattr(b, "_process_alive", lambda: True)
+    killed = {"n": 0}
+    monkeypatch.setattr(b, "_kill_process", lambda: killed.__setitem__("n", killed["n"] + 1))
+
+    b._lifecycle_lock.acquire()
+    try:
+        assert b.unload() is False  # lock held -> skip, don't block the load
+        assert killed["n"] == 0
+    finally:
+        b._lifecycle_lock.release()
+
+
+def test_llama_post_no_respawn_when_unloaded_midflight(monkeypatch):
+    # If a model load unloads us mid-POST (epoch moves), the kill is deliberate, so
+    # the dropped connection must NOT respawn the embedder back into model VRAM.
+    import httpx
+
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    restarts = {"n": 0}
+    monkeypatch.setattr(b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1))
+
+    def _post_killed_by_unload(url, json):
+        b._unload_epoch += 1  # a concurrent unload() killed the child
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(b._client, "post", _post_killed_by_unload)
+    with pytest.raises(RuntimeError, match = "failed after retry"):
+        b._post("/v1/embeddings", {})
+    assert restarts["n"] == 0
+
+
+def test_llama_post_respawns_on_transient_drop(monkeypatch):
+    # A dropped connection with no unload (the reaper killed us) must still respawn
+    # once and retry, the pre-existing self-heal the epoch guard must not break.
+    import httpx
+
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_restart", lambda: None)
+    calls = {"n": 0}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"ok": True}
+
+    def _post(url, json):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("connection refused")
+        return _Resp()
+
+    monkeypatch.setattr(b._client, "post", _post)
+    assert b._post("/v1/embeddings", {}) == {"ok": True}
+    assert calls["n"] == 2  # respawned and retried
+
+
+def test_llama_deliberate_post_works_after_unload(monkeypatch):
+    # Codex #1: after a GPU unload, ingestion calls token_counter() (a /tokenize
+    # POST) before any encode. That deliberate call must respawn and succeed, not
+    # be blocked by a stale unload guard.
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    b = LlamaServerBackend()
+    b._started_on_gpu = True
+    monkeypatch.setattr(b, "_process_alive", lambda: True)
+    monkeypatch.setattr(b, "_kill_process", lambda: None)
+    assert b.unload() is True
+
+    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"tokens": [1, 2, 3]}
+
+    monkeypatch.setattr(b._client, "post", lambda url, json: _Resp())
+    assert b._post("/tokenize", {}) == {"tokens": [1, 2, 3]}

@@ -441,20 +441,6 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
-def _warm_rag_embedder() -> None:
-    """Warm RAG embeddings without blocking backend readiness."""
-    try:
-        from storage import rag_db
-
-        if not rag_db.RAG_AVAILABLE:
-            return
-        from core.rag import embeddings
-
-        embeddings.warm()
-    except Exception:
-        pass
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -505,8 +491,8 @@ async def lifespan(app: FastAPI):
     # for tens of seconds on macOS (cold GitHub freshness cache / slow network, and
     # Gatekeeper verifying the unsigned binary on first `--help` exec). They only
     # write app.state and nothing reads it synchronously at startup, so run them on
-    # a daemon thread off the startup critical path (mirrors the helper-precache and
-    # RAG-warm threads). Default to None until the thread populates them.
+    # a daemon thread off the startup critical path (mirrors the helper-precache
+    # thread). Default to None until the thread populates them.
     app.state.llama_cpp_capabilities = None
     app.state.llama_cpp_freshness = None
     _start_llama_cpp_probes_if_enabled(app)
@@ -518,7 +504,10 @@ async def lifespan(app: FastAPI):
         _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     _start_helper_precache_if_enabled()
-    threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
+    # The RAG embedder is loaded lazily on first use, not warmed here: warming it
+    # onto the inference GPU at startup permanently held ~336 MB of VRAM (even when
+    # RAG is never used), which pushed llama-server's auto-context pick past the
+    # driver's system-memory spill threshold and cost ~18% generation throughput.
 
     # Initialize RSA key pair for API key encryption (external providers).
     from core.inference.key_exchange import init_key_pair
