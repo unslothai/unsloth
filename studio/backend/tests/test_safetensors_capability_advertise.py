@@ -742,46 +742,39 @@ class TestSafetensorsReasoningPrefillGate:
     def test_g1_enable_thinking_true(self):
         # G1: Qwen3.5 template + explicit enable_thinking=True -> prefilled.
         from routes.inference import _sf_reasoning_prefill_mode
-
         assert _sf_reasoning_prefill_mode(self._features(), True, self._QWEN_TPL) is True
 
     def test_g2_enable_thinking_none_defaults_on(self):
         # G2: default request (None) -> prefilled (Qwen3/GLM templates default on).
         from routes.inference import _sf_reasoning_prefill_mode
-
         assert _sf_reasoning_prefill_mode(self._features(), None, self._QWEN_TPL) is True
 
     def test_g3_enable_thinking_false(self):
         # G3: thinking explicitly off -> not prefilled.
         from routes.inference import _sf_reasoning_prefill_mode
-
         assert _sf_reasoning_prefill_mode(self._features(), False, self._QWEN_TPL) is False
 
     def test_g4_gpt_oss_reasoning_effort_excluded(self):
         # G4: gpt-oss uses explicit tags via HarmonyTextStreamer -> normal mode.
         from routes.inference import _sf_reasoning_prefill_mode
-
         feats = self._features(reasoning_style = "reasoning_effort")
         assert _sf_reasoning_prefill_mode(feats, True, self._QWEN_TPL) is False
 
     def test_g5_enable_thinking_effort_included(self):
         # G5: GLM-style enable_thinking_effort also prefills.
         from routes.inference import _sf_reasoning_prefill_mode
-
         feats = self._features(reasoning_style = "enable_thinking_effort")
         assert _sf_reasoning_prefill_mode(feats, None, self._QWEN_TPL) is True
 
     def test_g6_non_reasoning_model(self):
         # G6: no reasoning capability -> never prefilled.
         from routes.inference import _sf_reasoning_prefill_mode
-
         feats = self._features(supports_reasoning = False, reasoning_style = None)
         assert _sf_reasoning_prefill_mode(feats, True, self._QWEN_TPL) is False
 
     def test_g7_reasoning_always_on(self):
         # G7: hardcoded-<think> template -> prefilled regardless of the flag.
         from routes.inference import _sf_reasoning_prefill_mode
-
         feats = self._features(reasoning_always_on = True)
         assert _sf_reasoning_prefill_mode(feats, False, self._QWEN_TPL) is True
 
@@ -789,11 +782,9 @@ class TestSafetensorsReasoningPrefillGate:
         # G8: gemma's <|think|>/<|channel> format has no </think> -> NOT prefilled
         # (would otherwise swallow the whole answer as reasoning). Regression guard.
         from routes.inference import _sf_reasoning_prefill_mode
-
         assert _sf_reasoning_prefill_mode(self._features(), True, self._GEMMA_TPL) is False
 
     def test_g9_missing_template_not_prefilled(self):
         # G9: no template available -> conservative (not prefilled).
         from routes.inference import _sf_reasoning_prefill_mode
-
         assert _sf_reasoning_prefill_mode(self._features(), True, None) is False
