@@ -1410,8 +1410,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             as_tuple = False
                         )  # [T, 2] = (row, col), row-major
                         _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]  # [T-1]
-                        # completion-prediction positions only (col >= L - logits_to_keep, same row)
-                        _pk_ctgt = (_pk_nz_idx[1:, 1] >= (_pk_L - logits_to_keep)) & _pk_within
+                        # completion start is per-row after left-packing: (L - logits_to_keep) minus
+                        # that row's left-pad (matches create_completion_attention_mask exactly)
+                        _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
+                        _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
                         with _get_inference_mode_context_manager(model):
                             with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
                                 # use_cache=False: a KV cache silently disables varlen packing
@@ -1508,13 +1510,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             _pk_rkeep
                                         ].to(torch.float32)
                             device_synchronize()
-                            # compare only the completion region; the first max_left_pad window cols are
-                            # prompt-overflow the lm_head opt leaves 0
-                            _pk_cm = torch.zeros(
-                                (total_rows, _pk_W), dtype = torch.float32, device = input_ids.device
-                            )
-                            _pk_cm[:, max_left_pad:] = (
-                                input_ids[:, -logits_to_keep:] != _pk_pad
+                            # compare over the exact loss-mask region (per-row completion, non-pad)
+                            _pk_wc = torch.arange(_pk_W, device = input_ids.device)
+                            _pk_cm = (
+                                (_pk_wc.unsqueeze(0) >= (max_left_pad - left_pad_tokens_per_prompt).unsqueeze(1))
+                                & (input_ids[:, -_pk_W:] != _pk_pad)
                             ).float()
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
                             if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
