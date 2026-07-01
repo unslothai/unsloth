@@ -21,7 +21,9 @@ from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
     SdCppUpscaleParams,
+    build_img_gen_request,
     build_sd_cpp_command,
+    build_sd_cpp_server_command,
     build_sd_cpp_upscale_command,
     native_speed_flags,
     offload_flags,
@@ -285,3 +287,88 @@ def test_build_upscale_requires_input_and_model():
             SdCppUpscaleParams(input_image = "/i.png", upscale_model = ""),
             output_path = "/o.png",
         )
+
+
+# ── sd-server spawn command ──────────────────────────────────────────────────
+
+
+def test_server_command_has_model_and_listen_but_no_request_params():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/ae.sft", llm = "/m/q.gguf")
+    cmd = build_sd_cpp_server_command(
+        "/bin/sd-server", files, host = "127.0.0.1", port = 5678, vae_format = "flux2"
+    )
+    assert _pair(cmd, "--diffusion-model") == "/m/z.gguf"
+    assert _pair(cmd, "--vae") == "/m/ae.sft"
+    assert _pair(cmd, "--llm") == "/m/q.gguf"
+    assert _pair(cmd, "--vae-format") == "flux2"
+    assert _pair(cmd, "--listen-ip") == "127.0.0.1"
+    assert _pair(cmd, "--listen-port") == "5678"
+    # Per-request parameters must NOT be baked into the spawn command.
+    for flag in ("--prompt", "--seed", "--steps", "--cfg-scale", "--guidance", "--width", "--height", "--batch-count"):
+        assert flag not in cmd
+
+
+def test_server_command_maps_offload_and_speed_and_dedupes():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_server_command(
+        "/bin/sd-server",
+        files,
+        host = "127.0.0.1",
+        port = 1,
+        offload = ["--offload-to-cpu", "--diffusion-fa"],
+        native_speed = "default",  # would add --diffusion-fa again
+        threads = 8,
+    )
+    assert _pair(cmd, "--threads") == "8"
+    assert cmd.count("--diffusion-fa") == 1  # de-duped against offload
+    assert "--offload-to-cpu" in cmd
+
+
+def test_server_command_scratch_dir_expands_to_lora_upscaler_embd():
+    files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
+    cmd = build_sd_cpp_server_command(
+        "/bin/sd-server", files, host = "127.0.0.1", port = 1, scratch_dir = "/tmp/scratch"
+    )
+    assert _pair(cmd, "--lora-model-dir") == "/tmp/scratch"
+    assert _pair(cmd, "--hires-upscalers-dir") == "/tmp/scratch"
+    assert _pair(cmd, "--embd-dir") == "/tmp/scratch"
+    # Absent when not requested.
+    bare = build_sd_cpp_server_command("/bin/sd-server", files, host = "127.0.0.1", port = 1)
+    assert "--lora-model-dir" not in bare and "--hires-upscalers-dir" not in bare
+
+
+def test_server_command_requires_diffusion_model():
+    with pytest.raises(ValueError):
+        build_sd_cpp_server_command(
+            "/bin/sd-server", SdCppModelFiles(diffusion_model = ""), host = "127.0.0.1", port = 1
+        )
+
+
+# ── img_gen request body ─────────────────────────────────────────────────────
+
+
+def test_img_gen_request_maps_core_fields():
+    req = build_img_gen_request(
+        prompt = "a fox", negative_prompt = "blurry", width = 512, height = 768,
+        steps = 8, seed = 42, batch_count = 3, sample_method = "euler", cfg_scale = 4.0,
+    )
+    assert req["prompt"] == "a fox" and req["negative_prompt"] == "blurry"
+    assert req["width"] == 512 and req["height"] == 768
+    assert req["seed"] == 42 and req["batch_count"] == 3
+    assert req["sample_params"]["sample_steps"] == 8
+    assert req["sample_params"]["sample_method"] == "euler"
+    assert req["sample_params"]["guidance"]["txt_cfg"] == 4.0
+    assert req["output_format"] == "png"
+
+
+def test_img_gen_request_flux_uses_distilled_guidance():
+    req = build_img_gen_request(prompt = "x", steps = 4, distilled_guidance = 3.5, flow_shift = 3.0)
+    g = req["sample_params"]["guidance"]
+    assert g["distilled_guidance"] == 3.5
+    assert "txt_cfg" not in g
+    assert req["sample_params"]["flow_shift"] == 3.0
+
+
+def test_img_gen_request_requires_prompt():
+    with pytest.raises(ValueError):
+        build_img_gen_request(prompt = "   ", steps = 4)

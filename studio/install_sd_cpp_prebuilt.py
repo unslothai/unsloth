@@ -140,6 +140,17 @@ def _locate_sd_cli(root: Path) -> Optional[Path]:
     return None
 
 
+def _locate_sd_server(root: Path) -> Optional[Path]:
+    """The persistent ``sd-server`` binary in the extracted tree, if the archive ships
+    one (modern stable-diffusion.cpp releases do). Best-effort: the native backend
+    falls back to one-shot ``sd-cli`` when it is absent."""
+    name = "sd-server.exe" if sys.platform == "win32" else "sd-server"
+    for p in root.rglob(name):
+        if p.is_file():
+            return p
+    return None
+
+
 def install(
     *,
     install_dir: Optional[Path] = None,
@@ -181,6 +192,13 @@ def install(
     if sys.platform != "win32":
         _make_executable(sd_cli)
     print(f"installed sd-cli -> {sd_cli}", flush = True)
+    # The same archive ships the persistent sd-server; make it runnable too so the
+    # native backend can prefer it (load once, serve many) over one-shot sd-cli.
+    sd_server = _locate_sd_server(target)
+    if sd_server is not None and sys.platform != "win32":
+        _make_executable(sd_server)
+    if sd_server is not None:
+        print(f"installed sd-server -> {sd_server}", flush = True)
     return sd_cli
 
 

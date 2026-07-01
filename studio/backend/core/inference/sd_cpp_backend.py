@@ -47,12 +47,19 @@ from core.inference.diffusion_memory import (
     OFFLOAD_NONE,
     OFFLOAD_SEQUENTIAL,
 )
-from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles, offload_flags
+from core.inference.sd_cpp_args import (
+    SdCppGenParams,
+    SdCppModelFiles,
+    build_img_gen_request,
+    offload_flags,
+)
 from core.inference.sd_cpp_engine import (
     SdCppCancelled,
     SdCppEngine,
     find_sd_cpp_binary,
+    find_sd_server_binary,
 )
+from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -103,9 +110,49 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             return None
 
 
+def ensure_sd_server_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
+    """Path to a usable ``sd-server`` binary, installing the prebuilt once if needed.
+
+    Unlike ``ensure_sd_cpp_binary``, this installs when *sd-server specifically* is
+    missing -- even if an ``sd-cli`` from an older install is already present -- so an
+    existing one-shot install is upgraded to the persistent server (the prebuilt archive
+    ships both). Returns None when it is absent and cannot be installed; the backend then
+    uses the one-shot fallback. Never raises.
+    """
+    found = find_sd_server_binary()
+    if found:
+        return found
+    if not allow_install:
+        return None
+    with _install_lock:
+        found = find_sd_server_binary()
+        if found:
+            return found
+        try:
+            import sys
+
+            studio_dir = Path(__file__).resolve().parents[3]  # .../studio
+            if str(studio_dir) not in sys.path:
+                sys.path.insert(0, str(studio_dir))
+            from install_sd_cpp_prebuilt import install as _install
+        except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
+            logger.warning("sd-server installer import failed: %s", exc)
+            return None
+        try:
+            _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
+        except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
+            logger.warning("sd-server auto-install failed: %s", exc)
+            return None
+        return find_sd_server_binary()
+
+
 @dataclass(frozen = True)
 class _SdState:
-    """The loaded native checkpoint: resolved asset paths + run settings."""
+    """The loaded native checkpoint: resolved asset paths + run settings.
+
+    ``server`` is the resident ``sd-server`` process (the model is loaded once, inside
+    it) when ``mode == "server"``; in the ``"oneshot"`` fallback it is ``None`` and each
+    generation re-runs ``sd-cli``."""
 
     repo_id: str
     base_repo: str
@@ -118,6 +165,8 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
+    server: Optional[SdCppServer] = None
+    mode: str = "server"
 
 
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
@@ -210,6 +259,24 @@ class SdCppDiffusionBackend:
         self._engine = SdCppEngine(binary = binary)
         return self._engine
 
+    def _resolve_backend(self) -> tuple[str, Optional[str], Optional[SdCppEngine]]:
+        """Pick the native execution mode: ("server", binary, None) or ("oneshot", None, engine).
+
+        The persistent ``sd-server`` is preferred (load once, serve many). The one-shot
+        ``sd-cli`` is the fallback for older / custom builds that lack the server target.
+        An explicitly injected engine forces one-shot (the unit-test seam and an escape
+        hatch), so a test never spawns a real server or triggers an install.
+        """
+        if self._engine is not None:
+            return "oneshot", None, self._resolve_engine()
+        server_binary = ensure_sd_server_binary(allow_install = _install_allowed())
+        if server_binary is not None:
+            return "server", server_binary, None
+        logger.warning(
+            "sd-server not found; falling back to one-shot sd-cli (reloads the model per image)."
+        )
+        return "oneshot", None, self._resolve_engine()
+
     # ── Background load + progress ─────────────────────────────────────────
 
     def begin_load(
@@ -293,10 +360,18 @@ class SdCppDiffusionBackend:
         _load_token: int,
     ) -> None:
         try:
-            # Ensure the binary up front so an install failure surfaces before the
-            # multi-GB asset pull (the router also pre-checks, but a forced reload here
-            # must not silently download then fail at generate).
-            engine = self._resolve_engine()
+            # Resolve the backend mode (persistent sd-server preferred, one-shot sd-cli
+            # fallback) and binary up front so an install / missing-binary failure
+            # surfaces before the multi-GB asset pull.
+            mode, server_binary, engine = self._resolve_backend()
+            if mode == "oneshot":
+                # Probe the binary: version() returns None when the present binary cannot
+                # run (bad perms / missing libs), so fail now rather than commit a "ready"
+                # state that crashes on the first generation. (Server mode's equivalent
+                # probe is server.start() blocking on the readiness HTTP check below.)
+                assert engine is not None
+                if engine.version() is None:
+                    raise RuntimeError("sd-cli binary is present but not runnable.")
 
             assets = self._asset_specs(repo_id, gguf_filename, fam)
             self._set_expected_bytes(assets, hf_token)
@@ -313,37 +388,21 @@ class SdCppDiffusionBackend:
             )
             device = resolve_diffusion_device_target().device
             # Honor the requested speed everywhere; offload only off-CPU (forced
-            # sd_cpp / MPS), since on CPU sd-cli is resident in RAM and the offload
-            # flags are no-ops.
+            # sd_cpp / MPS), since on CPU the weights are resident in RAM and the
+            # offload flags are no-ops.
             offload: tuple[str, ...] = ()
             if device != "cpu":
                 offload = tuple(offload_flags(_memory_policy(memory_mode, cpu_offload)))
-            state = _SdState(
-                repo_id = repo_id,
-                base_repo = base,
-                family = fam,
-                device = device,
-                files = files,
-                vae_format = fam.sd_cpp_vae_format,
-                native_speed = _native_speed_for(speed_mode),
-                offload_flags = offload,
-                threads = None,
-                sampling_method = fam.sd_cpp_sampling_method,
-                flow_shift = fam.sd_cpp_flow_shift,
-            )
-            # Probe the binary: version() returns None when the present binary cannot
-            # run (bad permissions / missing shared libs), so fail the load now rather
-            # than commit a "ready" state that crashes on the first generation.
-            if engine.version() is None:
-                raise RuntimeError("sd-cli binary is present but not runnable.")
-            # A generation that started during the (slow) asset download is still running
-            # against the OLD model. Abort it, then WAIT on _generate_lock for it to exit
-            # before publishing the new state -- otherwise that stale sd-cli run can finish
-            # afterward and persist an image from the previous model once this load reports
-            # ready (mirrors the diffusers load_pipeline commit). _generate_lock is taken
-            # only here, not during the download, so the long fetch never serialises against
-            # generation; the inner token re-check guards an unload/newer load arriving while
-            # we waited.
+            native_speed = _native_speed_for(speed_mode)
+
+            # Tear down any previously-loaded model, then commit the new one. A generation
+            # that started during the (slow) asset download is still running against the OLD
+            # model: abort it and WAIT on _generate_lock for it to exit before swapping, or
+            # a stale run could finish afterward and persist an image from the previous
+            # model. For server mode we stop the old server and start (load) the new one
+            # HERE, under _generate_lock, so generation never races a half-loaded server and
+            # two resident models never coexist. _generate_lock is taken only now, not during
+            # the download, so the long fetch never serialises against generation.
             with self._lock:
                 if self._load_token != _load_token:
                     return  # superseded / cancelled
@@ -353,6 +412,64 @@ class SdCppDiffusionBackend:
                 with self._lock:
                     if self._load_token != _load_token:
                         return  # superseded / cancelled while waiting
+                    old_state = self._state
+                    self._state = None  # the old model is being torn down
+                if old_state is not None and old_state.server is not None:
+                    old_state.server.stop()
+                server: Optional[SdCppServer] = None
+                if mode == "server":
+                    assert server_binary is not None
+                    try:
+                        server = SdCppServer(server_binary)
+                        # Blocks until the server has loaded the model and is answering
+                        # (its readiness check); raises with the log tail on a failed load.
+                        server.start(
+                            files,
+                            vae_format = fam.sd_cpp_vae_format,
+                            offload = list(offload),
+                            native_speed = native_speed,
+                            threads = None,
+                        )
+                    except Exception as start_exc:  # noqa: BLE001
+                        # A present-but-unusable sd-server must be no worse than the
+                        # one-shot engine: fall back to sd-cli when it is usable, else
+                        # surface the server error.
+                        logger.warning(
+                            "sd-server failed to start (%s); falling back to one-shot sd-cli.",
+                            start_exc,
+                        )
+                        if server is not None:
+                            server.stop()
+                        server = None
+                        try:
+                            usable = self._resolve_engine().version() is not None
+                        except Exception:  # noqa: BLE001
+                            usable = False
+                        if not usable:
+                            raise start_exc
+                        mode = "oneshot"
+                state = _SdState(
+                    repo_id = repo_id,
+                    base_repo = base,
+                    family = fam,
+                    device = device,
+                    files = files,
+                    vae_format = fam.sd_cpp_vae_format,
+                    native_speed = native_speed,
+                    offload_flags = offload,
+                    threads = None,
+                    sampling_method = fam.sd_cpp_sampling_method,
+                    flow_shift = fam.sd_cpp_flow_shift,
+                    server = server,
+                    mode = mode,
+                )
+                with self._lock:
+                    if self._load_token != _load_token:
+                        # Superseded / unloaded while we were loading: discard the server
+                        # we just started so it doesn't leak (and keep _state unloaded).
+                        if server is not None:
+                            server.stop()
+                        return
                     self._state = state
                     self._loading = None
         except SdCppCancelled:
@@ -455,10 +572,6 @@ class SdCppDiffusionBackend:
         seed: Optional[int] = None,
         batch_size: int = 1,
     ) -> dict[str, Any]:
-        import tempfile
-
-        from PIL import Image
-
         cancel = threading.Event()
         with self._generate_lock:
             with self._lock:
@@ -466,65 +579,45 @@ class SdCppDiffusionBackend:
                 if state is None:
                     raise RuntimeError("No diffusion model is loaded.")
                 self._active_generate_cancel = cancel
-            engine = self._resolve_engine()
             try:
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
                 else:
                     seed = int(seed)
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
-                extra_args: list[str] = []
-                if state.vae_format:
-                    extra_args += ["--vae-format", state.vae_format]
-                if state.flow_shift is not None:
-                    extra_args += ["--flow-shift", repr(float(state.flow_shift))]
-
                 self._gen = _SdGen(total_steps = int(steps))
-                images = []
-                seeds: list[int] = []
-                with tempfile.TemporaryDirectory(prefix = "sdcpp_gen_") as tmpdir:
-                    for index in range(max(1, int(batch_size))):
-                        if cancel.is_set():
-                            raise RuntimeError("Diffusion generation was cancelled.")
-                        # Distinct seed per batch image (sd-cli is one image/run here),
-                        # so a batch is reproducible image-by-image from the base seed.
-                        # Mask to sd-cli's int64 range, NOT 53 bits: the request model and
-                        # the diffusers backend both accept large explicit seeds, so a tight
-                        # 2**53 mask would silently truncate them (2**53 -> 0) and collide
-                        # distinct requested seeds onto the same image. Randomly-drawn seeds
-                        # above are already 53-bit (JS-safe); explicit seeds pass through.
-                        seed_i = (seed + index) & ((1 << 63) - 1)
-                        out_path = str(Path(tmpdir) / f"img_{index}.png")
-                        params = SdCppGenParams(
-                            prompt = prompt,
-                            negative_prompt = negative_prompt or None,
-                            width = int(width),
-                            height = int(height),
-                            steps = int(steps),
-                            cfg_scale = cfg_scale,
-                            guidance = flux_guidance,
-                            seed = seed_i,
-                            sampling_method = state.sampling_method,
-                            batch_count = 1,
-                        )
-                        engine.generate(
-                            state.files,
-                            params,
-                            output_path = out_path,
-                            offload = list(state.offload_flags) or None,
-                            native_speed = state.native_speed,
-                            threads = state.threads,
-                            extra_args = extra_args or None,
-                            on_log = self._on_log,
-                            cancel_event = cancel,
-                        )
-                        with Image.open(out_path) as im:
-                            images.append(im.copy())
-                        seeds.append(seed_i)
+                if state.mode == "server" and state.server is not None:
+                    images, seeds = self._generate_server(
+                        state,
+                        prompt = prompt,
+                        negative_prompt = negative_prompt,
+                        width = width,
+                        height = height,
+                        steps = steps,
+                        seed = seed,
+                        batch_size = batch_size,
+                        cfg_scale = cfg_scale,
+                        flux_guidance = flux_guidance,
+                        cancel = cancel,
+                    )
+                else:
+                    images, seeds = self._generate_oneshot(
+                        state,
+                        prompt = prompt,
+                        negative_prompt = negative_prompt,
+                        width = width,
+                        height = height,
+                        steps = steps,
+                        seed = seed,
+                        batch_size = batch_size,
+                        cfg_scale = cfg_scale,
+                        flux_guidance = flux_guidance,
+                        cancel = cancel,
+                    )
                 if cancel.is_set():
                     raise RuntimeError("Diffusion generation was cancelled.")
-                # ``seeds`` is the per-image seed (each sd-cli run used seed+index), so
-                # the route can persist the real seed for every image in the batch.
+                # ``seeds`` is the per-image seed (image i used seed+i), so the route can
+                # persist the real seed for every image in the batch.
                 return {
                     "images": images,
                     "seed": int(seed),
@@ -538,6 +631,114 @@ class SdCppDiffusionBackend:
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+
+    def _generate_server(
+        self,
+        state: _SdState,
+        *,
+        prompt: str,
+        negative_prompt: Optional[str],
+        width: int,
+        height: int,
+        steps: int,
+        seed: int,
+        batch_size: int,
+        cfg_scale: Optional[float],
+        flux_guidance: Optional[float],
+        cancel: threading.Event,
+    ) -> tuple[list, list[int]]:
+        """Generate via the resident sd-server: ONE batched job, no model reload."""
+        import io
+
+        from PIL import Image
+
+        assert state.server is not None
+        payload = build_img_gen_request(
+            prompt = prompt,
+            negative_prompt = negative_prompt or None,
+            width = int(width),
+            height = int(height),
+            steps = int(steps),
+            seed = int(seed),
+            batch_count = max(1, int(batch_size)),
+            sample_method = state.sampling_method,
+            flow_shift = state.flow_shift,
+            cfg_scale = cfg_scale,
+            distilled_guidance = flux_guidance,
+        )
+        blobs = state.server.img_gen(payload, on_step = self._on_log, cancel_event = cancel)
+        images = [Image.open(io.BytesIO(b)).convert("RGB") for b in blobs]
+        # sd.cpp advances the seed per batch image, so report seed+i for each (masked to
+        # int64, matching the request model / diffusers backend's large-seed acceptance).
+        seeds = [(int(seed) + i) & ((1 << 63) - 1) for i in range(len(images))]
+        return images, seeds
+
+    def _generate_oneshot(
+        self,
+        state: _SdState,
+        *,
+        prompt: str,
+        negative_prompt: Optional[str],
+        width: int,
+        height: int,
+        steps: int,
+        seed: int,
+        batch_size: int,
+        cfg_scale: Optional[float],
+        flux_guidance: Optional[float],
+        cancel: threading.Event,
+    ) -> tuple[list, list[int]]:
+        """Fallback path: re-run one-shot sd-cli per image (reloads the model each time)."""
+        import tempfile
+
+        from PIL import Image
+
+        engine = self._resolve_engine()
+        extra_args: list[str] = []
+        if state.vae_format:
+            extra_args += ["--vae-format", state.vae_format]
+        if state.flow_shift is not None:
+            extra_args += ["--flow-shift", repr(float(state.flow_shift))]
+
+        images = []
+        seeds: list[int] = []
+        with tempfile.TemporaryDirectory(prefix = "sdcpp_gen_") as tmpdir:
+            for index in range(max(1, int(batch_size))):
+                if cancel.is_set():
+                    raise RuntimeError("Diffusion generation was cancelled.")
+                # Distinct seed per batch image, reproducible image-by-image from the base
+                # seed. Mask to int64, NOT 53 bits: the request model and the diffusers
+                # backend both accept large explicit seeds, so a tight 2**53 mask would
+                # truncate them and collide distinct requested seeds onto the same image.
+                seed_i = (seed + index) & ((1 << 63) - 1)
+                out_path = str(Path(tmpdir) / f"img_{index}.png")
+                params = SdCppGenParams(
+                    prompt = prompt,
+                    negative_prompt = negative_prompt or None,
+                    width = int(width),
+                    height = int(height),
+                    steps = int(steps),
+                    cfg_scale = cfg_scale,
+                    guidance = flux_guidance,
+                    seed = seed_i,
+                    sampling_method = state.sampling_method,
+                    batch_count = 1,
+                )
+                engine.generate(
+                    state.files,
+                    params,
+                    output_path = out_path,
+                    offload = list(state.offload_flags) or None,
+                    native_speed = state.native_speed,
+                    threads = state.threads,
+                    extra_args = extra_args or None,
+                    on_log = self._on_log,
+                    cancel_event = cancel,
+                )
+                with Image.open(out_path) as im:
+                    images.append(im.copy())
+                seeds.append(seed_i)
+        return images, seeds
 
     def _on_log(self, line: str) -> None:
         gen = self._gen
@@ -576,9 +777,15 @@ class SdCppDiffusionBackend:
         with self._lock:
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
+            state = self._state
             self._state = None
             self._load_token += 1
             self._loading = None
+        # Stop the resident server outside the lock (terminate can take a few seconds). A
+        # mid-flight generation had its cancel event set above, so its poll loop unwinds
+        # as the process goes away.
+        if state is not None and state.server is not None:
+            state.server.stop()
         return self.status()
 
     def status(self) -> dict[str, Any]:
@@ -602,6 +809,7 @@ class SdCppDiffusionBackend:
                 "attention_backend": None,
                 "transformer_cache": None,
                 "engine": "sd_cpp",
+                "native_mode": None,
             }
         return {
             "loaded": True,
@@ -625,6 +833,8 @@ class SdCppDiffusionBackend:
             "attention_backend": None,
             "transformer_cache": None,
             "engine": "sd_cpp",
+            # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
+            "native_mode": state.mode,
         }
 
 

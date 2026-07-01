@@ -24,6 +24,7 @@ from core.inference.sd_cpp_engine import (
     ENGINE_SD_CPP,
     SdCppEngine,
     find_sd_cpp_binary,
+    find_sd_server_binary,
     runtime_env,
     select_diffusion_engine,
 )
@@ -73,6 +74,58 @@ def test_find_returns_none_when_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
     monkeypatch.setattr(eng.shutil, "which", lambda *_a: None)
     assert find_sd_cpp_binary() is None
+
+
+# ── sd-server discovery ──────────────────────────────────────────────────────
+
+
+def _clear_server_env(monkeypatch):
+    monkeypatch.delenv("SD_SERVER_PATH", raising = False)
+    monkeypatch.delenv("SD_CLI_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
+
+
+def test_find_server_prefers_sd_server_path_env(tmp_path, monkeypatch):
+    _clear_server_env(monkeypatch)
+    binary = tmp_path / "sd-server"
+    binary.write_text("x")
+    monkeypatch.setenv("SD_SERVER_PATH", str(binary))
+    monkeypatch.setattr(eng.shutil, "which", lambda *_a: None)
+    assert find_sd_server_binary() == str(binary)
+
+
+def test_find_server_build_layout(tmp_path, monkeypatch):
+    _clear_server_env(monkeypatch)
+    root = tmp_path / "sdcpp"
+    built = root / "build" / "bin" / "sd-server"
+    built.parent.mkdir(parents = True)
+    built.write_text("x")
+    monkeypatch.setenv("UNSLOTH_SD_CPP_PATH", str(root))
+    monkeypatch.setattr(eng.shutil, "which", lambda *_a: None)
+    assert find_sd_server_binary() == str(built)
+
+
+def test_find_server_path_fallback(tmp_path, monkeypatch):
+    _clear_server_env(monkeypatch)
+    monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+    monkeypatch.setattr(
+        eng.shutil, "which", lambda stem: "/usr/bin/sd-server" if stem == "sd-server" else None
+    )
+    assert find_sd_server_binary() == "/usr/bin/sd-server"
+
+
+def test_find_server_not_confused_with_sd_cli(tmp_path, monkeypatch):
+    # A tree that has only sd-cli must NOT be reported as an sd-server (and vice versa),
+    # so the backend correctly falls back to one-shot when only the CLI is present.
+    _clear_server_env(monkeypatch)
+    root = tmp_path / "sdcpp"
+    (root / "build" / "bin").mkdir(parents = True)
+    (root / "build" / "bin" / "sd-cli").write_text("x")
+    monkeypatch.setenv("UNSLOTH_SD_CPP_PATH", str(root))
+    monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+    monkeypatch.setattr(eng.shutil, "which", lambda *_a: None)
+    assert find_sd_server_binary() is None
+    assert find_sd_cpp_binary() == str(root / "build" / "bin" / "sd-cli")
 
 
 # ── availability / version ──────────────────────────────────────────────────
