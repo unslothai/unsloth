@@ -2206,6 +2206,21 @@ class LlamaCppBackend:
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 
     @staticmethod
+    def _gpu_is_integrated(ordinal: int) -> bool:
+        """True iff CUDA device ``ordinal`` is integrated (cudaDeviceProp.integrated):
+        CPU and GPU share one physical RAM pool, so there is no dedicated VRAM
+        (NVIDIA GB10 / DGX Spark, Jetson). PyTorch surfaces this as
+        ``get_device_properties(...).is_integrated``. Fails closed to False, so a
+        discrete card, an older torch without the attribute, or any error leaves
+        the reported free/total untouched."""
+        try:
+            import torch
+            props = torch.cuda.get_device_properties(ordinal)
+            return bool(getattr(props, "is_integrated", 0))
+        except Exception:
+            return False
+
+    @staticmethod
     def _get_gpu_memory() -> list[tuple[int, int, int]]:
         """Query free AND total memory per GPU.
 
@@ -2295,15 +2310,30 @@ class LlamaCppBackend:
             # Empty mask (CVD="") yields an empty list -> no GPUs, consistent
             # with the nvidia-smi path.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            # On a unified-memory GPU (integrated: CPU and GPU share one physical
+            # RAM pool -- NVIDIA GB10 / DGX Spark, Jetson) mem_get_info's "free"
+            # tracks raw MemFree and ignores reclaimable page cache, so it reads a
+            # small fraction of what is really usable and the context fit floors at
+            # min_ctx (#6757). System MemAvailable is the real ceiling there, and
+            # what the weights + KV actually draw from; total stays as reported.
+            sys_avail_mib = LlamaCppBackend._available_system_memory_mib()
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
+                free_mib = free_bytes // (1024 * 1024)
+                total_mib = total_bytes // (1024 * 1024)
+                if (
+                    sys_avail_mib is not None
+                    and sys_avail_mib > free_mib
+                    and LlamaCppBackend._gpu_is_integrated(ordinal)
+                ):
+                    free_mib = sys_avail_mib
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                gpus.append((idx, free_bytes // (1024 * 1024), total_bytes // (1024 * 1024)))
+                gpus.append((idx, free_mib, total_mib))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
         except Exception as e:
