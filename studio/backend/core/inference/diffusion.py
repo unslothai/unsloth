@@ -52,6 +52,10 @@ from .diffusion_speed import (
     restore_backend_flags,
     snapshot_backend_flags,
 )
+from .diffusion_attention import (
+    apply_attention_backend,
+    select_attention_backend,
+)
 from .diffusion_precision import quantize_text_encoders
 from .diffusion_prequant import (
     load_prequantized_transformer,
@@ -96,6 +100,9 @@ class _LoadState:
     # Transformer quant actually engaged on the opt-in dense fast path: "int8" | "fp8"
     # | "nvfp4" | "mxfp8" | None. None means the default GGUF transformer was loaded.
     transformer_quant: Optional[str] = None
+    # Attention backend engaged via the diffusers dispatcher (e.g. "_native_cudnn"), or
+    # None for the default SDPA. Set before compile; orthogonal to the weight quant.
+    attention_backend: Optional[str] = None
 
 
 @dataclass
@@ -306,6 +313,7 @@ class DiffusionBackend:
         transformer_quant: Optional[str] = None,
         transformer_quant_fast_accum: Optional[bool] = None,
         transformer_prequant_path: Optional[str] = None,
+        attention_backend: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         fam = self.validate_load_request(
@@ -340,6 +348,7 @@ class DiffusionBackend:
                 transformer_quant = transformer_quant,
                 transformer_quant_fast_accum = transformer_quant_fast_accum,
                 transformer_prequant_path = transformer_prequant_path,
+                attention_backend = attention_backend,
                 _load_token = token,
             ),
             daemon = True,
@@ -476,6 +485,7 @@ class DiffusionBackend:
         transformer_quant: Optional[str] = None,
         transformer_quant_fast_accum: Optional[bool] = None,
         transformer_prequant_path: Optional[str] = None,
+        attention_backend: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -596,6 +606,18 @@ class DiffusionBackend:
                 # first so unload can restore them: TF32 / cudnn.benchmark are global,
                 # and a later `off` load must not inherit this load's settings.
                 backend_flags_before = snapshot_backend_flags()
+                # Pick the attention kernel BEFORE compile (compile traces attention). auto
+                # upgrades to cuDNN fused attention on NVIDIA when a speed profile is active
+                # (~1.18x, near-lossless); an explicit backend is honored, falling back to
+                # the diffusers default if its kernel is unavailable. Orthogonal to the
+                # weight quant -- it speeds the QK/PV matmuls torchao does not touch.
+                attention_engaged = apply_attention_backend(
+                    pipe,
+                    select_attention_backend(
+                        target, attention_backend, speed_active = effective_speed != SPEED_OFF
+                    ),
+                    logger = logger,
+                )
                 speed_applied = apply_speed_optims(
                     pipe,
                     target,
@@ -649,6 +671,7 @@ class DiffusionBackend:
                     backend_flags_before = backend_flags_before,
                     text_encoder_quant = te_quant,
                     transformer_quant = transformer_quant_engaged,
+                    attention_backend = attention_engaged,
                 )
 
         logger.info(
@@ -953,6 +976,7 @@ class DiffusionBackend:
                 "speed_optims": [],
                 "text_encoder_quant": None,
                 "transformer_quant": None,
+                "attention_backend": None,
             }
         return {
             "loaded": True,
@@ -969,6 +993,7 @@ class DiffusionBackend:
             "speed_optims": list(state.speed_optims),
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
+            "attention_backend": state.attention_backend,
         }
 
 

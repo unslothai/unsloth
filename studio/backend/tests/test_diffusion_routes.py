@@ -424,6 +424,29 @@ def test_transformer_prequant_path_threads_through(client, monkeypatch):
     assert backend.last_load_kwargs.get("transformer_prequant_path") == "/data/zimage_fp8.pt"
 
 
+def test_attention_backend_threads_through(client, monkeypatch):
+    backend = _FakeBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "x/z-image",
+            "gguf_filename": "q.gguf",
+            "attention_backend": "cudnn",
+        },
+    )
+    assert resp.status_code == 200
+    assert backend.last_load_kwargs.get("attention_backend") == "cudnn"
+
+
+def test_invalid_attention_backend_returns_422(client):
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "attention_backend": "bogus"},
+    )
+    assert resp.status_code == 422
+
+
 def test_prequant_path_doc_describes_allowlist_not_toggle():
     # The field help must match the code: UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH is a
     # directory allowlist, not a =1 toggle (diffusion_prequant._allowed_prequant_roots
