@@ -162,8 +162,11 @@ def resolve_controlnet(
             raise ValueError(f"ControlNet '{spec_id}' has no repo")
         return ResolvedControlNet(spec_id, entry.repo_id, is_local = False)
 
-    # A bare public HF repo id (owner/name).
-    if "/" in spec_id and " " not in spec_id:
+    # A bare public HF repo id (owner/name). STRICT shape -- exactly one slash and
+    # alphanumeric-leading segments -- so a filesystem-looking id (/tmp/x, ../x, ~/x,
+    # C:\x) can never reach from_pretrained, which would happily treat it as a local
+    # directory and bypass the controlnets_dir() no-raw-path contract.
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", spec_id):
         return ResolvedControlNet(spec_id, spec_id, is_local = False)
 
     raise FileNotFoundError(
