@@ -333,6 +333,20 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     )
 
 
+def _effective_base(base: str) -> str:
+    # `unsloth run` binds to `parsed.port or 8888`, so a portless UNSLOTH_STUDIO_URL like
+    # http://127.0.0.1 must resolve to :8888 here. Otherwise we launch the child on 8888
+    # but poll (and later connect to) port 80 and hit the startup timeout. Rebuild the
+    # host:port explicitly, keeping IPv6 literals bracketed.
+    parsed = urlparse(base)
+    if parsed.port:
+        return base
+    host = parsed.hostname or "127.0.0.1"
+    if ":" in host:  # bare IPv6 literal (urlparse strips the brackets)
+        host = f"[{host}]"
+    return f"{parsed.scheme or 'http'}://{host}:8888"
+
+
 def _require_studio(
     model: Optional[str] = None,
     load: Optional[LoadOptions] = None,
@@ -348,6 +362,9 @@ def _require_studio(
     # Auto-start a local server only for an interactive launch with a model to serve, and
     # only for a loopback target (never stand in for an explicit remote UNSLOTH_STUDIO_URL).
     if serve and launch and model and is_loopback_url(expected):
+        # Normalize to the port unsloth run actually binds, so the health poll and the
+        # returned base hit the same server we launch (not a portless :80).
+        expected = _effective_base(expected)
         return expected, _start_studio_server(expected, model, load or LoadOptions())
     model_hint = "" if model else " Pass --model to have it start one for you, or"
     _fail(
@@ -1342,13 +1359,18 @@ def pi(
         *_yolo_command_flags("pi", yolo),
         *ctx.args,
     ]
-    install_hint = "npm install -g @earendil-works/pi-coding-agent"
+    # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs
+    # no install scripts), so accepting the prompt skips dependency lifecycle scripts.
+    install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
     with _session_config("pi", launch) as home:
-        # Pi has no config-dir env var; it resolves ~/.pi off the home directory, so
-        # home-scope the session to leave the user's real ~/.pi untouched. The key
-        # rides in the config rather than the env.
-        write_pi_config(base, key, entry, home / ".pi" / "agent" / "models.json")
-        env = {"HOME": str(home)}
+        # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers
+        # it over $HOME/.pi/agent), so pin it at the session dir: an inherited
+        # PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real
+        # config and skip our provider/key. HOME is relocated too so any other ~/.pi paths
+        # stay in the session. The key rides in the config rather than the env.
+        pi_agent_dir = home / ".pi" / "agent"
+        write_pi_config(base, key, entry, pi_agent_dir / "models.json")
+        env = {"HOME": str(home), "PI_CODING_AGENT_DIR": str(pi_agent_dir)}
         if os.name == "nt" or os.environ.get("WSL_DISTRO_NAME"):
             # Node resolves ~/.pi via USERPROFILE (then HOMEDRIVE + HOMEPATH) on Windows,
             # not HOME. Set them whenever Pi may run as a Windows process: native Windows,

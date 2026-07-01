@@ -1115,6 +1115,44 @@ def test_no_server_no_model_hints_model_flag(fake_studio, monkeypatch):
     assert "--model" in result.output
 
 
+@pytest.mark.parametrize(
+    "base, expected",
+    [
+        ("http://127.0.0.1", "http://127.0.0.1:8888"),  # portless -> unsloth run's :8888
+        ("http://127.0.0.1:8888", "http://127.0.0.1:8888"),  # explicit port kept
+        ("http://127.0.0.1:9000", "http://127.0.0.1:9000"),
+        ("http://localhost", "http://localhost:8888"),
+        ("http://[::1]", "http://[::1]:8888"),  # IPv6 literal stays bracketed
+        ("http://[::1]:8888", "http://[::1]:8888"),
+    ],
+)
+def test_effective_base(base, expected):
+    assert start._effective_base(base) == expected
+
+
+def test_auto_serve_normalizes_portless_url(fake_studio, monkeypatch):
+    # A portless UNSLOTH_STUDIO_URL must launch AND poll :8888 (what unsloth run binds),
+    # not port 80, or readiness never matches and we hit the startup timeout.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = {}
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+
+    def fake_start(base, model, load):
+        started["base"] = base
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+
+    result = CliRunner().invoke(start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"])
+    assert result.exit_code == 0, result.output
+    assert started["base"] == "http://127.0.0.1:8888"
+
+
 def test_connect_explicit_api_key_skips_mint(fake_studio):
     result = CliRunner().invoke(
         start.start_app,
@@ -1351,9 +1389,12 @@ def test_write_pi_config_preserves_and_idempotent(tmp_path):
 def test_connect_pi_no_launch(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
-    # Pi has no config-dir env var, so the session is HOME-scoped to keep ~/.pi clean.
+    # Pi resolves its config dir from PI_CODING_AGENT_DIR first, so pin it at the session
+    # dir (and relocate HOME) to keep the user's real ~/.pi untouched and their own
+    # PI_CODING_AGENT_DIR from redirecting Pi away from our provider/key.
     home = tmp_path / "agents" / "pi"
     _assert_env_set(result.output, "HOME", str(home))
+    _assert_env_set(result.output, "PI_CODING_AGENT_DIR", str(home / ".pi" / "agent"))
     # Provider/model pinned on the command (Pi defaults to google otherwise).
     assert f"pi --provider unsloth --model {MODEL['id']}" in result.output
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
