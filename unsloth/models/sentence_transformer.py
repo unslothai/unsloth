@@ -1407,16 +1407,41 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
+        # Validate the mutually-exclusive load modes BEFORE the prefetch (a config rejected locally must
+        # not first download many GB of weights). Only the non-for_inference path uses these flags; the
+        # for_inference branch below skips them, so guard the check to preserve its behavior.
+        if not for_inference:
+            # sanity check, thanks Etherl:
+            if full_finetuning and (load_in_4bit or load_in_8bit):
+                print(
+                    "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
+                )
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_fp8 = False
+                load_in_16bit = False
+
+            if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
+                raise RuntimeError(
+                    "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
+                    "Also, we by default set `load_in_16bit = True`.\n"
+                    "If you want 4bit LoRA finetuning, set `load_in_16bit = False` and `load_in_4bit = True`\n"
+                    "If you want 8bit finetuning, set both `load_in_16bit = False` and `load_in_8bit = True`"
+                )
+
         # Pre-download in a killable subprocess (Xet -> HTTP on a no-progress stall) so the
         # SentenceTransformer load below is a cache hit and cannot hang on a stalled Xet transfer.
         # Covers every path (for_inference, fast-encoder, fallback), which all resolve the repo
         # in-process. weights_at_root is left False: an ST repo's component weights can live in
-        # subfolders (the pooling / dense modules), so the whole snapshot is warmed.
+        # subfolders (the pooling / dense modules), so the whole snapshot is warmed. Resolve the same
+        # cache the ST load will use: an explicit cache_folder, else SENTENCE_TRANSFORMERS_HOME (which
+        # SentenceTransformer honors when cache_folder is unset), else the default HF cache -- otherwise
+        # a warm into the wrong cache is missed and the load starts an unprotected in-process download.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
             revision = revision,
-            cache_dir = kwargs.get("cache_folder"),
+            cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             local_files_only = kwargs.get("local_files_only", False),
         )
 
@@ -1453,24 +1478,7 @@ class FastSentenceTransformer(FastModel):
             st_model = SentenceTransformer(model_name, **st_kwargs)
             return st_model
 
-        # sanity check, thanks Etherl:
-        if full_finetuning and (load_in_4bit or load_in_8bit):
-            print(
-                "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
-            )
-            load_in_4bit = False
-            load_in_8bit = False
-            load_in_fp8 = False
-            load_in_16bit = False
-
-        if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
-            raise RuntimeError(
-                "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
-                "Also, we by default set `load_in_16bit = True`.\n"
-                "If you want 4bit LoRA finetuning, set `load_in_16bit = False` and `load_in_4bit = True`\n"
-                "If you want 8bit finetuning, set both `load_in_16bit = False` and `load_in_8bit = True`"
-            )
-
+        # Load-mode validation + full_finetuning normalization already ran before the prefetch above.
         if "auto_model" not in kwargs:
             kwargs["auto_model"] = AutoModel
 

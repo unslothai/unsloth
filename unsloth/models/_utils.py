@@ -1055,6 +1055,22 @@ def _filename_has_variant(filename, variant):
     return f".{variant}." in base or f".{variant}-" in base
 
 
+_CANONICAL_MODEL_WEIGHT_SAFETENSORS_RE = re.compile(
+    r"^(?:model\.safetensors|model-\d{5}-of-\d{5}\.safetensors|model\.safetensors\.index\.json)$"
+)
+
+
+def _is_canonical_model_weight_safetensors(filename):
+    """True for a CANONICAL (non-variant) model-weights safetensors a DEFAULT (no-variant) load reads:
+    ``model.safetensors``, a numbered shard, or the shard index. A variant file
+    (``model.fp16.safetensors``) does NOT match, so a repo that ships only a variant safetensors plus
+    the canonical ``pytorch_model.bin`` does not get its ``.bin`` wrongly dropped for a no-variant load
+    (which reads the ``.bin``). Errs strict: an unrecognized name keeps both formats (a safe over-fetch),
+    never dropping a ``.bin`` the load reads."""
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    return bool(_CANONICAL_MODEL_WEIGHT_SAFETENSORS_RE.match(name))
+
+
 def _adapter_repo_has_safetensors(
     model_name,
     *,
@@ -1156,12 +1172,18 @@ def _prefetch_ignore_patterns(
                 or []
             )
             # Only count model-weights safetensors the load actually reads (in-scope subfolder/root,
-            # not an adapter / sidecar), so a .bin-only subfolder is not stripped of its weights. With
-            # a variant, only a variant-matching safetensors proves the variant's .bin redundant.
+            # not an adapter / sidecar), so a .bin-only subfolder is not stripped of its weights. With a
+            # variant, only a variant-matching safetensors proves the variant's .bin redundant; WITHOUT a
+            # variant, only a CANONICAL safetensors does (a lone variant model.fp16.safetensors does not
+            # make the default pytorch_model.bin redundant for a no-variant load, which reads the .bin).
             has_safetensors = any(
                 _is_model_weight_safetensors(sibling.rfilename)
                 and _in_requested_load_scope(sibling.rfilename, subfolder)
-                and (not variant or _filename_has_variant(sibling.rfilename, variant))
+                and (
+                    _filename_has_variant(sibling.rfilename, variant)
+                    if variant
+                    else _is_canonical_model_weight_safetensors(sibling.rfilename)
+                )
                 for sibling in siblings
             )
             if has_safetensors:

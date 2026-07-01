@@ -248,6 +248,60 @@ def test_variant_drops_bin_when_variant_safetensors_present(monkeypatch):
     assert "*.bin" in ig
 
 
+def test_no_variant_keeps_bin_when_only_variant_safetensors(monkeypatch):
+    """A no-variant load reads pytorch_model.bin; a lone variant safetensors (model.fp16.safetensors)
+    must NOT prove the .bin redundant -- only a CANONICAL safetensors does. Else the .bin the load reads
+    is dropped from the warm and fetched in-process over Xet (Codex #6638)."""
+    _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.bin"])
+    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)  # variant unset
+    assert "*.bin" not in ig
+    # A canonical safetensors DOES make the .bin redundant for a no-variant load.
+    _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.bin"])
+    ig2 = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
+    assert "*.bin" in ig2
+
+
+def test_is_canonical_model_weight_safetensors():
+    """The canonical detector matches only the non-variant model-weight safetensors names a default
+    load reads, and rejects variant / sidecar names (Codex #6638)."""
+    assert U._is_canonical_model_weight_safetensors("model.safetensors") is True
+    assert U._is_canonical_model_weight_safetensors("model-00001-of-00002.safetensors") is True
+    assert U._is_canonical_model_weight_safetensors("model.safetensors.index.json") is True
+    assert U._is_canonical_model_weight_safetensors("model.fp16.safetensors") is False
+    assert U._is_canonical_model_weight_safetensors("model.fp16-00001-of-00002.safetensors") is False
+    assert U._is_canonical_model_weight_safetensors("adapter_model.safetensors") is False
+
+
+def test_st_prefetch_resolves_env_cache_and_runs_after_validation():
+    """The ST prefetch must resolve SENTENCE_TRANSFORMERS_HOME for its cache (so a load relying on that
+    env is a cache hit, not an unprotected in-process download) and must run AFTER the mutually-exclusive
+    load-mode validation (so a config rejected locally wastes no multi-GB download) (Codex #6638). Static
+    guard: importing ST pulls heavy optional deps."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        src = f.read()
+    tree = ast.parse(src)
+    prefetch_calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == "maybe_prefetch_hf_snapshot"
+    ]
+    assert len(prefetch_calls) == 1, "expected exactly one ST prefetch call"
+    call = prefetch_calls[0]
+    # F3: the cache_dir kwarg resolves SENTENCE_TRANSFORMERS_HOME.
+    cache_dir_kw = next((kw for kw in call.keywords if kw.arg == "cache_dir"), None)
+    assert cache_dir_kw is not None, "ST prefetch must pass cache_dir"
+    assert "SENTENCE_TRANSFORMERS_HOME" in ast.dump(cache_dir_kw.value), (
+        "ST prefetch cache_dir must resolve SENTENCE_TRANSFORMERS_HOME"
+    )
+    # F2: the load-mode validation runs before the prefetch (fewer source lines = earlier).
+    val_lineno = src[: src.index("Can only load in 4bit or 8bit or 16bit")].count("\n")
+    assert val_lineno < call.lineno, "load-mode validation must precede the ST prefetch"
+
+
 def test_filename_has_variant_matches_single_and_sharded():
     """The variant detector matches both the single-file (.fp16.) and SHARDED (.fp16-) infixes and
     rejects the default (non-variant) names (gemini #6638)."""
