@@ -273,10 +273,7 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
 
 
 def _resolve_repo_asset(
-    repo: str,
-    tag: Optional[str],
-    accelerator: str,
-    token: Optional[str],
+    repo: str, tag: Optional[str], accelerator: str, token: Optional[str]
 ) -> tuple[Optional[dict], Optional[str]]:
     """Fetch ``repo``'s release and pick the asset for this host. Returns
     ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable

@@ -323,7 +323,11 @@ _MIRROR_ASSETS = [
 ]
 
 
-def _mresolve(system, machine, accelerator = "auto"):
+def _mresolve(
+    system,
+    machine,
+    accelerator = "auto",
+):
     return resolve_release_asset(
         _MIRROR_ASSETS, system = system, machine = machine, accelerator = accelerator
     )
@@ -367,7 +371,13 @@ def _stub_two_repos(monkeypatch, *, mirror_serves, upstream_serves, zip_bytes, d
             ],
         }
 
-    def fake_fetch(tag = None, *, repo = None, token = None, timeout = 30.0):
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        token = None,
+        timeout = 30.0,
+    ):
         r = repo or sdmod.DEFAULT_REPO
         if r == sdmod.DEFAULT_REPO:
             if mirror_serves:
