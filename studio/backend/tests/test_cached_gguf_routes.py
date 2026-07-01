@@ -20,6 +20,7 @@ if "structlog" not in sys.modules:
     )
 
 import routes.models as models_route
+from hub.services.models import gguf_variants as GV
 
 
 def _repo(
@@ -564,21 +565,32 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
     """The per-quant 'downloaded' flag is driven by the real weight file in a
     single snapshot; an mmproj vision adapter (matching a quant label) must
     not make that quant appear downloaded."""
-    import huggingface_hub.constants as hf_constants
-
     variants = [
-        SimpleNamespace(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10_000),
-        SimpleNamespace(filename = "model-F16.gguf", quant = "F16", size_bytes = 20_000),
+        SimpleNamespace(
+            filename = "model-Q4_K_M.gguf",
+            quant = "Q4_K_M",
+            display_label = None,
+            size_bytes = 10_000,
+        ),
+        SimpleNamespace(
+            filename = "model-F16.gguf",
+            quant = "F16",
+            display_label = None,
+            size_bytes = 20_000,
+        ),
     ]
     monkeypatch.setattr(
-        models_route, "list_gguf_variants", lambda repo_id, hf_token = None: (variants, True)
+        GV,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (variants, True, []),
     )
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10_000)  # real weight, fully present
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # mmproj adapter, label "F16"
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -592,21 +604,32 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
 
 
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
-    import huggingface_hub.constants as hf_constants
-
     siblings = [
         SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),
         SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10),
     ]
     monkeypatch.setattr(
-        "huggingface_hub.model_info",
-        lambda *_args, **_kwargs: SimpleNamespace(siblings = siblings),
+        GV,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (
+            [
+                SimpleNamespace(
+                    filename = "model-Q4_K_M.gguf",
+                    quant = "Q4_K_M",
+                    display_label = None,
+                    size_bytes = 10,
+                )
+            ],
+            False,
+            siblings,
+        ),
     )
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -620,19 +643,25 @@ def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
 
 
 def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(monkeypatch, tmp_path):
-    import huggingface_hub.constants as hf_constants
-
     variants = [
-        SimpleNamespace(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10),
+        SimpleNamespace(
+            filename = "model-Q4_K_M.gguf",
+            quant = "Q4_K_M",
+            display_label = None,
+            size_bytes = 10,
+        ),
     ]
     monkeypatch.setattr(
-        models_route, "list_gguf_variants", lambda repo_id, hf_token = None: (variants, False)
+        GV,
+        "list_gguf_variants",
+        lambda repo_id, hf_token = None: (variants, False, []),
     )
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 10)
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -706,3 +735,69 @@ def test_gguf_download_progress_counts_quant_subdir(monkeypatch, tmp_path):
 
     assert result["downloaded_bytes"] == 20_000
     assert result["progress"] == 1.0
+
+
+def test_arch_to_task_hides_unsupported_diffusion_from_chat():
+    # Loadable diffusion archs -> the Images-picker task.
+    assert models_route._arch_to_task("flux") == "text-to-image"
+    assert models_route._arch_to_task("z_image") == "text-to-image"
+    assert models_route._arch_to_task("qwen_image") == "text-to-image"
+    # A real LLM arch stays a chat model; None passes through.
+    assert models_route._arch_to_task("llama") == "text-generation"
+    assert models_route._arch_to_task(None) is None
+    # Known-but-unsupported diffusion archs get a task that is NEITHER chat
+    # ("text-generation") NOR a loadable image task ("text-to-image"), so the chat
+    # picker hides them (they'd die in llama.cpp) and the Images picker leaves them
+    # out (they'd 400 in validate_load).
+    for arch in ("sdxl", "sd1", "sd3", "wan", "lumina2", "hidream", "cosmos"):
+        task = models_route._arch_to_task(arch)
+        assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
+        assert task not in ("text-generation", "text-to-image")
+    # Drift guard: every diffusion arch llama.cpp rejects as a chat model must be
+    # classified here as some image task (loadable OR unsupported), never chat.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    classified = models_route._DIFFUSION_GGUF_ARCHS | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+    missing = {a for a in LlamaCppBackend._DIFFUSION_ARCHES if a.lower() not in classified}
+    assert not missing, f"diffusion archs would still show in chat: {missing}"
+
+
+def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
+    # The cached-delete guard refuses deleting a repo the diffusion (Images)
+    # backend has loaded, mirroring the chat guard, so its GGUF can't be removed
+    # from under a live pipeline.
+    from fastapi import HTTPException
+    import core.inference.diffusion as diffusion_mod
+    import routes.inference as routes_inference
+
+    # Chat and orchestrator report nothing loaded; only diffusion holds the repo.
+    # delete_cached_model resolves get_inference_backend from the models module
+    # namespace, so patch it there (not on core.inference) to isolate that guard.
+    monkeypatch.setattr(
+        routes_inference,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, model_identifier = None),
+    )
+    monkeypatch.setattr(
+        models_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+    monkeypatch.setattr(
+        diffusion_mod,
+        "get_diffusion_backend",
+        lambda: SimpleNamespace(status = lambda: {"loaded": True, "repo_id": "org/Z-Image-GGUF"}),
+    )
+
+    try:
+        asyncio.run(
+            models_route.delete_cached_model(
+                repo_id = "org/Z-Image-GGUF",
+                variant = None,
+                current_subject = "u",
+            )
+        )
+        assert False, "expected HTTPException refusing the delete"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Unload the model before deleting" in e.detail

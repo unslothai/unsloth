@@ -1181,7 +1181,7 @@
     {
       "package": "tensorboard",
       "file": "tensorboard/plugins/projector/tf_projector_plugin/projector_binary.js",
-      "check": "Python wheel ships large (1918 KB) JS bundle (uncommon; manually review)",
+      "check": "Python wheel ships large JS bundle (uncommon; manually review)",
       "severity": "HIGH",
       "evidence": ""
     },

@@ -164,7 +164,10 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
         free, total = torch.cuda.mem_get_info()
         kind = "discrete_vram"
         try:
-            props = torch.cuda.get_device_properties(0)
+            # Query the CURRENT device, not device 0: mem_get_info() above already
+            # reports the active device, so hardcoding 0 would inspect the wrong GPU
+            # (and misclassify discrete vs unified) when the active device isn't 0.
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
             if bool(getattr(props, "integrated", False) or getattr(props, "is_integrated", False)):
                 kind = "unified_memory"  # e.g. Jetson / integrated SoC
         except Exception:
@@ -493,6 +496,19 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
 
         onload = torch.device(device)
         use_stream = onload.type == "cuda"  # overlap H2D copies with compute on CUDA
+        # Place the smaller components resident FIRST: moving them onto the device is
+        # the only step here that can OOM on a tight GPU. Doing it before
+        # apply_group_offloading means a failure leaves NO group-offload hooks on the
+        # transformer, so the caller's whole-module-offload fallback gets a clean
+        # pipeline -- diffusers refuses enable_model_cpu_offload() while group hooks
+        # are attached, which would otherwise turn the fallback into a hard crash.
+        for name, comp in getattr(pipe, "components", {}).items():
+            if name == "transformer":
+                continue
+            if isinstance(comp, torch.nn.Module):
+                comp.to(onload)
+        # Stream the transformer a few blocks at a time; it manages its own placement
+        # via the offloading hooks.
         apply_group_offloading(
             transformer,
             onload_device = onload,
@@ -501,13 +517,6 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
             num_blocks_per_group = DEFAULT_GROUP_BLOCKS,
             use_stream = use_stream,
         )
-        # Place the remaining (smaller) components resident; the streamed
-        # transformer manages its own placement via the offloading hooks.
-        for name, comp in getattr(pipe, "components", {}).items():
-            if name == "transformer":
-                continue
-            if isinstance(comp, torch.nn.Module):
-                comp.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
         if logger is not None:

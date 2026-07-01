@@ -117,12 +117,12 @@ export function UpdateScreen({
   }
 
   return (
-    <div className="flex h-full w-full items-center justify-center bg-background">
+    <div className="box-border flex h-full w-full overflow-y-auto bg-background">
       <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, ease: EASE_OUT_QUART }}
-        className="flex w-full max-w-xl flex-col items-center px-6"
+        className="mx-auto flex min-h-full w-full max-w-xl flex-col items-center justify-center px-6 pb-6 pt-[var(--studio-startup-top-inset,0px)]"
       >
         <Logo />
 

@@ -14,6 +14,7 @@ diffusers classes and base repo needed to assemble the full pipeline.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -87,7 +88,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 
 # Editing / inpaint checkpoints share an arch keyword but need a different
 # pipeline and an input image, which this text-to-image backend doesn't drive.
-_EDIT_KEYWORDS = ("edit", "kontext", "inpaint")
+_EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "inpainting")
 
 
 def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[DiffusionFamily]:
@@ -104,7 +105,13 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
                 return fam
         return None
     needle = repo_id.lower()
-    if any(kw in needle for kw in _EDIT_KEYWORDS):
+    # Match edit keywords as whole id segments, not raw substrings, so a normal
+    # text-to-image repo like ".../some-image-edition" isn't misread as an editing
+    # checkpoint. Qwen-Image-Edit / FLUX.1-Kontext still match (edit/kontext are
+    # whole tokens there). Split on both path separators so a Windows local path
+    # is segmented too.
+    segments = set(re.split(r"[-_./\\]+", needle))
+    if any(kw in segments for kw in _EDIT_KEYWORDS):
         return None
     for fam in _FAMILIES:
         if fam.name in needle or any(alias in needle for alias in fam.aliases):
@@ -140,6 +147,6 @@ def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     child = repo_root.joinpath(*rel.parts).resolve()
     if child != repo_real and repo_real not in child.parents:
         raise ValueError("gguf_filename must resolve to a file inside the repo.")
-    if not child.exists():
-        raise FileNotFoundError(f"'{gguf_filename}' not found under {repo_root}.")
+    if not child.is_file():
+        raise FileNotFoundError(f"'{gguf_filename}' is not a file under {repo_root}.")
     return child
