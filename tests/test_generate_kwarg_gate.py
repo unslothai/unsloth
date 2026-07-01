@@ -76,7 +76,11 @@ class VisionRejectsMM:
         input_ids,
         attention_mask = None,
     ): ...
-    def forward(self, input_ids, pixel_values = None): ...
+    def forward(
+        self,
+        input_ids,
+        pixel_values = None,
+    ): ...
 
 
 class VisionAcceptsMM:
