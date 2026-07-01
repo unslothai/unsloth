@@ -40,6 +40,7 @@ from routes.inference import (
     _effective_max_tokens,
     _extract_content_parts,
     _friendly_error,
+    _friendly_upstream_error,
     _merge_user_content,
     _monitor_openai_chunk,
     _monitor_openai_sse_event,
@@ -55,6 +56,20 @@ from routes.inference import (
     openai_chat_completions,
 )
 from state.tool_policy import reset_tool_policy
+
+
+class TestFriendlyUpstreamError:
+    def test_grammar_parse_failure_gets_actionable_message(self):
+        raw = '{"error":{"code":400,"message":"Failed to initialize samplers: failed to parse grammar","type":"invalid_request_error"}}'
+        msg = _friendly_upstream_error(raw)
+        assert "failed to parse grammar" not in msg  # raw body is not surfaced verbatim
+        assert "tool-calling grammar" in msg and "Update Studio" in msg
+
+    def test_failed_to_initialize_samplers_alone_matches(self):
+        assert "tool-calling grammar" in _friendly_upstream_error("Failed to initialize samplers")
+
+    def test_unrelated_error_passes_through(self):
+        assert _friendly_upstream_error("out of memory") == "llama-server error: out of memory"
 
 
 # =====================================================================

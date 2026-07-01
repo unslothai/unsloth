@@ -164,6 +164,26 @@ def _friendly_error(exc: Exception) -> str:
     return "An internal error occurred"
 
 
+def _friendly_upstream_error(text: str) -> str:
+    """Rewrite a raw llama-server error body into an actionable message where we can.
+
+    The main case is a tool-calling grammar that llama-server can't compile ("failed to
+    parse grammar" / "failed to initialize samplers"). This surfaces to coding agents as
+    a hard 400 on every tool-bearing turn. It is a llama-server limitation with some
+    model/quant + tool-schema combinations, and recent llama.cpp builds handle the common
+    coding-agent tools, so point the user at updating Studio rather than the raw body.
+    """
+    lowered = text.lower()
+    if "failed to parse grammar" in lowered or "failed to initialize samplers" in lowered:
+        return (
+            "The model couldn't compile a tool-calling grammar for this request. This is a "
+            "llama-server limitation with some model/quant and tool-schema combinations. "
+            "Update Studio (it installs the latest llama.cpp, which handles the common "
+            "coding-agent tools) or try a different GGUF model."
+        )
+    return f"llama-server error: {text}"
+
+
 def _clamp_finish_reason(value) -> str:
     """Coerce an upstream finish_reason into OpenAI's known chat values.
 
@@ -9346,7 +9366,7 @@ async def _anthropic_passthrough_stream(
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
-                        f"llama-server error: {_err_text}",
+                        _friendly_upstream_error(_err_text),
                         status = resp.status_code,
                     ),
                 )
@@ -9449,7 +9469,7 @@ async def _anthropic_passthrough_non_streaming(
     if resp.status_code != 200:
         raise HTTPException(
             status_code = resp.status_code,
-            detail = f"llama-server error: {resp.text[:500]}",
+            detail = _friendly_upstream_error(resp.text[:500]),
         )
 
     data = resp.json()
