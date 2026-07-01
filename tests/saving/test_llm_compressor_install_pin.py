@@ -1,14 +1,6 @@
-"""Guard that the automatic first-use install of llm-compressor stays version-pinned.
-
-``install_llm_compressor()`` auto-installs llm-compressor when a user requests an FP8/FP4
-compressed export and it is not already present. A bare ``pip install llmcompressor`` would resolve
-to whatever the configured package index serves, so a compromised, dependency-confused, or
-inflated-version ("999.0.0") release could run under the Unsloth process at install/import time.
-
-These are static checks (no import, no network, no GPU), mirroring test_save_shell_injection.py:
-they keep the install command bounded to a vetted range and keep the opt-out env gate in place so
-locked-down environments can forbid the automatic install entirely.
-"""
+"""Static guards (no import/network/GPU, like test_save_shell_injection.py) that
+install_llm_compressor()'s first-use auto-install of llm-compressor stays version-pinned to a vetted
+range and keeps its opt-out env gate, so a compromised/inflated release can't be auto-pulled."""
 
 from __future__ import annotations
 
@@ -55,13 +47,7 @@ def test_spec_is_a_bounded_pin() -> None:
 
 
 def test_ceiling_blocks_inflated_versions() -> None:
-    """The ceiling must cap to a vetted minor, not just <1.0.
-
-    A bare <1.0 still admits any 0.x, so an inflated 0.999.0 served by a compromised/misconfigured
-    index would win pip's highest-version selection -- the exact dependency-confusion this pin is
-    meant to block. Assert the current-latest vetted release resolves while an inflated 0.x and the
-    next major do not.
-    """
+    """Cap to a vetted minor: a bare <1.0 admits any 0.x, so an inflated 0.999.0 could win pip."""
     from packaging.requirements import Requirement
 
     spec = Requirement(_spec_value()).specifier
@@ -71,13 +57,7 @@ def test_ceiling_blocks_inflated_versions() -> None:
 
 
 def test_floor_stays_compatible_with_supported_torch() -> None:
-    """The floor must not require a torch newer than the oldest torch Unsloth supports (>=2.4).
-
-    llm-compressor 0.7.0+ require torch>=2.7 (0.10+ >=2.9, 0.12+ >=2.10); only <=0.6.x allows
-    torch<2.7. Since install_llm_compressor() pins the current torch in the constraints file, a
-    floor above 0.6.0 leaves pip with no candidate on a supported torch 2.4-2.6 box and breaks
-    FP8/FP4 export. Keep the floor at or below 0.6.0.
-    """
+    """Floor must stay <=0.6.0: 0.7+ need torch>=2.7, but the pinned torch can be as old as 2.4."""
     from packaging.requirements import Requirement
     from packaging.version import Version
 

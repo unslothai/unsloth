@@ -1363,34 +1363,18 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
-# Bound the automatic first-use install of llm-compressor to a vetted window. Without a bound,
-# `pip install llmcompressor` resolves to whatever the configured index offers, so a compromised,
-# dependency-confused, or inflated-version release could be pulled and executed under the Unsloth
-# process at install/import time. The ceiling must cap to a vetted minor, NOT just "<1.0": every 0.x
-# version satisfies "<1.0", so an inflated "0.999.0" on a malicious/misconfigured index would still
-# win pip's highest-version selection. "<0.13" caps to the current 0.12 series and blocks that jump.
-# Bump this ceiling deliberately (after vetting) when a newer llm-compressor is needed -- e.g. for a
-# brand-new architecture whose scheme the installed build does not yet support. Current new models
-# still resolve: 0.12.0 is < 0.13 and supports them.
-#
-# The floor is 0.6.0 (its metadata only needs torch>=1.7) so it never conflicts with the torch this
-# install pins in the constraints file below: Unsloth supports torch>=2.4, but llm-compressor
-# 0.7.0+ require torch>=2.7 (0.10+ need >=2.9, 0.12+ need >=2.10). A higher floor would leave pip
-# with no candidate on a supported torch 2.4-2.6 box and break FP8/FP4 export before quantization.
-# pip still prefers the newest compatible release, so modern torch gets the latest vetted 0.x anyway.
-#
-# An already-installed newer llm-compressor is used as-is (the import below short-circuits), so this
-# only constrains the auto-install, never what the user installed themselves.
+# Bound the first-use auto-install so a compromised / inflated ("0.999.0") release can't be pulled:
+# cap to the current vetted minor (bump <0.13 deliberately after vetting a newer one). Floor 0.6.0
+# keeps torch>=2.4 boxes resolvable (llm-compressor 0.7+ need torch>=2.7; torch is pinned below).
 _LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<0.13"
 
 
 def install_llm_compressor():
     """Import llm-compressor, installing it on first use for FP8/FP4 export.
 
-    Installs a version-pinned llm-compressor (``_LLM_COMPRESSOR_SPEC``) and pins the current torch
-    + transformers so pip does not upgrade them (a plain install pulls transformers>=5 and breaks
-    Unsloth). Set ``UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1`` to forbid the automatic install
-    and require a manual, vetted install instead. Returns (oneshot, QuantizationModifier).
+    Installs a version-pinned llm-compressor, pinning the current torch + transformers so pip does
+    not upgrade them. Set UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 to forbid the auto-install.
+    Returns (oneshot, QuantizationModifier).
     """
     try:
         from llmcompressor import oneshot
@@ -1399,8 +1383,7 @@ def install_llm_compressor():
     except Exception:
         pass
 
-    # Opt-out for locked-down / air-gapped setups: never reach out to a package index
-    # automatically; require the user to install the pinned spec themselves.
+    # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
     if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
         "0",
         "",
