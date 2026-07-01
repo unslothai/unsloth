@@ -39,8 +39,8 @@ from core.inference.llama_server_args import (
     strip_split_mode_only,
 )
 from core.tool_healing import (
-    _TOOL_ALL_PATS,
     strip_tool_call_markup,
+    strip_tool_markup_final,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -8069,9 +8069,7 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            for pat in _TOOL_ALL_PATS:
-                text = pat.sub("", text)
-            return text
+            return strip_tool_markup_final(text)
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its

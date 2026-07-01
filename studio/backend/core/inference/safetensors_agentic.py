@@ -21,13 +21,13 @@ from typing import Callable, Generator, Optional
 from loggers import get_logger
 
 from core.inference.tool_call_parser import (
-    _TOOL_ALL_PATS,
     BUDGET_EXHAUSTED_NUDGE,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     TOOL_XML_SIGNALS,
     parse_tool_calls_from_text,
     strip_tool_markup,
+    strip_tool_markup_final,
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
@@ -60,9 +60,7 @@ def strip_tool_markup_streaming(
     """Strip open-ended tool XML from display text without trimming whitespace."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
-    for pat in _TOOL_ALL_PATS:
-        text = pat.sub("", text)
-    return text
+    return strip_tool_markup_final(text)
 
 
 def _strip_tool_markup_final(
