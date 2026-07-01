@@ -183,17 +183,35 @@ def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
     return img
 
 
+# A small allowlist of well-known official base repos that may load as a full
+# (non-GGUF) pipeline even though they are not under ``unsloth/``. These are
+# safetensors-only checkpoints from their original publisher (no pickle, no remote
+# code) that some architectures require: SDXL ships only as a full pipeline and has
+# no unsloth-hosted GGUF, so without this its curated catalog entry could not load.
+# Exact-match, lowercased, so it cannot be widened by a typo-squat. Extend
+# deliberately, and never add a repo that carries pickled weights or remote code.
+_TRUSTED_NON_GGUF_REPOS = frozenset(
+    {
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        "stabilityai/stable-diffusion-xl-refiner-1.0",
+        "stabilityai/sdxl-turbo",
+    }
+)
+
+
 def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     """Whether a NON-GGUF load is allowed for ``repo_id``.
 
     Making ``gguf_filename`` optional opens a ``from_pretrained`` / ``from_single_file``
     on an arbitrary repo, which fetches and deserialises third-party weights. So the
-    non-GGUF paths are gated to the ``unsloth/*`` org (the curated safetensors models) and
-    to local paths the user explicitly pointed at (already on their disk). The GGUF path
-    is unchanged and stays open to any repo, as before."""
+    non-GGUF paths are gated to the ``unsloth/*`` org (the curated safetensors models),
+    a short allowlist of official safetensors-only base repos (``_TRUSTED_NON_GGUF_REPOS``,
+    e.g. the SDXL base), and local paths the user explicitly pointed at (already on their
+    disk). The GGUF path is unchanged and stays open to any repo, as before."""
     if Path(repo_id).expanduser().exists():
         return True
-    return repo_id.strip().lower().startswith("unsloth/")
+    rid = repo_id.strip().lower()
+    return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
 
 
 @dataclass(frozen = True)
@@ -819,6 +837,16 @@ class DiffusionBackend:
                         if hf_token:
                             pipe_kwargs["token"] = hf_token
                         pipe = pipeline_cls.from_pretrained(repo_id, **pipe_kwargs)
+                    elif kind == "single_file" and fam.single_file_is_pipeline:
+                        # A single-file SDXL-style checkpoint is the WHOLE pipeline
+                        # (U-Net + VAE + both text encoders), not a transformer-only file,
+                        # so load it through the pipeline class. ``config`` points at the
+                        # base repo so diffusers builds the correct structure/scheduler
+                        # around the single-file weights instead of guessing from the file.
+                        sf_pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "config": base}
+                        if hf_token:
+                            sf_pipe_kwargs["token"] = hf_token
+                        pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
                     else:
                         # Single-file transformer; the VAE / text-encoder / scheduler come
                         # from the base diffusers repo (the single file is transformer-only).
@@ -1228,20 +1256,21 @@ class DiffusionBackend:
         return pipe
 
     @staticmethod
-    def _align_vae_dtype(pipe: Any) -> None:
-        """Cast the VAE to the transformer's compute dtype before an image-conditioned
+    def _align_vae_dtype(pipe: Any, denoiser_attr: str = "transformer") -> None:
+        """Cast the VAE to the denoiser's compute dtype before an image-conditioned
         call. The img2img/inpaint pipelines VAE-encode the input image at the text-
         encoder dtype (bf16), but a prior txt2img DECODE may have left the shared VAE
         upcast to fp32 (its ``force_upcast`` path), so the encode would mismatch
         (bf16 image vs fp32 VAE). Re-aligning here is safe: our families run bf16 or
         fp32 only (the fp16 guard promotes fp16), and a later txt2img decode re-upcasts
-        as needed. Best-effort; a no-op when already aligned."""
-        transformer = getattr(pipe, "transformer", None)
+        as needed. ``denoiser_attr`` is ``pipe.transformer`` for DiT families and
+        ``pipe.unet`` for SDXL. Best-effort; a no-op when already aligned."""
+        denoiser = getattr(pipe, denoiser_attr, None)
         vae = getattr(pipe, "vae", None)
-        if transformer is None or vae is None:
+        if denoiser is None or vae is None:
             return
         try:
-            target_dtype = transformer.dtype
+            target_dtype = denoiser.dtype
             if next(vae.parameters()).dtype != target_dtype:
                 vae.to(dtype = target_dtype)
         except (StopIteration, AttributeError, RuntimeError):
@@ -1509,7 +1538,9 @@ class DiffusionBackend:
                         mask_pil = mask_pil.resize(init_pil.size, _PILImage.NEAREST)
                 if init_pil is not None:
                     # Keep the VAE encode dtype consistent with the input image.
-                    self._align_vae_dtype(pipe)
+                    self._align_vae_dtype(
+                        pipe, getattr(state.family, "denoiser_attr", "transformer")
+                    )
 
                 # Pipelines vary in which kwargs they accept (img2img derives size from the
                 # input image and may reject width/height; a distilled pipe may take no
