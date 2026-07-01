@@ -386,6 +386,22 @@ def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
         assert exclude_tokens_for_scheme(scheme) == ()
 
 
+def test_exclude_tokens_for_scheme():
+    # The shared scheme->exclusion decision used by BOTH the runtime quantise path and the offline
+    # prequant-checkpoint builder, so an int8 checkpoint built ahead of time skips exactly the
+    # layers the runtime path skips (offline == runtime). int8 excludes the M=1 modulation /
+    # embedder tokens; every scaled_mm scheme excludes nothing.
+    from core.inference.diffusion_transformer_quant import (
+        _INT8_EXCLUDE_NAME_TOKENS,
+        exclude_tokens_for_scheme,
+    )
+
+    assert exclude_tokens_for_scheme(TQ_INT8) == _INT8_EXCLUDE_NAME_TOKENS
+    assert exclude_tokens_for_scheme(TQ_FP8) == ()
+    assert exclude_tokens_for_scheme(TQ_NVFP4) == ()
+    assert exclude_tokens_for_scheme(TQ_MXFP8) == ()
+
+
 # ── apply ───────────────────────────────────────────────────────────────────────
 
 
