@@ -55,6 +55,24 @@ def test_validate_non_empty_text_field_rejects_streaming_empty_first_row():
     assert "train row 0 has an empty `text` field" in str(exc.value)
 
 
+def test_validate_non_empty_text_field_rejects_later_streaming_empty_row():
+    dataset = StreamingRows([{"text": "ok"}, {"text": ""}])
+
+    with pytest.raises(ValueError) as exc:
+        validate_non_empty_text_field(dataset, split_name = "train")
+
+    assert "train row 1 has an empty `text` field" in str(exc.value)
+
+
+def test_validate_non_empty_text_field_rejects_empty_streaming_dataset():
+    dataset = StreamingRows([])
+
+    with pytest.raises(ValueError) as exc:
+        validate_non_empty_text_field(dataset, split_name = "train")
+
+    assert "the train split is empty" in str(exc.value)
+
+
 def test_validate_non_empty_text_field_scans_sized_iterables_without_indexing():
     dataset = SizedIterableRows([{"text": "ok"}, {"text": ""}])
 

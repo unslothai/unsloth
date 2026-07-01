@@ -53,39 +53,28 @@ def validate_non_empty_text_field(
             "Add at least one training example before starting text SFT."
         )
 
-    if row_count is None:
-        try:
-            first_row = next(iter(dataset))
-        except StopIteration as exc:
-            raise ValueError(
-                f"Dataset validation failed: the {split_name} split is empty. "
-                "Add at least one training example before starting text SFT."
-            ) from exc
-
-        issue = _row_text_issue(first_row, field_name)
-        if issue is not None:
-            raise ValueError(
-                f"Dataset validation failed: {split_name} row 0 {issue}. "
-                "Unsloth expects every row used for text SFT to contain non-empty text. "
-                "Remove blank rows or fix the dataset formatting/template so it "
-                "produces training text."
-            )
-        return
-
-    scan_rows = min(row_count, max_scan_rows)
+    scan_rows = max_scan_rows if row_count is None else min(row_count, max_scan_rows)
     first_issue: tuple[int, str] | None = None
     issue_count = 0
+    seen_rows = 0
 
     for row_index, row in enumerate(dataset):
         if row_index >= scan_rows:
             break
 
+        seen_rows += 1
         issue = _row_text_issue(row, field_name)
         if issue is None:
             continue
         issue_count += 1
         if first_issue is None:
             first_issue = (row_index, issue)
+
+    if seen_rows == 0:
+        raise ValueError(
+            f"Dataset validation failed: the {split_name} split is empty. "
+            "Add at least one training example before starting text SFT."
+        )
 
     if first_issue is None:
         return

@@ -2688,9 +2688,10 @@ class UnslothTrainer:
                     train_portion, eval_dataset = split_result
                     dataset_info["dataset"] = train_portion
 
-            validate_non_empty_text_field(dataset_info["dataset"], split_name = "train")
-            if eval_dataset is not None:
-                validate_non_empty_text_field(eval_dataset, split_name = "eval")
+            if not self.is_vlm:
+                validate_non_empty_text_field(dataset_info["dataset"], split_name = "train")
+                if eval_dataset is not None:
+                    validate_non_empty_text_field(eval_dataset, split_name = "eval")
 
             return (dataset_info, eval_dataset)
 
