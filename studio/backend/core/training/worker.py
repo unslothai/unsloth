@@ -2053,6 +2053,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model(output_dir)
         if trainer.stop_requested:
             _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir)
+            if not _mlx_output_has_resume_checkpoint(output_dir):
+                _send(
+                    "error",
+                    error = (
+                        "Failed to save a resumable checkpoint after stop. "
+                        "Model files were saved, but this run cannot be resumed."
+                    ),
+                )
+                return
         _send("complete", output_dir = output_dir, status_message = "Training completed")
 
     if tb_writer is not None:
@@ -3172,13 +3181,28 @@ def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
         pass
 
 
-def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> None:
+def _mlx_output_has_resume_checkpoint(output_dir) -> bool:
+    path = Path(output_dir)
+    if (path / "trainer_state.json").is_file():
+        return True
+    return any(
+        (child / "trainer_state.json").is_file()
+        for child in path.glob("checkpoint-*")
+        if child.is_dir()
+    )
+
+
+def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
+    """Write a full resume checkpoint for a stopped MLX run.
+
+    Returns True when the output directory has resumable checkpoint state.
+    """
+    if _mlx_output_has_resume_checkpoint(output_dir):
+        return True
     step = int(getattr(trainer, "_global_step", 0) or 0)
     if step <= 0 or optimizer is None:
-        return
+        return False
     ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
-    if (ckpt_dir / "trainer_state.json").is_file():
-        return
     try:
         ckpt_dir.mkdir(parents = True, exist_ok = True)
         from unsloth_zoo.mlx.utils import (
@@ -3199,6 +3223,7 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> None:
         logger.info("Saved stop checkpoint to %s", ckpt_dir)
     except Exception:
         logger.exception("Failed to write stop checkpoint under %s", output_dir)
+    return _mlx_output_has_resume_checkpoint(output_dir)
 
 
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:

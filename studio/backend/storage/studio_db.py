@@ -580,6 +580,7 @@ def finish_run(
     loss_sparkline: Optional[str] = None,
     output_dir: Optional[str] = None,
     error_message: Optional[str] = None,
+    clear_output_dir: bool = False,
 ) -> None:
     conn = get_connection()
     try:
@@ -589,8 +590,9 @@ def finish_run(
             SET status = ?, ended_at = ?, final_step = ?, final_loss = ?,
                 duration_seconds = ?, loss_sparkline = ?,
                 output_dir = CASE
+                    WHEN ? = 1 THEN NULL
                     WHEN ? IS NOT NULL THEN ?
-                    WHEN ? = 'error' THEN output_dir
+                    WHEN ? IN ('error', 'stopped') THEN output_dir
                     ELSE NULL
                 END,
                 error_message = ?
@@ -603,6 +605,7 @@ def finish_run(
                 final_loss,
                 duration_seconds,
                 loss_sparkline,
+                int(clear_output_dir),
                 output_dir,
                 output_dir,
                 status,

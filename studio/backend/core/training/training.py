@@ -849,11 +849,20 @@ class TrainingBackend:
                             )
 
                 self._ensure_db_run_created()
+                with self._lock:
+                    interrupted_output_dir = (
+                        self._output_dir
+                        if self._should_stop and not self._cancel_requested
+                        else None
+                    )
+                    interrupted_clear_output_dir = self._cancel_requested
                 self._finalize_run_in_db(
                     status = "stopped" if self._should_stop else "error",
                     error_message = None
                     if self._should_stop
                     else "Training process terminated unexpectedly",
+                    output_dir = interrupted_output_dir,
+                    clear_output_dir = interrupted_clear_output_dir,
                 )
             except Exception:
                 logger.exception("Training event pump: finalization after worker exit failed")
@@ -1039,6 +1048,7 @@ class TrainingBackend:
                 db_action_kwargs = {
                     "status": "stopped" if self._should_stop else "completed",
                     "output_dir": self._output_dir,
+                    "clear_output_dir": self._cancel_requested,
                 }
 
             elif etype == "error":
@@ -1133,6 +1143,7 @@ class TrainingBackend:
         status: str,
         error_message: Optional[str] = None,
         output_dir: Optional[str] = None,
+        clear_output_dir: bool = False,
     ) -> None:
         """Flush remaining metrics and mark a run as finished in the DB."""
         if not self.current_job_id or not self._db_run_created or self._run_finalized:
@@ -1155,6 +1166,7 @@ class TrainingBackend:
                 loss_sparkline = _json.dumps(sparkline),
                 output_dir = output_dir,
                 error_message = error_message,
+                clear_output_dir = clear_output_dir,
             )
             self._run_finalized = True
         except Exception:
