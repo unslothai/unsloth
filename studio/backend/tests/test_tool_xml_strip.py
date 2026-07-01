@@ -27,9 +27,13 @@ assert _m, "could not extract _TOOL_XML_RE source"
 # _strip_tool_xml_for_display now delegates to _strip_tool_xml, which runs the
 # parser's Mistral [TOOL_CALLS] balanced strip before _TOOL_XML_RE. Provide both
 # into the exec namespace so the extracted helpers resolve.
-from core.inference.tool_call_parser import _strip_mistral_closed_calls
+from core.inference.tool_call_parser import _strip_function_xml_calls, _strip_mistral_closed_calls
 
-_ns = {"_re": _re, "_strip_mistral_closed_calls": _strip_mistral_closed_calls}
+_ns = {
+    "_re": _re,
+    "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
+    "_strip_function_xml_calls": _strip_function_xml_calls,
+}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
 
@@ -369,3 +373,20 @@ def test_python_tag_strip_restarts_on_second_python_tag():
     text = '<|python_tag|>{"name": "a"}<|python_tag|>{"name": "b"}'
     cleaned = _TOOL_XML_RE.sub("", text)
     assert cleaned == "", f"second python_tag region leaked: {cleaned!r}"
+
+
+def test_route_strip_removes_param_alias_close_tag():
+    # The parser accepts the <param name="...">...</param> attribute-form alias of
+    # <parameter=...>; the route tail cleanup must strip an orphan </param> close too.
+    assert _strip_tool_xml_for_display("answer </param>", auto_heal_tool_calls = True) == "answer "
+    assert (
+        _strip_tool_xml_for_display("answer </parameter>", auto_heal_tool_calls = True) == "answer "
+    )
+
+
+def test_route_strip_uses_guarded_function_scan_for_literal_nested_markup():
+    # A literal <function=...></function> inside a parameter value must not truncate
+    # the strip: the route now runs the parser's guarded function-XML scan
+    # (_inside_open_parameter) before the regex, matching the core strip.
+    text = "<function=python><parameter=code><function=evil></function></parameter></function> tail"
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "tail"

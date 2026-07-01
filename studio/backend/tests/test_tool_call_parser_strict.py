@@ -446,3 +446,31 @@ def test_tool_call_parser_declares_future_annotations_for_py39_import():
         Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py"
     ).read_text()
     assert "from __future__ import annotations" in src
+
+
+def test_bare_json_function_alias_parses_and_strips_symmetrically():
+    # The markerless bare-JSON parser accepts the "function" alias for the call name
+    # (obj.get("name") or obj.get("function")). strip_leading_bare_json_call must
+    # recognise the same alias so an executed {"function":...} call is not left as
+    # raw content (parser/strip symmetry).
+    from core.inference.tool_call_parser import (
+        parse_tool_calls_from_text,
+        strip_leading_bare_json_call,
+        _top_level_bare_json_name,
+    )
+
+    enabled = {"web_search"}
+    text = '{"function":"web_search","parameters":{"query":"cats"}}'
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = enabled)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    assert strip_leading_bare_json_call(text, enabled) == ""
+
+    # "name" still takes precedence when both are present; nested aliases are data.
+    assert _top_level_bare_json_name('{"function":"foo","name":"web_search"}') == "web_search"
+    assert _top_level_bare_json_name('{"function":"web_search"}') == "web_search"
+    assert _top_level_bare_json_name('{"result":{"function":"web_search"}}') is None
+    # A non-enabled function-alias object is ordinary content and is preserved.
+    assert (
+        strip_leading_bare_json_call('{"function":"not_a_tool","parameters":{}}', enabled)
+        == '{"function":"not_a_tool","parameters":{}}'
+    )

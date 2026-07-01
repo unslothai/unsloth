@@ -7932,7 +7932,7 @@ class LlamaCppBackend:
             parser / safetensors enabled-name gate. Handles truncated and oversized
             bodies (the gated strip collapses them once the name qualifies)."""
             probe = strip_llama3_leading_sentinels(text.lstrip())
-            if not (probe.startswith("{") and '"name"' in probe):
+            if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
                 return False
             return strip_leading_bare_json_call(probe, enabled_tool_names) != probe
 

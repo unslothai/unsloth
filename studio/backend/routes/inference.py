@@ -1109,7 +1109,7 @@ from state.tool_approvals import resolve_tool_decision
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
-from core.inference.tool_call_parser import _strip_mistral_closed_calls
+from core.inference.tool_call_parser import _strip_function_xml_calls, _strip_mistral_closed_calls
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -1258,10 +1258,11 @@ async def artifact_preview_frame(allow_network: bool = False):
     )
 
 
-# Whitespace/escape-tolerant ``{"name":`` detector for bare-JSON tool templates.
-# Matches ``{"name":``, ``{ "name" :`` (pretty-printed) and ``{\"name\":``
-# (JSON-escaped inside the template), mirroring the parser's whitespace tolerance.
-_BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"name\\?"\s*:')
+# Whitespace/escape-tolerant bare-JSON tool-template detector. Matches ``{"name":``,
+# ``{ "name" :`` (pretty-printed) and ``{\"name\":`` (JSON-escaped in the template),
+# plus the ``"function"`` alias the parser accepts (``obj.get("name") or
+# obj.get("function")``), mirroring the parser's whitespace tolerance.
+_BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"(?:name|function)\\?"\s*:')
 
 
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
@@ -1612,14 +1613,23 @@ _TOOL_XML_RE = _re.compile(
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
     r"|<\|python_tag\|>(?:[^<]|<(?!\|(?:eot_id|eom_id|python_tag|start_header_id|end_header_id|begin_of_text|finetune_right_pad_id)\|))*"
-    r"|</parameter>\s*\Z",
+    # ``</param>`` is the attribute-form alias of ``</parameter>`` (the parser accepts
+    # both); strip a tail-only orphan close of either spelling.
+    r"|</(?:parameter|param)>\s*\Z",
     _re.DOTALL,
 )
 
 
 def _strip_tool_xml(text: str) -> str:
-    """Combine the Mistral balanced-brace helper with ``_TOOL_XML_RE``."""
-    return _TOOL_XML_RE.sub("", _strip_mistral_closed_calls(text))
+    """Combine the Mistral balanced-brace helper and the guarded function-XML scan
+    with ``_TOOL_XML_RE``. The scan skips ``<function=`` openers inside an open
+    ``<parameter>`` value (same ``_inside_open_parameter`` guard as the parser), so a
+    literal nested ``<function=...></function>`` in an argument does not truncate the
+    strip and leak the tail -- the ``_TOOL_XML_RE`` function arm alone stops at the
+    inner close."""
+    return _TOOL_XML_RE.sub(
+        "", _strip_function_xml_calls(_strip_mistral_closed_calls(text), final = True)
+    )
 
 
 def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:

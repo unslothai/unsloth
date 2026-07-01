@@ -124,7 +124,7 @@ def _looks_like_enabled_bare_json(text: str, enabled_tool_names: Optional[set]) 
     ``None`` in unrestricted mode, where any bare ``{...,"name",...}`` is a potential
     call (matching the prior behaviour)."""
     probe = strip_llama3_leading_sentinels(text.lstrip())
-    if not (probe.startswith("{") and '"name"' in probe):
+    if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
         return False
     return strip_leading_bare_json_call(probe, enabled_tool_names) != probe
 

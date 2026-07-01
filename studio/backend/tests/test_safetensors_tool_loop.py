@@ -2626,3 +2626,15 @@ def test_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled():
     assert exec_on.calls == [], exec_on.calls
     contents_on = "".join(e["text"] for e in events_on if e["type"] == "content")
     assert "web_search" not in contents_on, contents_on
+
+
+def test_looks_like_enabled_bare_json_accepts_function_alias():
+    # The safetensors buffering gate must recognise the "function" bare-JSON alias
+    # the parser accepts, so a truncated/complete {"function":<enabled tool>} call is
+    # buffered/healed instead of streaming as visible content.
+    from core.inference.safetensors_agentic import _looks_like_enabled_bare_json
+
+    enabled = {"web_search"}
+    assert _looks_like_enabled_bare_json('{"function":"web_search","parameters":{"q":"x"}}', enabled)
+    # A non-tool "function" value is an ordinary JSON answer -> not gated.
+    assert not _looks_like_enabled_bare_json('{"function":"Alice","parameters":{}}', enabled)
