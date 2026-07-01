@@ -104,7 +104,6 @@ def test_train_export_chains_into_export_checkpoint(cli_app, runner: CliRunner) 
     assert call["checkpoint"] == outputs_root
     assert call["output_dir"] == outputs_root / "gguf"
     assert call["format"] == "gguf"
-    assert call["quantization"] == "q4_k_m"
 
 
 def test_train_export_dir_override(cli_app, runner: CliRunner, tmp_path: Path) -> None:

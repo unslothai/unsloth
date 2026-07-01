@@ -42,11 +42,6 @@ def train(
         "--export-dir",
         help = "Where to write the export. Defaults to <checkpoint>/<format>.",
     ),
-    quantization: str = typer.Option(
-        "q4_k_m",
-        "--quantization",
-        help = "GGUF quantization method, used only with --export gguf.",
-    ),
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
@@ -171,7 +166,6 @@ def train(
             checkpoint = checkpoint_dir,
             output_dir = out,
             format = export,
-            quantization = quantization,
             hf_token = hf_token,
             max_seq_length = cfg.training.max_seq_length,
             load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
