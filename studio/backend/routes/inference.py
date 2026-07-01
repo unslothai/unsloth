@@ -5257,13 +5257,20 @@ async def openai_chat_completions(
         # Reject confirm-without-stream local tool requests before the switch: the
         # local tool path requires stream=true for the confirm gate, so this shape
         # is invalid and must not evict the resident model first. Mirror that path's
-        # bypass_permissions exemption and its local-tool intent signal.
+        # enablement exactly (_effective_enable_tools honors a CLI --enable-tools
+        # policy hard-override; mcp_enabled opens the tool loop on its own but still
+        # defers to a CLI --disable-tools policy), or an mcp_enabled/policy-forced
+        # request would slip past this guard and only 400 after the swap.
+        from state.tool_policy import get_tool_policy as _get_confirm_tool_policy
+
+        _confirm_cli_policy = _get_confirm_tool_policy()
         if (
             payload.confirm_tool_calls
             and not payload.bypass_permissions
             and not payload.stream
             and (
-                payload.enable_tools is True
+                _effective_enable_tools(payload)
+                or (bool(payload.mcp_enabled) and _confirm_cli_policy is not False)
                 or bool(payload.enabled_tools)
                 or bool(payload.tools)
                 or bool(payload.openai_code_exec_container_id)
@@ -5296,6 +5303,12 @@ async def openai_chat_completions(
                         param = "tool_choice",
                     ),
                 )
+        # Reject an oversized audio upload before the switch: the size cap is a
+        # cheap, target-independent length check, so a too-large payload must not
+        # load a GGUF only to 413 afterward (the decode itself stays post-switch to
+        # avoid decoding a valid upload twice).
+        if payload.audio_base64 and len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
+            raise HTTPException(status_code = 413, detail = "Audio file is too large (max ~25 MB).")
         # Audio input rides the same companion-mmproj projector as vision, so a
         # text-only target can't serve it either; guard both before the switch.
         _needs_vision = (
@@ -7182,8 +7195,15 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _pre = await request.json()
         except (json.JSONDecodeError, ValueError):
             _pre = None
-        if isinstance(_pre, dict) and not _completions_prompt_present(_pre):
-            raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
+        if isinstance(_pre, dict):
+            _pre_prompt = _pre.get("prompt")
+            if _pre_prompt is not None and not isinstance(_pre_prompt, (str, list, tuple)):
+                # An object/number prompt is a deterministic client error (only a
+                # string or array is valid); reject it before the switch so a bad
+                # shape can't load a GGUF only to be rejected by llama-server after.
+                raise HTTPException(status_code = 400, detail = "'prompt' must be a string or array.")
+            if not _completions_prompt_present(_pre):
+                raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
 
     # Opt-in: load the requested local GGUF before the loaded-state check.
     body = await _auto_switch_from_request_body(request, current_subject)
@@ -7381,8 +7401,15 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             _pre = await request.json()
         except (json.JSONDecodeError, ValueError):
             _pre = None
-        if isinstance(_pre, dict) and not _embeddings_input_present(_pre):
-            raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+        if isinstance(_pre, dict):
+            _pre_input = _pre.get("input")
+            if _pre_input is not None and not isinstance(_pre_input, (str, list, tuple)):
+                # An object/number input is a deterministic client error (only a
+                # string or array is valid); reject it before the switch so a bad
+                # shape can't load a GGUF only to be rejected by llama-server after.
+                raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
+            if not _embeddings_input_present(_pre):
+                raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
     # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
     # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
     # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers

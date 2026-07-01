@@ -2455,6 +2455,103 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     assert captured["require_vision"] is True
 
 
+def test_completions_rejects_object_prompt_before_switch(monkeypatch):
+    # Codex P2: an object prompt like {"prompt": {}} is a deterministic client error
+    # (only a string or array is valid). It must 400 before the switch so a bad shape
+    # can't load the named GGUF only to be rejected by llama-server after eviction.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_completions(
+                _json_body_request({"model": "org/B-GGUF", "prompt": {}}), "tester"
+            )
+        )
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # no switch before rejection
+
+
+def test_embeddings_rejects_object_input_before_switch(monkeypatch):
+    # Codex P2: an object input like {"input": {}} is a deterministic client error
+    # (only a string or array is valid); reject before the switch, like completions.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_embeddings(
+                _json_body_request({"model": "org/B-GGUF", "input": {}}), "tester"
+            )
+        )
+    assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
+def test_chat_oversized_audio_rejected_before_switch(monkeypatch):
+    # Codex P2: the audio size cap is a cheap, target-independent length check, so an
+    # oversized upload must 413 before the switch rather than loading a GGUF first.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    big = "A" * (inference_route._MAX_AUDIO_B64_CHARS + 1)
+    payload = _chat_request(model = "org/B-GGUF", audio_base64 = big)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 413
+    assert rec.calls == []
+
+
+def test_chat_confirm_without_stream_mcp_rejected_before_switch(monkeypatch):
+    # Codex P2: mcp_enabled opens the local tool loop on its own, so confirm+no-stream
+    # +mcp is the same invalid shape as confirm+no-stream+tools and must 400 before
+    # the switch. The old guard only checked explicit tool fields and missed it.
+    import state.tool_policy as _tp
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)  # no CLI --disable-tools
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("org/B-GGUF", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    payload = _chat_request(
+        model = "org/B-GGUF", mcp_enabled = True, confirm_tool_calls = True, stream = False
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
 def test_require_vision_rejects_text_target_before_switch(monkeypatch):
     # Codex P2: an image request naming a different text-only GGUF must 400 before
     # the swap, so the resident vision model is not evicted for a rejected request.
