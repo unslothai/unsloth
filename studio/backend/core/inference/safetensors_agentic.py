@@ -271,6 +271,10 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    # Real tool-call turns completed. Only turns that actually executed a tool count
+    # against ``max_tool_iterations``; a duplicate/disabled no-op correction turn (and a
+    # plan-without-action re-prompt) must not consume budget, matching the GGUF loop.
+    _executed_tool_iters = 0
 
     def _tool_succeeded(tool_name: str) -> bool:
         key_prefix = f"{tool_name}:"
@@ -293,6 +297,9 @@ def run_safetensors_tool_loop(
     for iteration in range(max_tool_iterations + _extra_iters + 1):
         if cancel_event is not None and cancel_event.is_set():
             return
+        # Whether this turn actually ran a tool (set on record_result). A no-op-only
+        # turn leaves it False so it does not consume the caller's tool budget.
+        _turn_executed_real_tool = False
 
         if final_attempt_done:
             active_tools: list[dict] = []
@@ -849,6 +856,8 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
+            # A tool ran this turn, so it counts against the caller's budget.
+            _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
 
@@ -861,10 +870,13 @@ def run_safetensors_tool_loop(
         if not unrestricted_tools and not tool_controller.active_tools():
             final_attempt_done = True
             continue
-        # Track against the caller-requested cap, excluding re-prompt
-        # slots so a stalling model still gets a final-answer attempt.
-        _tool_iters_done = iteration + 1 - reprompt_count
-        if _tool_iters_done >= max_tool_iterations and not final_attempt_done:
+        # Count only turns that executed a tool against the caller's cap. A
+        # duplicate/disabled no-op is a correction turn -- like a plan-without-action
+        # re-prompt -- so it does not consume budget; the model gets its "already
+        # completed" nudge and another tool-enabled turn (matches the GGUF loop).
+        if _turn_executed_real_tool:
+            _executed_tool_iters += 1
+        if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             # Budget exhausted; nudge a final plain answer.
             final_attempt_done = True
             conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})

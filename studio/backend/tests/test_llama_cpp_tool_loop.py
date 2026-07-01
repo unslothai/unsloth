@@ -2318,8 +2318,7 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     # stops after 2. The third request is the tool-less final-answer pass (it consumes a
     # tool-call stream, which it ignores since no tools are offered on the final pass).
     streams = [
-        _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}")
-        for i in range(6)
+        _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}") for i in range(6)
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
