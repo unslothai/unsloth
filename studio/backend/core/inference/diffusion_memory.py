@@ -164,7 +164,10 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
         free, total = torch.cuda.mem_get_info()
         kind = "discrete_vram"
         try:
-            props = torch.cuda.get_device_properties(0)
+            # Query the CURRENT device, not device 0: mem_get_info() above already
+            # reports the active device, so hardcoding 0 would inspect the wrong GPU
+            # (and misclassify discrete vs unified) when the active device isn't 0.
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
             if bool(getattr(props, "integrated", False) or getattr(props, "is_integrated", False)):
                 kind = "unified_memory"  # e.g. Jetson / integrated SoC
         except Exception:

@@ -1208,9 +1208,10 @@ def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
                 HIGH,
                 package,
                 filename,
-                f"Python wheel ships large ({len(content) // 1024} KB) JS bundle "
-                "(uncommon; manually review)",
-                "",
+                # Size stays in evidence, not the check label, so the baseline key
+                # does not drift when a wheel's bundle grows by a few KB.
+                "Python wheel ships large JS bundle (uncommon; manually review)",
+                f"{len(content) // 1024} KB JS bundle",
             )
         )
     return findings
