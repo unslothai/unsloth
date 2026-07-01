@@ -465,6 +465,8 @@ def test_invalid_attention_backend_returns_422(client):
         json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "attention_backend": "bogus"},
     )
     assert resp.status_code == 422
+
+
 def test_prequant_path_doc_describes_allowlist_not_toggle():
     # The field help must match the code: UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH is a
     # directory allowlist, not a =1 toggle (diffusion_prequant._allowed_prequant_roots

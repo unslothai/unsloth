@@ -249,6 +249,8 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
     except Exception as exc:  # noqa: BLE001 — optimisation only
         _warn(logger, "cudnn_benchmark", exc)
         return False
+
+
 # The TF32 flag values from before the first max load flipped them, so a later
 # non-max load / unload can put the process back exactly as it found it (rather than
 # forcing a hardcoded default that might clobber another component's choice).
