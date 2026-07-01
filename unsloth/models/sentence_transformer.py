@@ -1692,9 +1692,15 @@ class FastSentenceTransformer(FastModel):
 
         # No modules.json -> force 16-bit: saving is custom for these models and
         # 4-bit would need dequant in save_pretrained_merged, not worth it.
+        # Resolve the same cache the prefetch warmed: hf_hub_download (used by _module_path /
+        # _read_pooling_mode) does NOT honor SENTENCE_TRANSFORMERS_HOME, so passing only cache_folder
+        # (None when the caller relies on the env var) would miss the warm and fetch these files
+        # in-process over Xet.
         has_modules_json = (
             FastSentenceTransformer._module_path(
-                model_name, token, cache_dir = kwargs.get("cache_folder")
+                model_name,
+                token,
+                cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             )
             is not None
         )
@@ -1748,7 +1754,9 @@ class FastSentenceTransformer(FastModel):
             max_seq_length,
             pooling_mode,
             trust_remote_code = trust_remote_code,
-            cache_dir = kwargs.get("cache_folder"),
+            # Reuse the prefetch's resolved cache (see _module_path note above) so the fallback
+            # modules.json / module-file loads hit the warm instead of an in-process Xet download.
+            cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
         )
 
         st_device = device_map

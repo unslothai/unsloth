@@ -306,6 +306,45 @@ def test_st_prefetch_resolves_env_cache_and_runs_after_validation():
     assert val_lineno < call.lineno, "load-mode validation must precede the ST prefetch"
 
 
+def test_st_fallback_module_loads_resolve_env_cache():
+    """The fallback module loads must resolve the SAME cache the prefetch warmed. _module_path /
+    _read_pooling_mode call hf_hub_download directly, which does NOT honor SENTENCE_TRANSFORMERS_HOME,
+    so any cache_dir derived from cache_folder must also fall back to the env var; otherwise, when a
+    caller relies on SENTENCE_TRANSFORMERS_HOME without passing cache_folder, modules.json / module
+    files miss the warm and are fetched in-process over Xet (Codex #6638). Static guard: importing ST
+    pulls heavy optional deps."""
+    import ast
+    import os
+
+    src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
+    with open(src_path, "r", encoding = "utf-8") as f:
+        src = f.read()
+    tree = ast.parse(src)
+
+    # Every _module_path / _load_modules call whose cache_dir is derived from cache_folder (i.e. the
+    # from_pretrained fallback sites, not the internal `cache_dir = cache_dir` pass-throughs) must also
+    # resolve SENTENCE_TRANSFORMERS_HOME so the resolution matches the prefetch above.
+    checked = 0
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr not in ("_module_path", "_load_modules"):
+            continue
+        cache_dir_kw = next((kw for kw in node.keywords if kw.arg == "cache_dir"), None)
+        if cache_dir_kw is None:
+            continue
+        dumped = ast.dump(cache_dir_kw.value)
+        if "cache_folder" not in dumped:
+            continue  # internal pass-through (cache_dir = cache_dir): not a resolution site
+        checked += 1
+        assert "SENTENCE_TRANSFORMERS_HOME" in dumped, (
+            f"{node.func.attr} cache_dir resolves cache_folder but not SENTENCE_TRANSFORMERS_HOME"
+        )
+    assert checked >= 2, (
+        "expected the fallback _module_path and _load_modules calls to resolve the env cache"
+    )
+
+
 def test_filename_has_variant_matches_single_and_sharded():
     """The variant detector matches both the single-file (.fp16.) and SHARDED (.fp16-) infixes and
     rejects the default (non-variant) names (gemini #6638)."""
