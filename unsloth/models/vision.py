@@ -275,7 +275,11 @@ def _install_offload_embedding_hooks(embed_tokens, return_device):
         return (inp.to(target),) + tuple(args[1:])
 
     def _unsloth_offload_post_hook(module, args, output):
-        if return_device is not None and hasattr(output, "device") and output.device != return_device:
+        if (
+            return_device is not None
+            and hasattr(output, "device")
+            and output.device != return_device
+        ):
             return output.to(return_device)
         return output
 
