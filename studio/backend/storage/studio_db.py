@@ -23,6 +23,16 @@ from typing import Any, Iterable, Optional
 
 
 from utils.paths import project_workspaces_root, studio_db_path, ensure_dir
+from utils.training_runs import extract_project_name
+
+
+def _extract_project_name_from_config_json(config_json: Optional[str]) -> Optional[str]:
+    if not config_json:
+        return None
+    try:
+        return extract_project_name(json.loads(config_json))
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -680,6 +690,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         runs = []
         for row in rows:
             run = dict(row)
+            run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
             sparkline = run.get("loss_sparkline")
             if sparkline:
                 try:
@@ -719,6 +730,7 @@ def get_run(id: str) -> Optional[dict]:
         if row is None:
             return None
         run = dict(row)
+        run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
         sparkline = run.get("loss_sparkline")
         if sparkline:
             try:
