@@ -117,6 +117,8 @@ export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
 
 const PROMPT_VARIABLE_PATTERN = /{{\s*[a-zA-Z_$][a-zA-Z0-9_$.-]*\s*}}/;
+// split a model id into segments (org / name / quant tags) for substring checks
+const MODEL_ID_DELIMITER = /[/_.-]/;
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -549,6 +551,16 @@ export function ChatSettingsPanel({
   })();
   const isLoadedGguf =
     useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const loadedIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
+  const pendingIsDiffusion = useMemo(() => {
+    const id = pendingSelection?.id;
+    if (!id) return false;
+    return id
+      .toLowerCase()
+      .split(MODEL_ID_DELIMITER)
+      .some((segment) => segment.startsWith("diffusion"));
+  }, [pendingSelection?.id]);
+  const isDiffusion = pendingIsGguf ? pendingIsDiffusion : loadedIsDiffusion;
   // While a pick is staged the sheet configures *that* model, so its GGUF-ness
   // (not the currently loaded model's) decides whether the GGUF-only controls
   // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
@@ -663,7 +675,10 @@ export function ChatSettingsPanel({
   const stagedDownloading =
     stagedDownloadFraction != null && stagedDownloadFraction < 1;
   const ctxDisplayValue = customContextLength ?? baseContext ?? "";
-  const ctxMaxValue = baseNativeContext ?? baseContext ?? null;
+  // diffusion runner won't go past 65536 (#6463)
+  const ctxMaxValue = isDiffusion
+    ? 65536
+    : (baseNativeContext ?? baseContext ?? 4096);
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
