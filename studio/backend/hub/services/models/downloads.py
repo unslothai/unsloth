@@ -78,6 +78,28 @@ def _spawn_download_worker(
     )
 
 
+def _is_model_in_local_cache(repo_id: str, variant: Optional[str]) -> bool:
+    """Return True if *repo_id* (and optional GGUF *variant*) is already present
+    in the local HuggingFace cache so no network download is needed."""
+    try:
+        scan = hf_cache_scan.scan_cache_dir()
+        for repo in getattr(scan, "repos", ()):
+            if getattr(repo, "repo_id", None) == repo_id:
+                if variant is None:
+                    # Any complete revision is sufficient for safetensors models.
+                    revisions = getattr(repo, "revisions", ())
+                    return any(not getattr(rev, "is_incomplete", True) for rev in revisions)
+                # For GGUF variants, check that the specific file exists.
+                for rev in getattr(repo, "revisions", ()):
+                    for f in getattr(rev, "files", ()):
+                        fname = getattr(f, "file_name", "") or ""
+                        if variant.lower() in fname.lower() and fname.endswith(".gguf"):
+                            return True
+    except Exception:
+        pass
+    return False
+
+
 async def download_model_response(body: DownloadModelRequest, hf_token: Optional[str] = None):
     """Start a background download for a HuggingFace model."""
     repo_id = body.repo_id.strip()
@@ -95,6 +117,24 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             status_code = 400,
             detail = f"Invalid gguf_variant: {variant!r}",
         )
+
+    # ── Confirmation gate ────────────────────────────────────────────────────
+    # When the caller has not explicitly confirmed the download, check whether
+    # the model is already cached locally.  If not, return a sentinel response
+    # so the frontend can present a "This will download X GB — proceed?" dialog
+    # before committing storage.  A follow-up request with confirmed=True skips
+    # this check and proceeds straight to the download worker.
+    if not body.confirmed:
+        in_cache = await asyncio.to_thread(_is_model_in_local_cache, repo_id, variant)
+        if not in_cache:
+            job_key = _download_job_key(repo_id, variant)
+            return {
+                "job_key": job_key,
+                "state": "confirmation_required",
+                "accepted": False,
+                "generation": 0,
+                "needs_confirmation": True,
+            }
     key = _download_job_key(repo_id, variant)
     use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
     transport = download_lifecycle.resolve_transport(use_xet)

@@ -24,6 +24,22 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # process is covered before its heavy ML imports.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
+# ── Windows: force UTF-8 on stdout/stderr ───────────────────────────────────
+# Windows terminals default to the system code page (cp1252, cp932, etc.).
+# Non-ASCII characters in log messages or the startup banner (e.g. the 🦥 emoji)
+# raise UnicodeEncodeError at runtime.  Reconfigure both streams to UTF-8 with
+# 'replace' so unrepresentable code points fall back to '?' instead of crashing.
+# Python 3.7+ guarantees `reconfigure` on TextIOWrapper; guard for edge-cases
+# (pipes, NUL streams, pythonw.exe) where the attribute may be absent.
+if sys.platform == "win32":
+    for _win_stream in (sys.stdout, sys.stderr):
+        if _win_stream is not None and hasattr(_win_stream, "reconfigure"):
+            try:
+                _win_stream.reconfigure(encoding = "utf-8", errors = "replace")
+            except Exception:
+                pass
+    del _win_stream
+
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
 # os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.

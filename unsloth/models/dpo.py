@@ -19,7 +19,67 @@ __all__ = [
 
 
 def PatchDPOTrainer():
-    return
+    """Patch the TRL DPOTrainer to accept ``DPOConfig`` (trl >= 0.7) in addition
+    to the legacy ``TrainingArguments``.
+
+    When running DPO fine-tuning use ``trl.DPOConfig`` (or
+    ``unsloth.UnslothDPOConfig``) instead of ``transformers.TrainingArguments``
+    to receive DPO-specific hyper-parameters such as ``beta`` and
+    ``loss_type``.  This helper ensures backward-compatibility so older code
+    that passes ``TrainingArguments`` directly still works.
+
+    Example::
+
+        from trl import DPOConfig, DPOTrainer
+        from unsloth import FastLanguageModel
+
+        model, tokenizer = FastLanguageModel.from_pretrained(...)
+        model = FastLanguageModel.get_peft_model(model, ...)
+
+        training_args = DPOConfig(
+            beta=0.1,
+            loss_type="sigmoid",
+            output_dir="outputs",
+            per_device_train_batch_size=2,
+            num_train_epochs=3,
+        )
+
+        trainer = DPOTrainer(
+            model=model,
+            ref_model=None,
+            args=training_args,
+            train_dataset=dataset,
+            tokenizer=tokenizer,
+        )
+        trainer.train()
+    """
+    try:
+        from trl import DPOConfig, DPOTrainer
+        import transformers
+
+        _original_init = DPOTrainer.__init__
+
+        def _patched_init(self, *args, **kwargs):
+            # Accept either DPOConfig or legacy TrainingArguments
+            training_args = kwargs.get("args")
+            if training_args is None and len(args) > 2:
+                training_args = args[2]
+            if isinstance(training_args, transformers.TrainingArguments) and not isinstance(
+                training_args, DPOConfig
+            ):
+                import warnings
+                warnings.warn(
+                    f"Unsloth: Passing '{type(training_args).__name__}' to DPOTrainer is deprecated. "
+                    "Please use 'trl.DPOConfig' (or 'unsloth.UnslothDPOConfig') instead. "
+                    "See: https://huggingface.co/docs/trl/dpo_trainer#trl.DPOConfig",
+                    DeprecationWarning,
+                    stacklevel = 2,
+                )
+            return _original_init(self, *args, **kwargs)
+
+        DPOTrainer.__init__ = _patched_init
+    except (ImportError, Exception):
+        pass
 
 
 def PatchKTOTrainer():
