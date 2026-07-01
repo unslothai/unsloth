@@ -351,11 +351,12 @@ def test_install_ps1_fallback_rebuild_preserves_env_mode_ownership_guard():
 def test_install_ps1_guard_accepts_venv_marker():
     """install.ps1 env-mode guard must accept the in-VENV .unsloth-studio-owned marker as a sentinel."""
     src = INSTALL_PS1.read_text()
+    assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
     block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
     block = src[block_start : block_start + 2000]
     assert (
-        '$VenvDir ".unsloth-studio-owned") -PathType Leaf' in block
-    ), "install.ps1 guard must check the in-VENV marker with -PathType Leaf"
+        "Test-Path -LiteralPath $VenvOwnershipMarker -PathType Leaf" in block
+    ), "install.ps1 guard must check the in-VENV marker through $VenvOwnershipMarker"
 
 
 def test_setup_helpers_gate_on_canonical_custom_root():
