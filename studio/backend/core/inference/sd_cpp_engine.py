@@ -27,7 +27,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -35,9 +34,10 @@ from typing import Callable, Optional
 from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
+    SdCppUpscaleParams,
     build_sd_cpp_command,
+    build_sd_cpp_upscale_command,
 )
-from utils.process_lifetime import child_popen_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -123,12 +123,8 @@ def find_sd_cpp_binary() -> Optional[str]:
         if hit:
             return hit
 
-    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME exactly like the
-    #    installer's default_install_dir(), so a binary installed under a custom Studio root
-    #    is found without also having to set UNSLOTH_SD_CPP_PATH.
-    studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
-    default_base = Path(studio_home).parent if studio_home else Path.home() / ".unsloth"
-    hit = _first_file(_layout_candidates(default_base / "stable-diffusion.cpp"))
+    # 3. Default install root (sibling of ~/.unsloth/llama.cpp).
+    hit = _first_file(_layout_candidates(Path.home() / ".unsloth" / "stable-diffusion.cpp"))
     if hit:
         return hit
 
@@ -206,28 +202,75 @@ class SdCppEngine:
         nonzero, or no output file is produced. ``on_log`` (if given) receives
         each line of sd-cli's progress output as it arrives.
         """
-        if not self.is_available():
-            raise RuntimeError(
-                "sd-cli (stable-diffusion.cpp) binary not found. Build it or set "
-                "SD_CLI_PATH / UNSLOTH_SD_CPP_PATH."
-            )
-        out = Path(output_path)
-        out.parent.mkdir(parents = True, exist_ok = True)
         cmd = build_sd_cpp_command(
-            self.binary,
+            self._require_binary(),
             files,
             params,
-            output_path = str(out),
+            output_path = str(self._prepare_out(output_path)),
             offload = offload,
             threads = threads,
             verbose = verbose,
             extra_args = extra_args,
         )
+        return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
+
+    def upscale(
+        self,
+        params: "SdCppUpscaleParams",
+        *,
+        output_path: str,
+        verbose: bool = False,
+        extra_args: Optional[list[str]] = None,
+        timeout: Optional[float] = 1800.0,
+        env: Optional[dict[str, str]] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+    ) -> Path:
+        """Upscale an image with an ESRGAN model; return the written path."""
+        cmd = build_sd_cpp_upscale_command(
+            self._require_binary(),
+            params,
+            output_path = str(self._prepare_out(output_path)),
+            verbose = verbose,
+            extra_args = extra_args,
+        )
+        return self._run(cmd, output_path, timeout = timeout, env = env, on_log = on_log)
+
+    # ── internals ─────────────────────────────────────────────────────────────
+
+    def _require_binary(self) -> str:
+        if not self.is_available():
+            raise RuntimeError(
+                "sd-cli (stable-diffusion.cpp) binary not found. Build it or set "
+                "SD_CLI_PATH / UNSLOTH_SD_CPP_PATH."
+            )
+        return self.binary  # type: ignore[return-value]
+
+    @staticmethod
+    def _prepare_out(output_path: str) -> Path:
+        out = Path(output_path)
+        out.parent.mkdir(parents = True, exist_ok = True)
+        return out
+
+    def _run(
+        self,
+        cmd: list[str],
+        output_path: str,
+        *,
+        timeout: Optional[float],
+        env: Optional[dict[str, str]],
+        on_log: Optional[Callable[[str], None]],
+    ) -> Path:
+        """Run an sd-cli argv, stream output, and return the produced image path.
+
+        Raises ``RuntimeError`` on nonzero exit, timeout, or a missing output.
+        Shared by ``generate`` and ``upscale``.
+        """
+        out = Path(output_path)
         base = dict(os.environ)
         if env:
             base.update(env)
-        run_env = runtime_env(self.binary, base)
-        logger.info("sd-cli generate: %s", " ".join(cmd))
+        run_env = runtime_env(self._require_binary(), base)
+        logger.info("sd-cli run: %s", " ".join(cmd))
 
         t0 = time.time()
         proc = subprocess.Popen(
@@ -237,18 +280,9 @@ class SdCppEngine:
             text = True,
             errors = "replace",
             env = run_env,
-            # Bind the child to the backend's lifetime (PR_SET_PDEATHSIG on Linux), so a
-            # long sd-cli denoise is SIGKILLed if the backend dies instead of orphaning.
-            **child_popen_kwargs(),
         )
-        # Drain stdout on a background thread and wait on the PROCESS, not the stream:
-        # iterating proc.stdout directly blocks until the stream closes, so a sd-cli that
-        # hangs without producing output (or closing stdout) would never reach proc.wait
-        # and the timeout would be silently bypassed. With the reader on its own thread the
-        # main thread always enforces the wall-clock timeout and kills a hung process.
         tail: list[str] = []
-
-        def _drain() -> None:
+        try:
             assert proc.stdout is not None
             for line in proc.stdout:
                 line = line.rstrip("\n")
@@ -257,45 +291,23 @@ class SdCppEngine:
                     tail.pop(0)
                 if on_log is not None:
                     on_log(line)
-
-        reader = threading.Thread(target = _drain, daemon = True)
-        reader.start()
-        try:
             ret = proc.wait(timeout = timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            reader.join(timeout = 5.0)
             raise RuntimeError(f"sd-cli timed out after {timeout}s")
         finally:
             if proc.poll() is None:
                 proc.kill()
-                # Reap the SIGKILLed child, or it lingers as a zombie until this process
-                # exits (the cancel/timeout branches kill without waiting otherwise).
-                try:
-                    proc.wait(timeout = 5.0)
-                except Exception:  # noqa: BLE001
-                    pass
-        # The process has exited; let the reader finish draining the buffered output.
-        reader.join(timeout = 5.0)
 
         if ret != 0:
             raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + "\n".join(tail[-12:]))
-        if out.is_file():
-            produced: Optional[Path] = out
-        else:
-            # For batch_count > 1, stable-diffusion.cpp's save_results() writes
-            # "<stem>_<idx><suffix>" (base_0.png, base_1.png, ...) rather than the
-            # literal --output path, so the single-path check above misses them.
-            # Fall back to the numbered siblings and return the first.
-            batch = sorted(out.parent.glob(f"{out.stem}_*{out.suffix}"))
-            produced = batch[0] if batch else None
-        if produced is None:
+        if not out.is_file():
             raise RuntimeError(
                 f"sd-cli reported success but no image at {out}. Last output:\n"
                 + "\n".join(tail[-12:])
             )
-        logger.info("sd-cli generate ok in %.1fs -> %s", time.time() - t0, produced)
-        return produced
+        logger.info("sd-cli run ok in %.1fs -> %s", time.time() - t0, out)
+        return out
 
 
 # ── engine routing ──────────────────────────────────────────────────────────

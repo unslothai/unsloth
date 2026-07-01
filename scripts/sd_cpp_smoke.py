@@ -41,6 +41,7 @@ from core.inference.diffusion_memory import (  # noqa: E402
 from core.inference.sd_cpp_args import (  # noqa: E402
     SdCppGenParams,
     SdCppModelFiles,
+    SdCppUpscaleParams,
     offload_flags,
 )
 from core.inference.sd_cpp_engine import SdCppEngine, find_sd_cpp_binary  # noqa: E402
@@ -55,9 +56,15 @@ _MODE_TO_POLICY = {
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description = "Native sd-cli engine smoke test.")
+    p.add_argument("--task", default = "txt2img", choices = ["txt2img", "img2img", "upscale"])
     p.add_argument("--binary", default = None, help = "sd-cli path (else env / finder)")
     p.add_argument("--family", default = "z-image")
-    p.add_argument("--diffusion-model", required = True)
+    p.add_argument("--diffusion-model", default = None)
+    # img2img + upscale inputs
+    p.add_argument("--init-img", default = None)
+    p.add_argument("--strength", type = float, default = 0.6)
+    p.add_argument("--upscale-model", default = None)
+    p.add_argument("--upscale-repeats", type = int, default = 1)
     p.add_argument("--vae", default = None)
     p.add_argument("--clip_l", default = None)
     p.add_argument("--t5xxl", default = None)
@@ -90,6 +97,36 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    out = Path(args.out_image)
+
+    if args.task == "upscale":
+        if not args.init_img or not args.upscale_model:
+            print("ERROR: upscale needs --init-img and --upscale-model.", flush = True)
+            return 2
+        t0 = time.time()
+        result = engine.upscale(
+            SdCppUpscaleParams(
+                input_image = args.init_img,
+                upscale_model = args.upscale_model,
+                repeats = args.upscale_repeats,
+            ),
+            output_path = str(out),
+            verbose = True,
+            timeout = args.timeout,
+            on_log = lambda ln: print(f"  [sd] {ln}", flush = True),
+        )
+        dt = time.time() - t0
+        print(
+            f"\nOK: upscaled {result} ({result.stat().st_size/1024:.0f} KB) in {dt:.1f}s",
+            flush = True,
+        )
+        print("SD-CPP-SMOKE-OK", flush = True)
+        return 0
+
+    if not args.diffusion_model:
+        print("ERROR: --diffusion-model is required for txt2img / img2img.", flush = True)
+        return 2
+
     files = SdCppModelFiles(
         diffusion_model = args.diffusion_model,
         vae = args.vae,
@@ -98,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         llm = args.llm,
         qwen2vl = args.qwen2vl,
     )
+    is_img2img = args.task == "img2img"
     params = SdCppGenParams(
         prompt = args.prompt,
         negative_prompt = args.negative_prompt,
@@ -106,12 +144,21 @@ def main(argv: list[str] | None = None) -> int:
         steps = args.steps,
         cfg_scale = args.cfg_scale,
         seed = args.seed,
+        init_img = args.init_img if is_img2img else None,
+        strength = args.strength if is_img2img else None,
     )
+    if is_img2img and not args.init_img:
+        print("ERROR: img2img needs --init-img.", flush = True)
+        return 2
     policy = _MODE_TO_POLICY[args.memory_mode]
     off = offload_flags(policy)
+    print(
+        f"task:      {args.task}"
+        + (f" (init={args.init_img}, strength={args.strength})" if is_img2img else ""),
+        flush = True,
+    )
     print(f"memory:    {args.memory_mode} -> policy={policy} -> flags={off}", flush = True)
 
-    out = Path(args.out_image)
     t0 = time.time()
     result = engine.generate(
         files,

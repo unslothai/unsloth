@@ -76,18 +76,46 @@ class SdCppModelFiles:
 
 @dataclass(frozen = True)
 class SdCppGenParams:
-    """Generation parameters, mapped 1:1 onto sd-cli's sampling flags."""
+    """Generation parameters, mapped 1:1 onto sd-cli's sampling flags.
+
+    The image-conditioning fields cover the img_gen variants: ``init_img`` +
+    ``strength`` make it img2img, adding ``mask`` makes it inpaint, and
+    ``ref_images`` drives FLUX Kontext / Qwen-Image-Edit style editing. ``lora_dir``
+    points sd-cli at a LoRA directory; the LoRAs themselves are selected with
+    ``<lora:name:weight>`` tags inside ``prompt`` (sd.cpp's own syntax).
+    """
 
     prompt: str
     negative_prompt: Optional[str] = None
-    width: int = 1024
-    height: int = 1024
+    # None = "unset": an image-conditioned run (img2img/inpaint/edit) then lets
+    # sd.cpp derive the size from the input image instead of forcing a resize; a
+    # plain txt2img run with unset dims falls back to 1024x1024 (see the builder).
+    width: Optional[int] = None
+    height: Optional[int] = None
     steps: Optional[int] = None
     cfg_scale: Optional[float] = None
     guidance: Optional[float] = None
     seed: Optional[int] = None
     sampling_method: Optional[str] = None
     batch_count: int = 1
+    # image-to-image / inpaint / edit
+    init_img: Optional[str] = None
+    strength: Optional[float] = None
+    mask: Optional[str] = None
+    ref_images: tuple[str, ...] = ()
+    # LoRA
+    lora_dir: Optional[str] = None
+    lora_apply_mode: Optional[str] = None
+
+
+@dataclass(frozen = True)
+class SdCppUpscaleParams:
+    """Inputs for sd-cli's ESRGAN upscale mode (a separate run mode)."""
+
+    input_image: str
+    upscale_model: str
+    repeats: int = 1
+    tile_size: Optional[int] = None
 
 
 def offload_flags(
@@ -168,7 +196,31 @@ def build_sd_cpp_command(
     cmd += ["--prompt", params.prompt]
     if params.negative_prompt:
         cmd += ["--negative-prompt", params.negative_prompt]
-    cmd += ["--width", str(int(params.width)), "--height", str(int(params.height))]
+    # img2img / inpaint / edit conditioning (img_gen mode with an input image).
+    if params.init_img:
+        cmd += ["--init-img", params.init_img]
+    if params.strength is not None:
+        cmd += ["--strength", _fmt_float(params.strength)]
+    if params.mask:
+        cmd += ["--mask", params.mask]
+    for ref in params.ref_images:
+        cmd += ["--ref-image", ref]
+    # LoRA: the directory to scan; individual LoRAs are <lora:name:w> tags in prompt.
+    if params.lora_dir:
+        cmd += ["--lora-model-dir", params.lora_dir]
+    if params.lora_apply_mode:
+        cmd += ["--lora-apply-mode", params.lora_apply_mode]
+    # Emit explicit dims when given. For an image-conditioned run (img2img /
+    # inpaint / edit) that leaves them unset, omit the flags so sd.cpp derives the
+    # size from the input image (set_width_and_height_if_unset) rather than forcing
+    # a 1024x1024 resize/crop of the source. A plain txt2img run with unset dims
+    # keeps the prior 1024 default.
+    if params.width is not None or params.height is not None:
+        w = int(params.width) if params.width is not None else 1024
+        h = int(params.height) if params.height is not None else 1024
+        cmd += ["--width", str(w), "--height", str(h)]
+    elif not (params.init_img or params.ref_images):
+        cmd += ["--width", "1024", "--height", "1024"]
     if params.steps is not None:
         cmd += ["--steps", str(int(params.steps))]
     if params.cfg_scale is not None:
@@ -187,6 +239,50 @@ def build_sd_cpp_command(
         cmd += ["--threads", str(int(threads))]
     if offload:
         cmd += list(offload)
+    if verbose:
+        cmd += ["-v"]
+    if extra_args:
+        cmd += list(extra_args)
+    return cmd
+
+
+def build_sd_cpp_upscale_command(
+    binary: str,
+    params: SdCppUpscaleParams,
+    *,
+    output_path: str,
+    verbose: bool = False,
+    extra_args: Optional[list[str]] = None,
+) -> list[str]:
+    """Build the ``sd-cli --mode upscale`` argv (ESRGAN super-resolution).
+
+    Upscale is a distinct run mode: it takes an input image and an ESRGAN model,
+    no prompt or text encoders. ``repeats`` runs the upscaler N times (each pass
+    is a fixed scale factor for the model).
+    """
+    if not params.input_image:
+        raise ValueError("input_image is required for upscale")
+    if not params.upscale_model:
+        raise ValueError("upscale_model is required for upscale")
+    # A truthiness guard below would silently swallow repeats=0 and fall back to
+    # sd-cli's default of one pass, turning an explicit no-op into a real upscale.
+    # Reject it (and negatives) so the caller's intent isn't quietly changed.
+    if params.repeats < 1:
+        raise ValueError("repeats must be >= 1 for upscale")
+    cmd: list[str] = [
+        binary,
+        "--mode",
+        "upscale",
+        "--init-img",
+        params.input_image,
+        "--upscale-model",
+        params.upscale_model,
+    ]
+    if params.repeats != 1:
+        cmd += ["--upscale-repeats", str(int(params.repeats))]
+    if params.tile_size is not None:
+        cmd += ["--upscale-tile-size", str(int(params.tile_size))]
+    cmd += ["--output", output_path]
     if verbose:
         cmd += ["-v"]
     if extra_args:

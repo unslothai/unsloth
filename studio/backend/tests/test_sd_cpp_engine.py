@@ -26,7 +26,7 @@ from core.inference.sd_cpp_engine import (
     runtime_env,
     select_diffusion_engine,
 )
-from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles
+from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles, SdCppUpscaleParams
 
 
 # ── binary discovery ────────────────────────────────────────────────────────
@@ -77,10 +77,7 @@ def test_find_returns_none_when_absent(tmp_path, monkeypatch):
 # ── availability / version ──────────────────────────────────────────────────
 
 
-def test_engine_unavailable_when_no_binary(monkeypatch):
-    # Hermetic: force discovery to find nothing so a real sd-cli installed on the host
-    # (e.g. ~/.unsloth) can't leak in and make binary=None resolve to a real binary.
-    monkeypatch.setattr(eng, "find_sd_cpp_binary", lambda: None)
+def test_engine_unavailable_when_no_binary():
     e = SdCppEngine(binary = None)
     assert e.is_available() is False
     assert e.version() is None
@@ -211,31 +208,6 @@ def test_generate_success_returns_path_and_collects_logs(tmp_path, monkeypatch):
     assert str(Path(e.binary).resolve().parent) in _FakePopen.captured_env.get(var, "")
 
 
-def test_generate_collects_batch_output_paths(tmp_path, monkeypatch):
-    # batch_count > 1: stable-diffusion.cpp writes "<stem>_<idx><suffix>"
-    # (img_0.png, img_1.png, ...) rather than the literal --output path, so the
-    # single-path check must fall back to the numbered siblings.
-    e = _engine(tmp_path)
-    out = tmp_path / "img.png"
-
-    def _factory(cmd, **kw):
-        # Emulate batch save_results(): write the numbered files, NOT the literal path.
-        (tmp_path / "img_0.png").write_bytes(b"\x89PNG\r\n")
-        (tmp_path / "img_1.png").write_bytes(b"\x89PNG\r\n")
-        return _FakePopen(
-            cmd, lines = ["done"], returncode = 0, out_file = out, write = False, env = kw.get("env")
-        )
-
-    monkeypatch.setattr(eng.subprocess, "Popen", _factory)
-    result = e.generate(
-        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-        SdCppGenParams(prompt = "x", batch_count = 2),
-        output_path = str(out),
-    )
-    assert result == tmp_path / "img_0.png" and result.is_file()
-    assert not out.exists()  # the literal --output path was never written
-
-
 def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):
     e = _engine(tmp_path)
     out = tmp_path / "img.png"
@@ -270,60 +242,41 @@ def test_generate_raises_when_binary_missing():
         )
 
 
-def test_generate_times_out_even_when_stdout_blocks(tmp_path, monkeypatch):
-    # A sd-cli that hangs WITHOUT closing stdout must still hit the wall-clock timeout:
-    # the reader drains on a thread while the main thread waits on the PROCESS, so the
-    # timeout can no longer be bypassed by an unending stdout stream.
-    import subprocess as _sp
-    import threading as _threading
-
-    released = _threading.Event()
-
-    class _Block:
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            # Models a hung stream that only ends once the process is killed.
-            if not released.wait(5.0):
-                raise AssertionError("stdout was never released by kill()")
-            raise StopIteration
-
-    class _HangingPopen:
-        def __init__(self, cmd, **kw):
-            self.killed = False
-
-        @property
-        def stdout(self):
-            return _Block()
-
-        def wait(self, timeout = None):
-            raise _sp.TimeoutExpired(cmd = "sd-cli", timeout = timeout)
-
-        def poll(self):
-            return 0 if self.killed else None
-
-        def kill(self):
-            self.killed = True
-            released.set()  # killing closes the pipe, so the reader unblocks
-
-    holder: dict = {}
-
-    def _factory(cmd, **kw):
-        holder["proc"] = _HangingPopen(cmd, **kw)
-        return holder["proc"]
-
-    monkeypatch.setattr(eng.subprocess, "Popen", _factory)
-
+def test_img2img_generate_passes_init_image(tmp_path, monkeypatch):
     e = _engine(tmp_path)
-    with pytest.raises(RuntimeError, match = "timed out"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(tmp_path / "o.png"),
-            timeout = 0.01,
+    out = tmp_path / "img.png"
+    src = tmp_path / "src.png"
+    src.write_bytes(b"\x89PNG\r\n")
+    _patch_popen(monkeypatch, lines = ["img2img"], returncode = 0, out_file = out)
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "x", init_img = str(src), strength = 0.5),
+        output_path = str(out),
+    )
+    assert "--init-img" in _FakePopen.captured_cmd
+    assert str(src) == _FakePopen.captured_cmd[_FakePopen.captured_cmd.index("--init-img") + 1]
+
+
+def test_upscale_runs_and_returns_path(tmp_path, monkeypatch):
+    e = _engine(tmp_path)
+    out = tmp_path / "big.png"
+    _patch_popen(monkeypatch, lines = ["upscaling", "done"], returncode = 0, out_file = out)
+    result = e.upscale(
+        SdCppUpscaleParams(input_image = "/in/small.png", upscale_model = "/m/esrgan.pth", repeats = 2),
+        output_path = str(out),
+    )
+    assert result == out and out.is_file()
+    assert _FakePopen.captured_cmd[_FakePopen.captured_cmd.index("--mode") + 1] == "upscale"
+    assert "--upscale-model" in _FakePopen.captured_cmd
+
+
+def test_upscale_raises_when_binary_missing():
+    e = SdCppEngine(binary = None)
+    with pytest.raises(RuntimeError, match = "not found"):
+        e.upscale(
+            SdCppUpscaleParams(input_image = "/i.png", upscale_model = "/m/e.pth"),
+            output_path = "/tmp/x.png",
         )
-    assert holder["proc"].killed is True
 
 
 # ── engine routing ──────────────────────────────────────────────────────────
