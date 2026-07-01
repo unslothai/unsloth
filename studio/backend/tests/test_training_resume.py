@@ -402,9 +402,7 @@ def test_can_resume_run_rejects_resume_blocked_run(monkeypatch):
     assert resume.can_resume_run(_stopped_run(status = "error", resume_blocked = 1)) is False
 
 
-def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(
-    monkeypatch, tmp_path
-):
+def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(monkeypatch, tmp_path):
     # An MLX stop-and-save that failed to write the current-step checkpoint
     # must not offer Resume just because an older periodic checkpoint exists;
     # resuming would silently roll back past the recorded final step.
