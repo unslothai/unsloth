@@ -58,8 +58,6 @@ def train(
 
     cfg.apply_overrides(**config_overrides)
 
-    # CLI/env tokens take precedence; guard against unresolved typer.Option
-    # (decorator interaction)
     from typer.models import OptionInfo
 
     if isinstance(hf_token, OptionInfo):
@@ -85,7 +83,6 @@ def train(
         typer.echo("Error: provide --dataset or --local-dataset (or via --config)", err = True)
         raise typer.Exit(code = 2)
 
-    # Validate the export format up front so a typo fails now, not after training.
     if export is not None:
         from unsloth_cli.commands.export import EXPORT_FORMATS
 
@@ -97,7 +94,6 @@ def train(
             )
             raise typer.Exit(code = 2)
 
-    # A LoRA adapter dir has adapter_config.json
     model_path = Path(cfg.model) if cfg.model else None
     model_is_lora = (
         model_path and model_path.is_dir() and (model_path / "adapter_config.json").exists()
@@ -116,7 +112,6 @@ def train(
 
     trainer = UnslothTrainer()
 
-    # Load model (trainer.is_vlm is set after this)
     if not trainer.load_model(
         model_name = cfg.model,
         max_seq_length = cfg.training.max_seq_length,
@@ -144,7 +139,7 @@ def train(
     ds, eval_ds = result
 
     training_kwargs = cfg.training_kwargs()
-    training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
+    training_kwargs["wandb_token"] = wandb_token
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:
@@ -170,7 +165,6 @@ def train(
         from studio.backend.utils.paths.storage_roots import resolve_output_dir
         from unsloth_cli.commands.export import export_checkpoint
 
-        # Trainer saved the model under the resolved output dir; export from there.
         checkpoint_dir = resolve_output_dir(str(cfg.training.output_dir))
         out = export_dir if export_dir is not None else checkpoint_dir / export
         export_checkpoint(

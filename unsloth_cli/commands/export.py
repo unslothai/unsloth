@@ -42,10 +42,6 @@ def run_export_format(
     hf_token: Optional[str] = None,
     private: bool = False,
 ):
-    """Dispatch an already-loaded backend to the export call for `format`.
-
-    Returns the backend's (success, message, output_path) 3-tuple.
-    """
     if format == "merged-16bit":
         return backend.export_merged_model(
             save_directory = save_directory,
@@ -95,11 +91,6 @@ def export_checkpoint(
     max_seq_length: int = 2048,
     load_in_4bit: bool = True,
 ) -> Optional[str]:
-    """Load `checkpoint` and export it to `format` under `output_dir`.
-
-    Echoes progress and raises ``typer.Exit`` on failure. Returns the saved
-    output path. Shared by `unsloth export` and `unsloth train --export`.
-    """
     from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()

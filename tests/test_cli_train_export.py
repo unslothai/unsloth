@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for `unsloth train --export`: after a successful run the CLI must chain
-into export_checkpoint with the resolved checkpoint dir and a sensible default
-output dir. Heavy training/export internals are stubbed via sys.modules."""
+"""Tests for `unsloth train --export` chaining into export_checkpoint."""
 
 from __future__ import annotations
 
