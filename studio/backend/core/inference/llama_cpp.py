@@ -1470,8 +1470,9 @@ class LlamaCppBackend:
             with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
                 for line in f:
                     if line.startswith("VmRSS:"):
+                        # IndexError guards a "VmRSS:" line with no value column.
                         return int(line.split()[1]) * 1024  # kB -> bytes
-        except (FileNotFoundError, PermissionError, ValueError, OSError):
+        except (FileNotFoundError, PermissionError, ValueError, IndexError, OSError):
             return None
         return 0  # readable but no VmRSS line
 

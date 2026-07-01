@@ -13,12 +13,58 @@ fraction-driven progress bar even though the model is ready -- the "stuck around
 
 from __future__ import annotations
 
+import io
 import sys
 import types
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from core.inference.llama_cpp import LlamaCppBackend
+# Stub heavy/unavailable deps before importing the module under test, so a
+# targeted run in the lightweight backend env (no structlog/httpx) still
+# collects. setdefault keeps the real modules when they are installed. Mirrors
+# test_llama_cpp_load_progress_matrix.py.
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+_loggers_stub = types.ModuleType("loggers")
+_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+sys.modules.setdefault("loggers", _loggers_stub)
+
+sys.modules.setdefault("structlog", types.ModuleType("structlog"))
+
+_httpx_stub = types.ModuleType("httpx")
+for _exc_name in (
+    "ConnectError",
+    "TimeoutException",
+    "ReadTimeout",
+    "ReadError",
+    "RemoteProtocolError",
+    "CloseError",
+):
+    setattr(_httpx_stub, _exc_name, type(_exc_name, (Exception,), {}))
+
+
+class _FakeTimeout:
+    def __init__(self, *a, **kw):
+        pass
+
+
+_httpx_stub.Timeout = _FakeTimeout
+_httpx_stub.Client = type(
+    "Client",
+    (),
+    {
+        "__init__": lambda self, **kw: None,
+        "__enter__": lambda self: self,
+        "__exit__": lambda self, *a: None,
+    },
+)
+sys.modules.setdefault("httpx", _httpx_stub)
+
+from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 
 def _backend(
@@ -89,6 +135,17 @@ def test_read_rss_bytes_absent_pid_is_none():
     # A pid with no readable /proc entry (or no /proc at all) yields None, never
     # raises.
     assert LlamaCppBackend._read_rss_bytes(2**31 - 1) is None
+
+
+def test_read_rss_bytes_valueless_line_is_none():
+    # A "VmRSS:" line with no value column must not raise (IndexError) -> None.
+    def fake_open(path, *a, **kw):
+        if str(path).startswith("/proc/"):
+            return io.StringIO("Name:\ttest\nVmRSS:\n")
+        return open(path, *a, **kw)
+
+    with patch("builtins.open", side_effect = fake_open):
+        assert LlamaCppBackend._read_rss_bytes(4321) is None
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "/proc is Linux-only")
