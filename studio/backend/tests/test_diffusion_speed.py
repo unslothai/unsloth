@@ -239,6 +239,25 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
     assert called == {"compiled_dequant": 0}
 
 
+def test_offload_active_drops_fullgraph(monkeypatch):
+    # Group/model/sequential offload installs a torch.compiler.disable'd onload hook;
+    # compiling with fullgraph=True then crashes at the first denoise step. Same reason
+    # as an active step cache -> fullgraph must drop to False when offload is planned.
+    # (Dense model: on this branch GGUF `default` takes the compiled-dequant path.)
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe,
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        offload_active = True,
+    )
+    assert applied["compiled"] is True
+    assert pipe.compile_kwargs["fullgraph"] is False
+
+
 def test_speed_default_gguf_compiles_only_dequant(monkeypatch):
     # GGUF `default` is the LIGHT path: compile ONLY the dequant op chain, NOT the
     # regional block compile.
