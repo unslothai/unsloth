@@ -338,14 +338,15 @@ def test_valid_call_after_close_less_marker_with_quoted_close_token_is_recovered
     # close-less marker, so it must not extend the earlier marker's coverage over
     # the later call and drop it.
     gemma = '<|tool_call>call:a{x:1} <|tool_call>call:b{note:<|"|></tool_call><|"|>}<tool_call|>'
-    names = [c["function"]["name"] for c in parse_tool_calls_from_text(gemma, allow_incomplete = False)]
+    names = [
+        c["function"]["name"] for c in parse_tool_calls_from_text(gemma, allow_incomplete = False)
+    ]
     assert names == ["b"], names
     json_text = (
         '<tool_call>{"name":"a","arguments":{}} '
         '<tool_call>{"name":"b","arguments":{"x":"</tool_call>"}}</tool_call>'
     )
     names_j = [
-        c["function"]["name"]
-        for c in parse_tool_calls_from_text(json_text, allow_incomplete = False)
+        c["function"]["name"] for c in parse_tool_calls_from_text(json_text, allow_incomplete = False)
     ]
     assert "b" in names_j, names_j
