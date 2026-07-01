@@ -10,8 +10,9 @@ review:
   raw and non-strings JSON-encoded; the parser must not coerce a
   bare string ``"42"`` into ``42``).
 * GLM ``<arg_value>`` containing a literal ``<`` (e.g. ``if x < 10``).
-* Kimi K2 dotted name ``functions.my.tool:0`` resolves to the last
-  segment (``tool``) while the full id is preserved on the call.
+* Kimi K2 dotted name ``functions.my.tool:0`` keeps its full name
+  (``my.tool``) after stripping only the ``functions.`` prefix and
+  ``:idx`` suffix, while the full id is preserved on the call.
 * Kimi K2 bare-counter id (no ``functions.`` prefix, no ``:IDX``) is
   dropped rather than surfaced under a numeric name.
 * DeepSeek V3.1 truncated mid-stream produces an empty result without
@@ -171,7 +172,11 @@ def test_glm_4_7_does_not_break_qwen_path():
 # ────────────────────────────────────────────────────────────────────
 
 
-def test_kimi_dotted_namespace_resolves_to_last_segment():
+def test_kimi_dotted_namespace_keeps_full_dotted_name():
+    # A dotted Kimi id keeps its FULL name after stripping only the ``functions.``
+    # prefix and ``:idx`` suffix -- matching current vLLM
+    # (``tool_id.split(":")[0].removeprefix("functions.")``) and SGLang. Truncating to
+    # the final dot-segment would corrupt dotted MCP tool names like ``mcp.server-list``.
     text = (
         "<|tool_calls_section_begin|>"
         "<|tool_call_begin|>functions.my.tool:0"
@@ -181,7 +186,7 @@ def test_kimi_dotted_namespace_resolves_to_last_segment():
     )
     calls = parse_tool_calls_from_text(text)
     assert len(calls) == 1
-    assert calls[0]["function"]["name"] == "tool"
+    assert calls[0]["function"]["name"] == "my.tool"
     assert calls[0]["id"] == "functions.my.tool:0"
 
 
