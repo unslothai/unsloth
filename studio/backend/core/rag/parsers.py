@@ -15,6 +15,8 @@ import os
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from . import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +69,28 @@ def _html(raw: str) -> list[Page]:
     return [_page("\n".join(parser.out), 1)]
 
 
+def _pdf_markdown(doc) -> list[str] | None:
+    """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
+    i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
+    page count does not line up, so the caller falls back to plain PyMuPDF text."""
+    try:
+        import pymupdf4llm
+    except Exception:
+        return None
+    try:
+        chunks = pymupdf4llm.to_markdown(
+            doc,
+            page_chunks = True,
+            show_progress = False,
+        )
+    except Exception:  # noqa: BLE001 - never let Markdown extraction break ingestion
+        logger.warning("pymupdf4llm extraction failed; using plain text", exc_info = True)
+        return None
+    if not isinstance(chunks, list) or len(chunks) != doc.page_count:
+        return None
+    return [str(c.get("text") or "") for c in chunks]
+
+
 def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
     import fitz  # PyMuPDF
 
@@ -74,8 +98,11 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
     images: list[ParsedImage] = []
     doc = fitz.open(path)
     try:
+        md = _pdf_markdown(doc) if config.PDF_MARKDOWN else None
         for i, page in enumerate(doc):
-            text = page.get_text("text") or ""
+            # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval);
+            # fall back to plain text when Markdown is off, unavailable, or empty here.
+            text = (md[i] if md else "") or page.get_text("text") or ""
             pages.append(_page(text, i + 1))
             if want_images:
                 for img in page.get_images(full = True):
@@ -118,63 +145,164 @@ def _merge_rects(boxes: list) -> list:
     return merged
 
 
-def render_pdf_figures(
-    path: str,
+def _figure_boxes(
+    page,
     *,
-    dpi: int = 130,
     min_area_frac: float = 0.04,
     min_side: float = 40.0,
-    max_figures: int = 8,
-) -> list[ParsedImage]:
-    """Detect figure regions and render each to a PNG for captioning.
+) -> list:
+    """Qualifying figure-region rectangles on a page: cluster vector drawings + raster
+    placements, merge overlaps, keep the page-spanning ones (area/side filtered)."""
+    boxes: list = []
+    try:
+        boxes.extend(info["bbox"] for info in page.get_image_info())
+    except Exception:
+        pass
+    try:
+        boxes.extend(page.cluster_drawings())
+    except Exception:
+        pass
+    if not boxes:
+        return []
+    page_area = page.rect.width * page.rect.height
+    keep: list = []
+    for box in _merge_rects(boxes):
+        if (
+            box.get_area() >= min_area_frac * page_area
+            and box.width >= min_side
+            and box.height >= min_side
+        ):
+            keep.append(box)
+    return keep
 
-    Academic figures are vector, so raster extraction yields fragments; instead
-    cluster vector drawings + raster placements into boxes, keep the page-spanning
-    ones, and render them. Any failure yields [], never an exception.
-    """
+
+def pages_with_figures(
+    path: str,
+    *,
+    max_pages: int = 4,
+    min_area_frac: float = 0.04,
+    min_side: float = 40.0,
+    exclude_pages: set[int] | None = None,
+) -> list[int]:
+    """1-based page numbers with a qualifying figure region, capped at ``max_pages``;
+    drives figure tiling. ``exclude_pages`` (1-based) are skipped: those are the pages
+    OCR already transcribed whole, so tiling them would duplicate the vision work. Any
+    failure yields []."""
+    exclude = exclude_pages or set()
     try:
         import pymupdf
     except Exception:
         return []
-
-    out: list[ParsedImage] = []
     try:
         doc = pymupdf.open(path)
     except Exception:
         return []
+    pages: list[int] = []
     try:
         for i, page in enumerate(doc):
-            boxes: list = []
-            try:
-                boxes.extend(info["bbox"] for info in page.get_image_info())
-            except Exception:
-                pass
-            try:
-                boxes.extend(page.cluster_drawings())
-            except Exception:
-                pass
-            if not boxes:
+            if (i + 1) in exclude:
                 continue
-            page_area = page.rect.width * page.rect.height
-            for box in _merge_rects(boxes):
-                if (
-                    box.get_area() >= min_area_frac * page_area
-                    and box.width >= min_side
-                    and box.height >= min_side
-                ):
-                    try:
-                        pix = page.get_pixmap(dpi = dpi, clip = box)
-                        out.append(
-                            ParsedImage(
-                                image_bytes = pix.tobytes("png"),
-                                page_number = i + 1,
-                                xref = 0,
-                            )
+            if _figure_boxes(page, min_area_frac = min_area_frac, min_side = min_side):
+                pages.append(i + 1)
+                if len(pages) >= max_pages:
+                    break
+        return pages
+    finally:
+        doc.close()
+
+
+def render_pdf_figure_tiles(
+    path: str,
+    page_numbers,
+    *,
+    dpi: int = 200,
+    rows: int = 2,
+    cols: int = 2,
+    overlap: float = 0.12,
+    fullpage: bool = True,
+    max_tiles: int = 24,
+) -> list[ParsedImage]:
+    """Render figure-bearing pages as overlapping high-DPI tiles (plus an optional full
+    page), each a ``ParsedImage`` keyed by page number. Tiling keeps small labels legible
+    and covers every sub-figure without exact region detection. Any failure yields []."""
+    wanted = [int(n) for n in page_numbers]
+    if not wanted:
+        return []
+    rows, cols = max(1, int(rows)), max(1, int(cols))  # never divide by zero
+    try:
+        import pymupdf
+    except Exception:
+        return []
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return []
+    out: list[ParsedImage] = []
+    try:
+        for num in wanted:
+            if num < 1 or num > doc.page_count:
+                continue
+            page = doc[num - 1]
+            rect = page.rect
+            clips: list = [rect] if fullpage else []
+            cw, ch = rect.width / cols, rect.height / rows
+            ox, oy = cw * overlap, ch * overlap
+            for r in range(rows):
+                for c in range(cols):
+                    clips.append(
+                        pymupdf.Rect(
+                            rect.x0 + c * cw - ox,
+                            rect.y0 + r * ch - oy,
+                            rect.x0 + (c + 1) * cw + ox,
+                            rect.y0 + (r + 1) * ch + oy,
                         )
-                    except Exception:
-                        continue
-                    if len(out) >= max_figures:
-                        return out
+                        & rect
+                    )
+            for clip in clips:
+                try:
+                    pix = page.get_pixmap(dpi = dpi, clip = clip)
+                    out.append(ParsedImage(image_bytes = pix.tobytes("png"), page_number = num, xref = 0))
+                except Exception:
+                    continue
+                if len(out) >= max_tiles:
+                    return out
+        return out
+    finally:
+        doc.close()
+
+
+def render_pdf_pages(
+    path: str,
+    page_numbers,
+    *,
+    dpi: int = 150,
+) -> dict[int, bytes]:
+    """Render whole PDF pages (given as 1-based numbers) to PNG bytes, keyed by
+    page number. Backs scanned-page OCR. Any failure yields ``{}`` (or skips that
+    page), never an exception.
+    """
+    wanted = {int(n) for n in page_numbers}
+    if not wanted:
+        return {}
+    try:
+        import pymupdf
+    except Exception:
+        return {}
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return {}
+    out: dict[int, bytes] = {}
+    try:
+        for i, page in enumerate(doc):
+            num = i + 1
+            if num not in wanted:
+                continue
+            try:
+                pix = page.get_pixmap(dpi = dpi)
+                out[num] = pix.tobytes("png")
+            except Exception:
+                continue
         return out
     finally:
         doc.close()

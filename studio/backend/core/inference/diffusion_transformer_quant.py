@@ -257,7 +257,14 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
             return Float8DynamicActivationFloat8WeightConfig()
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
-        return NVFP4DynamicActivationNVFP4WeightConfig()
+        # Select the CUTLASS FP4 path, not the default Triton kernel: torchao defaults
+        # use_triton_kernel=True, which needs MSLK installed. On a Blackwell box with the
+        # CUTLASS FP4 extension but no MSLK, the default would make the smoke probe fail
+        # and silently fall back to GGUF instead of using the FP4 tensor cores.
+        try:
+            return NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
+        except TypeError:  # older torchao without the knob
+            return NVFP4DynamicActivationNVFP4WeightConfig()
     if scheme == TQ_MXFP8:
         import torch
         from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
@@ -265,7 +272,9 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
             return MXDynamicActivationMXWeightConfig(
                 activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn
             )
-        except TypeError:
+        except (TypeError, AttributeError):
+            # TypeError: older torchao without the explicit dtype knobs.
+            # AttributeError: a torch build without torch.float8_e4m3fn.
             return MXDynamicActivationMXWeightConfig()
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 

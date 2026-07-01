@@ -22,17 +22,21 @@
       {
         "label": "main",
         "title": "Unsloth Studio (Desktop)",
-        "width": 690,
-        "height": 480,
+        "width": 760,
+        "height": 560,
         "center": true,
         "visible": false,
-        "resizable": false
+        "resizable": false,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": { "x": 14, "y": 24 },
+        "hiddenTitle": true
       }
     ]
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ2RDhGMDMzNDNEMTlGMkQKUldRdG45RkRNL0RZMXZsaVo2TElUQlVHb1hVNWEyajhUOGFXeTdNVDFZTFdBVUtlZUh5L2wwWVYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE0NjlBNkEwQTc0QjY0Q0UKUldUT1pFdW5vS1pwRkl3TXRrOGlYdDNMeTh1bEhSbURrM3IyT2lTK1BiekpTc0Z2SXZFeVNibDIK",
       "endpoints": [
         "https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json"
       ],
@@ -72,6 +76,9 @@
       }
     },
     "linux": {
+      "appimage": {
+        "bundleMediaFramework": false
+      },
       "deb": {
         "postRemoveScript": "./linux/postremove.sh"
       }

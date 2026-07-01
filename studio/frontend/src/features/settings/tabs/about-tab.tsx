@@ -250,29 +250,33 @@ export function AboutTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.about.dangerZone")}>
-        <SettingsRow
-          destructive={true}
-          label={t("settings.about.shutDownStudio")}
-          description={t("settings.about.shutDownStudioDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShutdownOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+      {!isTauri && (
+        <SettingsSection title={t("settings.about.dangerZone")}>
+          <SettingsRow
+            destructive={true}
+            label={t("settings.about.shutDownStudio")}
+            description={t("settings.about.shutDownStudioDescription")}
           >
-            <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1.5" />
-            {t("settings.about.shutDown")}
-          </Button>
-        </SettingsRow>
-      </SettingsSection>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShutdownOpen(true)}
+              className="text-destructive hover:text-destructive hover:border-destructive/60"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1.5" />
+              {t("settings.about.shutDown")}
+            </Button>
+          </SettingsRow>
+        </SettingsSection>
+      )}
 
-      <ShutdownDialog
-        open={shutdownOpen}
-        onOpenChange={setShutdownOpen}
-        onAfterShutdown={removeTrainingUnloadGuard}
-      />
+      {!isTauri && (
+        <ShutdownDialog
+          open={shutdownOpen}
+          onOpenChange={setShutdownOpen}
+          onAfterShutdown={removeTrainingUnloadGuard}
+        />
+      )}
     </div>
   );
 }

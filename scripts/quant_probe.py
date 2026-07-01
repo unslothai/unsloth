@@ -27,7 +27,7 @@ REPO = "unsloth/Z-Image-Turbo-GGUF"
 GGUF = "z-image-turbo-Q4_K_M.gguf"
 BASE = "Tongyi-MAI/Z-Image-Turbo"
 PROMPT = "A cinematic photograph of a red fox in a snowy forest at dawn, highly detailed"
-OUT = Path("/mnt/disks/unslothai/ubuntu/workspace_81/outputs/quant_research/probe_images")
+OUT = Path(__file__).resolve().parent.parent / "outputs" / "quant_research" / "probe_images"
 
 
 def _psnr(a, b):
@@ -39,17 +39,19 @@ _LPIPS = {"fn": None}
 
 
 def _lpips(ref_arr, arr):
-    """Perceptual LPIPS (alexnet) vs reference; lower is closer. None if unavailable."""
+    """Perceptual LPIPS (alexnet) vs reference; lower is closer. None if unavailable.
+
+    Runs on CPU so the scorer never holds CUDA memory: each row resets peak VRAM, so a
+    resident GPU LPIPS module would inflate the reported load/gen VRAM and could even OOM."""
     try:
         import torch
         import lpips
 
         if _LPIPS["fn"] is None:
-            _LPIPS["fn"] = lpips.LPIPS(net = "alex", verbose = False).cuda().eval()
+            _LPIPS["fn"] = lpips.LPIPS(net = "alex", verbose = False).eval()
 
         def t(x):
-            t = torch.from_numpy(x).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
-            return t.cuda()
+            return torch.from_numpy(x).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
 
         with torch.no_grad():
             return float(_LPIPS["fn"](t(ref_arr), t(arr)).item())
@@ -111,7 +113,7 @@ def _quant_config(name):
             return MXDynamicActivationMXWeightConfig(
                 activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn
             )
-        except TypeError:
+        except (TypeError, AttributeError):
             return MXDynamicActivationMXWeightConfig()
     raise ValueError(name)
 
