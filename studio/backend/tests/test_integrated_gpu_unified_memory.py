@@ -22,7 +22,13 @@ import pytest
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-def _fake_torch(*, integrated, free_mib, total_mib, hip = None):
+def _fake_torch(
+    *,
+    integrated,
+    free_mib,
+    total_mib,
+    hip = None,
+):
     t = types.ModuleType("torch")
     t.version = types.SimpleNamespace(hip = hip)
     props = types.SimpleNamespace(is_integrated = 1 if integrated else 0)
@@ -57,9 +63,7 @@ def _clear_visibility_masks(monkeypatch):
 
 
 def _fixed_avail(monkeypatch, mib):
-    monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: mib)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: mib))
 
 
 # ── _get_gpu_memory: unified-memory ceiling ──
@@ -69,7 +73,9 @@ def test_integrated_gpu_uses_system_available_ram(monkeypatch):
     # GB10 reproducer: nvidia-smi -> [N/A], mem_get_info free a misleading ~1.5 GB,
     # ~60 GB actually available. Free must be lifted to system-available; total,
     # already correct from mem_get_info on a unified device, stays put.
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(integrated = True, free_mib = 1590, total_mib = 124610))
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(integrated = True, free_mib = 1590, total_mib = 124610)
+    )
     _fixed_avail(monkeypatch, 61850)
     with _mock_nvidia_smi_run("0, [N/A], [N/A]\n"):
         assert LlamaCppBackend._get_gpu_memory() == [(0, 61850, 124610)]
@@ -78,7 +84,9 @@ def test_integrated_gpu_uses_system_available_ram(monkeypatch):
 def test_discrete_gpu_keeps_mem_get_info_free(monkeypatch):
     # Discrete card: dedicated VRAM is the real ceiling, system RAM is irrelevant,
     # so the reported free must be left exactly as mem_get_info gives it.
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(integrated = False, free_mib = 20000, total_mib = 24576))
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(integrated = False, free_mib = 20000, total_mib = 24576)
+    )
     _fixed_avail(monkeypatch, 61850)
     with _mock_nvidia_smi_run("", returncode = 1):  # force the torch fallback
         assert LlamaCppBackend._get_gpu_memory() == [(0, 20000, 24576)]
@@ -86,7 +94,9 @@ def test_discrete_gpu_keeps_mem_get_info_free(monkeypatch):
 
 def test_integrated_gpu_unknown_available_keeps_free(monkeypatch):
     # System RAM unreadable (psutil + /proc both fail): fail safe to mem_get_info.
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(integrated = True, free_mib = 1590, total_mib = 124610))
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(integrated = True, free_mib = 1590, total_mib = 124610)
+    )
     _fixed_avail(monkeypatch, None)
     with _mock_nvidia_smi_run("", returncode = 1):
         assert LlamaCppBackend._get_gpu_memory() == [(0, 1590, 124610)]
@@ -95,7 +105,9 @@ def test_integrated_gpu_unknown_available_keeps_free(monkeypatch):
 def test_integrated_gpu_override_never_lowers_free(monkeypatch):
     # The override only ever raises the ceiling: if mem_get_info free already
     # exceeds system-available, keep the larger figure.
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(integrated = True, free_mib = 8000, total_mib = 124610))
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(integrated = True, free_mib = 8000, total_mib = 124610)
+    )
     _fixed_avail(monkeypatch, 2000)
     with _mock_nvidia_smi_run("", returncode = 1):
         assert LlamaCppBackend._get_gpu_memory() == [(0, 8000, 124610)]
@@ -107,7 +119,9 @@ def test_integrated_gpu_override_never_lowers_free(monkeypatch):
 def test_gpu_is_integrated_true_and_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(integrated = True, free_mib = 1, total_mib = 1))
     assert LlamaCppBackend._gpu_is_integrated(0) is True
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch(integrated = False, free_mib = 1, total_mib = 1))
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(integrated = False, free_mib = 1, total_mib = 1)
+    )
     assert LlamaCppBackend._gpu_is_integrated(0) is False
 
 
