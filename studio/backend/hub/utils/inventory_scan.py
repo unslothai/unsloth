@@ -387,7 +387,53 @@ def _manifest_partial(
     )
     if resolved is None:
         return True
+    if repo_type == "model" and variant is not None:
+        if download_manifest.verify_against_disk(manifest, resolved).ok:
+            return False
+        for candidate in _manifest_snapshot_dirs(repo_type, repo_id, repo_cache_dir):
+            if candidate == resolved:
+                continue
+            if download_manifest.verify_against_disk(manifest, candidate).ok:
+                return False
+        return True
     return not download_manifest.verify_against_disk(manifest, resolved).ok
+
+
+def _manifest_snapshot_dirs(
+    repo_type: RepoType,
+    repo_id: str,
+    repo_cache_dir: Optional[Path] = None,
+) -> list[Path]:
+    repo_dirs = (
+        [repo_cache_dir]
+        if repo_cache_dir is not None
+        else list(iter_repo_cache_dirs(repo_type, repo_id))
+    )
+    snapshots: list[Path] = []
+    seen: set[str] = set()
+    for repo_dir in repo_dirs:
+        if repo_dir is None:
+            continue
+        snapshots_dir = repo_dir / "snapshots"
+        try:
+            if not snapshots_dir.is_dir():
+                continue
+            entries = list(snapshots_dir.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if not entry.is_dir():
+                    continue
+                resolved = entry.resolve()
+            except OSError:
+                continue
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            snapshots.append(resolved)
+    return snapshots
 
 
 def is_snapshot_partial(

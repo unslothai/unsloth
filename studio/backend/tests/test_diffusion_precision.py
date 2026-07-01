@@ -43,6 +43,9 @@ def _stub_torch(
     torch.float16 = "float16"
     if with_fp8:
         torch.float8_e4m3fn = "float8_e4m3fn"
+    # _cast_fp8 skips nn.Embedding tables (skip_modules_classes) to keep prompt
+    # tokens full precision, so the stub torch must expose torch.nn.Embedding.
+    torch.nn = types.SimpleNamespace(Embedding = type("Embedding", (), {}))
     torch.cuda = types.SimpleNamespace(get_device_capability = lambda *a: cc)
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch

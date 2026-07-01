@@ -79,15 +79,18 @@ def sanitize_alias(raw: str) -> str:
     """Deterministic, filesystem- and prompt-tag-safe alias from an id/stem.
 
     The native `<lora:NAME:w>` tag resolves NAME as a filename stem, so the alias must
-    contain no path separators, spaces, colons, or angle brackets. Collisions across
-    sources are broken by the caller (materialize_native_dir) with a numeric suffix.
+    contain no path separators, spaces, colons, or angle brackets. It is also used as the
+    diffusers PEFT adapter name, which additionally forbids "." (PEFT treats it as a module
+    path separator), so dots are replaced too -- many real LoRA filenames carry a version
+    like "V1.0". Collisions across sources are broken by the caller (materialize_native_dir
+    / the diffusers manager) with a numeric suffix.
     """
     stem = raw.rsplit("/", 1)[-1]
     for ext in _ALL_EXTS:
         if stem.lower().endswith(ext):
             stem = stem[: -len(ext)]
             break
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_-")
     return stem or "lora"
 
 
@@ -243,7 +246,9 @@ def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[Res
             n += 1
             alias = f"{r.alias}_{n}"
         used.add(alias)
-        ext = os.path.splitext(r.path)[1].lower() or (".gguf" if r.fmt == "gguf" else ".safetensors")
+        ext = os.path.splitext(r.path)[1].lower() or (
+            ".gguf" if r.fmt == "gguf" else ".safetensors"
+        )
         link = dest / f"{alias}{ext}"
         try:
             if link.exists() or link.is_symlink():
@@ -251,7 +256,6 @@ def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[Res
             os.symlink(os.path.realpath(r.path), link)
         except OSError:
             import shutil
-
             shutil.copy2(r.path, link)
         out.append(ResolvedLora(r.id, alias, str(link), r.fmt, r.weight))
     return out
@@ -286,7 +290,16 @@ def _fmt_weight(w: float) -> str:
 # Families the native sd-cli LoRA name-conversion supports (SD1.5/SD2/SDXL/SD3/FLUX/
 # z-image). Qwen-Image has no LoRA branch in stable-diffusion.cpp -> excluded until
 # validated. Matched by substring against the resolved family name.
-_NATIVE_LORA_FAMILY_TOKENS = ("flux.1", "flux.2", "z-image", "sd1", "sd2", "sdxl", "sd3", "stable-diffusion")
+_NATIVE_LORA_FAMILY_TOKENS = (
+    "flux.1",
+    "flux.2",
+    "z-image",
+    "sd1",
+    "sd2",
+    "sdxl",
+    "sd3",
+    "stable-diffusion",
+)
 # Diffusers quant schemes that cannot take LoRA cleanly (torchao tensor-subclass weights).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("int8", "fp8", "nvfp4", "mxfp8")
 

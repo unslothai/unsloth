@@ -20,6 +20,13 @@ def test_sanitize_alias_strips_path_ext_and_unsafe_chars():
     assert dl.sanitize_alias("owner/repo-name") == "repo-name"
     assert dl.sanitize_alias("weird:<>chars.gguf") == "weird_chars"
     assert dl.sanitize_alias("") == "lora"
+    # Internal dots (version tags like "V1.0") must be replaced: the alias becomes a
+    # diffusers PEFT adapter name and PEFT rejects "." in module/adapter names.
+    assert (
+        dl.sanitize_alias("Qwen-Image-2512-Lightning-8steps-V1.0-bf16")
+        == "Qwen-Image-2512-Lightning-8steps-V1_0-bf16"
+    )
+    assert "." not in dl.sanitize_alias("model.v1.0.safetensors")
 
 
 def test_inject_prompt_tags_appends_with_spacing():
@@ -42,15 +49,31 @@ def test_inject_prompt_tags_empty_returns_prompt():
 
 def test_supports_lora_matrix():
     # native: flux/z-image yes, qwen no
-    assert dl.supports_lora(engine = "sd_cpp", family = "flux.1", model_kind = "gguf", transformer_quant = None)
-    assert dl.supports_lora(engine = "sd_cpp", family = "z-image", model_kind = "gguf", transformer_quant = None)
-    assert not dl.supports_lora(engine = "sd_cpp", family = "qwen-image", model_kind = "gguf", transformer_quant = None)
+    assert dl.supports_lora(
+        engine = "sd_cpp", family = "flux.1", model_kind = "gguf", transformer_quant = None
+    )
+    assert dl.supports_lora(
+        engine = "sd_cpp", family = "z-image", model_kind = "gguf", transformer_quant = None
+    )
+    assert not dl.supports_lora(
+        engine = "sd_cpp", family = "qwen-image", model_kind = "gguf", transformer_quant = None
+    )
     # diffusers: bf16 yes, fp8/int8 dense no, gguf-diffusers no
-    assert dl.supports_lora(engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = None)
-    assert dl.supports_lora(engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = None)
-    assert not dl.supports_lora(engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "fp8")
-    assert not dl.supports_lora(engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "int8")
-    assert not dl.supports_lora(engine = "diffusers", family = "flux.1", model_kind = "gguf", transformer_quant = None)
+    assert dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = None
+    )
+    assert dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = None
+    )
+    assert not dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "fp8"
+    )
+    assert not dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "int8"
+    )
+    assert not dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "gguf", transformer_quant = None
+    )
 
 
 def test_materialize_native_dir_symlinks_and_breaks_collisions(tmp_path):
@@ -136,10 +159,18 @@ class _FakePipe:
         self.active = None
         self.unloaded = 0
 
-    def load_lora_weights(self, path, adapter_name = None):
+    def load_lora_weights(
+        self,
+        path,
+        adapter_name = None,
+    ):
         self.loaded.append((path, adapter_name))
 
-    def set_adapters(self, names, adapter_weights = None):
+    def set_adapters(
+        self,
+        names,
+        adapter_weights = None,
+    ):
         self.active = (list(names), list(adapter_weights) if adapter_weights else None)
 
     def unload_lora_weights(self):
@@ -148,7 +179,12 @@ class _FakePipe:
         self.active = None
 
 
-def _fake_state(pipe, *, kind = "pipeline", quant = None):
+def _fake_state(
+    pipe,
+    *,
+    kind = "pipeline",
+    quant = None,
+):
     fam = types.SimpleNamespace(name = "flux.1")
     return types.SimpleNamespace(
         pipe = pipe, family = fam, kind = kind, transformer_quant = quant, hf_token = None
@@ -157,7 +193,6 @@ def _fake_state(pipe, *, kind = "pipeline", quant = None):
 
 def _backend():
     from core.inference.diffusion import DiffusionBackend
-
     return DiffusionBackend()
 
 
@@ -173,7 +208,9 @@ def test_diffusers_apply_loads_and_sets_adapters(monkeypatch):
         ],
     )
     pipe = _FakePipe()
-    _backend()._apply_loras(_fake_state(pipe), [("styleA", 0.8), ("styleB", 1.0)], threading.Event())
+    _backend()._apply_loras(
+        _fake_state(pipe), [("styleA", 0.8), ("styleB", 1.0)], threading.Event()
+    )
     assert [n for _p, n in pipe.loaded] == ["styleA", "styleB"]
     assert pipe.active == (["styleA", "styleB"], [0.8, 1.0])
     assert getattr(pipe, "_unsloth_loras")  # marker recorded
@@ -220,7 +257,6 @@ def test_diffusers_apply_clears_when_empty(monkeypatch):
 
 def test_diffusers_apply_rejects_unsupported_quant():
     import threading
-
     pipe = _FakePipe()
     with pytest.raises(ValueError, match = "not supported"):
         _backend()._apply_loras(

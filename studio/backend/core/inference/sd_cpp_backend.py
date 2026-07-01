@@ -40,6 +40,7 @@ from core.inference.diffusion_families import (
     family_sd_cpp_supported,
     resolve_base_repo,
     resolve_local_gguf_child,
+    supported_family_names,
 )
 from core.inference.diffusion_memory import (
     OFFLOAD_GROUP,
@@ -249,7 +250,11 @@ class SdCppDiffusionBackend:
             )
         fam = detect_family(repo_id, family_override)
         if fam is None:
-            raise ValueError(f"Could not infer a diffusion family for '{repo_id}'.")
+            raise ValueError(
+                f"'{repo_id}' is not a supported diffusion image model. Supported families: "
+                f"{', '.join(supported_family_names())}. If this is a variant of one of them, "
+                f"pass family_override with that family name."
+            )
         if not family_sd_cpp_supported(fam):
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
 

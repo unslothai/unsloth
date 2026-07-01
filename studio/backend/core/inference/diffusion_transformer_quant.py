@@ -106,13 +106,15 @@ _DATACENTER_GPU_TOKENS = frozenset(
     {
         "B200",
         "B100",
+        "B300",  # Blackwell Ultra data center
         "GB200",
         "GB300",
         "GB10",  # Blackwell data center
         "H200",
         "H100",
         "H800",
-        "H20",  # Hopper data center
+        "H20",
+        "GH200",  # Grace-Hopper superchip (data center)
         "A100",
         "A800",
         "A30",
@@ -133,15 +135,22 @@ _DATACENTER_GPU_TOKENS = frozenset(
 )
 
 
+# Professional parts the rest of the backend treats as datacenter-class (see llama_cpp.py
+# _DATACENTER_GPU_RE, which applies the same FP32-accum tuning to them). Matched as phrases
+# because the marker spans tokens ("RTX PRO 6000", "RTX 6000 ADA"), so they must not be
+# misread as consumer (which would put int8 ahead of fp8 and pick fast accumulate).
+_PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
+
+
 def _is_consumer_gpu(device: Any = None) -> bool:
-    """Whether the active GPU is consumer / workstation class (GDDR), where fp8 FP32
-    accumulate is throughput-halved so fast (FP16) accumulate is a ~2x win. Data-center
-    HBM parts (recognised by name token) are not nerfed and return False, so they keep
-    the higher-precision default accumulate for free. Heuristic on the device name: a
-    GeForce / TITAN name is always consumer; a recognised data-center token is not;
-    anything else (workstation RTX, unknown) defaults to consumer -- the safe choice,
-    since fast accumulate is free on data-center and a win on consumer. Best-effort:
-    True on any probe failure."""
+    """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is
+    throughput-halved so fast (FP16) accumulate is a ~2x win. Data-center HBM parts and
+    professional parts (recognised by name) are not nerfed and return False, so they keep
+    the higher-precision default accumulate and fp8 first. Heuristic on the device name: a
+    GeForce / TITAN name is always consumer; a recognised data-center token or professional
+    marker is not; anything else (unknown) defaults to consumer -- the safe choice, since
+    fast accumulate is free on data-center and a win on consumer. Best-effort: True on any
+    probe failure."""
     try:
         import re
 
@@ -151,6 +160,8 @@ def _is_consumer_gpu(device: Any = None) -> bool:
         return True
     if "GEFORCE" in name or "TITAN" in name:
         return True
+    if any(marker in name for marker in _PROFESSIONAL_GPU_MARKERS):
+        return False
     tokens = set(re.split(r"[^A-Z0-9]+", name))
     return not (tokens & _DATACENTER_GPU_TOKENS)
 
@@ -302,7 +313,14 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
             return Float8DynamicActivationFloat8WeightConfig()
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
-        return NVFP4DynamicActivationNVFP4WeightConfig()
+        # Select the CUTLASS FP4 path, not the default Triton kernel: torchao defaults
+        # use_triton_kernel=True, which needs MSLK installed. On a Blackwell box with the
+        # CUTLASS FP4 extension but no MSLK, the default would make the smoke probe fail
+        # and silently fall back to GGUF instead of using the FP4 tensor cores.
+        try:
+            return NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
+        except TypeError:  # older torchao without the knob
+            return NVFP4DynamicActivationNVFP4WeightConfig()
     if scheme == TQ_MXFP8:
         import torch
         from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
@@ -310,7 +328,9 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
             return MXDynamicActivationMXWeightConfig(
                 activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn
             )
-        except TypeError:
+        except (TypeError, AttributeError):
+            # TypeError: older torchao without the explicit dtype knobs.
+            # AttributeError: a torch build without torch.float8_e4m3fn.
             return MXDynamicActivationMXWeightConfig()
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 
@@ -335,7 +355,7 @@ def make_filter_fn(min_features: int, exclude_name_tokens: tuple[str, ...] = ())
         if in_features < min_features or out_features < min_features:
             return False
         if exclude_name_tokens:
-            name = fqn.lower()
+            name = fqn.lower() if fqn else ""
             if any(tok in name for tok in exclude_name_tokens):
                 return False
         return True

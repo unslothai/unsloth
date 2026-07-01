@@ -32,6 +32,7 @@ import {
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  lazy,
   Suspense,
   useEffect,
   useLayoutEffect,
@@ -56,6 +57,13 @@ function RouteFallback() {
     </div>
   );
 }
+
+// ImagesPage is mounted persistently below (not via the /images route) so an
+// in-flight image batch survives leaving the tab, mirroring ChatPage. Kept lazy
+// so its bundle still loads only on the first /images visit.
+const ImagesPage = lazy(() =>
+  import("@/features/images").then((m) => ({ default: m.ImagesPage })),
+);
 
 function PersonalizationSyncMount() {
   usePersonalizationSync(hasAuthToken());
@@ -141,6 +149,17 @@ function RootLayout() {
   const chatSearch = isChatRoute ? liveChatSearch : frozenChatSearch;
   const shouldMountChat = isChatRoute || chatMounted;
 
+  // Same persistent-mount treatment for /images so a long image batch keeps
+  // generating when the user flips to another tab (ImagesPage reads no URL
+  // search, so it needs no freeze dance -- just the mount latch). Mounts lazily
+  // on first /images visit, then stays mounted, hidden+inert while off-route.
+  const isImagesRoute = pathname === "/images";
+  const [imagesMounted, setImagesMounted] = useState(isImagesRoute);
+  if (isImagesRoute && !imagesMounted) {
+    setImagesMounted(true);
+  }
+  const shouldMountImages = isImagesRoute || imagesMounted;
+
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
@@ -219,7 +238,7 @@ function RootLayout() {
       <SettingsDialog />
       <RemoteCodeConsentDialog />
       {hideNavbar ? (
-        <main className="flex-1">
+        <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <Suspense fallback={<RouteFallback />}>
             <Outlet />
           </Suspense>
@@ -235,7 +254,7 @@ function RootLayout() {
           <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
             <Navbar />
             <div
-              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-0"}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
             >
               {/* Stays mounted across navigation so an in-flight generation is
                   not cancelled when leaving /chat; hidden (not unmounted) off-route.
@@ -253,12 +272,30 @@ function RootLayout() {
                   <ChatPage search={chatSearch} active={isChatRoute} />
                 </div>
               )}
+              {/* Same keep-alive treatment for Images so a long batch keeps
+                  generating off-tab; `active` force-closes its body-portaled
+                  overlays (model selector, recipe popover, aspect dropdown) so
+                  none can bleed over another tab while hidden. */}
+              {shouldMountImages && (
+                <div
+                  className={
+                    isImagesRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
+                      : "hidden"
+                  }
+                  inert={!isImagesRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <ImagesPage active={isImagesRoute} />
+                  </Suspense>
+                </div>
+              )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
                   switching from heavy pages (like Export with many checkpoints).
                   "popLayout" allows the new route to mount immediately while the
                   old one animates out, avoiding blocking on expensive exit renders.
                   See issue #5850. */}
-              {!isChatRoute && (
+              {!isChatRoute && !isImagesRoute && (
                 <AnimatePresence initial={false} mode="popLayout">
                   <motion.div
                     key={pathname}

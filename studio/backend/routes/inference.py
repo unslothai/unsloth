@@ -683,7 +683,9 @@ try:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -718,7 +720,9 @@ except ImportError:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1115,6 +1119,7 @@ from auth.authentication import get_current_subject
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
+from core.inference.model_ids import public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.providers import get_base_url
@@ -1242,15 +1247,13 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
-async def artifact_preview_frame(
-    request: Request,
-    allow_network: bool = False,
-    token: Optional[str] = None,
-):
-    """Serve the opaque sandbox shell used for client-side HTML canvases."""
+async def artifact_preview_frame(allow_network: bool = False):
+    """Serve the opaque sandbox shell for client-side HTML canvases.
 
-    if allow_network:
-        await _authenticate_header_or_query(request, token)
+    No auth token by design: the URL is readable by the untrusted canvas via
+    location.href, and this static shell exposes no server resource (frame-ancestors
+    plus the sandbox already gate it), so the CSP is chosen from allow_network alone.
+    """
 
     csp = (
         _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
@@ -2087,6 +2090,32 @@ def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[
     )
 
 
+def _carry_preserved_tensor_intent(
+    *, preserved: bool, same_model: bool, explicit_drop: bool
+) -> bool:
+    """Carry a preserved multi-GPU layer fallback forward only for a reload of the
+    SAME loaded model that doesn't explicitly drop tensor intent, so a fitting model
+    isn't collapsed to one GPU on a ctx-only change -- but an unrelated model switch
+    (without /unload) or an explicit tensor-off doesn't inherit it (#6659)."""
+    return preserved and same_model and not explicit_drop
+
+
+def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
+    """True only when the request explicitly selects a non-tensor --split-mode (e.g.
+    layer/row/none), a deliberate departure from a preserved tensor->layer fallback.
+
+    A bare tensor_parallel field is NOT a drop: the Studio UI always sends it and echoes
+    the /load response's resolved value back, so after a fallback every reload carries
+    tensor_parallel=false even though the user never changed it -- treating that as a drop
+    would collapse the preserved multi-GPU placement on the next ctx/settings reload. An
+    empty clear is not a drop either (a fallback always stores --split-mode layer, never a
+    tensor split mode, so a clear never wipes tensor intent), nor is an unrelated extra
+    (--top-k) or inherit (None). tensor_parallel=true / --split-mode tensor re-engage
+    tensor. Shared by the already-loaded dedup and the load carry-forward (#6659)."""
+    override = parse_split_mode_override(request.llama_extra_args)
+    return override is not None and override.strip().lower() != "tensor"
+
+
 def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
@@ -2124,6 +2153,13 @@ def _request_matches_loaded_settings(
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
+        return False
+    # Preserved tensor->layer fallback (both report tensor=off, so the check above
+    # matches): if the user now explicitly drops tensor intent, reload so placement
+    # re-selects instead of keeping the all-GPU mask (#6659). The effective check
+    # includes the env, so an env-only tensor (LLAMA_ARG_SPLIT_MODE=tensor) that
+    # can't actually be dropped falls through to the env-downgrade match, not a loop.
+    if llama_backend.layer_preserves_tensor_intent and _is_explicit_tensor_drop(request):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
@@ -2827,6 +2863,48 @@ async def load_model(
                     hf_variant = config.gguf_variant,
                 )
 
+            # Tensor intent for this load: the request itself, or a preserved
+            # multi-GPU layer fallback carried across a reload of the SAME model that
+            # doesn't drop it (e.g. a ctx-only change), so a fitting model doesn't
+            # silently collapse to one GPU. Only an explicit non-tensor --split-mode
+            # override counts as the drop -- the tensor field echo / unrelated extras keep
+            # the preserved placement; the same-model guard stops a switch-without-unload
+            # inheriting the prior model's intent.
+            _explicit_tensor_drop = _is_explicit_tensor_drop(request)
+            # Compare the resolved config.identifier (what load_model stores), not the
+            # raw request id: from_identifier normalizes shorthands (adds unsloth/, fixes
+            # case), so a reload with the shorthand would otherwise miss the match and
+            # drop the carry-forward. #6659
+            _same_model_loaded = (
+                llama_backend.is_loaded
+                and (llama_backend.model_identifier or "").lower()
+                == (config.identifier or "").lower()
+            )
+            # model_identifier is variant-agnostic for HF repos and dir-level for a
+            # local multi-variant directory, so also require the loaded quant to match
+            # (path else variant, mirroring _already_in_target_state) -- otherwise a
+            # different variant inherits the prior one's preserved intent. #6659
+            if _same_model_loaded:
+                if config.gguf_file and llama_backend.gguf_path:
+                    try:
+                        _same_model_loaded = (
+                            Path(llama_backend.gguf_path).resolve()
+                            == Path(config.gguf_file).resolve()
+                        )
+                    except OSError:
+                        _same_model_loaded = False
+                else:
+                    _same_model_loaded = (llama_backend.hf_variant or "").lower() == (
+                        config.gguf_variant or ""
+                    ).lower()
+            _tensor_intent_overall = _effective_tensor_parallel(
+                extra_llama_args, request.tensor_parallel
+            ) or _carry_preserved_tensor_intent(
+                preserved = llama_backend.layer_preserves_tensor_intent,
+                same_model = _same_model_loaded,
+                explicit_drop = _explicit_tensor_drop,
+            )
+
             # Run a single load attempt with the given tensor flag + extras.
             async def _attempt_gguf_load(
                 tensor_parallel: bool, attempt_extra_args: Optional[list[str]]
@@ -2840,6 +2918,12 @@ async def load_model(
                     **_source_load_kwargs,
                     **attempt_kwargs,
                     tensor_parallel = tensor_parallel,
+                    # True on the layer fallback retry (tensor wanted overall but not on
+                    # this attempt): keep multi-GPU. Mirrors the fallback's key.
+                    preserve_multi_gpu_on_layer = bool(
+                        _tensor_intent_overall
+                        and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
+                    ),
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
@@ -3721,7 +3805,7 @@ async def generate_audio(
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
-        model_name = llama_backend.model_identifier
+        model_name = public_model_id(llama_backend.model_identifier)
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -3739,7 +3823,7 @@ async def generate_audio(
         model_info = backend.models.get(backend.active_model_name, {})
         if not model_info.get("is_audio"):
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
-        model_name = backend.active_model_name
+        model_name = public_model_id(backend.active_model_name)
         gen = lambda: backend.generate_audio_response(
             text = text,
             temperature = payload.temperature,
@@ -4504,6 +4588,14 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            # Surface the failure: a bare EOF (e.g. after a read timeout) is treated
+            # by the chat client as success, saving a partial answer with no error.
+            yield (
+                "data: "
+                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
         finally:
             try:
                 await gen.aclose()
@@ -4847,7 +4939,8 @@ async def openai_chat_completions(
         return response
 
     if using_gguf:
-        model_name = llama_backend.model_identifier or payload.model
+        # Echo a clean public id in the response, never the absolute .gguf path.
+        model_name = public_model_id(llama_backend.model_identifier) or payload.model
         if getattr(llama_backend, "_is_audio", False):
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF audio chat completions")
@@ -4862,7 +4955,9 @@ async def openai_chat_completions(
                 status_code = 400,
                 detail = "No model loaded. Call POST /inference/load first.",
             )
-        model_name = backend.active_model_name or payload.model
+        # Clean public id so the response never echoes a local path; the audio
+        # branch below receives this sanitized label too.
+        model_name = public_model_id(backend.active_model_name) or payload.model
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("non-GGUF chat completions")
 
@@ -6397,6 +6492,9 @@ async def serve_sandbox_file(
 # OpenAI-Compatible Models Listing  (/models → /v1/models)
 # =====================================================================
 
+# `owned_by` marker on every /v1/models entry (loaded and available alike).
+_OWNED_BY = "unsloth-studio"
+
 
 def _openai_model_objects() -> list[dict]:
     """The model objects GET /v1/models exposes (one per loaded local backend).
@@ -6411,10 +6509,12 @@ def _openai_model_objects() -> list[dict]:
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded:
         entry = {
-            "id": llama_backend.model_identifier,
+            # Public id, never the absolute .gguf path (which leaks the host
+            # filesystem layout); see core.inference.model_ids.public_model_id.
+            "id": public_model_id(llama_backend.model_identifier),
             "object": "model",
             "created": _created,
-            "owned_by": "local",
+            "owned_by": _OWNED_BY,
         }
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
@@ -6432,10 +6532,10 @@ def _openai_model_objects() -> list[dict]:
     if backend.active_model_name:
         model_info = backend.models.get(backend.active_model_name, {})
         entry = {
-            "id": backend.active_model_name,
+            "id": public_model_id(backend.active_model_name),
             "object": "model",
             "created": _created,
-            "owned_by": "local",
+            "owned_by": _OWNED_BY,
         }
         _ctx = _positive_int_or_none(model_info.get("context_length"))
         if _ctx is None:
@@ -6453,15 +6553,86 @@ def _openai_model_objects() -> list[dict]:
     return models
 
 
+# Brief cache for the local-model filesystem scan so repeated /v1/models calls
+# don't rescan the HF cache and models dirs on every request.
+_CATALOG_CACHE: dict = {"at": 0.0, "models": []}
+_CATALOG_TTL_S = 30.0
+_CATALOG_LOCK = asyncio.Lock()
+
+
+async def _cached_local_catalog() -> list:
+    """Locally available models (models dir + HF caches + LM Studio + scan
+    folders), cached for a few seconds. Returns a list of LocalModelInfo.
+
+    The scan walks several directories and stats many files, so it runs in a
+    worker thread (asyncio.to_thread) -- calling it inline would block the event
+    loop and stall every concurrent request and in-flight inference stream. A
+    lock with a double-check collapses a burst of simultaneous /v1/models calls
+    into a single scan instead of one per request."""
+    # Validity is keyed on "at" (set only after a scan), not on list contents, so
+    # an empty/errored scan is still cached instead of rescanning on every poll.
+    now = time.monotonic()
+    if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+        return _CATALOG_CACHE["models"]
+    async with _CATALOG_LOCK:
+        now = time.monotonic()
+        if _CATALOG_CACHE["at"] and (now - _CATALOG_CACHE["at"]) <= _CATALOG_TTL_S:
+            return _CATALOG_CACHE["models"]
+        try:
+            from routes.models import collect_local_models
+            _CATALOG_CACHE["models"] = await asyncio.to_thread(
+                collect_local_models, Path("./models").resolve()
+            )
+        except Exception as exc:
+            logger.debug("model catalog scan failed: %s", exc)
+            _CATALOG_CACHE["models"] = []
+        # Stamp after the scan, not the pre-scan "now": a scan slower than the TTL
+        # would otherwise leave the cache already expired, so every waiter rescans.
+        _CATALOG_CACHE["at"] = time.monotonic()
+    return _CATALOG_CACHE["models"]
+
+
+async def _openai_catalog_objects() -> list[dict]:
+    """Every model the server knows about for ``GET /v1/models``: the loaded
+    model(s) plus locally available (downloaded/cached) models discovered by
+    scanning. Loaded entries keep their context fields and are marked
+    ``loaded: true``. All ids are clean public ids (never absolute paths)."""
+    _created = int(time.time())
+    # Loaded models first (clean ids + context fields), marked loaded.
+    by_id: dict[str, dict] = {}
+    for entry in _openai_model_objects():
+        by_id[entry["id"]] = {**entry, "loaded": True}
+
+    # Locally available (downloaded/cached) models that are not already loaded.
+    for info in await _cached_local_catalog():
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        if not cid or cid in by_id:
+            continue
+        obj = {
+            "id": cid,
+            "object": "model",
+            "created": _created,
+            "owned_by": _OWNED_BY,
+            "loaded": False,
+        }
+        display = getattr(info, "display_name", None)
+        if display:
+            obj["display_name"] = display
+        by_id[cid] = obj
+
+    return list(by_id.values())
+
+
 @router.get("/models")
 async def openai_list_models(current_subject: str = Depends(get_current_subject)):
     """
-    OpenAI-compatible model listing endpoint.
+    OpenAI-compatible model listing endpoint (``GET /v1/models``).
 
-    Returns the currently loaded model in the format expected by
-    OpenAI-compatible clients (``GET /v1/models``).
+    Lists every model available on this server -- the loaded model(s) plus
+    locally available (downloaded/cached) models -- not only what is resident in
+    memory. Each entry carries a clean public id and a ``loaded`` flag.
     """
-    return {"object": "list", "data": _openai_model_objects()}
+    return {"object": "list", "data": await _openai_catalog_objects()}
 
 
 @router.get("/models/{model_id:path}")
@@ -6469,13 +6640,37 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     """
     OpenAI-compatible single-model retrieval endpoint (``GET /v1/models/{id}``).
 
-    Returns the bare model object when ``model_id`` matches a loaded local
-    model, or 404 model_not_found otherwise. Defined after the LIST route so
-    it does not shadow it; ``{model_id:path}`` keeps ids with slashes intact.
+    Returns the bare model object when ``model_id`` matches a known model
+    (loaded or locally available), or 404 model_not_found otherwise. Defined
+    after the LIST route so it does not shadow it; ``{model_id:path}`` keeps ids
+    with slashes intact.
     """
-    for model in _openai_model_objects():
+    from core.inference.model_ids import model_id_matches
+
+    # Loaded models resolve without a catalog scan (the common case); only build
+    # the full catalog -- which may hit the filesystem -- for unloaded ids.
+    for entry in _openai_model_objects():
+        if entry["id"] == model_id:
+            return {**entry, "loaded": True}
+
+    objects = await _openai_catalog_objects()
+    for model in objects:
         if model["id"] == model_id:
             return model
+    # Backward compatibility: a client may still send the legacy raw identifier
+    # (e.g. an absolute .gguf path cached from an older /v1/models). Resolve it to
+    # the clean object so it keeps working, without ever echoing the path back.
+    llama_backend = get_llama_cpp_backend()
+    backend = get_inference_backend()
+    for raw in (
+        llama_backend.model_identifier if llama_backend.is_loaded else None,
+        backend.active_model_name or None,
+    ):
+        if raw and model_id_matches(model_id, raw):
+            clean = public_model_id(raw)
+            for model in objects:
+                if model["id"] == clean:
+                    return model
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(
@@ -6544,7 +6739,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-            client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
+            client = httpx.AsyncClient(
+                timeout = _llama_streaming_generation_timeout(),
+                trust_env = False,
+            )
             resp = None
             bytes_iter = None
             disconnect_event = threading.Event()
@@ -7412,6 +7610,15 @@ async def _responses_stream(
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
 
     async def event_generator():
+        # Clean public id for every response envelope. Prefer the loaded model's
+        # id so the stream agrees with /v1/models, chat/completions and the
+        # non-streaming twin; fall back to a sanitized payload.model (a legacy
+        # raw .gguf path is stripped, never echoed back).
+        _clean_model = (
+            public_model_id(getattr(llama_backend, "model_identifier", None))
+            or public_model_id(payload.model)
+            or payload.model
+        )
         full_text = ""
         full_reasoning = ""
         input_tokens = 0
@@ -7573,7 +7780,7 @@ async def _responses_stream(
                     "object": "response",
                     "created_at": created_at,
                     "status": "failed",
-                    "model": payload.model,
+                    "model": _clean_model,
                     "output": _snapshot_output(),
                     "usage": {
                         "input_tokens": input_tokens,
@@ -7597,7 +7804,7 @@ async def _responses_stream(
                     "object": "response",
                     "created_at": created_at,
                     "status": "in_progress",
-                    "model": payload.model,
+                    "model": _clean_model,
                     "output": [],
                     "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                 },
@@ -7610,7 +7817,10 @@ async def _responses_stream(
         # `async with`, explicit aclose of lines_iter BEFORE resp / client so
         # the innermost httpcore byte stream is finalised in this task (not via
         # the asyncgen GC in a sibling task).
-        client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
+        client = httpx.AsyncClient(
+            timeout = _llama_streaming_generation_timeout(),
+            trust_env = False,
+        )
         resp = None
         lines_iter = None
         disconnect_watcher = None
@@ -7637,7 +7847,7 @@ async def _responses_stream(
                             "object": "response",
                             "created_at": created_at,
                             "status": "failed",
-                            "model": payload.model,
+                            "model": _clean_model,
                             "output": [],
                             "error": {"code": 502, "message": _friendly_error(e)},
                         },
@@ -7663,7 +7873,7 @@ async def _responses_stream(
                             "object": "response",
                             "created_at": created_at,
                             "status": "failed",
-                            "model": payload.model,
+                            "model": _clean_model,
                             "output": [],
                             "error": {
                                 "code": resp.status_code,
@@ -8012,7 +8222,7 @@ async def _responses_stream(
                 "object": "response",
                 "created_at": created_at,
                 "status": "completed",
-                "model": payload.model,
+                "model": _clean_model,
                 "output": _snapshot_output(),
                 "usage": {
                     "input_tokens": input_tokens,
@@ -8284,7 +8494,13 @@ async def anthropic_messages(
             ),
         )
 
-    model_name = getattr(llama_backend, "model_identifier", None) or payload.model
+    # Clean public id so /v1/messages never echoes the local .gguf path (and a
+    # legacy raw path sent as payload.model is sanitized rather than returned).
+    model_name = (
+        public_model_id(getattr(llama_backend, "model_identifier", None))
+        or public_model_id(payload.model)
+        or payload.model
+    )
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
 
     # ── Translate Anthropic → OpenAI ──────────────────────────
@@ -9114,6 +9330,7 @@ async def _anthropic_passthrough_stream(
         client = httpx.AsyncClient(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
+            trust_env = False,
         )
         resp = None
         lines_iter = None
@@ -9640,6 +9857,7 @@ async def _openai_passthrough_stream(
         client = httpx.AsyncClient(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
+            trust_env = False,
         )
         resp = None
         _truncate_budget = (
@@ -10053,6 +10271,29 @@ async def _openai_passthrough_non_streaming(
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def _guard_diffusion_load_against_training() -> None:
+    """Refuse loading an image model while a training run is active. Unlike chat,
+    a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
+    load is refused outright rather than fit-checked. No-op when training is
+    inactive or its state can't be read. Raises HTTP 409."""
+    from core.training import get_training_backend
+
+    try:
+        if not get_training_backend().is_training_active():
+            return
+    except Exception as e:
+        logger.warning("Could not check training state for image-load guard: %s", e)
+        return
+    raise HTTPException(
+        status_code = 409,
+        detail = (
+            "Can't load an image model while training is running: the diffusion "
+            "pipeline would compete with the training run for GPU memory. Training "
+            "was left untouched. Try again after training finishes."
+        ),
+    )
+
+
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -10083,6 +10324,10 @@ async def load_diffusion_model(
             family_override = request.family_override,
             model_kind = kind,
         )
+        # Refuse while training is running: a multi-GB diffusion pipeline would
+        # compete with the training subprocess for VRAM. The chat path does the
+        # same via _guard_chat_load_against_training; this is its image sibling.
+        _guard_diffusion_load_against_training()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp with no GPU),
         # installing the sd-cli binary if needed -- all BEFORE evicting chat, so a
         # native fallback never strands a half-loaded state. Non-GGUF kinds force diffusers.
@@ -10209,6 +10454,9 @@ async def generate_diffusion_image(
                         # Position within the batch: shared timestamp, so the export
                         # filename needs this to stay unique.
                         "batch_index": index,
+                        # The batch shares one seed, so reproducing image batch_index>0
+                        # needs the original batch_size: persist it so restore can replay.
+                        "batch_size": request.batch_size,
                         "model": result.get("repo_id"),
                         "loras": (
                             [f"{l.id}:{l.weight:g}" for l in request.loras] if request.loras else []

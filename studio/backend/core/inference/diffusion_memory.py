@@ -164,7 +164,10 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
         free, total = torch.cuda.mem_get_info()
         kind = "discrete_vram"
         try:
-            props = torch.cuda.get_device_properties(0)
+            # Query the CURRENT device, not device 0: mem_get_info() above already
+            # reports the active device, so hardcoding 0 would inspect the wrong GPU
+            # (and misclassify discrete vs unified) when the active device isn't 0.
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
             if bool(getattr(props, "integrated", False) or getattr(props, "is_integrated", False)):
                 kind = "unified_memory"  # e.g. Jetson / integrated SoC
         except Exception:
@@ -454,12 +457,22 @@ def apply_memory_plan(
     if plan.vae_slicing:
         _enable_vae_saver(pipe, "enable_vae_slicing", "enable_slicing", logger)
 
+    def _fallback_to_model_offload() -> None:
+        # Group offload keeps the VAE resident, so the GROUP plan set vae_tiling=False.
+        # When group offload is unavailable and we drop to whole-module offload, the card
+        # is in the low-VRAM situation where the decode-time spike can OOM, so turn VAE
+        # tiling on now (if not already engaged) to cap it.
+        nonlocal tiling_engaged
+        pipe.enable_model_cpu_offload()
+        if not tiling_engaged:
+            tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
+
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload()
     elif policy == OFFLOAD_GROUP:
         if not _apply_group_offload(pipe, device, logger):
-            pipe.enable_model_cpu_offload()
+            _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
@@ -471,7 +484,7 @@ def apply_memory_plan(
                     "falling back to whole-module offload",
                     exc,
                 )
-            pipe.enable_model_cpu_offload()
+            _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:
         pipe.to(device)
