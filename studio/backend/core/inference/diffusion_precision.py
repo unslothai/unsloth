@@ -99,15 +99,41 @@ def quantize_text_encoders(
 
 
 def _cast_fp8(encoder: Any, target: Any) -> None:
+    import re
     import torch
     from diffusers.hooks import apply_layerwise_casting
     from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
+
+    # diffusers' layerwise casting stores each supported leaf module's weights in fp8 and
+    # upcasts them per forward. Two things on a transformers text encoder can push an fp8
+    # weight or activation into an op that can't handle it, and both crash only at
+    # generation (the load-time guard can't see them), so skip the offending modules:
+    skip = tuple(DEFAULT_SKIP_MODULES_PATTERN)
+
+    # (1) dtype-sensitive modules the encoder itself flags. T5 keeps "wo" in fp32: its
+    # gated feed-forward reads self.wo.weight.dtype and casts the activations to match
+    # BEFORE calling wo (transformers#20287), racing the forward-time upcast hook so
+    # F.linear sees an fp8 input against a bf16 weight. Names are literal substrings.
+    skip += tuple(re.escape(m) for m in (getattr(encoder, "_keep_in_fp32_modules", None) or ()))
+
+    # (2) an output projection tied to the input embedding. A CausalLM encoder (FLUX.2's
+    # Qwen3) ties lm_head.weight to embed_tokens.weight; lm_head is an nn.Linear so it
+    # gets cast to fp8 and, sharing one tensor, drags the embedding to fp8 with it. The
+    # embedding then emits fp8 activations that crash the first RMSNorm. Skip the tied
+    # projection so the shared tensor stays dense (lm_head is unused for prompt encoding).
+    get_out, get_in = getattr(encoder, "get_output_embeddings", None), getattr(encoder, "get_input_embeddings", None)
+    out_emb = get_out() if callable(get_out) else None
+    in_emb = get_in() if callable(get_in) else None
+    if out_emb is not None and in_emb is not None and out_emb.weight is in_emb.weight:
+        tied_name = next((n for n, m in encoder.named_modules() if m is out_emb), None)
+        if tied_name:
+            skip += (rf"^{re.escape(tied_name)}$",)
 
     apply_layerwise_casting(
         encoder,
         storage_dtype = torch.float8_e4m3fn,
         compute_dtype = target.dtype,
-        skip_modules_pattern = DEFAULT_SKIP_MODULES_PATTERN,
+        skip_modules_pattern = skip,
         # Keep token-embedding tables (T5 "shared", Qwen "embed_tokens", etc.) full
         # precision: the diffusers default pattern only skips vision pos/patch
         # embeds, not nn.Embedding lookups, and fp8'ing those quantizes every prompt
