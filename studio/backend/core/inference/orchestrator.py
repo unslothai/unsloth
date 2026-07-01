@@ -45,6 +45,11 @@ _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
 
+# How long unload_model waits for a cancelled generation to release _gen_lock
+# before falling back to tearing the subprocess down. A cancel aborts within a
+# token (~0.1s in practice); this only bounds a wedged worker.
+_UNLOAD_GEN_LOCK_TIMEOUT = 15.0
+
 
 class InferenceOrchestrator:
     """
@@ -456,7 +461,15 @@ class InferenceOrchestrator:
         cancel ack from that same source so stale events don't leak into the
         next request.
         """
+        # Latch the subprocess/queue this stream belongs to. If unload_model tears
+        # a wedged worker down and a later load spawns a fresh one, bail instead of
+        # re-blocking on the new queue while still holding _gen_lock (deadlock).
+        initial_proc = self._proc
+        initial_resp_queue = self._resp_queue
         while True:
+            if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
+                yield f"Error: {self._subprocess_crash_message(crash_context)}"
+                return
             resp = read_one(read_timeout)
             if resp is None:
                 # Check subprocess health
@@ -857,14 +870,38 @@ class InferenceOrchestrator:
                 self.active_model_name = None
             return True
 
+        # This subprocess runs commands sequentially, so a bare unload queues
+        # behind a running generate (a 2-3 min hang on long answers). Cancel the
+        # generation first (instant, via the mp.Event the worker polls each
+        # token), then take _gen_lock to be the sole resp_queue reader, matching
+        # the GGUF backend which cancels and kills its process on unload.
+        self._cancel_generation()
+        acquired = self._gen_lock.acquire(timeout = _UNLOAD_GEN_LOCK_TIMEOUT)
+        if not acquired:
+            # Wedged worker: tear the subprocess down to free the GPU; the next
+            # load spawns a fresh one.
+            logger.warning(
+                "Unload: generation did not yield %.1fs after cancel; "
+                "shutting the inference subprocess down to free the model",
+                _UNLOAD_GEN_LOCK_TIMEOUT,
+            )
+            self._shutdown_subprocess(timeout = 5)
+            self.models.pop(model_name, None)
+            if self.active_model_name == model_name:
+                self.active_model_name = None
+            return True
+
         try:
+            # Drop stale tokens from the cancelled generation so they can't be
+            # read as the unload reply.
+            self._drain_queue()
             self._send_cmd(
                 {
                     "type": "unload",
                     "model_name": model_name,
                 }
             )
-            resp = self._wait_response("unloaded")
+            self._wait_response("unloaded")
 
             # Update local state
             self.models.pop(model_name, None)
@@ -881,6 +918,8 @@ class InferenceOrchestrator:
             if self.active_model_name == model_name:
                 self.active_model_name = None
             return False
+        finally:
+            self._gen_lock.release()
 
     def generate_chat_response(
         self,
