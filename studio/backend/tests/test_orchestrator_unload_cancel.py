@@ -24,6 +24,8 @@ def _bare_orchestrator():
     o._proc = object()  # truthy so _ensure_subprocess_alive can report alive
     o._cmd_queue = object()
     o._resp_queue = object()
+    o._dispatcher_thread = None  # no compare-mode dispatcher in these tests
+    o._unload_pending = False
     o.active_model_name = "m"
     o.models = {"m": {}}
     o.loading_models = set()
@@ -117,3 +119,32 @@ def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
     assert "restarted" in msg
     with pytest.raises(StopIteration):
         next(gen)
+
+
+def test_unload_pending_clears_after_unload(monkeypatch):
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_send_cmd", lambda cmd: None)
+    monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
+    monkeypatch.setattr(o, "_drain_queue", lambda: [])
+
+    o.unload_model("m")
+
+    # The pending flag must not leak past a completed unload, else every later
+    # generation would bail forever.
+    assert o._unload_pending is False
+
+
+def test_generation_bails_when_unload_pending(monkeypatch):
+    # A generation that wins the _gen_lock handoff while a switch is pending must
+    # not start on the outgoing model.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    o._unload_pending = True
+
+    out = list(o._generate_inner(messages = [{"role": "user", "content": "hi"}]))
+
+    assert any("unloaded" in chunk.lower() for chunk in out)
+    # It released (or never held) the lock, so the pending unload can proceed.
+    assert o._gen_lock.acquire(blocking = False)
+    o._gen_lock.release()

@@ -2711,12 +2711,15 @@ async def load_model(
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
-            # Unload any active Unsloth model to free VRAM
+            # Unload any active Unsloth model to free VRAM (off the event loop:
+            # unload takes _gen_lock and can wait on an in-flight stream).
             if unsloth_backend.active_model_name:
                 logger.info(
                     f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
                 )
-                unsloth_backend.unload_model(unsloth_backend.active_model_name)
+                await asyncio.to_thread(
+                    unsloth_backend.unload_model, unsloth_backend.active_model_name
+                )
 
             # Inherit llama_extra_args from the previous load when the request
             # omits the field (the chat-settings Apply path doesn't round-trip
@@ -3375,9 +3378,12 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             logger.info(f"Unloaded GGUF model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
-        # Otherwise, unload from Unsloth backend
+        # Otherwise, unload from Unsloth backend. Run off the event loop: unload
+        # takes _gen_lock, and a slow SSE stream paused between tokens still holds
+        # it, so a synchronous call here would block the loop that drives the
+        # stream's next token (and the lock release) until the unload timeout.
         backend = get_inference_backend()
-        backend.unload_model(request.model_path)
+        await asyncio.to_thread(backend.unload_model, request.model_path)
         logger.info(f"Unloaded model: {request.model_path}")
         return UnloadResponse(status = "unloaded", model = request.model_path)
 
