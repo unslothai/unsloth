@@ -1357,19 +1357,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
-            # ---- Sequence-packing fast path (default-on; disable with UNSLOTH_GRPO_SEQ_PACKING=0) ----
-            # One varlen [1, sum L] block-diagonal forward replaces the padded [B, Lmax] per-chunk
-            # loop. The packed forward is the EXACT per-row computation (each segment attends only
-            # within itself, reset 0-based positions), so it equals forwarding each row's real tokens
-            # alone -- and is strictly more accurate than the padded batch forward, which mis-positions
-            # left-padded rows (Unsloth's known Flash-Attn left-padding issue) on long completions.
-            # Correctness is self-verified against the PER-ROW clean forward (NOT the padded batch,
-            # which is itself wrong for left-pad), shape/RoPE-aware: re-checked whenever the packed
-            # total length T grows past the largest verified T, so a later batch that crosses a
-            # LongRoPE short/long cache boundary -- or a backend that silently ignores
-            # packed_seq_lengths and leaks attention across samples -- is caught and falls back to the
-            # padded loop instead of corrupting logps. lm_head runs only on completion-prediction
-            # positions (not every packed prompt token).
+            # ---- Sequence packing (default-on; disable with UNSLOTH_GRPO_SEQ_PACKING=0) ----
+            # One varlen [1, sum L] block-diagonal forward replaces the padded [B, Lmax] loop: the exact
+            # per-row result, and it fixes the padded path's left-pad RoPE error. Self-verified against
+            # the per-row forward (shape/RoPE-aware, re-checked as T grows); falls back if a backend
+            # ignores packed_seq_lengths. lm_head runs on completion positions only.
             logprobs = None
             _pk_result = None
             _pk_use = False
@@ -1411,20 +1403,18 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and _pk_sw_ok
                         and (_pk_ok is True or _pk_active >= 2)
                     ):
-                        # vectorized reset 0-based position_ids (no per-row sync)
+                        # reset 0-based position_ids per segment
                         _pk_pos = (_pk_keep.cumsum(dim = 1) - 1)[_pk_keep].unsqueeze(0)
                         _pk_chunks = max(1, total_rows * multiplier)
                         _pk_nz_idx = _pk_keep.nonzero(
                             as_tuple = False
                         )  # [T, 2] = (row, col), row-major
                         _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]  # [T-1]
-                        # completion-prediction positions: token j+1 is a real completion token
-                        # (col >= L - logits_to_keep) in the same row as j. lm_head only on these.
+                        # completion-prediction positions only (col >= L - logits_to_keep, same row)
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= (_pk_L - logits_to_keep)) & _pk_within
                         with _get_inference_mode_context_manager(model):
                             with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
-                                # use_cache=False: a populated past_key_value disables varlen packing
-                                # in the attention kernels (silent fallback to dense causal attention).
+                                # use_cache=False: a KV cache silently disables varlen packing
                                 _pk_hidden = unwrapped_model(
                                     input_ids = _pk_flat,
                                     position_ids = _pk_pos,
@@ -1443,11 +1433,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     logit_softcapping,
                                     temperature,
                                 )[0]
-                        # Same GPT-OSS offload (offload_embbed=True) race guard the padded loop uses.
+                        # GPT-OSS offload race guard (matches the padded loop)
                         device_synchronize()
-                        # Scatter each completion next-token logprob to its ORIGINAL (row, col) so
-                        # left-padded prompts land in the right columns; [:, -_pk_W:] then matches the
-                        # padded layout.
+                        # scatter each completion logprob back to its (row, col) so [:, -_pk_W:] matches padded
                         _pk_tgt = (_pk_nz_idx[1:, 0] * _pk_L + _pk_nz_idx[1:, 1])[_pk_ctgt]
                         _pk_result = (
                             torch.zeros(
@@ -1458,10 +1446,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             .index_put((_pk_tgt,), _pk_sel.to(torch.float32))
                             .view(total_rows, _pk_L)[:, -_pk_W:]
                         )
-                        # ---- trust decision (shape/RoPE-aware) ----
-                        # Re-verify when the packed total length OR the longest segment grows past what
-                        # was verified: a LongRoPE model can switch its short/long RoPE cache on either,
-                        # and the packed [1, T] forward can cross that boundary before any single row does.
+                        # trust decision: re-verify when T or the longest segment grows past what was
+                        # verified (a LongRoPE cache switch can change the result)
                         _pk_vT = int(
                             getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0)
                         )
@@ -1484,8 +1470,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         elif _pk_unsafe is not None and _pk_T >= _pk_unsafe:
                             _pk_use = False  # known-unsafe length region
                         else:
-                            # verify against the per-row clean forward (exact ground truth: each row's
-                            # real tokens alone, 0-based positions, no padding).
+                            # verify against the per-row clean forward (exact ground truth)
                             _pk_ref = torch.zeros_like(_pk_result)
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
@@ -1523,10 +1508,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             _pk_rkeep
                                         ].to(torch.float32)
                             device_synchronize()
-                            # Compare ONLY the completion region (window cols [max_left_pad, W) = the
-                            # last logits_to_keep cols). The window's first max_left_pad cols are
-                            # prompt-overflow that the lm_head completion-window opt deliberately leaves
-                            # 0 (masked out downstream); including them would falsely flag a mismatch.
+                            # compare only the completion region; the first max_left_pad window cols are
+                            # prompt-overflow the lm_head opt leaves 0
                             _pk_cm = torch.zeros(
                                 (total_rows, _pk_W), dtype = torch.float32, device = input_ids.device
                             )
@@ -1539,9 +1522,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
                                     flush = True,
                                 )
-                            # floor: packed vs per-row through different attention kernels ~0.25 (the
-                            # padded path is itself ~0.4 from per-row truth); cross-sample
-                            # contamination (a backend ignoring packing) is >= 2.4.
+                            # floor ~0.25 through different kernels; cross-sample contamination is >= 2.4
                             if _pk_diff < 7e-1:
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
                                 unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
@@ -1555,15 +1536,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             else:
                                 _pk_use = False
                                 if _pk_diff >= 1.5:
-                                    # large mismatch = cross-sample contamination: this model's
-                                    # attention does not honor the block-diagonal packed mask (seen on
-                                    # some MoE / custom-attention models), so disable packing entirely
-                                    # and stop paying the verification cost on later batches.
+                                    # large mismatch = contamination (attention ignores the packed
+                                    # mask, e.g. some MoE): disable packing for this model
                                     unwrapped_model._unsloth_seq_packing_nograd_ok = False
                                 else:
-                                    # moderate mismatch -> more likely a length-boundary effect (e.g. a
-                                    # LongRoPE short/long cache switch): mark this length region unsafe
-                                    # but keep packing available for smaller shapes.
+                                    # moderate mismatch -> likely a length boundary (LongRoPE): mark
+                                    # unsafe but keep packing for smaller shapes
                                     unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
                                         _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
                                     )
@@ -1573,8 +1551,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         flush = True,
                                     )
                 except Exception as _pk_err:
-                    # Any failure (no varlen backend, OOM on the flattened batch, unsupported forward)
-                    # -> drop packed intermediates, reclaim memory, use the padded loop, do not retry.
+                    # any failure -> drop intermediates, use the padded loop, do not retry
                     _pk_hidden = None
                     _pk_sel = None
                     _pk_result = None
@@ -1588,7 +1565,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             flush = True,
                         )
             if _pk_use and _pk_result is not None:
-                logprobs = _pk_result  # verified equal to per-row ground truth -> skip the loop
+                logprobs = _pk_result  # verified -> skip the loop
                 zipped_inputs = []
 
             with _get_inference_mode_context_manager(model):
@@ -1676,9 +1653,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     device_synchronize()
                     all_logprobs_list.append(logprobs_chunk)
                 if logprobs is None:
-                    # Padded fallback result (packing disabled / unsupported / not yet verified for
-                    # this length). Verification against the per-row ground truth already happened in
-                    # the packing block above, so nothing to compare here.
+                    # padded fallback (packing disabled / unsupported / not verified for this length)
                     logprobs = torch.cat(all_logprobs_list, dim = 0)
                 entropies = None
 
