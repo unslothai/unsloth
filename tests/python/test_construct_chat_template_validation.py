@@ -7,6 +7,8 @@ not silently drop the last char via s[:-1]. A minimal fake tokenizer keeps
 the cases CPU-only (no HF_TOKEN, no gated download).
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from unsloth.chat_templates import construct_chat_template
@@ -67,3 +69,38 @@ def test_error_message_excerpt_is_bounded():
     # Excerpt is capped well under the template length.
     assert len(msg) < 1000
     assert "{OUTPUT}" in msg
+
+
+class _SuccessFakeTokenizer(_FakeTokenizer):
+    """Adds the surface construct_chat_template touches on the success path."""
+
+    bos_token = "<s>"
+    bos_token_id = 1
+    added_tokens_decoder: dict = {}
+
+    def __call__(self, text):
+        # input_ids[0] must differ from bos_token_id so the BOS-handling branch is skipped.
+        return SimpleNamespace(input_ids = [5])
+
+
+@pytest.mark.parametrize(
+    "chat_template",
+    [
+        # User turn begins with {INPUT} (no prefix before the sentinel).
+        "{INPUT} [/INST] {OUTPUT}</s>{INPUT} [/INST] {OUTPUT}</s>",
+        # Assistant turn begins with {OUTPUT} (no prefix before the sentinel).
+        "User: {INPUT}\n{OUTPUT}</s>User: {INPUT}\n{OUTPUT}</s>",
+    ],
+)
+def test_chat_template_does_not_leak_sentinel_when_section_starts_with_it(chat_template):
+    """When an input/output section begins with the {INPUT}/{OUTPUT} sentinel, the
+    generated Jinja template must not keep the literal sentinel text. The `startswith`
+    branch in the internal `process()` helper used to slice from `find()` (which is 0
+    here) instead of past the sentinel, re-including the literal `{INPUT}`/`{OUTPUT}`."""
+    _, jinja_template, _, _ = construct_chat_template(
+        tokenizer = _SuccessFakeTokenizer(),
+        chat_template = chat_template,
+        extra_eos_tokens = ["</s>"],
+    )
+    assert "{INPUT}" not in jinja_template
+    assert "{OUTPUT}" not in jinja_template

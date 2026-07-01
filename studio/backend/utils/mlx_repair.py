@@ -36,6 +36,8 @@ from pathlib import Path
 
 import structlog
 
+from utils.uv_path_safety import uv_safe_path
+
 logger = structlog.get_logger(__name__)
 
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
@@ -207,7 +209,8 @@ def _mlx_install_env() -> dict[str, str]:
         / "overrides-darwin-arm64.txt"
     )
     if override.is_file():
-        env.setdefault("UV_OVERRIDE", str(override))
+        # uv truncates UV_OVERRIDE at the first space (issue #6503).
+        env.setdefault("UV_OVERRIDE", uv_safe_path(override))
     return env
 
 

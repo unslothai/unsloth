@@ -158,9 +158,15 @@ class ExportCommonOptions(BaseModel):
 class ExportMergedModelRequest(ExportCommonOptions):
     """Request for exporting a merged PEFT model."""
 
-    format_type: Literal["16-bit (FP16)", "4-bit (FP4)"] = Field(
+    format_type: Literal[
         "16-bit (FP16)",
-        description = "Export precision / format for the merged model",
+        "4-bit (FP4)",
+        "FP8 (compressed-tensors)",
+        "NVFP4 (compressed-tensors)",
+    ] = Field(
+        "16-bit (FP16)",
+        description = "Export precision / format for the merged model. The compressed-tensors "
+        "options run llm-compressor for vLLM (FP8 is data-free; NVFP4 calibrates).",
     )
 
 
@@ -198,6 +204,15 @@ class ExportGGUFRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None,
         description = "Hugging Face token for GGUF upload",
+    )
+    imatrix: bool = Field(
+        False,
+        description = "Use an importance matrix (auto-downloads the upstream unsloth GGUF "
+        "imatrix). Required for the IQ low-bit quants such as iq2_xxs / iq4_xs.",
+    )
+    imatrix_path: Optional[str] = Field(
+        None,
+        description = "Path to a custom imatrix file; overrides the auto-download when set.",
     )
 
 

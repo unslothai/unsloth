@@ -263,7 +263,7 @@ jobs:
           # unsloth_zoo.vision_utils imports PIL at module top, and the
           # easiest way to get a torch-compatible PIL on a CPU runner is
           # to let torchvision pull the right Pillow version.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
                       'torch>=2.8,<2.11' 'torchvision<0.26'
           # Pin to the same versions update_all_notebooks.py installs in
           # generated notebooks. Keep these in lockstep with PIN_TRL /
