@@ -354,13 +354,16 @@ def render_pdf_pages(
 
 def _docx_table_rows(table) -> list[str]:
     """Each row as pipe-joined cell text (the locator splits anchors on pipes).
-    Keeps columns aligned to the layout grid: a merged cell fills its spanned slots
-    (text once, then placeholders), skipped leading/trailing grid columns become
-    empty fields, and tables nested in a cell are flattened in place."""
+    Columns stay aligned to the layout grid (a merged cell fills its spanned slots,
+    skipped leading/trailing grid columns become empty fields). Cells are walked in
+    document order so a nested table, and any text after it, flattens in place."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
     rows: list[str] = []
     for row in table.rows:
         cells: list[str] = [""] * getattr(row, "grid_cols_before", 0)
-        nested: list = []
+        trailing: list[str] = []  # nested rows + any post-nested text, kept in order
         seen: set = set()
         for cell in row.cells:
             # row.cells repeats a merged cell (shared <w:tc>) once per spanned column:
@@ -369,14 +372,23 @@ def _docx_table_rows(table) -> list[str]:
                 cells.append("")
                 continue
             seen.add(cell._tc)
-            # Collapse in-cell newlines; keep empty cells so columns line up.
-            cells.append(" ".join(cell.text.split()))
-            nested.extend(cell.tables)  # cell.text ignores nested tables
+            # Paragraph text before the first nested table is the aligned field; the
+            # nested table and anything after it flatten below the row, in order.
+            field: list[str] = []
+            after_table = False
+            for item in cell.iter_inner_content():
+                if isinstance(item, Table):
+                    after_table = True
+                    trailing.extend(_docx_table_rows(item))
+                elif isinstance(item, Paragraph):
+                    text = " ".join(item.text.split())  # collapse in-cell newlines
+                    if text:
+                        (trailing if after_table else field).append(text)
+            cells.append(" ".join(field))  # empty cells kept so columns line up
         cells.extend([""] * getattr(row, "grid_cols_after", 0))
         if any(c.strip() for c in cells):
             rows.append(" | ".join(cells))
-        for inner in nested:
-            rows.extend(_docx_table_rows(inner))
+        rows.extend(trailing)
     return rows
 
 

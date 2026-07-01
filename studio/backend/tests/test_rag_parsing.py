@@ -251,3 +251,25 @@ def test_docx_flattens_nested_table(tmp_path):
 
     text = "\n".join(p.text for p in parsers.parse(str(path)))
     assert "NESTED-A | NESTED-B" in text  # nested table flattened, not dropped
+
+
+def test_docx_nested_table_keeps_in_cell_order(tmp_path):
+    # A cell holding paragraph, nested table, paragraph must serialize in that order
+    # (cell.text alone would emit both paragraphs before the nested rows).
+    pytest.importorskip("docx")
+    import docx
+
+    from core.rag import parsers
+
+    document = docx.Document()
+    cell = document.add_table(rows = 1, cols = 1).cell(0, 0)
+    cell.text = "before"
+    nested = cell.add_table(rows = 1, cols = 2)
+    nested.cell(0, 0).text = "NESTED-A"
+    nested.cell(0, 1).text = "NESTED-B"
+    cell.add_paragraph("after")
+    path = tmp_path / "nested_order.docx"
+    document.save(str(path))
+
+    text = "\n".join(p.text for p in parsers.parse(str(path)))
+    assert text.index("before") < text.index("NESTED-A") < text.index("after")
