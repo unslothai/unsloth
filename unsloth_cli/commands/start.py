@@ -190,9 +190,7 @@ _SERVER_START_TIMEOUT_S = 900
 
 
 def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
-    request = urllib.request.Request(
-        f"{base}/api/health", headers = {"User-Agent": _USER_AGENT}
-    )
+    request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout = timeout) as response:
             return json.loads(response.read(65536).decode() or "{}").get("status") == "healthy"
@@ -241,11 +239,16 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     # --disable-tools = passthrough mode (relay the agent's own tools); --no-cloudflare =
     # loopback only, no tunnel. Mirrors .github/scripts/serve-unsloth-run.sh.
     command = [
-        unsloth, "run",
-        "-H", parsed.hostname or "127.0.0.1",
-        "-p", str(parsed.port or 8888),
-        "--disable-tools", "--no-cloudflare",
-        "--model", model,
+        unsloth,
+        "run",
+        "-H",
+        parsed.hostname or "127.0.0.1",
+        "-p",
+        str(parsed.port or 8888),
+        "--disable-tools",
+        "--no-cloudflare",
+        "--model",
+        model,
     ]
     if load.gguf_variant:
         command += ["--gguf-variant", load.gguf_variant]
@@ -257,7 +260,9 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         command += ["--tensor-parallel"]
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
-    typer.echo(f"No Studio server at {base}. Starting one for {model} (loading the model can take a while)…")
+    typer.echo(
+        f"No Studio server at {base}. Starting one for {model} (loading the model can take a while)…"
+    )
     typer.echo(f"Server log: {log_path}")
     log = open(log_path, "wb")
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
@@ -284,7 +289,9 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
             return server
         time.sleep(2.0)
     _shutdown_auto_served()
-    _fail(f"The Studio server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}.")
+    _fail(
+        f"The Studio server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}."
+    )
 
 
 def _require_studio(
@@ -1037,8 +1044,11 @@ def claude(
 ):
     """Point Claude Code at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
-        serve = serve, launch = launch,
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve,
+        launch = launch,
     )
     model_id = entry["id"]
 
@@ -1114,8 +1124,11 @@ def codex(
 ):
     """Point OpenAI Codex at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
-        serve = serve, launch = launch,
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve,
+        launch = launch,
     )
     _require_gguf_for_codex(base, key, entry["id"])
     command = [
@@ -1147,8 +1160,11 @@ def openclaw(
 ):
     """Point OpenClaw at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
-        serve = serve, launch = launch,
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve,
+        launch = launch,
     )
     command = ["openclaw", *ctx.args]
     install_hint = (
@@ -1180,8 +1196,11 @@ def opencode(
 ):
     """Point OpenCode at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
-        serve = serve, launch = launch,
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve,
+        launch = launch,
     )
     command = ["opencode", *ctx.args]
     with _session_config("opencode", launch) as cfg:
@@ -1209,8 +1228,11 @@ def hermes(
 ):
     """Point Hermes (Nous Research) at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
-        serve = serve, launch = launch,
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve,
+        launch = launch,
     )
     command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
     install_hint = (
@@ -1240,8 +1262,11 @@ def pi(
 ):
     """Point Pi (coding agent) at the running Studio server and start it."""
     base, key, entry = _connect(
-        api_key, model, LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
-        serve = serve, launch = launch,
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        serve = serve,
+        launch = launch,
     )
     # Pi defaults to the google provider, so pin our provider/model on the command
     # line; the custom OpenAI-compatible endpoint itself is only configurable via

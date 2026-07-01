@@ -919,7 +919,9 @@ def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
         return fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
-    monkeypatch.setattr(start, "_shutdown_server", lambda server: started.__setitem__("down", server))
+    monkeypatch.setattr(
+        start, "_shutdown_server", lambda server: started.__setitem__("down", server)
+    )
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
 
@@ -936,7 +938,9 @@ def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
 def test_no_serve_preserves_error(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {"called": False}
-    monkeypatch.setattr(start, "_start_studio_server", lambda *a, **k: started.__setitem__("called", True))
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda *a, **k: started.__setitem__("called", True)
+    )
     result = CliRunner().invoke(
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-serve"]
     )
@@ -948,7 +952,9 @@ def test_no_serve_preserves_error(fake_studio, monkeypatch):
 def test_no_launch_never_serves(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {"called": False}
-    monkeypatch.setattr(start, "_start_studio_server", lambda *a, **k: started.__setitem__("called", True))
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda *a, **k: started.__setitem__("called", True)
+    )
     result = CliRunner().invoke(
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-launch"]
     )
