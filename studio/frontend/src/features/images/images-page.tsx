@@ -194,6 +194,8 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "kontext", steps: 28, guidance: 2.5 },
   { match: "flux.1", steps: 28, guidance: 3.5 },
   { match: "flux.2-klein", steps: 4, guidance: 0 },
+  // FLUX.2-dev is the full (non-distilled) model: more steps + real guidance, unlike klein.
+  { match: "flux.2-dev", steps: 28, guidance: 4 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 20, guidance: 4 },
 ];

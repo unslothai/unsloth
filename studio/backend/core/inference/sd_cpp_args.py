@@ -40,6 +40,7 @@ from core.inference.diffusion_memory import (
 _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "z-image": ("--llm",),
     "flux.2-klein": ("--llm",),
+    "flux.2-dev": ("--llm",),
     "qwen-image": ("--qwen2vl",),
     "flux.1": ("--clip_l", "--t5xxl"),
 }

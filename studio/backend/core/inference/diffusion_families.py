@@ -138,6 +138,24 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
         ),
     ),
+    # FLUX.2-dev is the full (non-distilled) FLUX.2. It uses the Mistral-based
+    # Flux2Pipeline, distinct from klein's Qwen3-based Flux2KleinPipeline, so it needs
+    # its own entry. Its base diffusers repo is gated (gated=auto) but reachable with an
+    # HF token. text-to-image only: diffusers 0.38 ships no Flux2 img2img / inpaint
+    # pipeline for dev. VAE + Mistral text encoder come from the open Comfy-Org/flux2-dev
+    # mirror for the sd-cli path (shares the FLUX.2 32-channel AE with klein).
+    DiffusionFamily(
+        name = "flux.2-dev",
+        pipeline_class = "Flux2Pipeline",
+        transformer_class = "Flux2Transformer2DModel",
+        base_repo = "black-forest-labs/FLUX.2-dev",
+        aliases = ("flux2-dev", "flux2dev"),
+        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        sd_cpp_vae_format = "flux2",
+        sd_cpp_text_encoders = (
+            ("Comfy-Org/flux2-dev", "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", "llm"),
+        ),
+    ),
     DiffusionFamily(
         # Instruction editing with FLUX. FluxKontextPipeline takes an input image + an edit
         # instruction; the GGUF transformer is the standard FluxTransformer2DModel, with the
