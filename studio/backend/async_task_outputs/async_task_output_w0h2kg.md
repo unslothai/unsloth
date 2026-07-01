@@ -1,0 +1,9 @@
+- Approved plan saved at `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/plans/wobbly-jumping-narwhal.md`.
+- Created `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/core/inference/diffusion_patch_backend.py`; lazy wraps `unsloth_zoo.temporary_patches.utils` `patch_function`/`can_safely_patch`/`restore_original`.
+- Edited `diffusion_eager_patches.py`, `diffusion_gguf_compile.py`, `diffusion.py`, `tests/conftest.py`, `test_diffusion_gguf_compile.py`; CPU tests require `UNSLOTH_ALLOW_CPU=1`.
+- Created `diffusion_arch_patches.py` + `test_diffusion_arch_patches.py`; qwen `_modulate` and z-image gated residuals use compile-safe `torch.addcmul`.
+- Created `scripts/arch_patch_bench.py`.
+- Tests: `77 passed, 1 skipped`; full diffusion: `296 passed, 1 skipped`.
+- Bench: qwen parity default `5.952s`, max `2.741s`; arch isolation z-image `-0.2%`, qwen `+0.3%`.
+- Alloc profile: `alloc_retries delta == 0`, reserved VRAM flat; global scratch buffers not useful.
+- Pending: user asked whether to extend same addcmul recipe to flux.1/flux.2.

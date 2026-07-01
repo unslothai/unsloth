@@ -1,0 +1,1 @@
+Continue the latest directive: remove all global buffers since they looked useless, then ensure nothing else broke. The last completed action read the affected section of tests/test_diffusion_speed.py, so the next action is to edit that file to remove the weight_buffer stub/assertions without re-reading or rerunning the completed Read.

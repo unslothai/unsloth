@@ -1,0 +1,1 @@
+- PENDING: install `torch 2.11` `NVFP4`

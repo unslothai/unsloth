@@ -1,0 +1,49 @@
+- Decision: Launched 6 parallel research agents to avoid duplicated work and cover shipped optimizations plus five lever clusters: caching, attention/token merging, peak-memory reduction, `torch.compile`/Inductor, and quant/kernel/cross-platform.
+- Decision: Prioritized attention-backend selection after research and B200 probing showed it was the only immediately validated speed win: `_native_cudnn` gave `1.18x` end-to-end with `LPIPS=0.004448794759809971`; Sage/Flash/FBCache were not usable on the available Z-Image setup.
+- Decision: Split Inductor flags out of the main implementation because measured gain was negligible on B200/bf16: `inductor_flags 0.681s (1.01x vs base) peak=40.9G LPIPS=0.0047416952438652515`.
+- Decision: Rejected `flash_4_hub` for now because installing `kernels` upgraded `huggingface-hub` to `1.21.0`, breaking diffusers `0.38.0` which needs `<1.0`; env was restored to `huggingface-hub==0.36.2`.
+- Decision: Rejected SageAttention for B200 because `sageattention` v1.0.6 lacked usable Blackwell/`sm_100` kernels: `Sage Attention backend 'sage' is not usable`.
+- Decision: Implemented Phase 11 consumer-aware quant ladder because consumer/workstation GPUs have nerfed FP8 FP32-accumulate while INT8 is full-rate; kept FP8 first on data-center GPUs.
+- Decision: Rejected VAE tiling as Phase 12 for Z-Image inference peak memory after measuring worse/negligible peaks; denoise transformer activations dominate, not VAE decode.
+- Decision: Deferred FBCache shipping because it fails for Z-Image even eager with `ValueError: Parameter 'hidden_states' not found in function signature but was requested.` and `KeyError: 'hidden_states'`; it needs validation on many-step Flux/Qwen.
+- Created `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/outputs/quant_research/03_NEXT_LEVERS.md`: synthesis of next levers and later updated with negative VAE/FBCache findings.
+- Created `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/scripts/perf_levers_probe.py`: B200 probe for baseline, Inductor flags, attention backends, and FBCache.
+- Created `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/core/inference/diffusion_attention.py`: normalizes attention backend requests, selects `auto -> _native_cudnn` on NVIDIA CUDA, supports opt-in `sage`/`flash`/etc., applies via `set_attention_backend`, gracefully falls back to native.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/core/inference/diffusion.py`: threaded `attention_backend` through load flow, applied attention backend before speed compile, added `_LoadState.attention_backend`, and exposed it in status.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/models/inference.py`: added request and status model fields for `attention_backend`.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/routes/inference.py`: forwards `attention_backend` from API request to backend load call.
+- Created `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/tests/test_diffusion_attention.py`: hermetic tests for backend normalization/selection/application/fallback.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/tests/test_diffusion_routes.py`: added route coverage for threading and invalid enum handling.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/core/inference/diffusion_transformer_quant.py`: added consumer-aware `auto` reorder so consumer GPUs prefer `int8`; B200/data-center keeps `fp8` first.
+- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/tests/test_diffusion_transformer_quant.py`: updated torch stub with device names, added 3 consumer ladder tests, fixed data-center names.
+- Created `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/temp/phase10_pr_body.md` and `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/temp/phase11_pr_body.md` for PR bodies.
+- Command: checked diffusers APIs; key output: `diffusers 0.38.0 torch 2.9.1+cu128`, `ZImageTransformer2DModel has set_attention_backend: True`, cache configs present, Inductor flags present.
+- Command: listed attention backends; key output included `flash`, `flash_4_hub`, `aiter`, `flex`, `native`, `_native_cudnn`, `sage`, `sage_hub`, `sage_varlen`, `xformers`.
+- Command: `uv pip install sageattention kernels`; caused `huggingface-hub` incompatibility.
+- Command: restored env with `uv pip uninstall kernels` and `uv pip install "huggingface-hub>=0.34.0,<1.0"`; verified `hub 0.36.2 diffusers 0.38.0`, `ZImage import OK`, `sageattention OK`.
+- Command: ran B200 perf probe; final key output: `baseline 0.686s peak=22.6G`, `attn_cudnn 0.584s (1.18x vs base) peak=40.6G LPIPS=0.004448794759809971`.
+- Command: created branch `diffusion-phase10-attention`; verified `has set_attention_backend: True`, `has reset_attention_backend: True`, `hip: None`.
+- Error resolved: initial tests failed because test expected `"flash-3"` alias; actual normalization did not map it. Fixed test to use valid case.
+- Command: `python -m pytest tests/ -q -k "diffusion"` after Phase 10; result `213 passed, 4993 deselected, 1 warning`.
+- Command: B200 smoke for product attention functions; key output: `select(auto, speed_active=True) -> _native_cudnn`, `apply -> _native_cudnn`, `image finite: True shape: (1024, 1024, 3)`, `ATTN-SMOKE-OK`, `=== EXIT 0 ===`.
+- Commit: `b92367554 Studio diffusion (Phase 10): attention-backend selection`.
+- Command: pushed `diffusion-phase10-attention` and created PR `https://github.com/unslothai/unsloth/pull/6701` stacked on `diffusion-phase9-prequant`.
+- Command: pre-commit.ci moved Phase 10 remote; rebased successfully; sync output `0 0`.
+- Command: re-ran tests for PR #6701; result `213 passed, 4993 deselected, 1 warning in 15.14s`; PR state `{"base":"diffusion-phase9-prequant","mergeable":"MERGEABLE","number":6701,"state":"OPEN"}`.
+- Command: created branch `diffusion-phase11-consumer-int8`.
+- Command: Phase 11 tests: `python -m pytest tests/ -q -k "diffusion"`; result `216 passed` (tail showed `216 p`).
+- Command: B200 non-regression for quant ladder; key output: `device: NVIDIA B200`, `_is_consumer_gpu('cuda'): False`, `reorder (B200): ('fp8', 'nvfp4', 'mxfp8', 'int8')`, `auto scheme on B200: fp8`.
+- Commit: `764a3e1dc Studio diffusion (Phase 11): prefer int8 on consumer GPUs in the auto ladder`.
+- Command: pushed `diffusion-phase11-consumer-int8` and created PR `https://github.com/unslothai/unsloth/pull/6702` stacked on `diffusion-phase10-attention`.
+- Command: Phase 11 pre-commit wait showed `no movement`, sync `0 0`.
+- Command: PR state check: #6701 `MERGEABLE`/`OPEN`, #6702 `MERGEABLE`/`OPEN`.
+- Command: measured VAE decode peak with pipeline-level tiling; errors: `'ZImagePipeline' object has no attribute 'enable_vae_tiling'` and `'ZImagePipeline' object has no attribute 'enable_vae_slicing'`.
+- Command: checked Z-Image VAE methods; key output: `VAE class: AutoencoderKL`, `vae.enable_tiling: True`, `vae.enable_slicing: True`, `pipe.enable_vae_tiling: False`, `pipe.vae_scale_factor: 8`.
+- Command: measured VAE-level tiling; key output: `res 1024: no-tile peak=23.3G | vae-tile peak=30.6G | saved=-7.3G (-31%) | LPIPS=0.0000`; `res 1536: no-tile peak=33.8G | vae-tile peak=37.9G | saved=-4.1G (-12%) | LPIPS=0.0037`; `res 2048: no-tile peak=45.6G | vae-tile peak=45.3G | saved=0.3G (1%) | LPIPS=0.0037`; `=== EXIT 0 ===`.
+- Command: probed FBCache compatibility; key output: `[cache_eager] FAIL ValueError: Parameter 'hidden_states' not found in function signature but was requested.`, `[cache+regional_nofullgraph] FAIL KeyError: 'hidden_states'`, `[cache+fullcompile_nofullgraph] FAIL KeyError: 'hidden_states'`, `FBCACHE-COMPAT-DONE`, `=== EXIT 0 ===`.
+- Command still in flight at end: prefetch Flux.1-dev for FBCache validation, background ID `bbujpwspc`, log path pattern `logs/flux_prefetch_$(date +%Y%m%d_%H%M%S).log`.
+- Completed: Phase 10 PR #6701 is open/mergeable, tests passing, B200 smoke passing.
+- Completed: Phase 11 PR #6702 is open/mergeable, tests passing, B200 non-regression verified.
+- Completed: VAE tiling investigated and rejected for Z-Image inference peak.
+- Completed: FBCache investigated on Z-Image and found incompatible due to `hidden_states` signature.
+- Pending: Wait for Flux.1-dev prefetch, then validate FBCache on compatible many-step model and potentially ship gated Phase 12 for Flux/Qwen only.

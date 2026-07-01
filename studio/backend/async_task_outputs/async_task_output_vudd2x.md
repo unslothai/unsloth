@@ -1,0 +1,2 @@
+- User asked: `Is there a way to fix the loading VRAM issue - pre-quantized?`
+- Pending: answer likely needs repo/PR context; no commands or edits in this span.

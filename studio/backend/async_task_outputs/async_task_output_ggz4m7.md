@@ -1,0 +1,1 @@
+- PENDING: Z-Image, LPIPS, CPU cmp

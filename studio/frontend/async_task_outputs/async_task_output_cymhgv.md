@@ -1,0 +1,3 @@
+- User directive received: `if the /goal is not yet achieved or there is an API error, say "Continue work"`
+- No files edited, no commands run, no errors observed in this span.
+- Pending: determine whether `/goal` is achieved; if not achieved or API error occurred, output `Continue work`.

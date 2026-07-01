@@ -1,0 +1,1 @@
+- `FLUX.2-klein` inpaint done; extend excluded

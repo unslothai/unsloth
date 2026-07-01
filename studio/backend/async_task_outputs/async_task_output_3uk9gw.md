@@ -1,0 +1,1 @@
+- `upscale` added+verified; hold for push/mirror

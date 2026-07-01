@@ -1,0 +1,1 @@
+- Load Studio `--secure`; ask sd.cpp

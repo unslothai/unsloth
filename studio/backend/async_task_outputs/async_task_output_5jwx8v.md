@@ -1,0 +1,8 @@
+- User requested benchmarking performance gains across all PRs for every supported model format: `GGUFs` and `safetensors`.
+- Verbatim directive to preserve: `And for all odels that are supported - GGUFs or just safetensors - across all PRs - what are the performance gains - benchmark all`
+- Decision implied: scope expands from isolated PR review to cross-PR, cross-model benchmark comparison.
+- Files created/edited: none in this span.
+- Commands run: none in this span.
+- Errors encountered: none; note typo `odels` appears in user directive.
+- COMPLETED: request captured.
+- PENDING: identify supported models/formats, enumerate relevant PRs, run benchmarks, report performance gains.

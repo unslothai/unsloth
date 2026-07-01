@@ -1,0 +1,8 @@
+- Decision: implement faithful `addcmul` fusions for all four Flux block classes (`FluxTransformerBlock`, `FluxSingleTransformerBlock`, `Flux2TransformerBlock`, `Flux2SingleTransformerBlock`) using exact `diffusers` 0.38 forward bodies to avoid semantic drift.
+- Decision: run two follow-up tasks: `Task #112` for Flux.1/Flux.2 patch implementation with body-drift guards/specs/allclose tests, and `Task #113` for isolation benchmarks across all four arch families plus focused global buffer on/off benchmark.
+- Commands run from `/mnt/disks/unslothai/ubuntu/workspace_81`: `CUDA_VISIBLE_DEVICES="" UNSLOTH_ALLOW_CPU=1 python - <<'PY' 2>/dev/null` to inspect `transformer_flux2` and `transformer_flux` sources.
+- Key outputs: fetched `Flux2TransformerBlock.forward`, `Flux2SingleTransformerBlock.forward`, `FluxTransformerBlock.forward`, `FluxSingleTransformerBlock.forward`, relevant `__init__` signatures, and `Flux2Modulation` source.
+- Finding: `Flux2Modulation.split` returns modulation tensors shaped `[B,1,dim]`, so test inputs can rely on clean broadcasting.
+- Error: `API Error: Connection closed mid-response. The response above may be incomplete.` Work was interrupted before edits.
+- Completed: source inspection and task creation.
+- Pending: edit `diffusion_arch_patches.py`, add specs/guards/tests, run allclose checks and benchmarks.

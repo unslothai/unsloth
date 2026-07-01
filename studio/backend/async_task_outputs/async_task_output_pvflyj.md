@@ -1,0 +1,1 @@
+- Asked: `Search HuggingFace for any NVFP4 diffusion models and see if we can try them`

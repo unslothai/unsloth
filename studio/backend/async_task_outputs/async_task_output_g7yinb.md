@@ -1,0 +1,6 @@
+- Decision: next lever should target inference-time peak memory/speed, because Phases 7-9 already covered compile, dense+torchao quant, consumer fast-accum gating, and pre-quantized loading/load VRAM.
+- Goal preserved: push diffusion speed and `peak memory (both load and inference)` under ~25% accuracy cost across consumer/data-center GPUs and ideally Mac/AMD/Intel/CPU, for `GGUF + safetensors`.
+- Mentioned candidate levers: step caching, attention backends, VAE tiling for decode peak memory.
+- No files edited/created.
+- No commands completed.
+- Error: `API Error: Connection closed mid-response.` unresolved; assistant response may be incomplete.

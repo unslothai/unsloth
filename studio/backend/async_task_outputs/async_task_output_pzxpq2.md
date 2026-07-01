@@ -1,0 +1,2 @@
+- fixed UI+resize
+- pending push/backend
