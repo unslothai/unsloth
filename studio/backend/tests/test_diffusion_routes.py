@@ -381,6 +381,44 @@ def test_memory_mode_threads_through_to_backend(client, monkeypatch):
     assert backend.last_load_kwargs.get("memory_mode") == "low_vram"
 
 
+def test_transformer_quant_threads_through_to_backend(client, monkeypatch):
+    backend = _FakeBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "transformer_quant": "auto"},
+    )
+    assert resp.status_code == 200
+    assert backend.last_load_kwargs.get("transformer_quant") == "auto"
+
+
+def test_transformer_quant_fast_accum_threads_through(client, monkeypatch):
+    backend = _FakeBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "x/z-image",
+            "gguf_filename": "q.gguf",
+            "transformer_quant": "fp8",
+            "transformer_quant_fast_accum": False,
+        },
+    )
+    assert resp.status_code == 200
+    assert backend.last_load_kwargs.get("transformer_quant_fast_accum") is False
+
+
+def test_invalid_transformer_quant_returns_422_without_eviction(client):
+    # An unsupported transformer_quant is rejected by the request schema (Literal), so
+    # the GPU is never acquired and no chat model is evicted.
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "transformer_quant": "int2"},
+    )
+    assert resp.status_code == 422
+    assert gpu_arbiter._owner is None
+
+
 def test_invalid_memory_mode_returns_422_without_eviction(client):
     # An unsupported memory_mode is rejected by the request schema (Literal), so the
     # GPU is never acquired and no chat model is evicted.

@@ -899,3 +899,131 @@ def test_load_fast_mode_stays_resident_on_cuda(fake_runtime, tmp_path, monkeypat
     )
     assert status["offload_policy"] == "none" and status["cpu_offload"] is False
     assert backend._state.pipe.moved_to == "cuda"
+
+
+# ── transformer quant (opt-in dense fast path) ────────────────────────────────
+
+
+def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
+    """Force the dense+quant branch hermetically: a supported dense source, a
+    from_pretrained on the fake transformer, and a quantizer that engages `scheme`.
+    Returns a dict recording the dense-loader / quantizer calls."""
+    from core.inference import diffusion as dmod
+
+    calls: dict = {"from_pretrained": 0, "quantize": 0, "quant_mode": None}
+
+    @classmethod
+    def _from_pretrained(cls, base, **kwargs):
+        calls["from_pretrained"] += 1
+        calls["fp_kwargs"] = {"base": base, **kwargs}
+        return object()
+
+    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _from_pretrained, raising = False)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+
+    def _quantize(pipe, target, *, mode, **kw):
+        calls["quantize"] += 1
+        calls["quant_mode"] = mode
+        return scheme
+
+    monkeypatch.setattr(dmod, "quantize_transformer", _quantize)
+    return calls
+
+
+def test_default_load_skips_dense_quant_path(fake_runtime, tmp_path, monkeypatch):
+    # With no transformer_quant flag the GGUF path is taken and the dense gate is
+    # never even consulted (short-circuit), so the default cannot regress.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(
+        dmod,
+        "dense_transformer_supported",
+        lambda *a, **k: pytest.fail("dense path must not run without the flag"),
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"]  # GGUF from_single_file was used
+
+
+def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatch):
+    # transformer_quant + a CUDA resident plan -> load the DENSE transformer from the
+    # base repo, place it on the device, quantise it, and report the engaged scheme.
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    calls = _stub_dense_quant(monkeypatch, scheme = "fp8")
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["transformer_quant"] == "fp8"
+    # No speed_mode was given, but a quantized transformer is ~30x slower eager, so the
+    # backend promotes it to `default` (regional compile) instead of the dense `off`.
+    assert status["speed_mode"] == "default"
+    assert calls["from_pretrained"] == 1 and calls["quantize"] == 1
+    assert calls["quant_mode"] == "fp8"
+    assert calls["fp_kwargs"]["subfolder"] == "transformer"  # dense transformer subfolder
+    # The GGUF single-file path was NOT used for the transformer.
+    assert _FakeTransformer.last == {}
+    # quantize ran on-device: the dense pipe was placed on cuda (before compile).
+    assert backend._state.pipe.moved_to == "cuda"
+    assert status["offload_policy"] == "none"
+
+
+def test_transformer_quant_falls_back_to_gguf_on_failure(fake_runtime, tmp_path, monkeypatch):
+    # A dense/quant failure (here: quantize returns None -> unsupported) must fall back
+    # to the GGUF build, not error -- status reports no transformer_quant engaged.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+
+    @classmethod
+    def _from_pretrained(cls, base, **kwargs):
+        return object()
+
+    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _from_pretrained, raising = False)
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda pipe, target, **kw: None)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["loaded"] is True
+    assert status["transformer_quant"] is None  # fell back
+    assert _FakeTransformer.last["path"]  # GGUF from_single_file used
+
+
+def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, monkeypatch):
+    # The dense bf16 transformer only fits resident, so when the memory plan would
+    # offload (here low_vram) the fast path is skipped and GGUF loads instead -- the
+    # dense transformer is never even loaded.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+
+    @classmethod
+    def _fp_fail(cls, *a, **k):
+        pytest.fail("dense transformer must not load when the plan offloads")
+
+    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _fp_fail, raising = False)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+        memory_mode = "low_vram",
+    )
+    assert status["transformer_quant"] is None
+    assert status["offload_policy"] == "model"
+    assert _FakeTransformer.last["path"]  # GGUF path used
