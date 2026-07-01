@@ -10602,7 +10602,7 @@ async def openai_image_generations(
     returns them as URLs (default) or base64 PNGs per ``response_format``. Steps
     and guidance have no OpenAI knob, so they default per loaded model."""
     from core.inference import image_gallery
-    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import default_generation_params
 
     if body.stream:
@@ -10619,7 +10619,10 @@ async def openai_image_generations(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
         )
 
-    backend = get_diffusion_backend()
+    # Use the active engine (diffusers OR native sd.cpp on a no-GPU host), the same
+    # accessor /images/generate uses, so a model loaded on the native engine isn't
+    # wrongly reported unloaded here.
+    backend = get_active_diffusion_engine()
     status = backend.status()
     if not status.get("loaded"):
         # Mirror /v1/completions and /v1/embeddings, which 503 when their backend
@@ -10660,15 +10663,26 @@ async def openai_image_generations(
         "height": height,
         "steps": steps,
         "guidance": guidance,
-        "seed": result["seed"],
+        # The batch shares one base seed, so restoring a batch_index>0 sibling needs the
+        # original batch_size to replay it (same as /images/generate); persist it.
+        "batch_size": body.n,
         "model": result.get("repo_id"),
         "created_at": float(created),
     }
+    # The diffusers batch shares one seed; the native sd.cpp batch uses a distinct seed
+    # per image (returned in ``seeds``), so record each image's own seed, like
+    # /images/generate, or a native batch_index>0 image shows the wrong seed.
+    per_image_seeds = result.get("seeds")
 
     def _persist() -> list[ImageGenerationData]:
         items: list[ImageGenerationData] = []
         for index, image in enumerate(result["images"]):
-            record = image_gallery.save(image, {**recipe, "batch_index": index})
+            seed = (
+                per_image_seeds[index]
+                if per_image_seeds and index < len(per_image_seeds)
+                else result["seed"]
+            )
+            record = image_gallery.save(image, {**recipe, "batch_index": index, "seed": seed})
             if want_b64:
                 encoded = image_gallery.image_b64(record["id"])
                 if encoded is None:  # vanished between write and read — fail the call

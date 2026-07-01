@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import core.inference.diffusion as diffusion_module
+import core.inference.diffusion_engine_router as engine_router
 import core.inference.image_gallery as gallery_module
 from auth.authentication import get_current_subject
 from core.inference.diffusion_families import default_generation_params
@@ -102,10 +103,13 @@ class _FakeBackend:
         base_repo = None,
         generate_error = None,
         unload_on_generate = False,
+        native_seeds = False,
     ) -> None:
         self._loaded = loaded
         self._repo_id = repo_id
         self._base_repo = base_repo
+        # Model the native sd.cpp engine, which returns a distinct seed per image.
+        self._native_seeds = native_seeds
         # When set, generate() raises this; unload_on_generate flips is_loaded off
         # first, to model the eviction/unload race vs an in-pipeline failure (OOM).
         self._generate_error = generate_error
@@ -153,11 +157,14 @@ class _FakeBackend:
                 batch_size = batch_size,
             )
         )
-        return {
+        out = {
             "images": [object() for _ in range(batch_size)],
             "seed": 4242,
             "repo_id": self._repo_id,
         }
+        if self._native_seeds:
+            out["seeds"] = [4242 + i for i in range(batch_size)]
+        return out
 
 
 def _make_client(backend):
@@ -277,6 +284,49 @@ def test_n_maps_to_batch(client):
     assert resp.status_code == 200
     assert len(resp.json()["data"]) == 3
     assert client.backend.calls[0]["batch_size"] == 3
+
+
+def test_batch_persists_batch_size(monkeypatch):
+    # n>1 must persist batch_size in each gallery record so the Studio restore path
+    # can replay a batch_index>0 sibling (which shares the batch's single seed).
+    backend = _FakeBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256", "n": 3})
+    assert resp.status_code == 200
+    records = sorted(store.values(), key = lambda r: r["batch_index"])
+    assert [r["batch_index"] for r in records] == [0, 1, 2]
+    assert all(r["batch_size"] == 3 for r in records)
+
+
+def test_uses_active_engine_not_diffusers_singleton(monkeypatch):
+    # On a no-GPU host the loaded model lives behind the native sd_cpp engine, not the
+    # diffusers singleton. The route must query get_active_diffusion_engine (like
+    # /images/generate) or it 503s a model that is loaded and usable.
+    active = _FakeBackend(loaded = True)  # the active (e.g. sd_cpp) engine, loaded
+    idle_diffusers = _FakeBackend(loaded = False)  # diffusers singleton, empty
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: active)
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: idle_diffusers)
+    cli, store, _save = _make_client(active)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    assert resp.status_code == 200
+    assert len(active.calls) == 1  # the active engine did the work, not the idle singleton
+
+
+def test_native_batch_persists_per_image_seed(monkeypatch):
+    # The native sd.cpp engine returns a distinct seed per image (base+index) in
+    # "seeds"; each gallery record must store its own seed (like /images/generate),
+    # not the shared base, or a restored batch_index>0 image shows the wrong seed.
+    backend = _FakeBackend(native_seeds = True)
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256", "n": 3})
+    assert resp.status_code == 200
+    records = sorted(store.values(), key = lambda r: r["batch_index"])
+    assert [r["seed"] for r in records] == [4242, 4243, 4244]
 
 
 def test_null_fields_coalesce_to_defaults(client):
