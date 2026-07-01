@@ -2403,6 +2403,14 @@ export function ChatPage({
     return [...fromLoras, ...cachedGgufs];
   }, [loraModels, cachedGgufs]);
 
+  // A speech-LLM chat model (Orpheus, CSM, Spark...) produces its own voice, so
+  // a separate TTS voice doesn't apply. Detected from the loaded checkpoint;
+  // listening (STT) stays available regardless.
+  const chatModelIsSpeechLLM =
+    /(?:orpheus|csm|spark|bark|parler|musicgen|kokoro|text-to-speech|[-_]tts)/i.test(
+      inferenceParams.checkpoint ?? "",
+    );
+
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
     void refresh();
@@ -2582,6 +2590,7 @@ export function ChatPage({
                 onValueChange={(id) => void handleVoiceModelChange(id)}
                 loading={voiceSlotLoading}
                 disabled={!hasActiveModel}
+                voiceOwnedByModel={chatModelIsSpeechLLM}
                 className="!h-[34px]"
               />
             )}

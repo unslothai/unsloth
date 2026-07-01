@@ -23,6 +23,9 @@ interface VoiceModelSelectorProps {
   /** When true (no main chat model loaded), grey out and block the selector:
    *  picking a voice would load a TTS model with no brain to generate replies. */
   disabled?: boolean;
+  /** When true, the loaded chat model is a speech-LLM (Orpheus etc.) that speaks
+   *  with its own voice, so the TTS voice section is disabled. STT stays active. */
+  voiceOwnedByModel?: boolean;
   className?: string;
 }
 
@@ -35,6 +38,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   onValueChange,
   loading = false,
   disabled = false,
+  voiceOwnedByModel = false,
   className,
 }) => {
   const [open, setOpen] = useState(false);
@@ -114,56 +118,65 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
           Speak with
         </div>
 
-        {/* Browser voice fallback */}
-        <button
-          type="button"
-          onClick={() => handleSelect(BROWSER_VOICE_ID)}
-          className={cn(
-            "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] font-medium leading-[1.4] tracking-nav transition-colors hover:bg-accent",
-            value === null && "bg-accent",
-          )}
-        >
-          <MicVocalIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 truncate">{BROWSER_VOICE_LABEL}</span>
-          {value === null && (
-            <span className="ml-auto text-[11px] text-muted-foreground">
-              active
-            </span>
-          )}
-        </button>
-
-        {models.length > 0 && (
-          <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
-        )}
-
-        {models.map((model) => (
-          <button
-            key={model.id}
-            type="button"
-            onClick={() => handleSelect(model.id)}
-            className={cn(
-              "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] font-medium leading-[1.4] tracking-nav transition-colors hover:bg-accent",
-              value === model.id && "bg-accent",
-            )}
-          >
-            <span className="min-w-0 flex-1 truncate">{model.name}</span>
-            {model.isGguf && !model.source && (
-              <span className="shrink-0 text-[11px] text-muted-foreground">
-                GGUF
-              </span>
-            )}
-            {value === model.id && (
-              <span className="ml-auto text-[11px] text-muted-foreground">
-                active
-              </span>
-            )}
-          </button>
-        ))}
-
-        {models.length === 0 && (
-          <p className="px-3 py-2 text-[12px] text-muted-foreground">
-            No TTS models found. Train or export a voice model first.
+        {voiceOwnedByModel ? (
+          <p className="px-3 py-2 text-[12px] leading-[1.5] text-muted-foreground">
+            The loaded model is a speech-LLM and speaks with its own voice, so a
+            separate TTS voice isn&apos;t needed.
           </p>
+        ) : (
+          <>
+            {/* Browser voice fallback */}
+            <button
+              type="button"
+              onClick={() => handleSelect(BROWSER_VOICE_ID)}
+              className={cn(
+                "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] font-medium leading-[1.4] tracking-nav transition-colors hover:bg-accent",
+                value === null && "bg-accent",
+              )}
+            >
+              <MicVocalIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 truncate">{BROWSER_VOICE_LABEL}</span>
+              {value === null && (
+                <span className="ml-auto text-[11px] text-muted-foreground">
+                  active
+                </span>
+              )}
+            </button>
+
+            {models.length > 0 && (
+              <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+            )}
+
+            {models.map((model) => (
+              <button
+                key={model.id}
+                type="button"
+                onClick={() => handleSelect(model.id)}
+                className={cn(
+                  "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] font-medium leading-[1.4] tracking-nav transition-colors hover:bg-accent",
+                  value === model.id && "bg-accent",
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate">{model.name}</span>
+                {model.isGguf && !model.source && (
+                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                    GGUF
+                  </span>
+                )}
+                {value === model.id && (
+                  <span className="ml-auto text-[11px] text-muted-foreground">
+                    active
+                  </span>
+                )}
+              </button>
+            ))}
+
+            {models.length === 0 && (
+              <p className="px-3 py-2 text-[12px] text-muted-foreground">
+                No TTS models found. Train or export a voice model first.
+              </p>
+            )}
+          </>
         )}
       </PopoverContent>
     </Popover>
