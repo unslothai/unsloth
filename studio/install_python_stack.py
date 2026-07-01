@@ -938,6 +938,12 @@ def _detect_cuda_torch_index_url() -> str:
     Defaults to cu126 when nvidia-smi is missing or the version is unreadable
     (e.g. NVIDIA detected only via the /proc/driver/nvidia/gpus fallback).
     """
+    # Explicit override (parity with install.sh / install.ps1):
+    # UNSLOTH_TORCH_INDEX_FAMILY=cu128|cu130|cu126|cpu|... pins the wheel
+    # index when probing is wrong or impossible (no GPU at build time, CI).
+    family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY")
+    if family:
+        return f"{_PYTORCH_WHL_BASE}/{family}"
     exe = shutil.which("nvidia-smi")
     if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
         exe = "/usr/bin/nvidia-smi"

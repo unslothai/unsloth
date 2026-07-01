@@ -111,6 +111,33 @@ del maybe_set_windows_rocm_bnb_version
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
+# Containers launched with `docker --gpus '"device=N"'` only set
+# NVIDIA_VISIBLE_DEVICES to specific device ids/UUIDs and leave
+# CUDA_VISIBLE_DEVICES absent. Inductor's compile worker subprocess pool
+# then fails to enumerate the cgroup-pinned GPU and raises
+# `Could not find an active GPU backend` from
+# torch/_inductor/runtime/triton_helpers.py::set_driver_to_gpu. Force a
+# single in-process compile thread so the pool is never spawned.
+#
+# Gate only on the cgroup-pinned fingerprint -- specific device ids in
+# NVIDIA_VISIBLE_DEVICES. NVIDIA_VISIBLE_DEVICES in {"all","none","void",""}
+# (the default in `--gpus all` runs) must NOT trigger this.
+# Set UNSLOTH_FORCE_SINGLE_COMPILE_WORKER=0 to opt out.
+_nvd = os.environ.get("NVIDIA_VISIBLE_DEVICES", "").strip().lower()
+_cgroup_pinned = _nvd not in ("", "all", "none", "void")
+if (
+    os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "auto") != "0"
+    and _cgroup_pinned
+    and "CUDA_VISIBLE_DEVICES" not in os.environ
+):
+    # Either set the env var if absent, or honour the user's existing
+    # value -- but always plant the sentinel so the zoo-side patch knows
+    # to preserve the forcing.
+    if os.environ.get("TORCHINDUCTOR_COMPILE_THREADS") in (None, "", "1"):
+        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+        os.environ["UNSLOTH_FORCE_SINGLE_COMPILE_WORKER"] = "1"
+del _nvd, _cgroup_pinned
+
 # [TODO] Check why some GPUs don't work
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
@@ -154,6 +181,30 @@ except ModuleNotFoundError:
     )
 except:
     raise
+
+# Re-assert the single-compile-worker policy after unsloth_zoo has had a
+# chance to run its patch_torch_compile (which historically popped
+# TORCHINDUCTOR_COMPILE_THREADS in non-debug mode). Force the Inductor
+# config value directly so the Docker --gpus '"device=N"' subprocess-pool
+# bug is fixed even when the installed unsloth_zoo predates the
+# corresponding zoo-side patch. Also monkey-patch the zoo's
+# `determine_compile_threads` so the Inductor options dict (rebuilt per
+# `torch.compile` call) always sees 1 even if a later import path pops the
+# env var again. No-op when the user opted out.
+if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
+    try:
+        torch._inductor.config.compile_threads = 1
+    except Exception:
+        pass
+    os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
+    try:
+        setattr(
+            importlib.import_module("unsloth_zoo.temporary_patches.common"),
+            "determine_compile_threads",
+            lambda: 1,
+        )
+    except Exception:
+        pass
 
 from unsloth_zoo.device_type import (
     is_hip,
@@ -252,7 +303,13 @@ del patch_peft_weight_converter_compatibility
 del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
+    # UNSLOTH_ALLOW_CPU=1 keeps DEVICE_TYPE "cuda" on driverless hosts (CPU
+    # CI, Docker Desktop without GPU passthrough); probing the device would
+    # raise. bf16 stays on: CPU bf16 kernels exist, fp16 ones largely do not.
+    SUPPORTS_BFLOAT16 = True
+    torch.cuda.is_bf16_supported = lambda *args, **kwargs: True
+elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     SUPPORTS_BFLOAT16 = major_version >= 8
 

@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# Populate and refresh /workspace/unsloth-notebooks from unslothai/notebooks.
+#
+# The image bakes a read-only template at /opt/unsloth-notebooks so the
+# notebooks are present in JupyterLab instantly and offline. On boot this script
+# copies the template into /workspace/unsloth-notebooks (first run only) and then
+# best-effort refreshes from GitHub when upstream has actually advanced.
+#
+# The user's edits ALWAYS win. We remember the content hash of every file we
+# wrote; on refresh a file whose current hash differs from what we last wrote is
+# treated as user-modified and is left untouched. So a refresh only updates files
+# the user has not changed and adds new ones -- it never clobbers an edited
+# notebook and never produces merge conflicts.
+#
+# Opt-out / tuning (all optional):
+#   UNSLOTH_SKIP_NOTEBOOK_SYNC=1      do nothing (no populate, no refresh)
+#   UNSLOTH_SKIP_NOTEBOOK_REFRESH=1   populate from the baked template only;
+#                                     never touch the network
+#   UNSLOTH_KEEP_DELETED_NOTEBOOKS=1  do not restore notebooks the user deleted
+#                                     (default: deleted files are healed back)
+#   UNSLOTH_NOTEBOOKS_DIR=<path>      target dir (default /workspace/unsloth-notebooks)
+#   UNSLOTH_NOTEBOOKS_REPO=<url>      source repo (default unslothai/notebooks)
+#   UNSLOTH_NOTEBOOK_FETCH_TIMEOUT=N  seconds for each network op (default 60)
+set -u
+
+TEMPLATE="${UNSLOTH_NOTEBOOKS_TEMPLATE:-/opt/unsloth-notebooks}"
+DEST="${UNSLOTH_NOTEBOOKS_DIR:-/workspace/unsloth-notebooks}"
+REMOTE="${UNSLOTH_NOTEBOOKS_REPO:-https://github.com/unslothai/notebooks}"
+STATE="$DEST/.unsloth_sync_state"     # "sha256  relpath" of what we last wrote
+SYNCED="$DEST/.unsloth_sync_commit"   # upstream commit we last synced to
+TIMEOUT="${UNSLOTH_NOTEBOOK_FETCH_TIMEOUT:-60}"
+
+# Helper that compares the *content* (the middle, ignoring the auto-generated
+# install header / announcements / footer) of two notebooks. Used so a refresh
+# doesn't rewrite an untouched notebook when only that boilerplate moved
+# upstream. Resolved from an explicit override, then PATH, then a sibling file.
+PYBIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+SIG_HELPER="${UNSLOTH_NB_SIG_HELPER:-}"
+if [ -z "$SIG_HELPER" ]; then
+    if command -v unsloth-nb-content-sig >/dev/null 2>&1; then
+        SIG_HELPER="$(command -v unsloth-nb-content-sig)"
+    else
+        _self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+        [ -n "$_self_dir" ] && [ -f "$_self_dir/unsloth_nb_content_sig.py" ] \
+            && SIG_HELPER="$_self_dir/unsloth_nb_content_sig.py"
+    fi
+fi
+
+# True only when BOTH are .ipynb, the helper is usable, and it reports the
+# non-boilerplate middle is identical (so only the header/footer changed).
+# Any failure returns false, so the caller falls back to a normal refresh.
+middle_unchanged() {
+    case "$1" in *.ipynb) : ;; *) return 1 ;; esac
+    [ -n "$PYBIN" ] && [ -n "$SIG_HELPER" ] || return 1
+    [ "${UNSLOTH_NOTEBOOK_BODY_AWARE:-1}" = "1" ] || return 1
+    [ "$("$PYBIN" "$SIG_HELPER" "$1" "$2" 2>/dev/null)" = "SAME" ] || return 1
+    return 0
+}
+
+[ "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" = "1" ] && exit 0
+[ -d "$TEMPLATE" ] || exit 0
+mkdir -p "$DEST" 2>/dev/null || exit 0
+
+hash_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
+
+# Record "<hash>  <relpath>" for every file currently under DEST (skip metadata).
+record_state() {
+    : > "$STATE.tmp" 2>/dev/null || return 0
+    ( cd "$DEST" && find . -type f -print0 ) | while IFS= read -r -d '' rel; do
+        rel="${rel#./}"
+        case "$rel" in
+            .unsloth_sync_state|.unsloth_sync_state.tmp|.unsloth_sync_commit) continue ;;
+        esac
+        printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
+    done
+    mv "$STATE.tmp" "$STATE" 2>/dev/null || rm -f "$STATE.tmp"
+}
+
+# 1) First-boot populate from the baked template (instant, works offline).
+if [ ! -f "$STATE" ]; then
+    : > "$STATE.tmp" 2>/dev/null || true
+    ( cd "$TEMPLATE" && find . -type f -print0 ) | while IFS= read -r -d '' rel; do
+        rel="${rel#./}"
+        case "$rel" in .unsloth_template_commit) continue ;; esac
+        mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
+        # A pre-existing file at this path (bind-mounted or hand-created before
+        # the first boot) is user data: never clobber it, and -- crucially -- do
+        # NOT record it in the sync state. If it were recorded, the GitHub refresh
+        # below would see its hash match the recorded hash, treat it as pristine
+        # and overwrite it with upstream. Only files we actually lay down (or that
+        # are already byte-identical to the template) are recorded as managed.
+        if [ -e "$DEST/$rel" ] \
+           && [ "$(hash_of "$DEST/$rel")" != "$(hash_of "$TEMPLATE/$rel")" ]; then
+            echo "[unsloth-nb] kept existing user file: $DEST/$rel"
+            continue
+        fi
+        if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
+            printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
+        fi
+    done
+    mv "$STATE.tmp" "$STATE" 2>/dev/null || rm -f "$STATE.tmp"
+    cp -a "$TEMPLATE/.unsloth_template_commit" "$SYNCED" 2>/dev/null || true
+    echo "[unsloth-nb] notebooks ready at $DEST"
+fi
+
+# 1b) Every-boot OFFLINE restore of deleted notebooks. A file we previously wrote
+# that the user has since DELETED is restored from the baked template -- works
+# with no network and even when upstream has not advanced. Files that still exist
+# (edited or not) are never touched, so this cannot resurrect or clobber an edit;
+# the GitHub refresh below then bumps any restored file to the latest upstream.
+# The restored file's recorded hash is reset to the template's so the refresh
+# treats it as pristine (not as a user edit). Opt out with
+# UNSLOTH_KEEP_DELETED_NOTEBOOKS=1 (for users who prune notebooks on purpose).
+if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
+    restored=0
+    RS_TMP="$(mktemp)"
+    while IFS= read -r line; do
+        h="${line%%  *}"; rel="${line#*  }"
+        if [ -n "$rel" ] && [ "$rel" != "$line" ] \
+           && [ ! -e "$DEST/$rel" ] && [ -f "$TEMPLATE/$rel" ]; then
+            mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
+            if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
+                printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$RS_TMP"
+                restored=$((restored + 1))
+                continue
+            fi
+        fi
+        printf '%s\n' "$line" >> "$RS_TMP"
+    done < "$STATE"
+    mv "$RS_TMP" "$STATE" 2>/dev/null || rm -f "$RS_TMP"
+    [ "$restored" -gt 0 ] \
+        && echo "[unsloth-nb] restored $restored deleted notebook(s) from the baked set"
+fi
+
+# 2) Best-effort GitHub refresh -- only when upstream has advanced. Edits win.
+[ "${UNSLOTH_SKIP_NOTEBOOK_REFRESH:-0}" = "1" ] && exit 0
+command -v git >/dev/null 2>&1 || exit 0
+command -v sha256sum >/dev/null 2>&1 || exit 0
+
+last="$(cat "$SYNCED" 2>/dev/null || true)"
+remote="$(timeout "$TIMEOUT" git ls-remote "$REMOTE" HEAD 2>/dev/null | cut -f1)"
+[ -z "$remote" ] && exit 0            # offline / unreachable -> keep what we have
+[ "$remote" = "$last" ] && exit 0     # nothing new since last sync -> done
+
+TMP="$(mktemp -d)"
+if ! timeout "$TIMEOUT" git clone -q --depth 1 "$REMOTE" "$TMP" 2>/dev/null; then
+    rm -rf "$TMP"; exit 0             # network died mid-way -> keep what we have
+fi
+
+declare -A LAST
+if [ -f "$STATE" ]; then
+    while read -r h p; do
+        [ -n "${p:-}" ] && LAST["$p"]="$h"
+    done < "$STATE"
+fi
+
+TMPSTATE="$(mktemp)"
+updated=0; kept=0; unchanged=0
+while IFS= read -r -d '' f; do
+    rel="${f#"$TMP"/}"
+    case "$rel" in .git|.git/*) continue ;; esac
+    dst="$DEST/$rel"
+    if [ -e "$dst" ]; then
+        rec="${LAST[$rel]:-}"
+        if [ -z "$rec" ]; then
+            # File exists in DEST but the sync state never recorded it -> it is a
+            # pre-existing user / bind-mounted file. Treat it as user-owned: keep
+            # it and do not adopt it into the state (so it stays protected).
+            kept=$((kept + 1))
+            continue
+        fi
+        if [ -n "$rec" ] && [ "$(hash_of "$dst")" != "$rec" ]; then
+            # User changed this file since we wrote it -> keep theirs, keep marker.
+            printf '%s  %s\n' "$rec" "$rel" >> "$TMPSTATE"
+            kept=$((kept + 1))
+            continue
+        fi
+        if [ -n "$rec" ] && middle_unchanged "$dst" "$f"; then
+            # Untouched notebook whose only upstream change is the install
+            # header / announcements / footer. The tutorial body is identical,
+            # so don't churn the user's file -- keep it and its marker as-is.
+            printf '%s  %s\n' "$rec" "$rel" >> "$TMPSTATE"
+            unchanged=$((unchanged + 1))
+            continue
+        fi
+    fi
+    mkdir -p "$(dirname "$dst")" 2>/dev/null || true
+    if cp -a "$f" "$dst" 2>/dev/null; then
+        printf '%s  %s\n' "$(hash_of "$dst")" "$rel" >> "$TMPSTATE"
+        updated=$((updated + 1))
+    fi
+done < <(find "$TMP" -type f -print0)
+
+mv "$TMPSTATE" "$STATE" 2>/dev/null || rm -f "$TMPSTATE"
+echo "$remote" > "$SYNCED" 2>/dev/null || true
+rm -rf "$TMP"
+echo "[unsloth-nb] notebooks refreshed from GitHub: $updated updated, $kept kept (your edits), $unchanged kept (only header/footer changed upstream)"
+exit 0
