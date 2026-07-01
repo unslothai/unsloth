@@ -156,10 +156,17 @@ def _find_binary(
         if hit:
             return hit
 
-    # 3. Default install root (sibling of ~/.unsloth/llama.cpp).
-    hit = _first_file(
-        _layout_candidates(Path.home() / ".unsloth" / "stable-diffusion.cpp", layout_stem)
+    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME the same way
+    #    the installer's default_install_dir does (base = the Studio home's parent), so
+    #    a binary installed under a custom Studio root is discovered and side-by-side
+    #    Studios stay isolated; falls back to the sibling of ~/.unsloth/llama.cpp.
+    studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    default_root = (
+        Path(studio_home).parent / "stable-diffusion.cpp"
+        if studio_home
+        else Path.home() / ".unsloth" / "stable-diffusion.cpp"
     )
+    hit = _first_file(_layout_candidates(default_root, layout_stem))
     if hit:
         return hit
 

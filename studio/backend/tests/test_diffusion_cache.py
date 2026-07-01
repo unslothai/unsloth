@@ -4,10 +4,9 @@
 """Hermetic CPU tests for opt-in step caching (First-Block-Cache).
 
 ``diffusers`` is stubbed via ``sys.modules`` (the module under test imports
-``FirstBlockCacheConfig`` / ``apply_first_block_cache`` lazily), and the pipeline is a fake
-that records the engaged config. So normalisation, the CacheMixin (``enable_cache``) path, the
-standalone-hook fallback, threshold selection, and the best-effort failure handling are all
-exercised without torch or a real diffusers model.
+``FirstBlockCacheConfig`` lazily), and the pipeline is a fake that records the engaged config.
+So normalisation, the CacheMixin (``enable_cache``) gating, threshold selection, and the
+best-effort failure handling are all exercised without torch or a real diffusers model.
 """
 
 from __future__ import annotations
@@ -62,8 +61,11 @@ class _MixinTransformer:
         self.enabled_with = config
 
 
-class _HookTransformer:
-    """A transformer with no ``enable_cache`` -> the standalone hook is used."""
+class _NonCacheMixinTransformer:
+    """A transformer with no ``enable_cache`` (not a CacheMixin) -> must run uncached.
+
+    Its pipeline opens no ``cache_context``, so installing FBCache would crash at generation;
+    the load runs uncached instead (e.g. Z-Image)."""
 
 
 def _pipe(transformer):
@@ -117,14 +119,14 @@ def test_explicit_threshold_overrides_quant(monkeypatch):
     assert t.enabled_with.threshold == 0.2
 
 
-def test_fallback_to_standalone_hook(monkeypatch):
+def test_non_cachemixin_runs_uncached(monkeypatch):
+    # A transformer without enable_cache (e.g. Z-Image) must NOT install the standalone hook
+    # -- its pipeline opens no cache_context, so it runs uncached instead of crashing at gen.
     rec: dict = {}
     _stub_diffusers(monkeypatch, hook_recorder = rec)
-    t = _HookTransformer()
-    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
-    assert engaged == TC_FBCACHE
-    assert rec["transformer"] is t
-    assert rec["config"].threshold == DEFAULT_FBCACHE_THRESHOLD
+    t = _NonCacheMixinTransformer()
+    assert apply_step_cache(_pipe(t), mode = "fbcache") is None
+    assert rec == {}  # the standalone hook was never called
 
 
 def test_incompatible_model_runs_uncached(monkeypatch):

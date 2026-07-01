@@ -186,6 +186,18 @@ def _wait_for_load(backend: Any, timeout_s: int = 3600) -> None:
 
 
 def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
+    # A local model dir / file: stat it directly. The Hub lookup below returns None for
+    # a local path, which would drop every candidate from _recommend (file_size_mib None).
+    try:
+        local = Path(repo).expanduser()
+        if local.is_dir():
+            f = local / filename
+            if f.is_file():
+                return int(f.stat().st_size // (1024 * 1024))
+        elif local.is_file():
+            return int(local.stat().st_size // (1024 * 1024))
+    except Exception:
+        pass
     try:
         from huggingface_hub import HfApi
         info = HfApi().model_info(repo, files_metadata = True, token = os.environ.get("HF_TOKEN"))
@@ -268,6 +280,11 @@ def _compare(
             clip_sim.append(clip.image_similarity(img, ref))
 
     def _mean(xs: list[float]) -> Optional[float]:
+        # Preserve +inf: an identical render (reference vs itself, or a lossless
+        # quant/offload) scores PSNR=inf, which is exactly the case this harness
+        # verifies; dropping it as non-finite would print "-" instead of "inf".
+        if xs and any(x == math.inf for x in xs):
+            return math.inf
         finite = [x for x in xs if math.isfinite(x)]
         return round(sum(finite) / len(finite), 4) if finite else None
 

@@ -435,6 +435,18 @@ def test_apply_group_falls_back_to_model_without_transformer():
     assert effective == OFFLOAD_MODEL and "model_offload" in pipe.calls
 
 
+def test_apply_group_fallback_enables_vae_tiling():
+    # A balanced/group plan keeps the VAE resident (tiling off); when group offload can't
+    # engage and we drop to whole-module offload, the applier must turn VAE tiling ON to
+    # cap the decode-time spike on what is now a low-VRAM path.
+    plan = _plan(OFFLOAD_GROUP, tiling = True)
+    assert plan.vae_tiling is False  # group plan leaves tiling off by design
+    pipe = _RecordingPipe()  # no .transformer -> group offload falls back to model
+    effective, tiled = apply_memory_plan(pipe, plan, device = "cuda")
+    assert effective == OFFLOAD_MODEL
+    assert tiled is True and "vae_tiling" in pipe.calls
+
+
 def test_apply_sequential_offload():
     pipe = _RecordingPipe()
     effective, _ = apply_memory_plan(
