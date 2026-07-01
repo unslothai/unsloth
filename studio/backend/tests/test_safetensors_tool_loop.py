@@ -915,6 +915,46 @@ class TestParserDeepSeek:
         result = parse_tool_calls_from_text(text)
         assert [c["function"]["name"] for c in result] == ["get_time", "get_weather"]
 
+    def test_v3_1_strict_recovers_after_missing_call_end(self):
+        # Strict mode (Auto-Heal off): the FIRST inner call is missing its
+        # <｜tool▁call▁end｜> terminator, so it is skipped -- but the parser must
+        # keep scanning and still return the LATER well-formed call instead of
+        # dropping the whole envelope (matches the Kimi strict parser).
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_weather"
+            "<｜tool▁sep｜>"
+            '{"city": "SF"}'
+            "<｜tool▁call▁begin｜>get_time"
+            "<｜tool▁sep｜>"
+            '{"tz": "PST"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        # Auto-Heal keeps both; strict skips the truncated first, keeps the second.
+        assert [c["function"]["name"] for c in parse_tool_calls_from_text(text)] == [
+            "get_weather",
+            "get_time",
+        ]
+        strict = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert [c["function"]["name"] for c in strict] == ["get_time"]
+
+    def test_r1_strict_recovers_after_missing_close_fence(self):
+        # R1 form. Strict mode: the FIRST call's closing ``` fence + terminator
+        # never arrived, so it is skipped -- the parser must continue and return
+        # the LATER well-formed call rather than break out and drop everything.
+        text = (
+            "<｜tool▁calls▁begin｜>"
+            "function<｜tool▁sep｜>get_weather\n```json\n"
+            '{"city": "SF"}'
+            "function<｜tool▁sep｜>get_time\n```json\n"
+            '{"tz": "PST"}'
+            "\n```<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+        strict = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert [c["function"]["name"] for c in strict] == ["get_time"]
+
     def test_deepseek_strip_markup(self):
         text = (
             "before "
@@ -1114,10 +1154,13 @@ class TestParserKimi:
         assert result[1]["function"]["name"] == "web_search"
         assert result[1]["id"].endswith(":1")
 
-    def test_kimi_dotted_name_keeps_last_segment(self):
-        # Bare ``NAME:IDX`` (no ``functions.`` prefix) and ``a.b.c:IDX``
-        # nested names must both resolve to the final dot-segment per
-        # vLLM / SGLang behaviour.
+    def test_kimi_dotted_name_keeps_full_dotted_name(self):
+        # A dotted Kimi id keeps its FULL name after stripping only the
+        # ``functions.`` prefix and ``:idx`` suffix -- matching current
+        # vLLM (``tool_id.split(":")[0].removeprefix("functions.")``) and
+        # SGLang (``r"^(?:functions\.)?(?P<name>[\w.\-]+):(?P<index>\d+)$"``).
+        # Truncating to the final dot-segment would corrupt dotted MCP tool
+        # names such as ``mcp.server-list``.
         text = (
             "<|tool_calls_section_begin|>"
             "<|tool_call_begin|>a.b.c:2"
@@ -1128,7 +1171,22 @@ class TestParserKimi:
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "c"
+        assert result[0]["function"]["name"] == "a.b.c"
+
+    def test_kimi_dotted_mcp_name_with_functions_prefix(self):
+        # ``functions.mcp.server-list:0`` must resolve to ``mcp.server-list``
+        # (only the ``functions.`` prefix and ``:idx`` are removed).
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.mcp.server-list:0"
+            "<|tool_call_argument_begin|>"
+            "{}"
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "mcp.server-list"
 
     def test_kimi_multi_call_recovers_when_first_end_marker_missing(self):
         # First call omits its <|tool_call_end|>; the second must still parse.
@@ -1401,6 +1459,22 @@ def test_gemma_wrapperless_call_is_not_streamed_as_content():
     assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("call:web_search" in t for t in contents), contents
+
+
+def test_gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed():
+    # Gemma may emit ``call : NAME{...}`` with whitespace around the colon, split
+    # across stream chunks. The suppression buffer's prefix check must tolerate
+    # that whitespace (via _GEMMA_BARE_TC_PREFIX_RE) so partial ``call :`` markup
+    # is held (BUFFERING) instead of leaking to content, and the call still runs.
+    loop, exec_fn = _make_loop(
+        turns = [["call", " : ", "web_search", "{query:cats}"], ["Found."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+    events = _collect_events(loop)
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert not any("call" in t for t in contents), contents
 
 
 def test_leading_json_answer_is_not_dropped():

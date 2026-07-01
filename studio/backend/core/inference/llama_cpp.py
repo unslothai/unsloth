@@ -42,6 +42,7 @@ from core.inference.llama_server_args import (
 # Share strip / signal constants with the multi-format parser so BUFFERING also
 # catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
+    _GEMMA_BARE_TC_PREFIX_RE,
     _GEMMA_BARE_TC_RE,
     _TOOL_ALL_PATS,
     _balanced_brace_end,
@@ -8327,9 +8328,15 @@ class LlamaCppBackend:
                                                     enabled_tool_names = _enabled_tool_names,
                                                 ):
                                                     _drain_silently = True
-                                            elif "call:".startswith(
-                                                stripped_buf
-                                            ) or stripped_buf.startswith("call:"):
+                                            elif (
+                                                "call:".startswith(stripped_buf)
+                                                or _GEMMA_BARE_TC_PREFIX_RE.match(stripped_buf)
+                                                is not None
+                                                or _GEMMA_BARE_TC_RE.match(stripped_buf) is not None
+                                            ):
+                                                # Whitespace-tolerant (``call : NAME``)
+                                                # like the parser, so the spaced
+                                                # spelling is held, not leaked.
                                                 if _GEMMA_BARE_TC_RE.match(stripped_buf):
                                                     _drain_silently = True
                                                 elif len(stripped_buf) < _MAX_BUFFER_CHARS:

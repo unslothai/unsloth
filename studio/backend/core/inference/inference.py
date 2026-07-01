@@ -8,7 +8,6 @@ from unsloth.chat_templates import get_chat_template
 from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
-import copy
 import json
 import sys
 import torch
@@ -210,37 +209,6 @@ class InferenceBackend:
     def _normalize_top_k(top_k: int) -> int:
         # API uses -1 to disable top-k; transformers uses 0.
         return 0 if top_k < 0 else top_k
-
-    def _render_with_native_template(
-        self,
-        model_info: dict,
-        messages: list,
-        tools: list,
-        enable_thinking,
-        reasoning_effort,
-        preserve_thinking,
-    ) -> Optional[str]:
-        """Render ``messages`` + ``tools`` with the model's NATIVE chat template.
-
-        Thin wrapper over the shared ``render_native_template`` helper so the
-        transformers and MLX backends share one implementation (an Unsloth
-        override template like ``mistral`` / ``gemma-4`` can drop the ``tools``
-        schema; the repo's native template carries the family's tool-calling
-        syntax). ``apply_fn`` is this backend's own render so template-rejected
-        kwargs are peeled the same way as the main path.
-        """
-        from core.inference.chat_template_helpers import render_native_template
-        return render_native_template(
-            model_info = model_info,
-            active_model_name = self.active_model_name,
-            messages = messages,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            apply_fn = self._apply_chat_template_for_generation,
-            hf_token = getattr(self, "_hf_token", None),
-        )
 
     def load_model(
         self,

@@ -21,6 +21,7 @@ from typing import Callable, Generator, Optional
 from loggers import get_logger
 
 from core.inference.tool_call_parser import (
+    _GEMMA_BARE_TC_PREFIX_RE,
     _GEMMA_BARE_TC_RE,
     _TOOL_ALL_PATS,
     _balanced_brace_end,
@@ -483,12 +484,18 @@ def run_safetensors_tool_loop(
             # entry in tool_xml_signals, so without this it streams raw and is only
             # caught by the end-of-turn safety net. The ``(?<!\w)`` guard in
             # _GEMMA_BARE_TC_RE keeps words like "recall:" out; the safety net still
-            # recovers the text if it turns out not to be a call.
+            # recovers the text if it turns out not to be a call. The prefix regex is
+            # whitespace-tolerant (``call : web_search``) like the parser, so the
+            # spaced spelling is held instead of leaking.
             if (
                 not is_match
                 and not is_prefix
                 and tool_protocol_active
-                and ("call:".startswith(stripped) or stripped.startswith("call:"))
+                and (
+                    "call:".startswith(stripped)
+                    or _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None
+                    or _GEMMA_BARE_TC_RE.match(stripped) is not None
+                )
             ):
                 if _GEMMA_BARE_TC_RE.match(stripped):
                     detect_state = _state_draining

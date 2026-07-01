@@ -280,6 +280,11 @@ _GEMMA_TC_END = "<tool_call|>"
 # bare ``call:NAME{k:v, ...}`` with unquoted values. Match that here; the
 # ``(?<!\w)`` guard avoids catching words like ``recall:``.
 _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
+# A (possibly partial) leading wrapper-less Gemma prefix -- ``call``, ``call :``,
+# ``call : partial_name`` -- before the ``{`` arrives. Whitespace-tolerant like
+# ``_GEMMA_BARE_TC_RE`` so the streaming buffer holds ``call : web_search`` (not just
+# the exact ``call:`` spelling) instead of leaking it as visible text.
+_GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 _GEMMA_KEY_RE = re.compile(r"\s*([\w\.\-]+)\s*:")
 
 
@@ -1716,7 +1721,11 @@ def _parse_deepseek_tool_calls(
             while after < len(body) and body[after] in " \t\r\n":
                 after += 1
             if _DEEPSEEK_R1_CLOSE_RE.match(body, after) is None:
-                break
+                # Strict mode: fence / terminator missing -- skip this call but keep
+                # the later well-formed ones (matches the Kimi strict parser) instead
+                # of dropping the rest of the envelope.
+                pos = brace_end + 1
+                continue
         if name:
             out.append(
                 {
@@ -1763,7 +1772,12 @@ def _parse_deepseek_tool_calls(
             while after < len(body) and body[after] in " \t\r\n":
                 after += 1
             if not body.startswith(_DEEPSEEK_CALL_END, after):
-                break
+                # Strict mode: this call is missing its <｜tool▁call▁end｜> terminator
+                # (truncated or merged). Skip it but keep scanning so a LATER
+                # well-formed call is still returned, matching the Kimi strict parser's
+                # recovery instead of dropping the rest of the envelope.
+                pos = brace_end + 1
+                continue
         try:
             args = json.loads(body[json_start : brace_end + 1])
         except (json.JSONDecodeError, ValueError):
@@ -1975,9 +1989,13 @@ def _parse_kimi_section_body(
         full_id = body[id_start:arg_begin].strip()
         m = _KIMI_ID_RE.match(full_id)
         if m:
-            name = m.group(1).split(".")[-1]
+            # ``_KIMI_ID_RE`` already drops the ``functions.`` prefix and ``:idx``
+            # suffix; group(1) is the whole name. Do NOT split on ``.`` -- a dotted
+            # MCP name (functions.mcp.server-list:0) must stay ``mcp.server-list``.
+            name = m.group(1)
         else:
-            name = full_id.split(":")[0].split(".")[-1]
+            base = full_id.split(":")[0]
+            name = base[len("functions.") :] if base.startswith("functions.") else base
         # Drop bare-counter ids (``3``, ``42``) -- matches vLLM; SGLang
         # infers name from tool schema, which we don't have here.
         if name.isdigit():
