@@ -752,7 +752,7 @@ def get_resumable_run_by_output_dir(output_dir: str) -> Optional[dict]:
                    0 AS resumed_later
             FROM training_runs r
             WHERE r.output_dir = ?
-              AND r.status = 'stopped'
+              AND r.status IN ('stopped', 'error')
               AND NOT EXISTS (
                   SELECT 1
                   FROM training_runs newer

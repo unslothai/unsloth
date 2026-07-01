@@ -44,6 +44,20 @@ def test_can_resume_run_allows_checkpointed_non_s3_run(monkeypatch):
     assert resume.can_resume_run(_stopped_run()) is True
 
 
+def test_can_resume_run_allows_errored_run_with_checkpoint(monkeypatch):
+    # Crash recovery: errored run with a checkpoint is resumable.
+    monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
+
+    assert resume.can_resume_run(_stopped_run(status = "error")) is True
+
+
+def test_can_resume_run_rejects_errored_run_without_checkpoint(monkeypatch):
+    # An errored run with nothing on disk is still not resumable.
+    monkeypatch.setattr(resume, "has_resume_state", lambda _path: False)
+
+    assert resume.can_resume_run(_stopped_run(status = "error")) is False
+
+
 def test_can_resume_run_rejects_s3_dataset_source(monkeypatch):
     monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
 
