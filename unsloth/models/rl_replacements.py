@@ -49,7 +49,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 import textwrap
-from ._utils import _get_inference_mode_context_manager
+from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
 
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS = defaultdict(list)
@@ -1518,7 +1518,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             # compare over the exact loss-mask region (same mask the loss uses)
                             _pk_cm = _pk_cmask.float()
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
-                            if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
+                            if UNSLOTH_ENABLE_LOGGING:
                                 print(
                                     f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
                                     flush = True,
@@ -1546,7 +1546,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     unwrapped_model._unsloth_seq_packing_nograd_unsafe_T = (
                                         _pk_T if _pk_unsafe is None else min(_pk_unsafe, _pk_T)
                                     )
-                                if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
+                                if UNSLOTH_ENABLE_LOGGING:
                                     print(
                                         f"[Unsloth] GRPO seq-packing (no-grad) fell back at T={_pk_T} (diff={_pk_diff:.3f})",
                                         flush = True,
@@ -1560,7 +1560,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     if isinstance(_pk_err, torch.cuda.OutOfMemoryError):
                         torch.cuda.empty_cache()
                     unwrapped_model._unsloth_seq_packing_nograd_ok = False
-                    if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING_DEBUG", "0") == "1":
+                    if UNSLOTH_ENABLE_LOGGING:
                         print(
                             f"[Unsloth] GRPO sequence-packing (no-grad) disabled (fell back to padded): {_pk_err!r}",
                             flush = True,
