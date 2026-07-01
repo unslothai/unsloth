@@ -41,6 +41,33 @@ def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
     }
 
 
+def _make_mlx_presence_penalty_processor(penalty: float):
+    """OpenAI-style presence penalty as an mlx_lm/mlx_vlm logits processor,
+    matching the transformers safetensors path (once per distinct completion
+    token, prompt excluded, multiplicity ignored, negatives raise).
+
+    generate_step calls processors as ``fn(tokens, logits)`` with ``tokens`` the
+    full running sequence (prompt + generated) and ``logits`` ``[1, vocab]``. The
+    first call is prompt-only, so latch that length and penalize only after it.
+    """
+    state = {"prompt_len": None}
+
+    def _processor(tokens, logits):
+        if state["prompt_len"] is None:
+            # First call = prompt only; latch its length, penalize nothing yet.
+            state["prompt_len"] = int(tokens.shape[0])
+            return logits
+        generated = tokens[state["prompt_len"]:]
+        if generated.size == 0:
+            return logits
+        # Scatter-assign is idempotent for duplicate ids, so presence applies
+        # once per token, on-device, with no per-step host sync.
+        logits[:, generated] = logits[:, generated] - penalty
+        return logits
+
+    return _processor
+
+
 class MLXInferenceBackend:
     def __init__(self):
         self.models = {}
@@ -270,6 +297,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        presence_penalty = 0.0,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -317,6 +345,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                presence_penalty = presence_penalty,
             )
         else:
             yield from self._generate_text(
@@ -332,6 +361,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                presence_penalty = presence_penalty,
             )
 
     def _generate_text(
@@ -349,6 +379,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        presence_penalty = 0.0,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
@@ -375,15 +406,24 @@ class MLXInferenceBackend:
             min_p = float(min_p or 0.0),
             min_tokens_to_keep = 1,
         )
-        # Only build a logits processor for a non-trivial repetition penalty.
-        logits_processors = None
+        # Logits processors for repetition penalty and/or presence penalty
+        # (OpenAI-style; parity with the GGUF and safetensors paths).
+        logits_processors = []
         if repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
             1.0,
         ):
-            logits_processors = make_logits_processors(
-                repetition_penalty = float(repetition_penalty),
+            logits_processors.extend(
+                make_logits_processors(
+                    repetition_penalty = float(repetition_penalty),
+                )
             )
+        if presence_penalty:
+            logits_processors.append(
+                _make_mlx_presence_penalty_processor(float(presence_penalty))
+            )
+        if not logits_processors:
+            logits_processors = None
 
         token_ids = []
         logger.info(
@@ -449,6 +489,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        presence_penalty = 0.0,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -496,10 +537,26 @@ class MLXInferenceBackend:
             top_k = int(top_k or 0),
             min_p = float(min_p or 0.0),
         )
-        if repetition_penalty is not None and float(repetition_penalty) not in (
+        _rep_active = repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
             1.0,
-        ):
+        )
+        if presence_penalty:
+            # Presence needs a custom processor: build the full list (repetition +
+            # presence) and pass it directly instead of the repetition_penalty
+            # shortcut so both apply once. pp=0 keeps the shortcut path below.
+            from mlx_lm.sample_utils import make_logits_processors
+
+            _vlm_processors = []
+            if _rep_active:
+                _vlm_processors.extend(
+                    make_logits_processors(repetition_penalty = float(repetition_penalty))
+                )
+            _vlm_processors.append(
+                _make_mlx_presence_penalty_processor(float(presence_penalty))
+            )
+            vlm_kwargs["logits_processors"] = _vlm_processors
+        elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
         with self._generation_lock:

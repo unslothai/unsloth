@@ -431,6 +431,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             "min_p": cmd.get("min_p", 0.0),
             "max_new_tokens": cmd.get("max_new_tokens", 256),
             "repetition_penalty": cmd.get("repetition_penalty", 1.0),
+            "presence_penalty": cmd.get("presence_penalty", 0.0),
             "cancel_event": cancel_event,
         }
 
