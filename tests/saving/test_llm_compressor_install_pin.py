@@ -54,8 +54,12 @@ def test_ceiling_blocks_inflated_versions() -> None:
     assert spec.contains("0.12.0"), "the current vetted release must resolve"
     assert not spec.contains("0.999.0"), "an inflated 0.x must be blocked"
     assert not spec.contains("1.0.0"), "a new major must not be auto-installed"
-    assert not spec.contains("0.12.1"), "a higher in-range patch must be blocked (cap to the vetted patch)"
-    assert not spec.contains("0.12.999"), "a crafted higher in-range patch (e.g. on a mirror) must be blocked"
+    assert not spec.contains(
+        "0.12.1"
+    ), "a higher in-range patch must be blocked (cap to the vetted patch)"
+    assert not spec.contains(
+        "0.12.999"
+    ), "a crafted higher in-range patch (e.g. on a mirror) must be blocked"
 
 
 def test_floor_stays_compatible_with_supported_torch() -> None:
