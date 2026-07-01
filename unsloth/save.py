@@ -4605,8 +4605,10 @@ def _unsloth_save_torchao(
         # auto_map in any staged config (the original load already had the user's consent).
         if not trust_remote_code:
             for _cfg in (
-                "config.json", "tokenizer_config.json",
-                "processor_config.json", "preprocessor_config.json",
+                "config.json",
+                "tokenizer_config.json",
+                "processor_config.json",
+                "preprocessor_config.json",
             ):
                 try:
                     _p = os.path.join(staging, _cfg)
