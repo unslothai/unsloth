@@ -1363,10 +1363,10 @@ def install_python_non_blocking(packages = []):
     return run_installer
 
 
-# Bound the first-use auto-install so a compromised / inflated ("0.999.0") release can't be pulled:
-# cap to the current vetted minor (bump <0.13 deliberately after vetting a newer one). Floor 0.6.0
-# keeps torch>=2.4 boxes resolvable (llm-compressor 0.7+ need torch>=2.7; torch is pinned below).
-_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<0.13"
+# Bound the first-use auto-install so no unvetted release is pulled: not an inflated "0.999.0", nor
+# a crafted higher in-range patch like "0.12.999" from a mirror. Cap to the exact vetted patch and
+# bump deliberately. Floor 0.6.0 keeps torch>=2.4 resolvable (0.7+ need torch>=2.7; torch pinned below).
+_LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
 
 
 def install_llm_compressor():

@@ -47,13 +47,15 @@ def test_spec_is_a_bounded_pin() -> None:
 
 
 def test_ceiling_blocks_inflated_versions() -> None:
-    """Cap to a vetted minor: a bare <1.0 admits any 0.x, so an inflated 0.999.0 could win pip."""
+    """Cap to the exact vetted patch: block an inflated 0.x, a new major, and any higher in-range patch."""
     from packaging.requirements import Requirement
 
     spec = Requirement(_spec_value()).specifier
     assert spec.contains("0.12.0"), "the current vetted release must resolve"
-    assert not spec.contains("0.999.0"), "an inflated 0.x must be blocked (cap to a vetted minor)"
+    assert not spec.contains("0.999.0"), "an inflated 0.x must be blocked"
     assert not spec.contains("1.0.0"), "a new major must not be auto-installed"
+    assert not spec.contains("0.12.1"), "a higher in-range patch must be blocked (cap to the vetted patch)"
+    assert not spec.contains("0.12.999"), "a crafted higher in-range patch (e.g. on a mirror) must be blocked"
 
 
 def test_floor_stays_compatible_with_supported_torch() -> None:
