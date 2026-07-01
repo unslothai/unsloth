@@ -66,12 +66,12 @@ def test_non_mlx_exports_public_trainer_api_when_available():
     """GPU/ROCm imports should keep exporting the public Unsloth trainer API."""
     try:
         unsloth = importlib.import_module("unsloth")
-    except ModuleNotFoundError as exc:
-        # Non-MLX import pulls optional GPU deps; skip when they are unavailable
-        # rather than failing collection on CPU/ROCm/XPU review hosts.
-        if exc.name in {"bitsandbytes", "triton"}:
-            pytest.skip(f"non-MLX import dependency unavailable: {exc.name}")
-        raise
+    except ImportError as exc:
+        # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo,
+        # bitsandbytes/triton, and _gpu_init can re-raise missing deps as
+        # ImportError). Skip when any of it is unavailable rather than failing
+        # collection on CPU/ROCm/XPU review hosts.
+        pytest.skip(f"non-MLX import dependency unavailable: {exc}")
     if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
         pytest.skip("non-MLX export smoke test only runs on GPU/ROCm backends")
 
@@ -820,7 +820,7 @@ def test_mlx_compatibility_shims_are_installed():
     assert unsloth.trainer is trainer_module
     assert unsloth.chat_templates is chat_templates
     assert trl.SFTTrainer is unsloth.UnslothTrainer
-    assert trl.SFTConfig is unsloth.UnslothTrainingArguments
+    assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
     assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
     assert chat_templates.train_on_responses_only is dataset_utils.train_on_responses_only
@@ -849,7 +849,7 @@ def test_mlx_trl_shim_preserves_existing_trl_module(monkeypatch):
     assert sys.modules["trl"] is trl
     assert trl.__path__ == ["real-trainer-package"]
     assert trl.SFTTrainer is unsloth.UnslothTrainer
-    assert trl.SFTConfig is unsloth.UnslothTrainingArguments
+    assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trl.__UNSLOTH_MLX_COMPAT__ is True
     assert "ExistingExport" in trl.__all__
     assert "BrokenExport" not in trl.__all__
@@ -871,7 +871,7 @@ def test_mlx_trl_shim_installs_real_trl_or_stub(monkeypatch):
     else:
         assert trl.__version__ == "0.0.0+unsloth-mlx"
     assert trl.SFTTrainer is unsloth.UnslothTrainer
-    assert trl.SFTConfig is unsloth.UnslothTrainingArguments
+    assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trl.__UNSLOTH_MLX_COMPAT__ is True
 
 
@@ -942,6 +942,24 @@ def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
     for name in ("GRPOTrainer", "DPOTrainer"):
         with pytest.raises(NotImplementedError):
             getattr(trl, name)(model = None)
+
+
+def test_mlx_stubs_trl_trainers_outside_fixed_set(monkeypatch):
+    """Any non-SFT trainer trl exports (e.g. a newer RLOOTrainer not in the fixed
+    list) must be stubbed too, so no torch trainer slips through on MLX."""
+    unsloth = _import_mlx_unsloth()
+    trl = types.ModuleType("trl")
+    trl.__path__ = ["real-trainer-package"]
+    trl.__all__ = ["SFTTrainer", "SFTConfig", "RLOOTrainer"]
+    monkeypatch.setitem(sys.modules, "trl", trl)
+
+    unsloth._install_mlx_trl_sft_shim()
+
+    with pytest.raises(NotImplementedError) as exc:
+        trl.RLOOTrainer(model = None)
+    assert "MLX" in str(exc.value) and "RLOOTrainer" in str(exc.value)
+    # SFT stays usable; only non-SFT trainers are stubbed
+    assert trl.SFTTrainer is unsloth.UnslothTrainer
 
 
 def test_mlx_preserve_dataset_order_is_accepted():

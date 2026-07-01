@@ -278,6 +278,16 @@ if _IS_MLX:
                 total = int(get_gpu_memory_stats()[2] * 1024 * 1024 * 1024)
                 return (max(total - _mlx_active_memory_bytes(), 0), total)
 
+            def reset_peak_memory_stats(device = None):
+                """Reset MLX's peak-memory counter so a later max_memory_reserved /
+                max_memory_allocated scopes to the run, not earlier model-load peaks."""
+                import mlx.core as mx
+                reset = getattr(mx, "reset_peak_memory", None)
+                if reset is None and hasattr(mx, "metal"):
+                    reset = getattr(mx.metal, "reset_peak_memory", None)
+                if callable(reset):
+                    reset()
+
             cuda.get_device_properties = get_device_properties
             cuda.get_device_name = get_device_name
             cuda.max_memory_reserved = max_memory_reserved
@@ -286,7 +296,7 @@ if _IS_MLX:
             cuda.memory_allocated = memory_current
             cuda.empty_cache = empty_cache
             cuda.mem_get_info = mem_get_info
-            cuda.reset_peak_memory_stats = lambda device = None: None
+            cuda.reset_peak_memory_stats = reset_peak_memory_stats
             cuda.synchronize = lambda device = None: None
             cuda.current_device = lambda: 0
             cuda.device_count = lambda: 1
@@ -1140,7 +1150,14 @@ if _IS_MLX:
         # trainer import, pulling torch and breaking `import unsloth` on torch-free
         # MLX just to check existence.
         _trl_exports = set(getattr(_trl, "__all__", ()) or ())
-        for _name in _MLX_UNSUPPORTED_TRL_TRAINERS:
+        # Stub every non-SFT trainer trl exposes, not just a fixed list, so newer
+        # trainers (RLOOTrainer, ...) also fail with a clear MLX message instead
+        # of importing the real torch trainer. Names come from __all__ so we never
+        # resolve them (that would trigger trl's lazy import and pull torch).
+        _unsupported = set(_MLX_UNSUPPORTED_TRL_TRAINERS) | {
+            _n for _n in _trl_exports if _n.endswith("Trainer") and _n != "SFTTrainer"
+        }
+        for _name in _unsupported:
             _current = vars(_trl).get(_name)
             if getattr(_current, "_unsloth_mlx_unsupported", False):
                 continue
