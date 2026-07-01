@@ -2702,9 +2702,14 @@ const VoiceEngine: FC = () => {
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
   const setVoiceOrbState = useChatRuntimeStore((s) => s.setVoiceOrbState);
   useEffect(() => {
-    if (voiceMode !== "active") { setVoiceOrbState(null); return; }
-    if (isThreadRunning)        { setVoiceOrbState("thinking"); return; }
-    if (isSpeaking)             { setVoiceOrbState("speaking"); return; }
+    if (voiceMode !== "active") {
+      console.log("[voice-newchat] orb-state effect: voiceMode=", voiceMode, "-> setVoiceOrbState(null)");
+      setVoiceOrbState(null);
+      return;
+    }
+    if (isThreadRunning)        { console.log("[voice-newchat] orb-state effect: voiceMode=", voiceMode, "-> setVoiceOrbState(thinking)"); setVoiceOrbState("thinking"); return; }
+    if (isSpeaking)             { console.log("[voice-newchat] orb-state effect: voiceMode=", voiceMode, "-> setVoiceOrbState(speaking)"); setVoiceOrbState("speaking"); return; }
+    console.log("[voice-newchat] orb-state effect: voiceMode=", voiceMode, "-> setVoiceOrbState(listening)");
     setVoiceOrbState("listening");
   }, [voiceMode, isThreadRunning, isSpeaking, setVoiceOrbState]);
 
@@ -2848,6 +2853,7 @@ const VoiceEngine: FC = () => {
     // ACTIVE → OFF (turn off the loop)
     const next: "off" | "configuring" =
       voiceModeRef.current === "off" ? "configuring" : "off";
+    console.log("[voice-newchat] toggle() called: current voiceMode=", voiceModeRef.current, "-> next=", next);
     _voiceMode = next;
     voiceModeRef.current = next;
     setVoiceModeState(next);
@@ -2901,12 +2907,28 @@ const VoiceEngine: FC = () => {
   // Thread switch resets voice entirely: toggle() exits voice mode (hiding the
   // orb), and the unload-on-off effect in chat-page then unloads the voice slot.
   // Fires only on an actual change, never on mount.
+  //
+  // prevThreadIdRef must ALWAYS end each run holding the last-seen activeThreadId,
+  // no matter which branch runs. Otherwise a transition the effect chose not to
+  // act on (e.g. null -> __LOCALID_xxx when a new chat is saved) leaves the ref
+  // stale at its old value, and a later real switch (__LOCALID_xxx -> null on
+  // New Chat) compares equal to that stale value and the reset is skipped.
   useEffect(() => {
-    if (prevThreadIdRef.current === activeThreadId) return;
-    prevThreadIdRef.current = activeThreadId;
-    if (voiceModeRef.current !== "off") {
-      toggle();
+    const current = activeThreadId;
+    const prev = prevThreadIdRef.current;
+    console.log("[voice-newchat] thread-switch effect: activeThreadId=", current, "prev=", prev, "voiceModeRef=", voiceModeRef.current);
+    if (prev === current) {
+      console.log("[voice-newchat] thread-switch effect: no change (prev === current), returning early — toggle NOT called");
+      prevThreadIdRef.current = current;
+      return;
     }
+    if (voiceModeRef.current !== "off") {
+      console.log("[voice-newchat] thread-switch effect: change detected + voice not off -> calling toggle()");
+      toggle();
+    } else {
+      console.log("[voice-newchat] thread-switch effect: change detected but voiceModeRef is off -> toggle NOT called");
+    }
+    prevThreadIdRef.current = current;
   }, [activeThreadId, toggle]);
 
   // Headless: the visible control now lives in the plus menu (ComposerToolsMenu).
