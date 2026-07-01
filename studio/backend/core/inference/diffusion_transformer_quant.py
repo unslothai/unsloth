@@ -55,6 +55,11 @@ DEFAULT_MIN_LINEAR_FEATURES = 512
 # (0.81x end-to-end on Z-Image 1024px) AND notably less accurate (LPIPS 0.166 vs fp8's
 # 0.044), because FP4's per-forward quant overhead is not amortised and the format is
 # coarser. So nvfp4 is kept as an explicit opt-in, never the auto pick for diffusion.
+#
+# This order is the DATA-CENTER preference. On a consumer / workstation GPU it is reordered
+# to put int8 first (see ``_prefer_consumer_scheme``): consumer cards halve fp8/fp16 FP32-
+# accumulate throughput, while int8 runs full-rate (int32 accumulate is not nerfed), so int8
+# is as fast or faster than fp8 on every consumer NVIDIA / AMD / Intel part.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+
     ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
@@ -72,13 +77,15 @@ _DATACENTER_GPU_TOKENS = frozenset(
     {
         "B200",
         "B100",
+        "B300",  # Blackwell Ultra data center
         "GB200",
         "GB300",
         "GB10",  # Blackwell data center
         "H200",
         "H100",
         "H800",
-        "H20",  # Hopper data center
+        "H20",
+        "GH200",  # Grace-Hopper superchip (data center)
         "A100",
         "A800",
         "A30",
@@ -99,15 +106,22 @@ _DATACENTER_GPU_TOKENS = frozenset(
 )
 
 
+# Professional parts the rest of the backend treats as datacenter-class (see llama_cpp.py
+# _DATACENTER_GPU_RE, which applies the same FP32-accum tuning to them). Matched as phrases
+# because the marker spans tokens ("RTX PRO 6000", "RTX 6000 ADA"), so they must not be
+# misread as consumer (which would put int8 ahead of fp8 and pick fast accumulate).
+_PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
+
+
 def _is_consumer_gpu(device: Any = None) -> bool:
-    """Whether the active GPU is consumer / workstation class (GDDR), where fp8 FP32
-    accumulate is throughput-halved so fast (FP16) accumulate is a ~2x win. Data-center
-    HBM parts (recognised by name token) are not nerfed and return False, so they keep
-    the higher-precision default accumulate for free. Heuristic on the device name: a
-    GeForce / TITAN name is always consumer; a recognised data-center token is not;
-    anything else (workstation RTX, unknown) defaults to consumer -- the safe choice,
-    since fast accumulate is free on data-center and a win on consumer. Best-effort:
-    True on any probe failure."""
+    """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is
+    throughput-halved so fast (FP16) accumulate is a ~2x win. Data-center HBM parts and
+    professional parts (recognised by name) are not nerfed and return False, so they keep
+    the higher-precision default accumulate and fp8 first. Heuristic on the device name: a
+    GeForce / TITAN name is always consumer; a recognised data-center token or professional
+    marker is not; anything else (unknown) defaults to consumer -- the safe choice, since
+    fast accumulate is free on data-center and a win on consumer. Best-effort: True on any
+    probe failure."""
     try:
         import re
 
@@ -117,6 +131,8 @@ def _is_consumer_gpu(device: Any = None) -> bool:
         return True
     if "GEFORCE" in name or "TITAN" in name:
         return True
+    if any(marker in name for marker in _PROFESSIONAL_GPU_MARKERS):
+        return False
     tokens = set(re.split(r"[^A-Z0-9]+", name))
     return not (tokens & _DATACENTER_GPU_TOKENS)
 
@@ -168,11 +184,22 @@ def select_transformer_quant_scheme(target: Any, requested: Optional[str]) -> Op
         return None
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            for scheme in schemes:
+            for scheme in _prefer_consumer_scheme(schemes, device):
                 if _scheme_supported(scheme, device):
                     return scheme
             return None
     return None
+
+
+def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
+    """Reorder an arch tier's schemes for the GPU class. On a consumer / workstation card
+    move int8 to the front: consumer parts halve fp8/fp16 FP32-accumulate throughput, while
+    int8 runs at full rate (int32 accumulate is not nerfed), so int8 is as fast or faster
+    than fp8 on every consumer NVIDIA / AMD / Intel GPU (and the only path on pre-Ada
+    consumer without fp8 tensor cores). Data-center HBM parts keep fp8 first."""
+    if TQ_INT8 in schemes and schemes[0] != TQ_INT8 and _is_consumer_gpu(device):
+        return (TQ_INT8,) + tuple(s for s in schemes if s != TQ_INT8)
+    return schemes
 
 
 def _capability() -> Optional[tuple[int, int]]:
