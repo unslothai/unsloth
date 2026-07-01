@@ -297,6 +297,8 @@ def test_strip_final_keeps_text_after_closed_xml_with_inner_gemma_opener():
     # A closed <function=...></function> whose parameter text contains a bare
     # <|tool_call> must be stripped as a unit; the to-EOF Gemma sweep must not eat
     # the trailing visible text after </function>.
-    text = 'before <function=python><parameter=code>print("<|tool_call>")</parameter></function> after'
+    text = (
+        'before <function=python><parameter=code>print("<|tool_call>")</parameter></function> after'
+    )
     assert strip_tool_call_markup(text, final = True) == "before  after"
     assert strip_tool_call_markup(text) == "before  after"
