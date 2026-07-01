@@ -1338,11 +1338,19 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # A Program Files dir can hold a transient handle (Defender / MSBuild node)
+          # so Rename-Item intermittently fails with "Access is denied"; retry to ride it out.
+          function Rename-WithRetry($Path, $NewName) {
+            for ($i = 1; $i -le 6; $i++) {
+              try { Rename-Item -LiteralPath $Path -NewName $NewName -ErrorAction Stop; return }
+              catch { if ($i -eq 6) { throw }; Start-Sleep -Seconds 3 }
+            }
+          }
           # Rename the Visual Studio install roots (incl. the Installer that holds
           # vswhere.exe) so Find-VsBuildTools' vswhere + filesystem scan both miss.
           foreach ($d in @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
             if (Test-Path -LiteralPath $d) {
-              Rename-Item -LiteralPath $d -NewName ((Split-Path $d -Leaf) + '.vsoff')
+              Rename-WithRetry $d ((Split-Path $d -Leaf) + '.vsoff')
               Write-Host "Hid VS: $d"
             }
           }
@@ -1351,7 +1359,7 @@ jobs:
           $hidden = @()
           foreach ($c in (Get-Command cmake -All -ErrorAction SilentlyContinue)) {
             if ($c.Source -and (Test-Path -LiteralPath $c.Source)) {
-              Rename-Item -LiteralPath $c.Source -NewName ((Split-Path $c.Source -Leaf) + '.off')
+              Rename-WithRetry $c.Source ((Split-Path $c.Source -Leaf) + '.off')
               $hidden += $c.Source
               Write-Host "Hid cmake: $($c.Source)"
             }
@@ -1376,7 +1384,7 @@ jobs:
       - name: PyTorch CPU wheel installs and imports (no Visual Studio)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
           python -c "import torch; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())"
 
       - name: Install Studio (--local, --no-torch) with no build tools present
@@ -1536,8 +1544,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # Retry the rename: a Program Files dir can hold a transient handle that
+          # makes Rename-Item intermittently fail with "Access is denied".
+          function Rename-WithRetry($Path, $NewName) {
+            for ($i = 1; $i -le 6; $i++) {
+              try { Rename-Item -LiteralPath $Path -NewName $NewName -ErrorAction Stop; return }
+              catch { if ($i -eq 6) { throw }; Start-Sleep -Seconds 3 }
+            }
+          }
           foreach ($d in @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")) {
-            if (Test-Path -LiteralPath $d) { Rename-Item -LiteralPath $d -NewName ((Split-Path $d -Leaf) + '.vsoff'); Write-Host "Hid VS: $d" }
+            if (Test-Path -LiteralPath $d) { Rename-WithRetry $d ((Split-Path $d -Leaf) + '.vsoff'); Write-Host "Hid VS: $d" }
           }
 
       - name: Windows CUDA and ROCm prebuilts exist in unslothai/llama.cpp (what GPU users download, no VS)

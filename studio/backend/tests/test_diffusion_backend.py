@@ -284,6 +284,20 @@ def test_cpu_offload_ignored_off_cuda(fake_runtime, tmp_path):
     assert status["cpu_offload"] is False
 
 
+def test_low_vram_ignored_off_cuda(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        family_override = "z-image",
+        base_repo = "base/repo",
+        memory_mode = "low_vram",
+    )
+    # No CUDA in the stub, so offload is not engaged regardless of the request.
+    assert status["cpu_offload"] is False
+
+
 def test_generate_without_load_raises(fake_runtime):
     backend = DiffusionBackend()
     with pytest.raises(RuntimeError):
