@@ -57,6 +57,7 @@ def main(argv = None) -> int:
     from core.inference.diffusion_transformer_quant import (
         TQ_SCHEMES,
         _make_quant_config,
+        exclude_tokens_for_scheme,
         make_filter_fn,
     )
     from torchao.quantization import quantize_
@@ -78,7 +79,17 @@ def main(argv = None) -> int:
         args.base, subfolder = "transformer", torch_dtype = torch.bfloat16, token = args.hf_token
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
-    quantize_(transformer, _make_quant_config(scheme), filter_fn = make_filter_fn(args.min_features))
+    # Mirror the runtime path EXACTLY (the offline == runtime, LPIPS-0 invariant): for int8 also
+    # skip the M=1 AdaLN-modulation / conditioning-embedder projections, else the saved checkpoint
+    # bakes them as int8 and crashes (torch._int_mm needs M>16) at the first denoise step on
+    # Flux / Qwen. fp8 / fp4 / mx use scaled_mm (no M limit) -> exclude_tokens_for_scheme returns ().
+    quantize_(
+        transformer,
+        _make_quant_config(scheme),
+        filter_fn = make_filter_fn(
+            args.min_features, exclude_name_tokens = exclude_tokens_for_scheme(scheme)
+        ),
+    )
 
     # Move the state dict to CPU for a portable, GPU-free artifact.
     state_dict = {

@@ -37,12 +37,41 @@ TQ_AUTO = "auto"
 TQ_SCHEMES = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)
 TQ_MODES = (TQ_AUTO,) + TQ_SCHEMES
 
-# Skip linears whose in/out features are below this. The int8 dynamic path uses
-# torch._int_mm, which requires the activation row count M > 16, and the DiT's tiny
-# timestep / pooled / modulation projections run at M=1 and crash it. They are a
-# negligible share of the FLOPs, so leaving them bf16 costs ~nothing (measured:
-# 239/276 Z-Image linears quantised, full speedup) and keeps quality a touch higher.
+# Skip linears whose in/out features are below this. A small share of the FLOPs, so leaving
+# them bf16 costs ~nothing and keeps quality a touch higher.
 DEFAULT_MIN_LINEAR_FEATURES = 512
+
+# int8-ONLY name exclusions. The int8 dynamic path uses torch._int_mm, which requires the
+# activation row count M > 16. A DiT's AdaLN *modulation* projections and its timestep /
+# guidance / pooled-text *conditioning embedders* are computed once from the [batch, dim]
+# conditioning vector (M = batch = 1), not per token -- so they crash _int_mm even though
+# their feature dims are large (e.g. Flux's norm1.linear 3072->18432, Qwen's img_mod.1, Flux.2's
+# *_modulation.linear). min_features does NOT catch them (they are big), so int8 also skips any
+# Linear whose fqn matches one of these tokens. They are a negligible share of the FLOPs (run at
+# M=1, once per block), so int8 keeps the full speedup on the attention/FFN layers (M = seq).
+# fp8 / nvfp4 / mxfp8 use scaled_mm (no M>16 limit) and quantise these layers fine, so the
+# exclusion is int8-only. Sequence embedders (context_embedder / x_embedder / txt_in, M = seq)
+# are deliberately NOT excluded.
+_INT8_EXCLUDE_NAME_TOKENS = (
+    "norm",  # AdaLN modulation .linear (norm1 / norm1_context / norm / norm_out)
+    "_mod",  # Qwen img_mod / txt_mod
+    "modulation",  # Flux.2 double/single_stream_modulation
+    "timestep_embed",
+    "guidance_embed",
+    "time_text_embed",  # Flux/Qwen time_text_embed.* (pooled-text + timestep); NOT context_embedder
+    "pooled",
+)
+
+
+def exclude_tokens_for_scheme(scheme: str) -> tuple[str, ...]:
+    """Name tokens to exclude from quantisation for ``scheme``. int8 (torch._int_mm, M>16)
+    skips the M=1 modulation / conditioning-embedder projections (see _INT8_EXCLUDE_NAME_TOKENS);
+    every other scheme uses scaled_mm (no M limit) and excludes nothing. Shared by the runtime
+    quantise path and the offline prequant-checkpoint builder so the two never drift -- an int8
+    checkpoint built offline must skip exactly the layers the runtime path skips, or it bakes the
+    M=1 projections as int8 and crashes at the first denoise step on Flux / Qwen."""
+    return _INT8_EXCLUDE_NAME_TOKENS if scheme == TQ_INT8 else ()
+
 
 # Per-architecture preference order for ``auto`` -- best (fastest, in-bar) first, with
 # the lower-precision schemes listed as fallbacks for that arch tier. On Blackwell, fp8
@@ -307,9 +336,11 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 
 
-def make_filter_fn(min_features: int):
-    """A torchao ``quantize_`` filter keeping only the FLOP-heavy linears: nn.Linear
-    with both in/out features >= ``min_features``. Hides the (module, fqn) callback arity."""
+def make_filter_fn(min_features: int, exclude_name_tokens: tuple[str, ...] = ()):
+    """A torchao ``quantize_`` filter keeping only the FLOP-heavy linears: nn.Linear with both
+    in/out features >= ``min_features`` AND whose fully-qualified name contains none of
+    ``exclude_name_tokens`` (used by int8 to skip the M=1 modulation / conditioning-embedder
+    projections that crash ``torch._int_mm``). Hides the (module, fqn) callback arity."""
 
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:
@@ -322,7 +353,13 @@ def make_filter_fn(min_features: int):
         out_features = getattr(module, "out_features", None)
         if in_features is None or out_features is None:
             return False
-        return in_features >= min_features and out_features >= min_features
+        if in_features < min_features or out_features < min_features:
+            return False
+        if exclude_name_tokens:
+            name = fqn.lower() if fqn else ""
+            if any(tok in name for tok in exclude_name_tokens):
+                return False
+        return True
 
     return filter_fn
 
@@ -352,10 +389,13 @@ def quantize_transformer(
     try:
         from torchao.quantization import quantize_
 
+        # int8 (torch._int_mm, M>16) additionally skips the M=1 modulation / conditioning-embedder
+        # projections; fp8 / fp4 / mx (scaled_mm) have no such limit and quantise everything.
+        exclude = exclude_tokens_for_scheme(scheme)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
-            filter_fn = make_filter_fn(min_features),
+            filter_fn = make_filter_fn(min_features, exclude_name_tokens = exclude),
         )
         # Runtime-only marker (torchao tensors are not safetensors-serializable; this
         # backend is inference-only, so this is purely diagnostic).

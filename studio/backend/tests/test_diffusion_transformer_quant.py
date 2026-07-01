@@ -325,6 +325,67 @@ def test_make_filter_fn(monkeypatch):
     assert keep(types.SimpleNamespace(), "no_attrs") is False
 
 
+def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
+    # The int8 path skips the large M=1 AdaLN modulation / conditioning-embedder projections
+    # (they crash torch._int_mm's M>16), while keeping the attention / FFN compute layers and
+    # the sequence embedders. fp8 (no exclusion) keeps everything.
+    from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
+
+    class _Lin:
+        def __init__(self, i, o):
+            self.in_features, self.out_features = i, o
+
+    torch = types.ModuleType("torch")
+    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    keep = make_filter_fn(512, exclude_name_tokens = _INT8_EXCLUDE_NAME_TOKENS)
+    big = lambda: _Lin(3072, 18432)  # noqa: E731 — large enough to pass min_features
+    # Excluded (M=1 modulation / conditioning embedders), despite large features:
+    for fqn in (
+        "transformer_blocks.0.norm1.linear",
+        "transformer_blocks.0.norm1_context.linear",
+        "single_transformer_blocks.0.norm.linear",
+        "norm_out.linear",
+        "transformer_blocks.0.img_mod.1",
+        "transformer_blocks.0.txt_mod.1",
+        "double_stream_modulation_img.linear",
+        "time_text_embed.timestep_embedder.linear_2",
+        "time_text_embed.guidance_embedder.linear_2",
+        "time_guidance_embed.timestep_embedder.linear_2",
+    ):
+        assert keep(big(), fqn) is False, fqn
+    # Kept (M=seq compute layers + sequence embedders), NOT matched by the modulation tokens:
+    for fqn in (
+        "transformer_blocks.0.attn.to_q",
+        "transformer_blocks.0.ff.net.0.proj",
+        "single_transformer_blocks.0.proj_mlp",
+        "single_transformer_blocks.0.attn.to_qkv_mlp_proj",
+        "context_embedder",  # "context" contains "text" -> must NOT be excluded
+        "txt_in",
+    ):
+        assert keep(big(), fqn) is True, fqn
+    # Without the exclusion (fp8 path), the modulation layer is kept.
+    assert make_filter_fn(512)(big(), "transformer_blocks.0.norm1.linear") is True
+    # A None / empty fqn must not crash the exclusion check (defensive against the callback
+    # passing no name); with no name nothing matches the exclusion tokens -> kept.
+    assert keep(big(), None) is True
+    assert keep(big(), "") is True
+
+
+def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
+    # The runtime quantiser and the offline prequant builder must apply the SAME int8
+    # exclusion, or an int8 prequant artifact quantises the M=1 modulation/embedder linears
+    # and reintroduces the torch._int_mm crash. int8 gets the exclusion; others get none.
+    from core.inference.diffusion_transformer_quant import (
+        _INT8_EXCLUDE_NAME_TOKENS,
+        exclude_tokens_for_scheme,
+    )
+    assert exclude_tokens_for_scheme(TQ_INT8) == _INT8_EXCLUDE_NAME_TOKENS
+    for scheme in (TQ_FP8, TQ_NVFP4, TQ_MXFP8):
+        assert exclude_tokens_for_scheme(scheme) == ()
+
+
 # ── apply ───────────────────────────────────────────────────────────────────────
 
 
