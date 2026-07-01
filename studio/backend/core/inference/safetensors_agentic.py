@@ -25,6 +25,7 @@ from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_RE,
     _TOOL_ALL_PATS,
     _balanced_brace_end,
+    _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
     _strip_mistral_closed_calls,
@@ -106,13 +107,17 @@ def strip_tool_markup_streaming(
     """Strip open-ended tool XML from display text without trimming whitespace."""
     if not (auto_heal_tool_calls or tool_protocol_active):
         return text
+    # Mirror the final strip's scan order so streaming and final display agree.
     # Balanced strip first so nested Mistral / Gemma JSON ({"a":{"b":1}},
     # call:f{a:{b:1}}) is removed whole instead of the non-greedy pattern arms
-    # truncating at the first ``}`` and leaving a trailing brace visible. The GLM
-    # scan finds each call's real </tool_call> so a literal </tool_call> in an arg
-    # value is data, not a leak.
+    # truncating at the first ``}`` and leaving a trailing brace visible. The guarded
+    # function-XML and GLM scans each close at the call's REAL terminator so a literal
+    # ``<function=...>`` / ``</tool_call>`` inside an arg value is data, not a leak, and
+    # trailing prose after the call survives. No final trim so incremental length
+    # comparisons in the streaming loop still hold.
     text = _strip_mistral_closed_calls(text)
     text = _strip_gemma_wrapperless_calls(text)
+    text = _strip_function_xml_calls(text, final = True)
     text = _strip_glm_calls(text, final = True)
     for pat in _TOOL_ALL_PATS:
         text = pat.sub("", text)

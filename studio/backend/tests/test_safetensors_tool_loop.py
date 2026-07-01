@@ -258,6 +258,19 @@ class TestParser:
         assert "}" not in out
         assert "ok " in out and "tail" in out
 
+    def test_streaming_strip_keeps_prose_after_function_xml_with_literal_marker(self):
+        # A literal ``<function=...>`` inside a parameter value is data, not a nested
+        # call, so the streaming strip must close the call at its REAL ``</function>``
+        # and keep the trailing prose -- matching the guarded final strip. The raw
+        # open-ended regex ate everything to EOF, dropping `` tail``.
+        raw = (
+            'pref <function=python><parameter=code>'
+            'print("<function=x>")</parameter></function> tail'
+        )
+        assert strip_tool_markup_streaming(raw) == "pref  tail"
+        # Streaming and final strip agree on the visible text (final also trims).
+        assert strip_tool_markup_streaming(raw) == strip_tool_markup(raw, final = True)
+
 
 class TestParserMultiFormat:
     """Parser coverage for Llama-3 / Mistral / Gemma 4 emission formats.
@@ -3624,6 +3637,8 @@ def test_looks_like_enabled_bare_json_accepts_function_alias():
     from core.inference.safetensors_agentic import _looks_like_enabled_bare_json
 
     enabled = {"web_search"}
-    assert _looks_like_enabled_bare_json('{"function":"web_search","parameters":{"q":"x"}}', enabled)
+    assert _looks_like_enabled_bare_json(
+        '{"function":"web_search","parameters":{"q":"x"}}', enabled
+    )
     # A non-tool "function" value is an ordinary JSON answer -> not gated.
     assert not _looks_like_enabled_bare_json('{"function":"Alice","parameters":{}}', enabled)

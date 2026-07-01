@@ -46,6 +46,7 @@ from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_RE,
     _TOOL_ALL_PATS,
     _balanced_brace_end,
+    _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
     _strip_mistral_closed_calls,
@@ -7899,8 +7900,11 @@ class LlamaCppBackend:
             # arms); no final trim so incremental length comparisons still hold.
             text = _strip_mistral_closed_calls(text)
             text = _strip_gemma_wrapperless_calls(text)
-            # GLM scan finds each call's real </tool_call> so a literal </tool_call>
-            # in an arg value is data, not a leaked tail.
+            # Guarded function-XML and GLM scans each close at the call's REAL terminator
+            # (parser-accurate) BEFORE the regex arms, matching the final strip: a literal
+            # ``<function=...>`` / ``</tool_call>`` inside a parameter value is data, not a
+            # call, so the open-ended regex tail must not eat the real trailing prose.
+            text = _strip_function_xml_calls(text, final = True)
             text = _strip_glm_calls(text, final = True)
             for pat in _TOOL_ALL_PATS:
                 text = pat.sub("", text)
@@ -7987,6 +7991,11 @@ class LlamaCppBackend:
         # "Hello!" won't match. Pattern compiled at module level
         # (_INTENT_SIGNAL).
         _reprompt_count = 0
+        # Real tool-call turns completed (excludes re-prompt-only stalls). The
+        # reserved re-prompt slots must NOT extend the caller's tool-call budget, so
+        # this counter -- not the enlarged loop range -- gates ``max_tool_iterations``
+        # (mirrors the safetensors ``_tool_iters_done`` guard).
+        _tool_iters_done = 0
         _forced_tool_call_pending = False
 
         # Reserve extra iterations for re-prompts so they don't consume the
@@ -7995,6 +8004,9 @@ class LlamaCppBackend:
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
+            # Whether this turn actually ran a tool (set on record_result). A no-op-only
+            # turn leaves it False so it does not consume the caller's tool budget.
+            _turn_executed_real_tool = False
 
             active_tools = tool_controller.active_tools()
             if not active_tools:
@@ -8792,6 +8804,8 @@ class LlamaCppBackend:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                    # A tool ran this turn, so it counts against the caller's budget.
+                    _turn_executed_real_tool = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
 
@@ -8815,6 +8829,18 @@ class LlamaCppBackend:
                 if tool_controller.force_final_answer or not tool_controller.active_tools():
                     _append_budget_exhausted_nudge = False
                     break
+                # Count only turns that actually executed a tool against the caller's
+                # budget, so the reserved re-prompt slots cannot be spent as extra REAL
+                # tool rounds (with max_tool_iterations=1 the loop used to run up to
+                # _MAX_REPROMPTS additional tool rounds). A duplicate/disabled no-op turn
+                # is a correction turn -- like a plan-without-action re-prompt -- so it
+                # does not consume budget; the model gets its "already completed" nudge
+                # and another tool-enabled turn. When the real-tool budget is spent, stop
+                # so the post-loop final-answer nudge fires.
+                if _turn_executed_real_tool:
+                    _tool_iters_done += 1
+                    if _tool_iters_done >= max_tool_iterations:
+                        break
                 continue
 
             except httpx.ConnectError:
