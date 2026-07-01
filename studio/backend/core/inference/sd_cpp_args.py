@@ -350,9 +350,12 @@ def build_sd_cpp_server_command(
     cmd += ["--listen-ip", str(host), "--listen-port", str(int(port))]
     if scratch_dir:
         cmd += [
-            "--lora-model-dir", scratch_dir,
-            "--hires-upscalers-dir", scratch_dir,
-            "--embd-dir", scratch_dir,
+            "--lora-model-dir",
+            scratch_dir,
+            "--hires-upscalers-dir",
+            scratch_dir,
+            "--embd-dir",
+            scratch_dir,
         ]
     if threads is not None:
         cmd += ["--threads", str(int(threads))]

@@ -110,7 +110,9 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             return None
 
 
-def ensure_sd_server_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
+def ensure_sd_server_binary(
+    *, allow_install: bool = True, accelerator: str = "cpu"
+) -> Optional[str]:
     """Path to a usable ``sd-server`` binary, installing the prebuilt once if needed.
 
     Unlike ``ensure_sd_cpp_binary``, this installs when *sd-server specifically* is

@@ -91,13 +91,30 @@ class _FakeServer:
         self.stopped = False
         self.payloads = []
 
-    def start(self, files, *, vae_format = None, offload = None, native_speed = None, threads = None):
+    def start(
+        self,
+        files,
+        *,
+        vae_format = None,
+        offload = None,
+        native_speed = None,
+        threads = None,
+    ):
         self.started = dict(
-            files = files, vae_format = vae_format, offload = offload,
-            native_speed = native_speed, threads = threads,
+            files = files,
+            vae_format = vae_format,
+            offload = offload,
+            native_speed = native_speed,
+            threads = threads,
         )
 
-    def img_gen(self, payload, *, on_step = None, cancel_event = None):
+    def img_gen(
+        self,
+        payload,
+        *,
+        on_step = None,
+        cancel_event = None,
+    ):
         import io as _io
 
         self.payloads.append(payload)
@@ -370,7 +387,12 @@ def test_resolve_backend_falls_back_to_oneshot_without_server(monkeypatch):
     assert mode == "oneshot" and engine is not None
 
 
-def _run_server_load(monkeypatch, b, servers, fam_name = "z-image"):
+def _run_server_load(
+    monkeypatch,
+    b,
+    servers,
+    fam_name = "z-image",
+):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
 
@@ -434,7 +456,13 @@ def test_server_generate_progress_from_stdout(monkeypatch):
     seen = {}
 
     class _WatchServer(_FakeServer):
-        def img_gen(self, payload, *, on_step = None, cancel_event = None):
+        def img_gen(
+            self,
+            payload,
+            *,
+            on_step = None,
+            cancel_event = None,
+        ):
             on_step("  4/8")
             seen["mid"] = b.generate_progress()
             return super().img_gen(payload, on_step = on_step, cancel_event = cancel_event)
@@ -506,7 +534,8 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
     monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
     monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
     monkeypatch.setattr(
-        b, "_fetch_assets",
+        b,
+        "_fetch_assets",
         lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
     )
     monkeypatch.setattr(
@@ -515,8 +544,12 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
     fam = detect_family("z-image")
     b._load_token = 1
     b._run_load(
-        repo_id = "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z.gguf",
-        base = fam.base_repo, fam = fam, hf_token = None, _load_token = 1,
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
     )
     assert b._state is not None and b._state.mode == "oneshot" and b._state.server is None
     # and it can still generate via the one-shot engine

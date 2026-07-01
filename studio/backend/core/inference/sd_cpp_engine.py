@@ -131,7 +131,9 @@ def _first_file(paths: list[Path]) -> Optional[str]:
     return None
 
 
-def _find_binary(*, direct_env: str, path_stems: tuple[str, ...], layout_stem: str) -> Optional[str]:
+def _find_binary(
+    *, direct_env: str, path_stems: tuple[str, ...], layout_stem: str
+) -> Optional[str]:
     """Shared finder for the stable-diffusion.cpp binaries.
 
     Search order (mirrors the llama.cpp finder so a Studio install lands where every
@@ -155,7 +157,9 @@ def _find_binary(*, direct_env: str, path_stems: tuple[str, ...], layout_stem: s
             return hit
 
     # 3. Default install root (sibling of ~/.unsloth/llama.cpp).
-    hit = _first_file(_layout_candidates(Path.home() / ".unsloth" / "stable-diffusion.cpp", layout_stem))
+    hit = _first_file(
+        _layout_candidates(Path.home() / ".unsloth" / "stable-diffusion.cpp", layout_stem)
+    )
     if hit:
         return hit
 

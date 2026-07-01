@@ -78,7 +78,12 @@ _TERMINAL_CANCELLED = "cancelled"
 class SdCppServer:
     """A resident ``sd-server`` subprocess plus the HTTP client that drives it."""
 
-    def __init__(self, binary: str, *, host: str = "127.0.0.1") -> None:
+    def __init__(
+        self,
+        binary: str,
+        *,
+        host: str = "127.0.0.1",
+    ) -> None:
         self.binary = binary
         self.host = host
         self.port: Optional[int] = None
@@ -198,11 +203,13 @@ class SdCppServer:
                 tail = "\n".join(self._tail[-30:])
                 self._kill_locked()
                 self._dispose()
-                raise RuntimeError(
-                    "sd-server failed to become ready. Last output:\n" + tail[:2000]
-                )
+                raise RuntimeError("sd-server failed to become ready. Last output:\n" + tail[:2000])
 
-    def _wait_ready(self, timeout: float, interval: float = 0.5) -> bool:
+    def _wait_ready(
+        self,
+        timeout: float,
+        interval: float = 0.5,
+    ) -> bool:
         """Poll ``/v1/models`` until 200; bail early if the process exits.
 
         Upstream binds the port only AFTER the model is loaded, so a 200 here is a true
@@ -335,7 +342,9 @@ class SdCppServer:
             try:
                 job = resp.json()
             except ValueError as exc:
-                raise RuntimeError(f"sd-server img_gen returned a non-JSON submit response: {exc}") from exc
+                raise RuntimeError(
+                    f"sd-server img_gen returned a non-JSON submit response: {exc}"
+                ) from exc
             job_id = job.get("id")
             if not job_id:
                 raise RuntimeError(f"sd-server img_gen returned no job id: {job}")

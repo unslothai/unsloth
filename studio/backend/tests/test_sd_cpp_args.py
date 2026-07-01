@@ -304,7 +304,16 @@ def test_server_command_has_model_and_listen_but_no_request_params():
     assert _pair(cmd, "--listen-ip") == "127.0.0.1"
     assert _pair(cmd, "--listen-port") == "5678"
     # Per-request parameters must NOT be baked into the spawn command.
-    for flag in ("--prompt", "--seed", "--steps", "--cfg-scale", "--guidance", "--width", "--height", "--batch-count"):
+    for flag in (
+        "--prompt",
+        "--seed",
+        "--steps",
+        "--cfg-scale",
+        "--guidance",
+        "--width",
+        "--height",
+        "--batch-count",
+    ):
         assert flag not in cmd
 
 
@@ -349,8 +358,15 @@ def test_server_command_requires_diffusion_model():
 
 def test_img_gen_request_maps_core_fields():
     req = build_img_gen_request(
-        prompt = "a fox", negative_prompt = "blurry", width = 512, height = 768,
-        steps = 8, seed = 42, batch_count = 3, sample_method = "euler", cfg_scale = 4.0,
+        prompt = "a fox",
+        negative_prompt = "blurry",
+        width = 512,
+        height = 768,
+        steps = 8,
+        seed = 42,
+        batch_count = 3,
+        sample_method = "euler",
+        cfg_scale = 4.0,
     )
     assert req["prompt"] == "a fox" and req["negative_prompt"] == "blurry"
     assert req["width"] == 512 and req["height"] == 768

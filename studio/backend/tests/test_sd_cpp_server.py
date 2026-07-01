@@ -34,7 +34,11 @@ class _FakePopen:
     process is terminated/killed/exited -- mirroring a real child that holds its pipe
     open for its lifetime (so the owner/drain thread stays alive, as in production)."""
 
-    def __init__(self, lines = (), exit_code = None):
+    def __init__(
+        self,
+        lines = (),
+        exit_code = None,
+    ):
         self.pid = 4242
         self._lines = list(lines)
         self._exit = exit_code  # None == alive
@@ -78,7 +82,13 @@ class _FakePopen:
 
 
 class _Resp:
-    def __init__(self, status_code, payload = None, text = "", bad_json = False):
+    def __init__(
+        self,
+        status_code,
+        payload = None,
+        text = "",
+        bad_json = False,
+    ):
         self.status_code = status_code
         self._payload = payload if payload is not None else {}
         self.text = text
@@ -91,18 +101,32 @@ class _Resp:
 
 
 class _FakeClient:
-    def __init__(self, *, get = None, post = None):
+    def __init__(
+        self,
+        *,
+        get = None,
+        post = None,
+    ):
         self._get = get or (lambda url: _Resp(200, {}))
         self._post = post or (lambda url, json: _Resp(202, {"id": "job1"}))
         self.get_urls = []
         self.post_calls = []
         self.closed = False
 
-    def get(self, url, timeout = None):
+    def get(
+        self,
+        url,
+        timeout = None,
+    ):
         self.get_urls.append(url)
         return self._get(url)
 
-    def post(self, url, json = None, timeout = None):
+    def post(
+        self,
+        url,
+        json = None,
+        timeout = None,
+    ):
         self.post_calls.append((url, json))
         return self._post(url, json)
 
@@ -135,7 +159,9 @@ def _server_with(popen, client):
 def test_start_becomes_ready_when_capabilities_200(patched):
     popen = _FakePopen(lines = ["loading model", "listening on: http://127.0.0.1:1"])
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
-    s = _server_with(popen, _FakeClient(get = lambda url: _Resp(200, {"model": {"path": "/m/z.gguf"}})))
+    s = _server_with(
+        popen, _FakeClient(get = lambda url: _Resp(200, {"model": {"path": "/m/z.gguf"}}))
+    )
     s.start(_FILES, startup_timeout = 5.0)
     assert s.is_alive() is True
     assert s.port is not None
@@ -146,7 +172,9 @@ def test_start_fails_fast_when_process_exits(patched):
     popen = _FakePopen(lines = ["error: bad model"], exit_code = 1)
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
     # Capabilities never answers (connection refused) -> readiness relies on exit detection.
-    s = _server_with(popen, _FakeClient(get = lambda url: (_ for _ in ()).throw(srv.httpx.ConnectError("refused"))))
+    s = _server_with(
+        popen, _FakeClient(get = lambda url: (_ for _ in ()).throw(srv.httpx.ConnectError("refused")))
+    )
     with pytest.raises(RuntimeError, match = "failed to become ready"):
         s.start(_FILES, startup_timeout = 2.0)
 
@@ -155,25 +183,36 @@ def test_start_fails_fast_when_process_exits(patched):
 
 
 def _completed_job(images_b64):
-    return _Resp(200, {
-        "status": "completed",
-        "result": {"images": [{"index": i, "b64_json": b} for i, b in enumerate(images_b64)]},
-    })
+    return _Resp(
+        200,
+        {
+            "status": "completed",
+            "result": {"images": [{"index": i, "b64_json": b} for i, b in enumerate(images_b64)]},
+        },
+    )
 
 
 def test_img_gen_returns_image_bytes_in_index_order(patched):
     popen = _FakePopen()
-    s = _server_with(popen, _FakeClient(
-        post = lambda url, json: _Resp(202, {"id": "jobA"}),
-        # result images deliberately out of order -> manager must sort by index.
-        get = lambda url: _Resp(200, {
-            "status": "completed",
-            "result": {"images": [
-                {"index": 1, "b64_json": _png_b64(200)},
-                {"index": 0, "b64_json": _png_b64(50)},
-            ]},
-        }),
-    ))
+    s = _server_with(
+        popen,
+        _FakeClient(
+            post = lambda url, json: _Resp(202, {"id": "jobA"}),
+            # result images deliberately out of order -> manager must sort by index.
+            get = lambda url: _Resp(
+                200,
+                {
+                    "status": "completed",
+                    "result": {
+                        "images": [
+                            {"index": 1, "b64_json": _png_b64(200)},
+                            {"index": 0, "b64_json": _png_b64(50)},
+                        ]
+                    },
+                },
+            ),
+        ),
+    )
     blobs = s.img_gen({"prompt": "x", "batch_count": 2, "sample_params": {"sample_steps": 4}})
     assert len(blobs) == 2
     first = Image.open(io.BytesIO(blobs[0])).convert("RGB").getpixel((0, 0))
@@ -182,10 +221,15 @@ def test_img_gen_returns_image_bytes_in_index_order(patched):
 
 def test_img_gen_failed_job_raises(patched):
     popen = _FakePopen()
-    s = _server_with(popen, _FakeClient(
-        post = lambda url, json: _Resp(202, {"id": "jobF"}),
-        get = lambda url: _Resp(200, {"status": "failed", "error": {"code": "x", "message": "boom"}}),
-    ))
+    s = _server_with(
+        popen,
+        _FakeClient(
+            post = lambda url, json: _Resp(202, {"id": "jobF"}),
+            get = lambda url: _Resp(
+                200, {"status": "failed", "error": {"code": "x", "message": "boom"}}
+            ),
+        ),
+    )
     with pytest.raises(RuntimeError, match = "generation failed.*boom"):
         s.img_gen({"prompt": "x"})
 
@@ -203,7 +247,9 @@ def test_img_gen_cancel_posts_cancel_and_raises(patched):
     cancel.set()  # already cancelled before the first poll
     client = _FakeClient(
         post = lambda url, json: _Resp(202, {"id": "jobC"}),
-        get = lambda url: _Resp(200, {"status": "cancelled", "error": {"code": "cancelled", "message": "c"}}),
+        get = lambda url: _Resp(
+            200, {"status": "cancelled", "error": {"code": "cancelled", "message": "c"}}
+        ),
     )
     s = _server_with(popen, client)
     with pytest.raises(SdCppCancelled):
@@ -218,7 +264,9 @@ def test_img_gen_detects_server_death(patched):
         popen._exit = 137  # the process died between submit and poll
         return _Resp(200, {"status": "generating"})
 
-    s = _server_with(popen, _FakeClient(post = lambda url, json: _Resp(202, {"id": "jobD"}), get = _die_get))
+    s = _server_with(
+        popen, _FakeClient(post = lambda url, json: _Resp(202, {"id": "jobD"}), get = _die_get)
+    )
     with pytest.raises(RuntimeError, match = "connection lost|process exited"):
         s.img_gen({"prompt": "x"})
 
@@ -266,10 +314,13 @@ def test_img_gen_malformed_submit_json_raises(patched):
 
 def test_img_gen_empty_result_raises(patched):
     popen = _FakePopen()
-    s = _server_with(popen, _FakeClient(
-        post = lambda url, json: _Resp(202, {"id": "jobE"}),
-        get = lambda url: _Resp(200, {"status": "completed", "result": {"images": []}}),
-    ))
+    s = _server_with(
+        popen,
+        _FakeClient(
+            post = lambda url, json: _Resp(202, {"id": "jobE"}),
+            get = lambda url: _Resp(200, {"status": "completed", "result": {"images": []}}),
+        ),
+    )
     with pytest.raises(RuntimeError, match = "no images"):
         s.img_gen({"prompt": "x"})
 
