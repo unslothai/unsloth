@@ -1156,9 +1156,11 @@ class DiffusionBackend:
         if cn_model is None:
             if cancel.is_set():
                 raise RuntimeError("Diffusion generation was cancelled.")
-            cn_model = getattr(diffusers, model_cls_name).from_pretrained(
-                resolved_cn.path, torch_dtype = state.dtype, token = state.hf_token
-            ).to(state.device)
+            cn_model = (
+                getattr(diffusers, model_cls_name)
+                .from_pretrained(resolved_cn.path, torch_dtype = state.dtype, token = state.hf_token)
+                .to(state.device)
+            )
             self._cn_models[resolved_cn.id] = cn_model
         key = (pipe_cls_name, resolved_cn.id)
         pipe = self._cn_pipes.get(key)

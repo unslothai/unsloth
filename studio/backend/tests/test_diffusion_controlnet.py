@@ -78,12 +78,18 @@ def test_supports_controlnet_matrix():
     assert not dc.supports_controlnet(**ok, model_kind = "single_file", transformer_quant = "int8")
     # native engine + a family without a CN pipeline are off.
     assert not dc.supports_controlnet(
-        engine = "sd_cpp", family = "flux.1", has_controlnet_pipeline = True,
-        model_kind = "gguf", transformer_quant = None,
+        engine = "sd_cpp",
+        family = "flux.1",
+        has_controlnet_pipeline = True,
+        model_kind = "gguf",
+        transformer_quant = None,
     )
     assert not dc.supports_controlnet(
-        engine = "diffusers", family = "z-image", has_controlnet_pipeline = False,
-        model_kind = "pipeline", transformer_quant = None,
+        engine = "diffusers",
+        family = "z-image",
+        has_controlnet_pipeline = False,
+        model_kind = "pipeline",
+        transformer_quant = None,
     )
 
 
@@ -96,7 +102,12 @@ def test_controlnet_spec_and_request_validation():
     assert DiffusionGenerateRequest(prompt = "x").controlnet is None
     req = DiffusionGenerateRequest(
         prompt = "x",
-        controlnet = {"id": "flux-union-pro", "image": "data", "control_type": "canny", "strength": 0.6},
+        controlnet = {
+            "id": "flux-union-pro",
+            "image": "data",
+            "control_type": "canny",
+            "strength": 0.6,
+        },
     )
     assert req.controlnet.id == "flux-union-pro" and req.controlnet.strength == 0.6
     # defaults
@@ -129,7 +140,12 @@ def test_families_declare_controlnet_classes():
 
 class _FakeCNModel:
     @classmethod
-    def from_pretrained(cls, path, torch_dtype = None, token = None):
+    def from_pretrained(
+        cls,
+        path,
+        torch_dtype = None,
+        token = None,
+    ):
         m = cls()
         m.path = path
         return m
@@ -141,7 +157,12 @@ class _FakeCNModel:
 
 class _FakeCNPipe:
     @classmethod
-    def from_pipe(cls, base, controlnet = None, torch_dtype = None):
+    def from_pipe(
+        cls,
+        base,
+        controlnet = None,
+        torch_dtype = None,
+    ):
         p = cls()
         p.base = base
         p.controlnet = controlnet
