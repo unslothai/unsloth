@@ -37,8 +37,7 @@ _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 def normalize_te_quant(value: Optional[str]) -> Optional[str]:
     """Lower/strip a requested text-encoder quant; None / "" / "none" -> None.
 
-    Raises ValueError for an unsupported value. The route rejects bad values at the
-    Pydantic Literal boundary; this guard covers direct / script callers."""
+    Raises ValueError for an unsupported value so a bad request is rejected cheaply."""
     if value is None:
         return None
     normalized = str(value).strip().lower().replace("-", "_")

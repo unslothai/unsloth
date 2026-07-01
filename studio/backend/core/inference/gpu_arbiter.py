@@ -55,8 +55,10 @@ def _evict_chat() -> None:
 
 
 def _evict_diffusion() -> None:
-    from core.inference.diffusion import get_diffusion_backend
-    get_diffusion_backend().unload()
+    # Unload whichever engine the router has active (diffusers or native sd.cpp), so a
+    # chat acquire frees the right one.
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    get_active_diffusion_engine().unload()
 
 
 # Patchable in tests via monkeypatch.setitem.

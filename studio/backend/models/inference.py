@@ -1699,11 +1699,13 @@ class DiffusionLoadRequest(BaseModel):
         None, description = "Force a family when it can't be inferred from the repo id"
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated repos")
+    cpu_offload: bool = Field(False, description = "Enable model CPU offload to fit low-VRAM cards")
     memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
         None,
         description = "Memory policy: auto (measured), fast (resident), balanced "
         "(stream the transformer, near-resident speed, moderate VRAM "
-        "cut), low_vram (offload every component, lowest VRAM, slower).",
+        "cut), low_vram (offload every component, lowest VRAM, slower). "
+        "Overrides cpu_offload when set.",
     )
     speed_mode: Optional[Literal["off", "default", "max"]] = Field(
         None,
@@ -1717,6 +1719,77 @@ class DiffusionLoadRequest(BaseModel):
         "CUDA cc>=8.9) or nvfp4 (~4x smaller, Blackwell sm_100+). A "
         "memory-vs-quality tradeoff (shifts fine detail), not free; "
         "pairs well with balanced mode.",
+    )
+    transformer_quant: Optional[Literal["auto", "int8", "fp8", "nvfp4", "mxfp8"]] = Field(
+        None,
+        description = "Opt-in fast transformer: load the DENSE bf16 transformer instead "
+        "of the GGUF and torchao-quantise it onto the low-precision tensor "
+        "cores (faster than GGUF's bf16-rate dequant, at higher VRAM). auto "
+        "picks the best for the GPU (Blackwell nvfp4/mxfp8, Ada/Hopper fp8, "
+        "Ampere int8); an explicit scheme forces it. Needs CUDA + bf16 + room "
+        "for the dense load; falls back to GGUF otherwise.",
+    )
+    transformer_quant_fast_accum: Optional[bool] = Field(
+        None,
+        description = "fp8 only: FP8 matmul accumulate. null auto-detects by GPU class "
+        "(fast FP16 accumulate on consumer/workstation cards, where FP32 "
+        "accumulate is ~2x slower; precise FP32 accumulate on data-center "
+        "HBM cards, which are not nerfed). true/false force it. Negligible "
+        "quality effect (below the fp8 quant noise floor); no overflow risk.",
+    )
+    transformer_prequant_path: Optional[str] = Field(
+        None,
+        description = "Local path to a pre-quantized transformer checkpoint (built by "
+        "scripts/build_prequant_checkpoint.py) for the requested transformer_quant "
+        "scheme. Loads the already-quantized weights with the dense bf16 never on the "
+        "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
+        "checkpoint if configured, else quantises the dense transformer at load time. "
+        "Loading a local path unpickles the file (arbitrary code execution), so it is "
+        "ignored unless the path resolves inside a directory the operator allowlisted "
+        "via UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH (one or more directories, separated by "
+        "the OS path separator). A bare on/off value such as '1' is deliberately not "
+        "accepted -- it must name an allowed directory.",
+    )
+    attention_backend: Optional[
+        Literal[
+            "auto",
+            "native",
+            "sdpa",
+            "cudnn",
+            "flash",
+            "flash2",
+            "flash3",
+            "flash4",
+            "sage",
+            "xformers",
+            "aiter",
+        ]
+    ] = Field(
+        None,
+        description = "Attention kernel via the diffusers dispatcher. auto picks the best "
+        "exact backend for the device (cuDNN fused attention on NVIDIA, ~1.18x and "
+        "near-lossless, when a speed profile is active; native SDPA elsewhere and when "
+        "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
+        "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
+        "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
+        "unavailable kernel falls back to the default.",
+    )
+    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+        None,
+        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
+        "reuse the transformer tail across denoise steps when the first block's residual "
+        "barely changes (~1.4x on Flux 28-step at LPIPS ~0.08). For MANY-step models "
+        "(Flux / Qwen-Image); leave off for few-step distilled models (e.g. Z-Image-Turbo), "
+        "which have no caching headroom. Composes with compile (drops fullgraph "
+        "automatically); incompatible models run uncached.",
+    )
+    transformer_cache_threshold: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "FBCache residual threshold (higher = skips more steps = faster, lower "
+        "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
+        "shifts the residual distribution).",
     )
 
 
@@ -1827,6 +1900,22 @@ class DiffusionStatusResponse(BaseModel):
     )
     text_encoder_quant: Optional[str] = Field(
         None, description = "Text-encoder quantisation engaged: fp8 | nvfp4 | null"
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
+        "nvfp4 | mxfp8 | null (null = the GGUF transformer was loaded)",
+    )
+    attention_backend: Optional[str] = Field(
+        None,
+        description = "Attention backend engaged via the diffusers dispatcher (e.g. "
+        "_native_cudnn), or null for the default SDPA",
+    )
+    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    fallback_reason: Optional[str] = Field(
+        None,
+        description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
     )
 
 
