@@ -1127,7 +1127,13 @@ from core.inference.key_exchange import decrypt_api_key
 from core.inference.model_ids import public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
-from core.inference.tool_call_parser import _strip_function_xml_calls, _strip_mistral_closed_calls
+from core.inference.tool_call_parser import (
+    _strip_function_xml_calls,
+    _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
+    _strip_mistral_closed_calls,
+)
+from core.inference.tool_call_parser import TOOL_XML_SIGNALS as _PARSER_TOOL_SIGNALS
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -1293,20 +1299,20 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # Markers the safetensors / MLX parser recognises. If the template advertises
-    # tools but uses none, drop the pill (parser can't honour the emission). The
-    # bare-JSON ``{"name":`` form (Llama-3.2 ``custom_tools`` template, no
-    # ``<|python_tag|>`` prefix) is matched with a whitespace-tolerant regex so a
-    # pretty-printed / escaped template (``{ "name" :`` or ``{\"name\":``) is not
-    # mis-classified as tool-less -- the parser itself accepts that whitespace via
-    # ``json.JSONDecoder().raw_decode``, so the gate must too.
+    # Markers any supported parser recognises. If the template advertises
+    # tools but uses none, drop the pill. Reuse the parser's own signal list
+    # (``_PARSER_TOOL_SIGNALS``) so this gate never drifts from the formats the
+    # parser actually handles -- a hand-maintained copy silently lost the new
+    # DeepSeek opener variants. ``<arg_key>`` is GLM's unique signal (GLM and Qwen
+    # share ``<tool_call>``); it is not in the shared XML-signal set, so add it here.
+    # The bare-JSON ``{"name":`` form (Llama-3.2 ``custom_tools``) is matched below
+    # with the whitespace/escape-tolerant ``_BARE_JSON_NAME_MARKER_RE`` instead of
+    # literal substrings, so a pretty-printed ``{ "name" :`` or escaped
+    # ``{\"name\":`` template is not mis-classified as tool-less (the parser accepts
+    # that whitespace via ``json.JSONDecoder().raw_decode``).
     _PARSER_MARKERS = (
-        "<tool_call>",
-        "<function=",
-        "<function name=",
-        "<|python_tag|>",
-        "[TOOL_CALLS]",
-        "<|tool_call>",
+        *_PARSER_TOOL_SIGNALS,
+        "<arg_key>",
     )
     if (
         flags.get("supports_tools")
@@ -1636,13 +1642,17 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     return nudge + " " + _RAG_GROUNDING_NUDGE
 
 
-# Strip leaked tool-call markup: every shared-parser format AND the four leak
-# shapes ``llama_cpp.py``'s speculative buffer splits across the visible/DRAIN
-# boundary (closed pair, orphan open to EOF, bare orphan close, tail-only
-# ``</parameter>``). Mistral ``[TOOL_CALLS]`` goes to the parser's balanced-brace
-# helper -- a non-greedy ``\{.*?\}`` here would truncate nested JSON at the first ``}``.
+# Strip leaked tool-call markup: every shared-parser format AND the four leak shapes
+# ``llama_cpp.py``'s speculative buffer splits across the visible/DRAIN boundary
+# (closed pair, orphan open to EOF, bare orphan close, tail-only ``</parameter>``).
+# Mistral ``[TOOL_CALLS]`` goes to the parser's balanced-brace helper -- a non-greedy
+# ``\{.*?\}`` here would truncate nested JSON at the first ``}``.
+# Reuse the parser's DeepSeek opener alternation so the display strip covers every
+# opener the parser accepts (incl. the space / escaped-underscore spellings); a
+# signal we parse must never be left un-stripped.
+from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
+
 _TOOL_XML_RE = _re.compile(
-    # Hyphen in the name char-class matches MCP tool names with dashes
     # (mcp__srv__list-issues) that would otherwise leak past this strip.
     # The Llama-3 ``<|python_tag|>...`` arm runs to the next REAL Llama control
     # sentinel or EOF. Stopping at any ``<|`` (the old ``<(?!\|)``) truncated the
@@ -1650,6 +1660,8 @@ _TOOL_XML_RE = _re.compile(
     # ``<|cite|>`` inside a string), leaking the call tail into display; the
     # explicit sentinel list keeps literal ``<``, ``<|x|>`` markup, newlines, and
     # embedded JSON while still bounding on genuine header/eot/eom/python_tag tokens.
+    # The last arms strip DeepSeek envelopes (every opener variant), Kimi section
+    # blocks, and a bare (section-less) Kimi call.
     # ``<function=name>`` (Qwen3.5) and the attribute form ``<function name="name">``
     # (MiniCPM-5 / MiniMax-M2); name class ``[\w.\-]`` mirrors the parser so this
     # form is stripped from the UI instead of leaking.
@@ -1664,6 +1676,9 @@ _TOOL_XML_RE = _re.compile(
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
     r"|<\|python_tag\|>(?:[^<]|<(?!\|(?:eot_id|eom_id|python_tag|start_header_id|end_header_id|begin_of_text|finetune_right_pad_id)\|))*"
+    r"|" + _DS_OPEN_SRC + r".*?(?:<｜tool▁calls▁end｜>|\Z)"
+    r"|<\|tool_calls_section_begin\|>.*?(?:<\|tool_calls_section_end\|>|\Z)"
+    r"|<\|tool_call_begin\|>.*?(?:<\|tool_call_end\|>|\Z)"
     # ``</param>`` is the attribute-form alias of ``</parameter>`` (the parser accepts
     # both); strip a tail-only orphan close of either spelling.
     r"|</(?:parameter|param)>\s*\Z",
@@ -1672,15 +1687,20 @@ _TOOL_XML_RE = _re.compile(
 
 
 def _strip_tool_xml(text: str) -> str:
-    """Combine the Mistral balanced-brace helper and the guarded function-XML scan
-    with ``_TOOL_XML_RE``. The scan skips ``<function=`` openers inside an open
-    ``<parameter>`` value (same ``_inside_open_parameter`` guard as the parser), so a
-    literal nested ``<function=...></function>`` in an argument does not truncate the
-    strip and leak the tail -- the ``_TOOL_XML_RE`` function arm alone stops at the
-    inner close."""
-    return _TOOL_XML_RE.sub(
-        "", _strip_function_xml_calls(_strip_mistral_closed_calls(text), final = True)
+    """Combine the parser's scan-based strips with ``_TOOL_XML_RE``: the Mistral
+    ``[TOOL_CALLS]`` balanced-brace strip and the Gemma ``call:NAME{...}``
+    wrapper-less form (no XML, not in ``_TOOL_XML_RE``, else they leak through
+    Anthropic/display/history cleanup); the GLM scan (finds each call's real
+    ``</tool_call>`` so a literal ``</tool_call>`` in an arg value is data, not a
+    leaked tail); and the guarded function-XML scan (skips ``<function=`` openers
+    inside an open ``<parameter>`` value -- same ``_inside_open_parameter`` guard as
+    the parser -- so a literal nested ``<function=...></function>`` in an argument
+    does not truncate the strip and leak the tail)."""
+    cleaned = _strip_glm_calls(
+        _strip_gemma_wrapperless_calls(_strip_mistral_closed_calls(text)), final = True
     )
+    cleaned = _strip_function_xml_calls(cleaned, final = True)
+    return _TOOL_XML_RE.sub("", cleaned)
 
 
 def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:

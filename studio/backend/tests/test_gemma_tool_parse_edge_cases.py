@@ -172,3 +172,42 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
     )
     calls = parse_tool_calls_from_text(content)
     assert [c["function"]["name"] for c in calls] == ["python"], calls
+
+
+def test_wrapperless_nested_object_argument_is_parsed():
+    # skip_special_tokens stream: the <|tool_call> wrapper and <|"|> string
+    # markers were stripped, so a nested object arrives bare. It must parse as a
+    # nested dict, not the literal string "{city:NYC}".
+    calls = parse_tool_calls_from_text("call:f{loc:{city:NYC},n:3}")
+    assert len(calls) == 1
+    assert _args(calls[0]) == {"loc": {"city": "NYC"}, "n": 3}
+
+
+def test_wrapperless_array_argument_is_parsed():
+    calls = parse_tool_calls_from_text("call:label{labels:[bug,ui],n:2}")
+    assert len(calls) == 1
+    assert _args(calls[0]) == {"labels": ["bug", "ui"], "n": 2}
+
+
+def test_wrapperless_deeply_nested_object_and_array_are_preserved():
+    # The single-pass parser must keep multi-level nesting (objects inside
+    # objects, arrays inside arrays) intact, not flatten or drop it.
+    calls = parse_tool_calls_from_text(
+        "call:f{loc:{city:NYC,geo:{lat:1,lng:2}},tags:[a,b,[c,d]],n:3}"
+    )
+    assert len(calls) == 1
+    assert _args(calls[0]) == {
+        "loc": {"city": "NYC", "geo": {"lat": 1, "lng": 2}},
+        "tags": ["a", "b", ["c", "d"]],
+        "n": 3,
+    }
+
+
+def test_gemma_parse_array_advances_on_stray_brace():
+    # Regression: a stray '}' / ']' / ',' where an array element is expected must
+    # not stall _gemma_parse_value at the same index (it looped forever before).
+    from core.inference.tool_call_parser import _gemma_parse_array
+
+    items, end, closed = _gemma_parse_array("[a,}]", 0)
+    assert end == 5 and closed is True  # consumed through the closing ']'
+    assert items[0] == "a"

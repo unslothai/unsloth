@@ -1916,6 +1916,37 @@ def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
     assert all('{"name"' not in t for t in content_texts), content_texts
 
 
+def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(monkeypatch):
+    """A truncated markerless object whose "name" is NOT an enabled tool (a person
+    record cut off mid-stream, ``{"name":"Alice","age":``) must still be shown. The
+    end-of-stream ``_is_bare_tc`` heuristic routed any ``{...,"name",...}`` fragment
+    to DRAINING (dropped); it is now gated on the enabled tool names so only a real
+    truncated tool call is suppressed, ordinary JSON streams through."""
+
+    truncated = '{"name": "Alice", "age": 30, "bio": "loves '
+    stream = _streamed_content(truncated)
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "start a person record"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("Alice" in t for t in content_texts), content_texts
+
+
 def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkeypatch):
     """A truncated ordinary JSON answer whose name is NOT an enabled tool
     (``{"name":"Alice","parameters":{"age": 30`` cut off) must still be shown. The
@@ -2004,6 +2035,40 @@ def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
     assert calls == [], calls
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert any("Alice" in t for t in content_texts), content_texts[:1]
+
+
+def test_gemma_wrapperless_call_streamed_is_not_leaked_and_executes(monkeypatch):
+    """Gemma 4 GGUF (skip_special_tokens) streams a wrapper-less ``call:NAME{..}``
+    with no XML signal. Like bare JSON, the BUFFERING scan must recognise it via
+    _GEMMA_BARE_TC_RE, drain it silently, and execute the tool -- never leaking
+    the ``call:`` markup to the user-visible stream."""
+
+    gemma_call = 'call:web_search{query:"weather in Sydney"}'
+    first_stream = _streamed_content(gemma_call)
+    final_stream = [_sse({"content": "It is sunny in Sydney."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Weather: sunny, 22C."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather in Sydney?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "weather in Sydney"})]
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("call:" not in t for t in content_texts), content_texts
+    assert any("sunny in Sydney" in t for t in content_texts), content_texts
 
 
 def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
@@ -2144,6 +2209,66 @@ def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
     assert len(payloads) >= 2
     asst = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
     assert asst and not any('"name"' in (m.get("content") or "") for m in asst), asst
+
+
+def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
+    """A single textual-fallback turn that parses many DISTINCT tool calls must be
+    capped at _MAX_TOOL_CALLS_PER_TURN (structured delta.tool_calls are grammar
+    bounded by llama-server; text parsed from content is not). Mirrors the
+    safetensors loop so one runaway turn cannot fan out into dozens of executions."""
+    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+
+    n = _MAX_TOOL_CALLS_PER_TURN + 4
+    blocks = "".join(
+        '<tool_call>{"name":"t%d","arguments":{"i":%d}}</tool_call>' % (i, i) for i in range(n)
+    )
+    first_stream = [_sse({"content": blocks}), _done()]
+    final_stream = [_sse({"content": "done"}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": f"t{i}"}} for i in range(n)],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
+    # The cap keeps the first calls in order (no reordering / drop of leading ones).
+    assert [c[0] for c in calls] == [f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN)]
+
+
+def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
+    """Exact-duplicate textual calls in one turn collapse to a single execution."""
+    blocks = '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>' * 5
+    first_stream = [_sse({"content": blocks}), _done()]
+    final_stream = [_sse({"content": "done"}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(calls) == 1, [c[0] for c in calls]
 
 
 def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):

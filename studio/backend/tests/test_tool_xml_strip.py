@@ -24,14 +24,29 @@ import re as _re
 _src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
-# _strip_tool_xml_for_display now delegates to _strip_tool_xml, which runs the
-# parser's Mistral [TOOL_CALLS] balanced strip before _TOOL_XML_RE. Provide both
-# into the exec namespace so the extracted helpers resolve.
-from core.inference.tool_call_parser import _strip_function_xml_calls, _strip_mistral_closed_calls
+# The lazy ``(.*?)\n\)`` could grab a shorter expression if an arm is ever wrapped;
+# pin the DeepSeek + bare-Kimi arms so a silent truncation fails loudly here.
+assert "_DS_OPEN_SRC" in _m.group(1) and "tool_call_begin" in _m.group(
+    1
+), "extracted _TOOL_XML_RE is missing expected arms (extraction truncated?)"
+# The regex reuses the parser's shared DeepSeek opener alternation; provide it so
+# the extracted ``_re.compile`` expression resolves the same source. The display
+# helper delegates to _strip_tool_xml, which runs the parser's Mistral balanced
+# strip, the GLM scan, and the guarded function-XML scan, so provide those too.
+from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
+from core.inference.tool_call_parser import (
+    _strip_function_xml_calls,
+    _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
+    _strip_mistral_closed_calls,
+)
 
 _ns = {
     "_re": _re,
+    "_DS_OPEN_SRC": _DS_OPEN_SRC,
     "_strip_mistral_closed_calls": _strip_mistral_closed_calls,
+    "_strip_gemma_wrapperless_calls": _strip_gemma_wrapperless_calls,
+    "_strip_glm_calls": _strip_glm_calls,
     "_strip_function_xml_calls": _strip_function_xml_calls,
 }
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
@@ -53,6 +68,8 @@ _helper = _re.search(
     _src,
 )
 assert _helper, "could not extract _strip_tool_xml_for_display source"
+# After the V1 fix the display helper delegates to _strip_tool_xml; confirm the
+# extracted body actually reached that call rather than truncating early.
 assert "_strip_tool_xml(" in _helper.group(0), "display helper no longer delegates"
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
@@ -336,6 +353,42 @@ def test_no_catastrophic_backtracking_on_orphan_opening_spam():
     assert "<tool_call>" not in cleaned
 
 
+# ── DeepSeek opener variants + bare Kimi (parse/strip symmetry) ──
+
+
+def test_strips_deepseek_space_opener_variant():
+    # The space-separated opener is parsed by the parser, so the display strip
+    # must remove it too (the shared opener alternation is reused here).
+    text = (
+        "pre <｜tool calls begin｜><｜tool▁call▁begin｜>get_x<｜tool▁sep｜>"
+        '{"a":1}<｜tool▁call▁end｜><｜tool▁calls▁end｜> post'
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "tool" not in cleaned.replace("post", "").replace("pre", "")
+    assert cleaned == "pre  post"
+
+
+def test_strips_deepseek_escaped_underscore_opener_variant():
+    text = (
+        "pre <｜tool\\_calls\\_begin｜><｜tool▁call▁begin｜>get_y<｜tool▁sep｜>"
+        '{"a":1}<｜tool▁call▁end｜><｜tool▁calls▁end｜> post'
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert cleaned == "pre  post"
+
+
+def test_strips_bare_kimi_call_without_section_wrapper():
+    # Kimi can emit a bare <|tool_call_begin|>...<|tool_call_end|> with no
+    # section wrapper; the parser accepts it, so the strip must cover it.
+    text = (
+        "pre <|tool_call_begin|>functions.get_w:0<|tool_call_argument_begin|>"
+        '{"a":1}<|tool_call_end|> post'
+    )
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert "tool_call_begin" not in cleaned
+    assert cleaned == "pre  post"
+
+
 # ── Llama-3 <|python_tag|> arm bounds on REAL sentinels only ──────
 
 
@@ -373,6 +426,31 @@ def test_python_tag_strip_restarts_on_second_python_tag():
     text = '<|python_tag|>{"name": "a"}<|python_tag|>{"name": "b"}'
     cleaned = _TOOL_XML_RE.sub("", text)
     assert cleaned == "", f"second python_tag region leaked: {cleaned!r}"
+
+
+def test_glm_call_with_literal_close_tag_in_arg_value_is_stripped_whole():
+    # GLM 4.x emits <tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value>
+    # ...</tool_call>. When an arg VALUE contains a literal </tool_call>, the
+    # non-greedy <tool_call>.*?</tool_call> regex stopped at that literal and leaked
+    # the call's tail. The route strip now scans to the call's real close (matching
+    # the parser) so the whole call is removed and only the prose remains.
+    text = (
+        "<tool_call>web_search\n<arg_key>query</arg_key>\n"
+        "<arg_value>find </tool_call> here</arg_value>\n</tool_call> done"
+    )
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "</arg_value>" not in out
+    assert "<arg_key>" not in out
+    assert out.strip() == "done"
+
+
+def test_glm_normal_and_qwen_calls_still_stripped_by_route():
+    # Regression: a normal GLM call (no literal close tag) and a Qwen
+    # <tool_call>{json}</tool_call> are still stripped; trailing prose is kept.
+    glm = "<tool_call>get_time\n<arg_key>tz</arg_key>\n<arg_value>UTC</arg_value>\n</tool_call> ok"
+    assert _strip_tool_xml_for_display(glm, auto_heal_tool_calls = True).strip() == "ok"
+    qwen = '<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call> after'
+    assert _strip_tool_xml_for_display(qwen, auto_heal_tool_calls = True).strip() == "after"
 
 
 def test_route_strip_removes_param_alias_close_tag():

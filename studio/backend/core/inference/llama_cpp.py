@@ -42,9 +42,13 @@ from core.inference.llama_server_args import (
 # Share strip / signal constants with the multi-format parser so BUFFERING also
 # catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
+    _GEMMA_BARE_TC_PREFIX_RE,
+    _GEMMA_BARE_TC_RE,
     _TOOL_ALL_PATS,
     _balanced_brace_end,
     _strip_function_xml_calls,
+    _strip_gemma_wrapperless_calls,
+    _strip_glm_calls,
     _strip_mistral_closed_calls,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -238,6 +242,11 @@ _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 _PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 _REPROMPT_MAX_CHARS = 2000
+# Cap on tool calls executed from a single TEXTUAL-fallback turn (mirrors the
+# safetensors loop). Structured delta.tool_calls are grammar-bounded by
+# llama-server; text parsed from content is not, so one runaway turn could fan
+# out into dozens of executions/events without this.
+_MAX_TOOL_CALLS_PER_TURN = 8
 _FORCED_REPEAT_PLAN_SIGNAL = re.compile(
     r"\b(?:i\s+will|i'll|let\s+me|going\s+to|need\s+to|call|use|run|search|fetch|render)\b",
     re.I,
@@ -551,6 +560,15 @@ _TOOL_TEMPLATE_MARKERS = (
     "'role' == 'tool'",
     'message.role == "tool"',
     "message.role == 'tool'",
+    # DeepSeek-style: subscripted access + tool_calls field checks.
+    # DeepSeek's chat template has no top-level ``{% if tools %}`` block
+    # and uses ``message['role'] == 'tool'`` plus ``message['tool_calls']
+    # is defined`` to gate the emission.
+    "message['role'] == 'tool'",
+    'message["role"] == "tool"',
+    "message['tool_calls']",
+    'message["tool_calls"]',
+    "tool_calls is defined",
 )
 
 
@@ -8086,14 +8104,17 @@ class LlamaCppBackend:
             # Use the shared parser patterns (not the legacy tool_healing set) so a
             # textual GGUF Mistral ``[TOOL_CALLS]`` / Llama ``<|python_tag|>`` call
             # entering DRAINING is stripped instead of leaking the marker (and any
-            # same-chunk args) to streaming clients. Balanced Mistral blocks go
-            # first; no final trim so incremental length comparisons still hold.
+            # same-chunk args) to streaming clients. Balanced Mistral / Gemma blocks
+            # go first (nested JSON would be truncated by the non-greedy pattern
+            # arms); no final trim so incremental length comparisons still hold.
             text = _strip_mistral_closed_calls(text)
-            # Guarded function-XML scan (parser-accurate) BEFORE the regex arms, matching
-            # the final strip: a literal ``<function=...>`` inside a parameter value is
-            # data, not a call, so the open-ended regex tail must not eat the real
-            # trailing prose after the call's true ``</function>``.
+            text = _strip_gemma_wrapperless_calls(text)
+            # Guarded function-XML and GLM scans each close at the call's REAL terminator
+            # (parser-accurate) BEFORE the regex arms, matching the final strip: a literal
+            # ``<function=...>`` / ``</tool_call>`` inside a parameter value is data, not a
+            # call, so the open-ended regex tail must not eat the real trailing prose.
             text = _strip_function_xml_calls(text, final = True)
+            text = _strip_glm_calls(text, final = True)
             for pat in _TOOL_ALL_PATS:
                 text = pat.sub("", text)
             return text
@@ -8493,12 +8514,12 @@ class LlamaCppBackend:
                                                 is_prefix = True
                                                 break
 
-                                        # Bare Llama-3.2 {"name":..} carries no XML
-                                        # signal, so the scan above misses it and it
-                                        # would stream raw while the end-of-stream
-                                        # safety net also never fires. Mirror the
-                                        # safetensors loop: hold an incomplete bare
-                                        # object, drain a complete one silently.
+                                        # No-signal call shapes the XML-signal scan
+                                        # misses (mirror the safetensors loop, else
+                                        # these stream raw and -- for bare JSON --
+                                        # the safety net never fires): Llama-3.2 bare
+                                        # {"name":..} (after any leaked sentinel) and
+                                        # Gemma wrapper-less call:NAME{...}.
                                         _hold_buffer = False
                                         # Whole buffer is the call (no visible prefix
                                         # to flush) -- drain it silently, unlike the
@@ -8528,6 +8549,19 @@ class LlamaCppBackend:
                                                     enabled_tool_names = _enabled_tool_names,
                                                 ):
                                                     _drain_silently = True
+                                            elif (
+                                                "call:".startswith(stripped_buf)
+                                                or _GEMMA_BARE_TC_PREFIX_RE.match(stripped_buf)
+                                                is not None
+                                                or _GEMMA_BARE_TC_RE.match(stripped_buf) is not None
+                                            ):
+                                                # Whitespace-tolerant (``call : NAME``)
+                                                # like the parser, so the spaced
+                                                # spelling is held, not leaked.
+                                                if _GEMMA_BARE_TC_RE.match(stripped_buf):
+                                                    _drain_silently = True
+                                                elif len(stripped_buf) < _MAX_BUFFER_CHARS:
+                                                    _hold_buffer = True
 
                                         if _drain_silently:
                                             # No visible prefix -- the buffered text IS
@@ -8827,6 +8861,32 @@ class LlamaCppBackend:
                 _it = _iter_timings or {}
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
+
+                # Collapse exact-duplicate calls and cap the count for the TEXTUAL
+                # fallback (mirrors the safetensors loop). Structured delta.tool_calls
+                # are grammar-bounded by llama-server, but text parsed straight from
+                # content has no such limit, so one runaway turn could fan out into
+                # dozens of executions/events.
+                if tool_calls and not has_structured_tc and len(tool_calls) > 1:
+                    _seen_keys: set = set()
+                    _deduped: list = []
+                    for _tc in tool_calls:
+                        _fn = _tc.get("function", {}) or {}
+                        _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
+                        if _key in _seen_keys:
+                            continue
+                        _seen_keys.add(_key)
+                        _deduped.append(_tc)
+                        if len(_deduped) >= _MAX_TOOL_CALLS_PER_TURN:
+                            break
+                    if len(_deduped) != len(tool_calls):
+                        logger.info(
+                            "GGUF textual fallback: collapsed %d repeated tool call(s) "
+                            "in one turn to %d",
+                            len(tool_calls),
+                            len(_deduped),
+                        )
+                    tool_calls = _deduped
 
                 # disable_parallel_tool_use: execute only the first tool call
                 # this turn. Truncate before building assistant_msg so the

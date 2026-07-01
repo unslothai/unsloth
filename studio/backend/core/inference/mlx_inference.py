@@ -104,6 +104,9 @@ class MLXInferenceBackend:
     ) -> bool:
         import mlx.core as mx
 
+        # Keep the load token so the native-template fallback can fetch a
+        # gated/private model's repo template later (during generation).
+        self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
 
@@ -173,6 +176,12 @@ class MLXInferenceBackend:
             "processor": self._processor,
             "is_vision": is_vision,
             "is_lora": getattr(config, "is_lora", False),
+            # For a LoRA adapter the native chat template lives on the base model;
+            # without this the native-template fallback would load the adapter's own
+            # (often template-less) tokenizer instead of the base model template.
+            "base_model": getattr(config, "base_model", None)
+            if getattr(config, "is_lora", False)
+            else None,
             "is_audio": False,
             "audio_type": None,
             "has_audio_input": False,
@@ -355,6 +364,7 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
+            render_with_native_template_fallback,
         )
 
         prompt = apply_chat_template_for_generation(
@@ -367,6 +377,25 @@ class MLXInferenceBackend:
         )
         if prompt is None:
             raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
+
+        # If tools were requested but the (possibly overridden) template ignored
+        # them, fall back to the model's native template -- same parity fix the
+        # transformers backend applies, so MLX text models keep advertising tools.
+        # ``self._tokenizer`` is this entry's ``model_info["tokenizer"]``, so the
+        # probe and native render use the same renderer. (The VLM path renders via
+        # the processor for image tokens and is intentionally not wired here.)
+        prompt = render_with_native_template_fallback(
+            formatted_prompt = prompt,
+            tokenizer = self._tokenizer,
+            model_info = self.models.get(self.active_model_name, {}),
+            active_model_name = self.active_model_name,
+            messages = messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            hf_token = getattr(self, "_hf_token", None),
+        )
 
         sampler = make_sampler(
             temp = temperature,
