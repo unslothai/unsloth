@@ -245,7 +245,7 @@ class TestParser:
         # and keep the trailing prose -- matching the guarded final strip. The raw
         # open-ended regex ate everything to EOF, dropping `` tail``.
         raw = (
-            'pref <function=python><parameter=code>'
+            "pref <function=python><parameter=code>"
             'print("<function=x>")</parameter></function> tail'
         )
         assert strip_tool_markup_streaming(raw) == "pref  tail"
