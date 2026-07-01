@@ -225,7 +225,6 @@ def _reset_global_backend_to_native(logger: Any) -> None:
             AttentionBackendName,
             _AttentionBackendRegistry,
         )
-
         _AttentionBackendRegistry.set_active_backend(AttentionBackendName.NATIVE)
     except Exception:  # noqa: BLE001 — best-effort; leave the global as-is on any change
         pass
