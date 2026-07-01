@@ -525,6 +525,80 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
     _assert_env_set(result.output, "ANTHROPIC_MODEL", canonical)
 
 
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        ("unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL", ("unsloth/Qwen3-1.7B-GGUF", "UD-Q4_K_XL")),
+        ("unsloth/gemma-4-E2B-it-GGUF:Q8_0", ("unsloth/gemma-4-E2B-it-GGUF", "Q8_0")),
+        ("unsloth/Qwen3-1.7B-GGUF", ("unsloth/Qwen3-1.7B-GGUF", None)),  # no suffix
+        ("/models/local.gguf", ("/models/local.gguf", None)),  # absolute path
+        ("./rel.gguf", ("./rel.gguf", None)),  # relative path
+        ("C:\\models\\x.gguf", ("C:\\models\\x.gguf", None)),  # Windows drive
+        ("repo:with/slash", ("repo:with/slash", None)),  # slash in variant -> not a variant
+        ("", ("", None)),
+    ],
+)
+def test_split_repo_variant(model, expected):
+    assert start._split_repo_variant(model) == expected
+
+
+def test_connect_model_variant_suffix_matches_loaded_without_reload(fake_studio):
+    # `--model <loaded repo>:QUANT` must resolve against the already-loaded repo (which
+    # /v1/models lists without the `:QUANT` suffix), NOT trigger a reload. A reload here
+    # both fails (Studio rejects a `:`-suffixed repo id) and evicts a model another
+    # session is using -- the bug wasim hit running a second `unsloth start`.
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"]
+    )
+    assert result.exit_code == 0, result.output
+    loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads == []  # no reload, so no eviction of the running session
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
+
+
+def test_connect_model_variant_suffix_loads_split_repo(fake_studio):
+    # When the model is not already loaded, the `:QUANT` suffix becomes the gguf_variant
+    # and the load uses the bare (valid) repo id, mirroring `unsloth run repo --gguf-variant`.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", "unsloth/Qwen3-4B-GGUF:UD-Q4_K_XL"],
+    )
+    assert result.exit_code == 0, result.output
+    loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads == [
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {"model_path": "unsloth/Qwen3-4B-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+        )
+    ]
+
+
+def test_connect_explicit_gguf_variant_wins_over_suffix(fake_studio):
+    # An explicit --gguf-variant takes precedence; the suffix is still stripped so the
+    # repo id stays valid.
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "claude",
+            "--no-launch",
+            "--model",
+            "unsloth/Qwen3-4B-GGUF:Q8_0",
+            "--gguf-variant",
+            "UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads == [
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {"model_path": "unsloth/Qwen3-4B-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+        )
+    ]
+
+
 def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
     monkeypatch.setattr(
         start,
@@ -929,7 +1003,10 @@ def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"]
     )
     assert result.exit_code == 0, result.output
-    assert started["model"] == "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"
+    # The `:QUANT` suffix is split off into the gguf_variant so `unsloth run` gets a valid
+    # repo id plus `--gguf-variant`, mirroring how `unsloth run` accepts either form.
+    assert started["model"] == "unsloth/Qwen3-1.7B-GGUF"
+    assert started["load"].gguf_variant == "UD-Q4_K_XL"
     assert started["base"] == BASE
     # Torn down after the agent session ended.
     assert started.get("down") is fake

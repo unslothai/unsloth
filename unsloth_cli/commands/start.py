@@ -135,6 +135,29 @@ class LoadOptions(NamedTuple):
     tensor_parallel: bool = False
 
 
+def _split_repo_variant(model: str) -> tuple:
+    """Split ``org/name:QUANT`` into ``(repo, variant)`` -> ``("org/name", "QUANT")``.
+
+    ``unsloth run`` and llama.cpp accept ``--model org/name:QUANT`` as shorthand for
+    ``--model org/name --gguf-variant QUANT``. Mirror that here so a ``:variant`` suffix
+    resolves against the already-loaded ``org/name`` (which /v1/models lists without the
+    suffix) instead of trying to load a repo id containing ``:`` -- which Hugging Face
+    rejects, and which would evict a model another session is using. Local paths, Windows
+    drive letters, and ids without a ``:`` pass through unchanged.
+    """
+    s = (model or "").strip()
+    if not s or s.startswith(("/", "./", "../", "~")) or s == ".":
+        return s, None
+    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():  # Windows drive, e.g. C:\models\x
+        return s, None
+    if ":" not in s:
+        return s, None
+    repo, _, variant = s.rpartition(":")
+    if not repo or not variant or "/" in variant:
+        return s, None
+    return repo, variant
+
+
 def _fail(message: str) -> NoReturn:
     typer.echo(message, err = True)
     raise typer.Exit(code = 1)
@@ -792,6 +815,16 @@ def _connect(
     serve: bool = False,
     launch: bool = True,
 ) -> tuple:
+    # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`.
+    # Split it before we match/serve so the attach path resolves against the already-loaded
+    # `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id --
+    # which Studio rejects and which would evict a model another session is using.
+    if model:
+        repo, variant = _split_repo_variant(model)
+        if variant:
+            model = repo
+            if not load.gguf_variant:
+                load = load._replace(gguf_variant = variant)
     base, server = _require_studio(model, load, serve = serve, launch = launch)
     try:
         key = _agent_api_key(base, api_key)
