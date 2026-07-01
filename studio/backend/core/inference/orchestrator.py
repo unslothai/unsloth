@@ -45,6 +45,11 @@ _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
 
+# How long unload_model waits for a cancelled generation to release _gen_lock
+# before falling back to tearing the subprocess down. A cancel aborts within a
+# token (~0.1s in practice); this only bounds a wedged worker.
+_UNLOAD_GEN_LOCK_TIMEOUT = 15.0
+
 
 class InferenceOrchestrator:
     """
@@ -61,6 +66,9 @@ class InferenceOrchestrator:
         self._resp_queue: Any = None
         self._cancel_event: Any = None  # mp.Event — set to cancel generation
         self._gen_lock = threading.Lock()  # Serializes generation
+        # Set while unload_model is switching models so a generation that wins
+        # the _gen_lock handoff bails instead of starting on the outgoing model.
+        self._unload_pending = False
 
         # Dispatcher state for compare mode (adapter-controlled requests):
         # bypass _gen_lock, send commands directly, read from per-request
@@ -456,7 +464,15 @@ class InferenceOrchestrator:
         cancel ack from that same source so stale events don't leak into the
         next request.
         """
+        # Latch the subprocess/queue this stream belongs to. If unload_model tears
+        # a wedged worker down and a later load spawns a fresh one, bail instead of
+        # re-blocking on the new queue while still holding _gen_lock (deadlock).
+        initial_proc = self._proc
+        initial_resp_queue = self._resp_queue
         while True:
+            if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
+                yield f"Error: {self._subprocess_crash_message(crash_context)}"
+                return
             resp = read_one(read_timeout)
             if resp is None:
                 # Check subprocess health
@@ -857,30 +873,65 @@ class InferenceOrchestrator:
                 self.active_model_name = None
             return True
 
+        # This subprocess runs commands sequentially, so a bare unload queues
+        # behind a running generate (a 2-3 min hang on long answers). Cancel the
+        # generation first (instant, via the mp.Event the worker polls each
+        # token), then take _gen_lock to be the sole resp_queue reader, matching
+        # the GGUF backend which cancels and kills its process on unload.
+        # _unload_pending makes a generation that wins the lock handoff bail
+        # instead of starting on the outgoing model.
+        self._unload_pending = True
         try:
-            self._send_cmd(
-                {
-                    "type": "unload",
-                    "model_name": model_name,
-                }
-            )
-            resp = self._wait_response("unloaded")
+            self._cancel_generation()
+            acquired = self._gen_lock.acquire(timeout = _UNLOAD_GEN_LOCK_TIMEOUT)
+            if not acquired:
+                # Wedged worker: tear the subprocess down to free the GPU; the
+                # next load spawns a fresh one.
+                logger.warning(
+                    "Unload: generation did not yield %.1fs after cancel; "
+                    "shutting the inference subprocess down to free the model",
+                    _UNLOAD_GEN_LOCK_TIMEOUT,
+                )
+                self._shutdown_subprocess(timeout = 5)
+                self.models.pop(model_name, None)
+                if self.active_model_name == model_name:
+                    self.active_model_name = None
+                return True
 
-            # Update local state
-            self.models.pop(model_name, None)
-            if self.active_model_name == model_name:
-                self.active_model_name = None
+            try:
+                # Stop any compare-mode dispatcher so it can't consume the
+                # "unloaded" reply off the shared resp_queue before we read it.
+                self._wait_dispatcher_idle()
+                # Drop stale tokens from the cancelled generation so they can't
+                # be read as the unload reply.
+                self._drain_queue()
+                self._send_cmd(
+                    {
+                        "type": "unload",
+                        "model_name": model_name,
+                    }
+                )
+                self._wait_response("unloaded")
 
-            logger.info("Model '%s' unloaded from subprocess", model_name)
-            return True
+                # Update local state
+                self.models.pop(model_name, None)
+                if self.active_model_name == model_name:
+                    self.active_model_name = None
 
-        except Exception as exc:
-            logger.error("Error unloading model '%s': %s", model_name, exc)
-            # Clear local state anyway
-            self.models.pop(model_name, None)
-            if self.active_model_name == model_name:
-                self.active_model_name = None
-            return False
+                logger.info("Model '%s' unloaded from subprocess", model_name)
+                return True
+
+            except Exception as exc:
+                logger.error("Error unloading model '%s': %s", model_name, exc)
+                # Clear local state anyway
+                self.models.pop(model_name, None)
+                if self.active_model_name == model_name:
+                    self.active_model_name = None
+                return False
+            finally:
+                self._gen_lock.release()
+        finally:
+            self._unload_pending = False
 
     def generate_chat_response(
         self,
@@ -1074,6 +1125,11 @@ class InferenceOrchestrator:
         # consume and drop each other's token events. Hold _gen_lock across the
         # cmd build + send + whole stream so we stay the sole resp_queue reader.
         with self._gen_lock:
+            if self._unload_pending:
+                # A model switch won the lock handoff; do not start a new
+                # generation on the outgoing model.
+                yield "Error: model is being unloaded"
+                return
             request_id = str(uuid.uuid4())
             image_b64 = self._pil_to_base64(image) if image is not None else None
             cmd = self._build_generate_cmd(
