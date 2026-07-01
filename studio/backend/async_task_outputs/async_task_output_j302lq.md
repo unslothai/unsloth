@@ -1,1 +1,0 @@
-- Bench: 2.56x faster `1.83 s -> 0.71 s`; stack: compile+cudnn attention+channels_last+benchmark. FBCache extra for many-step only.

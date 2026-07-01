@@ -1,8 +1,0 @@
-- Decision: discussion #26 fixed by using one always-present top-bar `LayoutAlignRightIcon`; guarantees no icon swap or movement and matches Chat style.
-- Decision: Advanced panel now closed by default so preview canvas loads full width.
-- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/frontend/src/features/images/images-page.tsx`: default Advanced state closed; replaced conditional gear/header close icons with a single fixed top-right `LayoutAlignRightIcon` toggle; removed redundant panel header close button.
-- Edited `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/plans/diffusion-workflows-pr-plan.md`: updated plan note for discussion #26.
-- Ran `cd /mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/frontend && npx tsc --noEmit ... && npm run build`; exit 0, key output `=== TSC OK ===`, `build exit 0 -> /mnt/disks/unslothai/ubuntu/workspace_81/logs/fe_build_222352.log`.
-- Ran Playwright script `/mnt/disks/unslothai/ubuntu/workspace_81/scripts/shoot_toggle.py`; exit 0, saved `toggle_closed.png` and `toggle_open.png`; output `ICON MOVED: False`, both boxes `{x:1558, y:11, width:34, height:34}`.
-- Verified visually via `/mnt/disks/unslothai/ubuntu/workspace_81/outputs/ui_shots/toggle_open.png` and `/mnt/disks/unslothai/ubuntu/workspace_81/outputs/ui_shots/toggle_closed.png`.
-- Completed: discussion #26 changes and verification. Pending: local frontend changes for PR 2 remain uncommitted.

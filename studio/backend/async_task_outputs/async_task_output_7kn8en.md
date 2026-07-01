@@ -1,2 +1,0 @@
-- User asked: `Also for https://github.com/unslothai/unsloth/pull/6658 - which models are supported?`
-- PENDING: inspect PR `6658` and determine supported models.

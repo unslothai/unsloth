@@ -1,1 +1,0 @@
-- Asked diffusers `int8 / float8`

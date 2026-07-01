@@ -1,1 +1,0 @@
-- Asked why `Image generation failed.`

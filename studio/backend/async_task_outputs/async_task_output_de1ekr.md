@@ -1,1 +1,0 @@
-- Found/fixed `is_gguf` bug in `core/inference/diffusion.py`; non-GGUF fp8/int8 now route to regional `compiled`.

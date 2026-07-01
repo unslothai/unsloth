@@ -1,4 +1,0 @@
-- Decided pre-quantized torchao loading fixes fast-mode load VRAM; offline quant avoids dense bf16 GPU materialization.
-- Created PR `https://github.com/unslothai/unsloth/pull/6700`, base `diffusion-phase8-quant`, branch `diffusion-phase9-prequant`, commit `b90f83346`.
-- Added `diffusion_prequant.py`, builder/verify scripts, request field/tests.
-- Verified: load peak `21.2 GB` -> `14.6 GB`, disk `6.28 GB`, `LPIPS 0.0`; `200` diffusion tests passed.

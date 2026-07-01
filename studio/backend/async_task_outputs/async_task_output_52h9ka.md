@@ -1,2 +1,0 @@
-- Done: right-sidebar move #25, Advanced discoverability, `/16` auto-resize verified.
-- Pending: push, backend path, mirror, cancel loop.

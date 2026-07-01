@@ -1,1 +1,0 @@
-- `dynamic=True` default; global buffers

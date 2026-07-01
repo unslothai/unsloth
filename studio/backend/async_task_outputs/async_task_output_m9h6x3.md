@@ -1,2 +1,0 @@
-- Phase13 TE offload rejected: `+686%` latency for `-11%` peak; code reverted.
-- `#6703` green: `42 pass`, `1 skipping`.

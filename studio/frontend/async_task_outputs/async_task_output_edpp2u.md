@@ -1,6 +1,0 @@
-- Fixed numeric spinner overlap in `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/frontend/src/features/images/images-page.tsx`; hide all native spinners, widen `SliderField` number input.
-- Created `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/plans/diffusion-workflows-studio.md`.
-- Created `/mnt/disks/unslothai/ubuntu/workspace_81/scripts/shoot_images_page.py`.
-- Ran `npm run build`: exit 0. Playwright screenshots saved to `outputs/ui_shots/`; verified values no longer covered.
-- Secure Studio relaunched: `https://perhaps-nick-valentine-park.trycloudflare.com`, login `unsloth` / `diffusion-Thrg7s3tr1-UoGYq`.
-- Pending: tabbed workflow shell, Advanced Options, img2img.

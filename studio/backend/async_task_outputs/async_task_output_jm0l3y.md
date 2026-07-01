@@ -1,1 +1,0 @@
-- Decided fp8 fastest; GGUF smallest/default.

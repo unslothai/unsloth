@@ -1,5 +1,0 @@
-- Decision: continue active Stop-hook work on diffusion efficiency/memory without pausing, per directive `Keep working on making diffusion more efficent, use less memory and not reduce accuracy...`.
-- Must use cwd only: `/mnt/disks/unslothai/ubuntu/workspace_81/unsloth/studio/backend/temp/temporary_qui4gujp`; never exit it.
-- Goal constraints: optimize diffusion load/inference peak memory and speed across Mac/Windows/Linux, NVIDIA/AMD/Intel/CPU; support GGUF and safetensors; avoid large accuracy loss, `25% reduction is fine`.
-- Research targets preserved: `torch._int_mm`, `torchao/sparsity`, SDNQ, int8 fused, FBGEMM, TorchInductor config, Diffusers optimization docs, FP8/NVFP4/MXFP8, TensorRT, FlashAttention diffusion.
-- Existing PR context to consider: `#6658 #6670 #6675 #6679 #6680 #6690 #6694 #6700 #5872`.

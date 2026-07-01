@@ -1,5 +1,0 @@
-- User directed to expand scope to every architecture: `Yes do all arches.`
-- User also requested validation benchmarks across all architectures: `Then also do a benchmark to check all.`
-- User specifically requested benchmarking the alternative buffer-based implementation: `Also benchmark the buffers approach`
-- COMPLETED: captured new requirements only.
-- PENDING: implement/test all architectures; run comparative benchmarks including buffer approach.

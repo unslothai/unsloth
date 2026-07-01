@@ -1,1 +1,0 @@
-- Diffusion: fp8 fastest/`auto`; caveats VRAM/shape

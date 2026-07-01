@@ -1,4 +1,0 @@
-- Decision: discussion `#26` changes are complete because the UI is now closed by default and the Chat-style toggle is fixed.
-- Completed: verified the discussion `#26` behavior; no further autonomous action was identified in this span.
-- Pending: waiting for user go-ahead on remaining choices: `push the frontend + installer`, `backend path 1/2/3`, `set up the mirror`, `cancel the loop`, or continued UI feedback iteration.
-- Live studio remains available at `https://incentive-topics-patrick-commissioners.trycloudflare.com` with credentials `unsloth` / `diffusion-Thrg7s3tr1-UoGYq`.

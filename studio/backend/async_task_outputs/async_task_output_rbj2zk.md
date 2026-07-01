@@ -1,7 +1,0 @@
-- Decision: Used cached/local context first per `AGENTS.md`; no cache existed for PR `#6658`, so fetched live PR metadata with `gh`.
-- Decision: Summarized PR `#6658` as foundational diffusion/image-generation support; detection is architecture-based so one family entry covers quants/variants.
-- Command run: `cd /mnt/disks/unslothai/ubuntu/workspace_81 && echo "=== cached summary? ===" && ls -la data/pr_summaries/unslothai__unsloth/pr_6658.json 2>/dev/null || echo "(no cache)" && echo "=== PR meta ===" && gh pr view 6658 --repo unslothai/unsloth --json number,title,state,author,body ...`; key output: `(no cache)`, `#6658 [OPEN] Studio: add image generation with Unsloth GGUFs`, author `oobabooga`.
-- Completed: Captured PR body summary: new Image tab with download menu, generation inputs, output image/gallery.
-- Completed: Identified integrated families: `z-image`, `qwen-image`, `flux.1`, `flux.2-klein`; all Unsloth GGUF transformer-only with base diffusers components resolved via `base_model`.
-- Completed: Noted excluded models/reasons: `ERNIE-Image`, `FLUX.2-dev`, editing models.
-- Pending: none in this span.

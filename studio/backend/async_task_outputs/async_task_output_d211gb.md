@@ -1,4 +1,0 @@
-- User requested testing safetensors inplace ops and `global` buffers.
-- Desired defaults: `channels_last`, compiled dequant only, cuDNN if supported, inplace/eager opts.
-- Max adds compile all + tf32.
-- Check `https://github.com/unslothai/unsloth/blob/main/unsloth/models/llama.py#L1236`-`L1354`.

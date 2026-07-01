@@ -1,1 +1,0 @@
-- Asked `How about memory usage and size`

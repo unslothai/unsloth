@@ -1,1 +1,0 @@
-- User asked: `So FP8 is the fastest?`

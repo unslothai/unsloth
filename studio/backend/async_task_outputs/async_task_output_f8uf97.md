@@ -1,5 +1,0 @@
-- Decision/request: make `Advanced` closed by default, because user wants it not open initially.
-- Decision/request: when `Advanced` is expanded, keep the Advanced icon stationary; it should look like `Chat`, so the icon should not move.
-- Reference URL provided verbatim: `https://huggingface.co/datasets/danielhanchen/screenshots/discussions/26`
-- COMPLETED: no implementation in this span.
-- PENDING: apply the UI behavior/icon alignment changes.

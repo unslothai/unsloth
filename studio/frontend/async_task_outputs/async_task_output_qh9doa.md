@@ -1,2 +1,0 @@
-- User directed: `No need to enter plan mode - just use the parallel planner, and you plan here.`
-- Pending: continue without plan mode.

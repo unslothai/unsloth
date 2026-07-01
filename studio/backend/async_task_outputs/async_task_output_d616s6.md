@@ -1,2 +1,0 @@
-- Advanced moved to right card, open default; Chat-like toggle.
-- `images-page.tsx`; `tsc`, build ok.
