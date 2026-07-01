@@ -29,8 +29,10 @@ from loggers import get_logger
 from utils.hardware import clear_gpu_cache
 
 from .diffusion_families import (
+    DIFFUSION_CANCELLED_MSG,
+    DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
-    detect_family,
+    detect_family_for_pick,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -43,11 +45,10 @@ from .diffusion_device import (
 from .diffusion_memory import (
     OFFLOAD_NONE,
     apply_memory_plan,
-    estimate_gguf_dense_mib,
+    estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
     file_size_mib,
-    infer_gguf_quant_label,
     plan_diffusion_memory,
     snapshot_device_memory,
 )
@@ -392,22 +393,6 @@ class DiffusionBackend:
                 base, rfilename, hf_token, cancel_event = self._cancel_event
             )
 
-    @staticmethod
-    def _detect_family_for_pick(
-        repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
-    ) -> Optional[DiffusionFamily]:
-        """Detect the family from the repo id, falling back to the combined
-        path/filename for a direct local .gguf pick. The frontend splits such a
-        pick into (parent dir, basename), so the family keyword can live only in
-        the filename (e.g. /models/z-image-turbo-Q4_K_M.gguf) while the parent
-        directory carries none; scan it too when the directory alone is
-        undetectable. Only used as a fallback, so remote 'org/name' picks and
-        explicit overrides behave exactly as before."""
-        fam = detect_family(repo_id, family_override)
-        if fam is None and gguf_filename and not family_override:
-            fam = detect_family(f"{repo_id}/{gguf_filename}", family_override)
-        return fam
-
     def validate_load_request(
         self,
         repo_id: str,
@@ -423,7 +408,7 @@ class DiffusionBackend:
         undetectable family, and ValueError/FileNotFoundError for a bad local path.
         Touches no GPU, network, or state."""
         kind = resolve_model_kind(gguf_filename, model_kind)
-        fam = self._detect_family_for_pick(repo_id, gguf_filename, family_override)
+        fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported diffusion image model. Supported families: "
@@ -546,7 +531,7 @@ class DiffusionBackend:
             # Resolve the base repo and estimate sizes on this thread (both network
             # calls) so begin_load returns instantly; the bar shows raw bytes until
             # the total lands. This is the only writer of _loading's fields here.
-            fam = self._detect_family_for_pick(
+            fam = detect_family_for_pick(
                 kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
             )
             kind = resolve_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
@@ -762,7 +747,6 @@ class DiffusionBackend:
                 plan = self._plan_memory(
                     target,
                     single_file_path,
-                    gguf_filename,
                     base,
                     fam,
                     memory_mode,
@@ -945,7 +929,11 @@ class DiffusionBackend:
                             quant = transformer_quant_engaged,
                             attention_backend = attention_engaged,
                             compile_kwargs = {
-                                "fullgraph": cache_engaged is None,
+                                # Mirrors apply_speed_optims' fullgraph decision: an active
+                                # step cache OR a planned offload graph-breaks, so the cached
+                                # bundle must be keyed on the same fullgraph setting.
+                                "fullgraph": cache_engaged is None
+                                and plan.offload_policy == OFFLOAD_NONE,
                                 "dynamic": effective_speed != SPEED_MAX,
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
@@ -961,8 +949,21 @@ class DiffusionBackend:
                         family = fam,
                         speed_mode = effective_speed,
                         cache_active = cache_engaged is not None,
+                        # The planned offload policy: group/model/sequential offload installs
+                        # compiler-disabled onload hooks, so compile must drop fullgraph.
+                        offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
+                    if transformer_quant_engaged is not None and not speed_applied.get("compiled"):
+                        # Promotion above could not engage compile (e.g. the family is not
+                        # compile-friendly, or compile_repeated_blocks failed): the quantized
+                        # transformer is now running eager, which is far slower than the GGUF
+                        # path it replaced. Surface it loudly rather than hiding the regression.
+                        logger.warning(
+                            "diffusion.transformer_quant: %s engaged but the transformer is NOT "
+                            "compiled; eager torchao quant is ~30x slower than GGUF here",
+                            transformer_quant_engaged,
+                        )
                     # Quantise the dense companion text encoder(s) (opt-in fp8 / nvfp4),
                     # also before placement so the offload hooks move the smaller weights.
                     te_quant = quantize_text_encoders(
@@ -1018,6 +1019,9 @@ class DiffusionBackend:
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
+                        # Also free the half-built pipe's VRAM: the failed load never
+                        # commits _state, so nothing else reclaims it until the next unload.
+                        clear_gpu_cache()
 
         logger.info(
             "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s",
@@ -1116,7 +1120,6 @@ class DiffusionBackend:
         self,
         target: DiffusionDeviceTarget,
         single_file_path: Optional[str],
-        gguf_filename: Optional[str],
         base: str,
         fam: DiffusionFamily,
         memory_mode: Optional[str],
@@ -1130,9 +1133,10 @@ class DiffusionBackend:
         offload policy + VAE memory savers. Kept on the backend so the cached base
         repo (companion text-encoder / VAE) feeds the size estimate.
 
-        The size estimate is per-kind: a GGUF dequantises (a 4-bit file ~4x), a
-        safetensors single-file loads near its on-disk size, and a full pipeline is
-        one cached download (transformer + companions) that is already compressed."""
+        The size estimate is per-kind: diffusers keeps GGUF weights packed (per-matmul
+        transient dequant), so a GGUF loads near its on-disk size; a safetensors
+        single-file loads near its on-disk size (it carries its dtype); and a full
+        pipeline is one cached download (transformer + companions), already compressed."""
         device_memory = snapshot_device_memory(target)
         if kind == "pipeline":
             # The whole repo (transformer + companions) is one cached download; the
@@ -1144,18 +1148,18 @@ class DiffusionBackend:
         else:
             if kind == "single_file":
                 # Safetensors single-file: no dequant expansion (it carries its dtype).
-                transformer_dense = estimate_safetensors_dense_mib(file_size_mib(single_file_path))
-            else:
-                transformer_dense = estimate_gguf_dense_mib(
-                    file_size_mib(single_file_path), infer_gguf_quant_label(gguf_filename)
+                transformer_resident = estimate_safetensors_dense_mib(
+                    file_size_mib(single_file_path)
                 )
+            else:
+                transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
             # The companion components (VAE + text encoders) load near their on-disk
             # size; sum whatever the prefetch already placed in the base-repo cache.
             companion = self._cache_bytes(base)
             companion_mib = int(companion // (1024 * 1024)) if companion else None
             model_dense_mib = None
-            if transformer_dense is not None:
-                model_dense_mib = transformer_dense + (companion_mib or 0)
+            if transformer_resident is not None:
+                model_dense_mib = transformer_resident + (companion_mib or 0)
         runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = fam.name)
         return plan_diffusion_memory(
             target = target,
@@ -1363,7 +1367,7 @@ class DiffusionBackend:
             with self._lock:
                 state = self._state
                 if state is None:
-                    raise RuntimeError("No diffusion model is loaded.")
+                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 # Register under _lock so unload()/a load can signal THIS generation.
                 # A cancel that arrived before now either nulled _state (we raised
                 # above) or targets an older generation, so nothing is lost.
@@ -1602,7 +1606,7 @@ class DiffusionBackend:
                 # A cancelled denoise returns early with a partial/garbage image;
                 # don't hand it back to be persisted.
                 if cancel.is_set():
-                    raise RuntimeError("Diffusion generation was cancelled.")
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # The first compiled generation just paid the compile cost; persist the
                 # warm torch.compile cache bundle when saving is enabled (distributor /
                 # first-run warm). Idempotent + best-effort -- never fails a generation.
