@@ -233,6 +233,8 @@ export const ptBR = {
       title: "Sistema",
       description: "Monitore o hardware e o armazenamento deste servidor Studio.",
       liveUpdates: "Atualizações ao vivo",
+      floatingWindow: "Janela flutuante",
+      disableOverlay: "Desativar sobreposição",
       liveMonitor: {
         title: "Monitor ao vivo",
         cpu: "CPU",

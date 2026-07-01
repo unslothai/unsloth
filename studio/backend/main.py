@@ -12,6 +12,8 @@ from pathlib import Path as _Path
 import asyncio
 from dataclasses import asdict
 
+from typing import Any
+
 # Suppress C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
@@ -23,6 +25,11 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # utils/hardware/hardware.py for the full rationale; set here too so the entry
 # process is covered before its heavy ML imports.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+
+_SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
+_system_gpu_cache_lock = threading.Lock()
+_system_gpu_cache: tuple[float, dict[str, Any]] | None = None
 
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
@@ -1048,6 +1055,56 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     return {"status": "shutting_down"}
 
 
+def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
+    """Return merged GPU visibility/utilization with bounded live-probe churn."""
+    import time
+    from utils.hardware import get_backend_visible_gpu_info, get_visible_gpu_utilization
+
+    global _system_gpu_cache
+    now = time.monotonic()
+    with _system_gpu_cache_lock:
+        if _system_gpu_cache is not None:
+            cached_at, cached_gpu_info = _system_gpu_cache
+            if now - cached_at < _SYSTEM_GPU_CACHE_TTL_SECONDS:
+                return cached_gpu_info
+
+        try:
+            visibility_info = get_backend_visible_gpu_info()
+        except Exception as e:
+            logger.debug(f"Failed to get GPU visibility info: {e}")
+            visibility_info = {"available": False, "devices": []}
+
+        try:
+            utilization_info = get_visible_gpu_utilization()
+        except Exception as e:
+            logger.debug(f"Failed to get GPU utilization info: {e}")
+            utilization_info = {"devices": []}
+
+        util_devices = {d.get("index"): d for d in utilization_info.get("devices", [])}
+        enriched_devices = []
+
+        for dev in visibility_info.get("devices", []):
+            idx = dev.get("index")
+            util = util_devices.get(idx, {})
+
+            total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
+            used_vram = util.get("vram_used_gb") or 0
+
+            enriched_dev = dict(dev)
+            enriched_dev["vram_used_gb"] = used_vram
+            enriched_dev["vram_free_gb"] = round(total_vram - used_vram, 2) if total_vram else 0
+            enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
+            enriched_devices.append(enriched_dev)
+
+        gpu_info = {
+            "available": visibility_info.get("available", False),
+            "devices": enriched_devices,
+        }
+        _system_gpu_cache = (time.monotonic(), gpu_info)
+        return gpu_info
+
+
+
 @app.get("/api/system")
 def get_system_info(current_subject: str = Depends(get_current_subject)):
     """Get system information.
@@ -1061,34 +1118,12 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
     import os
     import time
     import logging
-    from utils.hardware import get_device, get_backend_visible_gpu_info, get_visible_gpu_utilization
+    from utils.hardware import get_device
     from utils.hardware.hardware import _backend_label
 
     logger = logging.getLogger(__name__)
 
-    visibility_info = get_backend_visible_gpu_info()
-    utilization_info = get_visible_gpu_utilization()
-
-    util_devices = {d.get("index"): d for d in utilization_info.get("devices", [])}
-    enriched_devices = []
-
-    for dev in visibility_info.get("devices", []):
-        idx = dev.get("index")
-        util = util_devices.get(idx, {})
-
-        total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
-        used_vram = util.get("vram_used_gb") or 0
-
-        enriched_dev = dict(dev)
-        enriched_dev["vram_used_gb"] = used_vram
-        enriched_dev["vram_free_gb"] = round(total_vram - used_vram, 2) if total_vram else 0
-        enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
-        enriched_devices.append(enriched_dev)
-
-    gpu_info = {
-        "available": visibility_info.get("available", False),
-        "devices": enriched_devices,
-    }
+    gpu_info = _get_cached_system_gpu_info(logger)
 
     memory = psutil.virtual_memory()
 

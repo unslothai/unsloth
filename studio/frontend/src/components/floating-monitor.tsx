@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useSystemInfo } from "@/hooks/use-system";
-import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
-import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
-import { motion } from "motion/react";
-import { CpuIcon, XIcon, GripVerticalIcon } from "lucide-react";
-import { useRef } from "react";
+import { Progress } from "@/components/ui/progress";
+import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
+import { useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
+import { motion } from "motion/react";
+import { useRef } from "react";
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
@@ -19,6 +19,12 @@ function usageIndicatorClass(percent: number): string {
   if (percent >= 90) return "bg-destructive";
   if (percent >= 70) return "bg-amber-500";
   return "bg-primary";
+}
+
+function usageTextClass(percent: number): string {
+  if (percent >= 90) return "text-destructive";
+  if (percent >= 70) return "text-amber-600 dark:text-amber-400";
+  return "text-primary";
 }
 
 function formatGb(value: number): string {
@@ -49,39 +55,53 @@ export function FloatingMonitor() {
     (sum, device) => sum + (device.vram_used_gb ?? 0),
     0,
   );
-  const vramPercent = clampPercent(vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0);
+  const vramPercent = clampPercent(
+    vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
+  );
 
   const hasGpu = (systemInfo.gpu.available ?? false) && devices.length > 0;
 
   return (
-    <div ref={constraintsRef} className="fixed inset-0 z-50 pointer-events-none">
+    <div
+      ref={constraintsRef}
+      className="fixed inset-0 z-50 pointer-events-none"
+    >
       <motion.div
-        layout
-        drag
+        layout={true}
+        drag={true}
         dragConstraints={constraintsRef}
         dragElastic={0.1}
         dragMomentum={false}
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.9 }}
-        className="fixed resize bottom-4 right-4 pointer-events-auto rounded-xl border border-border bg-background p-3 shadow-2xl w-60 cursor-default select-none overflow-hidden"
+        className="settings-surface fixed bottom-4 right-4 w-64 max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm pointer-events-auto cursor-default select-none"
       >
-        <div className="flex items-center justify-between border-b pb-2 mb-2 gap-2">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground truncate flex-1">
-            <CpuIcon className="size-3.5 text-primary shrink-0" />
-            <span className="truncate">Resource Monitor</span>
+        <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
+            <CpuIcon className="size-3.5 shrink-0 text-primary" />
+            <span className="truncate">
+              {t("settings.resources.liveMonitor.title")}
+            </span>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            <div className="text-muted-foreground/50 cursor-grab hover:text-muted-foreground active:cursor-grabbing px-1">
+            <div className="cursor-grab rounded-md px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground active:cursor-grabbing">
               <GripVerticalIcon className="size-3.5" />
             </div>
 
-            <Button size="icon" variant="ghost" className="size-5 rounded text-destructive hover:bg-destructive/10" onClick={() => setIsOpen(false)} title={t("common.close")}>
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setIsOpen(false)}
+              title={t("common.close")}
+              aria-label={t("common.close")}
+            >
               <XIcon className="size-3" />
             </Button>
           </div>
         </div>
-      
+
         <motion.div
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: "auto" }}
@@ -90,17 +110,17 @@ export function FloatingMonitor() {
         >
           <div className="space-y-1">
             <div className="flex justify-between text-[11px] font-medium font-mono">
-              <span>RAM</span>
-              <span className={cn("tabular-nums", ramPercent)}>
+              <span>{t("settings.resources.liveMonitor.ram")}</span>
+              <span className={cn("tabular-nums", usageTextClass(ramPercent))}>
                 {Math.round(ramPercent)}%
               </span>
             </div>
             <div className="text-xs text-muted-foreground font-mono tabular-nums">
               {formatGb(ramUsed)} / {formatGb(ramTotal)}
             </div>
-            <Progress 
-              value={ramPercent} 
-              className="h-1.5 rounded-full bg-muted mt-1" 
+            <Progress
+              value={ramPercent}
+              className="mt-1 h-1.5 rounded-full bg-muted"
               indicatorClassName={usageIndicatorClass(ramPercent)}
             />
           </div>
@@ -109,18 +129,26 @@ export function FloatingMonitor() {
             <div className="space-y-1">
               <div className="flex justify-between text-[11px] font-medium font-mono">
                 <span className="truncate flex-1 pr-2">
-                  VRAM {devices.length > 1 ? `(${devices.length} GPUs)` : `(${devices[0].name ?? "GPU"})`}
+                  {t("settings.resources.liveMonitor.vram")}{" "}
+                  {devices.length > 1
+                    ? `(${devices.length} GPUs)`
+                    : `(${devices[0].name ?? "GPU"})`}
                 </span>
-                <span className={cn("shrink-0 tabular-nums", vramPercent)}>
+                <span
+                  className={cn(
+                    "shrink-0 tabular-nums",
+                    usageTextClass(vramPercent),
+                  )}
+                >
                   {Math.round(vramPercent)}%
                 </span>
               </div>
               <div className="text-xs text-muted-foreground font-mono tabular-nums">
                 {formatGb(vramUsed)} / {formatGb(vramTotal)}
               </div>
-              <Progress 
-                value={vramPercent} 
-                className="h-1.5 rounded-full bg-muted mt-1" 
+              <Progress
+                value={vramPercent}
+                className="mt-1 h-1.5 rounded-full bg-muted"
                 indicatorClassName={usageIndicatorClass(vramPercent)}
               />
             </div>

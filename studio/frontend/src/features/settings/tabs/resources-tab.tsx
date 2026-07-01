@@ -267,7 +267,9 @@ export function ResourcesTab() {
             onClick={() => setIsOpen(!isOpen)}
           >
             <LayersIcon className="size-3.5" />
-            {isOpen ? "Disable Overlay" : "Floating Window"}
+            {isOpen
+              ? t("settings.resources.disableOverlay")
+              : t("settings.resources.floatingWindow")}
           </Button>
 
           <div className="flex shrink-0 items-center gap-2 rounded-full border border-border/60 px-2.5 py-1.5 text-xs font-medium text-foreground">

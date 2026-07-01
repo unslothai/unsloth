@@ -250,6 +250,8 @@ export const en = {
       title: "System",
       description: "Monitor this Studio server's hardware and storage.",
       liveUpdates: "Live updates",
+      floatingWindow: "Floating window",
+      disableOverlay: "Disable overlay",
       liveMonitor: {
         title: "Live monitor",
         cpu: "CPU",
