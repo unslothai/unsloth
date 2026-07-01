@@ -260,6 +260,7 @@ if _IS_MLX:
             def _mlx_active_memory_bytes():
                 """Current active MLX memory in bytes (not the peak high-water mark)."""
                 import mlx.core as mx
+
                 get_active = getattr(mx, "get_active_memory", None)
                 if get_active is None and hasattr(mx, "metal"):
                     get_active = getattr(mx.metal, "get_active_memory", None)
