@@ -1065,15 +1065,18 @@ const NON_CHAT_TASKS: readonly string[] = [...IMAGE_GEN_TASKS, UNSUPPORTED_DIFFU
 // which the text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by
 // id so they don't show in the Images picker only to 400 on load. Keeping the
 // image-to-image task itself is required: some supported models (FLUX.2-klein)
-// carry that tag too.
-const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "inpainting"] as const;
+// carry that tag too. "layered" hides Qwen-Image-Layered, which needs a dedicated
+// pipeline (additional_t_cond) the standard text-to-image path can't drive.
+const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "layered"] as const;
+// Editing families the backend now SUPPORTS (their own Edit workflow) -- must not be
+// hidden even though their id contains an edit keyword. Mirrors the backend's
+// qwen-image-edit family in diffusion_families.py.
+const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext"] as const;
 function isImageEditModel(repoId: string | null | undefined): boolean {
   if (!repoId) return false;
-  // Whole-segment match (not substring) so a normal model like "...-edition"
-  // isn't hidden; mirrors the backend detect_family segment check. Split on
-  // both path separators so a Windows local path is segmented too.
-  const segments = new Set(repoId.toLowerCase().split(/[-_./\\]+/));
-  return IMAGE_EDIT_KEYWORDS.some((kw) => segments.has(kw));
+  const id = repoId.toLowerCase();
+  if (SUPPORTED_EDIT_KEYWORDS.some((kw) => id.includes(kw))) return false;
+  return IMAGE_EDIT_KEYWORDS.some((kw) => id.includes(kw));
 }
 
 // Gate an on-device model by the picker's task scope. With a filter (the Images
@@ -1829,6 +1832,21 @@ export function HubModelPicker({
     task,
   ]);
 
+  // Curated non-GGUF (safetensors) models for the Images picker. The HF listing +
+  // Recommended gate only surface GGUF on a GPU host (isRecommendableFormat), so a
+  // bnb-4bit / fp8 safetensors model would never appear there. These curated entries
+  // (the non-GGUF ModelOptions passed in) are shown explicitly above the GGUF rows so
+  // the user can pick a full diffusers pipeline. Only the Images picker (task set)
+  // curates them; already-downloaded ones show under Downloaded instead.
+  const curatedSafetensorsRows = useMemo(() => {
+    if (!task) return [];
+    // Always list the curated safetensors (bnb-4bit / fp8) diffusion models. They
+    // render with a "downloaded" badge when cached (like GGUF Recommended rows), so
+    // they must not be hidden once on disk -- otherwise they vanish from the picker
+    // entirely after the first load.
+    return models.filter((m) => m.isGguf === false);
+  }, [models, task]);
+
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
   const recommendedMeta = useMemo(() => {
     const map = new Map<
@@ -1922,18 +1940,21 @@ export function HubModelPicker({
       ),
     [cachedGguf, downloadedSort, loadTimes, task],
   );
-  // Non-GGUF (safetensors) cached repos aren't single-file diffusion GGUFs, so
-  // hide them entirely when a task filter is active (the Images picker). In chat,
-  // drop cached diffusers pipeline repos (a Z-Image / FLUX base) the same way.
+  // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos. In the
+  // Images picker (task set) it keeps them, but limit to repos this backend can actually
+  // load as diffusion: unsloth-hosted ones. Base repos (Qwen/Qwen-Image, FLUX bases) are
+  // cached as dependencies and fail the diffusion trust gate, so listing them would dead-end.
   const sortedCachedModels = useMemo(
     () =>
-      task
-        ? []
-        : sortCachedRepos(
-            cachedModels.filter((c) => passesTaskGate(c.task, c.repo_id, task)),
-            downloadedSort,
-            loadTimes,
-          ),
+      sortCachedRepos(
+        cachedModels.filter(
+          (c) =>
+            passesTaskGate(c.task, c.repo_id, task) &&
+            (!task || isUnslothRepoId(c.repo_id)),
+        ),
+        downloadedSort,
+        loadTimes,
+      ),
     [cachedModels, downloadedSort, loadTimes, task],
   );
   // Each local section's search is scoped to its own models (matched by name).
@@ -3426,6 +3447,30 @@ export function HubModelPicker({
 
               {showRecommendedSection ? (
                 <>
+                  {/* Curated safetensors models (full diffusers pipelines / single-file
+                      fp8). Shown above the GGUF rows; clicking loads directly (no quant
+                      expander), the same path as a non-GGUF Recommended row. */}
+                  {curatedSafetensorsRows.map((m) => {
+                    const optionKey = makeModelOptionKey("curated-safetensors", m.id);
+                    return (
+                      <div key={m.id}>
+                        <ModelRow
+                          label={m.id}
+                          hideOwner={true}
+                          downloaded={downloadedSet.has(m.id.toLowerCase())}
+                          capabilities={capsById.get(m.id)}
+                          meta={m.description ?? "Safetensors"}
+                          selected={value === m.id}
+                          optionProps={hubModelList.getOptionProps(
+                            optionKey,
+                            value === m.id,
+                          )}
+                          onClick={() => handleModelClick(m.id)}
+                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        />
+                      </div>
+                    );
+                  })}
                   {recommendedSearch.isLoading &&
                   recommendedRows.length === 0 ? (
                     <div className="flex items-center gap-2 px-5 py-3">
@@ -3434,7 +3479,8 @@ export function HubModelPicker({
                         Loading models…
                       </span>
                     </div>
-                  ) : recommendedRows.length === 0 ? (
+                  ) : recommendedRows.length === 0 &&
+                    curatedSafetensorsRows.length === 0 ? (
                     <div className="px-2.5 py-2 text-xs text-muted-foreground">
                       No models found.
                     </div>

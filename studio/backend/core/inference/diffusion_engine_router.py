@@ -99,7 +99,12 @@ def _activate(name: str, reason: Optional[str]) -> Any:
     return get_active_diffusion_engine()
 
 
-def select_and_activate_engine(fam: DiffusionFamily, *, hf_token: Optional[str] = None) -> Any:
+def select_and_activate_engine(
+    fam: DiffusionFamily,
+    *,
+    hf_token: Optional[str] = None,
+    model_kind: Optional[str] = None,
+) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
 
     Falls back to diffusers (recording a reason) whenever the native route is
@@ -107,6 +112,12 @@ def select_and_activate_engine(fam: DiffusionFamily, *, hf_token: Optional[str] 
     native asset mapping, or the sd-cli binary is unavailable -- always BEFORE the
     slow load begins, so a fallback never strands a half-native load.
     """
+    # Non-GGUF loads (a single-file safetensors transformer, or a full diffusers
+    # pipeline) only run on diffusers: the native sd.cpp engine consumes single-file
+    # GGUF checkpoints only, so force diffusers before the device/native checks below.
+    if model_kind and model_kind != "gguf":
+        return _activate(ENGINE_DIFFUSERS, f"non-GGUF load ({model_kind}) requires diffusers")
+
     forced, sd_cpp_pref, mps_enabled = _engine_config()
 
     if forced == ENGINE_DIFFUSERS:

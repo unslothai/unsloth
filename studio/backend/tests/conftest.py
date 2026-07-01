@@ -22,6 +22,12 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
+# Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only / no-GPU test
+# host: unsloth_zoo runs accelerator detection at import and raises without a GPU unless
+# this is set (device_type.get_device_type checks torch.cuda first, so it is a no-op on a
+# real GPU run). setdefault so an explicit override wins.
+os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
+
 
 # Pytest CLI options
 

@@ -265,6 +265,17 @@ def estimate_gguf_dense_mib(storage_mib: Optional[int], quant: Optional[str]) ->
     return int(storage_mib * 4.0)  # unknown: assume 4-bit-ish
 
 
+def estimate_safetensors_dense_mib(storage_mib: Optional[int]) -> Optional[int]:
+    """Resident size of a safetensors checkpoint, in MiB.
+
+    Unlike a GGUF (which is dequantised to bf16/fp16 on load, so a 4-bit file
+    expands ~4x), a safetensors checkpoint loads near its on-disk size: a dense
+    bf16 file is already bf16, and a bnb-4bit / fp8 file stays compressed in VRAM.
+    So the on-disk size is the estimate, returned unchanged (None passes through).
+    """
+    return storage_mib
+
+
 def estimate_image_runtime_mib(
     *,
     width: Optional[int],

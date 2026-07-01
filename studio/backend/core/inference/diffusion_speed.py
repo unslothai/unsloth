@@ -6,22 +6,34 @@
 Off by default, so the default render path stays bit-identical to a plain run (the
 property the regression harness checks). When the operator opts in, this applies the
 near-lossless speedups in the order the diffusers guides recommend
-(channels_last + cudnn.benchmark -> regional compile, with TF32 / fused-QKV under
-"max"):
+(channels_last + cudnn.benchmark -> compile, with TF32 / fused-QKV under "max"):
 
   off     - nothing (default; bit-identical reference).
-  default - near-lossless: channels_last VAE memory format + cudnn.benchmark conv
-            autotune + regional torch.compile of the denoiser's repeated block WHERE
-            eligible (bf16, CUDA, a compile-friendly family). Compile is the big win
-            (~2.3x denoise on the GGUF Z-Image transformer, PSNR ~36 dB vs eager,
-            well above the Q4 quantisation noise floor, so it does not meaningfully
-            move output quality).
-  max     - default plus near-lossless TF32 matmul and fused QKV projections.
+  eager   - everything lossless EXCEPT torch.compile: channels_last VAE +
+            cudnn.benchmark + the attention backend + the shared eager monkey-patches
+            (fused RMSNorm / AdaLayerNorm + per-arch addcmul fusions, see
+            diffusion_eager_patches.py / diffusion_arch_patches.py). The fast first-image
+            / casual-use path -- no compile tax to amortise.
+  default - LIGHT compile. For a GGUF model: channels_last + cudnn.benchmark +
+            torch.compile of ONLY the dequant op chain
+            (``torch.compile(dequantize_gguf_tensor, dynamic=True)``) -- the dequant is
+            ~70-80% of eager GGUF time, so fusing it gives ~1.24-1.64x for a small
+            one-time compile (~7.5-10.4s) and ZERO extra VRAM, resolution-invariant
+            (the dequant inputs are fixed-shape weights). For a dense (non-GGUF) model
+            there is no dequant, so ``default`` falls back to regional torch.compile of
+            the denoiser's repeated block (the only compile lever a dense model has).
+  max     - the FULL torch.compile: regional max-autotune compile of the denoiser's
+            repeated block (which fuses the GGUF dequant AND the matmul/norm/elementwise
+            in one graph -- ~3.2x on the GGUF Z-Image transformer, PSNR ~36 dB vs eager,
+            well above the Q4 noise floor) plus TF32 matmul and fused QKV projections.
 
-Regional compile used to be gated off for the GGUF transformer, but it compiles and
-runs faster on the current diffusers/torch (measured; the GGUF dequant ops stay
-eager and the rest of the repeated block compiles), so the GGUF gate is removed; the
-per-family ``supports_torch_compile`` flag and the bf16/CUDA checks still apply.
+Tier rationale: ``default`` is the cheap, always-amortising compile (compile just the
+hot GGUF dequant; the block stays eager) so the first image is fast and VRAM is
+untouched; ``max`` pays the larger regional-compile tax for the bigger warm speedup.
+The compiled dequant is deliberately skipped under ``max`` -- the regional block compile
+subsumes the dequant fusion (a separately-compiled dequant would be traced into that
+graph and break it), so ``max`` runs the stock dequant and lets the block compile it. The
+per-family ``supports_torch_compile`` flag and the bf16/CUDA checks gate regional compile.
 
 The backend flags this layer flips (TF32, cudnn.benchmark) are PROCESS-WIDE, so
 ``snapshot_backend_flags`` / ``restore_backend_flags`` let the caller capture the
@@ -34,10 +46,13 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from . import diffusion_gguf_compile as gguf_compile
+
 SPEED_OFF = "off"
+SPEED_EAGER = "eager"
 SPEED_DEFAULT = "default"
 SPEED_MAX = "max"
-SPEED_MODES = (SPEED_OFF, SPEED_DEFAULT, SPEED_MAX)
+SPEED_MODES = (SPEED_OFF, SPEED_EAGER, SPEED_DEFAULT, SPEED_MAX)
 
 
 def snapshot_backend_flags() -> Optional[dict]:
@@ -105,12 +120,13 @@ def normalize_speed_mode(value: Optional[str]) -> str:
 def resolve_speed_mode(value: Optional[str], *, is_gguf: bool) -> str:
     """The effective speed mode when the caller leaves it UNSET (``None``).
 
-    A GGUF model defaults to ``default``: regional compile is ~2.2x faster and its
-    numeric perturbation sits well below the quantisation noise floor (measured
-    PSNR ~37 dB compile-vs-eager versus ~21 dB Q4-vs-bf16), so it does not reduce
-    output quality relative to the dense reference. A dense (non-GGUF) model stays
-    ``off`` / bit-identical, since there compile would be the only source of drift.
-    An explicit value -- including ``"off"`` -- is always honored verbatim."""
+    A GGUF model defaults to ``default``: it compiles only the hot dequant op chain
+    (~70-80% of eager GGUF time) for ~1.24-1.64x at a small one-time compile and zero
+    extra VRAM -- a cheap, always-amortising win whose numeric perturbation sits well
+    below the quantisation noise floor (the dequant graph is unchanged, just
+    Inductor-fused). A dense (non-GGUF) model stays ``off`` / bit-identical, since there
+    compile would be the only source of drift. An explicit value -- including ``"off"``
+    -- is always honored verbatim."""
     if value is None:
         return SPEED_DEFAULT if is_gguf else SPEED_OFF
     return normalize_speed_mode(value)
@@ -159,6 +175,7 @@ def apply_speed_optims(
         "tf32": False,
         "fused_qkv": False,
         "compiled": False,
+        "compiled_dequant": False,
     }
     mode = normalize_speed_mode(speed_mode)
     # TF32 is the one PROCESS-GLOBAL flag we flip (on max). Restore it whenever this
@@ -170,25 +187,41 @@ def apply_speed_optims(
     if mode == SPEED_OFF:
         return applied
 
+    on_cuda = getattr(target, "device", None) == "cuda"
+    family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
+
     # Lossless: a channels-last VAE speeds up its convolutions with no numeric change.
     applied["channels_last"] = _vae_channels_last(pipe, logger)
 
     # Near-lossless: let cuDNN autotune the fixed-shape VAE convs (CUDA only). It may
     # pick a different conv algorithm, so it is a "default"-tier (not bit-identical) win.
-    if getattr(target, "device", None) == "cuda":
+    if on_cuda:
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
 
-    # Near-lossless and the largest win: regional compile of the repeated denoiser
-    # block, where eligible (now incl. the GGUF transformer). `max` opts into
-    # max-autotune (longer compile, autotuned kernels).
-    if compile_eligible(target, is_gguf = is_gguf, family = family):
+    # --- the compile lever, remapped per tier ----------------------------------------
+    # default = LIGHT compile: for a GGUF model, compile ONLY the dequant op chain
+    #   (~70-80% of eager GGUF time) -- cheap, VRAM-free, resolution-invariant; the
+    #   transformer block stays eager. A dense model has no dequant, so default falls
+    #   back to the regional block compile (its only compile lever).
+    # max = FULL compile: regional max-autotune compile of the repeated denoiser block
+    #   (fuses dequant + matmul + norm + elementwise in one graph). It subsumes the
+    #   dequant fusion, so we do NOT also install the standalone compiled dequant here.
+    # eager = no compile at all.
+    if mode == SPEED_DEFAULT:
+        if is_gguf and on_cuda and family_allows_compile:
+            applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
+        elif compile_eligible(target, is_gguf = is_gguf, family = family):
+            applied["compiled"] = _compile_repeated_blocks(
+                pipe, logger, max_autotune = False, cache_active = cache_active
+            )
+    elif mode == SPEED_MAX and compile_eligible(target, is_gguf = is_gguf, family = family):
         applied["compiled"] = _compile_repeated_blocks(
-            pipe, logger, max_autotune = mode == SPEED_MAX, cache_active = cache_active
+            pipe, logger, max_autotune = True, cache_active = cache_active
         )
 
     if mode == SPEED_MAX:
         # Near-lossless: TF32 matmul (CUDA only) trades a few mantissa bits for speed.
-        if getattr(target, "device", None) == "cuda":
+        if on_cuda:
             applied["tf32"] = _enable_tf32(logger)
         applied["fused_qkv"] = _fuse_qkv(pipe, logger)
 

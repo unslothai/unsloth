@@ -35,13 +35,21 @@ class _FakeBackend:
         *,
         gguf_filename = None,
         family_override = None,
+        model_kind = None,
     ):
         # Mirror the real backend's cheap validation so the route's
         # validate-before-evict ordering is exercised.
+        from core.inference.diffusion import resolve_model_kind
         from core.inference.diffusion_families import detect_family
 
-        if not gguf_filename:
-            raise ValueError("gguf_filename is required.")
+        kind = resolve_model_kind(gguf_filename, model_kind)
+        if kind in ("gguf", "single_file") and not gguf_filename:
+            raise ValueError("a single-file checkpoint name is required.")
+        # Non-GGUF loads are gated to unsloth/* (or a local path), like the real backend.
+        if kind != "gguf" and not model_path.lower().startswith("unsloth/"):
+            raise ValueError(
+                f"Non-GGUF diffusion loads are restricted to unsloth/* repos; got '{model_path}'."
+            )
         fam = detect_family(model_path, family_override)
         if fam is None:
             raise ValueError(f"Could not infer a diffusion family for '{model_path}'.")
@@ -254,10 +262,24 @@ def test_generate_rejects_non_multiple_of_16(client):
     assert ok.status_code == 200
 
 
-def test_load_requires_gguf_filename(client):
-    # gguf_filename is now mandatory — a load without it is a 422.
+def test_non_gguf_load_restricted_to_unsloth(client):
+    # gguf_filename is optional now; with none, the load is a full-pipeline kind, which
+    # is gated to unsloth/* repos. A non-unsloth repo (no filename) is rejected -> 400.
     resp = client.post("/api/inference/images/load", json = {"model_path": "x/z-image"})
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert "unsloth" in resp.json()["detail"].lower()
+
+
+def test_pipeline_load_allowed_for_unsloth_repo(client):
+    # An unsloth/* repo with no filename loads as a full diffusers pipeline (kind auto
+    # = pipeline); the route forwards model_kind="pipeline" to begin_load.
+    resp = client.post(
+        "/api/inference/images/load", json = {"model_path": "unsloth/Z-Image-Turbo-unsloth-bnb-4bit"}
+    )
+    assert resp.status_code == 200
+    backend = diffusion_module.get_diffusion_backend()
+    assert backend.last_load_kwargs["model_kind"] == "pipeline"
+    assert backend.last_load_kwargs.get("gguf_filename") is None
 
 
 def test_generate_without_load_returns_409(client):
