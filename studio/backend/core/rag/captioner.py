@@ -128,6 +128,8 @@ def _vision_complete(
             json = payload,
             timeout = timeout,
             headers = _vision_auth_headers(),
+            # trust_env=False: base_url is the loopback backend; skip any HTTP(S)_PROXY.
+            trust_env = False,
         )
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
