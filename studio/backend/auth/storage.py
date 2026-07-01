@@ -110,6 +110,17 @@ def get_connection() -> sqlite3.Connection:
         except OSError:
             pass
     conn.row_factory = sqlite3.Row
+    # WAL lets token reads run concurrently with refresh-token writes;
+    # busy_timeout bounds lock waits. Matches the other Studio SQLite stores.
+    # Set busy_timeout first: switching journal_mode needs a lock, so if a
+    # refresh-token write already holds one, journal_mode=WAL raises SQLITE_BUSY;
+    # with busy_timeout already in effect it waits instead of failing and leaving
+    # this connection on SQLite's default zero lock wait.
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.Error:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS auth_user (

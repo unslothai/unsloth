@@ -138,6 +138,10 @@ export interface RunExportParams {
   exportMethod: ExportMethod;
   isAdapter: boolean;
   quantLevels: string[];
+  /** GGUF: use an importance matrix (auto-download); required for the IQ quants. */
+  useImatrix?: boolean;
+  /** Merged: precision/format ("16-bit (FP16)" or a compressed-tensors option). */
+  mergedFormat?: string;
   saveDirectory: string;
   destination: ExportDestination;
   repoId?: string;
@@ -437,6 +441,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           const { outputPath } = await runRecoverableOp(() =>
             exportMerged({
               save_directory: params.saveDirectory,
+              format_type: params.mergedFormat,
               push_to_hub: pushToHub,
               repo_id: params.repoId,
               hf_token: params.token,
@@ -469,6 +474,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               push_to_hub: pushToHub,
               repo_id: params.repoId,
               hf_token: params.token,
+              imatrix: params.useImatrix,
             }),
           );
           lastOutputPath = outputPath ?? lastOutputPath;
