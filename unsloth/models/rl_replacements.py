@@ -1513,7 +1513,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             # compare over the exact loss-mask region (per-row completion, non-pad)
                             _pk_wc = torch.arange(_pk_W, device = input_ids.device)
                             _pk_cm = (
-                                (_pk_wc.unsqueeze(0) >= (max_left_pad - left_pad_tokens_per_prompt).unsqueeze(1))
+                                (
+                                    _pk_wc.unsqueeze(0)
+                                    >= (max_left_pad - left_pad_tokens_per_prompt).unsqueeze(1)
+                                )
                                 & (input_ids[:, -_pk_W:] != _pk_pad)
                             ).float()
                             _pk_diff = float(((_pk_result - _pk_ref).abs() * _pk_cm).max())
