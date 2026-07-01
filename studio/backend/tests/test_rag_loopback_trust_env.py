@@ -16,7 +16,6 @@ def _httpx_calls(path):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        # match httpx.<callee>(...)
         if (
             isinstance(func, ast.Attribute)
             and func.attr in HTTPX_CALLEES

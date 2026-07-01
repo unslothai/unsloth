@@ -182,7 +182,7 @@ def test_vision_complete_sends_auth_header(monkeypatch):
     )
     assert out == "ok"
     assert captured["headers"] == {"Authorization": "Bearer secret"}
-    assert captured["trust_env"] is False  # loopback backend: ignore ambient proxy
+    assert captured["trust_env"] is False
 
 
 def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
@@ -207,7 +207,7 @@ def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
     monkeypatch.setattr(httpx, "post", fake_post)
     captioner._vision_complete("http://x", "local", b"i", prompt = "p", timeout = 5.0, max_tokens = 8)
     assert captured["headers"] is None
-    assert captured["trust_env"] is False  # loopback backend: ignore ambient proxy
+    assert captured["trust_env"] is False
 
 
 def test_merge_page_captions_dedups():

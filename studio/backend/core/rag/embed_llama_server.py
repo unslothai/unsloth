@@ -61,8 +61,7 @@ class LlamaServerBackend:
         self._binary: str | None = None
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
-        # Pooled client; requests pass full URLs, so a respawn's new port needs no
-        # rebuild. trust_env=False keeps the loopback embedder off any HTTP(S)_PROXY.
+        # Pooled client (full URLs per request survive a respawn); trust_env=False skips HTTP(S)_PROXY.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
         atexit.register(self._shutdown)
 
