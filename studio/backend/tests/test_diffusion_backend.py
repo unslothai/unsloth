@@ -307,6 +307,38 @@ def test_generate_without_load_raises(fake_runtime):
         backend.generate(prompt = "x")
 
 
+def test_failed_load_restores_backend_flags(fake_runtime, tmp_path, monkeypatch):
+    # A failure AFTER apply_speed_optims (here an OOM in apply_memory_plan) must go
+    # through the load's try/finally and restore the process-global TF32 / cudnn flags,
+    # so a later `off` load is still bit-identical, and must not commit a partial state.
+    # Regression: a refactor dropped this guard, leaking the flags on a failed load.
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+
+    restored: list = []
+    cleared: list = []
+    monkeypatch.setattr(
+        "core.inference.diffusion.restore_backend_flags", lambda snap: restored.append(snap)
+    )
+    monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", lambda: cleared.append(True))
+    monkeypatch.setattr(
+        "core.inference.diffusion.apply_memory_plan",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("CUDA out of memory")),
+    )
+
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "model.gguf",
+            family_override = "z-image",
+            base_repo = "base/repo",
+            speed_mode = "max",
+        )
+    assert restored, "restore_backend_flags was not called on the failed-load path"
+    assert cleared, "clear_gpu_cache was not called on the failed-load path (VRAM leak)"
+    assert backend._state is None and backend.is_loaded is False
+
+
 def test_resolve_base_repo_prefers_caller_then_hf_tag_then_fallback(monkeypatch):
     from core.inference import diffusion
     from core.inference.diffusion_families import detect_family

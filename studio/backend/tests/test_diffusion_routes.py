@@ -281,6 +281,37 @@ def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
     assert "CUDA" not in resp.json()["detail"]
 
 
+def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(client, monkeypatch):
+    # A native sd-cli execution failure whose raw tail merely CONTAINS "cancelled"
+    # must stay a sanitized 500, not misroute to 409 and echo that output (path/arg
+    # leak). Regression: the handler matched "cancelled" as a substring.
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError("sd-cli exited 1. Last output:\nop cancelled at /home/u/models/x.gguf")
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Image generation failed."
+    assert "cancelled" not in resp.json()["detail"] and "models" not in resp.json()["detail"]
+
+
+def test_generate_user_cancellation_returns_409(client, monkeypatch):
+    # The exact cancellation sentinel both engines raise is client-state (409).
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _cancel(**kwargs):
+        raise RuntimeError("Diffusion generation was cancelled.")
+
+    monkeypatch.setattr(backend, "generate", _cancel)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Diffusion generation was cancelled."
+
+
 def test_load_unknown_family_returns_400(client, monkeypatch):
     def _raise(*a, **k):
         raise ValueError("'x/y' isn't a supported image-generation model. Supported: Z-Image.")

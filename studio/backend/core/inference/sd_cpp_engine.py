@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from utils.process_lifetime import child_popen_kwargs
 from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
@@ -140,7 +141,8 @@ def _find_binary(
     binary is looked for):
       1. ``direct_env`` -- a direct path to the binary.
       2. ``UNSLOTH_SD_CPP_PATH`` env -- a stable-diffusion.cpp install dir.
-      3. ``~/.unsloth/stable-diffusion.cpp`` build layouts (the installer target).
+      3. the installer target: ``<UNSLOTH_STUDIO_HOME>/../stable-diffusion.cpp`` when
+         that env (or ``STUDIO_HOME``) is set, else ``~/.unsloth/stable-diffusion.cpp``.
       4. ``./stable-diffusion.cpp`` in-tree build (developer checkout).
       5. ``path_stems`` on PATH (in order).
     """
@@ -384,6 +386,10 @@ class SdCppEngine:
             # Own session/process group so cancellation/timeout can kill the whole
             # tree, not just the parent (POSIX only; harmless flag elsewhere).
             start_new_session = (os.name == "posix"),
+            # Bind the child to the parent's lifetime (Linux PR_SET_PDEATHSIG), so a
+            # hard parent crash mid-generation can't orphan sd-cli holding VRAM/RAM --
+            # matching every llama.cpp Popen site. Composes with start_new_session.
+            **child_popen_kwargs(),
         )
         # Drain stdout on a reader thread so the timeout is enforced even when the
         # child hangs WITHOUT printing (e.g. stuck in model load / GPU init): a plain
