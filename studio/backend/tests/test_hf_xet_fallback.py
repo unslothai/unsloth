@@ -206,6 +206,7 @@ class _FakeAttempt:
         interval,
         grace_period,
         on_status,
+        force_download = False,
     ):
         self.calls.append(
             _types.SimpleNamespace(

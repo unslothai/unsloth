@@ -36,16 +36,15 @@ from .import_fixes import (
     fix_huggingface_hub,
 )
 
-# Redirect a read-only Hugging Face cache before anything below can import
-# huggingface_hub / transformers / vllm (disable_broken_vllm probes
-# `import vllm`, check_fbgemm_gpu_version imports transformers, and
-# fix_huggingface_hub imports huggingface_hub itself), all of which can
-# freeze Hub's cache constants with the un-redirected paths. unsloth_zoo
-# runs the same redirect at import, but that happens after these probes.
-# hf_cache.py is stdlib-only, so load it straight from its file without
-# triggering the full unsloth_zoo package init this early; the zoo's own
-# call later is an idempotent no-op. Older unsloth_zoo without hf_cache.py
-# is skipped silently.
+# Redirect a read-only Hugging Face cache before anything below imports
+# huggingface_hub / transformers / vllm (disable_broken_vllm probes `import vllm`
+# and its compiled extensions, check_fbgemm_gpu_version imports transformers,
+# fix_huggingface_hub imports huggingface_hub) -- any of which would freeze Hub's
+# cache constants with the un-redirected paths. unsloth_zoo runs the same redirect
+# at import, but only after these probes. hf_cache.py is stdlib-only, so load it
+# straight from its file without triggering the full unsloth_zoo init this early;
+# the zoo's later call is an idempotent no-op. Older unsloth_zoo without it is
+# skipped silently.
 try:
     import importlib.util as _importlib_util
     from pathlib import Path as _Path
@@ -240,6 +239,7 @@ from .import_fixes import (
     disable_torchcodec_if_broken,
     disable_broken_wandb,
     fix_trl_vllm_ascend,
+    fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
     patch_accelerate_recursively_apply,
@@ -271,6 +271,7 @@ disable_broken_wandb()
 # Must run before patch_peft_weight_converter_compatibility: stubs the
 # transformers v5 submodules peft 0.19.x imports, so the next patch can wrap
 # build_peft_weight_mapping instead of being swallowed by its ImportError.
+fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
 patch_accelerate_recursively_apply()
@@ -296,6 +297,7 @@ del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
 del disable_broken_wandb
+del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
 del patch_accelerate_recursively_apply
