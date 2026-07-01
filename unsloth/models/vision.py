@@ -1094,6 +1094,10 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         try:
+            if offload_embedding and fast_inference:
+                # vLLM manages its own weights; embedding offload does not apply.
+                print("Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM).")
+                offload_embedding = False
             if not fast_inference:
                 # Prevent load_in_fp8 from being forwarded into HF internal model loading
                 load_in_fp8 = kwargs.pop("load_in_fp8", None)
