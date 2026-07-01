@@ -39,6 +39,12 @@ class DiffusionFamily:
     # regional torch.compile. Now consulted on the GGUF path too (compile runs on the
     # GGUF transformer); all current families compile, so this stays True.
     supports_torch_compile: bool = True
+    # Optional pre-quantized transformer checkpoints, as (scheme, repo_id) pairs (a
+    # hashable mapping). When the fast transformer_quant path resolves a scheme with a
+    # hosted checkpoint, the loader fetches the already-quantized weights instead of
+    # materialising the dense bf16 transformer on the GPU (much lower load VRAM + a
+    # smaller download). Empty until checkpoints are hosted -> behaviour is unchanged.
+    prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
 
 
 # Keyed by architecture, not per model variant: a checkpoint's specific base repo
@@ -121,6 +127,14 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
     """The companion diffusers repo: caller-supplied if given, else the family fallback."""
     base = (base_repo or "").strip()
     return base or fam.base_repo
+
+
+def family_prequant_repo(fam: DiffusionFamily, scheme: str) -> Optional[str]:
+    """The hosted pre-quantized transformer repo for ``scheme`` in this family, or None."""
+    for entry_scheme, repo_id in fam.prequant_repos:
+        if entry_scheme == scheme:
+            return repo_id
+    return None
 
 
 def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:

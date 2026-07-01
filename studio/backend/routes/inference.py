@@ -10333,6 +10333,7 @@ async def load_diffusion_model(
             text_encoder_quant = request.text_encoder_quant,
             transformer_quant = request.transformer_quant,
             transformer_quant_fast_accum = request.transformer_quant_fast_accum,
+            transformer_prequant_path = request.transformer_prequant_path,
         )
         return DiffusionStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:

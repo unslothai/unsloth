@@ -53,10 +53,16 @@ from .diffusion_speed import (
     snapshot_backend_flags,
 )
 from .diffusion_precision import quantize_text_encoders
+from .diffusion_prequant import (
+    load_prequantized_transformer,
+    resolve_prequant_source,
+)
 from .diffusion_transformer_quant import (
+    DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
     normalize_transformer_quant,
     quantize_transformer,
+    select_transformer_quant_scheme,
 )
 
 logger = get_logger(__name__)
@@ -299,6 +305,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         transformer_quant_fast_accum: Optional[bool] = None,
+        transformer_prequant_path: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         fam = self.validate_load_request(
@@ -332,6 +339,7 @@ class DiffusionBackend:
                 text_encoder_quant = text_encoder_quant,
                 transformer_quant = transformer_quant,
                 transformer_quant_fast_accum = transformer_quant_fast_accum,
+                transformer_prequant_path = transformer_prequant_path,
                 _load_token = token,
             ),
             daemon = True,
@@ -467,6 +475,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         transformer_quant_fast_accum: Optional[bool] = None,
+        transformer_prequant_path: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         # Validate first (cheap, no torch/diffusers) so a direct call with a bad
@@ -534,6 +543,8 @@ class DiffusionBackend:
                             target,
                             transformer_quant,
                             transformer_quant_fast_accum,
+                            fam = fam,
+                            prequant_path = transformer_prequant_path,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
                         logger.warning(
@@ -662,27 +673,76 @@ class DiffusionBackend:
         target: DiffusionDeviceTarget,
         mode: Optional[str],
         fast_accum: Optional[bool] = None,
+        *,
+        fam: Optional[DiffusionFamily] = None,
+        prequant_path: Optional[str] = None,
     ) -> tuple[Any, str]:
-        """Build the opt-in fast pipeline: load the DENSE bf16 transformer from the base
-        repo (``subfolder="transformer"``), assemble the pipeline, place it on the device,
-        and torchao-quantise the transformer in place. Returns ``(pipe, engaged_scheme)``.
+        """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
+
+        Two ways to get the quantized transformer, in order:
+
+        1. Pre-quantized: if a checkpoint is configured for the chosen scheme (an explicit
+           ``prequant_path`` or the family's hosted repo), load the already-quantized
+           weights onto the meta device and assign them in -- the dense bf16 never lands on
+           the GPU, so the load peak is ~half and the download is smaller.
+        2. Dense + quantise (fallback): load the DENSE bf16 transformer from the base repo,
+           place it on the device, and torchao-quantise it in place.
 
         Raises if the scheme is unsupported or quantisation fails, so ``load_pipeline``
-        catches it and falls back to the GGUF build. Quantisation runs ON the device (the
-        dynamic int8 / fp8 / fp4 kernels need the weights on CUDA) and BEFORE the loader
-        compiles the repeated block, so the order is quantize -> compile -> placement."""
+        catches it and falls back to the GGUF build. Quantisation runs ON the device and
+        BEFORE the loader compiles the repeated block, so the order stays quantize ->
+        compile -> placement."""
+        # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
+        scheme = select_transformer_quant_scheme(target, mode)
+        if scheme is not None and fam is not None:
+            source = resolve_prequant_source(fam, scheme, path_override = prequant_path)
+            if source is not None:
+                transformer = load_prequantized_transformer(
+                    transformer_cls,
+                    base,
+                    source,
+                    device = device,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    scheme = scheme,
+                    # Reject a checkpoint built with a different Linear filter than the
+                    # dense path uses, so the prequant and runtime-quant models match.
+                    min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                    logger = logger,
+                )
+                if transformer is not None:
+                    pipe = self._assemble_pipe(
+                        pipeline_cls, base, transformer, dtype, hf_token, device
+                    )
+                    return pipe, scheme
+
+        # 2. Fallback: materialise the dense bf16 transformer and quantise it on-device.
         transformer = transformer_cls.from_pretrained(
             base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
         )
+        pipe = self._assemble_pipe(pipeline_cls, base, transformer, dtype, hf_token, device)
+        scheme = quantize_transformer(pipe, target, mode = mode, fast_accum = fast_accum, logger = logger)
+        if scheme is None:
+            raise RuntimeError("transformer quant unsupported for this device/scheme")
+        return pipe, scheme
+
+    @staticmethod
+    def _assemble_pipe(
+        pipeline_cls: Any,
+        base: str,
+        transformer: Any,
+        dtype: Any,
+        hf_token: Optional[str],
+        device: str,
+    ) -> Any:
+        """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
+        (a no-op for an already-placed pre-quantized transformer; it moves the companions)."""
         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
         if hf_token:
             pipe_kwargs["token"] = hf_token
         pipe = pipeline_cls.from_pretrained(base, **pipe_kwargs)
         pipe.to(device)
-        scheme = quantize_transformer(pipe, target, mode = mode, fast_accum = fast_accum, logger = logger)
-        if scheme is None:
-            raise RuntimeError("transformer quant unsupported for this device/scheme")
-        return pipe, scheme
+        return pipe
 
     def _plan_memory(
         self,

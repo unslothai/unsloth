@@ -920,6 +920,10 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
 
     monkeypatch.setattr(_FakeTransformer, "from_pretrained", _from_pretrained, raising = False)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    # Resolve the scheme without the real GPU smoke probe, and configure no pre-quant
+    # checkpoint so the dense materialise+quantise branch is the one exercised.
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: scheme)
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
     def _quantize(pipe, target, *, mode, **kw):
         calls["quantize"] += 1
@@ -972,6 +976,77 @@ def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatc
     # quantize ran on-device: the dense pipe was placed on cuda (before compile).
     assert backend._state.pipe.moved_to == "cuda"
     assert status["offload_policy"] == "none"
+
+
+def test_transformer_quant_prequant_path_engaged(fake_runtime, tmp_path, monkeypatch):
+    # A configured pre-quant checkpoint -> load the already-quantized transformer directly;
+    # the dense from_pretrained and the on-device quantize_transformer are NOT used.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda target, mode: "fp8")
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
+    prequant_obj = object()
+    loaded: dict = {"n": 0}
+
+    def _load_prequant(transformer_cls, base, source, **kw):
+        loaded["n"] += 1
+        loaded["scheme"] = kw.get("scheme")
+        return prequant_obj
+
+    monkeypatch.setattr(dmod, "load_prequantized_transformer", _load_prequant)
+
+    @classmethod
+    def _fp_fail(cls, *a, **k):
+        pytest.fail("dense from_pretrained must not run when a prequant checkpoint loads")
+
+    monkeypatch.setattr(_FakeTransformer, "from_pretrained", _fp_fail, raising = False)
+    monkeypatch.setattr(
+        dmod,
+        "quantize_transformer",
+        lambda *a, **k: pytest.fail("quantize_transformer must not run on the prequant path"),
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+        transformer_prequant_path = str(tmp_path / "zimage_fp8.pt"),
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert loaded["n"] == 1 and loaded["scheme"] == "fp8"
+    # The pre-quantized transformer object was assembled into the pipeline...
+    assert _FakePipeline.last.get("transformer") is prequant_obj
+    # ...and the GGUF single-file path was not used.
+    assert _FakeTransformer.last == {}
+
+
+def test_transformer_quant_prequant_load_fails_falls_back_to_dense(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # A configured prequant source whose load returns None must fall back to the dense
+    # materialise+quantise path (not straight to GGUF), preserving the fast mode.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    calls = _stub_dense_quant(monkeypatch, scheme = "fp8")
+    # Override the no-prequant default: a source resolves, but its load fails.
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
+    monkeypatch.setattr(dmod, "load_prequantized_transformer", lambda *a, **k: None)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert calls["from_pretrained"] == 1 and calls["quantize"] == 1  # dense path ran
+    assert _FakeTransformer.last == {}  # GGUF not used
 
 
 def test_transformer_quant_falls_back_to_gguf_on_failure(fake_runtime, tmp_path, monkeypatch):
