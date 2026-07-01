@@ -577,6 +577,29 @@ def has_tool_signal(text: str) -> bool:
     return any(s in text for s in TOOL_XML_SIGNALS)
 
 
+# A Qwen/Hermes ``<tool_call>`` or ``<function=...>`` envelope whose arguments
+# contain literal DeepSeek/Kimi markers (e.g. a user asking about that syntax)
+# must be parsed as the OUTER call, not the embedded marker. Detect that such an
+# envelope opens before the first DeepSeek/Kimi marker so the marker pre-pass is
+# skipped for it.
+_EMBEDDED_MARKER_RE = re.compile(
+    _DEEPSEEK_OPEN_RE_SRC
+    + "|"
+    + re.escape(_KIMI_SECTION_BEGIN)
+    + "|"
+    + re.escape(_KIMI_CALL_BEGIN)
+)
+_OUTER_ENVELOPE_OPEN_RE = re.compile(r"<tool_call>|<function=")
+
+
+def _marker_inside_leading_envelope(content: str) -> bool:
+    marker = _EMBEDDED_MARKER_RE.search(content)
+    if marker is None:
+        return False
+    envelope = _OUTER_ENVELOPE_OPEN_RE.search(content)
+    return envelope is not None and envelope.start() < marker.start()
+
+
 def parse_tool_calls_from_text(
     content: str,
     *,
@@ -595,14 +618,18 @@ def parse_tool_calls_from_text(
     marker-based forms carry an explicit signal, so a disabled-tool name there is a
     real call attempt). ``None`` keeps the name-agnostic behaviour."""
     # DeepSeek / Kimi use unique (often full-width) markers that do not collide
-    # with the shared formats, so try them first.
-    for parser in (
-        _parse_deepseek_tool_calls,
-        _parse_kimi_tool_calls,
-    ):
-        calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
-        if calls:
-            return calls
+    # with the shared formats, so try them first -- unless a Qwen/Hermes
+    # <tool_call> / <function=...> envelope opens before the first such marker, in
+    # which case the marker is literal data inside the outer call's arguments and
+    # the shared parser below must take the outer call.
+    if not _marker_inside_leading_envelope(content):
+        for parser in (
+            _parse_deepseek_tool_calls,
+            _parse_kimi_tool_calls,
+        ):
+            calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
+            if calls:
+                return calls
 
     # Qwen/Hermes, Qwen3.5 XML, and Gemma 4 go through the shared tool_healing
     # parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and
