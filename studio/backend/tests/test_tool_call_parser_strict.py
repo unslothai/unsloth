@@ -160,3 +160,39 @@ class TestHealingPathUnaffected:
         calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
+
+
+class TestEnabledToolNameGate:
+    """``enabled_tool_names`` disambiguates the ambiguous bare-rehearsal
+    ``NAME[ARGS]{json}`` form (#5704): NAME is a call only when it is an active tool,
+    otherwise it is prose. ``None`` (the default) keeps the legacy unrestricted parse
+    so existing callers are unaffected."""
+
+    def _names(self, calls):
+        return [c["function"]["name"] for c in calls]
+
+    def test_inactive_rehearsal_before_active_call_does_not_swallow_it(self):
+        # P1: an inactive ``foo[ARGS]{...}`` preceding a real ``web_search[ARGS]{...}``
+        # must not consume the real call -- only web_search is parsed, with its args.
+        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert self._names(calls) == ["web_search"]
+        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
+
+    def test_inactive_rehearsal_alone_is_not_a_call(self):
+        text = 'foo[ARGS]{"a":1}'
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
+
+    def test_active_rehearsal_is_still_parsed(self):
+        text = 'web_search[ARGS]{"query":"cats"}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert self._names(calls) == ["web_search"]
+
+    def test_unrestricted_gate_none_preserves_legacy_behavior(self):
+        # Without a gate every ``NAME[ARGS]{...}`` is parsed, as before the gate landed.
+        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
+        assert self._names(parse_tool_calls_from_text(text)) == ["foo", "web_search"]
+        assert self._names(parse_tool_calls_from_text(text, enabled_tool_names = None)) == [
+            "foo",
+            "web_search",
+        ]

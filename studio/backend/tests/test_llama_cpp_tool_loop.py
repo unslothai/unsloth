@@ -1813,3 +1813,288 @@ def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
     metadata = [e for e in events if e.get("type") == "metadata"]
     assert metadata, "expected a metadata event"
     assert "prompt_tokens_details" not in metadata[-1]["usage"]
+
+
+def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
+    """Finding 6: a rehearsal call whose name (``web_search``) and ``[ARGS]{...}``
+    arrive in separate content deltas must hold the bare name in the buffer until
+    ``[ARGS]`` flips it to a drain. Without _is_rehearsal_prefix the GGUF path
+    streams the tool name as visible content before the call executes."""
+
+    first_stream = [
+        _sse({"content": "web_search"}),
+        _sse({"content": '[ARGS]{"query":"cats"}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("web_search" not in t for t in content_texts), content_texts
+    assert all("[ARGS]" not in t for t in content_texts), content_texts
+
+
+def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
+    """The first flush out of BUFFERING (prose plus a trailing active-tool-name in
+    the first delta, ``[ARGS]{...}`` in the next) must apply the same trailing-name
+    hold the STREAMING branch uses. The first delta has spaces so it is not a
+    rehearsal prefix and falls to the initial flush, which previously emitted the
+    bare name before the call drained."""
+
+    first_stream = [
+        _sse({"content": "I will use web_search"}),
+        _sse({"content": '[ARGS]{"query":"cats"}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("web_search" not in t for t in content_texts), content_texts
+    assert all("[ARGS]" not in t for t in content_texts), content_texts
+
+
+def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch):
+    """Finding 9: the BUFFERING guard only covers a rehearsal at the turn start.
+    When prose has already streamed (STREAMING state) and the model then emits the
+    tool name and ``[ARGS]{...}`` in later deltas, the bare name must still be held,
+    not flushed as visible content before the call drains."""
+
+    first_stream = [
+        _sse({"content": "Let me think. "}),
+        _sse({"content": "I will search "}),
+        _sse({"content": "web_search"}),
+        _sse({"content": '[ARGS]{"query":"cats"}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert all("web_search" not in t for t in content_texts), content_texts
+
+
+def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
+    """End-of-stream flush: a plain answer that ENDS on a tool-name word with no
+    ``[ARGS]`` following is real prose and must not be dropped by the streaming
+    rehearsal hold."""
+
+    first_stream = [
+        _sse({"content": "I think "}),
+        _sse({"content": "you should "}),
+        _sse({"content": "web_search"}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "advise"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any(t.rstrip().endswith("web_search") for t in content_texts), content_texts
+
+
+def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypatch):
+    """Finding 11: a realistic MCP name longer than the 32-char buffer cap split as
+    NAME then [ARGS]{...} must still be held (a rehearsal prefix is self-bounding),
+    so the name does not leak and the call executes."""
+    name = "mcp__github__create_pull_request"
+    assert len(name) >= 32, len(name)
+
+    first_stream = [
+        _sse({"content": name}),
+        _sse({"content": '[ARGS]{"x":1}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "done"}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda n, a, **_k: (calls.append((n, a)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [(name, {"x": 1})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert not any(name in t for t in content_texts), content_texts
+
+
+def test_gguf_streaming_keeps_bare_args_before_think_block(monkeypatch):
+    """F4: the GGUF streaming strip must run its open-ended ``[ARGS]`` tail cleanup
+    only on the LAST segment. A bare ``foo[ARGS]`` (no JSON body, ``foo`` not a tool)
+    before a <think> block is prose, not a truncated call, so the final visible text
+    must keep it verbatim instead of dropping ``foo[ARGS]`` and corrupting the
+    sentence."""
+
+    first_stream = [
+        _sse({"content": "Please pass foo[ARGS] "}),
+        _sse({"content": "<think>pause</think> "}),
+        _sse({"content": "to the template."}),
+        _done(),
+    ]
+    backend = _make_backend(monkeypatch, [first_stream], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "x"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert content_texts, events
+    assert content_texts[-1] == "Please pass foo[ARGS] <think>pause</think> to the template."
+
+
+def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
+    """BUG A: an inactive-name ``foo[ARGS]{...}`` in a prose answer must not be treated
+    as a tool call. The BUFFERING and end-of-stream safety-net ``[ARGS]`` checks gate on
+    active tool names (like the safetensors loop and the mid-stream path), so ``foo``
+    (``web_search`` is the only enabled tool) is neither drained/parsed into a disabled
+    no-op nor forced into another generation turn."""
+    first_stream = [
+        _sse({"content": 'foo[ARGS]{"x":1} is just syntax.'}),
+        _done(),
+    ]
+    backend = _make_backend(monkeypatch, [first_stream], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "x"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    # No tool executed and no tool_start/tool_end events for the inactive name. Only
+    # ONE stream is supplied, so a spurious disabled-``foo`` no-op + re-prompt would
+    # exhaust the stream list and error -- the clean completion proves no retry turn.
+    assert calls == [], calls
+    assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), events
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    # The inactive ``foo[ARGS]{...}`` is prose, not a call: the strip is gated on the
+    # active tool list too, so the WHOLE sentence (rehearsal markup and all) survives
+    # in the visible content rather than being partially stripped to " is just syntax."
+    assert any('foo[ARGS]{"x":1} is just syntax.' in t for t in content_texts), content_texts
+
+
+def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(monkeypatch):
+    """BUG X (#5704): an inactive-name ``foo[ARGS]{...}`` immediately preceding a real
+    ``web_search[ARGS]{...}`` in the same delta must NOT swallow the real call. The gate
+    is threaded through parse and strip, so web_search still executes while the inactive
+    ``foo[ARGS]{...}`` stays visible as prose (it is not a call, so it is not stripped)."""
+    first_stream = [
+        _sse({"content": 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    # The real call runs (not consumed by the inactive one, and ``foo`` itself is not
+    # executed as a phantom disabled call).
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    # The inactive rehearsal is preserved as prose; the active one is stripped.
+    assert any('foo[ARGS]{"a":1}' in t for t in content_texts), content_texts
+    assert all("web_search[ARGS]" not in t for t in content_texts), content_texts

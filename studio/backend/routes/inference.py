@@ -583,6 +583,19 @@ def _chat_content_chunk(completion_id, created, model_name, text) -> str:
     )
 
 
+def _chat_reasoning_chunk(completion_id, created, model_name, text) -> str:
+    """A reasoning-delta chunk carrying ``text`` (renders the UI thinking block).
+    Mirrors ``_chat_content_chunk`` but on ``reasoning_content`` so the
+    safetensors/MLX streams reach GGUF parity."""
+    return _chat_chunk_sse(
+        completion_id,
+        created,
+        model_name,
+        delta = ChoiceDelta(reasoning_content = text),
+        finish_reason = None,
+    )
+
+
 def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
     """Terminal stop chunk (empty delta) carrying the finish reason."""
     return _chat_chunk_sse(
@@ -1273,10 +1286,11 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
-    # Our safetensors loop only parses <tool_call>{json}</tool_call>,
-    # <function=name>...</function>, and Gemma native <|tool_call>...<tool_call|>.
-    # Llama uses <|python_tag|>, Mistral uses [TOOL_CALLS]; advertising tools for
-    # those enables a pill the parser can't honour. GGUF is unaffected --
+    # Our safetensors loop parses <tool_call>{json}</tool_call>,
+    # <function=name>...</function>, Gemma native <|tool_call>...<tool_call|>, and
+    # the Mistral [TOOL_CALLS]name{json} / rehearsal name[ARGS]{json} bracket forms.
+    # Llama uses <|python_tag|>, which the loop still cannot parse; advertising
+    # tools for that enables a pill the parser can't honour. GGUF is unaffected --
     # llama-server normalises every format into structured deltas.
     if (
         flags.get("supports_tools")
@@ -1284,6 +1298,7 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         and "<tool_call>" not in chat_template
         and "<function=" not in chat_template
         and "<|tool_call>" not in chat_template
+        and "[TOOL_CALLS]" not in chat_template
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "
@@ -1302,6 +1317,45 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     except Exception:
         logger.debug("gpt_oss_check_failed", exc_info = True)
     return flags
+
+
+def _sf_reasoning_prefill_mode(
+    features: dict,
+    enable_thinking: Optional[bool],
+    template: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+) -> bool:
+    """Whether a safetensors/MLX generation begins INSIDE an unclosed ``<think>``
+    for THIS request.
+
+    ``enable_thinking`` templates (Qwen3/Qwen3.5/GLM) prefill an open ``<think>``
+    into the generation prompt, so the model emits only the closing ``</think>``.
+    The streaming reasoning extractor must therefore start in reasoning mode.
+
+    Gated on the template using the STANDARD ``<think>``/``</think>`` markers the
+    extractor understands: models with a bespoke reasoning channel (e.g. gemma's
+    ``<|think|>`` / ``<|channel>thought``) never emit ``</think>``, so prefilled
+    mode would swallow the whole answer as reasoning -- exclude them (they fall
+    back to the current inline behavior). Also returns False for gpt-oss
+    (reasoning_style ``reasoning_effort``, explicit tags via HarmonyTextStreamer)
+    and for thinking-disabled requests. When ``enable_thinking`` is None these
+    templates default thinking ON, so a plain request still prefills.
+    """
+    if features.get("reasoning_style") not in ("enable_thinking", "enable_thinking_effort"):
+        return False
+    tpl = template or ""
+    if "</think>" not in tpl and "<think>" not in tpl:
+        return False
+    if features.get("reasoning_always_on"):
+        return True
+    if not features.get("supports_reasoning"):
+        return False
+    # enable_thinking_effort models express "thinking off" via reasoning_effort
+    # "none" (not enable_thinking=False); honor it so we don't start in prefilled
+    # mode and capture the whole answer as reasoning_content.
+    if reasoning_effort == "none":
+        return False
+    return enable_thinking is not False
 
 
 def _effective_enable_tools(payload) -> Optional[bool]:
@@ -1574,13 +1628,16 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     return nudge + " " + _RAG_GROUNDING_NUDGE
 
 
-# Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
-# split across the visible/DRAIN boundary. Four leak shapes:
+# Strip tool-call markup the speculative buffer in core/inference/llama_cpp.py
+# split across the visible/DRAIN boundary. Leak shapes:
 #   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
 #   2. orphan opening to EOF (close was DRAINED)
 #   3. bare orphan close (open was DRAINED)
 #   4. tail-only `</parameter>` (outer close truncated by EOS); anchored to
 #      `\Z` so mid-text `<parameter>` in user code samples survives.
+#   5. Mistral `[TOOL_CALLS]name{json}` / rehearsal `name[ARGS]{json}`. A complete
+#      call strips only its balanced JSON (one level); a truncated tail (brace lost
+#      to EOS) is stripped to `\Z`, mirroring the orphan-opening XML shapes.
 _TOOL_XML_RE = _re.compile(
     # Hyphen in the name char-class matches MCP tool names with dashes
     # (mcp__srv__list-issues) that would otherwise leak past this strip.
@@ -1588,16 +1645,95 @@ _TOOL_XML_RE = _re.compile(
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|<tool_call\|>"
-    r"|</parameter>\s*\Z",
+    r"|\[/TOOL_CALLS\]"
+    r"|</parameter>\s*\Z"
+    # Truncated canonical array ``[TOOL_CALLS] [{...`` (closing ``]`` lost to EOS):
+    # the balanced scan can't remove an unbalanced array, so strip its tail here.
+    r"|\[TOOL_CALLS\]\s*\[.*\Z"
+    # Named / v11 ``[TOOL_CALLS]name([CALL_ID]id)?([ARGS])?{json}`` and bare
+    # rehearsal ``name[ARGS]{json}``; arms aligned with the parser regexes.
+    r"|\[TOOL_CALLS\]\s*[\w-]+(?:\[CALL_ID\][\w-]+)?(?:\[ARGS\])?\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|.*?\Z)"
+    # Rehearsal: only a balanced JSON body, a truncated ``{...`` to EOS, or the bare
+    # marker at EOS -- NOT arbitrary trailing prose, so ``foo[ARGS] in a sentence`` is
+    # left intact instead of being truncated as a phantom call. The NAME is captured
+    # (``reh``) so the display strip can keep ``foo[ARGS]{...}`` when ``foo`` is not an
+    # active tool -- prose, not a call -- mirroring the loop-level enabled-tool gate.
+    r"|(?<!\[CALL_ID\])\b(?P<reh>[\w-]+)\[ARGS\]\s*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\{.*\Z|\Z)",
+    _re.DOTALL,
+)
+
+# Closed-only variant for the segments BEFORE the last <think>/[THINK] block. The
+# open-ended / bare-marker arms of _TOOL_XML_RE are anchored to ``\Z`` (true end of
+# text), so applying the full regex to a non-final segment would treat the segment
+# boundary as EOS and strip a bare ``foo[ARGS]`` that is really prose preceding a
+# reasoning block. Mirrors strip_tool_call_markup, which only runs its trailing-tail
+# patterns on the last segment; complete bracket calls are still removed in every
+# segment by _strip_bracket_tag_calls.
+_TOOL_XML_CLOSED_RE = _re.compile(
+    r"<(?:tool_call|function=[\w-]+)>.*?</(?:tool_call|function)>"
+    r"|<\|tool_call>.*?<tool_call\|>"
+    r"|</(?:tool_call|function)>"
+    r"|<tool_call\|>"
+    r"|\[/TOOL_CALLS\]",
     _re.DOTALL,
 )
 
 
-def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
-    """Apply route-level XML leak cleanup only when Auto-Heal is enabled."""
+def _display_tool_name_gate(active_tools):
+    """Active tool NAMES for gating the rehearsal strip in display cleanup, or None
+    when no tools are enabled. ``None`` keeps the legacy strip-all behavior, mirroring
+    the GGUF/safetensors loop gate (``_gguf_active_tool_names`` / ``_active_tool_names``
+    with ``... if tools else None``): a bare ``NAME[ARGS]`` is a call only when NAME is
+    an active tool; without a tool list every identifier stays ambiguous, so strip."""
+    names = {
+        (t.get("function") or {}).get("name")
+        for t in (active_tools or [])
+        if isinstance(t, dict) and isinstance(t.get("function"), dict)
+    }
+    names.discard(None)
+    return names or None
+
+
+def _strip_tool_xml_for_display(
+    text: str,
+    *,
+    auto_heal_tool_calls: bool,
+    enabled_tool_names = None,
+) -> str:
+    """Apply route-level XML leak cleanup only when Auto-Heal is enabled.
+
+    ``enabled_tool_names`` (when not None) gates the ambiguous bare-rehearsal
+    ``NAME[ARGS]{...}`` strip on the active tool list, mirroring the loop-level gate:
+    an inactive NAME is prose, not a call, so it is preserved. The ``[TOOL_CALLS]``
+    control-token arms strip unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
-    return _TOOL_XML_RE.sub("", text)
+    # Strip bracket-tag calls with the parser's balanced-brace scan first so a
+    # two-level-nested JSON arg is removed whole instead of the catch-all eating
+    # the trailing prose after it. Preserve <think>/[THINK] reasoning verbatim
+    # (same contract as strip_tool_call_markup) so a rehearsed call inside a
+    # reasoning block does not corrupt the visible block. The open-ended tail arms
+    # run only on the last segment (is_last); earlier segments use the closed-only
+    # regex so a bare ``foo[ARGS]`` before a reasoning block is not stripped.
+    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
+
+    def _keep_inactive_rehearsal(m) -> str:
+        # Only the bare-rehearsal arm captures ``reh``; every other arm leaves it
+        # None. When a tool list is in play and the NAME is not active, the
+        # ``NAME[ARGS]{...}`` is prose -- keep it instead of stripping.
+        if enabled_tool_names is not None:
+            name = m.groupdict().get("reh")
+            if name is not None and name not in enabled_tool_names:
+                return m.group(0)
+        return ""
+
+    def _strip_segment(seg: str, is_last: bool) -> str:
+        seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
+        if is_last:
+            return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
+        return _TOOL_XML_CLOSED_RE.sub("", seg)
+
+    return strip_outside_think(text, _strip_segment)
 
 
 logger = get_logger(__name__)
@@ -5864,6 +6000,10 @@ async def openai_chat_completions(
             _gguf_auto_heal_tool_calls = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
+            # Active tool names for gating the ambiguous bare-rehearsal strip on the
+            # current turn's output, matching the loop's gate so a preserved inactive
+            # ``foo[ARGS]{...}`` is not re-stripped by the display cleanup.
+            _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
 
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
@@ -6004,6 +6144,7 @@ async def openai_chat_completions(
                         clean_cumulative = _strip_tool_xml_for_display(
                             raw_cumulative,
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                            enabled_tool_names = _gguf_display_tool_names,
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -6109,6 +6250,7 @@ async def openai_chat_completions(
                             full_text = _strip_tool_xml_for_display(
                                 event.get("text", ""),
                                 auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                                enabled_tool_names = _gguf_display_tool_names,
                             )
                     return full_text, usage, finish
                 finally:
@@ -6480,6 +6622,31 @@ async def openai_chat_completions(
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     _sf_features = _detect_safetensors_features(backend, _sf_tpl)
 
+    # ── Reasoning-block parity with GGUF ──────────────────────
+    # ``enable_thinking`` templates (Qwen3/Qwen3.5/GLM) prefill an unclosed
+    # ``<think>`` in the generation prompt, so the model emits only the closing
+    # ``</think>`` then the answer. Split that into reasoning_content deltas
+    # (mirroring the GGUF path) so the UI renders the collapsible thinking block
+    # for safetensors AND MLX (both stream through the functions below).
+    _sf_parse_think = bool(
+        _sf_features.get("supports_reasoning") or _sf_features.get("reasoning_always_on")
+    )
+    # Prefilled-open only for the prefill styles, and only when thinking is on for
+    # THIS request. gpt-oss (reasoning_style "reasoning_effort", explicit tags via
+    # HarmonyTextStreamer) is excluded and uses the normal extractor mode.
+    _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
+        _sf_features,
+        payload.enable_thinking,
+        _sf_tpl,
+        reasoning_effort = payload.reasoning_effort,
+    )
+
+    def _new_sf_reasoning_extractor():
+        return _ResponsesReasoningExtractor(
+            parse_think_markers = _sf_parse_think,
+            reasoning_prefilled = _sf_reasoning_prefilled,
+        )
+
     cancel_event = threading.Event()
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
@@ -6555,6 +6722,10 @@ async def openai_chat_completions(
         _sf_auto_heal_tool_calls = (
             payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
         )
+        # Active tool names for gating the ambiguous bare-rehearsal strip on the
+        # current turn's output, matching the loop's gate so a preserved inactive
+        # ``foo[ARGS]{...}`` is not re-stripped by the display cleanup.
+        _sf_display_tool_names = _display_tool_name_gate(_sf_tools_to_use)
 
         # Strip stale tool-call XML from prior assistant turns.
         _sf_chat_messages = []
@@ -6621,6 +6792,21 @@ async def openai_chat_completions(
 
                 gen = sf_generate_with_tools()
                 prev_text = ""
+                reasoning_extractor = _new_sf_reasoning_extractor()
+
+                def _sf_flush_reasoning():
+                    # Drain the extractor at a turn boundary / stream end, mirroring
+                    # the GGUF path's _flush_reasoning_extractor. Only visible text
+                    # reaches the monitor reply (reasoning stays in the drawer).
+                    fr, fv = reasoning_extractor.finish()
+                    out = []
+                    if fr:
+                        out.append(_chat_reasoning_chunk(completion_id, created, model_name, fr))
+                    if fv:
+                        api_monitor.append_reply(monitor_id, fv)
+                        out.append(_chat_content_chunk(completion_id, created, model_name, fv))
+                    return out
+
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state()
@@ -6637,7 +6823,12 @@ async def openai_chat_completions(
 
                     if event["type"] == "status":
                         if not event["text"]:
+                            # Iteration boundary: flush reasoning, then start a
+                            # fresh (prefilled) extractor for the next turn.
+                            for _c in _sf_flush_reasoning():
+                                yield _c
                             prev_text = ""
+                            reasoning_extractor = _new_sf_reasoning_extractor()
                         status_data = json.dumps(
                             {
                                 "type": "tool_status",
@@ -6649,7 +6840,13 @@ async def openai_chat_completions(
 
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
+                            # Flush reasoning BEFORE the tool_start line so the
+                            # thinking block closes ahead of the tool card, then
+                            # reset for the post-tool answer turn.
+                            for _c in _sf_flush_reasoning():
+                                yield _c
                             prev_text = ""
+                            reasoning_extractor = _new_sf_reasoning_extractor()
                         yield f"data: {json.dumps(event)}\n\n"
                         continue
 
@@ -6658,14 +6855,24 @@ async def openai_chat_completions(
                     clean_cumulative = _strip_tool_xml_for_display(
                         raw_cumulative,
                         auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                        enabled_tool_names = _sf_display_tool_names,
                     )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
                     if not new_text:
                         continue
-                    api_monitor.append_reply(monitor_id, new_text)
-                    yield _chat_content_chunk(completion_id, created, model_name, new_text)
+                    # Split reasoning vs visible; only visible reaches the monitor.
+                    reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                    if reasoning_delta:
+                        yield _chat_reasoning_chunk(
+                            completion_id, created, model_name, reasoning_delta
+                        )
+                    if visible_delta:
+                        api_monitor.append_reply(monitor_id, visible_delta)
+                        yield _chat_content_chunk(completion_id, created, model_name, visible_delta)
 
+                for _c in _sf_flush_reasoning():
+                    yield _c
                 yield _chat_final_chunk(completion_id, created, model_name, "stop")
                 # Usage chunk from the last turn, same shape as the
                 # GGUF tool loop's metadata. Request-scoped holder, so
@@ -6739,22 +6946,33 @@ async def openai_chat_completions(
                         full_text = _strip_tool_xml_for_display(
                             event.get("text", ""),
                             auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                            enabled_tool_names = _sf_display_tool_names,
                         )
                 return full_text
 
             content_text = await asyncio.to_thread(_drain_to_text)
-            api_monitor.set_reply(monitor_id, content_text)
+            # Split prefilled <think> reasoning out of the visible answer (GGUF
+            # non-streaming parity); the monitor reply is the visible text only.
+            _reasoning_text, _visible_text = _extract_responses_reasoning(
+                content_text,
+                parse_think_markers = _sf_parse_think,
+                reasoning_prefilled = _sf_reasoning_prefilled,
+            )
+            api_monitor.set_reply(monitor_id, _visible_text)
             _stats = _sf_stats_holder.get("stats")
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))
             api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
+            _sf_msg_kwargs = {"content": _visible_text}
+            if _reasoning_text:
+                _sf_msg_kwargs["reasoning_content"] = _reasoning_text
             response = ChatCompletion(
                 id = completion_id,
                 created = created,
                 model = model_name,
                 choices = [
                     CompletionChoice(
-                        message = CompletionMessage(content = content_text),
+                        message = CompletionMessage(**_sf_msg_kwargs),
                         finish_reason = "stop",
                     )
                 ],
@@ -6833,6 +7051,10 @@ async def openai_chat_completions(
                 yield _chat_role_chunk(completion_id, created, model_name)
 
                 prev_text = ""
+                # Split prefilled <think> reasoning into reasoning_content deltas
+                # (GGUF parity) so the UI renders the thinking block. Single turn,
+                # so no per-turn reset; this path also serves MLX.
+                reasoning_extractor = _new_sf_reasoning_extractor()
                 # Run the sync generator in a thread pool to avoid blocking the
                 # event loop. Critical for compare mode: two SSE requests arrive
                 # concurrently but the orchestrator serializes them via
@@ -6861,9 +7083,21 @@ async def openai_chat_completions(
                     prev_text = cumulative
                     if not new_text:
                         continue
-                    api_monitor.append_reply(monitor_id, new_text)
-                    yield _chat_content_chunk(completion_id, created, model_name, new_text)
+                    reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                    if reasoning_delta:
+                        yield _chat_reasoning_chunk(
+                            completion_id, created, model_name, reasoning_delta
+                        )
+                    if visible_delta:
+                        api_monitor.append_reply(monitor_id, visible_delta)
+                        yield _chat_content_chunk(completion_id, created, model_name, visible_delta)
 
+                final_reasoning, final_visible = reasoning_extractor.finish()
+                if final_reasoning:
+                    yield _chat_reasoning_chunk(completion_id, created, model_name, final_reasoning)
+                if final_visible:
+                    api_monitor.append_reply(monitor_id, final_visible)
+                    yield _chat_content_chunk(completion_id, created, model_name, final_visible)
                 yield _chat_final_chunk(completion_id, created, model_name, "stop")
                 # Usage chunk (choices=[], usage set), same shape as the
                 # GGUF path so the speed popover works for MLX too.
@@ -6925,18 +7159,28 @@ async def openai_chat_completions(
             for token in generate():
                 full_text = token
 
+            # Split prefilled <think> reasoning from the visible answer (GGUF
+            # non-streaming parity); also covers MLX via the shared generate().
+            _reasoning_text, _visible_text = _extract_responses_reasoning(
+                full_text,
+                parse_think_markers = _sf_parse_think,
+                reasoning_prefilled = _sf_reasoning_prefilled,
+            )
+            _plain_msg_kwargs = {"content": _visible_text}
+            if _reasoning_text:
+                _plain_msg_kwargs["reasoning_content"] = _reasoning_text
             response = ChatCompletion(
                 id = completion_id,
                 created = created,
                 model = model_name,
                 choices = [
                     CompletionChoice(
-                        message = CompletionMessage(content = full_text),
+                        message = CompletionMessage(**_plain_msg_kwargs),
                         finish_reason = "stop",
                     )
                 ],
             )
-            api_monitor.set_reply(monitor_id, full_text)
+            api_monitor.set_reply(monitor_id, _visible_text)
             _stats = stats_holder.get("stats")
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))
@@ -7759,10 +8003,23 @@ def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
 class _ResponsesReasoningExtractor:
     """Split local <think> markup into Responses reasoning and visible text."""
 
-    def __init__(self, *, parse_think_markers: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        parse_think_markers: bool = False,
+        reasoning_prefilled: bool = False,
+    ) -> None:
         self._buffer = ""
-        self._in_reasoning = False
-        self._parse_think_markers = parse_think_markers
+        # ``reasoning_prefilled`` handles templates (Qwen3/Qwen3.5/GLM
+        # ``enable_thinking``) that insert an unclosed ``<think>`` into the
+        # generation prompt, so the model's output begins INSIDE the reasoning
+        # block and emits only the closing ``</think>``. Start already in
+        # reasoning so the leading text is captured as reasoning_content until the
+        # first ``</think>``. GGUF and every existing caller pass False, so their
+        # behavior is unchanged.
+        self._in_reasoning = reasoning_prefilled
+        # Splitting requires marker parsing; a prefilled open implies it.
+        self._parse_think_markers = parse_think_markers or reasoning_prefilled
 
     def feed(
         self,
@@ -7785,14 +8042,23 @@ class _ResponsesReasoningExtractor:
             if self._in_reasoning:
                 close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
                 if close_idx != -1:
-                    reasoning_parts.append(self._buffer[:close_idx])
+                    reasoning_parts.append(
+                        self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
+                    )
                     self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
                     self._in_reasoning = False
                     continue
-                keep = _responses_marker_holdback(self._buffer, (_RESPONSES_THINK_CLOSE,))
+                # Hold back a trailing partial of EITHER marker: the close (to
+                # split cleanly across chunk boundaries) and a stray open (so a
+                # re-emitted ``<think>`` from a full-tag template is suppressed,
+                # not leaked into the reasoning drawer).
+                keep = _responses_marker_holdback(
+                    self._buffer, (_RESPONSES_THINK_CLOSE, _RESPONSES_THINK_OPEN)
+                )
                 if keep == len(self._buffer):
                     break
-                reasoning_parts.append(self._buffer[:-keep] if keep else self._buffer)
+                emit = self._buffer[:-keep] if keep else self._buffer
+                reasoning_parts.append(emit.replace(_RESPONSES_THINK_OPEN, ""))
                 self._buffer = self._buffer[-keep:] if keep else ""
                 break
 
@@ -7829,7 +8095,7 @@ class _ResponsesReasoningExtractor:
             return "", remaining
         if self._in_reasoning:
             self._in_reasoning = False
-            return remaining, ""
+            return remaining.replace(_RESPONSES_THINK_OPEN, ""), ""
         return "", remaining.replace(_RESPONSES_THINK_CLOSE, "")
 
 
@@ -7838,8 +8104,12 @@ def _extract_responses_reasoning(
     reasoning_content: Any = None,
     *,
     parse_think_markers: bool = False,
+    reasoning_prefilled: bool = False,
 ) -> tuple[str, str]:
-    extractor = _ResponsesReasoningExtractor(parse_think_markers = parse_think_markers)
+    extractor = _ResponsesReasoningExtractor(
+        parse_think_markers = parse_think_markers,
+        reasoning_prefilled = reasoning_prefilled,
+    )
     reasoning, visible = extractor.feed(text, reasoning_content)
     final_reasoning, final_visible = extractor.finish()
     return reasoning + final_reasoning, visible + final_visible
@@ -9472,10 +9742,14 @@ async def anthropic_messages(
             else:
                 openai_messages.insert(0, {"role": "system", "content": _nudge})
 
-        # Strip stale tool-call XML from conversation
+        # Strip stale tool-call XML from conversation. Use the protected display
+        # helper (not raw _TOOL_XML_RE.sub) so rehearsal text inside <think> is
+        # preserved and a nested [TOOL_CALLS] call keeps its trailing prose.
         for _msg in openai_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
-                _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+                _msg["content"] = _strip_tool_xml_for_display(
+                    _msg["content"], auto_heal_tool_calls = True
+                ).strip()
 
         def _run_tool_gen():
             return llama_backend.generate_chat_completion_with_tools(
@@ -9627,9 +9901,13 @@ async def _anthropic_tool_stream(
                         captured_finish_reason = _fr
                 # Strip leaked tool-call XML from content events first, so a
                 # content event that was purely tool XML doesn't count as text.
+                # Protected helper preserves <think> rehearsal and balanced
+                # [TOOL_CALLS] trailing prose (raw _TOOL_XML_RE.sub corrupts both).
                 if etype == "content":
                     event = dict(event)
-                    event["text"] = _TOOL_XML_RE.sub("", event["text"])
+                    event["text"] = _strip_tool_xml_for_display(
+                        event["text"], auto_heal_tool_calls = True
+                    )
                 # disable_parallel_tool_use: keep only the first tool_use block,
                 # dropping every later tool_start and its paired tool_end (robust
                 # to empty tool-call ids — tracked by state, not id matching).
@@ -9814,8 +10092,9 @@ async def _anthropic_tool_non_streaming(
     for event in events:
         etype = event.get("type", "")
         if etype == "content":
-            # Strip leaked tool-call XML
-            clean = _TOOL_XML_RE.sub("", event["text"])
+            # Strip leaked tool-call XML (protected helper: preserves <think>
+            # rehearsal and balanced [TOOL_CALLS] trailing prose).
+            clean = _strip_tool_xml_for_display(event["text"], auto_heal_tool_calls = True)
             new = clean[len(prev_text) :]
             prev_text = clean
             if new:
@@ -10210,7 +10489,9 @@ async def _anthropic_passthrough_non_streaming(
     content_blocks = []
     text = message.get("content") or ""
     if text:
-        text = _TOOL_XML_RE.sub("", text).strip()
+        # Protected helper (not raw _TOOL_XML_RE.sub): preserves <think> rehearsal
+        # and balanced [TOOL_CALLS] trailing prose.
+        text = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip()
         if text:
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 

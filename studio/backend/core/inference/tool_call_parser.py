@@ -1,10 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
+# Bracket-tag, rehearsal, and thinking-block-strip logic adapted from forge
+# (https://github.com/antoinezambelli/forge), Copyright (c) 2025-2026
+# Antoine Zambelli, used under the MIT License.
 
 """
-Backend-neutral tool-call XML parser shared by GGUF and safetensors.
-Tolerates missing closing tags in either ``<tool_call>{json}</tool_call>``
-or ``<function=name><parameter=k>v...`` shape.
+Backend-neutral tool-call parser shared by GGUF and safetensors.
+
+Handles four serializations a local model may emit when bypassing
+native function calling:
+
+* ``<tool_call>{json}</tool_call>``
+* ``<function=name><parameter=k>v</parameter></function>``
+* ``[TOOL_CALLS]name{json}`` (Mistral / Devstral fallback)
+* ``name[ARGS]{json}`` (reasoning-model rehearsal)
+
+Closing tags are optional. ``<think>...</think>`` and
+``[THINK]...[/THINK]`` blocks are stripped before parsing so calls
+emitted after a reasoning preamble are still found.
 """
 
 from core import tool_healing as _tool_healing
@@ -18,20 +32,36 @@ def parse_tool_calls_from_text(
     *,
     id_offset: int = 0,
     allow_incomplete: bool = True,
+    enabled_tool_names = None,
 ) -> list[dict]:
     return _tool_healing.parse_tool_calls_from_text(
         content,
         id_offset = id_offset,
         allow_incomplete = allow_incomplete,
+        enabled_tool_names = enabled_tool_names,
     )
 
 
-def strip_tool_markup(text: str, *, final: bool = False) -> str:
-    return _tool_healing.strip_tool_call_markup(text, final = final)
+def strip_tool_markup(
+    text: str,
+    *,
+    final: bool = False,
+    enabled_tool_names = None,
+) -> str:
+    return _tool_healing.strip_tool_call_markup(
+        text, final = final, enabled_tool_names = enabled_tool_names
+    )
 
 
-# Prefixes the streaming buffer watches for to gate in-progress text.
-TOOL_XML_SIGNALS = ("<tool_call>", "<|tool_call>", "<function=")
+# Prefixes the streaming buffer watches to gate in-progress text. Bracket-tag forms
+# (Mistral [TOOL_CALLS], rehearsal [ARGS]) keep that markup buffered until parsed.
+TOOL_XML_SIGNALS = (
+    "<tool_call>",
+    "<|tool_call>",
+    "<function=",
+    "[TOOL_CALLS]",
+    "[ARGS]",
+)
 
 
 # Nudges + error prefixes shared by the GGUF and safetensors loops.

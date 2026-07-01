@@ -27,14 +27,25 @@ assert _m, "could not extract _TOOL_XML_RE source"
 _ns = {"_re": _re}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
+# The display helper applies the closed-only variant to segments before the last
+# <think> block (open-ended tails only on the final segment), so the extracted
+# helper needs it in scope to run.
+_mc = _re.search(r"_TOOL_XML_CLOSED_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
+assert _mc, "could not extract _TOOL_XML_CLOSED_RE source"
+exec(f"_TOOL_XML_CLOSED_RE = _re.compile({_mc.group(1)})", _ns)
+_TOOL_XML_CLOSED_RE = _ns["_TOOL_XML_CLOSED_RE"]
+# Extract both the gate helper and the display strip (multi-line signature, so
+# capture the whole span up to the next top-level ``logger =`` statement rather
+# than pinning the exact argument list).
 _helper = _re.search(
-    r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
-    r"(?:    .+\n)+",
+    r"def _display_tool_name_gate\(.*?(?=\nlogger = get_logger)",
     _src,
+    _re.DOTALL,
 )
-assert _helper, "could not extract _strip_tool_xml_for_display source"
+assert _helper, "could not extract display strip helper source"
 exec(_helper.group(0), _ns)
 _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
+_display_tool_name_gate = _ns["_display_tool_name_gate"]
 
 
 # ── Well-formed pairs ─────────────────────────────────────────────
@@ -44,6 +55,65 @@ def test_route_display_strip_respects_disabled_auto_heal_contract():
     text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
     assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+
+
+def test_route_display_strip_preserves_rehearsal_inside_think():
+    # A rehearsed bracket call inside <think> is reasoning, not markup to strip; the
+    # route display strip must preserve the block (consistent with
+    # strip_tool_call_markup) while still stripping a real call outside it.
+    text = '<think>plan: search[ARGS]{"q":"x"}</think> answer [TOOL_CALLS]web_search{"q":"y"} tail'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert '<think>plan: search[ARGS]{"q":"x"}</think>' in out
+    assert "[TOOL_CALLS]web_search" not in out
+    assert "answer" in out and "tail" in out
+
+
+def test_route_display_strip_keeps_bare_args_before_think_block():
+    # A bare ``foo[ARGS]`` (no JSON body) before a <think> block is prose, not a
+    # truncated call: the open-ended tail arms are anchored to true EOS, so they
+    # must run only on the LAST segment. Earlier segments use the closed-only regex,
+    # matching strip_tool_call_markup. Previously the route treated the segment
+    # boundary as EOS and stripped ``foo[ARGS]``.
+    text = "Please pass foo[ARGS] <think>pause</think> to the template."
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True) == text
+
+
+def test_route_display_strip_removes_complete_call_before_think_block():
+    # A COMPLETE bracket call before a <think> block is still stripped (the balanced
+    # scan runs on every segment), so the closed-only non-last regex does not let a
+    # real call leak.
+    text = 'before search[ARGS]{"q":"x"} <think>pause</think> after'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "search[ARGS]" not in out
+    assert "<think>pause</think>" in out
+    assert "before" in out and "after" in out
+
+
+def test_route_display_strip_removes_closed_xml_before_think_block():
+    # A closed <tool_call>...</tool_call> before a <think> block is removed in the
+    # non-last segment via the closed-only regex.
+    text = 'pre <tool_call>{"name":"x"}</tool_call> <think>p</think> tail'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "<tool_call>" not in out
+    assert "<think>p</think>" in out
+    assert "pre" in out and "tail" in out
+
+
+def test_all_route_cleanup_sites_use_protected_display_helper():
+    # Every route content-cleanup site must go through _strip_tool_xml_for_display
+    # (think-preserving, balanced) -- including the Anthropic stream / non-stream /
+    # passthrough paths, which previously called raw _TOOL_XML_RE.sub and so
+    # corrupted <think> rehearsal and dropped trailing prose after nested calls.
+    # The only legitimate raw _TOOL_XML_RE.sub lives INSIDE the helper itself.
+    raw_sub_lines = [
+        (i, line)
+        for i, line in enumerate(_src.splitlines(), 1)
+        if "_TOOL_XML_RE.sub(" in line and not line.lstrip().startswith("#")
+    ]
+    assert len(raw_sub_lines) == 1, (
+        "raw _TOOL_XML_RE.sub must appear only inside _strip_tool_xml_for_display; "
+        f"found extra call sites: {raw_sub_lines!r}"
+    )
 
 
 def test_strips_well_formed_tool_call():
@@ -153,6 +223,34 @@ def test_strips_tail_only_parameter_orphan_no_trailing_ws():
     cleaned = _TOOL_XML_RE.sub("", "Final answer.</parameter>")
     assert "</parameter>" not in cleaned
     assert "Final answer." in cleaned
+
+
+def test_strips_complete_bracket_tag_keeps_trailing_prose():
+    # A complete Mistral [TOOL_CALLS] call strips only its balanced JSON,
+    # leaving following prose intact.
+    cleaned = _TOOL_XML_RE.sub("", '[TOOL_CALLS]web_search{"q":"x"} and then prose')
+    assert "[TOOL_CALLS]" not in cleaned
+    assert "and then prose" in cleaned
+
+
+def test_strips_unclosed_bracket_tail():
+    # Close brace lost to EOS: the truncated tail is stripped up to the end
+    # instead of leaking the raw bracket marker to the UI.
+    cleaned = _TOOL_XML_RE.sub("", 'here [TOOL_CALLS]web_search{"query":"weather"')
+    assert "[TOOL_CALLS]" not in cleaned
+    assert cleaned.strip() == "here"
+
+
+def test_strips_unclosed_rehearsal_tail():
+    cleaned = _TOOL_XML_RE.sub("", 'text python[ARGS]{"code":"print(1)"')
+    assert "[ARGS]" not in cleaned
+    assert cleaned.strip() == "text"
+
+
+def test_strips_hyphenated_mcp_bracket_name():
+    cleaned = _TOOL_XML_RE.sub("", 'x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}')
+    assert "list-issues" not in cleaned
+    assert cleaned.strip() == "x"
 
 
 def test_preserves_mid_string_parameter_in_code_sample():
@@ -281,3 +379,210 @@ def test_no_catastrophic_backtracking_on_orphan_opening_spam():
     elapsed = time.perf_counter() - t0
     assert elapsed < 0.1, f"regex took {elapsed*1000:.0f}ms on 1000x orphan opens"
     assert "<tool_call>" not in cleaned
+
+
+# ── Two-level-nested bracket JSON (balanced-scan strip) ──────────
+
+
+def test_route_strip_two_level_nested_bracket_keeps_trailing_prose():
+    # A [TOOL_CALLS] call with two-level-nested JSON args must be removed whole
+    # so the trailing prose survives. A one-level regex either left the markup
+    # or let the catch-all eat everything to EOS.
+    text = 'before [TOOL_CALLS]search{"f":{"g":{"h":1}}} after'
+    cleaned = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert cleaned == "before  after"
+    assert "[TOOL_CALLS]" not in cleaned
+
+
+def test_route_strip_two_level_nested_rehearsal_keeps_trailing_prose():
+    text = 'note python[ARGS]{"a":{"b":{"c":1}}} done'
+    cleaned = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert cleaned == "note  done"
+    assert "[ARGS]" not in cleaned
+
+
+def test_route_strip_removes_call_with_literal_think_in_argument():
+    # A literal <think>...</think> inside a tool-call argument must be stripped with
+    # the call, not preserved as reasoning (which would split the call span).
+    text = (
+        '<tool_call>{"name":"write","arguments":'
+        '{"text":"compare <think> and </think> tags"}}</tool_call>'
+    )
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "<tool_call>" not in out and '"name"' not in out
+
+
+def test_route_strip_removes_truncated_mistral_array():
+    # A canonical array truncated by EOS (no closing ``]``) cannot be removed by the
+    # balanced scan; the route fallback must strip its tail like other orphans.
+    text = 'before [TOOL_CALLS] [{"name":"a","arguments":{"x":1}}'  # missing ]
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[TOOL_CALLS]" not in out and "{" not in out
+    assert "before" in out
+
+
+def test_route_strip_keeps_prose_mentioning_args_marker():
+    # ``foo[ARGS] in a sentence`` is prose (no JSON body); the rehearsal arm must
+    # not truncate the rest of the line.
+    text = "Please pass foo[ARGS] to the template and continue reading."
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert out == text
+
+
+def test_route_strip_handles_mistral_v11_call_id_args_shape():
+    # [TOOL_CALLS]name[CALL_ID]id[ARGS]{json} (Mistral Small 3.2) -- arms aligned
+    # with the parser regexes must strip it whole.
+    text = 'before [TOOL_CALLS]web_search[CALL_ID]abc123[ARGS]{"q":"x"} after'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[TOOL_CALLS]" not in out and "[CALL_ID]" not in out and "[ARGS]" not in out
+    assert "before" in out and "after" in out
+
+
+# ── Mistral [/TOOL_CALLS] closer + literal <think> inside a call ───────────────
+
+from core.tool_healing import strip_tool_call_markup as _strip_tool_call_markup
+
+
+def test_core_strip_removes_orphan_tool_calls_closer_array_form():
+    # The Mistral v11 wrapper closes a call with ``[/TOOL_CALLS]``. The balanced scan
+    # removes the call body but leaves the bare closer; it must not leak as content.
+    text = '[TOOL_CALLS] [{"name":"x","arguments":{}}][/TOOL_CALLS]'
+    assert _strip_tool_call_markup(text, final = True) == ""
+
+
+def test_core_strip_removes_orphan_tool_calls_closer_named_form_keeps_tail():
+    text = '[TOOL_CALLS]web_search{"q":"x"}[/TOOL_CALLS] tail'
+    assert _strip_tool_call_markup(text, final = True) == "tail"
+
+
+def test_core_strip_removes_call_with_literal_think_in_argument():
+    # An unclosed literal ``<think>`` inside a tool call's arguments must be stripped
+    # WITH the call (it is argument data), not preserved as a reasoning block, even
+    # though the greedy think match runs past the call's closer to EOF.
+    text = 'before <tool_call>{"name":"write","arguments":{"text":"literal <think> marker"}}</tool_call> after'
+    assert _strip_tool_call_markup(text, final = True) == "before  after"
+
+
+def test_route_display_strip_removes_orphan_tool_calls_closer_array_form():
+    text = '[TOOL_CALLS] [{"name":"x","arguments":{}}][/TOOL_CALLS]'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert out.strip() == ""
+
+
+def test_route_display_strip_removes_orphan_tool_calls_closer_named_form_keeps_tail():
+    text = '[TOOL_CALLS]web_search{"q":"x"}[/TOOL_CALLS] tail'
+    out = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert "[/TOOL_CALLS]" not in out
+    assert out.strip() == "tail"
+
+
+def test_incomplete_xml_call_with_literal_think_in_arg_is_stripped():
+    # An INCOMPLETE (unclosed) <tool_call> the parser still executes via
+    # allow_incomplete, whose argument contains a literal <think>, must have its
+    # markup stripped (to EOS) instead of the literal being treated as a reasoning
+    # block and leaking the raw call. The complete-call case already worked; this
+    # covers the unclosed tail that _tool_call_markup_spans previously missed.
+    from core.tool_healing import parse_tool_calls_from_text as _parse
+    from core.tool_healing import strip_tool_call_markup as _strip
+
+    text = 'before <tool_call>{"name":"write","arguments":{"text":"literal <think> marker"}} after'
+    assert [c["function"]["name"] for c in _parse(text)] == ["write"]
+    assert _strip(text, final = True) == "before"
+
+    # A real reasoning block with no tool call is still preserved verbatim.
+    assert (
+        _strip("answer <think>real</think> done", final = True) == "answer <think>real</think> done"
+    )
+
+    # A complete call followed by a real reasoning block: call stripped, block kept.
+    mixed = '<tool_call>{"name":"a","arguments":{}}</tool_call> mid <think>r</think> end'
+    assert _strip(mixed, final = True) == "mid <think>r</think> end"
+
+
+# ── enabled-tool gate for the ambiguous bare-rehearsal strip (#5704) ──
+
+
+def test_display_tool_name_gate_returns_active_names_or_none():
+    # Empty / no tools -> None (unrestricted; keep the legacy strip-all behavior).
+    assert _display_tool_name_gate([]) is None
+    assert _display_tool_name_gate(None) is None
+    # OpenAI-shaped tool dicts -> set of function names, malformed entries dropped.
+    tools = [
+        {"type": "function", "function": {"name": "web_search"}},
+        {"type": "function", "function": {"name": "run_python"}},
+        {"type": "function"},  # no name
+        {"nope": 1},  # no function
+    ]
+    assert _display_tool_name_gate(tools) == {"web_search", "run_python"}
+
+
+def test_route_display_strip_keeps_inactive_rehearsal_when_gated():
+    # P1 #5704: ``foo[ARGS]{...}`` where ``foo`` is NOT an active tool is prose, not a
+    # call. With the active-tool gate the display strip must leave it (and its trailing
+    # sentence) intact -- matching the loop-level parse/strip gate so the route does
+    # not re-corrupt already-correct loop output.
+    gate = {"web_search"}
+    text = 'foo[ARGS]{"x":1} is just syntax.'
+    assert (
+        _strip_tool_xml_for_display(text, auto_heal_tool_calls = True, enabled_tool_names = gate)
+        == text
+    )
+    # A bare marker with no JSON body is likewise prose when inactive.
+    assert (
+        _strip_tool_xml_for_display(
+            "use foo[ARGS] here", auto_heal_tool_calls = True, enabled_tool_names = gate
+        )
+        == "use foo[ARGS] here"
+    )
+
+
+def test_route_display_strip_removes_active_rehearsal_when_gated():
+    # The mirror case: an ACTIVE tool name IS a real rehearsal call and must still be
+    # stripped from the visible text even with the gate in play.
+    gate = {"web_search"}
+    out = _strip_tool_xml_for_display(
+        'web_search[ARGS]{"query":"x"} done', auto_heal_tool_calls = True, enabled_tool_names = gate
+    )
+    assert "web_search[ARGS]" not in out
+    assert out.strip() == "done"
+
+
+def test_route_display_strip_ungated_strips_all_rehearsal_unchanged():
+    # Backwards-compat: with no gate (enabled_tool_names=None, the default and the
+    # history-sanitize / non-loop call sites) the bare rehearsal is stripped as before.
+    text = 'foo[ARGS]{"x":1} is just syntax.'
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = True).strip() == "is just syntax."
+    assert (
+        _strip_tool_xml_for_display(
+            text, auto_heal_tool_calls = True, enabled_tool_names = None
+        ).strip()
+        == "is just syntax."
+    )
+
+
+def test_route_display_strip_control_token_stripped_regardless_of_gate():
+    # ``[TOOL_CALLS]`` is a control token, not an ambiguous bare identifier: it is
+    # stripped even when its NAME is not in the active-tool gate.
+    gate = {"web_search"}
+    out = _strip_tool_xml_for_display(
+        '[TOOL_CALLS]foo[ARGS]{"x":1} keep', auto_heal_tool_calls = True, enabled_tool_names = gate
+    )
+    assert "[TOOL_CALLS]" not in out and "foo[ARGS]" not in out
+    assert out.strip() == "keep"
+
+
+def test_core_strip_gates_bare_rehearsal_on_enabled_tools():
+    # P1 (#5704): the shared strip_tool_call_markup gate mirrors the parse gate --
+    # an inactive ``foo[ARGS]{...}`` is prose and preserved with its trailing
+    # sentence; an active tool name is a real call and stripped. ``None`` keeps the
+    # legacy strip-all behavior so existing callers are unchanged.
+    from core.tool_healing import strip_tool_call_markup as _strip
+
+    text = 'foo[ARGS]{"x":1} is just syntax.'
+    assert _strip(text, final = True, enabled_tool_names = {"web_search"}) == text
+    assert (
+        _strip('web_search[ARGS]{"q":1} done', final = True, enabled_tool_names = {"web_search"})
+        == "done"
+    )
+    assert _strip(text, final = True).strip() == "is just syntax."
+    assert _strip(text, final = True, enabled_tool_names = None).strip() == "is just syntax."
