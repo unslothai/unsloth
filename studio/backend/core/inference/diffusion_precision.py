@@ -121,7 +121,10 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     # gets cast to fp8 and, sharing one tensor, drags the embedding to fp8 with it. The
     # embedding then emits fp8 activations that crash the first RMSNorm. Skip the tied
     # projection so the shared tensor stays dense (lm_head is unused for prompt encoding).
-    get_out, get_in = getattr(encoder, "get_output_embeddings", None), getattr(encoder, "get_input_embeddings", None)
+    get_out, get_in = (
+        getattr(encoder, "get_output_embeddings", None),
+        getattr(encoder, "get_input_embeddings", None),
+    )
     out_emb = get_out() if callable(get_out) else None
     in_emb = get_in() if callable(get_in) else None
     if out_emb is not None and in_emb is not None and out_emb.weight is in_emb.weight:
