@@ -1,5 +1,6 @@
-"""Tests _install_offload_embedding_hooks in vision.py: the offloaded lookup must work
-whether the weight is on CPU or (bf16) pulled back on GPU. CUDA cases skip without a GPU."""
+"""Tests _install_offload_embedding_hooks in vision.py: the offloaded lookup must work and
+its output must land on the decoder device (return_device), whatever device the input is on.
+CUDA cases skip without a GPU."""
 
 import ast, os
 import torch
@@ -21,6 +22,7 @@ def _load_installer():
 
 
 install = _load_installer()
+CPU = torch.device("cpu")
 
 
 def _fresh_emb():
@@ -29,33 +31,46 @@ def _fresh_emb():
 
 def test_install_and_idempotent():
     emb = _fresh_emb()
-    assert install(emb) is True
+    assert install(emb, CPU) is True
     assert emb._unsloth_offload_hooks_installed is True
     n_pre = len(emb._forward_pre_hooks)
     n_post = len(emb._forward_hooks)
-    assert install(emb) is True
+    assert install(emb, CPU) is True
     assert len(emb._forward_pre_hooks) == n_pre and len(emb._forward_hooks) == n_post
-    assert install(None) is False
+    assert install(None, CPU) is False
 
 
 def test_cpu_noop_forward():
-    # cpu weight + cpu input -> pre-hook no-op.
+    # cpu weight + cpu input + cpu return -> pre-hook no-op, output stays cpu.
     emb = _fresh_emb()
-    install(emb)
+    install(emb, CPU)
     x = torch.randint(0, 32, (2, 5))
     out = emb(x)
     assert out.shape == (2, 5, 8)
     assert out.device.type == "cpu"
 
 
-def test_cuda_offloaded_weight_roundtrip():
+def test_cuda_input_roundtrip():
     if not torch.cuda.is_available():
         print("[SKIP] CUDA not available")
         return
-    # BUG 1: CPU weight, CUDA input -> must not raise; output back on CUDA.
+    # CPU weight, CUDA input -> lookup on cpu, output back on the cuda decoder.
     emb = _fresh_emb().to("cpu")
-    install(emb)
+    install(emb, torch.device("cuda"))
     x = torch.randint(0, 32, (2, 5), device = "cuda")
+    out = emb(x)
+    assert out.device.type == "cuda", out.device
+
+
+def test_cpu_input_still_returns_to_decoder():
+    if not torch.cuda.is_available():
+        print("[SKIP] CUDA not available")
+        return
+    # P1: offload makes model.device cpu, so the input arrives on cpu too. The output must
+    # still reach the cuda decoder, not stay on cpu.
+    emb = _fresh_emb().to("cpu")
+    install(emb, torch.device("cuda"))
+    x = torch.randint(0, 32, (2, 5), device = "cpu")
     out = emb(x)
     assert out.device.type == "cuda", out.device
 
@@ -64,9 +79,9 @@ def test_cuda_weight_pulled_back_to_gpu():
     if not torch.cuda.is_available():
         print("[SKIP] CUDA not available")
         return
-    # BUG 2: CUDA weight (bf16 pulled back) + CUDA input -> no-op (hard-coded .to('cpu') would crash).
+    # bf16 weight later pulled back to gpu + cuda input -> no-op, stays on cuda.
     emb = _fresh_emb().to("cuda")
-    install(emb)
+    install(emb, torch.device("cuda"))
     x = torch.randint(0, 32, (2, 5), device = "cuda")
     out = emb(x)
     assert out.device.type == "cuda", out.device
@@ -77,8 +92,10 @@ if __name__ == "__main__":
     print("[PASS] install + idempotent")
     test_cpu_noop_forward()
     print("[PASS] cpu no-op forward")
-    test_cuda_offloaded_weight_roundtrip()
-    print("[PASS] cuda offloaded-weight roundtrip (bug 1)")
+    test_cuda_input_roundtrip()
+    print("[PASS] cuda input roundtrip")
+    test_cpu_input_still_returns_to_decoder()
+    print("[PASS] cpu input still returns to cuda decoder (P1)")
     test_cuda_weight_pulled_back_to_gpu()
-    print("[PASS] cuda weight-on-gpu no-op (bug 2)")
-    print("OK: offload embedding hooks are device-safe both directions")
+    print("[PASS] cuda weight-on-gpu no-op")
+    print("OK: offloaded embedding output always lands on the decoder device")

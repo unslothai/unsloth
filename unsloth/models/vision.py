@@ -253,9 +253,10 @@ def _unsloth_generate_accepts_kwarg(model, key):
     return key in model_args
 
 
-def _install_offload_embedding_hooks(embed_tokens):
-    # Run the offloaded lookup on the weight's current device, then move the output back.
-    # Device read per-call (bf16 may be pulled to GPU); origin rides the tensor (thread-safe).
+def _install_offload_embedding_hooks(embed_tokens, return_device):
+    # Offloaded lookup runs on the weight's current device (per-call, so a bf16 weight pulled
+    # back to GPU still works); output always goes to return_device (the decoder device saved
+    # before offload) so it reaches the GPU even when inputs arrive on CPU. No per-request state.
     if embed_tokens is None:
         return False
     if getattr(embed_tokens, "_unsloth_offload_hooks_installed", False):
@@ -268,18 +269,14 @@ def _install_offload_embedding_hooks(embed_tokens):
         if not hasattr(inp, "device"):
             return args
         weight = getattr(module, "weight", None)
-        target = weight.device if weight is not None else inp.device
+        target = weight.device if weight is not None else return_device
         if inp.device == target:
             return args
-        moved = inp.to(target)
-        moved._unsloth_saved_device = inp.device
-        return (moved,) + tuple(args[1:])
+        return (inp.to(target),) + tuple(args[1:])
 
     def _unsloth_offload_post_hook(module, args, output):
-        inp = args[0] if args else None
-        dev = getattr(inp, "_unsloth_saved_device", None)
-        if dev is not None and hasattr(output, "device") and output.device != dev:
-            return output.to(dev)
+        if return_device is not None and hasattr(output, "device") and output.device != return_device:
+            return output.to(return_device)
         return output
 
     embed_tokens.register_forward_pre_hook(_unsloth_offload_pre_hook, prepend = True)
@@ -1130,10 +1127,11 @@ class FastBaseModel:
                         nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
                         ngb = round(nbytes / 1024 / 1024 / 1024, 2)
                         print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                        _embed_device = embed_tokens.weight.device  # decoder device, before offload
                         embed_tokens.to("cpu")
 
                         # Device-safe embedding offload.
-                        _install_offload_embedding_hooks(embed_tokens)
+                        _install_offload_embedding_hooks(embed_tokens, _embed_device)
                         # Must free GPU memory otherwise will not free!
                         torch.cuda.empty_cache()
                         gc.collect()
