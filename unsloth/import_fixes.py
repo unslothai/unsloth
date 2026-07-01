@@ -1501,12 +1501,10 @@ _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS = (
 
 
 def _extract_peft_tensor_parallel_imported_symbols():
-    """Return names PEFT expects from ``transformers.integrations.tensor_parallel``.
+    """Return names PEFT imports from ``transformers.integrations.tensor_parallel``.
 
-    The supported PEFT import line is the one in
-    ``peft.utils.save_and_load._maybe_shard_state_dict_for_tp`` for fast
-    LoRA adapter checkpoints. Parse that source to avoid stale hard-coded
-    symbol lists.
+    Parsed from ``peft.utils.save_and_load._maybe_shard_state_dict_for_tp`` to
+    avoid a stale hard-coded symbol list.
     """
     try:
         import peft.utils.save_and_load as _save_and_load
@@ -1564,12 +1562,11 @@ def _raise_on_peft_tensor_parallel_symbol_use(symbol_name):
 
 
 def fix_peft_transformers_tensor_parallel_import_compat():
-    """Preserve existing ``transformers.integrations.tensor_parallel`` objects, then add
-    lightweight placeholders for symbols that PEFT expects but this transformers
-    build omits.
+    """Add placeholders to ``transformers.integrations.tensor_parallel`` for symbols
+    PEFT expects but this transformers build omits, keeping existing objects.
 
-    Returns ``True`` when patched, ``False`` when no patch is needed, and
-    ``None`` when transformers / PEFT context is absent.
+    Returns ``True`` when patched, ``False`` when no patch is needed, ``None``
+    when transformers / PEFT context is absent.
     """
     try:
         tensor_parallel_spec = importlib.util.find_spec("transformers.integrations.tensor_parallel")

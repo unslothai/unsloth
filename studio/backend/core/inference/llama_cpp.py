@@ -3697,12 +3697,22 @@ class LlamaCppBackend:
         hf_repo: str,
         hf_variant: Optional[str] = None,
         hf_token: Optional[str] = None,
+        force: bool = False,
+        allow_smaller_fallback: bool = True,
+        cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """Download GGUF file(s) from HuggingFace. Returns local path.
 
         Runs WITHOUT self._lock so unload_model() can set _cancel_event at
         any time; checks it between each shard download.
+
+        ``force`` re-fetches even when a (possibly stale) blob is cached.
+        ``allow_smaller_fallback=False`` raises on low disk instead of silently
+        switching to a smaller quant. ``cancel_event`` overrides
+        ``self._cancel_event`` so an update can use a private event without
+        touching the shared one; defaults to the shared event.
         """
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         try:
             import huggingface_hub  # noqa: F401 -- presence check only
         except ImportError:
@@ -3768,21 +3778,22 @@ class LlamaCppBackend:
             # cold whenever free disk is below the full weight footprint,
             # even though nothing needs downloading.
             already_cached_bytes = 0
-            for p in path_infos:
-                if not p.size:
-                    continue
-                try:
-                    cached_path = try_to_load_from_cache(hf_repo, p.path)
-                except Exception:
-                    cached_path = None
-                if isinstance(cached_path, str) and os.path.exists(cached_path):
+            if not force:
+                for p in path_infos:
+                    if not p.size:
+                        continue
                     try:
-                        on_disk = os.path.getsize(cached_path)
-                    except OSError:
-                        on_disk = 0
-                    # Satisfied only when the full blob is present.
-                    if on_disk >= p.size:
-                        already_cached_bytes += p.size
+                        cached_path = try_to_load_from_cache(hf_repo, p.path)
+                    except Exception:
+                        cached_path = None
+                    if isinstance(cached_path, str) and os.path.exists(cached_path):
+                        try:
+                            on_disk = os.path.getsize(cached_path)
+                        except OSError:
+                            on_disk = 0
+                        # Satisfied only when the full blob is present.
+                        if on_disk >= p.size:
+                            already_cached_bytes += p.size
 
             total_download_bytes = max(0, total_bytes - already_cached_bytes)
 
@@ -3805,6 +3816,13 @@ class LlamaCppBackend:
                 )
 
                 if total_download_bytes > free_bytes:
+                    if not allow_smaller_fallback:
+                        # Update path: never silently switch to a smaller quant;
+                        # surface the disk shortfall for the requested variant.
+                        raise RuntimeError(
+                            f"Not enough disk space to download {gguf_filename}. "
+                            f"Only {free_gb:.1f} GB free in {cache_dir}"
+                        )
                     smaller = self._find_smallest_fitting_variant(
                         hf_repo,
                         free_bytes,
@@ -3845,7 +3863,7 @@ class LlamaCppBackend:
         )
         logger.info(f"Resolving GGUF: {gguf_label}")
         try:
-            if self._cancel_event.is_set():
+            if cancel_event.is_set():
                 raise RuntimeError("Cancelled")
             dl_start = time.monotonic()
             # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
@@ -3853,18 +3871,20 @@ class LlamaCppBackend:
                 hf_repo,
                 gguf_filename,
                 hf_token,
-                cancel_event = self._cancel_event,
+                cancel_event = cancel_event,
                 on_status = lambda m: logger.info(m),
+                force_download = force,
             )
             for shard in gguf_extra_shards:
-                if self._cancel_event.is_set():
+                if cancel_event.is_set():
                     raise RuntimeError("Cancelled")
                 logger.info(f"Resolving GGUF shard: {shard}")
                 hf_hub_download_with_xet_fallback(
                     hf_repo,
                     shard,
                     hf_token,
-                    cancel_event = self._cancel_event,
+                    cancel_event = cancel_event,
+                    force_download = force,
                 )
         except Exception as e:
             if isinstance(e, RuntimeError) and "Cancelled" in str(e):
@@ -3887,6 +3907,7 @@ class LlamaCppBackend:
         hf_token: Optional[str],
         pick: Callable[[list[str]], Optional[str]],
         label: str,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """Resolve and fetch a companion GGUF (mmproj / MTP drafter) by name.
 
@@ -3894,8 +3915,10 @@ class LlamaCppBackend:
         (offline, same fallback as _download_gguf), then hf_hub_download.
         Runs WITHOUT self._lock (like _download_gguf); honors _cancel_event so
         an /unload between the main download and here skips the fetch.
+        ``cancel_event`` overrides ``self._cancel_event`` (defaults to it).
         """
-        if self._cancel_event.is_set():
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
             return None
 
         target: Optional[str] = None
@@ -3904,7 +3927,7 @@ class LlamaCppBackend:
         # Retry a transient listing blip; permanent repo/auth errors and offline
         # mode are not retried (offline raises at once -> fall through to cache).
         for attempt in range(3):
-            if self._cancel_event.is_set():
+            if cancel_event.is_set():
                 return None
             try:
                 target = pick(list_repo_files(hf_repo, token = hf_token))
@@ -3923,7 +3946,7 @@ class LlamaCppBackend:
                     f"Could not list repo files for {label} (attempt {attempt + 1}/3): {e}"
                 )
                 if attempt < 2:
-                    self._cancel_event.wait(2**attempt)
+                    cancel_event.wait(2**attempt)
 
         if target is None:
             try:
@@ -3937,7 +3960,7 @@ class LlamaCppBackend:
             except Exception as e:
                 logger.debug(f"Offline cache lookup for {label} failed: {e}")
 
-        if target is None or self._cancel_event.is_set():
+        if target is None or cancel_event.is_set():
             return None
 
         try:
@@ -3947,7 +3970,7 @@ class LlamaCppBackend:
                 hf_repo,
                 target,
                 hf_token,
-                cancel_event = self._cancel_event,
+                cancel_event = cancel_event,
             )
         except Exception as e:
             logger.warning(f"Could not download {label}: {e}")
@@ -3958,11 +3981,13 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """Download the mmproj (vision projection) file from a GGUF repo.
 
         Prefers mmproj-F16.gguf, else any mmproj*.gguf. Returns the local
-        path, or None if none exists.
+        path, or None if none exists. ``cancel_event`` overrides
+        ``self._cancel_event`` (defaults to it).
         """
 
         def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -3983,6 +4008,7 @@ class LlamaCppBackend:
             hf_token = hf_token,
             pick = _pick_mmproj,
             label = "mmproj",
+            cancel_event = cancel_event,
         )
 
     def _download_mtp(
@@ -7431,9 +7457,8 @@ class LlamaCppBackend:
                 return False
 
             try:
-                # trust_env=False: never route the loopback health probe through
-                # an ambient HTTP(S)_PROXY. A proxy that 503s for 127.0.0.1 makes
-                # the probe loop until timeout and hangs Studio load.
+                # trust_env=False: skip ambient HTTP(S)_PROXY, which if it 503s
+                # for 127.0.0.1 loops the probe until timeout and hangs load.
                 resp = httpx.get(url, timeout = 2.0, trust_env = False)
                 if resp.status_code == 200:
                     return True
