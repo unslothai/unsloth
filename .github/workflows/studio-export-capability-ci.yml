@@ -3,22 +3,11 @@
 
 # Runs studio/backend/tests/test_export_capability.py on Linux, Windows and macOS.
 #
-# Why: Studio export is gated by hardware.export_capability(), which decides
-# whether export can run and, when it cannot, which reason to surface
-# (pytorch_not_installed on a --no-torch install, no_accelerator on a
-# bare-CPU host, mlx_unavailable on Apple Silicon without MLX). That decision
-# is per-OS: is_apple_silicon() and the PyTorch-import probe behave
-# differently on each platform, and the export backend must stay importable
-# without PyTorch so the worker degrades to a clear message instead of
-# crashing. Hosted runners have no GPU/MLX, so this job confirms the gating
-# and import-safety on real Windows/macOS (the "export unavailable, here is
-# why" path a Mac/Windows user without an accelerator actually sees); a real
-# GPU/MLX export is validated separately on accelerator hardware.
-#
-# No GPU, no model download, no llama.cpp: the capability matrix mocks the
-# lightweight probes and the import-safety test blocks torch/unsloth, so the
-# job installs only a CPU PyTorch plus the backend import deps and runs in
-# seconds.
+# export_capability() is per-OS (is_apple_silicon() and the PyTorch-import probe differ per
+# platform) and the export backend must import without PyTorch, so this confirms the gating and
+# import-safety on hosted Windows/macOS. Hosted runners have no GPU/MLX, so a real accelerator
+# export is validated separately. No GPU / model / llama.cpp: the tests mock the probes and block
+# torch/unsloth, so the job installs only a CPU PyTorch plus import deps.
 
 name: Studio export capability
 
@@ -59,8 +48,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
-      # No accelerator on hosted runners; keep detection on the CPU path and
-      # off any incidental CUDA device the image might expose.
+      # No accelerator on hosted runners; keep detection on the CPU path.
       CUDA_VISIBLE_DEVICES: ""
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -73,16 +61,12 @@ jobs:
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
       - name: Install CPU PyTorch
-        # Pin torch to the CPU wheel index so every OS gets a CPU build (Windows
-        # would otherwise pull a CUDA wheel from PyPI; macOS has no CUDA wheel).
-        # Keep PyPI as an extra index so torch's own transitive deps (filelock,
-        # sympy, networkx, ...) still resolve -- the CPU wheel index does not
-        # serve all of them, matching the other workflows in this repo.
+        # CPU wheel index so every OS gets a CPU build; keep PyPI as an extra index so torch's
+        # transitive deps still resolve (matching the other workflows in this repo).
         run: python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "torch>=2.4,<2.13"
       - name: Install backend import deps
-        # Enough to import utils.hardware and core.export.export; deliberately
-        # NOT unsloth (it needs a GPU to import and the import-safety test
-        # blocks it) and NOT triton/llama.cpp (Linux-only / native builds).
+        # Enough to import utils.hardware and core.export.export; NOT unsloth (needs a GPU, and
+        # the import-safety test blocks it) or triton/llama.cpp (Linux-only / native builds).
         run: python -m pip install
           transformers peft accelerate safetensors huggingface_hub datasets
           sentencepiece protobuf fastapi starlette structlog psutil

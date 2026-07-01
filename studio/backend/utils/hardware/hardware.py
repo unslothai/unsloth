@@ -264,18 +264,11 @@ def get_device() -> DeviceType:
 
 
 def export_capability() -> dict:
-    """Whether model export can run on this host, with a torch-aware reason when it cannot.
+    """Whether model export can run here, with a torch-aware reason when it cannot.
 
-    Export loads and merges/quantizes weights through Unsloth (``FastLanguageModel``), which
-    hard-requires a compute accelerator: it calls ``torch.cuda`` APIs unconditionally at import and
-    has no CPU code path, so a bare-CPU host cannot export even with PyTorch installed. Export is
-    therefore supported on exactly the accelerators Unsloth supports -- NVIDIA/AMD (CUDA/ROCm),
-    Intel (XPU), or Apple Silicon (MLX) -- i.e. ``get_device() in {CUDA, XPU, MLX}``.
-
-    The enabled *set* matches the training gate, but the *reason* is more precise: when PyTorch is
-    the missing piece (a ``--no-torch`` install, where even a physical GPU can't be used) the
-    message says so explicitly, rather than a generic "no GPU". Reads only the lightweight probes
-    above, so it is safe to call without importing torch.
+    Export runs through Unsloth, which hard-requires an accelerator (it calls ``torch.cuda`` at
+    import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The
+    reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch.
 
     Returns {export_supported, export_unsupported_reason, export_unsupported_message}.
     """
@@ -285,9 +278,8 @@ def export_capability() -> dict:
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
         }
-    # No usable accelerator. Name the specific blocker so the UI can guide the user. Apple Silicon
-    # is checked first: its export path is MLX, so "install PyTorch" would be the wrong advice on a
-    # Mac even when torch is also absent -- the fix there is to restore the MLX stack.
+    # No accelerator: name the blocker. Apple Silicon first -- its path is MLX, so "install PyTorch"
+    # would be wrong advice on a Mac even when torch is also absent.
     if is_apple_silicon():
         reason = "mlx_unavailable"
         message = (

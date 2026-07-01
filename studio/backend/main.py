@@ -1083,7 +1083,7 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
             "percent_used": memory.percent,
         },
         "gpu": gpu_info,
-        # Export capability + torch-aware reason (needs a GPU/MLX accelerator). See /api/system/hardware.
+        # Export capability + torch-aware reason. See /api/system/hardware.
         **export_capability(),
     }
 
@@ -1112,10 +1112,7 @@ def get_hardware_info(
     body = {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),
-        # Whether model export can run here. Export goes through Unsloth, which needs a compute
-        # accelerator (NVIDIA/AMD/Intel GPU or Apple MLX) and has no CPU path. The reason is
-        # torch-aware: the Export UI grays out with "PyTorch is not installed" on a --no-torch host,
-        # or "no accelerator" on a bare-CPU host, instead of a generic "no GPU".
+        # Export capability + torch-aware reason; the Export UI grays out with the message.
         **export_capability(),
     }
     if include_details:

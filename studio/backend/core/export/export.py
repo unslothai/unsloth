@@ -14,10 +14,8 @@ import contextlib
 from pathlib import Path
 from typing import Optional, Tuple, List
 
-# unsloth imports torch at import time on non-MLX hosts, so a --no-torch install raises here. Keep
-# this module importable: null the model classes and treat MLX as unavailable, so export attempts
-# return a clean "PyTorch is not installed" error instead of crashing at import. (On a working MLX
-# host unsloth imports fine without torch, so _IS_MLX is set correctly there.)
+# unsloth imports torch on non-MLX hosts, so a --no-torch install raises here. Stay importable
+# (null the classes) so exports return a clean "PyTorch is not installed" error, not an import crash.
 try:
     from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
     _UNSLOTH_IMPORT_ERROR = None
@@ -40,10 +38,8 @@ from utils.paths import (
 )
 from core.inference import get_inference_backend
 
-# GPU/PyTorch-only imports. Guarded for Apple Silicon (MLX exports without torch) AND for a
-# --no-torch install: keep this module importable when PyTorch is absent so the backend degrades to
-# a clear "PyTorch is not installed" error at export time instead of crashing on import. `torch`
-# stays None and the peft/transformers imports are skipped when torch cannot be imported.
+# GPU/PyTorch-only imports, skipped on MLX and on a --no-torch install so the module stays
+# importable; export then degrades to a clear "PyTorch is not installed" error.
 torch = None
 _TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
@@ -58,13 +54,7 @@ logger = get_logger(__name__)
 
 
 def _export_runtime_available() -> bool:
-    """True if a runtime capable of exporting is present.
-
-    Export runs through Unsloth, which needs a compute accelerator (NVIDIA/AMD/Intel GPU or Apple
-    MLX) and has no CPU code path. So the check is: MLX active, OR ``FastLanguageModel`` actually
-    imported (which only succeeds on a supported accelerator). A --no-torch host and a bare-CPU host
-    (where the Unsloth import fails at ``torch.cuda`` init) both correctly report unavailable.
-    """
+    """True if export can run: MLX active, or Unsloth imported (only succeeds on a GPU host)."""
     return bool(_IS_MLX) or (FastLanguageModel is not None)
 
 
@@ -82,7 +72,7 @@ def _export_runtime_message() -> str:
     )
 
 
-# Kept for backwards compatibility with call sites / tests that reference the PyTorch-missing text.
+# Kept for call sites / tests referencing the PyTorch-missing text.
 _PYTORCH_MISSING_MESSAGE = (
     "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
     "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
@@ -121,12 +111,7 @@ def _torchao_export_supported():
 
 
 def _has_nvidia_gpu():
-    """True only on a real NVIDIA CUDA box (not ROCm/XPU/CPU/MLX).
-
-    compressed-tensors (llm-compressor) export needs CUDA; the portable torchao path does not.
-    Reads the live hardware-module values that detect_hardware() sets at startup, so the backend
-    stays authoritative even if a UI request is submitted from a non-NVIDIA client.
-    """
+    """True only on a real NVIDIA CUDA box (not ROCm/XPU/CPU/MLX); compressed-tensors needs it."""
     try:
         from utils.hardware import hardware as _hw
         return _hw.DEVICE == _hw.DeviceType.CUDA and not _hw.IS_ROCM
@@ -498,26 +483,20 @@ class ExportBackend:
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
-        # Merged export works for both PEFT adapters (LoRA merged to base) and non-PEFT Local/HF
-        # base models (save_pretrained_merged is a no-op merge that just saves the base). This lets
-        # Local Model / Hugging Face sources export 16-bit + compressed + portable formats too.
+        # Merged export works for PEFT adapters and non-PEFT Local/HF base models alike
+        # (save_pretrained_merged is a no-op merge that just saves the base).
 
         output_path: Optional[str] = None
-        # Quantized merged formats run save_pretrained_merged with a quant save_method and write to
-        # a sibling "<dir>-<suffix>" directory. Two backends:
-        #   - compressed-tensors (llm-compressor): FP8/FP4/INT for vLLM, NVIDIA-only. Suffix from
-        #     unsloth.save COMPRESSED_EXPORT_SCHEMES.
-        #   - torchao "portable" FP8/INT8: device-agnostic (no NVIDIA GPU needed). Suffix from
-        #     unsloth.save TORCHAO_EXPORT_SCHEMES.
-        # The alias comes from the explicit `compressed_method` (the "all formats" dropdown) or is
-        # implied by the quick-button `format_type` label.
+        # Quantized formats save to a sibling "<dir>-<suffix>". Two backends: compressed-tensors
+        # (llm-compressor, NVIDIA-only) and portable torchao FP8/INT8 (device-agnostic). The alias
+        # comes from `compressed_method` (the "all formats" dropdown) or the `format_type` label.
         _LABEL_TO_ALIAS = {
             "FP8 (compressed-tensors)": "fp8",
             "NVFP4 (compressed-tensors)": "nvfp4",
         }
         compressed_alias = compressed_method or _LABEL_TO_ALIAS.get(format_type)
         compressed_suffix: Optional[str] = None
-        # Classify the alias as torchao-portable vs compressed-tensors up front.
+        # Classify the alias: torchao-portable vs compressed-tensors.
         torchao_info = None
         if compressed_alias and _torchao_export_supported():
             try:
@@ -537,12 +516,11 @@ class ExportBackend:
                 )
 
             if is_torchao:
-                # Portable torchao path: no NVIDIA GPU required, no calibration.
+                # Portable torchao: no NVIDIA GPU, no calibration.
                 compressed_suffix = torchao_info[1]
 
             if is_compressed:
-                # compressed-tensors (llm-compressor) needs an NVIDIA CUDA GPU. Keep the backend
-                # authoritative even if a non-NVIDIA client bypasses the UI gating.
+                # compressed-tensors needs CUDA; enforce in the backend even if the UI gate is bypassed.
                 if not _has_nvidia_gpu():
                     return (
                         False,
@@ -598,8 +576,7 @@ class ExportBackend:
                         save_directory, self.current_tokenizer, save_method = save_method
                     )
 
-                # Compressed / torchao export writes to the "<dir>-<suffix>" sibling; report that
-                # as output (torchao removes the intermediate 16bit staging dir automatically).
+                # Compressed / torchao writes to the "<dir>-<suffix>" sibling; report that as output.
                 final_dir = (
                     f"{save_directory}-{compressed_suffix}"
                     if (is_compressed or is_torchao)
@@ -643,9 +620,8 @@ class ExportBackend:
                                 private = private,
                             )
                 elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():
-                    # The compressed / torchao model was already built locally in output_path;
-                    # upload it directly so we do not re-run the (expensive, OOM-prone) quantization
-                    # that push_to_hub_merged(save_method=fp8/nvfp4/torchao_*) would otherwise redo.
+                    # Already built in output_path; upload it directly instead of re-running the
+                    # expensive quantization that push_to_hub_merged(save_method=...) would redo.
                     hf_api = HfApi(token = hf_token)
                     repo_id = PushToHubMixin._create_repo(
                         PushToHubMixin,
@@ -849,8 +825,8 @@ class ExportBackend:
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
-        # Only forward imatrix_file to an unsloth build that accepts it; otherwise even a plain
-        # no-imatrix export would fail with an unexpected-keyword error against an older unsloth.
+        # Only forward imatrix_file to an unsloth build that accepts it, else older builds raise
+        # an unexpected-keyword error even for a plain no-imatrix export.
         if imatrix_file is not None and not _supports_kwarg(
             self.current_model.save_pretrained_gguf, "imatrix_file"
         ):
@@ -865,15 +841,13 @@ class ExportBackend:
         output_path: Optional[str] = None
         model_tmp_to_cleanup: Optional[str] = None
         try:
-            # unsloth expects lowercase quant method(s). Accept a single string or a list and
-            # normalize to a list so multiple quants are produced from one model load.
+            # Normalize to a lowercased list so multiple quants come from one model load.
             if isinstance(quantization_method, (list, tuple)):
                 quant_methods = [str(q).lower() for q in quantization_method if str(q).strip()]
             else:
                 quant_methods = [str(quantization_method).lower()]
             if not quant_methods:
                 quant_methods = ["q4_k_m"]
-            # A single-element list still passes cleanly to save_pretrained_gguf.
             quant_method = quant_methods if len(quant_methods) > 1 else quant_methods[0]
 
             # Pin convert_hf_to_gguf.py to setup.sh's tagged llama.cpp ref so it
@@ -1055,9 +1029,8 @@ class ExportBackend:
                     f"Choose one of {', '.join(_GGUF_LORA_OUTTYPES)}.",
                     None,
                 )
-            # Older Unsloth builds may not have save_pretrained_gguf at all; use getattr so a
-            # missing method returns this clean "not supported" message instead of raising an
-            # AttributeError (which would surface as a generic 500) before the try block below.
+            # getattr so an older build without save_pretrained_gguf returns a clean message
+            # instead of an AttributeError (a generic 500).
             _save_gguf_fn = getattr(self.current_model, "save_pretrained_gguf", None)
             if _save_gguf_fn is None or not _supports_kwarg(_save_gguf_fn, "save_method"):
                 return (
@@ -1075,16 +1048,14 @@ class ExportBackend:
                 ensure_dir(Path(save_directory))
 
                 if gguf:
-                    # Writes the adapter files plus a "<base>-lora-<outtype>.gguf" into the dir.
+                    # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
                     _apply_wsl_sudo_patch()
                     self.current_model.save_pretrained_gguf(
                         save_directory,
                         self.current_tokenizer,
                         save_method = "lora",
                         quantization_method = outtype,
-                        # Forward the token so convert_lora_to_gguf.py can fetch a gated/private
-                        # base model's config (it sets HF_TOKEN from this); without it the load can
-                        # succeed but the GGUF conversion fails for gated bases.
+                        # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
                         token = hf_token or None,
                     )
                     final_ggufs = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
@@ -1114,8 +1085,8 @@ class ExportBackend:
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
 
                 if gguf:
-                    # Upload the locally-built GGUF adapter folder (built above). Requires a local
-                    # save_directory so we do not re-run the conversion a second time.
+                    # Upload the locally-built GGUF folder; needs a local save_directory so the
+                    # conversion is not re-run.
                     if not (output_path and Path(output_path).is_dir()):
                         return (
                             False,

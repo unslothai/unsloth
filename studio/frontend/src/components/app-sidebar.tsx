@@ -290,11 +290,8 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
-  // When Train is greyed out (chat-only host), explain why on hover instead of disabling it
-  // silently. mlx_unavailable is the common macOS case after a reinstall/update dropped MLX and is
-  // recoverable via `unsloth studio update`. Export is no longer disabled from the sidebar: it stays
-  // navigable so the Export page can render its own grayed-out state with a precise reason (PyTorch
-  // missing vs no accelerator vs MLX unavailable) instead of a silent redirect.
+  // Explain a greyed-out Train (chat-only host) on hover instead of disabling silently. Export is
+  // no longer disabled here: it stays navigable so its page can show a precise grayed-out reason.
   const trainDisabledHint: string | undefined = !chatOnly
     ? undefined
     : chatOnlyReason === "mlx_unavailable"

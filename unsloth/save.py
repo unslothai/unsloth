@@ -205,10 +205,8 @@ COMPRESSED_EXPORT_SCHEMES = {
 }
 
 
-# torchao "portable" quant export: device-agnostic FP8 / INT8 that needs NO NVIDIA GPU to
-# produce (unlike compressed-tensors, which gate on CUDA). alias -> (kind, sibling suffix).
-# FP8 serializes to safetensors (loads in vLLM); INT8 serializes to .bin (torchao only
-# whitelists float8 configs for safetensors). Both verified to load in vLLM.
+# torchao "portable" quant export: device-agnostic FP8 / INT8, no NVIDIA GPU needed.
+# alias -> (kind, sibling suffix). FP8 saves to safetensors, INT8 to .bin; both load in vLLM.
 TORCHAO_EXPORT_SCHEMES = {
     "torchao_fp8": ("fp8", "torchao-fp8"),
     "torchao_int8": ("int8", "torchao-int8"),
@@ -218,11 +216,7 @@ TORCHAO_EXPORT_SCHEMES = {
 
 
 def _normalize_torchao_method(save_method):
-    """Return (kind, suffix) if `save_method` is a torchao portable FP8/INT8 export, else None.
-
-    Kept separate from `_normalize_compressed_method` so torchao aliases route to the
-    device-agnostic torchao path instead of the NVIDIA-gated llm-compressor path.
-    """
+    """Return (kind, suffix) if `save_method` is a torchao portable FP8/INT8 export, else None."""
     if not isinstance(save_method, str):
         return None
     key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
@@ -239,8 +233,7 @@ def _normalize_compressed_method(save_method):
     if not isinstance(save_method, str):
         return None
     key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
-    # torchao portable aliases (e.g. "torchao_fp8") are handled by the torchao path, not here;
-    # return None so the "fp8" substring below does not raise a compressed near-miss error.
+    # torchao aliases route to the torchao path, so skip them before the "fp8" near-miss check.
     if key in TORCHAO_EXPORT_SCHEMES:
         return None
     if key in COMPRESSED_EXPORT_SCHEMES:
@@ -2029,7 +2022,7 @@ def unsloth_save_pretrained_merged(
             gc.collect()
         return
 
-    # torchao portable FP8/INT8 export (device-agnostic, no NVIDIA GPU required) -> separate path.
+    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
     _torchao = _normalize_torchao_method(save_method)
     if _torchao is not None:
         kind, suffix = _torchao
@@ -2143,7 +2136,7 @@ def unsloth_push_to_hub_merged(
             gc.collect()
         return
 
-    # torchao portable FP8/INT8 export (device-agnostic, no NVIDIA GPU required) -> separate path.
+    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
     _torchao = _normalize_torchao_method(save_method)
     if _torchao is not None:
         kind, suffix = _torchao
@@ -3880,7 +3873,7 @@ def unsloth_generic_save_pretrained_merged(
             gc.collect()
         return
 
-    # torchao portable FP8/INT8 export (device-agnostic, no NVIDIA GPU required) -> separate path.
+    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
     _torchao = _normalize_torchao_method(save_method)
     if _torchao is not None:
         kind, suffix = _torchao
@@ -3994,7 +3987,7 @@ def unsloth_generic_push_to_hub_merged(
             gc.collect()
         return
 
-    # torchao portable FP8/INT8 export (device-agnostic, no NVIDIA GPU required) -> separate path.
+    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
     _torchao = _normalize_torchao_method(save_method)
     if _torchao is not None:
         kind, suffix = _torchao
@@ -4520,13 +4513,9 @@ def _unsloth_save_torchao(
 ):
     """Export a device-agnostic torchao FP8 / INT8 "portable" checkpoint (no NVIDIA GPU needed).
 
-    Mirrors `_unsloth_save_compressed_tensors`: LoRA is first merged into the base model at
-    16bit (in an isolated staging dir), then torchao weight-only quantization is applied via
-    `TorchAoConfig` and the quantized checkpoint is written to `save_directory + "-" + suffix`.
-    Unlike the llm-compressor path this needs no calibration, no subprocess, and no CUDA - it
-    quantizes on whatever device is present (CPU included) and is intended for vLLM /
-    transformers inference. `kind` is "fp8" (Float8WeightOnlyConfig, saved to safetensors) or
-    "int8" (Int8WeightOnlyConfig, saved to .bin - torchao only whitelists float8 for safetensors).
+    Merges LoRA to 16bit in a staging dir, then applies torchao weight-only quantization via
+    `TorchAoConfig` into `save_directory + "-" + suffix`. No calibration, subprocess, or CUDA.
+    `kind` is "fp8" (safetensors) or "int8" (.bin; torchao only whitelists float8 for safetensors).
     """
     import tempfile
 
@@ -4557,8 +4546,7 @@ def _unsloth_save_torchao(
     else:
         raise RuntimeError(f"Unsloth: unknown torchao export kind '{kind}' (expected fp8/int8).")
 
-    # Pick the local working dir. For a hub push, save_directory is a repo id, so merge and
-    # quantize inside an isolated temp dir instead of writing ./<repo_id> into the cwd.
+    # For a hub push, save_directory is a repo id, so work inside an isolated temp dir.
     repo_id, work_tmp, model_dev = None, None, None
     if push_to_hub:
         repo_id = os.fspath(save_directory)
@@ -4581,9 +4569,8 @@ def _unsloth_save_torchao(
                 exist_ok = True,
             )
 
-        # 1) Merge to 16bit at a staging dir via unsloth_generic_save (handles LoRA merges and
-        #    full-finetuned/base models alike). The torchao reload below reads default weight
-        #    filenames, so never write variant-named shards here.
+        # 1) Merge to 16bit at a staging dir (LoRA and base alike). The reload reads default
+        #    weight filenames, so never write variant-named shards here.
         merge_kwargs.pop("variant", None)
         print(f"Unsloth: Merging to 16bit before torchao {kind} quantization...")
         merge_args = dict(merge_kwargs)
@@ -4632,9 +4619,8 @@ def _unsloth_save_torchao(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # 4) Reload the staged 16bit checkpoint with torchao quantization applied. torchao
-        #    requires bfloat16 loading (float16 fails). device_map="auto" uses a GPU if present
-        #    and falls back to CPU otherwise, so this produces a checkpoint on any hardware.
+        # 4) Reload the staged 16bit checkpoint with torchao applied. bfloat16 is required;
+        #    device_map="auto" falls back to CPU, so this works on any hardware.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
         dtype_kw = {"torch_dtype": torch.bfloat16} if HAS_TORCH_DTYPE else {"dtype": torch.bfloat16}
         quantized_model = auto_model.from_pretrained(
@@ -4666,9 +4652,8 @@ def _unsloth_save_torchao(
                 f"{cfg_path}"
             )
 
-        # 6) Remove the intermediate 16bit staging dir for a local save (kept only for the merge);
-        #    the torchao "<dir>-<suffix>" sibling is the reported output. For a hub push the whole
-        #    work_tmp is cleaned in finally.
+        # 6) Drop the intermediate 16bit staging dir on a local save; the "<dir>-<suffix>" sibling
+        #    is the output (a hub push cleans work_tmp in finally).
         if not push_to_hub and os.path.isdir(local_dir):
             try:
                 shutil.rmtree(local_dir)

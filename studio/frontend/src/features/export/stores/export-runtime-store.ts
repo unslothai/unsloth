@@ -139,10 +139,7 @@ export interface RunExportParams {
   quantLevels: string[];
   /** GGUF: use an importance matrix (auto-download); required for the IQ quants. */
   useImatrix?: boolean;
-  /**
-   * Merged: one or more selected precision formats. Each is exported to its own sibling directory
-   * (plain 16-bit, compressed-tensors, or portable torchao). Defaults to a single 16-bit export.
-   */
+  /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit. */
   mergedSelections?: { formatType: string; compressedMethod: string | null }[];
   /** LoRA: also emit a GGUF LoRA adapter (llama.cpp `--lora`), and its output float type. */
   loraGguf?: boolean;
@@ -444,8 +441,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       let lastOutputPath: string | null = null;
 
       if (params.exportMethod === "merged") {
-        // One or more selected precision formats; each writes its own sibling directory. Works for
-        // both PEFT adapters and non-PEFT (Local/HF base) sources - the backend guard is relaxed.
+        // Each selected format writes its own sibling directory (PEFT or non-PEFT base alike).
         const selections =
           params.mergedSelections && params.mergedSelections.length > 0
             ? params.mergedSelections
@@ -470,8 +466,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           set({ quantIndex: i + 1 });
         }
       } else if (params.exportMethod === "gguf") {
-        // Send the whole quant list in ONE call so the model is merged to 16bit once and each
-        // GGUF is produced from that single merge (unsloth save_to_gguf loops internally).
+        // Send the whole quant list in ONE call: the model is merged once and every GGUF comes
+        // from that single merge (unsloth save_to_gguf loops internally).
         const { outputPath } = await runRecoverableOp(() =>
           exportGGUF({
             save_directory: params.saveDirectory,

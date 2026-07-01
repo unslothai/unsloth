@@ -56,15 +56,12 @@ export const QUANT_OPTIONS: {
 ];
 
 /**
- * Unified merged-export precision formats. One list, sorted by bit width (16-bit first, then
- * 8-bit, then 4-bit). Three backends:
- *   - "plain":      a standard save (16-bit); `formatType` is the backend `format_type`.
- *   - "compressed": llm-compressor compressed-tensors (for vLLM); NVIDIA GPU required. `value` is
- *                   the backend `compressed_method` alias (unsloth.save COMPRESSED_EXPORT_SCHEMES).
- *   - "torchao":    portable torchao FP8/INT8; NO NVIDIA GPU required to produce, loads in vLLM.
- *                   `value` is the backend `compressed_method` alias (TORCHAO_EXPORT_SCHEMES).
- * `common` formats render as quick multi-select pills; the rest live in a multi-select "More
- * formats" dropdown. `needsNvidia` entries are hidden on non-NVIDIA hardware.
+ * Merged-export precision formats, sorted by bit width. Three backends:
+ *   - "plain":      standard save (16-bit); `formatType` is the backend `format_type`.
+ *   - "compressed": llm-compressor compressed-tensors (vLLM), NVIDIA-only; `value` is the alias.
+ *   - "torchao":    portable FP8/INT8, no NVIDIA GPU needed; `value` is the alias.
+ * `common` entries are quick pills, the rest the "More formats" dropdown; `needsNvidia` entries
+ * are hidden on non-NVIDIA hardware.
  */
 export type MergedBackend = "plain" | "compressed" | "torchao";
 
@@ -209,10 +206,7 @@ export function findMergedFormat(value: string): MergedFormatOption | undefined 
   return MERGED_FORMATS.find((f) => f.value === value);
 }
 
-/**
- * Backend payload discriminator for one selected merged format. plain -> {formatType,
- * compressedMethod:null}; compressed/torchao -> the alias goes in compressedMethod.
- */
+/** Backend payload for one merged format: plain -> formatType, compressed/torchao -> the alias. */
 export function mergedFormatPayload(value: string): {
   formatType: string;
   compressedMethod: string | null;

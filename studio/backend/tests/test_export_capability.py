@@ -3,15 +3,9 @@
 
 """Tests for export capability gating.
 
-Export runs through Unsloth, which hard-requires a compute accelerator (NVIDIA/AMD/Intel GPU or
-Apple MLX) and has no CPU code path, so export is supported on exactly ``get_device() in
-{CUDA, XPU, MLX}``. The enabled set matches the training gate, but the *reason* is torch-aware: a
-``--no-torch`` host reports the clear "PyTorch is not installed" reason, a bare-CPU (torch-present)
-host reports ``no_accelerator``, and Apple Silicon without MLX reports ``mlx_unavailable``. The
-export backend must still import without PyTorch and degrade to a clear message.
-
-The capability matrix mocks the lightweight hardware probes; the route/runtime wiring is checked
-with ast so it runs on CPU with no GPU, no model, and no llama.cpp.
+Export is supported iff ``get_device() in {CUDA, XPU, MLX}``, with a torch-aware reason otherwise
+(pytorch_not_installed / no_accelerator / mlx_unavailable), and the backend must import without
+PyTorch. The matrix mocks the hardware probes; wiring is checked with ast so it runs on CPU.
 """
 
 import ast
@@ -47,8 +41,7 @@ def _patch(monkeypatch, *, torch: bool, device, apple: bool):
 
 
 def test_cpu_with_torch_unsupported_no_accelerator(monkeypatch):
-    # PyTorch present but no accelerator: Unsloth can't export on CPU, so export is UNSUPPORTED
-    # with the no_accelerator reason (not a misleading "PyTorch is not installed").
+    # PyTorch present but no accelerator: unsupported with no_accelerator, not "PyTorch missing".
     _patch(monkeypatch, torch = True, device = hw.DeviceType.CPU, apple = False)
     cap = hw.export_capability()
     assert cap["export_supported"] is False
@@ -86,8 +79,7 @@ def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
 
 
 def test_apple_without_mlx_reports_mlx_unavailable(monkeypatch):
-    # Apple Silicon fell back to CPU -> MLX stack missing. The fix is to restore MLX, not to install
-    # PyTorch, so the reason is mlx_unavailable regardless of whether torch happens to be present.
+    # Apple + CPU means the MLX stack is missing; reason is mlx_unavailable regardless of torch.
     for has_torch in (False, True):
         _patch(monkeypatch, torch = has_torch, device = hw.DeviceType.CPU, apple = True)
         cap = hw.export_capability()

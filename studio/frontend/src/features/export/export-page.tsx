@@ -125,13 +125,11 @@ function buildRelativeSaveDirectory(
         : sourceBaseModelName;
     return `${safePathSegment(rawName)}-GGUF`;
   }
-  // Merged / LoRA exports. A fine-tuned checkpoint keeps the "<run>/<checkpoint>" layout under
-  // the outputs tree.
+  // Merged / LoRA: a checkpoint keeps the "<run>/<checkpoint>" layout under outputs.
   if (sourceMode === "checkpoint" && selectedModelIdx && checkpoint) {
     return `${selectedModelIdx}/${checkpoint}`;
   }
-  // Local Model / Hugging Face source (no run/checkpoint) - name from the model id so we never
-  // produce "model/null".
+  // Local / HF source (no checkpoint): name from the model id to avoid "model/null".
   const rawName =
     sourceMode === "checkpoint"
       ? checkpoint ?? selectedModelIdx ?? sourceBaseModelName
@@ -204,25 +202,19 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
-  // Merged export precision: one or more selected formats (values from MERGED_FORMATS). Multiple
-  // may be selected to export several precisions in one run.
+  // Merged precision: one or more MERGED_FORMATS values, exported in one run.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(["16-bit"]);
   // LoRA-only export: optionally also emit a GGUF LoRA adapter, and its output float type.
   const [loraAsGguf, setLoraAsGguf] = useState(false);
   const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("f16");
 
-  // NVIDIA-only compressed-tensors formats are hidden on non-NVIDIA hardware; portable torchao and
-  // 16-bit always remain. cuda!=null && rocm==null marks a real CUDA (not ROCm) box.
   const hardware = useHardwareInfo();
-  // The server's OS (`/api/health` device_type). llama.cpp GGUF LoRA conversion is not available on
-  // the macOS / MLX export path (the backend rejects it), so gate that option out on a Mac host.
+  // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
   const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
+  // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
-  // Export needs a supported accelerator (NVIDIA/AMD/Intel GPU or Apple MLX); Unsloth has no CPU
-  // path. Only gray out once we have an authoritative response that says unsupported; if the
-  // hardware probe hasn't loaded or failed, don't block here (the backend route guard stays
-  // authoritative). The backend supplies the precise reason ("PyTorch is not installed" vs "no
-  // accelerator" vs "MLX unavailable"); the fallback below only shows if that message is missing.
+  // Only gray out on an authoritative unsupported response; while unloaded the backend route guard
+  // stays authoritative. The backend supplies the precise reason; the fallback below is a backstop.
   const exportUnsupported =
     hardware.loaded && hardware.exportSupported === false;
   const exportUnsupportedMessage =
@@ -239,11 +231,8 @@ export function ExportPage() {
         : [...prev, value],
     );
   }, []);
-  // NVIDIA-only formats are never rendered on non-NVIDIA hardware (see availableFormats), so the
-  // selection can only ever contain formats valid for the current hardware; no pruning effect is
-  // needed. The default is 16-bit, which is available everywhere.
-  // IQ quants are imatrix-only, so force it on when one is selected; otherwise we would submit
-  // an IQ quant with no imatrix and llama.cpp would reject it.
+  // availableFormats already drops NVIDIA-only formats on other hardware, so no pruning needed.
+  // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
   );
@@ -368,12 +357,9 @@ export function ExportPage() {
   const baseModelName = selectedModelData?.base_model ?? "—";
   const isAdapter = !!selectedModelData?.peft_type;
   const isQuantized = !!selectedModelData?.is_quantized;
-  // `isAdapter` / `isQuantized` come from the selected checkpoint's metadata. In Local Model /
-  // Hugging Face ("model") source mode we export a direct base model, not that checkpoint, so these
-  // are stale there and must not gate the export: otherwise LoRA stays wrongly enabled for a base
-  // model (the backend then rejects it with "No adapter to export"), and a stale "quantized" flag
-  // disables every method for an unrelated, exportable model. Treat both as false outside
-  // checkpoint mode.
+  // isAdapter / isQuantized come from the checkpoint's metadata and are stale in "model" source
+  // mode (a direct base export), so treat both as false outside checkpoint mode to avoid wrongly
+  // gating the methods.
   const effectiveIsAdapter = sourceMode === "checkpoint" && isAdapter;
   const effectiveIsQuantized = sourceMode === "checkpoint" && isQuantized;
   const loraRank = selectedModelData?.lora_rank ?? null;
@@ -499,8 +485,7 @@ export function ExportPage() {
 
   // Auto-reset export method if incompatible with the selected model type
   useEffect(() => {
-    // LoRA-only export needs a real adapter; Merged and GGUF work for non-PEFT base models too
-    // (Local Model / Hugging Face sources), so only reset the adapter-only method here.
+    // Only LoRA needs a real adapter; Merged and GGUF work for non-PEFT base models too.
     if (!effectiveIsAdapter && exportMethod === "lora") {
       setExportMethod(null);
     }
@@ -516,8 +501,7 @@ export function ExportPage() {
     } else if (next === "hf" || next === "local") {
       setSourceMode("model");
       setModelSource(next);
-      // Do not force GGUF: Local Model / Hugging Face sources can export Merged (16-bit /
-      // compressed / portable) too. A stale LoRA-only pick is cleared by the auto-reset effect.
+      // Don't force GGUF: Local / HF sources can export Merged too; a stale LoRA pick auto-resets.
     } else {
       return;
     }
@@ -655,13 +639,9 @@ export function ExportPage() {
     if (!source || !exportMethod) return;
     // No supported accelerator (or PyTorch/MLX missing): the backend would reject anyway; don't submit.
     if (exportUnsupported) return;
-    // A GGUF export with no quant selected runs zero exports yet would still
-    // settle as success with no file; require at least one (mirrors canExport).
+    // GGUF with no quant, or merged with no format, would run an unintended/empty export; require
+    // at least one (mirrors canExport, in case the panel's Start button bypasses the outer one).
     if (exportMethod === "gguf" && quantLevels.length === 0) return;
-    // Likewise, a merged export with every precision pill deselected would fall
-    // back to a default 16-bit export the user did not ask for; require at least
-    // one selected format (mirrors canExport, in case the panel's Start button is
-    // clicked while the outer Export button is disabled).
     if (exportMethod === "merged" && selectedFormats.length === 0) return;
 
     const selectedCp = sourceMode === "checkpoint"

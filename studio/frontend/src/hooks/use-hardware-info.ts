@@ -25,12 +25,9 @@ export interface HardwareInfo {
     transformers: string | null;
     unsloth: string | null;
     llamaCpp: string | null;
-    // Whether model export can run here. Export goes through Unsloth, which needs a compute
-    // accelerator (NVIDIA/AMD/Intel GPU or Apple MLX) and has no CPU path, so this is true only on
-    // a supported accelerator. The reason string is torch-aware: `pytorch_not_installed` when torch
-    // is the missing piece, `no_accelerator` on a bare-CPU (torch-present) host, `mlx_unavailable`
-    // on Apple without MLX. `null` until the authoritative response arrives, so callers don't
-    // briefly enable export before load. `loaded` flips true once a real (non-error) response lands.
+    // Whether export can run here (true only on a supported accelerator), with a torch-aware
+    // reason. `null` until the authoritative response lands, so callers don't briefly enable
+    // export; `loaded` flips true once a real (non-error) response arrives.
     exportSupported: boolean | null;
     exportUnsupportedReason: string | null;
     exportUnsupportedMessage: string | null;

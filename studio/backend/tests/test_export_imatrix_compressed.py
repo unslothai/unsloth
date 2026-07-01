@@ -54,8 +54,7 @@ def test_merged_request_rejects_unknown_format():
 
 
 def test_export_gguf_threads_imatrix_to_save_and_push():
-    # imatrix_file must reach both save_pretrained_gguf and push_to_hub_gguf, but only via the
-    # conditional **imatrix_kw so a no-imatrix export never sends an unsupported keyword.
+    # imatrix_file must reach both save paths, but only via the conditional **imatrix_kw.
     g = _func_src("core/export/export.py", "export_gguf")
     assert g.count("**imatrix_kw") >= 2
     assert 'imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}' in g
@@ -109,8 +108,7 @@ def test_export_merged_maps_compressed_to_save_method():
 
 
 def test_compressed_hub_push_uploads_local_dir_without_recompressing():
-    # A compressed / torchao Hub push must upload the already-built output_path, not re-run the
-    # quantization via push_to_hub_merged (which would quantize a second time).
+    # A compressed / torchao Hub push must upload the built output_path, not re-quantize.
     m = _func_src("core/export/export.py", "export_merged_model")
     assert "elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():" in m
     assert "hf_api.upload_folder(" in m and "folder_path = output_path" in m
@@ -155,15 +153,12 @@ def test_export_merged_relaxes_is_peft_guard():
 
 
 def test_unsloth_save_has_torchao_registry_and_path():
-    # The core normalizer + registry + save path must exist for the backend to route to them.
-    # Read unsloth/save.py as text (like the ast checks above) rather than importing unsloth, so
-    # this runs in the CPU backend suite where the unsloth package is not installed / importable.
+    # Read unsloth/save.py as text (not import) so this runs in the CPU suite without unsloth.
     save_py = (_BACKEND.parent.parent / "unsloth" / "save.py").read_text(encoding = "utf-8")
     assert "def _normalize_torchao_method" in save_py
     assert "def _unsloth_save_torchao" in save_py
     assert "TORCHAO_EXPORT_SCHEMES = {" in save_py
-    # The torchao aliases must map to (scheme, suffix) in the registry so the backend routes them to
-    # the torchao path (and not to the compressed-tensors near-miss handler).
+    # torchao aliases must map to (scheme, suffix) so the backend routes to the torchao path.
     assert '"torchao_fp8": ("fp8", "torchao-fp8")' in save_py
     assert '"torchao_int8": ("int8", "torchao-int8")' in save_py
 

@@ -49,11 +49,8 @@ logger = get_logger(__name__)
 def _ensure_export_supported() -> None:
     """Reject a mutating export request up front (HTTP 400) when the host can't export.
 
-    Export goes through Unsloth, which needs a compute accelerator (NVIDIA/AMD/Intel GPU or Apple
-    MLX) and has no CPU path; on a --no-torch, no-accelerator, or MLX-missing host the backend stays
-    authoritative even if a client bypasses the UI. Read-only endpoints (scan/status/logs) are
-    intentionally NOT gated so the Export page can still render context and show the reason.
-    `export_capability()` is torch-free to evaluate.
+    Keeps the backend authoritative even if a client bypasses the UI gate. Read-only endpoints
+    (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
     """
     from utils.hardware import export_capability
 
