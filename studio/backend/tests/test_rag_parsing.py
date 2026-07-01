@@ -86,3 +86,69 @@ def test_pdf_markdown_falls_back_when_lib_missing(tmp_path, monkeypatch):
     _table_pdf(pdf)
     pages = parsers.parse(str(pdf))
     assert pages and "Quarter" in pages[0].text
+
+
+def _long_text_pdf(path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    body = "The quick brown fox jumps over the lazy dog. " * 12  # >200 letters
+    page.insert_textbox(pymupdf.Rect(40, 40, 550, 750), body, fontsize = 11)
+    doc.save(str(path))
+    doc.close()
+
+
+def test_pdf_markdown_corruption_falls_back_to_plain(tmp_path, monkeypatch):
+    # pymupdf4llm can emit shaped RTL Presentation Forms for Arabic/Hebrew; the parser
+    # detects that and uses PyMuPDF's logical-order text instead of the mangled Markdown.
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    shaped = "".join(chr(c) for c in range(0xFE8D, 0xFEA0)) * 20  # heavy shaped forms
+    monkeypatch.setattr(parsers, "_pdf_markdown", lambda doc: [shaped] * doc.page_count)
+    pdf = tmp_path / "table.pdf"
+    _table_pdf(pdf)
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "Quarter" in text  # real logical-order text recovered
+    assert not parsers._markdown_corrupted(text)  # shaped garbage not carried through
+
+
+def test_pdf_markdown_incomplete_falls_back_to_plain(tmp_path, monkeypatch):
+    # If pymupdf4llm silently drops most of a page, the parser prefers the fuller raw layer.
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    monkeypatch.setattr(parsers, "_pdf_markdown", lambda doc: ["x"] * doc.page_count)
+    pdf = tmp_path / "long.pdf"
+    _long_text_pdf(pdf)
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "quick brown fox" in text  # fuller raw layer used, not the near-empty Markdown
+
+
+def _docx_with_table(path):
+    import docx
+
+    document = docx.Document()
+    document.add_paragraph("Intro before table.")
+    table = document.add_table(rows = 2, cols = 2)
+    table.cell(0, 0).text = "NAME"
+    table.cell(0, 1).text = "SCORE"
+    table.cell(1, 0).text = "Alice"
+    table.cell(1, 1).text = "97pts"
+    document.add_paragraph("Outro after table.")
+    document.save(str(path))
+
+
+def test_docx_extracts_table_cells(tmp_path):
+    # document.paragraphs alone drops tables; the parser walks body content in order so
+    # table cells survive (pipe-joined, which the preview locator anchors on).
+    pytest.importorskip("docx")
+    from core.rag import parsers
+
+    docx_path = tmp_path / "t.docx"
+    _docx_with_table(docx_path)
+    text = "\n".join(p.text for p in parsers.parse(str(docx_path)))
+    assert all(v in text for v in ("NAME", "SCORE", "Alice", "97pts"))  # cells kept
+    assert "Alice | 97pts" in text  # row cells joined
+    assert text.index("Intro") < text.index("NAME") < text.index("Outro")  # order kept
