@@ -1,5 +1,6 @@
-"""GPU-free test for the logits_to_keep gate in vision.py
-(_unsloth_generate_accepts_kwarg), AST-extracted so no unsloth/CUDA import is needed."""
+"""GPU-free test for the generate-kwarg gate in vision.py
+(_unsloth_generate_accepts_kwarg), covering both logits_to_keep injection and mm_token_type_ids
+stripping, AST-extracted so no unsloth/CUDA import is needed."""
 
 import ast, inspect, os
 
@@ -68,6 +69,27 @@ class NoPrepare:
     ): ...
 
 
+class VisionRejectsMM:
+    # Qwen3-VL shape: neither prepare nor forward names mm_token_type_ids -> REJECTED (stripped).
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        attention_mask = None,
+    ): ...
+    def forward(self, input_ids, pixel_values = None): ...
+
+
+class VisionAcceptsMM:
+    # forward names mm_token_type_ids and prepare unions it via **kwargs -> ACCEPTED (kept).
+    def prepare_inputs_for_generation(self, input_ids, **kwargs): ...
+    def forward(
+        self,
+        input_ids,
+        mm_token_type_ids = None,
+        **kwargs,
+    ): ...
+
+
 def run():
     cases = [
         (
@@ -89,6 +111,18 @@ def run():
             PrepNoKwargs_ForwardHasKey(),
             "num_logits_to_keep",
             False,
+        ),
+        (
+            "mm_token_type_ids not accepted -> reject (strip)",
+            VisionRejectsMM(),
+            "mm_token_type_ids",
+            False,
+        ),
+        (
+            "mm_token_type_ids accepted     -> keep",
+            VisionAcceptsMM(),
+            "mm_token_type_ids",
+            True,
         ),
     ]
     passed = 0

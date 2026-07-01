@@ -373,6 +373,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             kwargs.pop("token_type_ids", None)
     # kwargs.pop("token_type_ids", None)
 
+    # Some vision processors (Transformers 5.x path) emit mm_token_type_ids that generate() then
+    # rejects in _validate_model_kwargs (seen on Qwen3-VL GRPO). Unlike logits_to_keep this is an
+    # incoming kwarg, so drop it when the top level generate does not accept it.
+    if "mm_token_type_ids" in kwargs and not _unsloth_generate_accepts_kwarg(self, "mm_token_type_ids"):
+        kwargs.pop("mm_token_type_ids", None)
+
     # VLMs do not allow logits_to_keep
     global NUM_LOGITS_TO_KEEP
     if arch not in NUM_LOGITS_TO_KEEP:
