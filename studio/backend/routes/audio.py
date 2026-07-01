@@ -41,6 +41,17 @@ def _get_whisper_pipeline(model_id: str):
     from transformers import pipeline
     import torch
 
+    # transformers.is_torchcodec_available() only checks that the torchcodec
+    # package is importable, not that its compiled DLLs actually load; on this
+    # ROCm-torch/Windows setup the package is present but libtorchcodec_core*.dll
+    # fails to load, so the ASR pipeline's unconditional `import torchcodec`
+    # crashes every request. We already hand it a pre-decoded numpy array (see
+    # transcribe() below), so torchcodec is never actually needed here — make the
+    # pipeline think it's absent so it takes the plain-array path instead.
+    import transformers.pipelines.automatic_speech_recognition as _asr_module
+
+    _asr_module.is_torchcodec_available = lambda: False
+
     device = 0 if torch.cuda.is_available() else -1
     _whisper_pipeline = pipeline(
         "automatic-speech-recognition", model = model_id, device = device

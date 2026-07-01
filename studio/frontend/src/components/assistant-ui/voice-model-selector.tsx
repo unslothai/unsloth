@@ -10,7 +10,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MicVocalIcon } from "lucide-react";
+import { MicVocalIcon, PhoneIcon } from "lucide-react";
 import { useState, type FC } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
 import type { LoraModelOption } from "./model-selector/types";
@@ -44,6 +44,11 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   const [open, setOpen] = useState(false);
   const sttEngine = useChatRuntimeStore((s) => s.sttEngine);
   const setSttEngine = useChatRuntimeStore((s) => s.setSttEngine);
+  // "configuring": dropdown is open (or openable) but the voice ball hasn't
+  // been entered yet — picking Listen/Speak options here only configures
+  // settings. Entering the ball is a separate, explicit action below.
+  const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  const setVoiceMode = useChatRuntimeStore((s) => s.setVoiceMode);
 
   const selectedModel = value ? models.find((m) => m.id === value) : null;
   const displayName = selectedModel?.name ?? BROWSER_VOICE_LABEL;
@@ -176,6 +181,27 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
                 No TTS models found. Train or export a voice model first.
               </p>
             )}
+          </>
+        )}
+
+        {/* Entering the ball is explicit: picking Listen/Speak options above
+            only configures settings, so you can leave this open and keep
+            reading/using the text chat until you're ready to talk. */}
+        {voiceMode === "configuring" && (
+          <>
+            <div className="my-1 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setOpen(false);
+                setVoiceMode("active");
+              }}
+              className="flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] font-medium text-primary transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <PhoneIcon className="size-3.5" />
+              Start voice mode
+            </button>
           </>
         )}
       </PopoverContent>

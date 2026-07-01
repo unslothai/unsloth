@@ -1284,9 +1284,11 @@ export function ChatPage({
       const previousId = useChatRuntimeStore.getState().selectedVoiceModelId;
       setSelectedVoiceModelId(id);
       if (!id) {
-        // Browser voice — unload voice slot and activate the loop immediately.
+        // Browser voice — just unload any loaded TTS voice slot. Selecting a
+        // voice only configures it; entering the ball is a separate, explicit
+        // action ("Start voice mode" in the popover) so picking a voice never
+        // yanks you out of the text chat you might still be reading.
         void authFetch("/api/inference/voice/unload", { method: "POST" });
-        useChatRuntimeStore.getState().setVoiceMode("active");
         return;
       }
 
@@ -1345,10 +1347,9 @@ export function ChatPage({
             description: (body as { detail?: string }).detail ?? undefined,
           });
           setSelectedVoiceModelId(null);
-        } else {
-          // Model loaded — activate the conversation loop.
-          useChatRuntimeStore.getState().setVoiceMode("active");
         }
+        // On success we just leave the model loaded and selected; entering the
+        // ball is the separate "Start voice mode" action in the popover.
       } catch {
         toast.error("Voice model failed to load");
         setSelectedVoiceModelId(null);
