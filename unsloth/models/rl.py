@@ -276,6 +276,9 @@ def PatchRL(FastLanguageModel):
         else:
             labels = None
 
+        # Force logits during eval, but restore the user's prior setting after
+        # so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
+        _old_return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         with torch.no_grad():
             if has_labels or loss_without_labels:
@@ -315,7 +318,7 @@ def PatchRL(FastLanguageModel):
                 # TODO: this needs to be fixed and made cleaner later.
                 if self.args.past_index >= 0:
                     self._past = outputs[self.args.past_index - 1]
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        os.environ["UNSLOTH_RETURN_LOGITS"] = _old_return_logits
         if prediction_loss_only:
             return (loss, None, None)
 
