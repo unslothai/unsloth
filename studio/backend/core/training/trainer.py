@@ -74,6 +74,7 @@ from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
+from utils.datasets.text_validation import validate_non_empty_text_field
 from utils.paths import (
     ensure_dir,
     resolve_dataset_path,
@@ -2683,6 +2684,11 @@ class UnslothTrainer:
                 if split_result is not None:
                     train_portion, eval_dataset = split_result
                     dataset_info["dataset"] = train_portion
+
+            if not self.is_vlm:
+                validate_non_empty_text_field(dataset_info["dataset"], split_name = "train")
+                if eval_dataset is not None:
+                    validate_non_empty_text_field(eval_dataset, split_name = "eval")
 
             return (dataset_info, eval_dataset)
 

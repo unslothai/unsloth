@@ -8,6 +8,8 @@ from typing import Literal
 
 from datasets import Dataset
 
+from .text_validation import validate_non_empty_text_field
+
 
 @dataclass(frozen = True)
 class RawTextNotice:
@@ -157,6 +159,7 @@ def prepare_raw_text_dataset(
         split_scope = split_scope,
     )
     notices.extend(invalid_row_notices)
+    validate_non_empty_text_field(dataset, split_name = split_name or "raw text")
 
     if append_eos:
         if not eos_token:

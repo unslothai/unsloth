@@ -398,6 +398,18 @@ class TestTrainingRawSupport(unittest.TestCase):
             any("null or non-string 'text' values" in notice.message for notice in result.notices)
         )
 
+    def test_prepare_raw_text_dataset_rejects_blank_rows_before_appending_eos(self):
+        dataset = Dataset.from_dict({"text": ["", "   "]})
+
+        with self.assertRaisesRegex(ValueError, "empty `text` field"):
+            prepare_raw_text_dataset(
+                dataset,
+                mode_label = "CPT",
+                split_name = "train",
+                eos_token = "<eos>",
+                append_eos = True,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
