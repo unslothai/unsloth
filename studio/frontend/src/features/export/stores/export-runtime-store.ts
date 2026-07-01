@@ -487,7 +487,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             save_directory: params.saveDirectory,
             push_to_hub: pushToHub,
             repo_id: params.repoId,
-            hf_token: params.token,
+            // A local GGUF LoRA export still reloads a possibly-gated base config, so fall back to
+            // the load token when there is no hub-upload token (both are the same HF token).
+            hf_token: params.token ?? params.loadToken ?? null,
             private: params.privateRepo,
             gguf: params.loraGguf ?? false,
             gguf_outtype: params.loraGgufOuttype ?? "f16",
