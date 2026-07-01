@@ -56,6 +56,9 @@ from models import (
     TrainingJobResponse,
     TrainingStatus,
     TrainingProgress,
+    DiffusionTrainingStartRequest,
+    DiffusionTrainingStartResponse,
+    DiffusionTrainingStatusResponse,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import BaseModel as PydanticBaseModel
@@ -1017,3 +1020,51 @@ async def stream_training_progress(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── Diffusion (SDXL) LoRA training ────────────────────────────────────────────
+# A separate, lightweight job path from the LLM training endpoints above: diffusion
+# runs are driven by DiffusionTrainingService (its own subprocess + event pump), not
+# the LLM TrainingBackend, so the two never contend and diffusion never triggers LLM
+# lifecycle (DB run rows, plots, transfer-to-chat-inference).
+
+
+@router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
+async def start_diffusion_training(
+    body: DiffusionTrainingStartRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Start an SDXL LoRA training job from an image + caption dataset."""
+    from core.training.diffusion_training_service import get_diffusion_training_service
+
+    service = get_diffusion_training_service()
+    try:
+        job_id = service.start(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+    except RuntimeError as e:
+        # A job is already running.
+        raise HTTPException(status_code = 409, detail = str(e))
+    except Exception as e:
+        raise log_and_http_error(
+            e, 500, "Failed to start diffusion training",
+            event = "diffusion_training.start_failed", log = logger,
+        )
+    return DiffusionTrainingStartResponse(job_id = job_id, status = "running")
+
+
+@router.post("/diffusion/stop")
+async def stop_diffusion_training(current_subject: str = Depends(get_current_subject)):
+    """Request a clean stop of the running diffusion training job (partial adapter saved)."""
+    from core.training.diffusion_training_service import get_diffusion_training_service
+
+    stopped = get_diffusion_training_service().stop()
+    return {"status": "stopping" if stopped else "idle"}
+
+
+@router.get("/diffusion/status", response_model = DiffusionTrainingStatusResponse)
+async def diffusion_training_status(current_subject: str = Depends(get_current_subject)):
+    """Poll the current diffusion training job's status/progress (JSON)."""
+    from core.training.diffusion_training_service import get_diffusion_training_service
+
+    return DiffusionTrainingStatusResponse(**get_diffusion_training_service().status())

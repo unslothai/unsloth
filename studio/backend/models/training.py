@@ -665,3 +665,66 @@ class TrainingRunDeleteResponse(BaseModel):
 
     status: str
     message: str
+
+
+class DiffusionTrainingStartRequest(BaseModel):
+    """Request to start a diffusion (SDXL) LoRA training job.
+
+    Field names mirror ``core.training.diffusion_lora_trainer.DiffusionLoraConfig`` so the
+    service can pass ``model_dump()`` straight through. Only the paths are required; the
+    rest carry the trainer's defaults.
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    base_model: str = Field(..., description="HF repo id or local path to an SDXL pipeline")
+    data_dir: str = Field(..., description="Folder of training images (+ captions)")
+    output_dir: str = Field(..., description="Directory to write the LoRA .safetensors into")
+    instance_prompt: Optional[str] = Field(
+        None, description="Dreambooth caption applied to images without their own caption"
+    )
+    resolution: int = Field(1024, ge=64, le=2048, description="Square training resolution (multiple of 8)")
+    train_steps: int = Field(500, ge=1, le=100000)
+    learning_rate: float = Field(1e-4, gt=0)
+    train_batch_size: int = Field(1, ge=1, le=64)
+    gradient_accumulation_steps: int = Field(1, ge=1, le=256)
+    lora_rank: int = Field(16, ge=1, le=320)
+    lora_alpha: Optional[int] = Field(None, ge=1, le=640, description="Defaults to lora_rank")
+    lora_dropout: float = Field(0.0, ge=0.0, le=1.0)
+    seed: int = Field(42)
+    mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
+    snr_gamma: Optional[float] = Field(5.0, description="Min-SNR loss weighting; null disables")
+    gradient_checkpointing: bool = Field(True)
+    lr_scheduler: str = Field("constant")
+    lr_warmup_steps: int = Field(0, ge=0)
+    center_crop: bool = Field(False)
+    random_flip: bool = Field(True)
+    caption_column: str = Field("text")
+    hf_token: Optional[str] = Field(None)
+
+
+class DiffusionTrainingStartResponse(BaseModel):
+    """Response for starting a diffusion training job."""
+
+    job_id: str
+    status: str
+
+
+class DiffusionTrainingStatusResponse(BaseModel):
+    """A snapshot of the current diffusion training job (or idle)."""
+
+    active: bool
+    job_id: Optional[str] = None
+    status: str
+    message: str = ""
+    step: int = 0
+    total_steps: int = 0
+    loss: Optional[float] = None
+    avg_loss: Optional[float] = None
+    learning_rate: Optional[float] = None
+    num_images: Optional[int] = None
+    in_model_load: bool = False
+    output_dir: Optional[str] = None
+    lora_path: Optional[str] = None
+    started_at: Optional[float] = None
+    updated_at: Optional[float] = None
