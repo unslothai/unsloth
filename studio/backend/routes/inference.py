@@ -10396,6 +10396,18 @@ async def generate_diffusion_image(
             upscale = request.upscale,
             reference_images = request.reference_images,
             loras = [(l.id, l.weight) for l in request.loras] if request.loras else None,
+            controlnet = (
+                (
+                    request.controlnet.id,
+                    request.controlnet.image,
+                    request.controlnet.control_type,
+                    request.controlnet.strength,
+                    request.controlnet.guidance_start,
+                    request.controlnet.guidance_end,
+                )
+                if request.controlnet
+                else None
+            ),
         )
     except ValueError as exc:
         # Bad client input (undecodable image/mask, or a workflow the loaded family
@@ -10448,6 +10460,12 @@ async def generate_diffusion_image(
                         "model": result.get("repo_id"),
                         "loras": (
                             [f"{l.id}:{l.weight:g}" for l in request.loras] if request.loras else []
+                        ),
+                        "controlnet": (
+                            f"{request.controlnet.id}:{request.controlnet.control_type}:"
+                            f"{request.controlnet.strength:g}"
+                            if request.controlnet
+                            else None
                         ),
                         "created_at": created_at,
                     },

@@ -21,6 +21,9 @@ export interface DiffusionStatus {
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA
   // picker's enabled state). False on unsupported families/quant.
   supports_lora?: boolean;
+  // Whether the loaded model can apply a ControlNet (drives the ControlNet picker's enabled
+  // state). Diffusers only, for families with a ControlNet pipeline; false otherwise.
+  supports_controlnet?: boolean;
 }
 
 export interface DiffusionGenerateProgress {
@@ -92,12 +95,36 @@ export interface DiffusionGenerateRequest {
   // LoRA adapters to apply for this generation (by discovery id + weight, 0..2). Omitted
   // or empty applies none. Rejected (400) when the loaded model/quant can't apply LoRA.
   loras?: LoraSpecInput[];
+  // ControlNet conditioning for this generation. Omitted applies none. Rejected (400) when
+  // the loaded model/quant can't apply ControlNet.
+  controlnet?: ControlNetSpecInput;
 }
 
 // One LoRA selection sent with a generation.
 export interface LoraSpecInput {
   id: string;
   weight: number;
+}
+
+// A ControlNet selection sent with a generation.
+export interface ControlNetSpecInput {
+  id: string;
+  // Base64/data-URL control image (a source image or an already-made control map).
+  image: string;
+  control_type: "passthrough" | "canny";
+  strength: number;
+  guidance_start?: number;
+  guidance_end?: number;
+}
+
+// A discoverable ControlNet model (from GET /api/models/diffusion-controlnets).
+export interface DiffusionControlNetInfo {
+  id: string;
+  display_name: string;
+  source: "local" | "hub";
+  families: string[];
+  control_types: string[];
+  is_union: boolean;
 }
 
 // A discoverable diffusion LoRA adapter (from GET /api/models/diffusion-loras).
@@ -126,6 +153,7 @@ export interface GalleryImage {
   batch_size: number;
   model: string | null;
   loras?: string[];
+  controlnet?: string | null;
   created_at: number;
 }
 
@@ -185,6 +213,17 @@ export async function listDiffusionLoras(family?: string): Promise<DiffusionLora
     await authFetch(`/api/models/diffusion-loras${qs}`),
   );
   return data.loras ?? [];
+}
+
+/** List diffusion ControlNet models, optionally filtered to a model family. */
+export async function listDiffusionControlNets(
+  family?: string,
+): Promise<DiffusionControlNetInfo[]> {
+  const qs = family ? `?family=${encodeURIComponent(family)}` : "";
+  const data = await parseJson<{ controlnets: DiffusionControlNetInfo[] }>(
+    await authFetch(`/api/models/diffusion-controlnets${qs}`),
+  );
+  return data.controlnets ?? [];
 }
 
 export interface GalleryPage {

@@ -322,6 +322,13 @@ class DiffusionBackend:
         # resident modules (no extra VRAM, no reload), so we build each once per load and
         # reuse it. Keyed by pipeline class name; cleared on unload with the base pipe.
         self._aux_pipes: dict[str, Any] = {}
+        # Cache of loaded ControlNet models (id -> module) and the ControlNet workflow
+        # pipelines built around them ((pipeline_class, cn_id) -> pipe). ControlNet models
+        # are a small extra module loaded via from_pretrained; the pipeline is assembled via
+        # Pipeline.from_pipe(base, controlnet=model), reusing the resident base modules (no
+        # reload). Both are cleared on unload with the base pipe.
+        self._cn_models: dict[str, Any] = {}
+        self._cn_pipes: dict[tuple[str, str], Any] = {}
 
     @property
     def is_loaded(self) -> bool:
@@ -1187,6 +1194,39 @@ class DiffusionBackend:
         self._aux_pipes[class_name] = pipe
         return pipe
 
+    def _controlnet_pipe(self, state: _LoadState, resolved_cn: Any, cancel: threading.Event) -> Any:
+        """Build (once, cached) the family's diffusers ControlNet pipeline around the requested
+        ControlNet model. The ControlNet model is a small extra module loaded via from_pretrained
+        and cached by id; the pipeline is assembled with ``Pipeline.from_pipe(base,
+        controlnet=model)`` -- reusing the resident base modules at their loaded dtype (no reload,
+        no recast; torch_dtype=None for the same reason as _workflow_pipe). Raises a clear
+        ValueError when the family declares no ControlNet classes."""
+        fam = state.family
+        pipe_cls_name = getattr(fam, "controlnet_pipeline_class", None)
+        model_cls_name = getattr(fam, "controlnet_model_class", None)
+        if not pipe_cls_name or not model_cls_name:
+            raise ValueError(f"ControlNet is not supported for the '{fam.name}' model family.")
+        import diffusers
+
+        cn_model = self._cn_models.get(resolved_cn.id)
+        if cn_model is None:
+            if cancel.is_set():
+                raise RuntimeError("Diffusion generation was cancelled.")
+            cn_model = (
+                getattr(diffusers, model_cls_name)
+                .from_pretrained(resolved_cn.path, torch_dtype = state.dtype, token = state.hf_token)
+                .to(state.device)
+            )
+            self._cn_models[resolved_cn.id] = cn_model
+        key = (pipe_cls_name, resolved_cn.id)
+        pipe = self._cn_pipes.get(key)
+        if pipe is None:
+            pipe = getattr(diffusers, pipe_cls_name).from_pipe(
+                state.pipe, controlnet = cn_model, torch_dtype = None
+            )
+            self._cn_pipes[key] = pipe
+        return pipe
+
     @staticmethod
     def _align_vae_dtype(pipe: Any) -> None:
         """Cast the VAE to the transformer's compute dtype before an image-conditioned
@@ -1307,6 +1347,9 @@ class DiffusionBackend:
         # LoRA adapters as (id, weight) pairs; loaded onto the pipe (non-fused) and activated
         # with set_adapters for this generation. None/empty = no LoRA (adapters cleared).
         loras: Optional[list[tuple[str, float]]] = None,
+        # ControlNet as (id, control_image_b64, control_type, strength, guidance_start,
+        # guidance_end); conditions the text-to-image path on a spatial control map. None = off.
+        controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -1348,6 +1391,8 @@ class DiffusionBackend:
                 # an edit model's OWN loaded pipe is already the edit pipeline.
                 pipe = state.pipe
                 init_pil = mask_pil = None
+                control_pil = None
+                cn_scale = cn_gstart = cn_gend = None
                 ref_extra: list = []
                 if getattr(state.family, "edit", False):
                     # Instruction editing: the loaded pipe is the edit pipeline. It always
@@ -1411,6 +1456,47 @@ class DiffusionBackend:
                     init_pil = _decode_b64_image(init_image, mode = "RGB")
                 else:
                     workflow = "txt2img"
+
+                # ControlNet conditioning (diffusers): applies to the plain text-to-image path.
+                # Builds the family's ControlNet pipeline around the resident modules (no reload)
+                # and passes a control map. v1 conditions txt2img only (not img2img/inpaint/edit).
+                if controlnet is not None:
+                    from core.inference import diffusion_controlnet
+
+                    if workflow != "txt2img":
+                        raise ValueError(
+                            "ControlNet currently combines with plain text-to-image only, not the "
+                            f"{workflow} workflow."
+                        )
+                    if not diffusion_controlnet.supports_controlnet(
+                        engine = "diffusers",
+                        family = state.family.name,
+                        has_controlnet_pipeline = bool(
+                            getattr(state.family, "controlnet_pipeline_class", None)
+                        ),
+                        model_kind = state.kind,
+                        transformer_quant = state.transformer_quant,
+                    ):
+                        raise ValueError(
+                            "ControlNet is not supported for this model/quantisation on the "
+                            "diffusers engine (needs a bf16 or bnb-4bit load of a family with a "
+                            "ControlNet pipeline; not GGUF-via-diffusers or torchao fp8/int8)."
+                        )
+                    cn_id, cn_image_b64, cn_type, cn_strength, cn_gs, cn_ge = controlnet
+                    resolved_cn = diffusion_controlnet.resolve_controlnet(
+                        cn_id,
+                        family = state.family.name,
+                        hf_token = state.hf_token,
+                        cancel_event = cancel,
+                    )
+                    pipe = self._controlnet_pipe(state, resolved_cn, cancel)
+                    workflow = "controlnet"
+                    src = _decode_b64_image(cn_image_b64, mode = "RGB")
+                    # Control map at the OUTPUT size so it aligns with the generated latents.
+                    control_pil = diffusion_controlnet.preprocess_control(src, cn_type).resize(
+                        (width, height), Image.LANCZOS
+                    )
+                    cn_scale, cn_gstart, cn_gend = cn_strength, cn_gs, cn_ge
                 # Auto-resize odd-sized inputs to a multiple of 16 for the workflows whose
                 # OUTPUT size is taken from the input image (img2img / inpaint / extend / edit),
                 # so an upload like 186px tall no longer fails the pipeline's divisibility check.
@@ -1457,10 +1543,10 @@ class DiffusionBackend:
                 # outpaint vs a 1024 slider -> "tensor a (128) must match tensor b (192)").
                 # Many img2img/inpaint pipelines drop width/height entirely; pass them only
                 # when accepted, derived from the image so they are always consistent.
-                if workflow in ("txt2img", "reference"):
-                    # txt2img and FLUX.2 reference both generate at the REQUESTED size; the
-                    # reference pipe resizes the conditioning image itself, so it must not be
-                    # pinned to the input image's size like img2img/inpaint/upscale are.
+                if workflow in ("txt2img", "reference", "controlnet"):
+                    # txt2img, FLUX.2 reference, and ControlNet all generate at the REQUESTED
+                    # size; the reference/control image is resized to match, so it must not be
+                    # pinned to an input image's size like img2img/inpaint/upscale are.
                     kwargs["width"] = width
                     kwargs["height"] = height
                 elif init_pil is not None:
@@ -1471,6 +1557,20 @@ class DiffusionBackend:
                         kwargs["height"] = ih
                 if negative_prompt and "negative_prompt" in call_params:
                     kwargs["negative_prompt"] = negative_prompt
+                if workflow == "controlnet" and control_pil is not None:
+                    # The ControlNet pipeline takes the control map + its conditioning scale;
+                    # guidance start/end bound the step range it acts over. Every kwarg is gated
+                    # on the pipe signature so a family whose CN pipe omits one still runs.
+                    if "control_image" in call_params:
+                        kwargs["control_image"] = control_pil
+                    elif "image" in call_params:  # some CN pipelines name it "image"
+                        kwargs["image"] = control_pil
+                    if "controlnet_conditioning_scale" in call_params and cn_scale is not None:
+                        kwargs["controlnet_conditioning_scale"] = cn_scale
+                    if "control_guidance_start" in call_params and cn_gstart is not None:
+                        kwargs["control_guidance_start"] = cn_gstart
+                    if "control_guidance_end" in call_params and cn_gend is not None:
+                        kwargs["control_guidance_end"] = cn_gend
 
                 gen = _GenState(total_steps = steps)
 
@@ -1586,6 +1686,9 @@ class DiffusionBackend:
         # freed pipeline (they only re-wire its components, but holding the wrappers
         # would keep the modules alive past unload).
         self._aux_pipes.clear()
+        # Drop any ControlNet models + pipelines so the freed load carries no extra modules.
+        self._cn_pipes.clear()
+        self._cn_models.clear()
         self._state = None
         del state
         clear_gpu_cache()
@@ -1613,8 +1716,9 @@ class DiffusionBackend:
                 "transformer_cache": None,
                 "workflows": [],
                 "supports_lora": False,
+                "supports_controlnet": False,
             }
-        from core.inference import diffusion_lora
+        from core.inference import diffusion_controlnet, diffusion_lora
 
         return {
             "loaded": True,
@@ -1640,6 +1744,15 @@ class DiffusionBackend:
             "supports_lora": diffusion_lora.supports_lora(
                 engine = "diffusers",
                 family = state.family.name,
+                model_kind = state.kind,
+                transformer_quant = state.transformer_quant,
+            ),
+            "supports_controlnet": diffusion_controlnet.supports_controlnet(
+                engine = "diffusers",
+                family = state.family.name,
+                has_controlnet_pipeline = bool(
+                    getattr(state.family, "controlnet_pipeline_class", None)
+                ),
                 model_kind = state.kind,
                 transformer_quant = state.transformer_quant,
             ),

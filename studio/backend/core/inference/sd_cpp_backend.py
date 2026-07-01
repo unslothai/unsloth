@@ -479,6 +479,9 @@ class SdCppDiffusionBackend:
         # LoRA adapters as (id, weight) pairs; resolved + materialized into a managed dir
         # and injected as <lora:ALIAS:w> prompt tags per sd-cli run. None/empty = no LoRA.
         loras: Optional[list[tuple[str, float]]] = None,
+        # ControlNet: accepted for interface parity with the diffusers backend. Native sd.cpp
+        # ControlNet (sd-cli --control-net) is a follow-up; a request is rejected clearly.
+        controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -490,6 +493,11 @@ class SdCppDiffusionBackend:
             raise ValueError(
                 "img2img / inpaint / reference are not yet supported on the native sd.cpp "
                 "engine; run on a GPU (diffusers) for image-conditioned workflows."
+            )
+        if controlnet is not None:
+            raise ValueError(
+                "ControlNet is not yet supported on the native sd.cpp engine; run on a GPU "
+                "(diffusers) for ControlNet conditioning."
             )
 
         cancel = threading.Event()
@@ -666,6 +674,7 @@ class SdCppDiffusionBackend:
                 "transformer_cache": None,
                 "engine": "sd_cpp",
                 "supports_lora": False,
+                "supports_controlnet": False,
             }
         from core.inference import diffusion_lora
 
@@ -697,6 +706,8 @@ class SdCppDiffusionBackend:
                 model_kind = "gguf",
                 transformer_quant = None,
             ),
+            # Native ControlNet (sd-cli --control-net) is a follow-up; off for now.
+            "supports_controlnet": False,
         }
 
 
