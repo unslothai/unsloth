@@ -1790,7 +1790,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
     from utils.paths import resolve_output_dir, ensure_dir
 
-    output_dir = config.get("output_dir", "")
+    output_dir = config.get("output_dir", "") or _output_dir_from_resume_checkpoint(
+        resume_from_checkpoint
+    )
     if not output_dir:
         output_dir = build_default_output_dir_name(
             model_name,
@@ -1798,6 +1800,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
     output_dir = str(resolve_output_dir(output_dir))
     ensure_dir(Path(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0
@@ -2024,6 +2027,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     trainer.add_eval_callback(_on_eval)
 
+    _opt_ref = [None]
+    _orig_build_optimizer = getattr(trainer, "_build_optimizer", None)
+
+    if callable(_orig_build_optimizer):
+
+        def _capture_optimizer(total_steps):
+            _opt_ref[0] = _orig_build_optimizer(total_steps)
+            return _opt_ref[0]
+
+        trainer._build_optimizer = _capture_optimizer
+
     # ── 11. Run training ──
     gc.collect()
     mx.synchronize()
@@ -2037,6 +2051,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("status", status_message = "Saving model...")
         mx.synchronize()
         trainer.save_model(output_dir)
+        if trainer.stop_requested:
+            if not _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
+                _send(
+                    "error",
+                    error = (
+                        "Failed to save a resumable checkpoint after stop. "
+                        "Model files were saved, but this run cannot be resumed."
+                    ),
+                    # A user stop normally finalizes as 'stopped'; this failure
+                    # must keep its error status so history explains it.
+                    keep_error_status = True,
+                    # Older checkpoints are stale; resuming would roll back past this stop.
+                    resume_blocked = True,
+                )
+                return
         _send("complete", output_dir = output_dir, status_message = "Training completed")
 
     if tb_writer is not None:
@@ -3029,6 +3058,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
+        _emit_output_dir(event_queue, output_dir)
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
@@ -3146,6 +3176,65 @@ def _send_status(event_queue: Any, message: str) -> None:
             "ts": time.time(),
         }
     )
+
+
+def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
+    try:
+        event_queue.put({"type": "output_dir", "output_dir": output_dir, "ts": time.time()})
+    except Exception:
+        pass
+
+
+def _mlx_output_has_resume_checkpoint(output_dir) -> bool:
+    path = Path(output_dir)
+    if (path / "trainer_state.json").is_file():
+        return True
+    return any(
+        (child / "trainer_state.json").is_file()
+        for child in path.glob("checkpoint-*")
+        if child.is_dir()
+    )
+
+
+def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
+    if step <= 0:
+        return False
+    return (Path(output_dir) / f"checkpoint-{step}" / "trainer_state.json").is_file()
+
+
+def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
+    """Write a full resume checkpoint for a stopped MLX run.
+
+    Returns True when a checkpoint for the current training step exists.
+    """
+    step = int(getattr(trainer, "_global_step", 0) or 0)
+    # A periodic save or a resumed run may already cover the current step.
+    if _mlx_has_checkpoint_at_step(output_dir, step):
+        return True
+    if step <= 0 or optimizer is None:
+        return False
+    ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
+    try:
+        ckpt_dir.mkdir(parents = True, exist_ok = True)
+        from unsloth_zoo.mlx.utils import (
+            save_optimizer_state,
+            save_trainable_adapters,
+            save_trainer_state,
+        )
+
+        save_trainable_adapters(trainer.model, str(ckpt_dir))
+        save_optimizer_state(optimizer, str(ckpt_dir))
+        save_trainer_state(
+            {
+                "global_step": step,
+                "train_loss_history": list(getattr(trainer, "_train_loss_history", [])),
+            },
+            str(ckpt_dir),
+        )
+        logger.info("Saved stop checkpoint to %s", ckpt_dir)
+    except Exception:
+        logger.exception("Failed to write stop checkpoint under %s", output_dir)
+    return _mlx_has_checkpoint_at_step(output_dir, step)
 
 
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -3512,6 +3601,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             config.get("project_name"),
         )
     output_dir = str(resolve_output_dir(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)
