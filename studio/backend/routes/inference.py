@@ -694,6 +694,7 @@ try:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        detect_dflash_file,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -731,6 +732,7 @@ except ImportError:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        detect_dflash_file,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -2230,6 +2232,24 @@ def _request_matches_loaded_settings(
                 return False
             if detected_resolved != stored_resolved:
                 return False
+    # Same for the DFlash drafter (auto mode only, no forced "dflash" UI mode):
+    # a dflash-*.gguf added/removed next to the weights changes --model-draft.
+    if req_mode == "auto" and llama_backend.gguf_path:
+        effective_extras = (
+            request.llama_extra_args
+            if request.llama_extra_args is not None
+            else llama_backend.extra_args
+        )
+        if not _extra_args_set_spec_type(effective_extras):
+            detected = detect_dflash_file(llama_backend.gguf_path)
+            stored = llama_backend.dflash_draft_path
+            try:
+                detected_resolved = Path(detected).resolve() if detected else None
+                stored_resolved = Path(stored).resolve() if stored else None
+            except OSError:
+                return False
+            if detected_resolved != stored_resolved:
+                return False
     return True
 
 
@@ -2360,7 +2380,7 @@ def _estimate_gguf_required_gb(
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+        for attr in ("gguf_mmproj_file", "gguf_mtp_file", "gguf_dflash_file"):
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
@@ -2837,10 +2857,24 @@ async def load_model(
                         except HTTPException as exc:
                             logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
                             config.gguf_mtp_file = None
+                    if config.gguf_dflash_file:
+                        # Same lease check as the MTP drafter: a dflash-*.gguf
+                        # must sit under the granted path and not be a symlink,
+                        # else drop it rather than fail the load.
+                        try:
+                            _validate_native_gguf_companion(
+                                config.gguf_dflash_file, config.gguf_file, "DFlash drafter"
+                            )
+                        except HTTPException as exc:
+                            logger.warning(
+                                "Dropping DFlash drafter for native load: %s", exc.detail
+                            )
+                            config.gguf_dflash_file = None
                 _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
                     mtp_draft_path = config.gguf_mtp_file,
+                    dflash_draft_path = config.gguf_dflash_file,
                     # Pass the resolved variant so _extra_args_source keys off
                     # the same string the inheritance check at the top of /load
                     # uses (#5401 followup).

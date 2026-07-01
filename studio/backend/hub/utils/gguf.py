@@ -84,14 +84,14 @@ def is_mmproj_filename(filename: str) -> bool:
 
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file MTP drafter (speculative head), a companion to
-    the main model rather than a selectable quant.
+    """True for a separate-file speculative drafter (MTP or DFlash), a companion
+    to the main model rather than a selectable quant.
 
-    Covers the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for
-    llama.cpp ``-hf`` auto-discovery) and the ``MTP/`` subdir copies (Gemma 4).
-    Repos that bake the head into the main GGUF (Qwen) have no such file, so
-    this is False for them. Must be excluded from main-model selection
-    everywhere mmproj is.
+    Covers the MTP repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for
+    llama.cpp ``-hf`` auto-discovery) and the ``MTP/`` subdir copies (Gemma 4),
+    plus the DFlash ``dflash-*.gguf`` drafter. Repos that bake the head into the
+    main GGUF (Qwen) have no such file, so this is False for them. Must be
+    excluded from main-model selection everywhere mmproj is.
 
     CANONICAL COPY. Layering keeps two mirrors that must change in lockstep:
     utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import
@@ -102,7 +102,7 @@ def is_mtp_drafter_path(path: str) -> bool:
     if not p.endswith(".gguf"):
         return False
     name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or name.startswith("dflash-")
 
 
 def is_gguf_filename(filename: str) -> bool:
